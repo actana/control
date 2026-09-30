@@ -30,9 +30,9 @@ export { connectPanelDatabase, closePanelDatabase } from "~/db/pg";
 export { serveNodeRequest } from "~/server/node-http-bridge";
 
 // Subscribe the event-log recorder to the server's AppEvent stream for the life
-// of the server process (idempotent). Appends every task/session/hook event to
+// of the server process (idempotent). Appends every session/hook event to
 // the monotonic `event_log` table so a reconnecting Panel can replay the
-// missed event/task timeline via the core-link's `subscribe` path.
+// missed event/session timeline via the core-link's `subscribe` path.
 registerEventLogRecorder();
 
 // Bring up a core-link to every registered Core as the process starts — not

@@ -19,12 +19,12 @@ const {
 } = await import("../projects");
 const { upsertProjectPresentation } = await import("../project-presentation");
 const { getDb } = await import("~/db/client");
-const { projects, tasks, groups, appSettings, projectPresentation } = await import("~/db/schema");
+const { projects, sessions, groups, appSettings, projectPresentation } = await import("~/db/schema");
 
 describe("projects service", () => {
   beforeEach(() => {
     const db = getDb();
-    db.delete(tasks).run();
+    db.delete(sessions).run();
     db.delete(projectPresentation).run();
     db.delete(projects).run();
     db.delete(groups).run();
@@ -190,22 +190,22 @@ describe("projects service", () => {
     expect(c.name).toBe(path.basename(dir));
   });
 
-  it("aggregates task counts, total, activeNonDone and preview per project", async () => {
-    const { isActiveStatus, TASK_STATUSES } = await import("@actana/shared/domain");
+  it("aggregates session counts, total, activeNonDone and preview per project", async () => {
+    const { isActiveStatus, SESSION_STATUSES } = await import("@actana/shared/domain");
     const db = getDb();
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mc-proj-counts-"));
     const c = createProject({ name: "counts", path: dir });
 
     // Insert in a fixed order so implicit rowid ascends with insertion; the
-    // earliest-inserted running task must supply the preview.
+    // earliest-inserted running session must supply the preview.
     let seq = 0;
-    const addTask = (status: string, opts: { preview?: string; archived?: boolean } = {}) => {
+    const addSession = (status: string, opts: { preview?: string; archived?: boolean } = {}) => {
       const now = Date.now() + seq;
-      db.insert(tasks)
+      db.insert(sessions)
         .values({
           id: `t-${seq}`,
           projectId: c.id,
-          title: `task-${seq}`,
+          title: `session-${seq}`,
           agent: "claude-code",
           status: status as never,
           preview: opts.preview ?? "",
@@ -217,19 +217,19 @@ describe("projects service", () => {
       seq += 1;
     };
 
-    addTask("ready");
-    addTask("ready");
-    addTask("running", { preview: "first-running" });
-    addTask("running", { preview: "second-running" });
-    addTask("needs-input", { preview: "waiting" });
-    addTask("finished");
-    addTask("interrupted");
+    addSession("ready");
+    addSession("ready");
+    addSession("running", { preview: "first-running" });
+    addSession("running", { preview: "second-running" });
+    addSession("needs-input", { preview: "waiting" });
+    addSession("finished");
+    addSession("interrupted");
     // Archived rows must be excluded entirely from counts and preview.
-    addTask("running", { preview: "archived-running", archived: true });
+    addSession("running", { preview: "archived-running", archived: true });
 
     const listed = listProjects().find((p) => p.id === c.id);
     expect(listed).toBeTruthy();
-    const counts = listed!.taskCounts;
+    const counts = listed!.sessionCounts;
 
     expect(counts.ready).toBe(2);
     expect(counts.running).toBe(2);
@@ -238,24 +238,24 @@ describe("projects service", () => {
     expect(counts.interrupted).toBe(1);
     expect(counts.terminated).toBe(0);
     expect(counts.disconnected).toBe(0);
-    // total = non-archived task count (the archived running row is excluded).
+    // total = non-archived session count (the archived running row is excluded).
     expect(counts.total).toBe(7);
 
-    const expectedActiveNonDone = TASK_STATUSES.filter(
+    const expectedActiveNonDone = SESSION_STATUSES.filter(
       (s) => isActiveStatus(s) && s !== "finished",
     ).reduce((acc, s) => acc + counts[s], 0);
     expect(counts.activeNonDone).toBe(expectedActiveNonDone);
 
-    // Earliest running task wins the preview over the later running + needs-input.
+    // Earliest running session wins the preview over the later running + needs-input.
     expect(listed!.preview).toBe("first-running");
   });
 
-  it("falls back to the needs-input preview when no task is running", () => {
+  it("falls back to the needs-input preview when no session is running", () => {
     const db = getDb();
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mc-proj-preview-ni-"));
     const c = createProject({ name: "ni", path: dir });
     const now = Date.now();
-    db.insert(tasks)
+    db.insert(sessions)
       .values({
         id: "ni-1",
         projectId: c.id,
@@ -272,13 +272,13 @@ describe("projects service", () => {
     expect(listed!.preview).toBe("needs you");
   });
 
-  it("reports zeroed counts and null preview for a project with no tasks", () => {
+  it("reports zeroed counts and null preview for a project with no sessions", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mc-proj-empty-"));
     const c = createProject({ name: "empty", path: dir });
     const listed = listProjects().find((p) => p.id === c.id);
-    expect(listed!.taskCounts.total).toBe(0);
-    expect(listed!.taskCounts.activeNonDone).toBe(0);
-    expect(listed!.taskCounts.running).toBe(0);
+    expect(listed!.sessionCounts.total).toBe(0);
+    expect(listed!.sessionCounts.activeNonDone).toBe(0);
+    expect(listed!.sessionCounts.running).toBe(0);
     expect(listed!.preview).toBeNull();
   });
 

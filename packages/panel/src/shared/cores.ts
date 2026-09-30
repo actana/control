@@ -2,7 +2,7 @@
 //
 // A Core is the Panel's handle for "this Core I can talk to": an endpoint,
 // an alias, and a replay cursor. Everything else about a Core — its projects,
-// tasks, sessions, events — lives on the Core and is read over the
+// sessions, events — lives on the Core and is read over the
 // core-link. The registry is the only Core state the Panel persists.
 //
 // The secret half of a registration (CA, client cert/key, bearer) never

@@ -1,9 +1,9 @@
-// Pure SQL helpers that mutate the Core's projects + tasks tables and read
+// Pure SQL helpers that mutate the Core's projects + sessions tables and read
 // the derived sessions view for the write path (issue 04, ADR 0004).
 //
 // The Core process is the sole VM-side writer of the shared SQLite (ADR
 // 0004); on remote Cores no sibling stateful server exists, so
-// `PtyCoreLinkServer` dispatches `projectsMutate` / `tasksMutate` /
+// `PtyCoreLinkServer` dispatches `projectsMutate` / `sessionsMutate` /
 // `sessionsList` frames to a `CoreMutationPort` whose real implementation
 // (packages/core/src/core-mutation-store.ts) opens `missioncontrol.db` read-write
 // and calls these helpers.
@@ -19,8 +19,8 @@ import type {
   CoreLinkProjectMutation,
   CoreLinkProjectSnapshot,
   CoreLinkSessionSnapshot,
-  CoreLinkTaskMutation,
-  CoreLinkTaskSnapshot,
+  CoreLinkSessionMutation,
+  CoreLinkSessionRow,
 } from "./sdk-link-frames";
 
 /**
@@ -38,13 +38,13 @@ export interface CoreMutationSqlite {
 }
 
 /**
- * A liveness probe: given a `taskId`, return the live `ptyId` if one is
- * currently running for that task, else `null`. `sessionsList` uses this to
- * enrich task rows with their optional live PTY so a reconnecting Panel knows
+ * A liveness probe: given a `sessionId`, return the live `ptyId` if one is
+ * currently running for that session, else `null`. `sessionsList` uses this to
+ * enrich session rows with their optional live PTY so a reconnecting Panel knows
  * which sessions it can reattach to. Passed in from the caller so this module
  * stays SQL-only (no dependency on `PtyCore`).
  */
-export type LivePtyProbe = (taskId: string) => string | null;
+export type LivePtyProbe = (sessionId: string) => string | null;
 
 // ─── Project mutations ────────────────────────────────────────────────────────
 
@@ -201,7 +201,7 @@ type ProjectSettingsPatch = Extract<CoreLinkProjectMutation, { op: "settings" }>
 
 /**
  * Patch a project's remembered session settings. Fields omitted from `input`
- * are left untouched (partial patch, mirroring `updateTask`); `savedHarness:
+ * are left untouched (partial patch, mirroring `updateSession`); `savedHarness:
  * null` clears the remembered Harness. Returns the updated snapshot, or `null`
  * when the row is missing — the Panel rolls its optimistic patch back on both
  * a `null` and a thrown error.
@@ -330,7 +330,7 @@ export function renameProject(
 
 /**
  * Delete a project row and return the snapshot of what was removed. SQLite's
- * ON DELETE CASCADE removes tasks, terminal_logs, prompts, token_usage,
+ * ON DELETE CASCADE removes sessions, terminal_logs, prompts, token_usage,
  * etc. tied to this project — matching the Panel server's
  * `deleteProject` semantics (which is a hard delete today). Returns `null`
  * when nothing matched. Returning the pre-delete snapshot (rather than
@@ -394,42 +394,42 @@ function readProjectSnapshot(
   };
 }
 
-// ─── Task mutations ─────────────────────────────────────────────────────────
+// ─── Session mutations ─────────────────────────────────────────────────────────
 
-type TaskInsert = Extract<CoreLinkTaskMutation, { op: "create" }>;
-type TaskUpdate = Extract<CoreLinkTaskMutation, { op: "update" }>;
+type SessionInsert = Extract<CoreLinkSessionMutation, { op: "create" }>;
+type SessionUpdate = Extract<CoreLinkSessionMutation, { op: "update" }>;
 
-const DEFAULT_TASK_STATUS = "ready";
-const DEFAULT_TASK_BRANCH = "main";
+const DEFAULT_SESSION_STATUS = "ready";
+const DEFAULT_SESSION_BRANCH = "main";
 
 /**
- * Insert a new task row and return its snapshot. `projectId`, `title`, and
- * `agent` are required (validated here). `taskId` is caller-supplied when the
+ * Insert a new session row and return its snapshot. `projectId`, `title`, and
+ * `agent` are required (validated here). `sessionId` is caller-supplied when the
  * Panel wants optimistic-UI parity, else generated on the Core.
  */
-export function createTask(
+export function createSession(
   sqlite: CoreMutationSqlite,
-  input: TaskInsert,
+  input: SessionInsert,
   now: number,
-): CoreLinkTaskSnapshot {
+): CoreLinkSessionRow {
   const projectId = input.projectId?.trim();
   const title = input.title?.trim();
   const agent = input.agent?.trim();
-  if (!projectId) throw new Error("task projectId is required");
-  if (!title) throw new Error("task title is required");
-  if (!agent) throw new Error("task agent is required");
-  const id = input.taskId?.trim() || newClientId("t");
-  const status = input.status?.trim() || DEFAULT_TASK_STATUS;
+  if (!projectId) throw new Error("session projectId is required");
+  if (!title) throw new Error("session title is required");
+  if (!agent) throw new Error("session agent is required");
+  const id = input.sessionId?.trim() || newClientId("t");
+  const status = input.status?.trim() || DEFAULT_SESSION_STATUS;
   const icon = normalizeIconInput(input.icon);
   sqlite
     .prepare(
-      `INSERT INTO tasks (
+      `INSERT INTO sessions (
          id, project_id, title, agent, status, icon, branch, created_at, updated_at
        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
-    .run(id, projectId, title, agent, status, icon, DEFAULT_TASK_BRANCH, now, now);
+    .run(id, projectId, title, agent, status, icon, DEFAULT_SESSION_BRANCH, now, now);
   return {
-    taskId: id,
+    sessionId: id,
     projectId,
     title,
     // A fresh row's title is whatever the create frame carried — the sentinel
@@ -462,15 +462,15 @@ function normalizeIconInput(value: string | null | undefined): string | null {
 }
 
 /**
- * Patch an existing task row. Fields omitted from `input` are left untouched
+ * Patch an existing session row. Fields omitted from `input` are left untouched
  * (partial update). Returns the updated snapshot, or `null` when the row is
  * missing.
  */
-export function updateTask(
+export function updateSession(
   sqlite: CoreMutationSqlite,
-  input: TaskUpdate,
+  input: SessionUpdate,
   now: number,
-): CoreLinkTaskSnapshot | null {
+): CoreLinkSessionRow | null {
   const sets: string[] = [];
   const params: unknown[] = [];
   if (input.status !== undefined) {
@@ -479,10 +479,10 @@ export function updateTask(
   }
   if (input.title !== undefined) {
     const trimmed = input.title.trim();
-    if (!trimmed) throw new Error("task title cannot be empty");
+    if (!trimmed) throw new Error("session title cannot be empty");
     sets.push("title = ?");
     params.push(trimmed);
-    // Mirror the local server controller (tasks.controller.ts): a title on an
+    // Mirror the local server controller (sessions.controller.ts): a title on an
     // update is a manual rename unless the caller says otherwise, so pin the
     // flag that stops the auto title-generator from clobbering it. The Core's
     // own generator is the one caller that says otherwise (issue 84) — its
@@ -514,7 +514,7 @@ export function updateTask(
   if (sets.length === 0) {
     // No-op patch: still bump updated_at so the Panel's live snapshot moves.
     // Return the existing row unchanged.
-    return readTaskSnapshot(sqlite, input.taskId);
+    return readSessionSnapshot(sqlite, input.sessionId);
   }
   // Strictly increasing per row, never just the wall clock: `updated_at` is
   // also the row's revision — the session backstop records it after its own
@@ -522,55 +522,55 @@ export function updateTask(
   // in one millisecond would otherwise carry one value and be indistinguishable.
   sets.push("updated_at = MAX(?, updated_at + 1)");
   params.push(now);
-  params.push(input.taskId);
+  params.push(input.sessionId);
   const result = sqlite
-    .prepare(`UPDATE tasks SET ${sets.join(", ")} WHERE id = ?`)
+    .prepare(`UPDATE sessions SET ${sets.join(", ")} WHERE id = ?`)
     .run(...params);
   if (result.changes === 0) return null;
-  return readTaskSnapshot(sqlite, input.taskId);
+  return readSessionSnapshot(sqlite, input.sessionId);
 }
 
 /**
- * Delete a task row and return the snapshot of what was removed. SQLite's
+ * Delete a session row and return the snapshot of what was removed. SQLite's
  * ON DELETE CASCADE takes the rows hanging off it (terminal_logs, prompts,
- * token_usage, …) — the same hard delete the Panel server's `deleteTask`
+ * token_usage, …) — the same hard delete the Panel server's `deleteSession`
  * performs for a Panel-owned row. Returns `null` when nothing matched, the way
- * {@link updateTask} reports a missing row, so the server answers
- * `tasksMutateResult` with a null task rather than an `error` frame.
+ * {@link updateSession} reports a missing row, so the server answers
+ * `sessionsMutateResult` with a null session rather than an `error` frame.
  *
  * The pre-delete snapshot is what comes back (mirroring {@link archiveProject})
- * so `tasksMutateResult.task` carries the same shape for every op and the
+ * so `sessionsMutateResult.session` carries the same shape for every op and the
  * caller doesn't branch on `op` to read the answer.
  *
  * No pending-question clear rides along, unlike the Panel server's delete.
  * A pending question is an in-memory map on the *Panel* server, filled by the
- * hooks route, which resolves the task against the Panel's own database — so a
- * Core-owned task never gets an entry to clear. Nothing on the Core tracks one.
+ * hooks route, which resolves the session against the Panel's own database — so a
+ * Core-owned session never gets an entry to clear. Nothing on the Core tracks one.
  * The Panel-side state that does follow a Core-owned session (its stored
- * session-finish notifications) is pruned off the `task:deleted` event this
+ * session-finish notifications) is pruned off the `session:deleted` event this
  * delete appends.
  */
-export function deleteTask(
+export function deleteSession(
   sqlite: CoreMutationSqlite,
-  taskId: string,
-): CoreLinkTaskSnapshot | null {
-  const before = readTaskSnapshot(sqlite, taskId);
+  sessionId: string,
+): CoreLinkSessionRow | null {
+  const before = readSessionSnapshot(sqlite, sessionId);
   if (!before) return null;
-  sqlite.prepare(`DELETE FROM tasks WHERE id = ?`).run(taskId);
+  sqlite.prepare(`DELETE FROM sessions WHERE id = ?`).run(sessionId);
   return before;
 }
 
-function readTaskSnapshot(
+function readSessionSnapshot(
   sqlite: CoreMutationSqlite,
-  taskId: string,
-): CoreLinkTaskSnapshot | null {
+  sessionId: string,
+): CoreLinkSessionRow | null {
   const row = sqlite
     .prepare(
       `SELECT id, project_id, title, title_manually_set, claude_session_id, agent, status,
               pinned, archived, icon, updated_at
-       FROM tasks WHERE id = ?`,
+       FROM sessions WHERE id = ?`,
     )
-    .get(taskId) as
+    .get(sessionId) as
     | {
         id: string;
         project_id: string;
@@ -587,7 +587,7 @@ function readTaskSnapshot(
     | undefined;
   if (!row) return null;
   return {
-    taskId: row.id,
+    sessionId: row.id,
     projectId: row.project_id,
     title: row.title,
     titleManuallySet: row.title_manually_set === 1,
@@ -604,11 +604,11 @@ function readTaskSnapshot(
 // ─── Sessions view ──────────────────────────────────────────────────────────
 
 /**
- * Read every active (non-archived) task as a session snapshot, optionally
+ * Read every active (non-archived) session as a session snapshot, optionally
  * filtered to one project. `probe` enriches each row with its live `ptyId`
- * (if the Core's PTY core currently has one for that task), so a
+ * (if the Core's PTY core currently has one for that session), so a
  * reconnecting Panel knows which sessions it can reattach to. Rows are
- * ordered `updated_at` DESC — same as `queryTasks`.
+ * ordered `updated_at` DESC — same as `querySessionRows`.
  */
 export function querySessions(
   sqlite: CoreMutationSqlite,
@@ -620,14 +620,14 @@ export function querySessions(
     if (projectId === undefined) {
       rows = sqlite
         .prepare(
-          `SELECT id, status, updated_at FROM tasks
+          `SELECT id, status, updated_at FROM sessions
            WHERE archived = 0 ORDER BY updated_at DESC`,
         )
         .all() as typeof rows;
     } else {
       rows = sqlite
         .prepare(
-          `SELECT id, status, updated_at FROM tasks
+          `SELECT id, status, updated_at FROM sessions
            WHERE archived = 0 AND project_id = ? ORDER BY updated_at DESC`,
         )
         .all(projectId) as typeof rows;
@@ -636,7 +636,7 @@ export function querySessions(
     return [];
   }
   return rows.map((row) => ({
-    taskId: row.id,
+    sessionId: row.id,
     ptyId: probe(row.id),
     status: row.status,
     updatedAt: row.updated_at,

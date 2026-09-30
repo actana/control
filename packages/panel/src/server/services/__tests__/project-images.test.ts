@@ -18,7 +18,7 @@ const {
 } = await import("../project-images");
 const { getProjectPresentation } = await import("../project-presentation");
 const { getDb } = await import("~/db/client");
-const { projectPresentation, projects, tasks, groups } = await import("~/db/schema");
+const { projectPresentation, projects, sessions, groups } = await import("~/db/schema");
 
 const PNG_BYTES = new Uint8Array([0x89, 0x50, 0x4e, 0x47]);
 
@@ -37,7 +37,7 @@ function touchImage(projectId: string, ext = "png"): string {
 describe("project-images service", () => {
   beforeEach(() => {
     const db = getDb();
-    db.delete(tasks).run();
+    db.delete(sessions).run();
     db.delete(projectPresentation).run();
     db.delete(projects).run();
     db.delete(groups).run();

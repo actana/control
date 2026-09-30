@@ -78,8 +78,8 @@ describe("projectRowFromSnapshot", () => {
 
   it("zeroes the counts a Core snapshot has no answer for", () => {
     const row = projectRowFromSnapshot(snapshot());
-    expect(row.taskCounts.total).toBe(0);
-    expect(row.taskCounts.running).toBe(0);
+    expect(row.sessionCounts.total).toBe(0);
+    expect(row.sessionCounts.running).toBe(0);
     expect(row.preview).toBeNull();
     expect(row.repoKey).toBeNull();
   });

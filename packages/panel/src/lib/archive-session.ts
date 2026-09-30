@@ -1,17 +1,17 @@
 import type { QueryClient } from "@tanstack/react-query";
-import { mutateTaskForCore } from "~/lib/mutate-task-for-core";
+import { mutateSessionForCore } from "~/lib/mutate-session-for-core";
 import type { OpenTerminal } from "~/lib/terminal-store";
-import { queryKeys, tasksCacheKey } from "~/queries";
+import { queryKeys, sessionsCacheKey } from "~/queries";
 
 type CloseSessionFn = (
-  taskId: string,
-  opts?: { activateTaskId?: string | null },
+  sessionId: string,
+  opts?: { activateSessionId?: string | null },
 ) => Promise<void>;
 
 /**
  * Close + archive one open session, scoped to its own project so it works for a
  * session belonging to any project (e.g. cells in the global session grid).
- * Mirrors the close+archive core of archiveTasks in projects.$id.tsx. Throws on
+ * Mirrors the close+archive core of archiveSessions in projects.$id.tsx. Throws on
  * failure so callers can surface a toast.
  *
  * Callers archiving many sessions at once should pass `skipInvalidate` and run
@@ -19,7 +19,7 @@ type CloseSessionFn = (
  * `projects` key (and any shared per-project keys) must not be invalidated
  * once per session.
  *
- * `activateTaskId` is handed to `close` so the caller can promote a replacement
+ * `activateSessionId` is handed to `close` so the caller can promote a replacement
  * session to active (e.g. the grid activating the closed cell's neighbour);
  * it defaults to null, which leaves the project with no active session.
  *
@@ -31,17 +31,17 @@ export async function archiveOpenSession(
   session: OpenTerminal,
   close: CloseSessionFn,
   queryClient: QueryClient,
-  opts?: { skipInvalidate?: boolean; activateTaskId?: string | null },
+  opts?: { skipInvalidate?: boolean; activateSessionId?: string | null },
 ): Promise<void> {
-  await close(session.taskId, {
-    activateTaskId: opts?.activateTaskId ?? null,
+  await close(session.sessionId, {
+    activateSessionId: opts?.activateSessionId ?? null,
   }).catch(() => undefined);
   // The row lives in the owning Core's database (ADR 0004/0005), so the flip
   // rides the panel link to that Core — the Panel's own HTTP API has no such
   // row and would 404. `session.coreId` is null for a Panel-owned row.
-  await mutateTaskForCore(session.coreId, {
+  await mutateSessionForCore(session.coreId, {
     op: "update",
-    taskId: session.taskId,
+    sessionId: session.sessionId,
     archived: true,
   });
   if (!opts?.skipInvalidate) await invalidateSessionQueries(queryClient, [session]);
@@ -57,7 +57,7 @@ export async function invalidateSessionQueries(
   for (const { project, coreId } of sessions) {
     // The card reads from the owning Core's bucket (issue 84); invalidating
     // the untagged key refreshes a list no Core-owned cell renders from.
-    add(tasksCacheKey(project.id, coreId));
+    add(sessionsCacheKey(project.id, coreId));
     add(queryKeys.project(project.id));
   }
   if (sessions.length > 0) add(queryKeys.projects);

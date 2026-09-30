@@ -18,15 +18,15 @@ const TAB_MIN_WIDTH = 96;
 export function FocusSessionBar({
   open,
   sessions,
-  activeTaskId,
+  activeSessionId,
   unread,
   onSelect,
 }: {
   open: boolean;
   sessions: OpenTerminal[];
-  activeTaskId: string;
+  activeSessionId: string;
   unread: Set<string>;
-  onSelect: (taskId: string) => void;
+  onSelect: (sessionId: string) => void;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const activeRef = useRef<HTMLButtonElement>(null);
@@ -50,7 +50,7 @@ export function FocusSessionBar({
   useEffect(() => {
     if (!open) return;
     activeRef.current?.scrollIntoView({ block: "nearest", inline: "nearest" });
-  }, [activeTaskId, open, sessions]);
+  }, [activeSessionId, open, sessions]);
 
   return (
     <div
@@ -82,11 +82,11 @@ export function FocusSessionBar({
       >
         {sessions.map((session) => (
           <FocusSessionTab
-            key={session.taskId}
-            ref={session.taskId === activeTaskId ? activeRef : undefined}
+            key={session.sessionId}
+            ref={session.sessionId === activeSessionId ? activeRef : undefined}
             session={session}
-            active={session.taskId === activeTaskId}
-            unread={unread.has(session.taskId)}
+            active={session.sessionId === activeSessionId}
+            unread={unread.has(session.sessionId)}
             onSelect={onSelect}
           />
         ))}
@@ -106,10 +106,10 @@ function FocusSessionTab({
   session: OpenTerminal;
   active: boolean;
   unread: boolean;
-  onSelect: (taskId: string) => void;
+  onSelect: (sessionId: string) => void;
 }) {
-  const status = session.task.status;
-  const title = session.task.title || "Session";
+  const status = session.session.status;
+  const title = session.session.title || "Session";
   const meta = STATUS_META[status];
   return (
     <button
@@ -118,7 +118,7 @@ function FocusSessionTab({
       role="tab"
       aria-selected={active}
       title={title}
-      onClick={() => onSelect(session.taskId)}
+      onClick={() => onSelect(session.sessionId)}
       style={
         {
           display: "flex",

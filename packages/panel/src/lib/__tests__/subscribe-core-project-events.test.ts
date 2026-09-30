@@ -12,7 +12,7 @@ import type { PanelBridge } from "~/lib/panel-bridge";
 type EventListener = (msg: { coreId: string; event: CoreLinkEvent }) => void;
 
 function makeEvent(kind: string, eventId = 1): CoreLinkEvent {
-  return { eventId, ts: 0, kind, ptyId: null, taskId: null, payload: "{}" };
+  return { eventId, ts: 0, kind, ptyId: null, sessionId: null, payload: "{}" };
 }
 
 function fakeBridge(): {
@@ -88,7 +88,7 @@ describe("subscribeCoreProjectEvents", () => {
     const fake = fakeBridge();
     const onChanged = vi.fn();
     subscribeCoreProjectEvents(fake.bridge, "core_a", onChanged);
-    fake.emit({ coreId: "core_a", event: makeEvent("task:created") });
+    fake.emit({ coreId: "core_a", event: makeEvent("session:created") });
     fake.emit({ coreId: "core_a", event: makeEvent("session:finished") });
     expect(onChanged).not.toHaveBeenCalled();
   });

@@ -6,9 +6,9 @@
 // preserve existing import paths.
 export {
   FINISH_RACE_WINDOW_MS,
-  noteTaskFinished,
-  taskFinishedWithinRaceWindow,
-  clearTaskFinished,
+  noteSessionFinished,
+  sessionFinishedWithinRaceWindow,
+  clearSessionFinished,
   noteSubagentStart,
   noteSubagentStop,
   hasActiveSubagents,

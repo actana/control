@@ -1,4 +1,4 @@
-import type { TaskStatus } from "@actana/shared/domain";
+import type { SessionStatus } from "@actana/shared/domain";
 import { ASK_USER_QUESTION_TOOL } from "./harness-questions";
 
 export const HARNESS_HOOK_EVENTS = {
@@ -37,7 +37,7 @@ export type HarnessHookPayload = {
   tool_name?: string;
 };
 
-export function mapHookEventToStatus(payload: HarnessHookPayload): TaskStatus | null {
+export function mapHookEventToStatus(payload: HarnessHookPayload): SessionStatus | null {
   switch (payload.hook_event_name || "") {
     // `permissionReplied` is here because an answered permission is the turn
     // resuming. If the answer was a denial the harness ends the turn instead,
@@ -75,7 +75,7 @@ export function mapHookEventToStatus(payload: HarnessHookPayload): TaskStatus | 
     case HARNESS_HOOK_EVENTS.subagentStop:
       return null;
     // Synthetic PTY-exit event: the hooks controller maps it conditionally
-    // (only tasks still in an active status move to terminated/finished).
+    // (only sessions still in an active status move to terminated/finished).
     case HARNESS_HOOK_EVENTS.sessionProcessExited:
       return null;
     default:

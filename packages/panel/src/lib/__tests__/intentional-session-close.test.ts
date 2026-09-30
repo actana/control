@@ -11,12 +11,12 @@ describe("intentional-session-close", () => {
   });
 
   it("consumes a marked close once", () => {
-    markIntentionalSessionClose("task-1");
-    expect(consumeIntentionalSessionClose("task-1")).toBe(true);
-    expect(consumeIntentionalSessionClose("task-1")).toBe(false);
+    markIntentionalSessionClose("session-1");
+    expect(consumeIntentionalSessionClose("session-1")).toBe(true);
+    expect(consumeIntentionalSessionClose("session-1")).toBe(false);
   });
 
-  it("returns false for unmarked task ids", () => {
-    expect(consumeIntentionalSessionClose("task-2")).toBe(false);
+  it("returns false for unmarked session ids", () => {
+    expect(consumeIntentionalSessionClose("session-2")).toBe(false);
   });
 });

@@ -1,28 +1,28 @@
 import { describe, it, expect } from "vitest";
 import type {
   CoreLinkProjectSnapshot,
-  CoreLinkTaskSnapshot,
+  CoreLinkSessionRow,
 } from "@actana/sdk/core";
 import { getPinnedProjectStatusDots } from "~/components/views/project-bar-status-dots";
 import {
-  coreTaskCountsByProject,
-  emptyTaskCounts,
+  coreSessionCountsByProject,
+  emptySessionCounts,
   getProjectActivity,
   projectRowFromSnapshot,
-  taskCountsFromCoreTasks,
+  sessionCountsFromCoreSessions,
 } from "../projects";
 
 // Issue 377: a Core-owned pin's activity dots never moved, because the row the
 // rail renders reported zero of every status no matter what the Core was
 // running. These cover the derivation the dots read from — the Core's own
-// `tasksList` snapshots, the same frame and the same rows the grid renders —
+// `sessionRowsList` snapshots, the same frame and the same rows the grid renders —
 // and the two things an operator must see: a running Session lighting the
 // matching dot, and a finished one clearing it on the next read, with no
 // reload in between.
 
-function task(over: Partial<CoreLinkTaskSnapshot> = {}): CoreLinkTaskSnapshot {
+function session(over: Partial<CoreLinkSessionRow> = {}): CoreLinkSessionRow {
   return {
-    taskId: "t1",
+    sessionId: "t1",
     projectId: "p1",
     title: "Ship it",
     titleManuallySet: false,
@@ -56,18 +56,18 @@ function snapshot(over: Partial<CoreLinkProjectSnapshot> = {}): CoreLinkProjectS
 }
 
 /** The pinned row as the rail would build it from one read of a Core. */
-function pinRow(tasks: readonly CoreLinkTaskSnapshot[]) {
-  const counts = coreTaskCountsByProject(tasks);
+function pinRow(sessions: readonly CoreLinkSessionRow[]) {
+  const counts = coreSessionCountsByProject(sessions);
   return projectRowFromSnapshot(snapshot(), null, counts.get("p1"));
 }
 
-describe("taskCountsFromCoreTasks", () => {
+describe("sessionCountsFromCoreSessions", () => {
   it("counts a Core's rows by status the way the Panel counts its own", () => {
-    const counts = taskCountsFromCoreTasks([
-      task({ taskId: "t1", status: "running" }),
-      task({ taskId: "t2", status: "running" }),
-      task({ taskId: "t3", status: "needs-input" }),
-      task({ taskId: "t4", status: "finished" }),
+    const counts = sessionCountsFromCoreSessions([
+      session({ sessionId: "t1", status: "running" }),
+      session({ sessionId: "t2", status: "running" }),
+      session({ sessionId: "t3", status: "needs-input" }),
+      session({ sessionId: "t4", status: "finished" }),
     ]);
     expect(counts.running).toBe(2);
     expect(counts["needs-input"]).toBe(1);
@@ -81,9 +81,9 @@ describe("taskCountsFromCoreTasks", () => {
   // Archived rows travel in their own list (ADR 0019). A Core that includes
   // one must not leave a dot lit for a Session the operator filed away.
   it("leaves archived rows out of every bucket", () => {
-    const counts = taskCountsFromCoreTasks([
-      task({ taskId: "t1", status: "running", archived: true }),
-      task({ taskId: "t2", status: "ready" }),
+    const counts = sessionCountsFromCoreSessions([
+      session({ sessionId: "t1", status: "running", archived: true }),
+      session({ sessionId: "t2", status: "ready" }),
     ]);
     expect(counts.running).toBe(0);
     expect(counts.ready).toBe(1);
@@ -93,22 +93,22 @@ describe("taskCountsFromCoreTasks", () => {
   // A Core may name a status this Panel does not render. The row exists, so it
   // counts toward the total, but it lights no dot it cannot be mapped to.
   it("counts a status it does not know toward the total only", () => {
-    const counts = taskCountsFromCoreTasks([task({ status: "warp-drive" })]);
+    const counts = sessionCountsFromCoreSessions([session({ status: "warp-drive" })]);
     expect(counts.total).toBe(1);
     expect(counts.running).toBe(0);
     expect(counts.activeNonDone).toBe(0);
   });
 
-  it("has every status at zero for a Core with no tasks", () => {
-    expect(taskCountsFromCoreTasks([])).toEqual(emptyTaskCounts());
+  it("has every status at zero for a Core with no sessions", () => {
+    expect(sessionCountsFromCoreSessions([])).toEqual(emptySessionCounts());
   });
 });
 
-describe("coreTaskCountsByProject", () => {
+describe("coreSessionCountsByProject", () => {
   it("keeps each project's counts to its own rows", () => {
-    const byProject = coreTaskCountsByProject([
-      task({ taskId: "t1", projectId: "p1", status: "running" }),
-      task({ taskId: "t2", projectId: "p2", status: "needs-input" }),
+    const byProject = coreSessionCountsByProject([
+      session({ sessionId: "t1", projectId: "p1", status: "running" }),
+      session({ sessionId: "t2", projectId: "p2", status: "needs-input" }),
     ]);
     expect(byProject.get("p1")?.running).toBe(1);
     expect(byProject.get("p1")?.["needs-input"]).toBe(0);
@@ -116,39 +116,39 @@ describe("coreTaskCountsByProject", () => {
     expect(byProject.get("p2")?.running).toBe(0);
   });
 
-  // Absent, not zeroed: a project the Core reported no tasks for is one the
-  // caller falls back to `emptyTaskCounts` for.
-  it("omits projects the Core reported no tasks for", () => {
-    expect(coreTaskCountsByProject([]).get("p1")).toBeUndefined();
+  // Absent, not zeroed: a project the Core reported no sessions for is one the
+  // caller falls back to `emptySessionCounts` for.
+  it("omits projects the Core reported no sessions for", () => {
+    expect(coreSessionCountsByProject([]).get("p1")).toBeUndefined();
   });
 });
 
 describe("a Core-owned pin's activity dots", () => {
   it("lights the matching dot while a Core Session is running", () => {
-    const row = pinRow([task({ status: "running" })]);
-    expect(row.taskCounts.running).toBe(1);
-    expect(getPinnedProjectStatusDots(row.taskCounts)).toEqual(["running"]);
+    const row = pinRow([session({ status: "running" })]);
+    expect(row.sessionCounts.running).toBe(1);
+    expect(getPinnedProjectStatusDots(row.sessionCounts)).toEqual(["running"]);
     expect(getProjectActivity(row)).toBe("agent-running");
   });
 
   it("lights one dot per running Session, as the rail draws them", () => {
     const row = pinRow([
-      task({ taskId: "t1", status: "running" }),
-      task({ taskId: "t2", status: "running" }),
+      session({ sessionId: "t1", status: "running" }),
+      session({ sessionId: "t2", status: "running" }),
     ]);
-    expect(getPinnedProjectStatusDots(row.taskCounts)).toEqual(["running", "running"]);
+    expect(getPinnedProjectStatusDots(row.sessionCounts)).toEqual(["running", "running"]);
   });
 
   // The clearing half of the acceptance: the next read of the same Core — the
-  // refetch a `task:statusChanged` event triggers, not a page load — carries
+  // refetch a `session:statusChanged` event triggers, not a page load — carries
   // the finished row, and the running dot goes out with it.
   it("clears the running dot on the next snapshot after the Session finishes", () => {
-    const running = pinRow([task({ status: "running" })]);
-    expect(running.taskCounts.running).toBe(1);
+    const running = pinRow([session({ status: "running" })]);
+    expect(running.sessionCounts.running).toBe(1);
 
-    const finished = pinRow([task({ status: "finished" })]);
-    expect(finished.taskCounts.running).toBe(0);
-    expect(getPinnedProjectStatusDots(finished.taskCounts)).not.toContain("running");
+    const finished = pinRow([session({ status: "finished" })]);
+    expect(finished.sessionCounts.running).toBe(0);
+    expect(getPinnedProjectStatusDots(finished.sessionCounts)).not.toContain("running");
     expect(getProjectActivity(finished)).toBe("offline");
   });
 
@@ -156,16 +156,16 @@ describe("a Core-owned pin's activity dots", () => {
   // an operator most needs to see from the rail.
   it("reports needs-input over running when a Session is waiting", () => {
     const row = pinRow([
-      task({ taskId: "t1", status: "running" }),
-      task({ taskId: "t2", status: "needs-input" }),
+      session({ sessionId: "t1", status: "running" }),
+      session({ sessionId: "t2", status: "needs-input" }),
     ]);
     expect(getProjectActivity(row)).toBe("needs-input");
   });
 
-  // Back-compat: the callers that have not read the Core's tasks still map to
+  // Back-compat: the callers that have not read the Core's sessions still map to
   // zeros rather than to an invented status.
   it("stays at zero for a caller that passes no counts", () => {
     const row = projectRowFromSnapshot(snapshot());
-    expect(row.taskCounts).toEqual(emptyTaskCounts());
+    expect(row.sessionCounts).toEqual(emptySessionCounts());
   });
 });

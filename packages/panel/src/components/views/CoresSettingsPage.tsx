@@ -191,7 +191,7 @@ export function CoresSettingsPage() {
         loading={removing}
       >
         The Panel stops dialing this Core and forgets its credentials and its place in the event
-        log. Nothing on the machine itself is touched — its projects, tasks, and running sessions
+        log. Nothing on the machine itself is touched — its projects, sessions, and running sessions
         keep going. To manage it again, run <code>actana pair new</code> on the machine and pair it
         here with the code it prints.
       </ConfirmDialog>

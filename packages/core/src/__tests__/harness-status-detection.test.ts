@@ -20,7 +20,7 @@ import {
   getLastEventId,
   readEventTail,
 } from "../event-log-store";
-import { CoreTaskWriter } from "../core-task-writer";
+import { CoreSessionWriter } from "../core-session-writer";
 import { CoreHarnessStatus } from "../core-harness-status";
 import { CoreTitleGenerator } from "../core-title-generator";
 import {
@@ -28,7 +28,7 @@ import {
   type HarnessHookReceiver,
 } from "../harness-hook-receiver";
 import { clearSubagentActivity } from "@actana/shared/subagent-activity";
-import { TITLE_WAITING } from "@actana/shared/task-sentinels";
+import { TITLE_WAITING } from "@actana/shared/session-sentinels";
 import type { CoreLinkEvent } from "@actana/sdk/core";
 
 // Harness status detection on a Core, driven the way it really happens: a hook
@@ -36,15 +36,15 @@ import type { CoreLinkEvent } from "@actana/sdk/core";
 // Core's real SQLite, and that appends an event to the Core's real event log —
 // which is what a Panel replays to re-render the card (issue 84).
 //
-// Nothing here hand-constructs a `task:updated` frame. Every assertion below
+// Nothing here hand-constructs a `session:updated` frame. Every assertion below
 // starts at an HTTP request a `curl` in a hook file could have made.
 
-const TASK_ID = "t1";
+const SESSION_ID = "t1";
 
 describe("harness status detection on the Core (issue 84)", () => {
   let userDataDir: string;
   let receiver: HarnessHookReceiver;
-  let writer: CoreTaskWriter;
+  let writer: CoreSessionWriter;
   let titleRuns: string[];
   let titleOutput: string;
 
@@ -55,7 +55,7 @@ describe("harness status detection on the Core (issue 84)", () => {
     configureCoreQueryStore(userDataDir);
     configureEventLogStore(userDataDir);
 
-    writer = new CoreTaskWriter({
+    writer = new CoreSessionWriter({
       mutationPort: coreMutationStore,
       queryPort: coreQueryStore,
       eventLog: { appendEvent, getLastEventId, readEventTail },
@@ -71,10 +71,10 @@ describe("harness status detection on the Core (issue 84)", () => {
     });
     const status = new CoreHarnessStatus({
       writer,
-      generateTitle: (taskId, prompt) => titleGenerator.schedule(taskId, prompt),
+      generateTitle: (sessionId, prompt) => titleGenerator.schedule(sessionId, prompt),
     });
-    receiver = await startHarnessHookReceiver((taskId, payload, eventFallback) =>
-      status.receiveHook(taskId, payload, eventFallback),
+    receiver = await startHarnessHookReceiver((sessionId, payload, eventFallback) =>
+      status.receiveHook(sessionId, payload, eventFallback),
     );
 
     coreMutationStore.mutateProject({
@@ -83,9 +83,9 @@ describe("harness status detection on the Core (issue 84)", () => {
       name: "Warehouse",
       path: userDataDir,
     });
-    coreMutationStore.mutateTask({
+    coreMutationStore.mutateSession({
       op: "create",
-      taskId: TASK_ID,
+      sessionId: SESSION_ID,
       projectId: "p1",
       title: TITLE_WAITING,
       agent: "claude-code",
@@ -94,7 +94,7 @@ describe("harness status detection on the Core (issue 84)", () => {
   });
 
   afterEach(() => {
-    clearSubagentActivity(TASK_ID);
+    clearSubagentActivity(SESSION_ID);
     receiver.close();
     disposeCoreMutationStore();
     disposeCoreQueryStore();
@@ -105,9 +105,9 @@ describe("harness status detection on the Core (issue 84)", () => {
   /** POST a hook payload exactly as a managed hook's `curl` would. */
   async function postHook(
     body: Record<string, unknown>,
-    opts?: { token?: string; taskId?: string; urlEvent?: string },
+    opts?: { token?: string; sessionId?: string; urlEvent?: string },
   ): Promise<{ status: number; json: unknown }> {
-    const query = new URLSearchParams({ taskId: opts?.taskId ?? TASK_ID });
+    const query = new URLSearchParams({ sessionId: opts?.sessionId ?? SESSION_ID });
     if (opts?.urlEvent) query.set("hookEvent", opts.urlEvent);
     const res = await fetch(
       `${receiver.url}/api/hooks/claude?${query}`,
@@ -123,20 +123,20 @@ describe("harness status detection on the Core (issue 84)", () => {
     return { status: res.status, json: await res.json() };
   }
 
-  const rowStatus = () => coreQueryStore.getTask(TASK_ID)?.status;
-  const rowTitle = () => coreQueryStore.getTask(TASK_ID)?.title;
-  const rowSessionId = () => coreQueryStore.getTask(TASK_ID)?.claudeSessionId;
+  const rowStatus = () => coreQueryStore.getSession(SESSION_ID)?.status;
+  const rowTitle = () => coreQueryStore.getSession(SESSION_ID)?.title;
+  const rowSessionId = () => coreQueryStore.getSession(SESSION_ID)?.claudeSessionId;
   const events = (): CoreLinkEvent[] => readEventTail(0, 100);
   const kinds = () => events().map((e) => e.kind);
 
-  it("captures Pi's session UUID from SessionStart onto the task row (ADO #4986)", async () => {
+  it("captures Pi's session UUID from SessionStart onto the session row (ADO #4986)", async () => {
     // Pi's extension posts this exact shape; the Core must persist the UUID
     // so relaunch can spell `pi --session <uuid>`. The Panel never mints one.
     const piSession = "a1b2c3d4-e5f6-7890-abcd-ef1234567890";
     expect(rowSessionId()).toBeNull();
 
     const res = await fetch(
-      `${receiver.url}/api/hooks/pi?taskId=${TASK_ID}&hookEvent=SessionStart`,
+      `${receiver.url}/api/hooks/pi?sessionId=${SESSION_ID}&hookEvent=SessionStart`,
       {
         method: "POST",
         headers: {
@@ -175,8 +175,8 @@ describe("harness status detection on the Core (issue 84)", () => {
     expect(rowStatus()).toBe("running");
     // The Panel re-renders off this event, replayed from its cursor if the
     // link was down when it landed.
-    expect(kinds()).toContain("task:updated");
-    expect(events().some((e) => e.taskId === TASK_ID)).toBe(true);
+    expect(kinds()).toContain("session:updated");
+    expect(events().some((e) => e.sessionId === SESSION_ID)).toBe(true);
   });
 
   it("moves running → needs-input on a permission request", async () => {
@@ -193,7 +193,7 @@ describe("harness status detection on the Core (issue 84)", () => {
     await postHook({ hook_event_name: "UserPromptSubmit", session_id: "sess-1" });
     await postHook({ hook_event_name: "Stop", session_id: "sess-1" });
     expect(rowStatus()).toBe("finished");
-    // #20's notification consumer routes on this kind; a generic task update
+    // #20's notification consumer routes on this kind; a generic session update
     // would leave it with nothing to hear.
     expect(kinds()).toContain("session:finished");
   });
@@ -201,7 +201,7 @@ describe("harness status detection on the Core (issue 84)", () => {
   it("finishes on a Stop whose session id is not the stored one (issue 390)", async () => {
     // The operator-visible miss: a resumed harness (or an OpenCode child whose
     // idle leaked past the plugin's filter) posts its Stop under a session id
-    // this task never captured. It used to be acked as `foreign-session` and
+    // this session never captured. It used to be acked as `foreign-session` and
     // dropped before any status write, so the card stayed on `running` and the
     // notification consumer never heard a thing.
     await postHook({ hook_event_name: "UserPromptSubmit", session_id: "sess-1" });
@@ -271,11 +271,11 @@ describe("harness status detection on the Core (issue 84)", () => {
     const status = new CoreHarnessStatus({ writer });
     await postHook({ hook_event_name: "UserPromptSubmit", session_id: "sess-1" });
 
-    status.sessionExited(TASK_ID, 1);
+    status.sessionExited(SESSION_ID, 1);
     expect(rowStatus()).toBe("terminated");
 
     // A second exit patch (a retry, a second tab) must not disturb the row.
-    status.sessionExited(TASK_ID, 0);
+    status.sessionExited(SESSION_ID, 0);
     expect(rowStatus()).toBe("terminated");
   });
 
@@ -286,12 +286,12 @@ describe("harness status detection on the Core (issue 84)", () => {
     const status = new CoreHarnessStatus({ writer });
     expect(rowStatus()).toBe("ready");
 
-    status.sessionExited(TASK_ID, 1);
+    status.sessionExited(SESSION_ID, 1);
 
     expect(rowStatus()).toBe("disconnected");
     // `disconnected` is not a finish: no ding for a Session that never worked.
     expect(kinds()).not.toContain("session:finished");
-    expect(kinds()).toContain("task:updated");
+    expect(kinds()).toContain("session:updated");
   });
 
   it("raises no completion ding for a bare Session whose PTY exited cleanly", async () => {
@@ -299,7 +299,7 @@ describe("harness status detection on the Core (issue 84)", () => {
     // going away. `finished` here would append `session:finished` and ding the
     // operator for "Waiting for initial prompt…".
     const status = new CoreHarnessStatus({ writer });
-    status.sessionExited(TASK_ID, 0);
+    status.sessionExited(SESSION_ID, 0);
     expect(rowStatus()).toBe("disconnected");
     expect(kinds()).not.toContain("session:finished");
   });
@@ -314,7 +314,7 @@ describe("harness status detection on the Core (issue 84)", () => {
     await postHook({ hook_event_name: "UserPromptSubmit", session_id: "sess-1" });
     expect(rowStatus()).toBe("running");
 
-    status.outputSignal(TASK_ID, "dialog-unanswered");
+    status.outputSignal(SESSION_ID, "dialog-unanswered");
     expect(rowStatus()).toBe("needs-input");
   });
 
@@ -328,7 +328,7 @@ describe("harness status detection on the Core (issue 84)", () => {
     expect(titleRuns).toHaveLength(1);
     // Generated, not renamed — an operator can still rename it, and the next
     // generated title is not blocked by a flag the generator set itself.
-    expect(coreQueryStore.getTask(TASK_ID)?.titleManuallySet).toBe(false);
+    expect(coreQueryStore.getSession(SESSION_ID)?.titleManuallySet).toBe(false);
   });
 
   it("never replaces an operator's rename, even when the generator finishes after it", async () => {
@@ -338,19 +338,19 @@ describe("harness status detection on the Core (issue 84)", () => {
     });
     const titleGenerator = new CoreTitleGenerator({ writer, runCli: () => slow });
 
-    const pending = titleGenerator.generate(TASK_ID, "rebuild the picker");
+    const pending = titleGenerator.generate(SESSION_ID, "rebuild the picker");
     // The operator renames while the CLI is still thinking.
-    writer.mutate({ op: "update", taskId: TASK_ID, title: "Picker rewrite" });
+    writer.mutate({ op: "update", sessionId: SESSION_ID, title: "Picker rewrite" });
     releaseCli("TITLE: Rebuild the warehouse picker\nICON: package");
     await pending;
 
     expect(rowTitle()).toBe("Picker rewrite");
     // And the protection is on the row, so it survives a Panel reload rather
     // than living in Panel memory.
-    expect(coreQueryStore.getTask(TASK_ID)?.titleManuallySet).toBe(true);
+    expect(coreQueryStore.getSession(SESSION_ID)?.titleManuallySet).toBe(true);
   });
 
-  it("refuses a hook with the wrong bearer, and one for a task this Core does not have", async () => {
+  it("refuses a hook with the wrong bearer, and one for a session this Core does not have", async () => {
     const wrongToken = await postHook(
       { hook_event_name: "UserPromptSubmit" },
       { token: "not-the-token" },
@@ -358,11 +358,11 @@ describe("harness status detection on the Core (issue 84)", () => {
     expect(wrongToken.status).toBe(401);
     expect(rowStatus()).toBe("ready");
 
-    const unknownTask = await postHook(
+    const unknownSession = await postHook(
       { hook_event_name: "UserPromptSubmit" },
-      { taskId: "nope" },
+      { sessionId: "nope" },
     );
-    expect(unknownTask.status).toBe(404);
+    expect(unknownSession.status).toBe(404);
   });
 
   it("names a Session from a prompt the Panel captured off the terminal", async () => {
@@ -373,7 +373,7 @@ describe("harness status detection on the Core (issue 84)", () => {
       writer,
       runCli: async () => "TITLE: Rebuild the warehouse picker\nICON: package",
     });
-    titleGenerator.schedule(TASK_ID, "rebuild the picker");
+    titleGenerator.schedule(SESSION_ID, "rebuild the picker");
     await vi.waitFor(() => expect(rowTitle()).toBe("Rebuild the warehouse picker"));
   });
 
@@ -388,7 +388,7 @@ describe("harness status detection on the Core (issue 84)", () => {
     });
     // A headless helper inherits the session's hook env; generating a title
     // from the title-generation prompt is a loop with no end.
-    titleGenerator.schedule(TASK_ID, "You are naming a developer's coding session. Pick a title");
+    titleGenerator.schedule(SESSION_ID, "You are naming a developer's coding session. Pick a title");
     await new Promise((r) => setTimeout(r, 10));
     expect(ran).toBe(false);
     expect(rowTitle()).toBe(TITLE_WAITING);
@@ -406,7 +406,7 @@ describe("harness status detection on the Core (issue 84)", () => {
   it("tells a dropped body apart from an oversized one", async () => {
     // An operator debugging with `curl -v` must not be told their kilobyte
     // payload was too large because the socket dropped.
-    const res = await fetch(`${receiver.url}/api/hooks/claude?taskId=${TASK_ID}`, {
+    const res = await fetch(`${receiver.url}/api/hooks/claude?sessionId=${SESSION_ID}`, {
       method: "POST",
       headers: { "content-type": "application/json", authorization: `Bearer ${receiver.token}` },
       body: "x".repeat(1_000_001),

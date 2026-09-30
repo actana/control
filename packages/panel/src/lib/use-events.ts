@@ -129,7 +129,7 @@ export function useServerEvents(onEvent: (e: ServerEvent) => void) {
  * Called once each time the shared stream comes back after dropping.
  *
  * A dropped SSE connection is a hole in this tab's knowledge, not a pause: a
- * Session that finishes while the socket is down emits its `task:updated` into
+ * Session that finishes while the socket is down emits its `session:updated` into
  * a stream nobody is reading, and no replay brings it back (issue 484). The
  * subscriber's job is therefore to re-read whatever the stream feeds, exactly
  * as `useCoreLiveQueries` already does for the core-link's own reconnects.

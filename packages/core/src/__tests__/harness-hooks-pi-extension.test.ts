@@ -76,7 +76,7 @@ async function loadExtension(env: Record<string, string | undefined>): Promise<M
 const WIRED = {
   AC_HOOK_URL: "http://127.0.0.1:45112",
   AC_HOOK_TOKEN: "hook-token-pi",
-  AC_HOOK_TASK_ID: "task_pi_1",
+  AC_HOOK_SESSION_ID: "session_pi_1",
   AC_HOOK_HARNESS: "pi",
   AC_HOOK_CWD: "/tmp/ac-pi-spawn-ws",
 };
@@ -299,17 +299,17 @@ describe("the Pi extension the Core writes (ADO #4985)", () => {
     const pi = await loadExtension({
       AC_HOOK_URL: undefined,
       AC_HOOK_TOKEN: undefined,
-      AC_HOOK_TASK_ID: undefined,
+      AC_HOOK_SESSION_ID: undefined,
     });
     expect(pi.handlers.project_trust).toBeUndefined();
   });
 
-  it("addresses the Core's receiver, with the task and the event on the URL", async () => {
+  it("addresses the Core's receiver, with the session and the event on the URL", async () => {
     const pi = await loadExtension(WIRED);
     await pi.fire("agent_settled");
     await settle();
     expect(posts[0]!.url).toBe(
-      "http://127.0.0.1:45112/api/hooks/pi?taskId=task_pi_1&hookEvent=Stop",
+      "http://127.0.0.1:45112/api/hooks/pi?sessionId=session_pi_1&hookEvent=Stop",
     );
     expect(posts[0]!.auth).toBe("Bearer hook-token-pi");
   });
@@ -329,7 +329,7 @@ describe("the Pi extension the Core writes (ADO #4985)", () => {
     const pi = await loadExtension({
       AC_HOOK_URL: undefined,
       AC_HOOK_TOKEN: undefined,
-      AC_HOOK_TASK_ID: undefined,
+      AC_HOOK_SESSION_ID: undefined,
     });
     expect(Object.keys(pi.handlers)).toEqual([]);
     await pi.fire("session_start", { reason: "startup" });
@@ -341,8 +341,8 @@ describe("the Pi extension the Core writes (ADO #4985)", () => {
 
   it("does nothing in a pi nested inside another harness's Session", async () => {
     // The file is global, so a pi an agent starts from inside a Claude Code
-    // Session loads it too, carrying that Session's URL, token and task id.
-    // Its SessionStart would re-key the Claude task and its Stop finish it.
+    // Session loads it too, carrying that Session's URL, token and session id.
+    // Its SessionStart would re-key the Claude session and its Stop finish it.
     const pi = await loadExtension({ ...WIRED, AC_HOOK_HARNESS: "claude-code" });
     expect(Object.keys(pi.handlers)).toEqual([]);
   });

@@ -187,7 +187,7 @@ function RootComponent() {
 
 // The active-session tail lives in its own leaf so the per-tick re-render from
 // subscribing to the terminal data slice (`activeFor` returns a fresh session
-// object whenever that session's task row updates) is confined here, instead of
+// object whenever that session's session row updates) is confined here, instead of
 // re-rendering the whole Shell + TopBar + ProjectBar. Props are all stable
 // (actions + booleans) so it re-renders only on its own subscription.
 const ProjectTerminalPanel = memo(function ProjectTerminalPanel({
@@ -199,9 +199,9 @@ const ProjectTerminalPanel = memo(function ProjectTerminalPanel({
   onToggleExpanded,
 }: {
   projectId: string;
-  onClose: (taskId: string, opts?: { activateTaskId?: string | null }) => Promise<void>;
+  onClose: (sessionId: string, opts?: { activateSessionId?: string | null }) => Promise<void>;
   onHide: (projectId: string) => void;
-  onPtyReady: (taskId: string, ptyId: string | null, scopeKey?: string) => void;
+  onPtyReady: (sessionId: string, ptyId: string | null, scopeKey?: string) => void;
   expanded: boolean;
   onToggleExpanded: () => void;
 }) {

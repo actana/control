@@ -13,7 +13,7 @@
 // This is the write-back, and it is deliberately narrow. Three things must all
 // hold before a row moves:
 //
-//  - **An agent spawn.** A `shell` or `shellSession` PTY carries a `taskId`
+//  - **An agent spawn.** A `shell` or `shellSession` PTY carries a `sessionId`
 //    for routing and is not harness work; neither may reset a Session's card.
 //  - **The status `disconnected`.** Not "any settled status": that is the only
 //    one this PR's own settles write for a Session that never worked, and
@@ -28,7 +28,7 @@
 //    back to the status it never really left.
 //
 // The last one is a read of this Core's event log, not of the row: see
-// `queryTaskProvenNeverWorked` for why the row cannot answer it, and for what
+// `querySessionProvenNeverWorked` for why the row cannot answer it, and for what
 // that read cannot see — a turn from before v0.4.0 left no status in the log,
 // so the read demands positive evidence and treats its absence as "cannot
 // tell". Everything else a spawn could tell us — the launch command, the
@@ -41,15 +41,15 @@
 // though it were bare.
 //
 // Like every other status change on this Core it goes through
-// {@link CoreTaskWriter}, so the `task:updated` a connected Panel re-renders
+// {@link CoreSessionWriter}, so the `session:updated` a connected Panel re-renders
 // from is appended with it.
 
 import log from "@actana/shared/log";
-import type { TaskStatus } from "@actana/shared/domain";
-import type { CoreTaskWriter } from "./core-task-writer";
+import type { SessionStatus } from "@actana/shared/domain";
+import type { CoreSessionWriter } from "./core-session-writer";
 
 /** The status a relaunched Session that never worked goes back to. */
-const RELAUNCH_STATUS: TaskStatus = "ready";
+const RELAUNCH_STATUS: SessionStatus = "ready";
 
 /**
  * The one status a spawn may reset — and the narrowness is the safety property,
@@ -74,14 +74,14 @@ const RELAUNCH_STATUS: TaskStatus = "ready";
 const RESETTABLE_STATUS = "disconnected";
 
 export type CoreSessionRelaunchDeps = {
-  /** The one seam a task row changes through, events included. */
-  writer: CoreTaskWriter;
+  /** The one seam a session row changes through, events included. */
+  writer: CoreSessionWriter;
   /**
    * Positive proof that no status change on this row has ever described a
    * turn. `false` means "worked, OR the log cannot say" — the two are one
    * answer here on purpose, because both forbid the reset.
    */
-  provenNeverWorked: (taskId: string) => boolean;
+  provenNeverWorked: (sessionId: string) => boolean;
 };
 
 /**
@@ -99,23 +99,23 @@ export type CoreSessionRelaunchDeps = {
  */
 export function readySessionOnAgentSpawn(
   deps: CoreSessionRelaunchDeps,
-  taskId: string,
+  sessionId: string,
 ): boolean {
-  if (!taskId) return false;
+  if (!sessionId) return false;
   try {
-    const task = deps.writer.readTask(taskId);
-    if (!task || task.status !== RESETTABLE_STATUS) return false;
-    if (!deps.provenNeverWorked(taskId)) return false;
+    const session = deps.writer.readSession(sessionId);
+    if (!session || session.status !== RESETTABLE_STATUS) return false;
+    if (!deps.provenNeverWorked(sessionId)) return false;
     const updated = deps.writer.mutate({
       op: "update",
-      taskId,
+      sessionId,
       status: RELAUNCH_STATUS,
     });
     if (!updated) return false;
-    log.info("session-relaunch.reset", { taskId, from: task.status });
+    log.info("session-relaunch.reset", { sessionId, from: session.status });
     return true;
   } catch (err) {
-    log.warn("session-relaunch.reset-failed", { taskId, error: String(err) });
+    log.warn("session-relaunch.reset-failed", { sessionId, error: String(err) });
     return false;
   }
 }

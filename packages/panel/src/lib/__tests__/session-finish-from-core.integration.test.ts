@@ -137,10 +137,10 @@ function mockPtyCore(): PtyCore {
     resize: () => true,
     kill: () => true,
     killLaunchProcesses: async () => ({ ptyCount: 0, ports: [] }),
-    findByTask: () => ({ ptyId: null }),
+    findBySession: () => ({ ptyId: null }),
     // Which Session a `write`/`kill` would touch (issue 144) — the lookup
     // the Core's Session-lock gate resolves a ptyId through.
-    taskIdForPty: () => null,
+    sessionIdForPty: () => null,
     replay: () => ({ data: "", nextSeq: 0 }),
     killAll: () => {},
   } as unknown as PtyCore;
@@ -185,9 +185,9 @@ describe("a Session finishing on a Core notifies the Panel (issue 20)", () => {
       name: "Warehouse",
       path: userDataDir,
     });
-    coreMutationStore.mutateTask({
+    coreMutationStore.mutateSession({
       op: "create",
-      taskId: "t1",
+      sessionId: "t1",
       projectId: "p1",
       title: "Rebuild the picker",
       agent: "claude-code",
@@ -205,12 +205,12 @@ describe("a Session finishing on a Core notifies the Panel (issue 20)", () => {
   });
 
   /** Patch a Session's status over the core-link, as the exit handler does. */
-  async function finishOnCore(taskId = "t1", status = "finished"): Promise<void> {
+  async function finishOnCore(sessionId = "t1", status = "finished"): Promise<void> {
     const before = ws.events().length;
     ws.receive({
-      type: "tasksMutate",
-      reqId: `m-${taskId}-${status}`,
-      mutation: { op: "update", taskId, status },
+      type: "sessionsMutate",
+      reqId: `m-${sessionId}-${status}`,
+      mutation: { op: "update", sessionId, status },
     });
     // Let the Core's live-event poll push whatever the mutation appended.
     await vi.waitFor(() => expect(ws.events().length).toBeGreaterThan(before));
@@ -239,7 +239,7 @@ describe("a Session finishing on a Core notifies the Panel (issue 20)", () => {
       id: "t1",
       projectId: "p1",
       projectName: "Warehouse",
-      taskTitle: "Rebuild the picker",
+      sessionTitle: "Rebuild the picker",
       coreId: "core-a",
       coreAlias: "Warehouse VM",
     });

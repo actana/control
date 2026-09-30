@@ -142,7 +142,7 @@ function fakeEventLog() {
         kind,
         payload,
         ptyId: opts?.ptyId ?? null,
-        taskId: opts?.taskId ?? null,
+        sessionId: opts?.sessionId ?? null,
       });
       return eventId;
     },
@@ -161,7 +161,7 @@ function mockCore(): PtyCore {
     resize: () => true,
     kill: () => true,
     killLaunchProcesses: async () => ({ ptyCount: 0, ports: [] }),
-    findByTask: () => ({ ptyId: null }),
+    findBySession: () => ({ ptyId: null }),
     replay: () => ({ data: "", nextSeq: 0, from: 0 }),
     killAll: () => {},
   } as unknown as PtyCore;
@@ -210,9 +210,9 @@ describe("the live-event cursor advances only behind a send that landed (issue 2
     // The event in the middle is the one the socket will refuse — the shape
     // from the ticket: 1 and 3 land, 2 does not.
     first.failEventOnce = 2;
-    logi.port.appendEvent("task:created", JSON.stringify({ taskId: "t1" }), { taskId: "t1" });
-    logi.port.appendEvent("session:finished", JSON.stringify({ taskId: "t1" }), { taskId: "t1" });
-    logi.port.appendEvent("task:updated", JSON.stringify({ taskId: "t1" }), { taskId: "t1" });
+    logi.port.appendEvent("session:created", JSON.stringify({ sessionId: "t1" }), { sessionId: "t1" });
+    logi.port.appendEvent("session:finished", JSON.stringify({ sessionId: "t1" }), { sessionId: "t1" });
+    logi.port.appendEvent("session:updated", JSON.stringify({ sessionId: "t1" }), { sessionId: "t1" });
 
     await vi.waitFor(() => expect(first.eventIds()).toContain(3));
 
@@ -236,14 +236,14 @@ describe("the live-event cursor advances only behind a send that landed (issue 2
     const warn = vi.spyOn(log, "warn").mockImplementation(() => {});
     const ws = connect();
     ws.receive({ type: "subscribe", reqId: "s1", lastEventId: 0 });
-    logi.port.appendEvent("task:created", "{}", { taskId: "t1" });
+    logi.port.appendEvent("session:created", "{}", { sessionId: "t1" });
     await vi.waitFor(() => expect(ws.eventIds()).toEqual([1]));
 
     // The link goes unwritable with no close handshake — the remote-Core case.
     // `ws.send` does not throw here; it never has.
     ws.goUnwritable();
-    logi.port.appendEvent("session:lockChanged", "{}", { taskId: "t1" });
-    logi.port.appendEvent("session:finished", "{}", { taskId: "t1" });
+    logi.port.appendEvent("session:lockChanged", "{}", { sessionId: "t1" });
+    logi.port.appendEvent("session:finished", "{}", { sessionId: "t1" });
     // Nothing is even attempted at an unwritable socket — the poll notices
     // before it writes, and says which event it is holding.
     await vi.waitFor(() => expect(warn).toHaveBeenCalledWith("core-link.event.undelivered", expect.objectContaining({ eventId: 2 })));
@@ -257,9 +257,9 @@ describe("the live-event cursor advances only behind a send that landed (issue 2
   });
 
   it("stops the subscribe replay at the last event the socket took", async () => {
-    logi.port.appendEvent("task:created", "{}", { taskId: "t1" });
-    logi.port.appendEvent("session:finished", "{}", { taskId: "t1" });
-    logi.port.appendEvent("task:updated", "{}", { taskId: "t1" });
+    logi.port.appendEvent("session:created", "{}", { sessionId: "t1" });
+    logi.port.appendEvent("session:finished", "{}", { sessionId: "t1" });
+    logi.port.appendEvent("session:updated", "{}", { sessionId: "t1" });
 
     const ws = connect();
     // A send that throws is the one failure the old `try/catch` did see — and
@@ -282,7 +282,7 @@ describe("the live-event cursor advances only behind a send that landed (issue 2
     const ws = connect();
     ws.receive({ type: "subscribe", reqId: "s1", lastEventId: 0 });
     ws.goUnwritable();
-    logi.port.appendEvent("session:finished", "{}", { taskId: "t1" });
+    logi.port.appendEvent("session:finished", "{}", { sessionId: "t1" });
 
     // The absence of any line naming a lost eventId is why this class of bug
     // was invisible: `core-link.connection.error` names a socket, never a frame.

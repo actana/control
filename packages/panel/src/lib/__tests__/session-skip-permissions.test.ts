@@ -1,6 +1,6 @@
 // The skip-permissions pair (issue 22).
 //
-// Auto-mode is unconditional: no checkbox, no project field, no task column
+// Auto-mode is unconditional: no checkbox, no project field, no session column
 // feeds it. Two independent things still have to agree about it — the command
 // builder, which puts the argument in the command string, and the spawn
 // descriptor, which declares the intent the spawn policy checks that argument
@@ -14,7 +14,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
-import type { Task } from "~/db/schema";
+import type { Session } from "~/db/schema";
 import type { Harness } from "@actana/shared/domain";
 import {
   HARNESS_REGISTRY,
@@ -45,11 +45,11 @@ function policyDeps(): SpawnPolicyDeps {
   };
 }
 
-function taskFor(agent: Harness): Task {
+function sessionFor(agent: Harness): Session {
   return {
-    id: "task-1",
+    id: "session-1",
     projectId: "project-1",
-    title: "Task",
+    title: "Session",
     titleManuallySet: false,
     icon: null,
     agent,
@@ -61,7 +61,7 @@ function taskFor(agent: Harness): Task {
     pinned: false,
     claudeSessionId: SESSION_ID,
     // Deliberately false — the launch path must not read this column. A Core
-    // never writes it (the task mutation frame does not carry it), so every
+    // never writes it (the session mutation frame does not carry it), so every
     // Core-owned session reaches the builder with exactly this value.
     claudeSkipPermissions: false,
     claudeBareSession: false,
@@ -72,11 +72,11 @@ function taskFor(agent: Harness): Task {
 
 /** How the app spawns: the built command plus the descriptor's declared intent. */
 function spawnRequestFor(agent: Harness): SpawnRequest {
-  const task = taskFor(agent);
+  const session = sessionFor(agent);
   return {
-    taskId: task.id,
+    sessionId: session.id,
     cwd: PROJECT_ROOT,
-    command: buildFreshHarnessLaunchCommand(task, SESSION_ID),
+    command: buildFreshHarnessLaunchCommand(session, SESSION_ID),
     agent,
     dangerouslySkipPermissions: harnessLaunchesWithSkipPermissions(agent),
   } as SpawnRequest;
@@ -131,7 +131,7 @@ describe("skip permissions on a newly created session", () => {
   // descriptor side itself — it cannot see whether the real spawn sites still
   // use the shared helper. This does: every `dangerouslySkipPermissions` a
   // spawn descriptor is built with must come from it. Reverting any one site to
-  // the task column (which a Core never writes, so it is permanently false)
+  // the session column (which a Core never writes, so it is permanently false)
   // rejects that spawn at the policy and starts no session — the failure
   // Refinement 2 asked to be pinned, and the one the equality test misses.
   it.each([
@@ -158,8 +158,8 @@ describe("skip permissions on a newly created session", () => {
     expect(decisions).toBeGreaterThan(0);
   });
 
-  it("no launch path reads the task's skip-permissions column", () => {
-    // The column stays on the row and on the optimistic/draft task shapes, but
+  it("no launch path reads the session's skip-permissions column", () => {
+    // The column stays on the row and on the optimistic/draft session shapes, but
     // nothing that builds a command or a descriptor may read it back.
     for (const file of ["src/lib/harness-command.ts", "src/lib/terminal-store.tsx"]) {
       const source = readFileSync(resolve(import.meta.dirname, "../../..", file), "utf8");

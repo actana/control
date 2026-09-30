@@ -2,13 +2,13 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { getSqlite } from "~/db/client";
 import {
-  TASK_STATUSES,
+  SESSION_STATUSES,
   isActiveStatus,
-  isTaskStatus,
+  isSessionStatus,
 } from "@actana/shared/domain";
 import { normalizeRepoRemote } from "~/shared/repo-key";
-import type { TaskStatus } from "@actana/shared/domain";
-import type { Project, Task } from "~/db/schema";
+import type { SessionStatus } from "@actana/shared/domain";
+import type { Project, Session } from "~/db/schema";
 import type { ProjectPathStatus, ProjectWithCounts } from "~/shared/projects";
 import { events } from "../events";
 import { ValidationError } from "../errors";
@@ -19,7 +19,7 @@ import {
   insertProject,
   updateProjectRow,
 } from "../repositories/projects.repo";
-import { findTasksByProjectId } from "../repositories/tasks.repo";
+import { findSessionsByProjectId } from "../repositories/sessions.repo";
 import { findMaxProjectPresentationPinnedOrder } from "../repositories/project-presentation.repo";
 import { deleteAllProjectImagesFor } from "./project-images";
 import { newId } from "./_ids";
@@ -95,7 +95,7 @@ export function getProjectPathStatus(id: string): ProjectPathStatus | null {
 
 // readOriginRemoteUrl runs inside decorate() (feeding both githubUrl and the
 // repoKey field), which fires for every project on every listProjects();
-// /api/projects re-lists on each project:*/task:* SSE event,
+// /api/projects re-lists on each project:*/session:* SSE event,
 // so a burst of agent activity re-read and re-parsed each .git/config many
 // times a minute. Cache the raw origin url per path, keyed by the config
 // file's mtime so an external remote change still refreshes. The statSync
@@ -153,26 +153,26 @@ export function detectGithubUrl(dir: string): string | null {
   return githubUrlFromRemote(readOriginRemoteUrl(dir));
 }
 
-function emptyStatusCounts(): Record<TaskStatus, number> {
-  return TASK_STATUSES.reduce(
+function emptyStatusCounts(): Record<SessionStatus, number> {
+  return SESSION_STATUSES.reduce(
     (acc, s) => {
       acc[s] = 0;
       return acc;
     },
-    {} as Record<TaskStatus, number>,
+    {} as Record<SessionStatus, number>,
   );
 }
 
 export function listProjects(): ProjectWithCounts[] {
   const rows = findAllProjects();
-  // Aggregate non-archived task counts per (project, status) in SQLite instead
-  // of loading every task row and filtering it per project in JS (was O(P×T)).
-  type Agg = { counts: Record<TaskStatus, number>; total: number; activeNonDone: number };
+  // Aggregate non-archived session counts per (project, status) in SQLite instead
+  // of loading every session row and filtering it per project in JS (was O(P×T)).
+  type Agg = { counts: Record<SessionStatus, number>; total: number; activeNonDone: number };
   const aggByProject = new Map<string, Agg>();
   const statusCountRows = getSqlite()
     .prepare(
       `SELECT project_id AS projectId, status, COUNT(*) AS c
-         FROM tasks
+         FROM sessions
         WHERE archived = 0
         GROUP BY project_id, status`,
     )
@@ -184,22 +184,22 @@ export function listProjects(): ProjectWithCounts[] {
       aggByProject.set(r.projectId, agg);
     }
     agg.total += r.c;
-    if (isTaskStatus(r.status)) {
+    if (isSessionStatus(r.status)) {
       agg.counts[r.status] = r.c;
       if (isActiveStatus(r.status) && r.status !== "finished") agg.activeNonDone += r.c;
     }
   }
 
   // Preview text mirrors decorate()'s `active.find(running) ?? active.find(needs-input)`
-  // over the rowid-ordered task scan: the earliest-inserted running task wins,
-  // else the earliest needs-input task. Only active session rows qualify — a
+  // over the rowid-ordered session scan: the earliest-inserted running session wins,
+  // else the earliest needs-input session. Only active session rows qualify — a
   // tiny set — so this narrow query stays cheap.
   const runningPreview = new Map<string, string>();
   const needsInputPreview = new Map<string, string>();
   const previewRows = getSqlite()
     .prepare(
       `SELECT project_id AS projectId, status, preview
-         FROM tasks
+         FROM sessions
         WHERE archived = 0 AND status IN ('running', 'needs-input')
         ORDER BY rowid`,
     )
@@ -217,7 +217,7 @@ export function listProjects(): ProjectWithCounts[] {
     const originRemote = readOriginRemoteUrl(p.path);
     return {
       ...p,
-      taskCounts: { ...counts, total: agg?.total ?? 0, activeNonDone: agg?.activeNonDone ?? 0 },
+      sessionCounts: { ...counts, total: agg?.total ?? 0, activeNonDone: agg?.activeNonDone ?? 0 },
       preview,
       githubUrl: githubUrlFromRemote(originRemote),
       repoKey: normalizeRepoRemote(originRemote),
@@ -228,17 +228,17 @@ export function listProjects(): ProjectWithCounts[] {
 export function getProject(id: string): ProjectWithCounts | null {
   const p = findProjectById(id);
   if (!p) return null;
-  return decorate(p, findTasksByProjectId(id));
+  return decorate(p, findSessionsByProjectId(id));
 }
 
-function decorate(p: Project, ts: Task[]): ProjectWithCounts {
+function decorate(p: Project, ts: Session[]): ProjectWithCounts {
   const active = ts.filter((t) => !t.archived);
-  const counts = TASK_STATUSES.reduce(
+  const counts = SESSION_STATUSES.reduce(
     (acc, s) => {
       acc[s] = 0;
       return acc;
     },
-    {} as Record<TaskStatus, number>
+    {} as Record<SessionStatus, number>
   );
   let activeNonDone = 0;
   for (const t of active) {
@@ -252,7 +252,7 @@ function decorate(p: Project, ts: Task[]): ProjectWithCounts {
   const originRemote = readOriginRemoteUrl(p.path);
   return {
     ...p,
-    taskCounts: { ...counts, total: active.length, activeNonDone },
+    sessionCounts: { ...counts, total: active.length, activeNonDone },
     preview: previewSource?.preview ?? null,
     githubUrl: githubUrlFromRemote(originRemote),
     repoKey: normalizeRepoRemote(originRemote),

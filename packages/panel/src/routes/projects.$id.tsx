@@ -12,7 +12,7 @@ import { Z_INDEX } from "~/lib/z-index";
 import { openExternal } from "~/lib/open-external";
 import { ProjectIcon } from "~/components/ui/ProjectIcon";
 import { EmptyState } from "~/components/ui/EmptyState";
-import { TaskColumn } from "~/components/views/TaskColumn";
+import { SessionColumn } from "~/components/views/SessionColumn";
 import { NewHarnessDialog } from "~/components/views/NewHarnessDialog";
 import {
   CodexHooksNoticeDialog,
@@ -49,21 +49,21 @@ import { api } from "~/lib/api";
 import { mutateProjectForCore } from "~/lib/mutate-project-for-core";
 import { saveProjectEdits } from "~/lib/save-project-edits";
 import { removeProject } from "~/lib/remove-project";
-import { mutateTaskForCore } from "~/lib/mutate-task-for-core";
+import { mutateSessionForCore } from "~/lib/mutate-session-for-core";
 import { newSessionId } from "~/lib/claude-command";
-import { TITLE_WAITING } from "~/lib/task-sentinels";
+import { TITLE_WAITING } from "~/lib/session-sentinels";
 import {
-  appendOptimisticTask,
-  buildOptimisticTask,
-  removeOptimisticTask,
-  removeTaskFromCache,
-  removeTasksFromCache,
-  replaceOptimisticTask,
-  restoreTasksCache,
-  setTaskArchivedInCache,
-  setTaskPinnedInCache,
-  setTasksArchivedInCache,
-} from "~/lib/optimistic-task";
+  appendOptimisticSession,
+  buildOptimisticSession,
+  removeOptimisticSession,
+  removeSessionFromCache,
+  removeSessionsFromCache,
+  replaceOptimisticSession,
+  restoreSessionsCache,
+  setSessionArchivedInCache,
+  setSessionPinnedInCache,
+  setSessionsArchivedInCache,
+} from "~/lib/optimistic-session";
 import { prefetchTerminalModules } from "~/lib/prefetch-terminal-modules";
 import { newClientId } from "@actana/shared/client-id";
 import {
@@ -88,10 +88,10 @@ import type { AiModelId } from "@actana/shared/ai-runtime-defaults";
 import { useTerminals } from "~/lib/terminal-store";
 import { useUserTerminals } from "~/lib/user-terminal-store";
 import {
-  groupActiveListTasksForDisplay,
-  groupArchivedTasksForDisplay,
-  groupTasksByStatusForDisplay,
-} from "~/lib/task-display-order";
+  groupActiveListSessionsForDisplay,
+  groupArchivedSessionsForDisplay,
+  groupSessionsByStatusForDisplay,
+} from "~/lib/session-display-order";
 import {
   DEFAULT_BRANCH,
   type Harness,
@@ -100,15 +100,15 @@ import {
 import { harnessLaunchesWithSkipPermissions } from "@actana/shared/harnesses";
 import {
   queryKeys,
-  remoteTaskFromSnapshot,
-  tasksCacheKey,
-  useArchivedTasks,
-  useCoreArchivedTaskCount,
+  remoteSessionFromSnapshot,
+  sessionsCacheKey,
+  useArchivedSessions,
+  useCoreArchivedSessionCount,
   useHookToken,
   useGroups,
   useProject,
   useSettings,
-  useTasks,
+  useSessions,
 } from "~/queries";
 import { useActiveGroup } from "~/lib/active-group";
 import { useCoreLiveQueries } from "~/lib/use-core-live-queries";
@@ -123,7 +123,7 @@ import {
   readPendingSessionOpen,
   type PendingSessionOpen,
 } from "~/lib/session-notification-store";
-import type { Group, Task, TaskStatus } from "~/db/schema";
+import type { Group, Session, SessionStatus } from "~/db/schema";
 import type { ProjectPathStatus } from "~/shared/projects";
 import { projectScopeKey, scopeKeyForProject } from "~/lib/scoped-project";
 import {
@@ -158,14 +158,14 @@ type ProjectPathCheck =
   | { state: "invalid"; status: Extract<ProjectPathStatus, { ok: false }> }
   | { state: "error"; message: string };
 
-/** The task id of the grid cell whose terminal currently holds focus (the pane
+/** The session id of the grid cell whose terminal currently holds focus (the pane
  *  the user is looking at), or null outside grid view / when nothing is focused.
  *  Clone and "new session" both anchor a fresh session on this so it lands
  *  beside — and takes the caret from — the active pane. */
-function readFocusedGridTaskId(): string | null {
+function readFocusedGridSessionId(): string | null {
   if (typeof document === "undefined") return null;
   const cell = document.activeElement?.closest("[data-grid-cell]") as HTMLElement | null;
-  return cell?.getAttribute("data-task-id") ?? null;
+  return cell?.getAttribute("data-session-id") ?? null;
 }
 
 function ProjectPage() {
@@ -212,7 +212,7 @@ function ProjectPage() {
     let cancelled = false;
     // Keep the last-known-good path while revalidating the same scope so
     // launch controls don't flicker on unrelated cache refreshes (e.g.
-    // deleting a session only touches tasks, not the project path).
+    // deleting a session only touches sessions, not the project path).
     setProjectPathCheck((prev) => {
       if (scopeChanged || prev.state === "idle") return { state: "checking" };
       if (prev.state === "valid") return prev;
@@ -266,23 +266,23 @@ function ProjectPage() {
     if (!terminalProject || !defaultWarmPayload || !warmPrepareKey) return;
     void prefetchTerminalModules();
     // No warm-slot pre-spawn any more: the pool spawned through the in-process
-    // Core's core-link and persisted its task over the Panel's local HTTP
+    // Core's core-link and persisted its session over the Panel's local HTTP
     // API, and a session's row belongs to the Core that runs it (ADR 0004).
     // Sessions take the one cold path, which is a mutation frame.
     // Depend only on warmPrepareKey (the stable logical key); inputs come from the ref.
   }, [warmPrepareKey]);
-  const tasksQuery = useTasks(id, { coreId });
-  // A remote Core's projects and tasks change on the Core, not in the
+  const sessionsQuery = useSessions(id, { coreId });
+  // A remote Core's projects and sessions change on the Core, not in the
   // Panel's own database, so the SSE stream that keeps the rest of this route
   // fresh says nothing about them. Core events over the panel link do.
   useCoreLiveQueries(coreId, id);
-  const tasks = tasksQuery.data ?? [];
+  const sessions = sessionsQuery.data ?? [];
   // Live pinned-session ids for the grid's "Pinned" filter — derived from the
-  // task query (not the store's open-time snapshot) so a pin toggle reflects
+  // session query (not the store's open-time snapshot) so a pin toggle reflects
   // immediately. Memoized so SessionGrid's filter doesn't churn every render.
-  const pinnedTaskIds = useMemo(
-    () => new Set(tasks.filter((t) => !t.archived && t.pinned).map((t) => t.id)),
-    [tasks],
+  const pinnedSessionIds = useMemo(
+    () => new Set(sessions.filter((t) => !t.archived && t.pinned).map((t) => t.id)),
+    [sessions],
   );
   const groups = groupsQuery.data ?? [];
   useHookToken();
@@ -320,30 +320,30 @@ function ProjectPage() {
   const showArchived = sessionView === "archived";
   const showPinned = sessionView === "pinned";
   // Where the Archived view's contents come from differs by owner (ADR 0019).
-  // A Panel-owned project's task list already carries its archived rows, so
+  // A Panel-owned project's session list already carries its archived rows, so
   // both the rows and the count are a filter away. A Core's list carries none
-  // of them: the count rides the `tasksList` answer as a scalar, and the rows
+  // of them: the count rides the `sessionRowsList` answer as a scalar, and the rows
   // arrive over their own frame — fetched only once this view is open.
-  const archivedTasksQuery = useArchivedTasks(id, { coreId, enabled: showArchived });
-  const coreArchivedCount = useCoreArchivedTaskCount(id, coreId);
-  const archivedTasks = coreId ? (archivedTasksQuery.data ?? []) : tasks.filter((t) => t.archived);
-  // Count, not `archivedTasks.length` — for a Core the rows are absent until
+  const archivedSessionsQuery = useArchivedSessions(id, { coreId, enabled: showArchived });
+  const coreArchivedCount = useCoreArchivedSessionCount(id, coreId);
+  const archivedSessions = coreId ? (archivedSessionsQuery.data ?? []) : sessions.filter((t) => t.archived);
+  // Count, not `archivedSessions.length` — for a Core the rows are absent until
   // the view opens, and the tab has to be gated and labelled before that.
-  const archivedCount = coreId ? coreArchivedCount : archivedTasks.length;
-  const hasArchivedTasks = archivedCount > 0;
-  const [pinningTaskIds, setPinningTaskIds] = useState<Set<string>>(() => new Set());
+  const archivedCount = coreId ? coreArchivedCount : archivedSessions.length;
+  const hasArchivedSessions = archivedCount > 0;
+  const [pinningSessionIds, setPinningSessionIds] = useState<Set<string>>(() => new Set());
   const pinRequestSeqRef = useRef<Record<string, number>>({});
-  // Stable callback identities for the memoized TaskCard: the real handlers are
+  // Stable callback identities for the memoized SessionCard: the real handlers are
   // defined far below (after this render's early returns), so we forward through
-  // a ref that's refreshed each render. This keeps the props TaskCard sees
+  // a ref that's refreshed each render. This keeps the props SessionCard sees
   // referentially stable so a single session update re-renders only its card,
   // while every click still runs the latest handler closure.
-  const taskCardHandlersRef = useRef<{
-    onToggle: (taskId: string) => void;
-    onArchive: (taskId: string) => void;
-    onRestore: (taskId: string) => void;
-    onDelete: (taskId: string) => void;
-    onTogglePinned: (taskId: string) => Promise<void> | void;
+  const sessionCardHandlersRef = useRef<{
+    onToggle: (sessionId: string) => void;
+    onArchive: (sessionId: string) => void;
+    onRestore: (sessionId: string) => void;
+    onDelete: (sessionId: string) => void;
+    onTogglePinned: (sessionId: string) => Promise<void> | void;
   }>({
     onToggle: () => {},
     onArchive: () => {},
@@ -352,23 +352,23 @@ function ProjectPage() {
     onTogglePinned: () => {},
   });
   const stableSelectTerminal = useCallback(
-    (taskId: string) => taskCardHandlersRef.current.onToggle(taskId),
+    (sessionId: string) => sessionCardHandlersRef.current.onToggle(sessionId),
     [],
   );
   const stableArchiveSession = useCallback(
-    (taskId: string) => taskCardHandlersRef.current.onArchive(taskId),
+    (sessionId: string) => sessionCardHandlersRef.current.onArchive(sessionId),
     [],
   );
   const stableRestoreSession = useCallback(
-    (taskId: string) => taskCardHandlersRef.current.onRestore(taskId),
+    (sessionId: string) => sessionCardHandlersRef.current.onRestore(sessionId),
     [],
   );
-  const stableDeleteTask = useCallback(
-    (taskId: string) => taskCardHandlersRef.current.onDelete(taskId),
+  const stableDeleteSession = useCallback(
+    (sessionId: string) => sessionCardHandlersRef.current.onDelete(sessionId),
     [],
   );
   const stableToggleSessionPinned = useCallback(
-    (taskId: string) => taskCardHandlersRef.current.onTogglePinned(taskId),
+    (sessionId: string) => sessionCardHandlersRef.current.onTogglePinned(sessionId),
     [],
   );
   const [confirmDeleteArchived, setConfirmDeleteArchived] = useState(false);
@@ -377,8 +377,8 @@ function ProjectPage() {
   // Leave the archived view automatically once it empties (last one restored
   // or deleted) so the toggle never strands the user on a blank list.
   useEffect(() => {
-    if (sessionView === "archived" && !hasArchivedTasks) setSessionView("active");
-  }, [sessionView, hasArchivedTasks]);
+    if (sessionView === "archived" && !hasArchivedSessions) setSessionView("active");
+  }, [sessionView, hasArchivedSessions]);
   const [pinning, setPinning] = useState(false);
   const [cleanupStatus, setCleanupStatus] = useState<string | null>(null);
   const [removingMissingProject, setRemovingMissingProject] = useState(false);
@@ -462,30 +462,30 @@ function ProjectPage() {
   // control the user needs to get back to Active/Pinned, stranding them in the
   // archived list. Keep it visible whenever grid mode is engaged for this scope.
   const showSessionScopeToggle = gridViewActive && gridScopeSessionCount > 0;
-  const syncTask = terminals.syncTask;
+  const syncSession = terminals.syncSession;
   const rehydrateTerminal = terminals.rehydrate;
   const toggleTerminalSession = terminals.toggle;
   const setVisibleTerminalScope = terminals.setVisibleScope;
   // "Grid view — show all sessions": entering the grid materializes every
   // active session for the visible scope, not just the already-open
   // ones. TerminalPane's spawn queue staggers the agent launches.
-  const tasksRef = useRef(tasks);
-  tasksRef.current = tasks;
+  const sessionsRef = useRef(sessions);
+  sessionsRef.current = sessions;
   const enterGridView = useCallback(() => {
     // Keep any open Review Changes diff open across the switch — the grid docks
     // it as a side panel rather than fighting for the slot, so switching views
     // shouldn't dismiss the review.
     terminals.setGridView(true);
     if (!terminalProject) return;
-    for (const task of tasksRef.current) {
-      if (task.archived) continue;
-      rehydrateTerminal(terminalProject, task, { coreId });
+    for (const session of sessionsRef.current) {
+      if (session.archived) continue;
+      rehydrateTerminal(terminalProject, session, { coreId });
     }
     // Focus the session that was active in normal view so entering the grid keeps
     // the same session current instead of landing on an arbitrary cell.
     // focusGridSession retries until that cell's pane mounts.
-    const activeTaskId = terminals.activeTaskIdFor(selectedScopeKey);
-    if (activeTaskId) terminals.focusGridSession(activeTaskId);
+    const activeSessionId = terminals.activeSessionIdFor(selectedScopeKey);
+    if (activeSessionId) terminals.focusGridSession(activeSessionId);
   }, [terminals, terminalProject, rehydrateTerminal, selectedScopeKey, coreId]);
   const toggleGridViewShowingAll = useCallback(() => {
     if (terminals.gridView) {
@@ -494,9 +494,9 @@ function ProjectPage() {
       // DOM focus first (hotkey exit, cell still focused); then the grid's
       // last-focused cell reported to the store (a header-button click moved
       // focus off the grid).
-      const focused = readFocusedGridTaskId() ?? terminals.getGridFocusedTaskId();
+      const focused = readFocusedGridSessionId() ?? terminals.getGridFocusedSessionId();
       terminals.setGridView(false);
-      if (focused && terminalProject && tasks.some((t) => t.id === focused)) {
+      if (focused && terminalProject && sessions.some((t) => t.id === focused)) {
         terminals.setActiveSession(terminalProject, focused);
         // setActiveSession only picks which session docks in normal view; the
         // cached terminal surface reattaches blurred, so without this the pane
@@ -512,7 +512,7 @@ function ProjectPage() {
     } else {
       enterGridView();
     }
-  }, [terminals, enterGridView, terminalProject, tasks]);
+  }, [terminals, enterGridView, terminalProject, sessions]);
   const {
     setProject: setActiveUserTerminalProject,
     setPanelOpen,
@@ -528,49 +528,49 @@ function ProjectPage() {
   }, [id, selectedScopeKey, setVisibleTerminalScope]);
 
   useEffect(() => {
-    for (const task of tasks) syncTask(task);
-  }, [tasks, syncTask]);
+    for (const session of sessions) syncSession(session);
+  }, [sessions, syncSession]);
 
   // When the active session is deleted/archived, jump to the next
   // highest-priority card. Plain deselect (Cmd+L, X) leaves the panel closed.
-  // We hold the prev active id across renders until the tasks query catches
-  // up — only then can we tell deletion (task gone) from deselect (still there).
-  // Scope the ref to {projectId, taskId} so the route component being reused
+  // We hold the prev active id across renders until the sessions query catches
+  // up — only then can we tell deletion (session gone) from deselect (still there).
+  // Scope the ref to {projectId, sessionId} so the route component being reused
   // across project switches doesn't make a stale ref look like a deletion in
   // the new project (which would auto-open a session there).
   const lastActiveRef = useRef<LastActiveSession | null>(null);
-  const activeTaskId = terminals.activeTaskIdFor(selectedScopeKey);
-  const lastHiddenSessionRef = useRef<{ projectId: string; taskId: string } | null>(null);
-  const archiveSessionRef = useRef<(taskId: string) => void>(() => undefined);
+  const activeSessionId = terminals.activeSessionIdFor(selectedScopeKey);
+  const lastHiddenSessionRef = useRef<{ projectId: string; sessionId: string } | null>(null);
+  const archiveSessionRef = useRef<(sessionId: string) => void>(() => undefined);
   useEffect(() => {
     const onArchiveRequest = (e: Event) => {
-      const taskId = (e as CustomEvent<ArchiveActiveSessionEventDetail>).detail?.taskId;
-      if (typeof taskId !== "string") return;
-      archiveSessionRef.current(taskId);
+      const sessionId = (e as CustomEvent<ArchiveActiveSessionEventDetail>).detail?.sessionId;
+      if (typeof sessionId !== "string") return;
+      archiveSessionRef.current(sessionId);
     };
     window.addEventListener(ARCHIVE_ACTIVE_SESSION_EVENT, onArchiveRequest);
     return () => window.removeEventListener(ARCHIVE_ACTIVE_SESSION_EVENT, onArchiveRequest);
   }, []);
   // Tell "the active session was deleted" from "the operator deselected it":
-  // only the first hands the scope a replacement session. `archivedTasks` joins
+  // only the first hands the scope a replacement session. `archivedSessions` joins
   // the inputs because an archived row is never in the visible list, so without
   // it every deselect on one reads as a deletion — see `active-session-memory`.
   useEffect(() => {
-    if (activeTaskId !== null) {
-      lastActiveRef.current = rememberActiveSession(activeTaskId, selectedScopeKey, {
-        tasks,
-        archivedTasks,
+    if (activeSessionId !== null) {
+      lastActiveRef.current = rememberActiveSession(activeSessionId, selectedScopeKey, {
+        sessions,
+        archivedSessions,
         previous: lastActiveRef.current,
       });
       return;
     }
     const prev = lastActiveRef.current;
     if (!prev || prev.projectId !== selectedScopeKey || !terminalProject) return;
-    const visible = tasks.filter((t) => !t.archived);
+    const visible = sessions.filter((t) => !t.archived);
     if (!activeSessionWentAway(prev, selectedScopeKey, visible)) {
       // An archived row leaving the slot is always a deselect, and it can never
       // turn up in `visible` later — forget it instead of re-deciding it every
-      // time the task list moves. A live row still on screen is kept, so its
+      // time the session list moves. A live row still on screen is kept, so its
       // deletion while deselected is still caught.
       if (prev.archived) lastActiveRef.current = null;
       return;
@@ -579,29 +579,29 @@ function ProjectPage() {
     const next = pickByPriority(visible);
     if (next) toggleTerminalSession(terminalProject, next);
   }, [
-    activeTaskId,
-    tasks,
-    archivedTasks,
+    activeSessionId,
+    sessions,
+    archivedSessions,
     terminalProject,
     toggleTerminalSession,
     selectedScopeKey,
   ]);
 
-  // Rehydrate after reload: if a persisted activeTaskId resolves to an
-  // existing task for this project, materialize a session entry so the panel
+  // Rehydrate after reload: if a persisted activeSessionId resolves to an
+  // existing session for this project, materialize a session entry so the panel
   // reopens without requiring a click.
   useEffect(() => {
     if (!terminalProject) return;
-    if (!activeTaskId) return;
-    const task = tasks.find((t) => t.id === activeTaskId);
-    if (task) rehydrateTerminal(terminalProject, task);
-  }, [activeTaskId, terminalProject, tasks, rehydrateTerminal]);
+    if (!activeSessionId) return;
+    const session = sessions.find((t) => t.id === activeSessionId);
+    if (session) rehydrateTerminal(terminalProject, session);
+  }, [activeSessionId, terminalProject, sessions, rehydrateTerminal]);
 
   // The rehydrate above re-shows the active session on a project switch,
   // but its cached terminal surface reattaches blurred (it doesn't self-focus),
   // so the newly-shown session drops keystrokes until a manual click. Re-assert
   // keyboard focus once per scope switch — guarded by scope so it fires on the
-  // switch (and first mount), not on every task refetch, which would yank the
+  // switch (and first mount), not on every session refetch, which would yank the
   // caret while the user is typing. focusGridSession retries until the pane
   // mounts and is consumed by both SessionGrid (grid view) and TerminalPanel
   // (normal view), so a single call covers both layouts.
@@ -609,10 +609,10 @@ function ProjectPage() {
   useEffect(() => {
     if (!terminalProject) return;
     if (focusedScopeRef.current === selectedScopeKey) return;
-    if (!activeTaskId) return;
+    if (!activeSessionId) return;
     focusedScopeRef.current = selectedScopeKey;
-    terminals.focusGridSession(activeTaskId);
-  }, [selectedScopeKey, terminalProject, activeTaskId, terminals]);
+    terminals.focusGridSession(activeSessionId);
+  }, [selectedScopeKey, terminalProject, activeSessionId, terminals]);
 
   const openRequestedSession = useCallback(
     (request: PendingSessionOpen) => {
@@ -627,30 +627,30 @@ function ProjectPage() {
         // selected scope, so the panel-switching logic below does
         // nothing visible. If the target session is live, just spotlight its cell
         // so the user can pick it out; the scope guards would otherwise no-op.
-        if (terminals.gridView && terminals.sessions.some((s) => s.taskId === request.taskId)) {
-          terminals.focusGridSession(request.taskId);
+        if (terminals.gridView && terminals.sessions.some((s) => s.sessionId === request.sessionId)) {
+          terminals.focusGridSession(request.sessionId);
           clearPendingSessionOpen(request);
           return;
         }
 
-        let task = tasks.find((entry) => entry.id === request.taskId && !entry.archived) ?? null;
+        let session = sessions.find((entry) => entry.id === request.sessionId && !entry.archived) ?? null;
 
-        if (!task) {
-          if (tasksQuery.isLoading) return;
+        if (!session) {
+          if (sessionsQuery.isLoading) return;
           if (coreId) {
-            // A Core's tasks only travel as core-link snapshots (already in
-            // `tasks`); `api.getTask` reads the Panel's own rows and could
+            // A Core's sessions only travel as core-link snapshots (already in
+            // `sessions`); `api.getSession` reads the Panel's own rows and could
             // resolve a colliding id. Absent from the snapshot list ⇒ stale.
             clearPendingSessionOpen(request);
             return;
           }
           try {
-            const { task: remoteTask } = await api.getTask(request.taskId);
-            if (!remoteTask || remoteTask.projectId !== id || remoteTask.archived) {
+            const { session: remoteSession } = await api.getSession(request.sessionId);
+            if (!remoteSession || remoteSession.projectId !== id || remoteSession.archived) {
               clearPendingSessionOpen(request);
               return;
             }
-            task = remoteTask;
+            session = remoteSession;
           } catch {
             clearPendingSessionOpen(request);
             return;
@@ -658,13 +658,13 @@ function ProjectPage() {
         }
 
         const active = terminals.activeFor(selectedScopeKey);
-        if (active?.taskId !== task.id) {
-          const activeTaskId = terminals.activeTaskIdFor(selectedScopeKey);
-          if (activeTaskId === task.id) terminals.rehydrate(terminalProject, task, { coreId });
-          else terminals.toggle(terminalProject, task);
+        if (active?.sessionId !== session.id) {
+          const activeSessionId = terminals.activeSessionIdFor(selectedScopeKey);
+          if (activeSessionId === session.id) terminals.rehydrate(terminalProject, session, { coreId });
+          else terminals.toggle(terminalProject, session);
         }
         // Now that the session is materialized in the grid, spotlight its cell.
-        if (terminals.gridView) terminals.focusGridSession(task.id);
+        if (terminals.gridView) terminals.focusGridSession(session.id);
         clearPendingSessionOpen(request);
       })();
     },
@@ -673,8 +673,8 @@ function ProjectPage() {
       coreId,
       terminalProject,
       selectedScopeKey,
-      tasks,
-      tasksQuery.isLoading,
+      sessions,
+      sessionsQuery.isLoading,
       terminals,
     ],
   );
@@ -699,21 +699,21 @@ function ProjectPage() {
     () => queryClient.invalidateQueries({ queryKey: queryKeys.project(id) }),
     [queryClient, id],
   );
-  const invalidateTasks = useCallback(
+  const invalidateSessions = useCallback(
     () =>
       queryClient.invalidateQueries({
-        queryKey: tasksCacheKey(id, coreId),
+        queryKey: sessionsCacheKey(id, coreId),
       }),
     [queryClient, id, coreId]
   );
   // The archived list lives in its own bucket outside the project key (ADR
   // 0019), so nothing else's invalidation reaches it — anything that can move
   // a row across the archived line has to say so.
-  const invalidateArchivedTasks = useCallback(
+  const invalidateArchivedSessions = useCallback(
     () =>
       coreId
         ? queryClient.invalidateQueries({
-            queryKey: queryKeys.coreArchivedTasks(id, coreId),
+            queryKey: queryKeys.coreArchivedSessions(id, coreId),
           })
         : Promise.resolve(),
     [queryClient, id, coreId],
@@ -740,11 +740,11 @@ function ProjectPage() {
   const refresh = useCallback(async () => {
     await Promise.all([
       invalidateProject(),
-      invalidateTasks(),
-      invalidateArchivedTasks(),
+      invalidateSessions(),
+      invalidateArchivedSessions(),
       invalidateProjects(),
     ]);
-  }, [invalidateProject, invalidateTasks, invalidateArchivedTasks, invalidateProjects]);
+  }, [invalidateProject, invalidateSessions, invalidateArchivedSessions, invalidateProjects]);
 
   const toggleProjectPin = useCallback(async () => {
     if (!project || pinning) return;
@@ -770,12 +770,12 @@ function ProjectPage() {
 
   const [showCodexHooksNotice, setShowCodexHooksNotice] = useState(false);
   const [harnessUpdateRequired, setHarnessUpdateRequired] = useState<{
-    agent: Task["agent"];
+    agent: Session["agent"];
     availability: CliAvailability;
   } | null>(null);
 
   const showHarnessUpdateRequired = useCallback(
-    (agent: Task["agent"], availability?: CliAvailability) => {
+    (agent: Session["agent"], availability?: CliAvailability) => {
       setShowNewHarness(false);
       setHarnessUpdateRequired({
         agent,
@@ -801,34 +801,34 @@ function ProjectPage() {
         return;
       }
 
-      const tasksKey = tasksCacheKey(project.id, coreId);
-      void queryClient.cancelQueries({ queryKey: tasksKey });
+      const sessionsKey = sessionsCacheKey(project.id, coreId);
+      void queryClient.cancelQueries({ queryKey: sessionsKey });
 
       const usesPersistedSession =
         payload.agent === "claude-code" ||
         payload.agent === "cursor-cli";
       const claudeSessionId = usesPersistedSession ? newSessionId() : null;
-      // Client-minted id so the optimistic card and the PTY agree on a task id
+      // Client-minted id so the optimistic card and the PTY agree on a session id
       // before the row exists.
-      const clientTaskId = newClientId("t");
-      const optimisticTask = buildOptimisticTask({
-        id: clientTaskId,
+      const clientSessionId = newClientId("t");
+      const optimisticSession = buildOptimisticSession({
+        id: clientSessionId,
         projectId: project.id,
         agent: payload.agent,
         claudeSessionId,
         claudeSkipPermissions: harnessLaunchesWithSkipPermissions(payload.agent),
         claudeBareSession: payload.agent === "claude-code" ? payload.bareSession : undefined,
       });
-      appendOptimisticTask(queryClient, project.id, optimisticTask, coreId);
+      appendOptimisticSession(queryClient, project.id, optimisticSession, coreId);
       if (opts?.initialInput) {
         // TerminalPane consumes this once, at the first spawn, as the PTY's
         // initialInput — the main process writes it after the agent TUI is ready.
-        setPendingInitialInput(optimisticTask.id, opts.initialInput);
+        setPendingInitialInput(optimisticSession.id, opts.initialInput);
       }
       if (opts?.model) {
-        setPendingSessionModel(optimisticTask.id, opts.model);
+        setPendingSessionModel(optimisticSession.id, opts.model);
       }
-      terminals.toggle(terminalProject, optimisticTask, {
+      terminals.toggle(terminalProject, optimisticSession, {
         awaitCreate: false,
         coreId,
       });
@@ -837,55 +837,55 @@ function ProjectPage() {
       // (and re-asserts across the awaitingCreate→persisted rebuild), so calling
       // it here — before the surface exists — is fine.
       if (opts?.focusOnCreate && terminals.gridView) {
-        terminals.focusGridSession(optimisticTask.id);
+        terminals.focusGridSession(optimisticSession.id);
       }
 
       void (async () => {
         try {
           // The Core owns the row (ADR-0004/0005), so starting a session is
           // a mutation frame to the Core the project lives on — there is no
-          // Panel-side task table to write to instead. The frame doesn't carry
+          // Panel-side session table to write to instead. The frame doesn't carry
           // claudeSessionId / bareSession today, so a session creates as a
-          // plain Harness task without those fields: no persisted-claude-session
+          // plain Harness session without those fields: no persisted-claude-session
           // resume until the protocol grows them. Skip-permissions is not a row
           // field any launch path reads — it is derived from the Harness
           // (issue 22).
-          const snapshot = await mutateTaskForCore(coreId, {
+          const snapshot = await mutateSessionForCore(coreId, {
             op: "create",
-            taskId: clientTaskId,
+            sessionId: clientSessionId,
             projectId: project.id,
             title: TITLE_WAITING,
             agent: payload.agent,
           });
-          if (!snapshot) throw new Error("Core did not return a task snapshot");
-          const createdTask: Task = remoteTaskFromSnapshot(snapshot);
-          replaceOptimisticTask(
+          if (!snapshot) throw new Error("Core did not return a session snapshot");
+          const createdSession: Session = remoteSessionFromSnapshot(snapshot);
+          replaceOptimisticSession(
             queryClient,
             project.id,
-            optimisticTask.id,
-            createdTask,
+            optimisticSession.id,
+            createdSession,
             coreId,
           );
-          if (clientTaskId && createdTask.id === clientTaskId) {
-            terminals.openSession(terminalProject, createdTask, { coreId });
+          if (clientSessionId && createdSession.id === clientSessionId) {
+            terminals.openSession(terminalProject, createdSession, { coreId });
           } else {
-            const pendingModel = peekPendingSessionModel(optimisticTask.id);
+            const pendingModel = peekPendingSessionModel(optimisticSession.id);
             if (pendingModel) {
-              clearPendingSessionModel(optimisticTask.id);
-              setPendingSessionModel(createdTask.id, pendingModel);
+              clearPendingSessionModel(optimisticSession.id);
+              setPendingSessionModel(createdSession.id, pendingModel);
             }
-            terminals.adoptTaskId(optimisticTask.id, createdTask);
+            terminals.adoptSessionId(optimisticSession.id, createdSession);
           }
-          void Promise.all([invalidateProject(), invalidateTasks(), invalidateProjects()]);
+          void Promise.all([invalidateProject(), invalidateSessions(), invalidateProjects()]);
           if (payload.agent === "codex" && !hasSeenCodexHooksNotice()) {
             setShowCodexHooksNotice(true);
           }
         } catch (e: unknown) {
           // The session never spawned — discard any staged prompt / model.
-          takePendingInitialInput(optimisticTask.id);
-          clearPendingSessionModel(optimisticTask.id);
-          removeOptimisticTask(queryClient, project.id, optimisticTask.id, coreId);
-          await terminals.close(optimisticTask.id);
+          takePendingInitialInput(optimisticSession.id);
+          clearPendingSessionModel(optimisticSession.id);
+          removeOptimisticSession(queryClient, project.id, optimisticSession.id, coreId);
+          await terminals.close(optimisticSession.id);
           toast.error(e instanceof Error ? e.message : "Could not create session");
         }
       })();
@@ -895,7 +895,7 @@ function ProjectPage() {
       terminalProject,
       queryClient,
       invalidateProject,
-      invalidateTasks,
+      invalidateSessions,
       invalidateProjects,
       terminals,
       cliAvailability,
@@ -910,11 +910,11 @@ function ProjectPage() {
     // Live DOM focus first (a hotkey fires with a cell focused); then the grid's
     // last-focused cell reported to the store (a header-button click moved DOM
     // focus to the button); finally the scope's active session.
-    for (const candidate of [readFocusedGridTaskId(), terminals.getGridFocusedTaskId()]) {
-      if (candidate && tasks.some((t) => t.id === candidate)) return candidate;
+    for (const candidate of [readFocusedGridSessionId(), terminals.getGridFocusedSessionId()]) {
+      if (candidate && sessions.some((t) => t.id === candidate)) return candidate;
     }
-    return terminals.activeFor(selectedScopeKey)?.taskId ?? undefined;
-  }, [tasks, terminals, selectedScopeKey]);
+    return terminals.activeFor(selectedScopeKey)?.sessionId ?? undefined;
+  }, [sessions, terminals, selectedScopeKey]);
 
   const startWithSaved = useCallback(() => {
     if (!project) return;
@@ -1095,14 +1095,14 @@ function ProjectPage() {
       // through to the normal cycle here. The grid stays mounted alongside the
       // docked diff panel, so cycling stays grid-owned while reviewing changes.
       if (showGrid) return;
-      const visible = tasks.filter((t) => !t.archived);
+      const visible = sessions.filter((t) => !t.archived);
       if (visible.length === 0) return;
-      const ordered: Task[] = [];
+      const ordered: Session[] = [];
       for (const status of STATUS_DISPLAY_ORDER) {
         for (const t of visible) if (t.status === status) ordered.push(t);
       }
       if (ordered.length === 0) return;
-      const currentId = terminals.activeTaskIdFor(selectedScopeKey);
+      const currentId = terminals.activeSessionIdFor(selectedScopeKey);
       // Panel closed: open the highest-priority card instead of cycling.
       if (!currentId) {
         const firstByPriority = pickByPriority(visible);
@@ -1116,18 +1116,18 @@ function ProjectPage() {
       const idx = ordered.findIndex((t) => t.id === currentId);
       if (idx === -1) return;
       const nextIdx = (idx + direction + ordered.length) % ordered.length;
-      const nextTask = ordered[nextIdx];
-      if (!nextTask || nextTask.id === currentId) return;
-      terminals.toggle(terminalProject, nextTask);
+      const nextSession = ordered[nextIdx];
+      if (!nextSession || nextSession.id === currentId) return;
+      terminals.toggle(terminalProject, nextSession);
       // Carry keyboard focus into the session we cycled to, so successive
       // presses keep cycling and the caret is ready to type (see selectTerminal).
-      terminals.focusGridSession(nextTask.id);
+      terminals.focusGridSession(nextSession.id);
     },
     [
       project,
       terminalProject,
       selectedScopeKey,
-      tasks,
+      sessions,
       terminals,
       anyBlockingDialogOpen,
       showGrid,
@@ -1135,7 +1135,7 @@ function ProjectPage() {
   );
 
   const duplicateActiveSession = useCallback(
-    (sourceTaskId?: string) => {
+    (sourceSessionId?: string) => {
       if (!project) return;
       if (anyBlockingDialogOpen) return;
       // Resolve which session to clone, most-specific first:
@@ -1147,27 +1147,27 @@ function ProjectPage() {
       //     beside the "wrong" session (or, if that session isn't in the
       //     rendered layout, in a seemingly random spot).
       //  3. The scope's active session (non-grid view / no cell focused).
-      const focusedGridTaskId = readFocusedGridTaskId();
-      const sourceTask =
-        (sourceTaskId && tasks.find((t) => t.id === sourceTaskId)) ||
-        (focusedGridTaskId && tasks.find((t) => t.id === focusedGridTaskId)) ||
+      const focusedGridSessionId = readFocusedGridSessionId();
+      const sourceSession =
+        (sourceSessionId && sessions.find((t) => t.id === sourceSessionId)) ||
+        (focusedGridSessionId && sessions.find((t) => t.id === focusedGridSessionId)) ||
         (() => {
           const active = terminals.activeFor(selectedScopeKey);
-          return active ? tasks.find((t) => t.id === active.taskId) : undefined;
+          return active ? sessions.find((t) => t.id === active.sessionId) : undefined;
         })();
-      if (!sourceTask) return;
+      if (!sourceSession) return;
       // In grid view, drop the clone directly beside the session it came from
       // rather than at the end of the grid.
-      terminals.requestCloneInsertAfter(sourceTask.id);
+      terminals.requestCloneInsertAfter(sourceSession.id);
       void createSession(
         {
-          agent: sourceTask.agent,
-          bareSession: sourceTask.agent === "claude-code" ? !!sourceTask.claudeBareSession : false,
+          agent: sourceSession.agent,
+          bareSession: sourceSession.agent === "claude-code" ? !!sourceSession.claudeBareSession : false,
         },
         { focusOnCreate: true },
       );
     },
-    [project, selectedScopeKey, tasks, terminals, createSession, anyBlockingDialogOpen],
+    [project, selectedScopeKey, sessions, terminals, createSession, anyBlockingDialogOpen],
   );
   const duplicateActiveSessionRef = useRef(duplicateActiveSession);
   duplicateActiveSessionRef.current = duplicateActiveSession;
@@ -1198,8 +1198,8 @@ function ProjectPage() {
   // session by id (registered once, so it reads the latest handler via a ref).
   useEffect(() => {
     const onDuplicateRequest = (e: Event) => {
-      const taskId = (e as CustomEvent<{ taskId?: string }>).detail?.taskId;
-      duplicateActiveSessionRef.current(taskId);
+      const sessionId = (e as CustomEvent<{ sessionId?: string }>).detail?.sessionId;
+      duplicateActiveSessionRef.current(sessionId);
     };
     window.addEventListener(DUPLICATE_ACTIVE_SESSION_EVENT, onDuplicateRequest);
     return () => window.removeEventListener(DUPLICATE_ACTIVE_SESSION_EVENT, onDuplicateRequest);
@@ -1234,10 +1234,10 @@ function ProjectPage() {
     hiddenSession?.projectId === selectedScopeKey &&
     terminals.sessions.some(
       (s) =>
-        s.taskId === hiddenSession.taskId &&
+        s.sessionId === hiddenSession.sessionId &&
         scopeKeyForProject(s.project) === selectedScopeKey,
     ) &&
-    tasks.some((t) => t.id === hiddenSession.taskId && !t.archived);
+    sessions.some((t) => t.id === hiddenSession.sessionId && !t.archived);
   const closePanelEnabled =
     !anyBlockingDialogOpen && !!project
       ? terminals.activeFor(selectedScopeKey) !== null || canRestoreHiddenSession
@@ -1256,7 +1256,7 @@ function ProjectPage() {
       if (showGrid) return;
       const active = terminals.activeFor(selectedScopeKey);
       if (active) {
-        lastHiddenSessionRef.current = { projectId: selectedScopeKey, taskId: active.taskId };
+        lastHiddenSessionRef.current = { projectId: selectedScopeKey, sessionId: active.sessionId };
         terminals.deselect(selectedScopeKey);
         return;
       }
@@ -1264,13 +1264,13 @@ function ProjectPage() {
       if (!hidden || hidden.projectId !== selectedScopeKey) return;
       const sessionStillOpen = terminals.sessions.some(
         (s) =>
-          s.taskId === hidden.taskId &&
+          s.sessionId === hidden.sessionId &&
           scopeKeyForProject(s.project) === selectedScopeKey,
       );
       if (!sessionStillOpen) return;
-      const task = tasks.find((t) => t.id === hidden.taskId && !t.archived);
-      if (!task) return;
-      if (terminalProject) terminals.toggle(terminalProject, task);
+      const session = sessions.find((t) => t.id === hidden.sessionId && !t.archived);
+      if (!session) return;
+      if (terminalProject) terminals.toggle(terminalProject, session);
     },
     {
       enabled: closePanelEnabled,
@@ -1278,16 +1278,16 @@ function ProjectPage() {
     },
   );
 
-  // Coalesce bursts of task events for THIS project into a single refetch. A
-  // running agent emits many task:updated events per second; each used to
-  // refetch this project's tasks + detail + the global projects list. The
+  // Coalesce bursts of session events for THIS project into a single refetch. A
+  // running agent emits many session:updated events per second; each used to
+  // refetch this project's sessions + detail + the global projects list. The
   // sidebar (ProjectBar / ProjectPicker) owns the projects-list refresh, so
-  // this route only refetches its own tasks + detail — and ignores task events
+  // this route only refetches its own sessions + detail — and ignores session events
   // for other projects entirely.
   // maxWait bounds staleness under a sustained event storm: without it a
   // continuous <150ms stream would defer the refetch indefinitely.
-  const invalidateThisProjectTasks = useDebouncedCallback(() => {
-    void invalidateTasks();
+  const invalidateThisProjectSessions = useDebouncedCallback(() => {
+    void invalidateSessions();
     void invalidateProject();
   }, 150, 400);
 
@@ -1295,16 +1295,16 @@ function ProjectPage() {
     useCallback(
       (e) => {
         applyQuestionServerEvent(e);
-        if (e.type.startsWith("task:")) {
+        if (e.type.startsWith("session:")) {
           if (e.projectId === id) {
-            invalidateThisProjectTasks();
+            invalidateThisProjectSessions();
           }
         } else if (e.type.startsWith("project:")) {
           void invalidateProject();
           void invalidateProjects();
         }
       },
-      [id, invalidateThisProjectTasks, invalidateProject, invalidateProjects, queryClient]
+      [id, invalidateThisProjectSessions, invalidateProject, invalidateProjects, queryClient]
     )
   );
 
@@ -1371,29 +1371,29 @@ function ProjectPage() {
     );
   }
 
-  const activeTasks = tasks.filter((t) => !t.archived);
-  const pinnedTasks = activeTasks.filter((t) => t.pinned);
-  const visibleTasks = showArchived ? archivedTasks : showPinned ? pinnedTasks : activeTasks;
+  const activeSessions = sessions.filter((t) => !t.archived);
+  const pinnedSessions = activeSessions.filter((t) => t.pinned);
+  const visibleSessions = showArchived ? archivedSessions : showPinned ? pinnedSessions : activeSessions;
   // Active list peels pinned into a top "Pinned" section; Pinned tab keeps
   // normal status grouping (already all-pinned). Archived folds every live
   // status into the single Archived column (no Interrupted/Running/etc.).
   const activeListGroups =
-    !showArchived && !showPinned ? groupActiveListTasksForDisplay(visibleTasks) : null;
-  const tasksByStatus = activeListGroups
+    !showArchived && !showPinned ? groupActiveListSessionsForDisplay(visibleSessions) : null;
+  const sessionsByStatus = activeListGroups
     ? activeListGroups.byStatus
     : showArchived
-      ? groupArchivedTasksForDisplay(visibleTasks)
-      : groupTasksByStatusForDisplay(visibleTasks);
-  const pinnedListTasks = activeListGroups?.pinned ?? [];
+      ? groupArchivedSessionsForDisplay(visibleSessions)
+      : groupSessionsByStatusForDisplay(visibleSessions);
+  const pinnedListSessions = activeListGroups?.pinned ?? [];
 
-  const activeId = terminals.activeTaskIdFor(selectedScopeKey);
-  const setTaskPinning = (taskId: string, pinning: boolean) => {
-    setPinningTaskIds((current) => {
-      if (pinning && current.has(taskId)) return current;
-      if (!pinning && !current.has(taskId)) return current;
+  const activeId = terminals.activeSessionIdFor(selectedScopeKey);
+  const setSessionPinning = (sessionId: string, pinning: boolean) => {
+    setPinningSessionIds((current) => {
+      if (pinning && current.has(sessionId)) return current;
+      if (!pinning && !current.has(sessionId)) return current;
       const next = new Set(current);
-      if (pinning) next.add(taskId);
-      else next.delete(taskId);
+      if (pinning) next.add(sessionId);
+      else next.delete(sessionId);
       return next;
     });
   };
@@ -1401,47 +1401,47 @@ function ProjectPage() {
   // Card click opens/focuses a session. Re-clicking the active card must not
   // hide the panel — only the session panel close button (or terminal.close
   // hotkey) deselects.
-  const selectTerminal = (taskId: string) => {
-    openClickedSession(taskId, {
-      tasks,
-      archivedTasks,
+  const selectTerminal = (sessionId: string) => {
+    openClickedSession(sessionId, {
+      sessions,
+      archivedSessions,
       project: terminalProject,
       coreId,
       terminals,
     });
   };
 
-  const toggleSessionPinned = async (taskId: string) => {
+  const toggleSessionPinned = async (sessionId: string) => {
     if (!project) return;
-    const task = tasks.find((t) => t.id === taskId);
-    if (!task || task.archived) return;
-    const nextPinned = !task.pinned;
-    const previousPinned = task.pinned;
-    const requestId = (pinRequestSeqRef.current[taskId] ?? 0) + 1;
-    pinRequestSeqRef.current[taskId] = requestId;
-    setTaskPinning(taskId, true);
+    const session = sessions.find((t) => t.id === sessionId);
+    if (!session || session.archived) return;
+    const nextPinned = !session.pinned;
+    const previousPinned = session.pinned;
+    const requestId = (pinRequestSeqRef.current[sessionId] ?? 0) + 1;
+    pinRequestSeqRef.current[sessionId] = requestId;
+    setSessionPinning(sessionId, true);
 
-    const tasksKey = tasksCacheKey(project.id, coreId);
-    await queryClient.cancelQueries({ queryKey: tasksKey });
-    setTaskPinnedInCache(queryClient, project.id, taskId, nextPinned, coreId);
+    const sessionsKey = sessionsCacheKey(project.id, coreId);
+    await queryClient.cancelQueries({ queryKey: sessionsKey });
+    setSessionPinnedInCache(queryClient, project.id, sessionId, nextPinned, coreId);
 
     try {
-      // Task pin is Core-owned state; the mutation goes over the coreId-
+      // Session pin is Core-owned state; the mutation goes over the coreId-
       // parameterised core-link surface (ADR-0005). For a Panel-owned row
-      // this replaces the previous local-HTTP `api.updateTask({pinned})`
+      // this replaces the previous local-HTTP `api.updateSession({pinned})`
       // path — the DB row still moves, but the write travels through the
       // in-process core-link so two Panels connected to the same Core (once
       // that lands for a Panel-owned row) see the same pin state.
-      const saved = await mutateTaskForCore(coreId, {
+      const saved = await mutateSessionForCore(coreId, {
         op: "update",
-        taskId,
+        sessionId,
         pinned: nextPinned,
       });
-      if (pinRequestSeqRef.current[taskId] !== requestId) return;
+      if (pinRequestSeqRef.current[sessionId] !== requestId) return;
       if (saved) {
-        queryClient.setQueryData<Task[]>(tasksKey, (current) =>
+        queryClient.setQueryData<Session[]>(sessionsKey, (current) =>
           (current ?? []).map((t) =>
-            t.id === taskId
+            t.id === sessionId
               ? {
                   ...t,
                   pinned: saved.pinned,
@@ -1451,35 +1451,35 @@ function ProjectPage() {
           ),
         );
       }
-      void invalidateTasks();
+      void invalidateSessions();
     } catch (e: unknown) {
-      if (pinRequestSeqRef.current[taskId] === requestId) {
-        const currentTask = queryClient.getQueryData<Task[]>(tasksKey)?.find((t) => t.id === taskId);
-        if (currentTask?.pinned === nextPinned) {
-          setTaskPinnedInCache(queryClient, project.id, taskId, previousPinned, coreId);
+      if (pinRequestSeqRef.current[sessionId] === requestId) {
+        const currentSession = queryClient.getQueryData<Session[]>(sessionsKey)?.find((t) => t.id === sessionId);
+        if (currentSession?.pinned === nextPinned) {
+          setSessionPinnedInCache(queryClient, project.id, sessionId, previousPinned, coreId);
         }
-        void invalidateTasks();
+        void invalidateSessions();
         toast.error(e instanceof Error ? e.message : "Could not update pinned session");
       }
     } finally {
-      if (pinRequestSeqRef.current[taskId] === requestId) {
-        delete pinRequestSeqRef.current[taskId];
-        setTaskPinning(taskId, false);
+      if (pinRequestSeqRef.current[sessionId] === requestId) {
+        delete pinRequestSeqRef.current[sessionId];
+        setSessionPinning(sessionId, false);
       }
     }
   };
 
-  const deleteTask = (taskId: string) => {
-    const task = tasks.find((t) => t.id === taskId);
-    if (!task || !project) return;
+  const deleteSession = (sessionId: string) => {
+    const session = sessions.find((t) => t.id === sessionId);
+    if (!session || !project) return;
 
-    const tasksKey = tasksCacheKey(project.id, coreId);
-    void queryClient.cancelQueries({ queryKey: tasksKey });
-    const previousTasks = queryClient.getQueryData<Task[]>(tasksKey);
+    const sessionsKey = sessionsCacheKey(project.id, coreId);
+    void queryClient.cancelQueries({ queryKey: sessionsKey });
+    const previousSessions = queryClient.getQueryData<Session[]>(sessionsKey);
 
-    const isActive = terminals.activeTaskIdFor(selectedScopeKey) === taskId;
+    const isActive = terminals.activeSessionIdFor(selectedScopeKey) === sessionId;
     const next = isActive
-      ? pickByPriority(tasks.filter((t) => !t.archived && t.id !== taskId))
+      ? pickByPriority(sessions.filter((t) => !t.archived && t.id !== sessionId))
       : undefined;
 
     // Point the panel at the replacement session before the deleted row disappears
@@ -1490,21 +1490,21 @@ function ProjectPage() {
       else terminals.deselect(selectedScopeKey);
     }
 
-    removeTaskFromCache(queryClient, project.id, taskId, coreId);
+    removeSessionFromCache(queryClient, project.id, sessionId, coreId);
 
     void (async () => {
       try {
         await terminals.close(
-          taskId,
-          isActive ? { activateTaskId: next?.id ?? null } : undefined,
+          sessionId,
+          isActive ? { activateSessionId: next?.id ?? null } : undefined,
         );
         // Route to the Core that owns the row (ADR 0005) — the Panel's own
         // delete endpoint only knows Panel-owned rows.
-        await mutateTaskForCore(coreId, { op: "delete", taskId });
+        await mutateSessionForCore(coreId, { op: "delete", sessionId });
         void refresh();
       } catch (e: unknown) {
-        if (previousTasks) {
-          restoreTasksCache(queryClient, project.id, previousTasks, coreId);
+        if (previousSessions) {
+          restoreSessionsCache(queryClient, project.id, previousSessions, coreId);
         }
         toast.error(e instanceof Error ? e.message : "Could not delete session");
       } finally {
@@ -1575,33 +1575,33 @@ function ProjectPage() {
   // No confirmation — archiving is reversible via Restore, for a Core-owned
   // row as much as a Panel-owned one: the Core lists its archived rows over
   // their own frame (ADR 0019), so the row reappears under Archived.
-  const archiveTasks = (targets: Task[]) => {
+  const archiveSessions = (targets: Session[]) => {
     if (!project || targets.length === 0) return;
     const ids = new Set(targets.map((t) => t.id));
 
-    const tasksKey = tasksCacheKey(project.id, coreId);
-    void queryClient.cancelQueries({ queryKey: tasksKey });
-    const previousTasks = queryClient.getQueryData<Task[]>(tasksKey);
+    const sessionsKey = sessionsCacheKey(project.id, coreId);
+    void queryClient.cancelQueries({ queryKey: sessionsKey });
+    const previousSessions = queryClient.getQueryData<Session[]>(sessionsKey);
 
-    const activeTaskId = terminals.activeTaskIdFor(selectedScopeKey);
-    const archivingActive = !!activeTaskId && ids.has(activeTaskId);
+    const activeSessionId = terminals.activeSessionIdFor(selectedScopeKey);
+    const archivingActive = !!activeSessionId && ids.has(activeSessionId);
     const next = archivingActive
-      ? pickByPriority(tasks.filter((t) => !t.archived && !ids.has(t.id)))
+      ? pickByPriority(sessions.filter((t) => !t.archived && !ids.has(t.id)))
       : undefined;
 
     // Repoint the panel at the replacement session before the PTY is torn down,
-    // mirroring deleteTask so the panel doesn't briefly unmount.
+    // mirroring deleteSession so the panel doesn't briefly unmount.
     if (archivingActive && terminalProject) {
       if (next) terminals.openSession(terminalProject, next, { coreId });
       else terminals.deselect(selectedScopeKey);
     }
 
-    setTasksArchivedInCache(queryClient, project.id, ids, true, coreId);
+    setSessionsArchivedInCache(queryClient, project.id, ids, true, coreId);
     // Bump the count the Archived tab is gated on, so the tab appears with the
     // row rather than one refetch later — the mirror of what restore does when
     // it takes a row back out (ADR 0019). A Panel-owned project counts its own
     // rows and needs no bucket.
-    const countKey = coreId ? queryKeys.coreArchivedTaskCount(project.id, coreId) : null;
+    const countKey = coreId ? queryKeys.coreArchivedSessionCount(project.id, coreId) : null;
     const previousCount = countKey ? queryClient.getQueryData<number>(countKey) : undefined;
     if (countKey) {
       queryClient.setQueryData<number>(countKey, (current) => (current ?? 0) + ids.size);
@@ -1614,22 +1614,22 @@ function ProjectPage() {
             await terminals
               .close(
                 t.id,
-                t.id === activeTaskId ? { activateTaskId: next?.id ?? null } : undefined,
+                t.id === activeSessionId ? { activateSessionId: next?.id ?? null } : undefined,
               )
               .catch(() => undefined);
             // Route to the Core that owns the row (ADR 0005) — the Panel's
             // own archive endpoint only knows Panel-owned rows.
-            await mutateTaskForCore(coreId, {
+            await mutateSessionForCore(coreId, {
               op: "update",
-              taskId: t.id,
+              sessionId: t.id,
               archived: true,
             });
           }),
         );
         void refresh();
       } catch (e: unknown) {
-        if (previousTasks) {
-          restoreTasksCache(queryClient, project.id, previousTasks, coreId);
+        if (previousSessions) {
+          restoreSessionsCache(queryClient, project.id, previousSessions, coreId);
         }
         if (countKey && previousCount !== undefined) {
           queryClient.setQueryData<number>(countKey, previousCount);
@@ -1639,9 +1639,9 @@ function ProjectPage() {
     })();
   };
 
-  const archiveSession = (taskId: string) => {
-    const task = tasks.find((t) => t.id === taskId);
-    if (task) archiveTasks([task]);
+  const archiveSession = (sessionId: string) => {
+    const session = sessions.find((t) => t.id === sessionId);
+    if (session) archiveSessions([session]);
   };
   archiveSessionRef.current = archiveSession;
 
@@ -1673,49 +1673,49 @@ function ProjectPage() {
     }
   };
 
-  // Un-archive one session, routed by owner like every other task mutation.
+  // Un-archive one session, routed by owner like every other session mutation.
   //
   // The two owners keep their rows in different buckets, so the optimistic
-  // move differs. A Panel-owned row is already in the task list with
+  // move differs. A Panel-owned row is already in the session list with
   // `archived: true` — clearing the flag there moves it between the two
   // views. A Core's archived rows live in their own list (ADR 0019), so the
   // row leaves that one and the count that gates the tab drops with it; the
   // refetch behind `refresh()` is what puts it back in the active list.
-  const restoreSession = (taskId: string) => {
+  const restoreSession = (sessionId: string) => {
     if (!project) return;
-    const task = archivedTasks.find((t) => t.id === taskId) ?? tasks.find((t) => t.id === taskId);
-    if (!task) return;
+    const session = archivedSessions.find((t) => t.id === sessionId) ?? sessions.find((t) => t.id === sessionId);
+    if (!session) return;
 
-    const tasksKey = tasksCacheKey(project.id, coreId);
-    void queryClient.cancelQueries({ queryKey: tasksKey });
-    const previousTasks = queryClient.getQueryData<Task[]>(tasksKey);
-    const archivedKey = coreId ? queryKeys.coreArchivedTasks(project.id, coreId) : null;
+    const sessionsKey = sessionsCacheKey(project.id, coreId);
+    void queryClient.cancelQueries({ queryKey: sessionsKey });
+    const previousSessions = queryClient.getQueryData<Session[]>(sessionsKey);
+    const archivedKey = coreId ? queryKeys.coreArchivedSessions(project.id, coreId) : null;
     const previousArchived = archivedKey
-      ? queryClient.getQueryData<Task[]>(archivedKey)
+      ? queryClient.getQueryData<Session[]>(archivedKey)
       : undefined;
-    const countKey = coreId ? queryKeys.coreArchivedTaskCount(project.id, coreId) : null;
+    const countKey = coreId ? queryKeys.coreArchivedSessionCount(project.id, coreId) : null;
     const previousCount = countKey ? queryClient.getQueryData<number>(countKey) : undefined;
 
     if (archivedKey && countKey) {
       void queryClient.cancelQueries({ queryKey: archivedKey });
-      queryClient.setQueryData<Task[]>(archivedKey, (current) =>
-        (current ?? []).filter((t) => t.id !== taskId),
+      queryClient.setQueryData<Session[]>(archivedKey, (current) =>
+        (current ?? []).filter((t) => t.id !== sessionId),
       );
       queryClient.setQueryData<number>(countKey, (current) => Math.max(0, (current ?? 1) - 1));
     } else {
-      setTaskArchivedInCache(queryClient, project.id, taskId, false, coreId);
+      setSessionArchivedInCache(queryClient, project.id, sessionId, false, coreId);
     }
 
     void (async () => {
       try {
-        await mutateTaskForCore(coreId, { op: "update", taskId, archived: false });
+        await mutateSessionForCore(coreId, { op: "update", sessionId, archived: false });
         void refresh();
       } catch (e: unknown) {
-        if (previousTasks) {
-          restoreTasksCache(queryClient, project.id, previousTasks, coreId);
+        if (previousSessions) {
+          restoreSessionsCache(queryClient, project.id, previousSessions, coreId);
         }
         if (archivedKey && previousArchived) {
-          queryClient.setQueryData<Task[]>(archivedKey, previousArchived);
+          queryClient.setQueryData<Session[]>(archivedKey, previousArchived);
         }
         if (countKey && previousCount !== undefined) {
           queryClient.setQueryData<number>(countKey, previousCount);
@@ -1725,33 +1725,33 @@ function ProjectPage() {
     })();
   };
 
-  // Refresh the stable TaskCard handler wrappers with this render's closures so
+  // Refresh the stable SessionCard handler wrappers with this render's closures so
   // the memoized cards always invoke the latest logic without changing identity.
-  taskCardHandlersRef.current = {
+  sessionCardHandlersRef.current = {
     onToggle: selectTerminal,
     onArchive: archiveSession,
     onRestore: restoreSession,
-    onDelete: deleteTask,
+    onDelete: deleteSession,
     onTogglePinned: toggleSessionPinned,
   };
 
   // Delete every archived row shown for this project. Routed by owner like
-  // every other task mutation; the rows come from wherever this project's
+  // every other session mutation; the rows come from wherever this project's
   // Archived view sources them (ADR 0019), which for a Core is its own list.
   const deleteAllArchived = () => {
     setConfirmDeleteArchived(false);
     if (!project) return;
-    const archived = archivedTasks;
+    const archived = archivedSessions;
     if (archived.length === 0) return;
 
-    const tasksKey = tasksCacheKey(project.id, coreId);
-    void queryClient.cancelQueries({ queryKey: tasksKey });
-    const previousTasks = queryClient.getQueryData<Task[]>(tasksKey);
+    const sessionsKey = sessionsCacheKey(project.id, coreId);
+    void queryClient.cancelQueries({ queryKey: sessionsKey });
+    const previousSessions = queryClient.getQueryData<Session[]>(sessionsKey);
     const archivedIds = new Set(archived.map((t) => t.id));
-    removeTasksFromCache(queryClient, project.id, archivedIds, coreId);
+    removeSessionsFromCache(queryClient, project.id, archivedIds, coreId);
     if (coreId) {
-      queryClient.setQueryData<Task[]>(queryKeys.coreArchivedTasks(project.id, coreId), []);
-      queryClient.setQueryData<number>(queryKeys.coreArchivedTaskCount(project.id, coreId), 0);
+      queryClient.setQueryData<Session[]>(queryKeys.coreArchivedSessions(project.id, coreId), []);
+      queryClient.setQueryData<number>(queryKeys.coreArchivedSessionCount(project.id, coreId), 0);
     }
 
     void (async () => {
@@ -1759,21 +1759,21 @@ function ProjectPage() {
         await Promise.all(
           archived.map(async (t) => {
             await terminals.close(t.id).catch(() => undefined);
-            await mutateTaskForCore(coreId, { op: "delete", taskId: t.id });
+            await mutateSessionForCore(coreId, { op: "delete", sessionId: t.id });
           }),
         );
         void refresh();
       } catch (e: unknown) {
-        if (previousTasks) {
-          restoreTasksCache(queryClient, project.id, previousTasks, coreId);
+        if (previousSessions) {
+          restoreSessionsCache(queryClient, project.id, previousSessions, coreId);
         }
         if (coreId) {
-          queryClient.setQueryData<Task[]>(
-            queryKeys.coreArchivedTasks(project.id, coreId),
+          queryClient.setQueryData<Session[]>(
+            queryKeys.coreArchivedSessions(project.id, coreId),
             archived,
           );
           queryClient.setQueryData<number>(
-            queryKeys.coreArchivedTaskCount(project.id, coreId),
+            queryKeys.coreArchivedSessionCount(project.id, coreId),
             archived.length,
           );
         }
@@ -1785,7 +1785,7 @@ function ProjectPage() {
   };
 
   const startHarness = (data: {
-    agent: Task["agent"];
+    agent: Session["agent"];
     title: string;
     bareSession: boolean;
   }) => {
@@ -2132,10 +2132,10 @@ function ProjectPage() {
           {showSessionScopeToggle && (
             <SessionScopeToggle
               view={sessionView}
-              activeCount={activeTasks.length}
-              pinnedCount={pinnedTasks.length}
+              activeCount={activeSessions.length}
+              pinnedCount={pinnedSessions.length}
               archivedCount={archivedCount}
-              showArchivedTab={hasArchivedTasks || showArchived}
+              showArchivedTab={hasArchivedSessions || showArchived}
               onChange={setSessionView}
             />
           )}
@@ -2179,7 +2179,7 @@ function ProjectPage() {
                 }}
               />
             )}
-            {showArchived && archivedTasks.length > 0 && (
+            {showArchived && archivedSessions.length > 0 && (
               <Btn
                 variant="danger"
                 icon="trash"
@@ -2197,9 +2197,9 @@ function ProjectPage() {
             scopeKey={selectedScopeKey}
             coreId={coreId}
             filter={showPinned ? "pinned" : "active"}
-            pinnedTaskIds={pinnedTaskIds}
+            pinnedSessionIds={pinnedSessionIds}
             onTogglePinned={toggleSessionPinned}
-            pinningTaskIds={pinningTaskIds}
+            pinningSessionIds={pinningSessionIds}
           />
         ) : (
         <>
@@ -2232,24 +2232,24 @@ function ProjectPage() {
             boxSizing: "border-box",
           }}
         >
-          {tasksQuery.isLoading ? (
+          {sessionsQuery.isLoading ? (
             <EmptyState
               title="Loading sessions"
-              subtitle="Fetching the hosted task list and terminal state."
+              subtitle="Fetching the hosted session list and terminal state."
               icon="sparkles"
             />
-          ) : tasksQuery.isError ? (
+          ) : sessionsQuery.isError ? (
             <EmptyState
               title="Could not load sessions"
               subtitle="Actana Control could not load sessions for this project. Retry before starting new work."
               icon="shield"
               action={
-                <Btn variant="primary" icon="refresh" onClick={() => void tasksQuery.refetch()}>
+                <Btn variant="primary" icon="refresh" onClick={() => void sessionsQuery.refetch()}>
                   Retry
                 </Btn>
               }
             />
-          ) : showArchived && archivedTasksQuery.isLoading ? (
+          ) : showArchived && archivedSessionsQuery.isLoading ? (
             // A Core fetches its archived rows over their own frame when this
             // view opens (ADR 0019), so unlike the active list there is a real
             // wait here. Both branches stay dark for a Panel-owned project,
@@ -2259,7 +2259,7 @@ function ProjectPage() {
               subtitle="Fetching this project's archived sessions from the Core that owns them."
               icon="sparkles"
             />
-          ) : showArchived && archivedTasksQuery.isError ? (
+          ) : showArchived && archivedSessionsQuery.isError ? (
             <EmptyState
               title="Could not load archived sessions"
               subtitle="Actana Control could not reach the Core that owns these sessions. Retry to see them."
@@ -2268,13 +2268,13 @@ function ProjectPage() {
                 <Btn
                   variant="primary"
                   icon="refresh"
-                  onClick={() => void archivedTasksQuery.refetch()}
+                  onClick={() => void archivedSessionsQuery.refetch()}
                 >
                   Retry
                 </Btn>
               }
             />
-          ) : showArchived && visibleTasks.length === 0 ? (
+          ) : showArchived && visibleSessions.length === 0 ? (
             <EmptyState
               title="No archived sessions"
               subtitle="Archive a finished session to keep it around without cluttering your active list."
@@ -2285,7 +2285,7 @@ function ProjectPage() {
                 </Btn>
               }
             />
-          ) : showPinned && visibleTasks.length === 0 ? (
+          ) : showPinned && visibleSessions.length === 0 ? (
             <EmptyState
               title="No pinned sessions"
               subtitle="Pin sessions you want to keep an eye on, like loop runs."
@@ -2296,7 +2296,7 @@ function ProjectPage() {
                 </Btn>
               }
             />
-          ) : visibleTasks.length === 0 ? (
+          ) : visibleSessions.length === 0 ? (
             <EmptyState
               title="No active sessions"
               subtitle="Start a new session to begin working on this project."
@@ -2310,7 +2310,7 @@ function ProjectPage() {
                       if (projectPathReady) setShowNewHarness(true);
                     }}
                   />
-                  {hasArchivedTasks && (
+                  {hasArchivedSessions && (
                     <Btn variant="ghost" icon="archive" onClick={() => setSessionView("archived")}>
                       View archived
                     </Btn>
@@ -2320,32 +2320,32 @@ function ProjectPage() {
             />
           ) : (
             <>
-              {pinnedListTasks.length > 0 && (
-                <TaskColumn
+              {pinnedListSessions.length > 0 && (
+                <SessionColumn
                   key={`${id}:pinned`}
                   title="Pinned"
                   color="var(--accent)"
-                  tasks={pinnedListTasks}
+                  sessions={pinnedListSessions}
                   activeId={activeId}
                   onToggle={stableSelectTerminal}
                   onArchive={stableArchiveSession}
                   onTogglePinned={stableToggleSessionPinned}
-                  pinningTaskIds={pinningTaskIds}
+                  pinningSessionIds={pinningSessionIds}
                 />
               )}
-              {STATUS_DISPLAY_ORDER.filter((s) => tasksByStatus[s].length > 0).map((status) => {
+              {STATUS_DISPLAY_ORDER.filter((s) => sessionsByStatus[s].length > 0).map((status) => {
                 const isArchivedTitleRow = showArchived && status === "finished";
                 const firstArchivedStatus = showArchived
-                  ? STATUS_DISPLAY_ORDER.find((s) => tasksByStatus[s].length > 0)
+                  ? STATUS_DISPLAY_ORDER.find((s) => sessionsByStatus[s].length > 0)
                   : undefined;
                 // Prefer the "Archived" (finished) row; otherwise put the exit
                 // control on the first visible archived status column.
                 const showViewActive =
                   showArchived &&
                   (isArchivedTitleRow ||
-                    (tasksByStatus.finished.length === 0 && status === firstArchivedStatus));
+                    (sessionsByStatus.finished.length === 0 && status === firstArchivedStatus));
                 return (
-                <TaskColumn
+                <SessionColumn
                   key={`${id}:${status}`}
                   title={
                     isArchivedTitleRow
@@ -2353,14 +2353,14 @@ function ProjectPage() {
                       : STATUS_META[status].label
                   }
                   color={STATUS_META[status].color}
-                  tasks={tasksByStatus[status]}
+                  sessions={sessionsByStatus[status]}
                   activeId={activeId}
                   onToggle={stableSelectTerminal}
                   onArchive={showArchived ? undefined : stableArchiveSession}
                   onRestore={showArchived ? stableRestoreSession : undefined}
-                  onDelete={showArchived ? stableDeleteTask : undefined}
+                  onDelete={showArchived ? stableDeleteSession : undefined}
                   onTogglePinned={showArchived ? undefined : stableToggleSessionPinned}
-                  pinningTaskIds={showArchived ? undefined : pinningTaskIds}
+                  pinningSessionIds={showArchived ? undefined : pinningSessionIds}
                   headerAction={
                     showViewActive ? (
                       <Btn
@@ -2371,22 +2371,22 @@ function ProjectPage() {
                       >
                         View active
                       </Btn>
-                    ) : !showArchived && status === "finished" && tasksByStatus.finished.length > 0 ? (
+                    ) : !showArchived && status === "finished" && sessionsByStatus.finished.length > 0 ? (
                       <Btn
                         variant="ghost"
                         icon="archive"
-                        onClick={() => archiveTasks(tasksByStatus.finished)}
+                        onClick={() => archiveSessions(sessionsByStatus.finished)}
                         title="Archive all finished sessions"
                       >
                         Archive all
                       </Btn>
                     ) : !showArchived &&
                       status === "disconnected" &&
-                      tasksByStatus.disconnected.length > 0 ? (
+                      sessionsByStatus.disconnected.length > 0 ? (
                       <Btn
                         variant="ghost"
                         icon="archive"
-                        onClick={() => archiveTasks(tasksByStatus.disconnected)}
+                        onClick={() => archiveSessions(sessionsByStatus.disconnected)}
                         title="Archive all disconnected sessions"
                       >
                         Archive all
@@ -2396,7 +2396,7 @@ function ProjectPage() {
                 />
                 );
               })}
-              {!showArchived && hasArchivedTasks && (
+              {!showArchived && hasArchivedSessions && (
                 <div
                   style={{
                     display: "flex",

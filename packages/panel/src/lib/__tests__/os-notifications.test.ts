@@ -53,7 +53,7 @@ function installNotification(
 
 function payload() {
   return {
-    tag: "session-finished-core_a-task-1",
+    tag: "session-finished-core_a-session-1",
     title: "Session finished — Web Panel on mac-mini",
     body: "Port the notifications",
   };
@@ -99,7 +99,7 @@ describe("showSessionFinishOsNotification", () => {
     expect(instances[0]!.title).toBe("Session finished — Web Panel on mac-mini");
     expect(instances[0]!.options).toMatchObject({
       body: "Port the notifications",
-      tag: "session-finished-core_a-task-1",
+      tag: "session-finished-core_a-session-1",
     });
   });
 

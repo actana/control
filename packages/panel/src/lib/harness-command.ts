@@ -1,4 +1,4 @@
-import type { Task } from "~/db/schema";
+import type { Session } from "~/db/schema";
 import type { Harness } from "@actana/shared/domain";
 import type { AiModelId } from "@actana/shared/ai-runtime-defaults";
 import { harnessLaunchesWithSkipPermissions } from "@actana/shared/harnesses";
@@ -22,8 +22,8 @@ export function harnessUsesPersistedSession(agent: Harness): boolean {
   );
 }
 
-export function harnessLaunchMode(task: Task): HarnessLaunchMode {
-  if (task.agent === "claude-code") {
+export function harnessLaunchMode(session: Session): HarnessLaunchMode {
+  if (session.agent === "claude-code") {
     // Both halves are load-bearing, the way they are for codex below.
     //
     // `status !== "ready"` alone read as "this Session has had a conversation",
@@ -36,20 +36,20 @@ export function harnessLaunchMode(task: Task): HarnessLaunchMode {
     //
     // A Session with no captured id has nothing to resume INTO, whatever its
     // status says, so it starts new.
-    return task.claudeSessionId && task.status !== "ready" ? "resume" : "new";
+    return session.claudeSessionId && session.status !== "ready" ? "resume" : "new";
   }
-  if (task.agent === "cursor-cli") {
+  if (session.agent === "cursor-cli") {
     return "resume";
   }
-  if (task.agent === "opencode") {
-    return task.claudeSessionId &&
-      isOpencodeSessionId(task.claudeSessionId) &&
-      task.status !== "ready"
+  if (session.agent === "opencode") {
+    return session.claudeSessionId &&
+      isOpencodeSessionId(session.claudeSessionId) &&
+      session.status !== "ready"
       ? "resume"
       : "new";
   }
-  if (task.agent === "codex" || task.agent === "pi") {
-    return task.claudeSessionId && task.status !== "ready" ? "resume" : "new";
+  if (session.agent === "codex" || session.agent === "pi") {
+    return session.claudeSessionId && session.status !== "ready" ? "resume" : "new";
   }
   return "new";
 }
@@ -126,24 +126,24 @@ export function buildPiCommand(opts: {
 }
 
 export function buildHarnessLaunchCommand(
-  task: Task,
+  session: Session,
   sessionId: string,
   mode: HarnessLaunchMode,
   opts: { model?: AiModelId | null } = {},
 ): string {
-  // Auto-mode is the default for every session (issue 22) — no task column and
+  // Auto-mode is the default for every session (issue 22) — no session column and
   // no user choice feeds this. The spawn descriptor derives the same value from
   // the same helper; they must not diverge or the spawn policy rejects the
   // command this builds. See `harnessLaunchesWithSkipPermissions`.
-  const skipPermissions = harnessLaunchesWithSkipPermissions(task.agent);
+  const skipPermissions = harnessLaunchesWithSkipPermissions(session.agent);
   const model = opts.model ?? null;
-  switch (task.agent) {
+  switch (session.agent) {
     case "claude-code":
       return buildClaudeCommand({
         kind: mode,
         sessionId,
         skipPermissions,
-        bareSession: !!task.claudeBareSession,
+        bareSession: !!session.claudeBareSession,
         model,
       });
     case "cursor-cli":
@@ -160,23 +160,23 @@ export function buildHarnessLaunchCommand(
     case "pi":
       return buildPiCommand({ mode, sessionId, model });
     default:
-      throw new Error(`unsupported agent for session launch: ${task.agent}`);
+      throw new Error(`unsupported agent for session launch: ${session.agent}`);
   }
 }
 
 export function buildFreshHarnessLaunchCommand(
-  task: Task,
+  session: Session,
   sessionId: string,
   opts: { model?: AiModelId | null } = {},
 ): string {
   const model = opts.model ?? null;
-  switch (task.agent) {
+  switch (session.agent) {
     case "claude-code":
-      return buildHarnessLaunchCommand(task, sessionId, "new", { model });
+      return buildHarnessLaunchCommand(session, sessionId, "new", { model });
     case "cursor-cli":
       return buildCursorCommand({
         sessionId,
-        skipPermissions: harnessLaunchesWithSkipPermissions(task.agent),
+        skipPermissions: harnessLaunchesWithSkipPermissions(session.agent),
         model,
       });
     case "opencode":
@@ -184,12 +184,12 @@ export function buildFreshHarnessLaunchCommand(
     case "codex":
       return buildCodexCommand({
         mode: "new",
-        skipPermissions: harnessLaunchesWithSkipPermissions(task.agent),
+        skipPermissions: harnessLaunchesWithSkipPermissions(session.agent),
         model,
       });
     case "pi":
       return buildPiCommand({ mode: "new", model });
     default:
-      throw new Error(`unsupported agent for fresh session launch: ${task.agent}`);
+      throw new Error(`unsupported agent for fresh session launch: ${session.agent}`);
   }
 }

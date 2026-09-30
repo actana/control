@@ -15,7 +15,7 @@ import {
   useCliAvailability,
   useHarnessInstall,
 } from "~/lib/cli-availability";
-import { TITLE_WAITING } from "~/lib/task-sentinels";
+import { TITLE_WAITING } from "~/lib/session-sentinels";
 import { useSettings } from "~/queries";
 import { HARNESS_REGISTRY } from "@actana/shared/harnesses";
 import {
@@ -42,7 +42,7 @@ function isInteractiveTarget(target: EventTarget | null): boolean {
 export function NewHarnessDialog({
   open,
   project,
-  // The picker reads its availability from the Core this Task will belong to —
+  // The picker reads its availability from the Core this Session will belong to —
   // one dialog for every Core (Singular UI invariant), no branch inside the
   // picker. Missing / outdated states, keyboard skip-over, and the submit gate
   // all consult that Core's Core-published probe.
@@ -55,7 +55,7 @@ export function NewHarnessDialog({
 }: {
   open: boolean;
   project: Project | null;
-  /** Which Core the created Task will belong to. Null means no Core is
+  /** Which Core the created Session will belong to. Null means no Core is
    *  selected, and nothing can launch. */
   coreId?: string | null;
   onClose: () => void;

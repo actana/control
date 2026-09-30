@@ -54,9 +54,9 @@ class FakeCoreLink implements CoreLinkClientLike {
   }
   request(frame: CoreLinkRequestFrame): Promise<CoreLinkResponseFrame> {
     return Promise.resolve({
-      type: "tasksListResult",
+      type: "sessionRowsListResult",
       reqId: (frame as { reqId: string }).reqId,
-      tasks: [],
+      sessions: [],
       archivedCount: 0,
     } as CoreLinkResponseFrame);
   }
@@ -115,18 +115,18 @@ class FakeTab {
     this.closed = true;
   }
 
-  drives(taskId: string) {
+  drives(sessionId: string) {
     return this.received.flatMap((f) =>
-      f.t === "drive" && f.taskId === taskId ? [{ driving: f.driving, reason: f.reason }] : [],
+      f.t === "drive" && f.sessionId === sessionId ? [{ driving: f.driving, reason: f.reason }] : [],
     );
   }
-  lastDrive(taskId: string) {
-    return this.drives(taskId).at(-1);
+  lastDrive(sessionId: string) {
+    return this.drives(sessionId).at(-1);
   }
 }
 
 const CORE = "core_a";
-const TASK = "task_1";
+const SESSION = "session_1";
 
 let source: FakeSource;
 let router: PanelLinkRouter;
@@ -150,7 +150,7 @@ function openTab(clientId?: string) {
 
 /** The gesture a pane makes when it mounts on a Session. */
 function announce(session: ReturnType<PanelLinkRouter["attach"]>, want: "watch" | "take" | "drop") {
-  session.receive({ t: "drive", coreId: CORE, taskId: TASK, want });
+  session.receive({ t: "drive", coreId: CORE, sessionId: SESSION, want });
 }
 
 describe("a tab that reloads onto the Session it alone was driving", () => {
@@ -164,7 +164,7 @@ describe("a tab that reloads onto the Session it alone was driving", () => {
     const { tab: after, session: reloaded } = openTab("tab-a");
     announce(reloaded, "watch");
 
-    expect(after.lastDrive(TASK)).toEqual({ driving: true, reason: "watch" });
+    expect(after.lastDrive(SESSION)).toEqual({ driving: true, reason: "watch" });
   });
 
   it("is never told it is following its own ghost", () => {
@@ -177,7 +177,7 @@ describe("a tab that reloads onto the Session it alone was driving", () => {
 
     // Not "it ends up true": it is never false in between. A pane that renders
     // read-only for one frame is the report this ticket opened with.
-    expect(after.drives(TASK)).toEqual([{ driving: true, reason: "watch" }]);
+    expect(after.drives(SESSION)).toEqual([{ driving: true, reason: "watch" }]);
   });
 
   it("keeps the drive when the predecessor's close finally lands", () => {
@@ -190,8 +190,8 @@ describe("a tab that reloads onto the Session it alone was driving", () => {
     // The delayed `close` the proxy was sitting on, arriving after the reload.
     before.detach();
 
-    expect(after.lastDrive(TASK)).toEqual({ driving: true, reason: "watch" });
-    expect(router.driveFor(CORE, TASK, reloaded)).toBe(true);
+    expect(after.lastDrive(SESSION)).toEqual({ driving: true, reason: "watch" });
+    expect(router.driveFor(CORE, SESSION, reloaded)).toBe(true);
   });
 
   it("drives it just the same when the close lands first, as on loopback", () => {
@@ -203,7 +203,7 @@ describe("a tab that reloads onto the Session it alone was driving", () => {
     const { tab: after, session: reloaded } = openTab("tab-a");
     announce(reloaded, "watch");
 
-    expect(after.lastDrive(TASK)).toEqual({ driving: true, reason: "watch" });
+    expect(after.lastDrive(SESSION)).toEqual({ driving: true, reason: "watch" });
   });
 
   it("retires the ghost socket rather than leaving it to the heartbeat", () => {
@@ -252,8 +252,8 @@ describe("a tab that reloads onto the Session it alone was driving", () => {
     // is ignored — including the `drop` a closing pane would have sent.
     announce(before, "drop");
 
-    expect(router.driveFor(CORE, TASK, reloaded)).toBe(true);
-    expect(after.lastDrive(TASK)).toEqual({ driving: true, reason: "watch" });
+    expect(router.driveFor(CORE, SESSION, reloaded)).toBe(true);
+    expect(after.lastDrive(SESSION)).toEqual({ driving: true, reason: "watch" });
   });
 });
 
@@ -266,8 +266,8 @@ describe("what a client id must not change", () => {
     announce(firstSession, "watch");
     announce(secondSession, "watch");
 
-    expect(first.lastDrive(TASK)).toEqual({ driving: true, reason: "watch" });
-    expect(second.lastDrive(TASK)).toEqual({ driving: false, reason: "watch" });
+    expect(first.lastDrive(SESSION)).toEqual({ driving: true, reason: "watch" });
+    expect(second.lastDrive(SESSION)).toEqual({ driving: false, reason: "watch" });
   });
 
   it("still moves the keyboard on the operator's explicit gesture, and says so", () => {
@@ -279,8 +279,8 @@ describe("what a client id must not change", () => {
 
     announce(secondSession, "take");
 
-    expect(second.lastDrive(TASK)).toEqual({ driving: true, reason: "watch" });
-    expect(first.lastDrive(TASK)).toEqual({ driving: false, reason: "handover" });
+    expect(second.lastDrive(SESSION)).toEqual({ driving: true, reason: "watch" });
+    expect(first.lastDrive(SESSION)).toEqual({ driving: false, reason: "handover" });
   });
 
   it("still hands the drive on when a tab really goes away", () => {
@@ -292,7 +292,7 @@ describe("what a client id must not change", () => {
 
     firstSession.detach();
 
-    expect(second.lastDrive(TASK)).toEqual({ driving: true, reason: "watch" });
+    expect(second.lastDrive(SESSION)).toEqual({ driving: true, reason: "watch" });
   });
 
   it("leaves a tab that presents no id exactly where it was before this ticket", () => {
@@ -306,7 +306,7 @@ describe("what a client id must not change", () => {
     const { tab: after, session: stranger } = openTab();
     announce(stranger, "watch");
 
-    expect(after.lastDrive(TASK)).toEqual({ driving: false, reason: "watch" });
+    expect(after.lastDrive(SESSION)).toEqual({ driving: false, reason: "watch" });
   });
 
   it("does not let one tab's id decide anything on another Core", () => {
@@ -315,8 +315,8 @@ describe("what a client id must not change", () => {
     const { session } = openTab("tab-a");
     announce(session, "watch");
 
-    // Same taskId, different Core: a different Session, and a register that
+    // Same sessionId, different Core: a different Session, and a register that
     // mixed them would answer for a machine it was never asked about.
-    expect(router.driveFor("core_b", TASK, session)).toBe(false);
+    expect(router.driveFor("core_b", SESSION, session)).toBe(false);
   });
 });

@@ -52,7 +52,7 @@ export type HarnessAvailabilityStoreOptions = {
   appendEvent: (
     kind: string,
     payload: string,
-    opts?: { ptyId?: string | null; taskId?: string | null },
+    opts?: { ptyId?: string | null; sessionId?: string | null },
   ) => number;
   /** Override the probe tick for tests. Default {@link DEFAULT_AVAILABILITY_TICK_MS}. */
   tickMs?: number;
@@ -132,7 +132,7 @@ export class HarnessAvailabilityStore {
       this.appendEvent(
         HARNESSES_AVAILABILITY_EVENT_KIND,
         JSON.stringify({ availability: next }),
-        { ptyId: null, taskId: null },
+        { ptyId: null, sessionId: null },
       );
     } catch (err) {
       log.warn("core-availability.append-failed", {

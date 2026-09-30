@@ -5,10 +5,10 @@ import {
   type HarnessHookBody,
 } from "@actana/shared/harness-hook-pipeline";
 import type { HarnessQuestion } from "@actana/shared/harness-questions";
-import { getTask, updateStatus, updateTask } from "../services/tasks";
+import { getSession, updateStatus, updateSession } from "../services/sessions";
 import { setPendingQuestion } from "../services/pending-questions";
 import { setTranscriptPath } from "../services/session-transcripts";
-import { generateTitleForTask, isTitleGenerationPrompt } from "../services/title-generator";
+import { generateTitleForSession, isTitleGenerationPrompt } from "../services/title-generator";
 import { rethrowUnlessDomain, json, jsonError, parseJsonBody } from "./_helpers";
 import { HTTP_BAD_REQUEST, HTTP_NOT_FOUND } from "~/shared/http-status";
 
@@ -32,7 +32,7 @@ const hookPayload = z
     // SessionStart's trigger: "startup" | "resume" | "clear" | "compact".
     source: z.string(),
     // Absolute path to the session's JSONL transcript (Claude Code). Stashed per
-    // task so auto-distill can read the full session, not just the prompts.
+    // session so auto-distill can read the full session, not just the prompts.
     transcript_path: z.string(),
     // Stop / SubagentStop carry the turn's final assistant text directly.
     last_assistant_message: z.string(),
@@ -43,7 +43,7 @@ const hookPayload = z
   .partial();
 
 /**
- * The Panel's hook endpoint, for the Panel's own task rows.
+ * The Panel's hook endpoint, for the Panel's own session rows.
  *
  * The decisions all live in `@actana/shared/harness-hook-pipeline` — the same
  * state machine the Core runs for the Sessions it owns (issue 84) — so this is
@@ -52,8 +52,8 @@ const hookPayload = z
  * own Core's receiver, which has the row.
  */
 export async function receive(url: URL, request: Request): Promise<Response> {
-  const taskId = url.searchParams.get("taskId");
-  if (!taskId) return jsonError(HTTP_BAD_REQUEST, "taskId required");
+  const sessionId = url.searchParams.get("sessionId");
+  if (!sessionId) return jsonError(HTTP_BAD_REQUEST, "sessionId required");
 
   const parsed = await parseJsonBody(request, hookPayload);
   if (!parsed.ok) return parsed.response;
@@ -61,25 +61,25 @@ export async function receive(url: URL, request: Request): Promise<Response> {
 
   try {
     const result = handleHarnessHookEvent(
-      taskId,
+      sessionId,
       payload,
       {
-        getTask: (id) => {
-          const task = getTask(id);
-          if (!task) return null;
-          return { status: task.status, claudeSessionId: task.claudeSessionId };
+        getSession: (id) => {
+          const session = getSession(id);
+          if (!session) return null;
+          return { status: session.status, claudeSessionId: session.claudeSessionId };
         },
         updateStatus: (id, status) => Boolean(updateStatus(id, { status })),
-        setSessionId: (id, sessionId) => {
-          updateTask(id, { claudeSessionId: sessionId });
+        setSessionId: (id, harnessSessionId) => {
+          updateSession(id, { claudeSessionId: harnessSessionId });
         },
         onTranscriptPath: setTranscriptPath,
         onQuestion: (id, toolUseId, questions) => {
-          const task = getTask(id);
-          if (!task) return;
+          const session = getSession(id);
+          if (!session) return;
           setPendingQuestion({
-            taskId: id,
-            projectId: task.projectId,
+            sessionId: id,
+            projectId: session.projectId,
             questions: questions as HarnessQuestion[],
             id: toolUseId,
           });
@@ -90,7 +90,7 @@ export async function receive(url: URL, request: Request): Promise<Response> {
           // session hook env), re-running title generation is the feedback
           // loop that would loop forever — ignore it outright.
           if (isTitleGenerationPrompt(prompt)) return;
-          void generateTitleForTask(id, prompt).catch(() => undefined);
+          void generateTitleForSession(id, prompt).catch(() => undefined);
         },
       },
       url.searchParams.get("hookEvent") ?? "",
@@ -99,7 +99,7 @@ export async function receive(url: URL, request: Request): Promise<Response> {
     // One mapping, shared with the Core's receiver, so the same event never
     // gets two different answers depending on which host owns the row.
     const answer = hookResultResponse(result);
-    return answer.ok ? json(answer.body) : jsonError(HTTP_NOT_FOUND, "task not found");
+    return answer.ok ? json(answer.body) : jsonError(HTTP_NOT_FOUND, "session not found");
   } catch (e) {
     return rethrowUnlessDomain(e);
   }

@@ -13,7 +13,7 @@ export type ProjectUsage = TokenTotals & {
 };
 
 export type SessionUsage = TokenTotals & {
-  taskId: string;
+  sessionId: string;
   title: string;
   projectId: string;
   projectName: string;

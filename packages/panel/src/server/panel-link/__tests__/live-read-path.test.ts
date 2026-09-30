@@ -19,7 +19,7 @@ import { CORE_LINK_PROTOCOL_VERSION } from "@actana/sdk/core";
 import type {
   CoreLinkEvent,
   CoreLinkProjectSnapshot,
-  CoreLinkTaskSnapshot,
+  CoreLinkSessionRow,
 } from "@actana/sdk/core";
 import type { PanelLinkClientFrame, PanelLinkServerFrame } from "~/shared/panel-link";
 
@@ -28,7 +28,7 @@ import type { PanelLinkClientFrame, PanelLinkServerFrame } from "~/shared/panel-
  * dialing it, and a browser holding one panel link.
  *
  * Everything here is driven the way a tab drives it — frames on a WebSocket —
- * so "the Fleet view sees this Core's tasks" means the query actually crossed
+ * so "the Fleet view sees this Core's sessions" means the query actually crossed
  * two hops and came back, not that a fake resolved.
  */
 
@@ -146,10 +146,10 @@ function mockCore(): PtyCore {
     kill: () => true,
     killLaunchProcesses: async () => ({ ptyCount: 0, ports: [] }),
     killPtysUnderPath: async () => ({ ptyCount: 0 }),
-    findByTask: () => ({ ptyId: null }),
+    findBySession: () => ({ ptyId: null }),
     // Which Session a `write`/`kill` would touch (issue 144) — the lookup
     // the Core's Session-lock gate resolves a ptyId through.
-    taskIdForPty: () => null,
+    sessionIdForPty: () => null,
     replay: () => ({ data: "", nextSeq: 0 }),
     killAll: () => {},
   } as unknown as PtyCore;
@@ -221,7 +221,7 @@ function growableEventLog(): EventLogPort & { push(kind: string): number } {
         ts: Date.now(),
         kind,
         ptyId: null,
-        taskId: null,
+        sessionId: null,
         payload: "{}",
       };
       events.push(event);
@@ -248,8 +248,8 @@ const PROJECT: CoreLinkProjectSnapshot = {
   updatedAt: 1,
 };
 
-const TASK: CoreLinkTaskSnapshot = {
-  taskId: "task_1",
+const SESSION: CoreLinkSessionRow = {
+  sessionId: "session_1",
   projectId: "proj_1",
   title: "restock the shelves",
   titleManuallySet: false,
@@ -262,8 +262,8 @@ const TASK: CoreLinkTaskSnapshot = {
   updatedAt: 2,
 };
 
-const ARCHIVED_TASK: CoreLinkTaskSnapshot = {
-  taskId: "task_old",
+const ARCHIVED_SESSION: CoreLinkSessionRow = {
+  sessionId: "session_old",
   projectId: "proj_1",
   title: "last winter's stocktake",
   titleManuallySet: false,
@@ -281,10 +281,10 @@ function queryPort(): CoreQueryPort {
     projectId && projectId !== PROJECT.projectId;
   return {
     listProjects: () => [PROJECT],
-    listTasks: (projectId) => (scoped(projectId) ? [] : [TASK]),
-    listArchivedTasks: (projectId) => (scoped(projectId) ? [] : [ARCHIVED_TASK]),
-    countArchivedTasks: (projectId) => (scoped(projectId) ? 0 : 1),
-    getTask: (taskId) => (taskId === TASK.taskId ? TASK : null),
+    listSessionRows: (projectId) => (scoped(projectId) ? [] : [SESSION]),
+    listArchivedSessions: (projectId) => (scoped(projectId) ? [] : [ARCHIVED_SESSION]),
+    countArchivedSessions: (projectId) => (scoped(projectId) ? 0 : 1),
+    getSession: (sessionId) => (sessionId === SESSION.sessionId ? SESSION : null),
   };
 }
 
@@ -397,42 +397,42 @@ describe("the live read path, browser to Core", () => {
     });
   });
 
-  it("answers a task query, scoped to a project", async () => {
+  it("answers a session query, scoped to a project", async () => {
     const { coreId } = await pair();
     const tab = await openTab();
 
-    const mine = await tab.ask(coreId, { type: "tasksList", projectId: "proj_1" });
-    const theirs = await tab.ask(coreId, { type: "tasksList", projectId: "proj_other" });
+    const mine = await tab.ask(coreId, { type: "sessionRowsList", projectId: "proj_1" });
+    const theirs = await tab.ask(coreId, { type: "sessionRowsList", projectId: "proj_other" });
 
-    expect(mine.tasks).toEqual([expect.objectContaining({ taskId: "task_1" })]);
-    expect(theirs.tasks).toEqual([]);
+    expect(mine.sessions).toEqual([expect.objectContaining({ sessionId: "session_1" })]);
+    expect(theirs.sessions).toEqual([]);
   });
 
   // ADR 0019: the tab learns how many archived Sessions a project holds
   // without a single archived row travelling the active answer. The rows come
   // back only when it asks for them, over their own frame.
-  it("answers a task query with the archived count but never an archived row", { timeout: 20_000 }, async () => {
+  it("answers a session query with the archived count but never an archived row", { timeout: 20_000 }, async () => {
     const { coreId } = await pair();
     const tab = await openTab();
 
-    const answer = await tab.ask(coreId, { type: "tasksList", projectId: "proj_1" });
+    const answer = await tab.ask(coreId, { type: "sessionRowsList", projectId: "proj_1" });
 
-    const rows = answer.tasks as Array<{ archived: boolean }>;
-    expect(rows).toEqual([expect.objectContaining({ taskId: "task_1" })]);
+    const rows = answer.sessions as Array<{ archived: boolean }>;
+    expect(rows).toEqual([expect.objectContaining({ sessionId: "session_1" })]);
     expect(rows.every((t) => !t.archived)).toBe(true);
     expect(answer.archivedCount).toBe(1);
   });
 
-  it("answers an archived task query, scoped to a project", { timeout: 20_000 }, async () => {
+  it("answers an archived session query, scoped to a project", { timeout: 20_000 }, async () => {
     const { coreId } = await pair();
     const tab = await openTab();
 
-    const mine = await tab.ask(coreId, { type: "archivedTasksList", projectId: "proj_1" });
-    const theirs = await tab.ask(coreId, { type: "archivedTasksList", projectId: "proj_other" });
+    const mine = await tab.ask(coreId, { type: "archivedSessionRowsList", projectId: "proj_1" });
+    const theirs = await tab.ask(coreId, { type: "archivedSessionRowsList", projectId: "proj_other" });
 
-    expect(mine).toMatchObject({ type: "archivedTasksListResult" });
-    expect(mine.tasks).toEqual([expect.objectContaining({ taskId: "task_old", archived: true })]);
-    expect(theirs.tasks).toEqual([]);
+    expect(mine).toMatchObject({ type: "archivedSessionRowsListResult" });
+    expect(mine.sessions).toEqual([expect.objectContaining({ sessionId: "session_old", archived: true })]);
+    expect(theirs.sessions).toEqual([]);
   });
 
   it("carries one tab's queries to several Cores over the one link", async () => {
@@ -460,10 +460,10 @@ describe("the live read path, browser to Core", () => {
     const tab = await openTab();
     tab.subscribe(coreId, 0);
 
-    core.log.push("task:statusChanged");
+    core.log.push("session:statusChanged");
 
     await vi.waitFor(
-      () => expect(tab.events(coreId).map((e) => e.kind)).toContain("task:statusChanged"),
+      () => expect(tab.events(coreId).map((e) => e.kind)).toContain("session:statusChanged"),
       10_000,
     );
   });
@@ -475,7 +475,7 @@ describe("the live read path, browser to Core", () => {
     one.subscribe(coreId, 0);
     two.subscribe(coreId, 0);
 
-    core.log.push("task:created");
+    core.log.push("session:created");
 
     await vi.waitFor(() => {
       expect(one.events(coreId)).toHaveLength(1);
@@ -487,7 +487,7 @@ describe("the live read path, browser to Core", () => {
     const { coreId, core } = await pair();
     // The Panel service is up and dialing this Core; no browser is on it. The
     // Session ends anyway, and the log is the only record that it did (#388).
-    core.log.push("task:statusChanged");
+    core.log.push("session:statusChanged");
     core.log.push("session:finished");
 
     // The service is what has to have them before the question means anything:
@@ -510,19 +510,19 @@ describe("the live read path, browser to Core", () => {
       10_000,
     );
     // The finish only: the rest of what it missed is what its queries fetch.
-    expect(fresh.events(coreId).map((e) => e.kind)).not.toContain("task:statusChanged");
+    expect(fresh.events(coreId).map((e) => e.kind)).not.toContain("session:statusChanged");
   });
 
   it("replays what a tab missed while its link was down", { timeout: 20_000 }, async () => {
     const { coreId, core } = await pair();
     const before = await openTab();
     before.subscribe(coreId, 0);
-    core.log.push("task:created");
+    core.log.push("session:created");
     await vi.waitFor(() => expect(before.events(coreId)).toHaveLength(1), 5_000);
     before.close();
 
     // Off the air while the fleet keeps working.
-    core.log.push("task:statusChanged");
+    core.log.push("session:statusChanged");
     core.log.push("session:finished");
     await vi.waitFor(() => expect(core.log.getLastEventId()).toBe(3));
 
@@ -570,10 +570,10 @@ describe("a Core speaking a protocol this Panel does not", () => {
     const tab = await openTab();
 
     const projects = await tab.ask(coreId, { type: "projectsList" });
-    const tasks = await tab.ask(coreId, { type: "tasksList" });
+    const sessions = await tab.ask(coreId, { type: "sessionRowsList" });
 
     expect(projects).toMatchObject({ type: "error", message: expect.stringMatching(/update/i) });
-    expect(tasks).toMatchObject({ type: "error", message: expect.stringMatching(/update/i) });
+    expect(sessions).toMatchObject({ type: "error", message: expect.stringMatching(/update/i) });
   });
 
   it("keeps its events off every tab", { timeout: 20_000 }, async () => {

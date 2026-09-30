@@ -70,10 +70,10 @@ vi.mock("@tanstack/react-router", () => ({
 function panelLocalFinishEvent(overrides: Record<string, unknown> = {}) {
   return {
     type: "session:finished",
-    id: "task-1",
+    id: "session-1",
     projectId: "project-1",
     projectName: "Local Project",
-    taskTitle: "Local session",
+    sessionTitle: "Local session",
     ...overrides,
   };
 }
@@ -88,7 +88,7 @@ function remoteFinishFrame(overrides: {
   const {
     coreId = "core-a",
     eventId = 42,
-    id = "task-42",
+    id = "session-42",
     projectId = "project-9",
     // A Core's clock, close enough to this browser's that the row reads as a
     // finish that just happened. A test about age says so with its own `ts`.
@@ -101,12 +101,12 @@ function remoteFinishFrame(overrides: {
       ts,
       kind: "session:finished",
       ptyId: null,
-      taskId: id,
+      sessionId: id,
       payload: JSON.stringify({
         id,
         projectId,
             projectName: "Remote Project",
-        taskTitle: "Remote session",
+        sessionTitle: "Remote session",
       }),
     },
   };
@@ -151,7 +151,7 @@ describe("useSessionFinishNotifications — integration", () => {
     const stored = loadSessionFinishNotifications();
     expect(stored).toHaveLength(1);
     expect(stored[0]).toMatchObject({
-      id: "task-42",
+      id: "session-42",
       projectId: "project-9",
       coreId: "core-a",
       coreAlias: "Core A",
@@ -166,17 +166,17 @@ describe("useSessionFinishNotifications — integration", () => {
   // arriving after a rename has to be titled with the new name.
   it("uses the Core's current alias after a rename", () => {
     const hook = renderHook(() => useSessionFinishNotifications());
-    act(() => h.fleetHandler?.(remoteFinishFrame({ eventId: 1, id: "task-1" })));
+    act(() => h.fleetHandler?.(remoteFinishFrame({ eventId: 1, id: "session-1" })));
     expect(toastText(0)).toContain("Remote Project on Core A");
 
     // The registry poll comes back with the operator's new name for that Core.
     h.cores = [{ id: "core-a", label: "build-box" }];
     hook.rerender();
-    act(() => h.fleetHandler?.(remoteFinishFrame({ eventId: 2, id: "task-2" })));
+    act(() => h.fleetHandler?.(remoteFinishFrame({ eventId: 2, id: "session-2" })));
 
     expect(h.mcToastCustom).toHaveBeenCalledTimes(2);
     expect(toastText(1)).toContain("Remote Project on build-box");
-    expect(loadSessionFinishNotifications().find((n) => n.id === "task-2")?.coreAlias).toBe(
+    expect(loadSessionFinishNotifications().find((n) => n.id === "session-2")?.coreAlias).toBe(
       "build-box",
     );
     hook.unmount();
@@ -281,13 +281,13 @@ describe("useSessionFinishNotifications — integration", () => {
   it("sorts a replayed old finish below a newer one instead of on top of it", () => {
     const hook = renderHook(() => useSessionFinishNotifications());
     act(() =>
-      h.fleetHandler?.(remoteFinishFrame({ eventId: 90, id: "task-new", ts: Date.now() })),
+      h.fleetHandler?.(remoteFinishFrame({ eventId: 90, id: "session-new", ts: Date.now() })),
     );
     act(() =>
       h.fleetHandler?.({
         ...remoteFinishFrame({
           eventId: 12,
-          id: "task-old",
+          id: "session-old",
           ts: Date.now() - 7 * 60 * 60_000,
         }),
         coldReplay: true,
@@ -296,8 +296,8 @@ describe("useSessionFinishNotifications — integration", () => {
 
     // Newest first, and the row that really is newest is the one on top.
     expect(loadSessionFinishNotifications().map((n) => n.id)).toEqual([
-      "task-new",
-      "task-old",
+      "session-new",
+      "session-old",
     ]);
     hook.unmount();
   });
@@ -307,8 +307,8 @@ describe("useSessionFinishNotifications — integration", () => {
     const hook = renderHook(() => useSessionFinishNotifications());
     // A Core running ahead must not pin its row to the top of the list, and a
     // Core sending no time at all still gets a row.
-    act(() => h.fleetHandler?.(remoteFinishFrame({ id: "task-ahead", ts: before + 60_000 })));
-    act(() => h.fleetHandler?.(remoteFinishFrame({ eventId: 43, id: "task-none", ts: 0 })));
+    act(() => h.fleetHandler?.(remoteFinishFrame({ id: "session-ahead", ts: before + 60_000 })));
+    act(() => h.fleetHandler?.(remoteFinishFrame({ eventId: 43, id: "session-none", ts: 0 })));
 
     for (const row of loadSessionFinishNotifications()) {
       expect(row.finishedAt).toBeGreaterThanOrEqual(before);
@@ -368,11 +368,11 @@ describe("useSessionFinishNotifications — integration", () => {
     expect(h.showOsNotification).toHaveBeenCalledTimes(2);
     expect(h.showOsNotification.mock.calls[0]?.[0]).toMatchObject({
       title: "Session finished — Remote Project on Core A",
-      tag: "session-finished-core-a-task-42",
+      tag: "session-finished-core-a-session-42",
     });
     expect(h.showOsNotification.mock.calls[1]?.[0]).toMatchObject({
       title: "Session finished — Local Project",
-      tag: "session-finished-null-task-1",
+      tag: "session-finished-null-session-1",
     });
     hook.unmount();
   });
@@ -384,13 +384,13 @@ describe("useSessionFinishNotifications — integration", () => {
     hook.unmount();
   });
 
-  it("prunes a Core's rows on its task:deleted without touching Panel-local rows", () => {
+  it("prunes a Core's rows on its session:deleted without touching Panel-local rows", () => {
     const base: SessionFinishNotification = {
       kind: "session-finished",
-      id: "task-1",
+      id: "session-1",
       projectId: "project-1",
         projectName: "Project",
-      taskTitle: "Session",
+      sessionTitle: "Session",
       finishedAt: 1,
       coreId: null,
       coreAlias: null,
@@ -404,10 +404,10 @@ describe("useSessionFinishNotifications — integration", () => {
         event: {
           eventId: 43,
           ts: 1_700_000_000_001,
-          kind: "task:deleted",
+          kind: "session:deleted",
           ptyId: null,
-          taskId: "task-1",
-          payload: JSON.stringify({ id: "task-1", projectId: "project-1" }),
+          sessionId: "session-1",
+          payload: JSON.stringify({ id: "session-1", projectId: "project-1" }),
         },
       }),
     );
@@ -429,7 +429,7 @@ describe("useSessionFinishNotifications — integration", () => {
 
   // Click-through is the browser's now: the notification this tab raised holds
   // the closure, so clicking it focuses the tab (the Notification API's own job)
-  // and lands on the Core and Task that finished.
+  // and lands on the Core and Session that finished.
   it("routes a click on a remote notification into the Core-scoped project view", () => {
     h.settings = { sessionFinishOsNotificationEnabled: true };
     const hook = renderHook(() => useSessionFinishNotifications());
@@ -448,7 +448,7 @@ describe("useSessionFinishNotifications — integration", () => {
     const pending = JSON.parse(
       window.localStorage.getItem("mc:pendingSessionOpen") ?? "null",
     );
-    expect(pending).toMatchObject({ taskId: "task-42", coreId: "core-a" });
+    expect(pending).toMatchObject({ sessionId: "session-42", coreId: "core-a" });
     hook.unmount();
   });
 
@@ -458,7 +458,7 @@ describe("useSessionFinishNotifications — integration", () => {
     act(() => h.fleetHandler?.(remoteFinishFrame()));
 
     expect(h.showOsNotification.mock.calls[0]?.[0]).toEqual({
-      tag: "session-finished-core-a-task-42",
+      tag: "session-finished-core-a-session-42",
       title: "Session finished — Remote Project on Core A",
       body: "Remote session",
     });

@@ -88,7 +88,7 @@ function fakeEventLog(): EventLogPort {
   return {
     appendEvent: (kind, payload, opts) => {
       const eventId = events.length + 1;
-      events.push({ eventId, ts: eventId, kind, payload, ptyId: opts?.ptyId ?? null, taskId: opts?.taskId ?? null });
+      events.push({ eventId, ts: eventId, kind, payload, ptyId: opts?.ptyId ?? null, sessionId: opts?.sessionId ?? null });
       return eventId;
     },
     readEventTail: (afterEventId, limit = 1_000) => events.filter((e) => e.eventId > afterEventId).slice(0, limit),
@@ -104,7 +104,7 @@ function mockCore(): PtyCore {
     resize: () => true,
     kill: () => true,
     killLaunchProcesses: async () => ({ ptyCount: 0, ports: [] }),
-    findByTask: () => ({ ptyId: null }),
+    findBySession: () => ({ ptyId: null }),
     replay: () => ({ data: "", nextSeq: 0, from: 0 }),
     killAll: () => {},
   } as unknown as PtyCore;

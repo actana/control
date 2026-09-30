@@ -12,7 +12,7 @@ import {
   configureCoreQueryStore,
   coreQueryStore,
   disposeCoreQueryStore,
-  listBootSweepTasks,
+  listBootSweepSessions,
 } from "../core-query-store";
 import {
   appendEvent,
@@ -21,7 +21,7 @@ import {
   getLastEventId,
   readEventTail,
 } from "../event-log-store";
-import { CoreTaskWriter } from "../core-task-writer";
+import { CoreSessionWriter } from "../core-session-writer";
 import { sweepStrandedSessions } from "../core-session-sweep";
 
 /**
@@ -47,33 +47,33 @@ function lastEventId(): number {
 
 describe("settling the Sessions a Core restart stranded", () => {
   let userDataDir: string;
-  let writer: CoreTaskWriter;
+  let writer: CoreSessionWriter;
 
-  const insert = (taskId: string, status: string, archived = false) => {
-    coreMutationStore.mutateTask({
+  const insert = (sessionId: string, status: string, archived = false) => {
+    coreMutationStore.mutateSession({
       op: "create",
-      taskId,
+      sessionId,
       projectId: "p1",
-      title: taskId,
+      title: sessionId,
       agent: "claude-code",
       status,
     });
     if (archived) {
-      coreMutationStore.mutateTask({ op: "update", taskId, archived: true });
+      coreMutationStore.mutateSession({ op: "update", sessionId, archived: true });
     }
   };
-  const statusOf = (taskId: string) => coreQueryStore.getTask(taskId)?.status;
+  const statusOf = (sessionId: string) => coreQueryStore.getSession(sessionId)?.status;
   /**
-   * The `pty:spawn` the Core appends when it starts a harness for a task, in
+   * The `pty:spawn` the Core appends when it starts a harness for a session, in
    * the shape `recordPtySpawn` writes — `shellSession` included, because the
    * sweep's evidence query reads it.
    */
-  const spawnPty = (taskId: string) => {
-    const ptyId = `pty-${taskId}`;
+  const spawnPty = (sessionId: string) => {
+    const ptyId = `pty-${sessionId}`;
     return appendEvent(
       "pty:spawn",
-      JSON.stringify({ ptyId, taskId, shellSession: false }),
-      { ptyId, taskId },
+      JSON.stringify({ ptyId, sessionId, shellSession: false }),
+      { ptyId, sessionId },
     );
   };
 
@@ -83,7 +83,7 @@ describe("settling the Sessions a Core restart stranded", () => {
     configureCoreMutationStore(userDataDir);
     configureCoreQueryStore(userDataDir);
     configureEventLogStore(userDataDir);
-    writer = new CoreTaskWriter({
+    writer = new CoreSessionWriter({
       mutationPort: coreMutationStore,
       queryPort: coreQueryStore,
       eventLog: { appendEvent, getLastEventId, readEventTail },
@@ -107,7 +107,7 @@ describe("settling the Sessions a Core restart stranded", () => {
     insert("t-running", "running");
     insert("t-waiting", "needs-input");
 
-    const settled = sweepStrandedSessions({ listBootSweepTasks, writer });
+    const settled = sweepStrandedSessions({ listBootSweepSessions, writer });
 
     expect(settled.sort()).toEqual(["t-running", "t-waiting"]);
     expect(statusOf("t-running")).toBe("disconnected");
@@ -125,7 +125,7 @@ describe("settling the Sessions a Core restart stranded", () => {
     // filter — a queue of unstarted work must not read as a fleet of deaths.
     insert("t-ready", "ready");
 
-    expect(sweepStrandedSessions({ listBootSweepTasks, writer })).toEqual([]);
+    expect(sweepStrandedSessions({ listBootSweepSessions, writer })).toEqual([]);
     expect(statusOf("t-finished")).toBe("finished");
     expect(statusOf("t-interrupted")).toBe("interrupted");
     expect(statusOf("t-ready")).toBe("ready");
@@ -139,7 +139,7 @@ describe("settling the Sessions a Core restart stranded", () => {
     spawnPty("t-zombie");
     insert("t-unstarted", "ready");
 
-    expect(sweepStrandedSessions({ listBootSweepTasks, writer })).toEqual([
+    expect(sweepStrandedSessions({ listBootSweepSessions, writer })).toEqual([
       "t-zombie",
     ]);
     expect(statusOf("t-zombie")).toBe("disconnected");
@@ -151,7 +151,7 @@ describe("settling the Sessions a Core restart stranded", () => {
     insert("t-zombie", "ready");
     spawnPty("t-zombie");
 
-    const settled = sweepStrandedSessions({ listBootSweepTasks, writer });
+    const settled = sweepStrandedSessions({ listBootSweepSessions, writer });
 
     expect(settled.sort()).toEqual(["t-running", "t-zombie"]);
     expect(statusOf("t-running")).toBe("disconnected");
@@ -163,10 +163,10 @@ describe("settling the Sessions a Core restart stranded", () => {
     spawnPty("t-zombie");
     const before = lastEventId();
 
-    sweepStrandedSessions({ listBootSweepTasks, writer });
+    sweepStrandedSessions({ listBootSweepSessions, writer });
 
     const appended = readEventTail(before, 100);
-    expect(appended.filter((e) => e.kind === "task:updated").map((e) => e.taskId)).toEqual([
+    expect(appended.filter((e) => e.kind === "session:updated").map((e) => e.sessionId)).toEqual([
       "t-zombie",
     ]);
     // Nobody knows how that Session would have ended — no ding rides out.
@@ -175,7 +175,7 @@ describe("settling the Sessions a Core restart stranded", () => {
 
   it("sweeps an archived row too — it is the same stale row, one tab away", () => {
     insert("t-archived", "running", true);
-    const settled = sweepStrandedSessions({ listBootSweepTasks, writer });
+    const settled = sweepStrandedSessions({ listBootSweepSessions, writer });
     expect(settled).toEqual(["t-archived"]);
     expect(statusOf("t-archived")).toBe("disconnected");
   });
@@ -184,22 +184,22 @@ describe("settling the Sessions a Core restart stranded", () => {
     insert("t-running", "running");
     const before = lastEventId();
 
-    sweepStrandedSessions({ listBootSweepTasks, writer });
+    sweepStrandedSessions({ listBootSweepSessions, writer });
 
     const appended = readEventTail(before, 100);
-    const updates = appended.filter((e) => e.kind === "task:updated");
+    const updates = appended.filter((e) => e.kind === "session:updated");
     expect(updates).toHaveLength(1);
-    expect(updates[0].taskId).toBe("t-running");
+    expect(updates[0].sessionId).toBe("t-running");
     // `disconnected` is not a finish, so no notification may ride out with it.
     expect(appended.map((e) => e.kind)).not.toContain("session:finished");
   });
 
   it("is a no-op on the second boot, because the first one settled everything", () => {
     insert("t-running", "running");
-    sweepStrandedSessions({ listBootSweepTasks, writer });
+    sweepStrandedSessions({ listBootSweepSessions, writer });
     const after = lastEventId();
 
-    expect(sweepStrandedSessions({ listBootSweepTasks, writer })).toEqual([]);
+    expect(sweepStrandedSessions({ listBootSweepSessions, writer })).toEqual([]);
     expect(lastEventId()).toBe(after);
   });
 
@@ -208,14 +208,14 @@ describe("settling the Sessions a Core restart stranded", () => {
     insert("t-b", "running");
     // A row that goes away between the read and the write — a Panel deleting
     // a Session while this Core boots. It must cost that row, not the sweep.
-    const failing = new CoreTaskWriter({
+    const failing = new CoreSessionWriter({
       mutationPort: {
         mutateProject: coreMutationStore.mutateProject,
-        mutateTask: (mutation) => {
-          if (mutation.op === "update" && mutation.taskId === "t-a") {
+        mutateSession: (mutation) => {
+          if (mutation.op === "update" && mutation.sessionId === "t-a") {
             throw new Error("row vanished");
           }
-          return coreMutationStore.mutateTask(mutation);
+          return coreMutationStore.mutateSession(mutation);
         },
         listSessions: coreMutationStore.listSessions,
       },
@@ -223,14 +223,14 @@ describe("settling the Sessions a Core restart stranded", () => {
       eventLog: { appendEvent, getLastEventId, readEventTail },
     });
 
-    expect(sweepStrandedSessions({ listBootSweepTasks, writer: failing })).toEqual(["t-b"]);
+    expect(sweepStrandedSessions({ listBootSweepSessions, writer: failing })).toEqual(["t-b"]);
     expect(statusOf("t-b")).toBe("disconnected");
     expect(statusOf("t-a")).toBe("running");
   });
 
   it("sweeps nothing, and says nothing, on a Core with no stranded rows", () => {
     const before = lastEventId();
-    expect(sweepStrandedSessions({ listBootSweepTasks, writer })).toEqual([]);
+    expect(sweepStrandedSessions({ listBootSweepSessions, writer })).toEqual([]);
     expect(lastEventId()).toBe(before);
   });
 });

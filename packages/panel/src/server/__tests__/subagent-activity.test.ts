@@ -7,8 +7,8 @@ import {
   hasActiveSubagents,
   noteSubagentStart,
   noteSubagentStop,
-  noteTaskFinished,
-  taskFinishedWithinRaceWindow,
+  noteSessionFinished,
+  sessionFinishedWithinRaceWindow,
 } from "../services/subagent-activity";
 
 const TTL_MS = 2 * 60 * 60 * 1000;
@@ -24,88 +24,88 @@ afterEach(() => {
 
 describe("subagent activity tracking", () => {
   it("tracks start/stop pairs by agent id", () => {
-    const taskId = "task-pairs";
-    expect(hasActiveSubagents(taskId)).toBe(false);
+    const sessionId = "session-pairs";
+    expect(hasActiveSubagents(sessionId)).toBe(false);
 
-    noteSubagentStart(taskId, "a");
-    noteSubagentStart(taskId, "b");
-    expect(hasActiveSubagents(taskId)).toBe(true);
+    noteSubagentStart(sessionId, "a");
+    noteSubagentStart(sessionId, "b");
+    expect(hasActiveSubagents(sessionId)).toBe(true);
 
-    noteSubagentStop(taskId, "a");
-    expect(hasActiveSubagents(taskId)).toBe(true);
-    noteSubagentStop(taskId, "b");
-    expect(hasActiveSubagents(taskId)).toBe(false);
+    noteSubagentStop(sessionId, "a");
+    expect(hasActiveSubagents(sessionId)).toBe(true);
+    noteSubagentStop(sessionId, "b");
+    expect(hasActiveSubagents(sessionId)).toBe(false);
   });
 
   it("is idempotent for repeated stops of the same subagent", () => {
-    const taskId = "task-idempotent";
-    noteSubagentStart(taskId, "a");
+    const sessionId = "session-idempotent";
+    noteSubagentStart(sessionId, "a");
     // A resumed subagent can stop more than once; repeats must not underflow
     // and mask another still-active subagent.
-    noteSubagentStop(taskId, "a");
-    noteSubagentStop(taskId, "a");
-    noteSubagentStart(taskId, "b");
-    noteSubagentStop(taskId, "a");
-    expect(hasActiveSubagents(taskId)).toBe(true);
-    noteSubagentStop(taskId, "b");
-    expect(hasActiveSubagents(taskId)).toBe(false);
+    noteSubagentStop(sessionId, "a");
+    noteSubagentStop(sessionId, "a");
+    noteSubagentStart(sessionId, "b");
+    noteSubagentStop(sessionId, "a");
+    expect(hasActiveSubagents(sessionId)).toBe(true);
+    noteSubagentStop(sessionId, "b");
+    expect(hasActiveSubagents(sessionId)).toBe(false);
   });
 
   it("floors the anonymous count at zero", () => {
-    const taskId = "task-anon";
-    noteSubagentStop(taskId, undefined);
-    expect(hasActiveSubagents(taskId)).toBe(false);
+    const sessionId = "session-anon";
+    noteSubagentStop(sessionId, undefined);
+    expect(hasActiveSubagents(sessionId)).toBe(false);
 
-    noteSubagentStart(taskId, undefined);
-    noteSubagentStart(taskId, undefined);
-    noteSubagentStop(taskId, undefined);
-    expect(hasActiveSubagents(taskId)).toBe(true);
-    noteSubagentStop(taskId, undefined);
-    expect(hasActiveSubagents(taskId)).toBe(false);
+    noteSubagentStart(sessionId, undefined);
+    noteSubagentStart(sessionId, undefined);
+    noteSubagentStop(sessionId, undefined);
+    expect(hasActiveSubagents(sessionId)).toBe(true);
+    noteSubagentStop(sessionId, undefined);
+    expect(hasActiveSubagents(sessionId)).toBe(false);
   });
 
-  it("expires stale entries so a lost SubagentStop cannot hold a task forever", () => {
-    const taskId = "task-ttl";
-    noteSubagentStart(taskId, "lost");
-    noteSubagentStart(taskId, undefined);
-    expect(hasActiveSubagents(taskId)).toBe(true);
+  it("expires stale entries so a lost SubagentStop cannot hold a session forever", () => {
+    const sessionId = "session-ttl";
+    noteSubagentStart(sessionId, "lost");
+    noteSubagentStart(sessionId, undefined);
+    expect(hasActiveSubagents(sessionId)).toBe(true);
 
     // Beyond the 2h TTL: the never-stopped entries stop counting as active.
     Date.now = () => realNow() + TTL_MS + 1;
-    expect(hasActiveSubagents(taskId)).toBe(false);
+    expect(hasActiveSubagents(sessionId)).toBe(false);
   });
 
   it("cross-cancels mismatched keyed/anonymous start-stop pairs", () => {
     // Keyed start, anonymous stop (payload-shape skew): any stop should
     // cancel SOME start, biased toward finishing.
-    const skewA = "task-skew-a";
+    const skewA = "session-skew-a";
     noteSubagentStart(skewA, "a");
     noteSubagentStop(skewA, undefined);
     expect(hasActiveSubagents(skewA)).toBe(false);
 
     // Anonymous start, keyed stop.
-    const skewB = "task-skew-b";
+    const skewB = "session-skew-b";
     noteSubagentStart(skewB, undefined);
     noteSubagentStop(skewB, "b");
     expect(hasActiveSubagents(skewB)).toBe(false);
   });
 
-  it("clears all tracked subagents for a task", () => {
-    const taskId = "task-clear";
-    noteSubagentStart(taskId, "a");
-    noteSubagentStart(taskId, undefined);
-    clearSubagentActivity(taskId);
-    expect(hasActiveSubagents(taskId)).toBe(false);
+  it("clears all tracked subagents for a session", () => {
+    const sessionId = "session-clear";
+    noteSubagentStart(sessionId, "a");
+    noteSubagentStart(sessionId, undefined);
+    clearSubagentActivity(sessionId);
+    expect(hasActiveSubagents(sessionId)).toBe(false);
   });
 });
 
 describe("deferred finish backstop", () => {
-  it("finishes a held task once its never-stopped subagents expire", () => {
+  it("finishes a held session once its never-stopped subagents expire", () => {
     vi.useFakeTimers();
-    const taskId = "task-backstop";
+    const sessionId = "session-backstop";
     const finished: string[] = [];
-    noteSubagentStart(taskId, "lost");
-    armDeferredFinish(taskId, (id) => finished.push(id));
+    noteSubagentStart(sessionId, "lost");
+    armDeferredFinish(sessionId, (id) => finished.push(id));
 
     // While the entry is fresh, ticks wait — the subagent may be working.
     vi.advanceTimersByTime(RECHECK_MS * 3);
@@ -114,67 +114,67 @@ describe("deferred finish backstop", () => {
     // Once the entry outlives the TTL with no SubagentStop, the set is idle;
     // after the drain grace passes with nothing new, promote.
     vi.advanceTimersByTime(TTL_MS + DRAIN_GRACE_MS + RECHECK_MS);
-    expect(finished).toEqual([taskId]);
-    expect(hasActiveSubagents(taskId)).toBe(false);
+    expect(finished).toEqual([sessionId]);
+    expect(hasActiveSubagents(sessionId)).toBe(false);
 
     // One-shot: no repeat promotions.
     vi.advanceTimersByTime(RECHECK_MS * 3);
-    expect(finished).toEqual([taskId]);
+    expect(finished).toEqual([sessionId]);
   });
 
   it("waits out the drain grace after real SubagentStops, then finishes", () => {
     vi.useFakeTimers();
-    const taskId = "task-real-stops";
+    const sessionId = "session-real-stops";
     const finished: string[] = [];
-    noteSubagentStart(taskId, "a");
-    armDeferredFinish(taskId, (id) => finished.push(id));
+    noteSubagentStart(sessionId, "a");
+    armDeferredFinish(sessionId, (id) => finished.push(id));
 
     // A real stop usually means the main agent gets re-invoked and its own
     // Stop lands the finish — so the backstop must hold through the grace…
-    noteSubagentStop(taskId, "a");
+    noteSubagentStop(sessionId, "a");
     vi.advanceTimersByTime(RECHECK_MS * 2);
     expect(finished).toEqual([]);
 
     // …but when nothing follows (a post-turn helper's paired events, or a
     // re-invocation that never came), it must promote rather than leave the
-    // task wedged on "running". The caller's finish guard makes this a no-op
+    // session wedged on "running". The caller's finish guard makes this a no-op
     // whenever a real Stop already landed.
     vi.advanceTimersByTime(DRAIN_GRACE_MS + RECHECK_MS);
-    expect(finished).toEqual([taskId]);
+    expect(finished).toEqual([sessionId]);
   });
 
   it("resets the drain grace when a new subagent starts mid-grace", () => {
     vi.useFakeTimers();
-    const taskId = "task-grace-reset";
+    const sessionId = "session-grace-reset";
     const finished: string[] = [];
-    noteSubagentStart(taskId, "a");
-    armDeferredFinish(taskId, (id) => finished.push(id));
-    noteSubagentStop(taskId, "a");
+    noteSubagentStart(sessionId, "a");
+    armDeferredFinish(sessionId, (id) => finished.push(id));
+    noteSubagentStop(sessionId, "a");
 
     // Part-way into the grace, new work appears — the countdown must restart
     // around the live subagent instead of finishing under it.
     vi.advanceTimersByTime(RECHECK_MS * 2);
-    noteSubagentStart(taskId, "b");
+    noteSubagentStart(sessionId, "b");
     vi.advanceTimersByTime(DRAIN_GRACE_MS);
     expect(finished).toEqual([]);
 
-    noteSubagentStop(taskId, "b");
+    noteSubagentStop(sessionId, "b");
     vi.advanceTimersByTime(DRAIN_GRACE_MS + RECHECK_MS * 2);
-    expect(finished).toEqual([taskId]);
+    expect(finished).toEqual([sessionId]);
   });
 
   it("can be disarmed explicitly and by clearSubagentActivity", () => {
     vi.useFakeTimers();
-    const taskA = "task-disarm";
-    const taskB = "task-clear-disarm";
+    const sessionA = "session-disarm";
+    const sessionB = "session-clear-disarm";
     const finished: string[] = [];
-    noteSubagentStart(taskA, "a");
-    noteSubagentStart(taskB, "b");
-    armDeferredFinish(taskA, (id) => finished.push(id));
-    armDeferredFinish(taskB, (id) => finished.push(id));
+    noteSubagentStart(sessionA, "a");
+    noteSubagentStart(sessionB, "b");
+    armDeferredFinish(sessionA, (id) => finished.push(id));
+    armDeferredFinish(sessionB, (id) => finished.push(id));
 
-    disarmDeferredFinish(taskA);
-    clearSubagentActivity(taskB);
+    disarmDeferredFinish(sessionA);
+    clearSubagentActivity(sessionB);
     vi.advanceTimersByTime(TTL_MS + DRAIN_GRACE_MS + RECHECK_MS * 2);
     expect(finished).toEqual([]);
   });
@@ -182,16 +182,16 @@ describe("deferred finish backstop", () => {
 
 describe("finish race window", () => {
   it("reports a finish as raced only within the window", () => {
-    const taskId = "task-finish-window";
-    expect(taskFinishedWithinRaceWindow(taskId)).toBe(false);
+    const sessionId = "session-finish-window";
+    expect(sessionFinishedWithinRaceWindow(sessionId)).toBe(false);
 
-    noteTaskFinished(taskId);
-    expect(taskFinishedWithinRaceWindow(taskId)).toBe(true);
+    noteSessionFinished(sessionId);
+    expect(sessionFinishedWithinRaceWindow(sessionId)).toBe(true);
 
     // Beyond the window, a subagent event is a post-turn helper, not a raced
     // lifecycle POST from the finished turn.
     Date.now = () => realNow() + FINISH_RACE_WINDOW_MS + 1;
-    expect(taskFinishedWithinRaceWindow(taskId)).toBe(false);
+    expect(sessionFinishedWithinRaceWindow(sessionId)).toBe(false);
   });
 
   it("stays at one second inclusive — a race window, not a grace period (issue 385)", () => {

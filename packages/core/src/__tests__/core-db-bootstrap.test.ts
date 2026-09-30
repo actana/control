@@ -45,8 +45,8 @@ describe("bootstrapCoreDb", () => {
     try {
       const rows = db.prepare("SELECT * FROM projects").all();
       expect(rows).toEqual([]);
-      const tasks = db.prepare("SELECT * FROM tasks").all();
-      expect(tasks).toEqual([]);
+      const sessions = db.prepare("SELECT * FROM sessions").all();
+      expect(sessions).toEqual([]);
     } finally {
       db.close();
     }

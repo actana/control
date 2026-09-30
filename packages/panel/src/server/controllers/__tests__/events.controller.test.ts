@@ -29,11 +29,11 @@ describe("events controller", () => {
     const response = stream();
     const { reader } = await readNextEvent(response);
 
-    events.emit("task:updated", { id: "task-1", projectId: "project-1" });
+    events.emit("session:updated", { id: "session-1", projectId: "project-1" });
 
     const next = await reader.read();
     await reader.cancel();
     const text = new TextDecoder().decode(next.value);
-    expect(text).toContain("task-1");
+    expect(text).toContain("session-1");
   });
 });

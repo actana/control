@@ -7,8 +7,8 @@ import type {
   CoreLinkProjectMutation,
   CoreLinkProjectSnapshot,
   CoreLinkSessionSnapshot,
-  CoreLinkTaskMutation,
-  CoreLinkTaskSnapshot,
+  CoreLinkSessionMutation,
+  CoreLinkSessionRow,
 } from "@actana/shared/sdk-link-frames";
 import type { CoreLinkAnswer as Answer } from "~/shared/panel-link";
 import type { CoreDialStatus } from "~/shared/cores";
@@ -34,23 +34,23 @@ export type PanelBridge = {
   /** List a Core's projects. Live query — the Panel persists none of this. */
   listProjects(coreId: string): Promise<CoreLinkProjectSnapshot[]>;
   /**
-   * List a Core's active tasks, optionally scoped to one project.
+   * List a Core's active sessions, optionally scoped to one project.
    *
    * `archivedCount` is how many archived rows the same scope holds — a scalar,
    * never the rows, which is what lets the Archived tab be gated and labelled
    * without an archived row crossing this answer (ADR 0019). Use
-   * {@link listArchivedTasks} for the rows.
+   * {@link listArchivedSessions} for the rows.
    */
-  listTasks(
+  listSessionRows(
     coreId: string,
     projectId?: string,
-  ): Promise<{ tasks: CoreLinkTaskSnapshot[]; archivedCount: number }>;
+  ): Promise<{ sessions: CoreLinkSessionRow[]; archivedCount: number }>;
   /**
-   * List a Core's archived tasks, optionally scoped to one project — the
+   * List a Core's archived sessions, optionally scoped to one project — the
    * Archived view's own read path (ADR 0019). Called when that view opens,
    * not on project open.
    */
-  listArchivedTasks(coreId: string, projectId?: string): Promise<CoreLinkTaskSnapshot[]>;
+  listArchivedSessions(coreId: string, projectId?: string): Promise<CoreLinkSessionRow[]>;
   /** List a Core's active sessions, optionally scoped to one project. */
   listSessions(coreId: string, projectId?: string): Promise<CoreLinkSessionSnapshot[]>;
   /** A Core's CLI availability snapshot; live changes arrive on {@link onEvent}. */
@@ -77,8 +77,8 @@ export type PanelBridge = {
     coreId: string,
     mutation: CoreLinkProjectMutation,
   ): Promise<CoreLinkProjectSnapshot | null>;
-  /** Create / update a task (session) on the Core that owns it. */
-  mutateTask(coreId: string, mutation: CoreLinkTaskMutation): Promise<CoreLinkTaskSnapshot | null>;
+  /** Create / update a session (session) on the Core that owns it. */
+  mutateSession(coreId: string, mutation: CoreLinkSessionMutation): Promise<CoreLinkSessionRow | null>;
 
   /**
    * List folders on the Core's machine. `path` null means "start at that
@@ -120,9 +120,9 @@ export type PanelBridge = {
    * them makes a single-connection Core look permanently locked to the operator
    * who is its only client.
    */
-  claimSession(coreId: string, taskId: string): Promise<{ supported: boolean; granted: boolean }>;
+  claimSession(coreId: string, sessionId: string): Promise<{ supported: boolean; granted: boolean }>;
   /** Give this Session's write lock back. Idempotent — the Panel may not hold it. */
-  releaseSessionLock(coreId: string, taskId: string): Promise<{ released: boolean }>;
+  releaseSessionLock(coreId: string, sessionId: string): Promise<{ released: boolean }>;
   /**
    * Take this Session's write lock whoever holds it. Unconditional and
    * unrecoverable by design (ADR 0024 D7): the previous holder's in-flight
@@ -131,7 +131,7 @@ export type PanelBridge = {
    */
   forceTakeoverSession(
     coreId: string,
-    taskId: string,
+    sessionId: string,
   ): Promise<{ takenFrom: "nobody" | "another-connection" | "this-connection" }>;
   /**
    * This tab has a pane open on a Session, and drives it if no other tab of this
@@ -143,22 +143,22 @@ export type PanelBridge = {
    * nothing on the wire (issue 186). `take` is exempt: it is a gesture, not a
    * pane.
    */
-  driveSession(coreId: string, taskId: string, opts?: { take?: boolean }): void;
+  driveSession(coreId: string, sessionId: string, opts?: { take?: boolean }): void;
   /**
    * One of this tab's panes on a Session has gone. Returns whether it was the
    * last one — whether the tab gave the Session back, or still has it on screen
    * in another pane (issue 186).
    */
-  releaseSessionDrive(coreId: string, taskId: string): boolean;
+  releaseSessionDrive(coreId: string, sessionId: string): boolean;
   /** The Session lock as the service's link to that Core sees it, pushed on change. */
   onSessionLock(
-    cb: (msg: { coreId: string; taskId: string; lock: PanelSessionLock }) => void,
+    cb: (msg: { coreId: string; sessionId: string; lock: PanelSessionLock }) => void,
   ): () => void;
   /** Whether this tab drives a Session, pushed on change. */
   onSessionDrive(
     cb: (msg: {
       coreId: string;
-      taskId: string;
+      sessionId: string;
       driving: boolean;
       reason: "watch" | "handover";
     }) => void,
@@ -180,20 +180,20 @@ function makeBridge(link: PanelLinkClient): PanelBridge {
     isConnected: () => link.isConnected(),
     listProjects: async (coreId) =>
       (await link.request<Answer<"projectsListResult">>(coreId, { type: "projectsList" })).projects,
-    listTasks: async (coreId, projectId) => {
-      const result = await link.request<Answer<"tasksListResult">>(coreId, {
-        type: "tasksList",
+    listSessionRows: async (coreId, projectId) => {
+      const result = await link.request<Answer<"sessionRowsListResult">>(coreId, {
+        type: "sessionRowsList",
         projectId,
       });
-      return { tasks: result.tasks, archivedCount: result.archivedCount };
+      return { sessions: result.sessions, archivedCount: result.archivedCount };
     },
-    listArchivedTasks: async (coreId, projectId) =>
+    listArchivedSessions: async (coreId, projectId) =>
       (
-        await link.request<Answer<"archivedTasksListResult">>(coreId, {
-          type: "archivedTasksList",
+        await link.request<Answer<"archivedSessionRowsListResult">>(coreId, {
+          type: "archivedSessionRowsList",
           projectId,
         })
-      ).tasks,
+      ).sessions,
     listSessions: async (coreId, projectId) =>
       (await link.request<Answer<"sessionsListResult">>(coreId, { type: "sessionsList", projectId }))
         .sessions,
@@ -217,9 +217,9 @@ function makeBridge(link: PanelLinkClient): PanelBridge {
           mutation,
         })
       ).project,
-    mutateTask: async (coreId, mutation) =>
-      (await link.request<Answer<"tasksMutateResult">>(coreId, { type: "tasksMutate", mutation }))
-        .task,
+    mutateSession: async (coreId, mutation) =>
+      (await link.request<Answer<"sessionsMutateResult">>(coreId, { type: "sessionsMutate", mutation }))
+        .session,
     listFolders: async (coreId, path) =>
       (await link.request<Answer<"dirListResult">>(coreId, { type: "dirList", path })).listing,
     createFolder: async (coreId, parent, name) =>
@@ -236,34 +236,34 @@ function makeBridge(link: PanelLinkClient): PanelBridge {
     // with an error, and the router's register never reports anything but
     // `supported: false` for it, so a claim there resolves to what it is —
     // nothing to claim, and nothing stopping the write either.
-    claimSession: async (coreId, taskId) => {
+    claimSession: async (coreId, sessionId) => {
       try {
-        const result = await link.request<Answer<"claimResult">>(coreId, { type: "claim", taskId });
+        const result = await link.request<Answer<"claimResult">>(coreId, { type: "claim", sessionId });
         return { supported: true, granted: result.granted };
       } catch {
         return { supported: false, granted: false };
       }
     },
-    releaseSessionLock: async (coreId, taskId) => {
+    releaseSessionLock: async (coreId, sessionId) => {
       try {
         const result = await link.request<Answer<"releaseResult">>(coreId, {
           type: "release",
-          taskId,
+          sessionId,
         });
         return { released: result.released };
       } catch {
         return { released: false };
       }
     },
-    forceTakeoverSession: async (coreId, taskId) => {
+    forceTakeoverSession: async (coreId, sessionId) => {
       const result = await link.request<Answer<"forceTakeoverResult">>(coreId, {
         type: "forceTakeover",
-        taskId,
+        sessionId,
       });
       return { takenFrom: result.takenFrom };
     },
-    driveSession: (coreId, taskId, opts) => link.driveSession(coreId, taskId, opts),
-    releaseSessionDrive: (coreId, taskId) => link.releaseSessionDrive(coreId, taskId),
+    driveSession: (coreId, sessionId, opts) => link.driveSession(coreId, sessionId, opts),
+    releaseSessionDrive: (coreId, sessionId) => link.releaseSessionDrive(coreId, sessionId),
     onSessionLock: (cb) => link.onSessionLock(cb),
     onSessionDrive: (cb) => link.onSessionDrive(cb),
     pty: (coreId) => corePtyBridgeFor(link, coreId),

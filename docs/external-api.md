@@ -4,9 +4,9 @@ Actana Control has three HTTP surfaces, and none is a public integration API.
 This page says what they are, so nobody has to guess from a port number.
 
 > **History.** The root README used to document a Core API of
-> `POST /api/projects/:id/tasks` and `POST /api/tasks/:id/status`, guarded by a
+> `POST /api/projects/:id/sessions` and `POST /api/sessions/:id/status`, guarded by a
 > token from `actana status`. **That design is retired and those routes do not
-> exist.** Task and project writes now travel as core-link mutation frames, not
+> exist.** Session and project writes now travel as core-link mutation frames, not
 > HTTP ([ADR 0004](adr/0004-core-owns-write-path.md)); the loopback hook receiver
 > below is the Core's only *unversioned* HTTP surface, and its `/v1/…` file
 > routes are the only other one. The old text is corrected here rather than
@@ -28,9 +28,9 @@ hands the credentials to the process in its environment.
 | --- | --- |
 | Bind address | `127.0.0.1` only — never the Core's public host |
 | Port | Ephemeral (`listen(0)`), chosen by the OS at boot |
-| Route | `POST /api/hooks/<slug>?taskId=…&hookEvent=…` |
+| Route | `POST /api/hooks/<slug>?sessionId=…&hookEvent=…` |
 | Auth | `Authorization: Bearer` — 32 random bytes minted **per boot**, held in memory, never persisted |
-| Delivered as | `AC_HOOK_URL`, `AC_HOOK_TOKEN`, `AC_HOOK_TASK_ID` in the PTY's environment |
+| Delivered as | `AC_HOOK_URL`, `AC_HOOK_TOKEN`, `AC_HOOK_SESSION_ID` in the PTY's environment |
 
 The command the Core writes into a harness's hook config reads the secret from
 the environment rather than embedding it, so the config file on disk carries
@@ -41,7 +41,7 @@ curl -sS -m 3 -X POST \
   -H "Authorization: Bearer $AC_HOOK_TOKEN" \
   -H "Content-Type: application/json" \
   --data-binary @- \
-  "$AC_HOOK_URL/api/hooks/<slug>?taskId=$AC_HOOK_TASK_ID&hookEvent=<event>"
+  "$AC_HOOK_URL/api/hooks/<slug>?sessionId=$AC_HOOK_SESSION_ID&hookEvent=<event>"
 ```
 
 A restart mints a fresh token, so a hook from a previous boot's PTY fails
@@ -294,7 +294,7 @@ authenticated by the Operator's session cookie, which the browser attaches on
 its own ([ADR 0011](adr/0011-operator-identity-and-panel-auth.md)) — there is no
 bearer-token mode and no versioning promise. Harnesses never call it.
 
-Task, project and session **reads and writes do not appear here**: they travel
+Session, project and session **reads and writes do not appear here**: they travel
 over the panel link as core-link frames, because each Core owns that state
 (ADR 0004). What is left is the Panel's own concerns:
 

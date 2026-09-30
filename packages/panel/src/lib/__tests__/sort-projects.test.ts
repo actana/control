@@ -32,7 +32,7 @@ function makeProject(
     defaultGridView: false,
     createdAt: 1_000,
     updatedAt: 1_000,
-    taskCounts: {
+    sessionCounts: {
       ready: 0,
       running: 0,
       "needs-input": 0,
@@ -54,7 +54,7 @@ const projects = [
     groupId: "g-beta",
     createdAt: 3_000,
     updatedAt: 9_000,
-    taskCounts: {
+    sessionCounts: {
       ready: 0,
       running: 2,
       "needs-input": 0,
@@ -78,7 +78,7 @@ const projects = [
     name: "Bravo",
     createdAt: 2_000,
     updatedAt: 7_000,
-    taskCounts: {
+    sessionCounts: {
       ready: 0,
       running: 0,
       "needs-input": 1,
@@ -117,7 +117,7 @@ describe("sortProjects", () => {
     ]);
   });
 
-  it("sorts by running task count", () => {
+  it("sorts by running session count", () => {
     const sort: ProjectSortState = { column: "running", direction: "desc" };
     expect(sortProjects(projects, groups, sort).map((p) => p.name)).toEqual([
       "Zulu",

@@ -1,16 +1,16 @@
 import { z } from "zod";
-import { HARNESSES, TASK_STATUSES } from "@actana/shared/domain";
+import { HARNESSES, SESSION_STATUSES } from "@actana/shared/domain";
 import {
-  archiveTask,
-  createTask,
-  deleteTask,
-  getTask,
-  listTasksForProject,
-  restoreTask,
-  sweepOrphanedActiveTasks,
+  archiveSession,
+  createSession,
+  deleteSession,
+  getSession,
+  listSessionsForProject,
+  restoreSession,
+  sweepOrphanedActiveSessions,
   updateStatus,
-  updateTask,
-} from "../services/tasks";
+  updateSession,
+} from "../services/sessions";
 import { getPendingQuestion } from "../services/pending-questions";
 import {
   rethrowUnlessDomain,
@@ -21,20 +21,20 @@ import {
   parseJsonBody,
 } from "./_helpers";
 import { HTTP_CREATED } from "~/shared/http-status";
-import { generateTitleForTask } from "../services/title-generator";
+import { generateTitleForSession } from "../services/title-generator";
 
-const createTaskBody = z.object({
+const createSessionBody = z.object({
   id: z.string().min(1).optional(),
   title: z.string().min(1, "title required"),
   agent: z.enum(HARNESSES),
-  status: z.enum(TASK_STATUSES).optional(),
+  status: z.enum(SESSION_STATUSES).optional(),
   preview: z.string().optional(),
   claudeSessionId: z.string().nullable().optional(),
   claudeSkipPermissions: z.boolean().optional(),
   claudeBareSession: z.boolean().optional(),
 });
 
-const updateTaskBody = z
+const updateSessionBody = z
   .object({
     title: z.string().trim().min(1, "title required"),
     icon: z.string().nullable(),
@@ -43,7 +43,7 @@ const updateTaskBody = z
     // Whether the `title` beside it is an operator's rename. Absent, a title
     // is one — the shape every rename has always had. A generator sends
     // `false`, matching the Core-side rule (issue 84), so the two arms of one
-    // task-mutation frame cannot disagree about what a title means.
+    // session-mutation frame cannot disagree about what a title means.
     titleManuallySet: z.boolean(),
     claudeSkipPermissions: z.boolean(),
     claudeBareSession: z.boolean(),
@@ -51,7 +51,7 @@ const updateTaskBody = z
   .partial();
 
 const updateStatusBody = z.object({
-  status: z.enum(TASK_STATUSES).optional(),
+  status: z.enum(SESSION_STATUSES).optional(),
   preview: z.string().optional(),
   lines: z.number().optional(),
   prompt: z.string().optional(),
@@ -59,9 +59,9 @@ const updateStatusBody = z.object({
 
 export async function listForProject(rawProjectId: string, request: Request): Promise<Response> {
   const parsed = idParam.safeParse(rawProjectId);
-  if (!parsed.success) return json({ tasks: [] });
+  if (!parsed.success) return json({ sessions: [] });
   try {
-    return json({ tasks: listTasksForProject(parsed.data) });
+    return json({ sessions: listSessionsForProject(parsed.data) });
   } catch (e) {
     return rethrowUnlessDomain(e);
   }
@@ -70,14 +70,14 @@ export async function listForProject(rawProjectId: string, request: Request): Pr
 export async function create(rawProjectId: string, request: Request): Promise<Response> {
   const projectIdParsed = idParam.safeParse(rawProjectId);
   if (!projectIdParsed.success) return notFound();
-  const parsed = await parseJsonBody(request, createTaskBody);
+  const parsed = await parseJsonBody(request, createSessionBody);
   if (!parsed.ok) return parsed.response;
   try {
-    const t = createTask({
+    const t = createSession({
       ...parsed.data,
       projectId: projectIdParsed.data,
     });
-    return json({ task: t }, { status: HTTP_CREATED });
+    return json({ session: t }, { status: HTTP_CREATED });
   } catch (e) {
     return rethrowUnlessDomain(e);
   }
@@ -86,15 +86,15 @@ export async function create(rawProjectId: string, request: Request): Promise<Re
 export async function getOne(rawId: string, request: Request): Promise<Response> {
   const parsed = idParam.safeParse(rawId);
   if (!parsed.success) return notFound();
-  const t = getTask(parsed.data);
+  const t = getSession(parsed.data);
   if (!t) return notFound();
-  return json({ task: t });
+  return json({ session: t });
 }
 
 export function readQuestion(rawId: string): Response {
   const parsed = idParam.safeParse(rawId);
   if (!parsed.success) return notFound();
-  const t = getTask(parsed.data);
+  const t = getSession(parsed.data);
   if (!t) return notFound();
   return json({ question: getPendingQuestion(parsed.data) });
 }
@@ -102,15 +102,15 @@ export function readQuestion(rawId: string): Response {
 export async function update(rawId: string, request: Request): Promise<Response> {
   const idParsed = idParam.safeParse(rawId);
   if (!idParsed.success) return notFound();
-  const parsed = await parseJsonBody(request, updateTaskBody);
+  const parsed = await parseJsonBody(request, updateSessionBody);
   if (!parsed.ok) return parsed.response;
   try {
     const patch = Object.prototype.hasOwnProperty.call(parsed.data, "title")
       ? { ...parsed.data, titleManuallySet: parsed.data.titleManuallySet ?? true }
       : parsed.data;
-    const t = updateTask(idParsed.data, patch);
+    const t = updateSession(idParsed.data, patch);
     if (!t) return notFound();
-    return json({ task: t });
+    return json({ session: t });
   } catch (e) {
     return rethrowUnlessDomain(e);
   }
@@ -119,7 +119,7 @@ export async function update(rawId: string, request: Request): Promise<Response>
 export async function remove(rawId: string, request: Request): Promise<Response> {
   const parsed = idParam.safeParse(rawId);
   if (!parsed.success) return notFound();
-  return deleteTask(parsed.data) ? noContent() : notFound();
+  return deleteSession(parsed.data) ? noContent() : notFound();
 }
 
 export async function setStatus(rawId: string, request: Request): Promise<Response> {
@@ -132,35 +132,35 @@ export async function setStatus(rawId: string, request: Request): Promise<Respon
     if (!t) return notFound();
     const prompt = typeof parsed.data.prompt === "string" ? parsed.data.prompt.trim() : "";
     if (prompt) {
-      void generateTitleForTask(idParsed.data, prompt).catch(() => undefined);
+      void generateTitleForSession(idParsed.data, prompt).catch(() => undefined);
     }
-    return json({ task: t });
+    return json({ session: t });
   } catch (e) {
     return rethrowUnlessDomain(e);
   }
 }
 
 /**
- * POST /api/tasks/sweep-disconnected — the Panel calls this once per service
+ * POST /api/sessions/sweep-disconnected — the Panel calls this once per service
  * boot (before the first window) to settle statuses orphaned by the previous
- * run. See sweepOrphanedActiveTasks for the invariant that makes this safe.
+ * run. See sweepOrphanedActiveSessions for the invariant that makes this safe.
  */
 export async function sweepDisconnected(): Promise<Response> {
-  return json({ swept: sweepOrphanedActiveTasks() });
+  return json({ swept: sweepOrphanedActiveSessions() });
 }
 
 export async function archive(rawId: string, request: Request): Promise<Response> {
   const parsed = idParam.safeParse(rawId);
   if (!parsed.success) return notFound();
-  const t = archiveTask(parsed.data);
+  const t = archiveSession(parsed.data);
   if (!t) return notFound();
-  return json({ task: t });
+  return json({ session: t });
 }
 
 export async function restore(rawId: string, request: Request): Promise<Response> {
   const parsed = idParam.safeParse(rawId);
   if (!parsed.success) return notFound();
-  const t = restoreTask(parsed.data);
+  const t = restoreSession(parsed.data);
   if (!t) return notFound();
-  return json({ task: t });
+  return json({ session: t });
 }

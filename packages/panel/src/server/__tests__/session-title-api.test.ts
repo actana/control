@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
-const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mc-task-title-api-test-"));
+const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mc-session-title-api-test-"));
 process.env.AC_USER_DATA_DIR = tmpRoot;
 
 vi.mock("../services/claude-cli", () => ({
@@ -14,11 +14,11 @@ const { runCli } = await import("../services/claude-cli");
 const { handleApiRequest } = await import("../api-router");
 const { operatorSessionCookie } = await import("./_operator-session");
 const { createProject } = await import("../services/projects");
-const { createTask, getTask, updateTask } = await import("../services/tasks");
-const { generateTitleForTask } = await import("../services/title-generator");
+const { createSession, getSession, updateSession } = await import("../services/sessions");
+const { generateTitleForSession } = await import("../services/title-generator");
 const { getDb } = await import("~/db/client");
-const { projects, tasks, groups, appSettings } = await import("~/db/schema");
-const { TITLE_WAITING } = await import("~/lib/task-sentinels");
+const { projects, sessions, groups, appSettings } = await import("~/db/schema");
+const { TITLE_WAITING } = await import("~/lib/session-sentinels");
 
 const LOOPBACK_HEADERS = { origin: "http://127.0.0.1:5173" };
 
@@ -35,33 +35,33 @@ function authed(input: string, init: RequestInit = {}): Request {
 
 function resetDb() {
   const db = getDb();
-  db.delete(tasks).run();
+  db.delete(sessions).run();
   db.delete(projects).run();
   db.delete(groups).run();
   db.delete(appSettings).run();
 }
 
-function createTitleTask() {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mc-task-title-proj-"));
-  const project = createProject({ name: "task-title", path: dir });
-  return createTask({
+function createTitleSession() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mc-session-title-proj-"));
+  const project = createProject({ name: "session-title", path: dir });
+  return createSession({
     projectId: project.id,
     title: TITLE_WAITING,
     agent: "codex",
   });
 }
 
-describe("task title updates", () => {
+describe("session title updates", () => {
   beforeEach(() => {
     resetDb();
     vi.mocked(runCli).mockClear();
   });
 
   it("marks PATCH title updates as manually set", async () => {
-    const task = createTitleTask();
+    const session = createTitleSession();
 
     const res = await handleApiRequest(
-      authed(`/api/tasks/${task.id}`, {
+      authed(`/api/sessions/${session.id}`, {
         method: "PATCH",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ title: "  Manual session title  " }),
@@ -70,19 +70,19 @@ describe("task title updates", () => {
 
     expect(res?.status).toBe(200);
     const body = await res!.json();
-    expect(body.task.title).toBe("Manual session title");
-    expect(body.task.titleManuallySet).toBe(true);
-    expect(getTask(task.id)?.titleManuallySet).toBe(true);
+    expect(body.session.title).toBe("Manual session title");
+    expect(body.session.titleManuallySet).toBe(true);
+    expect(getSession(session.id)?.titleManuallySet).toBe(true);
   });
 
   it("does not generate over a manually marked title, even when still sentinel", async () => {
-    const task = createTitleTask();
-    updateTask(task.id, { titleManuallySet: true });
+    const session = createTitleSession();
+    updateSession(session.id, { titleManuallySet: true });
 
-    await generateTitleForTask(task.id, "add a dark mode toggle");
+    await generateTitleForSession(session.id, "add a dark mode toggle");
 
     expect(runCli).not.toHaveBeenCalled();
-    expect(getTask(task.id)).toMatchObject({
+    expect(getSession(session.id)).toMatchObject({
       title: TITLE_WAITING,
       titleManuallySet: true,
     });

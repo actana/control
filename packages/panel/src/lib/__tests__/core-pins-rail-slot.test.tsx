@@ -14,7 +14,7 @@
 //      operator had just dragged to the top was re-rendered at the bottom the
 //      instant the drop settled (its `pinnedOrder` still null, which the
 //      comparator reads as last) and stayed there for two HTTP legs plus a
-//      `listProjects` and a `listTasks` for every Core.
+//      `listProjects` and a `listSessionRows` for every Core.
 //   2. A Core that was momentarily off the link kept its pins — deliberately —
 //      but kept them with the slot baked in at the last successful read. A
 //      reorder wrote the right slot to the database and the next pass put the
@@ -118,7 +118,7 @@ const bridge = {
   },
   onConnectionChange: () => () => {},
   listProjects: async () => [...h.projects],
-  listTasks: async () => ({ tasks: [], archivedCount: 0 }),
+  listSessionRows: async () => ({ sessions: [], archivedCount: 0 }),
 };
 
 vi.mock("~/lib/panel-bridge", () => ({ getPanelBridge: () => bridge }));
@@ -333,7 +333,7 @@ describe("a Core-owned pin's rail slot", () => {
     expect(slotOf(result.current.projects, "p-two")).toBe(0);
 
     // A pass is ALREADY in flight when the writes come back — started by the
-    // poll, by a reconnect, or by any task, session, PTY or project-list event,
+    // poll, by a reconnect, or by any session, PTY or project-list event,
     // which on a fleet with a live session is continuous. Its read was taken
     // before the write landed, so it is carrying the old slots.
     const release = holdNextRead();

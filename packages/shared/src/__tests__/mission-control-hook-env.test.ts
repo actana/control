@@ -45,9 +45,9 @@ describe("buildSyntheticHookUrl", () => {
     const url = buildSyntheticHookUrl(
       { apiUrl: "http://127.0.0.1:8080", token: "t" },
       "claude-code",
-      "task-1",
+      "session-1",
     );
-    expect(url).toBe("http://127.0.0.1:8080/api/hooks/claude?taskId=task-1");
+    expect(url).toBe("http://127.0.0.1:8080/api/hooks/claude?sessionId=session-1");
   });
 
   it("rejects non-http, port-less, and off-allow-list hosts", () => {

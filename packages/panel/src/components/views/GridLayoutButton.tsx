@@ -115,7 +115,7 @@ export function GridLayoutButton({ scopeKey }: { scopeKey: string }) {
   // section only shows once two kinds of sessions coexist.
   const harnessesPresent = useMemo(() => {
     const present = new Set(
-      sessions.filter((s) => scopeKeyFor(s) === scopeKey).map((s) => s.task.agent),
+      sessions.filter((s) => scopeKeyFor(s) === scopeKey).map((s) => s.session.agent),
     );
     return (Object.keys(HARNESS_META) as Harness[]).filter((a) => present.has(a));
   }, [sessions, scopeKey]);

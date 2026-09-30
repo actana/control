@@ -37,8 +37,8 @@ function renderBoard() {
   const header = make("div", { class: "mc-project-header" });
   const grid = make("div", { "data-session-grid": "" });
   const row = make("div", { "data-grid-row": "0" });
-  const cellA = make("div", { "data-grid-cell": "", "data-task-id": "task-a" });
-  const cellB = make("div", { "data-grid-cell": "", "data-task-id": "task-b" });
+  const cellA = make("div", { "data-grid-cell": "", "data-session-id": "session-a" });
+  const cellB = make("div", { "data-grid-cell": "", "data-session-id": "session-b" });
   const terminalA = make("div", { class: "xterm" });
   const terminalCanvasA = make("canvas");
   const divider = make("div", { style: "position:absolute;z-index:6" });

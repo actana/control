@@ -70,7 +70,7 @@ type Entry = SessionWriteState;
 const entries = new Map<string, Entry>();
 const listeners = new Set<() => void>();
 /** Handover notices this tab has not shown yet, keyed like the entries. */
-const handoverListeners = new Set<(msg: { coreId: string; taskId: string }) => void>();
+const handoverListeners = new Set<(msg: { coreId: string; sessionId: string }) => void>();
 /**
  * The open optimistic windows, one per Session this tab has asked about.
  *
@@ -81,8 +81,8 @@ const handoverListeners = new Set<(msg: { coreId: string; taskId: string }) => v
 const optimismTimers = new Map<string, ReturnType<typeof setTimeout>>();
 let wired = false;
 
-function key(coreId: string | null | undefined, taskId: string): string {
-  return `${coreId ?? ""}/${taskId}`;
+function key(coreId: string | null | undefined, sessionId: string): string {
+  return `${coreId ?? ""}/${sessionId}`;
 }
 
 function emit(): void {
@@ -142,16 +142,16 @@ function ensureWired(): void {
   const bridge = getPanelBridge();
   if (!bridge) return;
   wired = true;
-  bridge.onSessionLock(({ coreId, taskId, lock }) => {
-    const k = key(coreId, taskId);
+  bridge.onSessionLock(({ coreId, sessionId, lock }) => {
+    const k = key(coreId, sessionId);
     const current = entries.get(k) ?? UNKNOWN;
     // A lock answer says nothing about the drive, so it neither opens nor
     // closes the window: an ask still outstanding is still outstanding, and a
     // pane inside its window keeps the guess it was already typing on.
     put(k, { lock, drive: current.drive }, { optimistic: current.optimistic });
   });
-  bridge.onSessionDrive(({ coreId, taskId, driving, reason }) => {
-    const k = key(coreId, taskId);
+  bridge.onSessionDrive(({ coreId, sessionId, driving, reason }) => {
+    const k = key(coreId, sessionId);
     const current = entries.get(k) ?? UNKNOWN;
     // The answer. Whatever this tab was guessing, it now knows — and exactly
     // one tab of this Panel is told `driving: true` for a Session, so from here
@@ -163,14 +163,14 @@ function ensureWired(): void {
     // no call site can reach for the wrong copy: nothing was taken here, and
     // nothing was lost.
     if (!driving && reason === "handover") {
-      for (const cb of handoverListeners) cb({ coreId, taskId });
+      for (const cb of handoverListeners) cb({ coreId, sessionId });
     }
   });
 }
 
 /** Told when this tab stops driving a Session because it was taken in another tab. */
 export function onSessionDriveHandover(
-  cb: (msg: { coreId: string; taskId: string }) => void,
+  cb: (msg: { coreId: string; sessionId: string }) => void,
 ): () => void {
   ensureWired();
   handoverListeners.add(cb);
@@ -180,10 +180,10 @@ export function onSessionDriveHandover(
 /** The current answer for one Session, without subscribing. */
 export function readSessionWriteState(
   coreId: string | null | undefined,
-  taskId: string,
+  sessionId: string,
 ): SessionWriteState {
   ensureWired();
-  return entries.get(key(coreId, taskId)) ?? UNKNOWN;
+  return entries.get(key(coreId, sessionId)) ?? UNKNOWN;
 }
 
 /**
@@ -191,13 +191,13 @@ export function readSessionWriteState(
  * this Panel is (issue 147). Not a claim on the Session lock — that is an
  * explicit gesture over the core-link, and this one never leaves the Panel.
  */
-export function watchSessionDrive(coreId: string | null | undefined, taskId: string): void {
+export function watchSessionDrive(coreId: string | null | undefined, sessionId: string): void {
   if (!coreId) return;
   ensureWired();
   const bridge = getPanelBridge();
   if (!bridge) return;
-  bridge.driveSession(coreId, taskId);
-  const k = key(coreId, taskId);
+  bridge.driveSession(coreId, sessionId);
+  const k = key(coreId, sessionId);
   const current = entries.get(k) ?? UNKNOWN;
   // A second pane of this tab on a Session this tab already has an answer for
   // asked nothing (the link client counts panes and announces only the first),
@@ -218,13 +218,13 @@ export function watchSessionDrive(coreId: string | null | undefined, taskId: str
  * before that lands is the dual write this store exists to prevent, so this
  * moves the entry to `pending` with no window open and waits for the frame.
  */
-export function takeSessionDrive(coreId: string | null | undefined, taskId: string): void {
+export function takeSessionDrive(coreId: string | null | undefined, sessionId: string): void {
   if (!coreId) return;
   ensureWired();
   const bridge = getPanelBridge();
   if (!bridge) return;
-  bridge.driveSession(coreId, taskId, { take: true });
-  const k = key(coreId, taskId);
+  bridge.driveSession(coreId, sessionId, { take: true });
+  const k = key(coreId, sessionId);
   const current = entries.get(k) ?? UNKNOWN;
   if (current.drive === "driving") return;
   clearOptimism(k);
@@ -242,12 +242,12 @@ export function takeSessionDrive(coreId: string | null | undefined, taskId: stri
  * silent half of a dual write: a pane typing on a drive it no longer holds,
  * with no read-only state on screen to say so.
  */
-export function releaseSessionDrive(coreId: string | null | undefined, taskId: string): void {
+export function releaseSessionDrive(coreId: string | null | undefined, sessionId: string): void {
   if (!coreId) return;
   // The pane count lives in the link client, which is the one thing that also
   // has to re-announce this tab's interest on a reconnect. Asked, not mirrored.
-  if (getPanelBridge()?.releaseSessionDrive(coreId, taskId) !== true) return;
-  const k = key(coreId, taskId);
+  if (getPanelBridge()?.releaseSessionDrive(coreId, sessionId) !== true) return;
+  const k = key(coreId, sessionId);
   const current = entries.get(k);
   if (!current) return;
   // Nothing is waiting on an answer once the last pane is gone; a window left
@@ -271,11 +271,11 @@ function subscribe(cb: () => void): () => void {
  */
 export function useSessionWriteState(
   coreId: string | null | undefined,
-  taskId: string,
+  sessionId: string,
 ): SessionWriteState {
   return useSyncExternalStore(
     subscribe,
-    () => entries.get(key(coreId, taskId)) ?? UNKNOWN,
+    () => entries.get(key(coreId, sessionId)) ?? UNKNOWN,
     () => UNKNOWN,
   );
 }
@@ -283,10 +283,10 @@ export function useSessionWriteState(
 /** @internal — tests drive the store without a link. */
 export function __setSessionWriteStateForTests(
   coreId: string | null,
-  taskId: string,
+  sessionId: string,
   next: { lock: PanelSessionLock; drive: SessionDriveState; optimistic?: boolean } | null,
 ): void {
-  const k = key(coreId, taskId);
+  const k = key(coreId, sessionId);
   if (!next) {
     clearOptimism(k);
     entries.delete(k);

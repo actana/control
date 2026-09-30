@@ -10,11 +10,11 @@ const { handleApiRequest } = await import("../api-router");
 const { operatorSessionCookie } = await import("./_operator-session");
 const { getOrCreateApiToken } = await import("../services/settings");
 const { createProject } = await import("../services/projects");
-const { createTask, getTask } = await import("../services/tasks");
+const { createSession, getSession } = await import("../services/sessions");
 const { getPendingQuestion } = await import("../services/pending-questions");
 const { getDb } = await import("~/db/client");
-const { projects, tasks, groups, appSettings } = await import("~/db/schema");
-const { TITLE_WAITING } = await import("~/lib/task-sentinels");
+const { projects, sessions, groups, appSettings } = await import("~/db/schema");
+const { TITLE_WAITING } = await import("~/lib/session-sentinels");
 
 const LOOPBACK_HEADERS = { origin: "http://127.0.0.1:5173" };
 const SESSION_ID = "00000000-0000-4000-8000-000000000000";
@@ -24,7 +24,7 @@ const QUESTION_TOOL_INPUT = {
   questions: [
     {
       question: "What would you like to focus on right now?",
-      header: "Next task",
+      header: "Next session",
       multiSelect: false,
       options: [
         { label: "Complete the current feature", description: "Finish the modified file" },
@@ -41,7 +41,7 @@ function authed(input: string, init: RequestInit = {}): Request {
     headers: {
       ...LOOPBACK_HEADERS,
       // This file drives both surfaces: the agent hook endpoints (machine
-      // token) and the Operator's task API (session cookie).
+      // token) and the Operator's session API (session cookie).
       cookie: operatorSessionCookie(),
       authorization: `Bearer ${getOrCreateApiToken()}`,
       ...(init.headers as Record<string, string> | undefined),
@@ -50,11 +50,11 @@ function authed(input: string, init: RequestInit = {}): Request {
 }
 
 async function postHook(
-  taskId: string,
+  sessionId: string,
   body: Record<string, unknown>,
 ): Promise<Response | null> {
   return handleApiRequest(
-    authed(`/api/hooks/claude?taskId=${encodeURIComponent(taskId)}`, {
+    authed(`/api/hooks/claude?sessionId=${encodeURIComponent(sessionId)}`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(body),
@@ -62,12 +62,12 @@ async function postHook(
   );
 }
 
-async function getQuestion(taskId: string): Promise<Response | null> {
-  return handleApiRequest(authed(`/api/tasks/${encodeURIComponent(taskId)}/question`));
+async function getQuestion(sessionId: string): Promise<Response | null> {
+  return handleApiRequest(authed(`/api/sessions/${encodeURIComponent(sessionId)}/question`));
 }
 
-async function postAskUserQuestion(taskId: string): Promise<Response | null> {
-  return postHook(taskId, {
+async function postAskUserQuestion(sessionId: string): Promise<Response | null> {
+  return postHook(sessionId, {
     hook_event_name: "PreToolUse",
     session_id: SESSION_ID,
     tool_name: "AskUserQuestion",
@@ -78,16 +78,16 @@ async function postAskUserQuestion(taskId: string): Promise<Response | null> {
 
 function resetDb() {
   const db = getDb();
-  db.delete(tasks).run();
+  db.delete(sessions).run();
   db.delete(projects).run();
   db.delete(groups).run();
   db.delete(appSettings).run();
 }
 
-function createHookTask() {
+function createHookSession() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mc-ask-question-proj-"));
   const project = createProject({ name: "ask-question", path: dir });
-  return createTask({
+  return createSession({
     projectId: project.id,
     title: TITLE_WAITING,
     agent: "claude-code",
@@ -96,28 +96,28 @@ function createHookTask() {
 }
 
 describe("AskUserQuestion hook API", () => {
-  let taskId = "";
+  let sessionId = "";
 
   beforeEach(() => {
     resetDb();
-    taskId = createHookTask().id;
+    sessionId = createHookSession().id;
   });
 
   it("stores the question and flips status on PreToolUse", async () => {
-    const res = await postAskUserQuestion(taskId);
+    const res = await postAskUserQuestion(sessionId);
 
     expect(res?.status).toBe(200);
     await expect(res?.json()).resolves.toEqual({ ok: true, status: "needs-input" });
-    expect(getTask(taskId)?.status).toBe("needs-input");
+    expect(getSession(sessionId)?.status).toBe("needs-input");
 
-    const stored = getPendingQuestion(taskId);
+    const stored = getPendingQuestion(sessionId);
     expect(stored).toMatchObject({
       id: TOOL_USE_ID,
-      taskId,
+      sessionId,
       questions: [
         {
           question: "What would you like to focus on right now?",
-          header: "Next task",
+          header: "Next session",
           multiSelect: false,
         },
       ],
@@ -126,9 +126,9 @@ describe("AskUserQuestion hook API", () => {
   });
 
   it("serves the pending question over the read endpoint", async () => {
-    await postAskUserQuestion(taskId);
+    await postAskUserQuestion(sessionId);
 
-    const res = await getQuestion(taskId);
+    const res = await getQuestion(sessionId);
     expect(res?.status).toBe(200);
     const body = (await res?.json()) as { question: { id: string } | null };
     expect(body.question?.id).toBe(TOOL_USE_ID);
@@ -138,9 +138,9 @@ describe("AskUserQuestion hook API", () => {
   });
 
   it("clears the question and returns to running on PostToolUse", async () => {
-    await postAskUserQuestion(taskId);
+    await postAskUserQuestion(sessionId);
 
-    const res = await postHook(taskId, {
+    const res = await postHook(sessionId, {
       hook_event_name: "PostToolUse",
       session_id: SESSION_ID,
       tool_name: "AskUserQuestion",
@@ -149,25 +149,25 @@ describe("AskUserQuestion hook API", () => {
 
     expect(res?.status).toBe(200);
     await expect(res?.json()).resolves.toEqual({ ok: true, status: "running" });
-    expect(getTask(taskId)?.status).toBe("running");
-    expect(getPendingQuestion(taskId)).toBeNull();
+    expect(getSession(sessionId)?.status).toBe("running");
+    expect(getPendingQuestion(sessionId)).toBeNull();
   });
 
   it.each(["UserPromptSubmit", "Stop"])("clears the question on %s", async (event) => {
-    await postAskUserQuestion(taskId);
-    expect(getPendingQuestion(taskId)).not.toBeNull();
+    await postAskUserQuestion(sessionId);
+    expect(getPendingQuestion(sessionId)).not.toBeNull();
 
-    const res = await postHook(taskId, {
+    const res = await postHook(sessionId, {
       hook_event_name: event,
       session_id: SESSION_ID,
     });
 
     expect(res?.status).toBe(200);
-    expect(getPendingQuestion(taskId)).toBeNull();
+    expect(getPendingQuestion(sessionId)).toBeNull();
   });
 
   it("still flips status when tool_input is malformed, without storing a question", async () => {
-    const res = await postHook(taskId, {
+    const res = await postHook(sessionId, {
       hook_event_name: "PreToolUse",
       session_id: SESSION_ID,
       tool_name: "AskUserQuestion",
@@ -176,11 +176,11 @@ describe("AskUserQuestion hook API", () => {
 
     expect(res?.status).toBe(200);
     await expect(res?.json()).resolves.toEqual({ ok: true, status: "needs-input" });
-    expect(getPendingQuestion(taskId)).toBeNull();
+    expect(getPendingQuestion(sessionId)).toBeNull();
   });
 
   it("ignores PreToolUse for other tools", async () => {
-    const res = await postHook(taskId, {
+    const res = await postHook(sessionId, {
       hook_event_name: "PreToolUse",
       session_id: SESSION_ID,
       tool_name: "Bash",
@@ -189,12 +189,12 @@ describe("AskUserQuestion hook API", () => {
 
     expect(res?.status).toBe(200);
     await expect(res?.json()).resolves.toEqual({ ok: true, ignored: "PreToolUse" });
-    expect(getPendingQuestion(taskId)).toBeNull();
-    expect(getTask(taskId)?.status).not.toBe("needs-input");
+    expect(getPendingQuestion(sessionId)).toBeNull();
+    expect(getSession(sessionId)?.status).not.toBe("needs-input");
   });
 
   it("ignores questions from foreign sessions", async () => {
-    const res = await postHook(taskId, {
+    const res = await postHook(sessionId, {
       hook_event_name: "PreToolUse",
       session_id: "11111111-1111-4111-8111-111111111111",
       tool_name: "AskUserQuestion",
@@ -203,6 +203,6 @@ describe("AskUserQuestion hook API", () => {
 
     expect(res?.status).toBe(200);
     await expect(res?.json()).resolves.toEqual({ ok: true, ignored: "foreign-session" });
-    expect(getPendingQuestion(taskId)).toBeNull();
+    expect(getPendingQuestion(sessionId)).toBeNull();
   });
 });

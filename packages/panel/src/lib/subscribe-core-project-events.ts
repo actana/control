@@ -2,7 +2,7 @@ import type { PanelBridge } from "~/lib/panel-bridge";
 import type { CoreLinkEvent } from "@actana/shared/sdk-link-frames";
 
 // A Core's projectsList result changes when the Core appends one of these
-// event kinds to its monotonic event log. Everything else (task lifecycle,
+// event kinds to its monotonic event log. Everything else (session lifecycle,
 // PTY spawn/exit, hook, session) leaves projects untouched — filtering here
 // keeps refetches proportional to the mutation surface `useCoreProjects`
 // actually cares about.
@@ -29,7 +29,7 @@ const PROJECT_EVENT_KINDS = new Set([
  *
  * Exported for the callers that already hold their own `onEvent` subscription
  * and cannot afford a second one — the rail's pinned-projects engine watches
- * project and task kinds through one handler — so the answer to "which kinds
+ * project and session kinds through one handler — so the answer to "which kinds
  * move a project row" stays in this file rather than being re-listed there.
  */
 export function isProjectListEventKind(kind: string): boolean {
