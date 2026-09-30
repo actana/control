@@ -296,6 +296,22 @@ down -v`. The tag is on the pull request itself — the `Panel image` and `Core
 image` checks each announce the tag they pushed. Fork pull requests publish no
 image at all; that is by design, not a failure.
 
+## Shared folder storage: SeaweedFS (optional)
+
+The compose file also defines a `seaweedfs` service — SeaweedFS with its S3
+gateway and STS enabled, the backend for the Shared folder of development Cores.
+It is behind a compose profile, so **a plain `docker compose up -d` is unchanged**:
+it does not start it, pull its image or read its variables. To opt in, fill the
+`SEAWEEDFS_*` block of `.env` and run:
+
+```bash
+docker compose --profile seaweedfs up -d
+```
+
+[`seaweedfs/README.md`](seaweedfs/README.md) has the variables, the pinned image,
+and the role and policy that limit a Core to `<prefix>/<core-id>/`, with what
+each allowed and denied request does. Its Known gaps say what is not built yet.
+
 ## Configuration
 
 Copy [`.env.example`](.env.example) to `.env` beside the compose file. Every

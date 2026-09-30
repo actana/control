@@ -125,6 +125,16 @@ Everything is environment variables; there is no config file.
 
 Generate a key with `openssl rand -hex 32`.
 
+## Optional: SeaweedFS for the Shared folder
+
+The reference compose has one more service, `seaweedfs`, behind the `seaweedfs`
+profile: SeaweedFS with its S3 gateway and STS enabled, and a role and policy
+that limit a Core to `<prefix>/<core-id>/`. `docker compose up -d` does not
+start it; `docker compose --profile seaweedfs up -d` does, once the
+`SEAWEEDFS_*` values in `.env` are set (the OIDC issuer and JWKS URL name the
+Panel's token signer). Setup, the pinned image, the policy and its Known gaps:
+[`deploy/seaweedfs/README.md`](deploy/seaweedfs/README.md).
+
 ## Backup
 
 Back up the data directory — under the reference compose that is the
