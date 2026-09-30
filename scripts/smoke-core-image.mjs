@@ -25,8 +25,8 @@
 //     equivalent rather than just saying no (D16);
 //   • `docker compose exec -u core core actana pair new` mints a one-time code
 //     inside the container, and a real Panel — booted as the deployable it is —
-//     the CA fingerprint, spends the code in "Add Core", and the panel link
-//     reports the Core connected;
+//     checks the CA fingerprint, spends the code in "Add Core", and the panel
+//     link reports the Core connected;
 //   • `docker restart` is a no-op for pairing: same identity, still no
 //     credential in the log, and the same Panel reconnects untouched (D17);
 //   • and destroying the volume — the `docker compose down -v` motion — is the
