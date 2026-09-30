@@ -68,3 +68,7 @@ The declared length is a valid bound in **both** modes, which is the small fact 
 - **A refused-because-busy upload can be refused before its body is sent**, when the client sends `Expect: 100-continue`. The Core registers a `checkContinue` listener, which is what stops Node auto-answering `100 Continue` — a client that does not ask still gets the same 409, only later and after wasting bandwidth.
 - **A mid-transfer failure leaves partial results on disk.** A multi-gigabyte tar cannot be staged and swapped, so this surface does not promise atomicity, and the tests assert the honest behaviour rather than an aspiration. What is promised is that the *escape* never happens (ADR 0029), which is a different claim and the one that matters.
 - **The SDK gains `canUseFileRoutes()` and `filesCapability()` and nothing else.** `project.files.*` is issue [#166](https://github.com/actana/control/issues/166); this ticket adds only the capability a client needs to know whether to offer it.
+
+## Amended by ADR 0041
+
+[ADR 0041](0041-the-0-5-0-core-model.md) D1 amends the parts that address a Project: the `/v1/projects/:projectId/…` routes and **D6** (one write transfer per Project). The Files API is re-rooted at the workspace (#557). The rest stands. The text is left as it was written.

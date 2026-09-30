@@ -275,3 +275,7 @@ The ticket-by-ticket breakdown, dependency graph and what runs in parallel live 
 - **A permanent `docs/architecture/` page (rejected).** It would be documentation, not a handoff: the contradiction resolutions, the sequencing and the closed-open-items table have nowhere to go in it.
 - **No spec at all — tickets and ADRs only (rejected).** Nothing would hold the cross-cutting rules that belong to no single ticket: D29's installer contract, D32's push order, D37's three populations.
 - **A fully self-contained restatement of all ten decision comments (rejected).** It would stand alone if the tracker were lost, at ~600 lines. Rejected because it duplicates ten comments that argue it better, and the duplicate is what goes stale when a clause is amended.
+
+## Amended by ADR 0041
+
+[ADR 0041](0041-the-0-5-0-core-model.md) D10 **supersedes D12's sentence keeping `NOPASSWD` sudo for `core`**. The rest of D12 stands. The text is left as it was written.
