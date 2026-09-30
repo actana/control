@@ -4,7 +4,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { spawnSync } from "node:child_process";
 import { getAppTheme } from "./app-theme";
-import { asCore, coreHome, isContainerMode, killAsCore } from "./core-identity";
+import { asCore, coreHome, isContainerMode, killAsCore, killAsCoreQuietly } from "./core-identity";
 import { ensureStatuslineTap } from "@actana/shared/statusline-tap";
 import { PtyOutputBatcher } from "./pty-output-batch";
 import { PtyOutputActivityWatcher, type PtyOutputActivityKind } from "./pty-output-activity";
@@ -453,7 +453,8 @@ export function disposePty(proc: import("node-pty").IPty | null | undefined): vo
     if (typeof closable.destroy === "function") {
       closable.destroy();
     } else {
-      killAsCore(proc, "SIGHUP");
+      // No signal: node-pty's own default, as `proc.kill()` was.
+      killAsCoreQuietly(proc, undefined, "pty.kill");
     }
   } catch {
     /* already exited or fd already closed */
@@ -483,11 +484,7 @@ function armCoreKillEscalation(
   });
   const timer = setTimeout(() => {
     if (exited) return;
-    try {
-      killAsCore(-pid, "SIGKILL");
-    } catch (err) {
-      log.warn("pty.kill.escalation-failed", { pid, error: String(err) });
-    }
+    killAsCoreQuietly(-pid, "SIGKILL", "pty.kill.escalation");
   }, SIGTERM_GRACE_MS);
   timer.unref?.();
 }
@@ -521,7 +518,7 @@ async function killPidsListeningOnPort(port: number): Promise<PortKillResult> {
 
   for (const pid of pids) {
     try {
-      killAsCore(pid, "SIGTERM");
+      await killAsCore(pid, "SIGTERM");
       killed.push(pid);
     } catch (err: any) {
       errors.push(`pid ${pid}: ${err?.message ?? String(err)}`);
@@ -535,7 +532,7 @@ async function killPidsListeningOnPort(port: number): Promise<PortKillResult> {
     }
     for (const pid of pidsListeningOnPort(port).filter((pid) => killed.includes(pid))) {
       try {
-        killAsCore(pid, "SIGKILL");
+        await killAsCore(pid, "SIGKILL");
       } catch {
         /* already exited or not permitted */
       }

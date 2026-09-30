@@ -4,6 +4,7 @@
 // never used: the PTY is `setpriv` -> `core`, built by `asCore`. Teardown cannot
 // `kill(2)` a process of another uid, so it goes through `killAsCore`.
 
+import { EventEmitter } from "node:events";
 import { createRequire } from "node:module";
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -13,12 +14,24 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const spawnSyncCalls = vi.hoisted(
   () => [] as Array<{ command: string; args: string[]; options: Record<string, any> }>,
 );
+const spawnCalls = vi.hoisted(
+  () => [] as Array<{ command: string; args: string[]; options: Record<string, any> }>,
+);
 const setprivPresent = vi.hoisted(() => ({ value: true }));
 
 vi.mock("node:child_process", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:child_process")>();
   return {
     ...actual,
+    // The wrapped kill is an async spawn; lsof and taskkill are spawnSync.
+    spawn: (command: string, args: string[], options: Record<string, any>) => {
+      spawnCalls.push({ command, args, options });
+      const child = new EventEmitter() as EventEmitter & Record<string, any>;
+      child.stderr = new EventEmitter();
+      child.kill = vi.fn();
+      setImmediate(() => child.emit("close", 0));
+      return child;
+    },
     spawnSync: (command: string, args: string[], options: Record<string, any>) => {
       spawnSyncCalls.push({ command, args, options });
       return { status: 0, stdout: "", stderr: "", error: undefined };
@@ -47,6 +60,7 @@ function inContainer(home = "/home/core") {
 
 beforeEach(() => {
   spawnSyncCalls.length = 0;
+  spawnCalls.length = 0;
   setprivPresent.value = true;
 });
 afterEach(() => {
@@ -136,13 +150,13 @@ describe("disposePty in container mode", () => {
     const proc = fakePty();
     disposePty(proc as never);
     expect(proc.destroy).toHaveBeenCalledTimes(1);
-    expect(spawnSyncCalls).toHaveLength(0);
+    expect(spawnCalls).toHaveLength(0);
 
     vi.advanceTimersByTime(1_499);
-    expect(spawnSyncCalls).toHaveLength(0);
+    expect(spawnCalls).toHaveLength(0);
     vi.advanceTimersByTime(2);
-    expect(spawnSyncCalls).toHaveLength(1);
-    const call = spawnSyncCalls[0]!;
+    expect(spawnCalls).toHaveLength(1);
+    const call = spawnCalls[0]!;
     expect(call.command).toBe("/usr/bin/setpriv");
     expect(call.args).toContain("--reuid=1000");
     expect(call.args.slice(-2)).toEqual(["KILL", "-4242"]);
@@ -155,7 +169,7 @@ describe("disposePty in container mode", () => {
     disposePty(proc as never);
     (proc.onExit.mock.calls[0]![0] as () => void)();
     vi.advanceTimersByTime(5_000);
-    expect(spawnSyncCalls).toHaveLength(0);
+    expect(spawnCalls).toHaveLength(0);
   });
 
   it("arms nothing outside container mode", () => {
@@ -164,7 +178,7 @@ describe("disposePty in container mode", () => {
     disposePty(proc as never);
     vi.advanceTimersByTime(5_000);
     expect(proc.onExit).not.toHaveBeenCalled();
-    expect(spawnSyncCalls).toHaveLength(0);
+    expect(spawnCalls).toHaveLength(0);
   });
 
   it("the no-destroy fallback signals as core, not with the handle's own kill", () => {
@@ -172,8 +186,8 @@ describe("disposePty in container mode", () => {
     const proc = { pid: 4242, kill: vi.fn() };
     disposePty(proc as never);
     expect(proc.kill).not.toHaveBeenCalled();
-    expect(spawnSyncCalls).toHaveLength(1);
-    expect(spawnSyncCalls[0]!.args.slice(-2)).toEqual(["HUP", "4242"]);
+    expect(spawnCalls).toHaveLength(1);
+    expect(spawnCalls[0]!.args.slice(-2)).toEqual(["HUP", "4242"]);
   });
 });
 

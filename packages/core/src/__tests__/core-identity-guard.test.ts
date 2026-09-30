@@ -16,9 +16,10 @@ const PACKAGES = path.resolve(__dirname, "../../..");
 
 function sources(pkg: string): string[] {
   const dir = path.join(PACKAGES, pkg, "src");
+  // Recursive: a spawn added under a subdirectory of src/ is still a spawn.
   return fs
-    .readdirSync(dir)
-    .filter((f) => f.endsWith(".ts"))
+    .readdirSync(dir, { recursive: true, encoding: "utf8" })
+    .filter((f) => f.endsWith(".ts") && !f.endsWith(".test.ts") && !f.split(path.sep).includes("__tests__"))
     .map((f) => path.join(dir, f));
 }
 

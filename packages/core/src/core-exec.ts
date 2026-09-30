@@ -33,7 +33,7 @@
 //      process on this machine until the Core restarted.
 
 import { spawn } from "node:child_process";
-import { asCore, coreHome, killAsCore } from "./core-identity";
+import { asCore, coreHome, killAsCoreQuietly } from "./core-identity";
 import * as fs from "node:fs";
 import { sanitizedProcessEnv } from "@actana/shared/shell-env";
 import type { CoreExecPortResult } from "./pty-core-link-server";
@@ -165,8 +165,10 @@ export async function runCoreExec(input: CoreExecInput): Promise<CoreExecOutcome
     // settle the promise themselves and leave the killing to it.
     const stop = (settle: () => void) => {
       finish(() => {
-        killAsCore(child, "SIGTERM");
-        killTimer = setTimeout(() => killAsCore(child, "SIGKILL"), SIGTERM_GRACE_MS);
+        // Quietly: a refused or failed wrapped kill is a log line, never a
+        // promise that does not settle or a timer that throws.
+        killAsCoreQuietly(child, "SIGTERM", "core-exec.kill");
+        killTimer = setTimeout(() => killAsCoreQuietly(child, "SIGKILL", "core-exec.kill"), SIGTERM_GRACE_MS);
         killTimer.unref?.();
         settle();
       });

@@ -14,6 +14,8 @@ const spawned = vi.hoisted(() => ({
   spawnSync: [] as Array<{ command: string; args: string[]; options: Record<string, any> }>,
 }));
 const setprivPresent = vi.hoisted(() => ({ value: true }));
+// A command that never finishes on its own: only its timeout ends it.
+const hang = vi.hoisted(() => ({ value: false }));
 
 vi.mock("node:child_process", () => ({
   spawn: (command: string, args: string[], options: Record<string, any>) => {
@@ -26,10 +28,19 @@ vi.mock("node:child_process", () => ({
     child.exitCode = null;
     child.signalCode = null;
     child.kill = vi.fn(() => true);
-    setImmediate(() => {
-      child.emit("exit", 0, null);
-      child.emit("close", 0, null);
-    });
+    const isWrappedKill = args.some((a) => a.startsWith("kill -s"));
+    if (isWrappedKill) {
+      // The wrapped kill itself fails, as it does on ESRCH or a wrapper timeout.
+      setImmediate(() => {
+        child.stderr.emit("data", Buffer.from("sh: 1: kill: No such process"));
+        child.emit("close", 1);
+      });
+    } else if (!hang.value) {
+      setImmediate(() => {
+        child.emit("exit", 0, null);
+        child.emit("close", 0, null);
+      });
+    }
     return child;
   },
   spawnSync: (command: string, args: string[], options: Record<string, any>) => {
@@ -48,6 +59,7 @@ vi.mock("node:fs", async (importOriginal) => {
 import { runCoreExec } from "../core-exec";
 import { runCli } from "../harness-cli-run";
 import { daemonHarnessSystem } from "../core-harness-system";
+import log from "@actana/shared/log";
 
 const SCRIPT = 'cd -- "$0" && exec "$@"';
 
@@ -67,6 +79,7 @@ beforeEach(() => {
   spawned.spawn.length = 0;
   spawned.spawnSync.length = 0;
   setprivPresent.value = true;
+  hang.value = false;
 });
 afterEach(() => vi.unstubAllEnvs());
 
@@ -158,5 +171,61 @@ describe("Harness installs", () => {
     system.run("npm", ["prefix", "-g"]);
     expect(spawned.spawnSync[0]).toMatchObject({ command: "npm", args: ["prefix", "-g"] });
     expect(spawned.spawnSync[0]!.options.env).toBeUndefined();
+  });
+});
+
+describe("a failing wrapped kill cannot strand a caller", () => {
+  it("core exec still rejects with its timeout sentence, and the failure is a log line", async () => {
+    inContainer();
+    hang.value = true;
+    const warn = vi.spyOn(log, "warn").mockImplementation(() => undefined);
+    const unhandled = vi.fn();
+    process.on("unhandledRejection", unhandled);
+    try {
+      await expect(runCoreExec({ command: "sleep", args: ["9"], cwd: "/tmp", timeoutMs: 20 })).rejects.toThrow(
+        /did not finish within/,
+      );
+      await new Promise((r) => setTimeout(r, 20));
+      expect(warn.mock.calls.map((c) => c[0])).toContain("core-exec.kill.failed");
+      expect(JSON.stringify(warn.mock.calls)).toContain("No such process");
+      expect(unhandled).not.toHaveBeenCalled();
+    } finally {
+      process.off("unhandledRejection", unhandled);
+      warn.mockRestore();
+    }
+  });
+
+  it("a headless Harness call still rejects with its timeout, and logs the failed kill", async () => {
+    inContainer();
+    hang.value = true;
+    const warn = vi.spyOn(log, "warn").mockImplementation(() => undefined);
+    try {
+      await expect(runCli("claude", ["-p", "hi"], { timeoutMs: 20 })).rejects.toThrow("timeout");
+      await new Promise((r) => setTimeout(r, 20));
+      expect(warn.mock.calls.map((c) => c[0])).toContain("harness-cli-run.kill.failed");
+    } finally {
+      warn.mockRestore();
+    }
+  });
+});
+
+describe("a refused spawn in the Harness install port", () => {
+  it("run() returns status 127 with the refusal, as it does for any failed run", () => {
+    inContainer();
+    setprivPresent.value = false;
+    const result = daemonHarnessSystem().run("npm", ["prefix", "-g"]);
+    expect(result.status).toBe(127);
+    expect(result.stderr).toMatch(/setpriv is not in/);
+    expect(spawned.spawnSync).toHaveLength(0);
+  });
+
+  it("passthrough() resolves 127 instead of rejecting", async () => {
+    inContainer();
+    setprivPresent.value = false;
+    const error = vi.spyOn(log, "error").mockImplementation(() => undefined);
+    await expect(daemonHarnessSystem().passthrough("sh", ["-c", "true"])).resolves.toBe(127);
+    expect(error.mock.calls[0]![0]).toMatch(/setpriv is not in/);
+    error.mockRestore();
+    expect(spawned.spawn).toHaveLength(0);
   });
 });

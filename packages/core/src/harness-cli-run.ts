@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { asCore, killAsCore } from "./core-identity";
+import { asCore, killAsCoreQuietly } from "./core-identity";
 import { resolveHarnessCommandOnPath } from "@actana/shared/harness-cli-resolution";
 import { resolveCommandOnPath, sanitizedProcessEnv } from "@actana/shared/shell-env";
 import { isWindowsCommandScript } from "@actana/shared/windows-cmd";
@@ -101,7 +101,7 @@ export function runCli(
     let out = "";
     let err = "";
     const timer = setTimeout(() => {
-      killAsCore(child, "SIGTERM");
+      killAsCoreQuietly(child, "SIGTERM", "harness-cli-run.kill");
       reject(new Error("timeout"));
     }, timeoutMs);
     child.stdout?.on("data", (d) => (out += d.toString()));
