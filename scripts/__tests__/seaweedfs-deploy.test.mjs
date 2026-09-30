@@ -140,7 +140,11 @@ describe("compose: the seaweedfs service is opt-in", () => {
   });
 
   it("never uses a required-variable form, which would break the plain up", () => {
-    expect(COMPOSE).not.toMatch(/\$\{[A-Z_]+:?\?/);
+    // Except the Panel's own database password (#567): the Panel needs its
+    // Postgres on every plain `up`, so that one is meant to stop compose when
+    // it is unset. Nothing of SeaweedFS's may be required.
+    const withoutPanelDatabase = COMPOSE.replace(/\$\{AC_PANEL_DB_PASSWORD:\?[^}]*\}/g, "");
+    expect(withoutPanelDatabase).not.toMatch(/\$\{[A-Z_]+:?\?/);
   });
 
   it("gives every secret variable an empty or placeholder default only", () => {
