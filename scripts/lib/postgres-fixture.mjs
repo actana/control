@@ -15,11 +15,26 @@ import { POSTGRES_DB, POSTGRES_IMAGE, POSTGRES_USER } from "./postgres-image.mjs
 
 const READY_TIMEOUT_MS = 60_000;
 
+/**
+ * `args` for a message: the value of every `--env` / `-e` is replaced, because
+ * these carry the database password and a failure message lands in the CI log.
+ */
+export function redactDockerArgs(args) {
+  return args.map((arg, i) => {
+    const flag = args[i - 1];
+    return (flag === "--env" || flag === "-e") && arg.includes("=")
+      ? `${arg.slice(0, arg.indexOf("="))}=<redacted>`
+      : arg;
+  });
+}
+
 function docker(args, { allowFailure = false } = {}) {
   const result = spawnSync("docker", args, { encoding: "utf8" });
   if (result.error) throw new Error(`docker ${args[0]}: ${result.error.message}`);
   if (result.status !== 0 && !allowFailure) {
-    throw new Error(`docker ${args.join(" ")} exited ${result.status}:\n${result.stderr}`);
+    throw new Error(
+      `docker ${redactDockerArgs(args).join(" ")} exited ${result.status}:\n${result.stderr}`,
+    );
   }
   return result;
 }

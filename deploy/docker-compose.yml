@@ -88,7 +88,7 @@ services:
       # Postgres below (#567), so a backup is this volume *and* `postgres-data`.
       - panel-data:/data
 
-  # The Panel's database (#567, ADR 0041 D8). No published ports: only the
+  # The Panel's database (#567, ADR 0041 D16). No published ports: only the
   # Panel, on this network, reaches it. Nothing in the Panel reads it yet; the
   # Panel only opens a connection to it at boot.
   #
@@ -115,7 +115,10 @@ services:
       # Postgres 18 keeps its cluster in a versioned directory under here.
       - postgres-data:/var/lib/postgresql
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U panel -d panel"]
+      # `-h 127.0.0.1`: over TCP, not the socket. On first boot the image's
+      # init-time server listens on the socket only, so a socket check can pass
+      # before the Panel's `postgres:5432` accepts a connection.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U panel -d panel"]
       interval: 5s
       timeout: 5s
       retries: 10

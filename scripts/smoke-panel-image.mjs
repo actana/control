@@ -32,7 +32,7 @@ import { spawnSync } from "node:child_process";
 
 import { parseArgs } from "./lib/cli.mjs";
 import { makeDie, pickFreePort } from "./lib/core-smoke.mjs";
-import { startPostgres } from "./lib/postgres-fixture.mjs";
+import { redactDockerArgs, startPostgres } from "./lib/postgres-fixture.mjs";
 import {
   PANEL_DOCKERFILE,
   PANEL_NODE_BIN,
@@ -61,7 +61,7 @@ function docker(dockerArgs, { allowFailure = false } = {}) {
   const result = spawnSync("docker", dockerArgs, { encoding: "utf8" });
   if (result.error) die(`docker ${dockerArgs[0]}: ${result.error.message}`);
   if (result.status !== 0 && !allowFailure) {
-    die(`docker ${dockerArgs.join(" ")} exited ${result.status}:\n${result.stderr}`);
+    die(`docker ${redactDockerArgs(dockerArgs).join(" ")} exited ${result.status}:\n${result.stderr}`);
   }
   return result;
 }

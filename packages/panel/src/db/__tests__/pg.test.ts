@@ -80,6 +80,13 @@ describe("readPanelPgConfig", () => {
     expect(() => readPanelPgConfig(env)).not.toThrow(new RegExp(SECRET));
   });
 
+  it("refuses a malformed % escape as a PanelDatabaseError, not a bare URIError", () => {
+    const env = { [DATABASE_URL_ENV]: `postgres://u:${SECRET}@db/pa%zznel` };
+    expect(() => readPanelPgConfig(env)).toThrow(PanelDatabaseError);
+    expect(() => readPanelPgConfig(env)).toThrow(/malformed % escape/);
+    expect(() => readPanelPgConfig(env)).not.toThrow(new RegExp(SECRET));
+  });
+
   it("refuses a URL with no host", () => {
     expect(() => readPanelPgConfig({ [DATABASE_URL_ENV]: "postgres:///panel" })).toThrow(
       /names no host/,

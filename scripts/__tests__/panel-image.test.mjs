@@ -324,7 +324,7 @@ describe("reference compose", () => {
 
     it("has a healthcheck, and the Panel waits for it", () => {
       expect(postgres.scalars).toHaveProperty("healthcheck");
-      expect(composeText).toMatch(/pg_isready -U panel -d panel/);
+      expect(composeText).toMatch(/pg_isready -h 127\.0\.0\.1 -U panel -d panel/);
       expect(panel.scalars).toHaveProperty("depends_on");
       expect(composeText).toMatch(/^ {6}postgres:\n {8}condition: service_healthy$/m);
     });

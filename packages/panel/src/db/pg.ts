@@ -1,7 +1,7 @@
 import pg from "pg";
 
 /**
- * The Panel's Postgres connection (#567, ADR 0041 D8).
+ * The Panel's Postgres connection (#567, ADR 0041 D16 and D19).
  *
  * This only builds a pool and proves it can reach the server. Nothing in the
  * Panel reads or writes through it yet — the tables still live in SQLite until
@@ -76,10 +76,19 @@ export function readPanelPgConfig(env: NodeJS.ProcessEnv = process.env): PanelPg
   }
   if (!url.hostname) {
     throw new PanelDatabaseError(
-      `${DATABASE_URL_ENV} names no host. Expected a connection URL such as ${EXAMPLE}.`,
+      `${DATABASE_URL_ENV} names no host (a unix-socket URL is not supported). ` +
+        `Expected a connection URL such as ${EXAMPLE}.`,
     );
   }
-  const database = decodeURIComponent(url.pathname.replace(/^\//, ""));
+  let database: string;
+  try {
+    database = decodeURIComponent(url.pathname.replace(/^\//, ""));
+  } catch {
+    throw new PanelDatabaseError(
+      `${DATABASE_URL_ENV} has a malformed % escape in the database name. ` +
+        `Expected a connection URL such as ${EXAMPLE}.`,
+    );
+  }
   return {
     connectionString: raw,
     target: `${url.hostname}:${url.port || "5432"}${database ? `/${database}` : ""}`,
