@@ -498,14 +498,18 @@ describe("actana session, against a Core in this process", () => {
       withCore(),
     );
     // The turn ends once the delivery has been stamped — which is the ordering
-    // a harness's Stop hook has: it cannot fire before the text arrives.
+    // a harness's Stop hook has: it cannot fire before the text arrives. Both
+    // stamps, the text's and the return's: the wait counts from the **later**
+    // one, because the turn starts at the Enter, so a status that lands between
+    // the two is before the cursor and is rightly not counted (issue 588).
+    // Ending the turn on the first stamp alone raced the return's round trip.
     // Named stages (#517): under parallel vitest load a bare 60 s test timeout
     // did not say whether the stamp or the CLI wait stalled. `waitFor` /
     // `awaitStage` name the step; the budget matches #446's "give it room
     // under full-suite contention" rather than serialising the file.
     await waitFor(
-      () => eventLog.events.some((e) => e.kind === SESSION_DELIVERED_EVENT_KIND),
-      "the write was stamped",
+      () => eventLog.events.filter((e) => e.kind === SESSION_DELIVERED_EVENT_KIND).length >= 2,
+      "the text and the return were both stamped",
       30_000,
     );
     endTurn("task_live", "finished");

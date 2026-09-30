@@ -516,7 +516,11 @@ export function updateTask(
     // Return the existing row unchanged.
     return readTaskSnapshot(sqlite, input.taskId);
   }
-  sets.push("updated_at = ?");
+  // Strictly increasing per row, never just the wall clock: `updated_at` is
+  // also the row's revision — the session backstop records it after its own
+  // write and treats any other value as somebody else's (issue 588). Two writes
+  // in one millisecond would otherwise carry one value and be indistinguishable.
+  sets.push("updated_at = MAX(?, updated_at + 1)");
   params.push(now);
   params.push(input.taskId);
   const result = sqlite
