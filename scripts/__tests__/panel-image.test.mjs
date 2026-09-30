@@ -234,7 +234,9 @@ describe("reference compose", () => {
     expect(coreService.image).toBe(
       `\${ACTANA_IMAGE_NAMESPACE:-actana}/${coreName}:\${ACTANA_TAG:-latest}`,
     );
-    expect(Object.keys(compose.services)).toEqual(["panel", "core-init", "core"]);
+    // `seaweedfs` is the opt-in Shared-folder backend (#566): behind a profile,
+    // so it is in the file but not in a plain `up` — see seaweedfs-deploy.test.mjs.
+    expect(Object.keys(compose.services)).toEqual(["panel", "core-init", "core", "seaweedfs"]);
   });
 
   it("moves both services from one tag variable, because they are version-locked", () => {
@@ -328,7 +330,7 @@ describe("reference compose", () => {
   // point when Docker created the host dir as root (#551 / #558).
   it("gives the Core one named volume — its home — plus a swappable repos mount", () => {
     expect(coreService.volumes).toEqual([`core-home:${CORE_HOME}`, `./repos:${CORE_HOME}/repos`]);
-    expect(compose.volumes).toEqual(["panel-data", "core-home"]);
+    expect(compose.volumes).toEqual(["panel-data", "core-home", "seaweedfs-data"]);
     expect(composeText).toMatch(/Swappable for a named volume/);
     expect(fs.existsSync(path.join(repoRoot, "deploy/repos"))).toBe(true);
   });
