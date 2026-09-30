@@ -20,7 +20,7 @@ Core installed on metal rather than in a container.
 git clone https://github.com/actana/control
 cd control/deploy
 docker compose up -d
-docker compose exec core actana pair new     # a one-time code and a fingerprint
+docker compose exec -u core core actana pair new     # a one-time code and a fingerprint
 ```
 
 Then open <http://localhost:7420>, create the Operator (name + password), and
@@ -57,10 +57,10 @@ It prints no credential and writes none into the log: a client is enrolled one
 at a time, with a one-time code.
 
 ```bash
-docker compose exec core actana pair new       # a code, a CA fingerprint, an expiry
-docker compose exec core actana pair ls        # pending codes and paired clients
-docker compose exec core actana pair revoke <target>   # unpair one, or cancel a code
-docker compose exec core actana token regenerate       # rotate this Core's identity
+docker compose exec -u core core actana pair new       # a code, a CA fingerprint, an expiry
+docker compose exec -u core core actana pair ls        # pending codes and paired clients
+docker compose exec -u core core actana pair revoke <target>   # unpair one, or cancel a code
+docker compose exec -u core core actana token regenerate       # rotate this Core's identity
 ```
 
 The code is single-use, expires in five minutes by default, and dies after five
@@ -126,8 +126,8 @@ so the container's own `actana` can dial it.
 Then pair each client to the address it can actually reach:
 
 ```bash
-docker compose exec core actana pair new --label panel  --public-host core
-docker compose exec core actana pair new --label laptop --public-host 192.168.1.20
+docker compose exec -u core core actana pair new --label panel  --public-host core
+docker compose exec -u core core actana pair new --label laptop --public-host 192.168.1.20
 ```
 
 `--public-host` **chooses** from that list; it can never add to it. Name an
@@ -194,7 +194,7 @@ between `# >>> second Core` and `# <<< second Core`; uncomment it, add
 
 Three things change per Core, and they must agree: the **service name**,
 `ACTANA_PUBLIC_HOST` **to match it**, and its **own volumes**. Pair it the same
-way — `docker compose exec core2 actana pair new` prints its own code and CA
+way — `docker compose exec -u core core2 actana pair new` prints its own code and CA
 fingerprint, and **Add Core** takes the address `core2:8443` with that code.
 
 Its repos are a named volume rather than a second bind mount, which is exactly
@@ -341,4 +341,4 @@ job:
 
 The verbs that still work are the ones that are about *this* Core rather than
 its lifecycle — `actana status`, `actana pair`, `actana harnesses install
-<id>`. `docker compose exec core actana --help` prints the container page.
+<id>`. `docker compose exec -u core core actana --help` prints the container page.

@@ -16,14 +16,15 @@
 //
 // The legs, in order:
 //
-//   • the built image's config carries tini as ENTRYPOINT and drops to `core`;
+//   • the built image's config carries tini + the root-prep entrypoint, and
+//     the daemon runs as `core` after setpriv (image USER is unset on purpose);
 //   • a plain `docker run` — no privileges, no host mounts — boots the daemon
 //     and mints an identity on the empty volume, printing no credential at all;
 //   • tini is PID 1 and the daemon is a child of PID 1 (D14), read out of /proc;
 //   • the lifecycle verbs the image owns refuse, and each names its Docker
 //     equivalent rather than just saying no (D16);
-//   • `docker compose exec core actana pair new` mints a one-time code inside
-//     the container, and a real Panel — booted as the deployable it is — checks
+//   • `docker compose exec -u core core actana pair new` mints a one-time code
+//     inside the container, and a real Panel — booted as the deployable it is —
 //     the CA fingerprint, spends the code in "Add Core", and the panel link
 //     reports the Core connected;
 //   • `docker restart` is a no-op for pairing: same identity, still no
@@ -147,7 +148,7 @@ async function bootCore(name, { port } = {}) {
       const result = docker(["logs", "--tail", tail, containerName], { allowFailure: true });
       return `${result.stdout ?? ""}${result.stderr ?? ""}`.trim();
     },
-    exec: (argv, options) => docker(["exec", containerName, ...argv], options),
+    exec: (argv, options) => docker(["exec", "-u", "core", containerName, ...argv], options),
     start: () => {
       docker([
         "run",
@@ -365,16 +366,24 @@ if (!args["skip-build"]) {
 
 // D14, on the built bytes: a Dockerfile line saying tini is the entrypoint is
 // not evidence that the image carries it, and this is exactly the kind of
-// clause a "simplify the Dockerfile" edit drops.
+// clause a "simplify the Dockerfile" edit drops. #558 wraps the root-prep
+// script under tini; both must be present.
 log("verifying the built image's entrypoint and identity …");
 const config = JSON.parse(docker(["image", "inspect", "--format", "{{json .Config}}", image]).stdout);
-if ((config?.Entrypoint ?? []).join(" ") !== "/usr/bin/tini --") {
-  die(`${image} entrypoint is ${JSON.stringify(config?.Entrypoint)}, expected ["/usr/bin/tini","--"]`);
+if ((config?.Entrypoint ?? []).join(" ") !== "/usr/bin/tini -- /usr/local/bin/core-entrypoint.sh") {
+  die(
+    `${image} entrypoint is ${JSON.stringify(config?.Entrypoint)}, ` +
+      `expected ["/usr/bin/tini","--","/usr/local/bin/core-entrypoint.sh"]`,
+  );
 }
 if ((config?.Cmd ?? []).join(" ") !== "actana daemon") {
   die(`${image} cmd is ${JSON.stringify(config?.Cmd)}, expected ["actana","daemon"]`);
 }
-if (config?.User !== "core") die(`${image} runs as ${JSON.stringify(config?.User)}, expected core`);
+// Image USER must stay unset: a trailing USER core would run the entrypoint
+// unprivileged and skip the #551/#558 filesystem repair.
+if (config?.User) {
+  die(`${image} runs as ${JSON.stringify(config?.User)}, expected unset (root entrypoint)`);
+}
 
 // ─── Boot 1: an empty volume mints an identity ───────────────────────────────
 
@@ -408,6 +417,22 @@ function assertNoCredentialInLogs(what) {
 // the host makes every bind-mounted repo unreadable to the operator who owns it.
 const identity = core.exec(["id", "-u"]).stdout.trim() + ":" + core.exec(["id", "-g"]).stdout.trim();
 if (identity !== "1000:1000") die(`the Core runs as ${identity}, expected 1000:1000`);
+
+// #558 — `sudo -n true` must fail for core (no package, or no NOPASSWD).
+const sudoN = core.exec(
+  ["sh", "-c", "command -v sudo >/dev/null 2>&1 && sudo -n true"],
+  { allowFailure: true },
+);
+if (sudoN.status === 0) {
+  die("core can run `sudo -n true` — NOPASSWD sudo must be gone (#558)");
+}
+log("core cannot sudo -n (expected)");
+
+for (const owned of [CORE_HOME, `${CORE_HOME}/shared`, `${CORE_HOME}/.local/share/actana/data`]) {
+  const owner = core.exec(["stat", "-c", "%u:%g", owned]).stdout.trim();
+  if (owner !== "1000:1000") die(`${owned} is owned by ${owner}, expected 1000:1000`);
+}
+log("home, shared and daemon state are owned by core");
 
 // D14 — node-pty forks a shell and the shell forks a Harness, so a Harness
 // whose shell exited first reparents to PID 1. libuv only reaps children Node

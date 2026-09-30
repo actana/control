@@ -68,10 +68,13 @@ ARG DEBIAN_FRONTEND=noninteractive
 # `zip`, `wget`, `gnupg`, and every init-system package the dev fixture needed.
 # In, newly: `lsof`, without which pty-manager.ts's port-conflict probe is
 # silently a no-op — which is what it is in today's dev Core.
+# `sudo` is deliberately absent (#558). System packages a Harness needs are
+# baked here; an agent cannot install more at run time. Privilege drop uses
+# `setpriv` from util-linux, which is Essential on this base — do not add it.
 RUN apt-get update \
  && apt-get upgrade -y \
  && apt-get install -y --no-install-recommends \
-      bash sudo ca-certificates curl git openssh-client \
+      bash ca-certificates curl git openssh-client \
       build-essential python3 \
       ripgrep jq less vim-tiny unzip lsof xz-utils \
       tini \
@@ -155,19 +158,16 @@ RUN userdel --remove ubuntu \
  && groupadd --gid 1000 core \
  && useradd --uid 1000 --gid 1000 --create-home --shell /bin/bash core
 
-# NOPASSWD sudo, for `core` and for nobody else (D12). A Core's entire purpose
-# is arbitrary work on real repos, and without this a mid-session "install a
-# system dependency" is a dead end.
+# No sudoers, and no `sudo` package (#558). ADR 0016 D12's NOPASSWD grant is
+# retired; the ADR that replaces it is #554. Root exists only for the
+# entrypoint's filesystem prep, then `setpriv` drops to `core` for good.
 #
 # There is deliberately no accommodation for overriding `user:` in compose.
-# It half-works, and half-working is worse than a refusal: sudoers matches by
-# name/uid, so an overridden uid gets no sudo at all, and NPM_CONFIG_PREFIX
-# below points at a home that uid cannot write — so `actana harnesses install`
-# fails even if sudo were widened. A host whose login user is not uid 1000 has
-# two supported answers: chown the bind-mounted directory to 1000:1000, or use
-# a named volume and let the Core own the repos.
-RUN echo "core ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/core \
- && chmod 0440 /etc/sudoers.d/core
+# It half-works, and half-working is worse than a refusal: NPM_CONFIG_PREFIX
+# below points at a home that an overridden uid cannot write — so
+# `actana harnesses install` fails. A host whose login user is not uid 1000
+# has two supported answers: chown the bind-mounted directory to 1000:1000, or
+# use a named volume and let the Core own the repos.
 
 # The Core itself, from the release tarball built for this architecture. It
 # arrives as a named build context because artifacts/ is .dockerignore'd:
@@ -216,15 +216,28 @@ RUN --mount=type=bind,from=tarball,target=/mnt/tarball \
 # which is the persistent volume, so they survive every image upgrade and
 # self-update in place. Baked binaries would do neither.
 
-USER core
-WORKDIR /home/core
-
-# Created here, owned by `core`, because Docker seeds a fresh named volume
-# from the image's content *and* mode at the mount path: get this wrong and
-# every new deployment gets a home the Core cannot write to.
+# Seed paths Docker will copy into a fresh named volume at these mount points.
+# Ownership must be core:core in the image: a root-owned seed makes every new
+# deployment unwritable by the daemon. `shared` is the Shared folder (#561's
+# contract starts here as an empty local dir). `repos` is the workspace bind
+# mount compose still uses; the entrypoint also repairs a host dir Docker
+# created as root (#551).
 RUN mkdir -p /home/core/.local/bin \
              /home/core/.local/share/actana/data \
-             /home/core/.config/actana
+             /home/core/.config/actana \
+             /home/core/shared \
+             /home/core/repos \
+ && chown -R core:core /home/core
+
+# Runs as root only long enough to ensure those paths exist and are owned by
+# core on a live volume/bind mount, then setpriv-drops to core before exec'ing
+# CMD. The image USER stays unset so this script actually starts as root; a
+# trailing `USER core` would make the prep a no-op. Operator `docker compose
+# exec` must pass `-u core` — see docs/images/core.md.
+COPY core-entrypoint.sh /usr/local/bin/core-entrypoint.sh
+RUN chmod 0755 /usr/local/bin/core-entrypoint.sh
+
+WORKDIR /home/core
 
 # The operator contract is three variables, and the minimum for a working
 # Core is one (D15):
@@ -260,8 +273,13 @@ RUN mkdir -p /home/core/.local/bin \
 # next start would say "no Core is installed here" instead of booting a daemon.
 # Setting it in the image is what leaves the collision with no outcome to decide:
 # whichever `actana` runs, it is the same program and it finds the same tree.
+#
+# HOME is pinned because the image USER is root (for the entrypoint). After
+# setpriv the daemon is uid 1000; keeping HOME=/home/core means harness npm
+# installs still land under the user prefix without needing sudo.
 ARG ACTANA_PORT=8443
 ENV ACTANA_PORT=${ACTANA_PORT} \
+    HOME=/home/core \
     ACTANA_CONTAINER=1 \
     AC_CORE_REMOTE=1 \
     AC_CORE_LINK_HOST=0.0.0.0 \
@@ -275,12 +293,13 @@ ENV ACTANA_PORT=${ACTANA_PORT} \
 # The same ARG, so the exposed port cannot drift from the documented default.
 EXPOSE ${ACTANA_PORT}
 
-# tini is PID 1; the daemon is PID 2 (D14). node-pty forks a shell and the
-# shell forks a Harness, so when the shell exits first that Harness reparents
-# to PID 1 — and libuv only waitpid()s children Node spawned itself. A Core
-# running as PID 1 therefore accumulates zombies until the PID table fills.
-# Baked in rather than left to `--init` / `init: true`, because those are
-# opt-in and anyone copying a bare `docker run` off a README would get the
+# tini is PID 1; the entrypoint preps the filesystem as root, drops to core,
+# and the daemon is then tini's child (D14 + #558). node-pty forks a shell and
+# the shell forks a Harness, so when the shell exits first that Harness
+# reparents to PID 1 — and libuv only waitpid()s children Node spawned itself.
+# A Core running as PID 1 therefore accumulates zombies until the PID table
+# fills. Baked in rather than left to `--init` / `init: true`, because those
+# are opt-in and anyone copying a bare `docker run` off a README would get the
 # broken configuration by default. tini is 10 kB and is not a supervisor.
-ENTRYPOINT ["/usr/bin/tini", "--"]
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/core-entrypoint.sh"]
 CMD ["actana", "daemon"]

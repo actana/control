@@ -792,26 +792,56 @@ describe("core image", () => {
   });
 
   // D12 — 1000:1000 explicitly, because useradd's own pick is 1001:100 and
-  // that breaks every bind-mounted repo.
+  // that breaks every bind-mounted repo. #558 retires the NOPASSWD half of
+  // D12: the image USER is unset so the entrypoint can start as root, then
+  // setpriv-drops to core before the daemon runs.
   it("removes the stock ubuntu user and pins core to 1000:1000", () => {
     const account = coreImage.runs.find((run) => run.includes("useradd"));
     expect(account).toContain("userdel");
     expect(account).toMatch(/groupadd --gid 1000 core/);
     expect(account).toMatch(/useradd --uid 1000 --gid 1000/);
-    expect(coreImage.users.at(-1)).toBe("core");
+    expect(coreImage.users).toEqual([]);
   });
 
-  it("gives NOPASSWD sudo to core and to nobody else", () => {
-    const sudoers = coreImage.runs.filter((run) => run.includes("NOPASSWD"));
-    expect(sudoers).toHaveLength(1);
-    expect(sudoers[0]).toContain("core ALL=(ALL) NOPASSWD:ALL");
-    expect(sudoers[0]).toContain("/etc/sudoers.d/core");
+  it("gives core no sudo and no sudoers file", () => {
+    expect(CORE_PACKAGES).not.toContain("sudo");
+    const install = coreImage.runs.find((run) => run.includes("apt-get install"));
+    expect(aptPackages(install)).not.toContain("sudo");
+    expect(coreImage.runs.filter((run) => run.includes("NOPASSWD"))).toHaveLength(0);
+    expect(coreDockerfile).not.toContain("/etc/sudoers.d/core");
+    // No RUN writes a sudoers drop-in; comments may still name the retired path.
+    expect(coreImage.runs.join("\n")).not.toMatch(/sudoers\.d/);
+  });
+
+  it("preps the filesystem as root then setpriv-drops to core", () => {
+    const entrypoint = readRepoFile("deploy/core-entrypoint.sh");
+    expect(entrypoint).toContain("setpriv");
+    expect(entrypoint).toContain("--reuid=");
+    expect(entrypoint).toContain('SHARED_DIR="${CORE_HOME}/shared"');
+    expect(entrypoint).toContain('WORKSPACE_DIR="${CORE_HOME}/repos"');
+    expect(entrypoint).toContain("ensure_core_owned");
+    // The script must not invoke sudo — comments naming its absence are fine.
+    const body = entrypoint
+      .split("\n")
+      .filter((line) => !line.trim().startsWith("#"))
+      .join("\n");
+    expect(body).not.toMatch(/\bsudo\b/);
+    expect(coreImage.entrypoint).toBe(
+      '["/usr/bin/tini", "--", "/usr/local/bin/core-entrypoint.sh"]',
+    );
+    expect(coreDockerfile).toContain("COPY core-entrypoint.sh");
+    // Seed shared + repos as core-owned so a fresh named volume is writable.
+    const seed = coreImage.runs.find((run) => run.includes("/home/core/shared"));
+    expect(seed).toContain("/home/core/repos");
+    expect(seed).toContain("chown -R core:core /home/core");
   });
 
   // D14 — tini is PID 1 so reparented Harnesses get reaped; baked in, because
   // `--init` is opt-in and a bare `docker run` would skip it.
   it("runs the daemon under tini as PID 1", () => {
-    expect(coreImage.entrypoint).toBe('["/usr/bin/tini", "--"]');
+    expect(coreImage.entrypoint).toBe(
+      '["/usr/bin/tini", "--", "/usr/local/bin/core-entrypoint.sh"]',
+    );
     expect(coreImage.cmd).toBe('["actana", "daemon"]');
   });
 
@@ -819,6 +849,7 @@ describe("core image", () => {
   // is a private image constant the container mode depends on.
   it("bakes the container-mode environment", () => {
     expect(coreImage.env).toMatchObject({
+      HOME: CORE_HOME,
       ACTANA_CONTAINER: "1",
       AC_CORE_REMOTE: "1",
       AC_CORE_LINK_HOST: "0.0.0.0",

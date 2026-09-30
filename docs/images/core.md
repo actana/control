@@ -18,7 +18,7 @@ brings this image up beside a Panel on one network:
 
 ```bash
 docker compose up -d
-docker compose exec core actana pair new     # a code and a CA fingerprint
+docker compose exec -u core core actana pair new     # a code and a CA fingerprint
 ```
 
 Then open the Panel and give **Add Core** the address `core:8443` and that code,
@@ -72,8 +72,8 @@ a LAN address from outside it. Name both:
 One certificate covers both, and each client is paired to the one it can reach:
 
 ```bash
-docker compose exec core actana pair new --label panel  --public-host core
-docker compose exec core actana pair new --label laptop --public-host 192.168.1.20
+docker compose exec -u core core actana pair new --label panel  --public-host core
+docker compose exec -u core core actana pair new --label laptop --public-host 192.168.1.20
 ```
 
 `--public-host` picks from the configured list and can never add to it: an address that is not on
@@ -93,7 +93,7 @@ Panel paired before the edit still trusts this Core. What differs is whether it 
   it. Point it at the new address, or pair it again:
 
   ```bash
-  docker compose exec core actana pair new --label my-panel
+  docker compose exec -u core core actana pair new --label my-panel
   ```
 
 Reordering the list is a replacement of sorts: the first entry is the endpoint a code hands back
@@ -110,7 +110,7 @@ Install them into the volume instead, where they persist across image upgrades a
 place:
 
 ```bash
-docker compose exec core actana harnesses install claude-code
+docker compose exec -u core core actana harnesses install claude-code
 ```
 
 ## What is inside
@@ -121,15 +121,21 @@ digest still collects Canonical's security fixes.
 A real toolchain, because a Core exists to run coding agents against real repositories: `git`,
 `curl`, `openssh-client`, `ripgrep`, `jq`, `lsof`, `vim-tiny`, and `build-essential` + `python3` so
 that `npm install` on a project with a native addon can actually invoke node-gyp. The `core` user
-(uid 1000, gid 1000) has passwordless `sudo` for the same reason.
+(uid 1000, gid 1000) has **no sudo** — system packages are baked into the image, and an agent
+cannot install more at run time.
+
+The container starts as root only long enough for the entrypoint to create `~`, `~/shared` and the
+daemon state directory owned by `core`, and to repair a root-owned workspace bind mount. It then
+drops to `core` with `setpriv` and never escalates again. Operator commands inside the container
+must use `docker compose exec -u core …` because the image USER is unset on purpose.
 
 A system Node 24, taken from nodejs.org and SHA-256 verified against that release's own
 `SHASUMS256.txt`, for `npm i -g` work. The daemon does not use it — it runs the Node bundled inside
 its own release tarball.
 
-`tini` is PID 1 and the daemon runs as its child. That is baked into the image rather than left to
-`--init` / `init: true`, because a Core forks shells that fork agents, and a Node process running as
-PID 1 does not reap the ones that get reparented to it.
+`tini` is PID 1 and the daemon runs as its child (after the entrypoint drops privileges). That is
+baked into the image rather than left to `--init` / `init: true`, because a Core forks shells that
+fork agents, and a Node process running as PID 1 does not reap the ones that get reparented to it.
 
 ### uid 1000, and bind-mounted repositories
 
@@ -138,8 +144,9 @@ your host and your login user is not uid 1000, files the Core writes will be own
 does not exist on your host. Two supported answers: `chown -R 1000:1000` the directory, or use a
 named volume and let the Core own the checkout.
 
-Overriding `user:` is **not** supported — it half-works, which is worse. `sudo` is granted by name,
-and npm's prefix points into `/home/core`, so an overridden uid gets neither.
+Overriding `user:` is **not** supported — it half-works, which is worse. The entrypoint must start
+as root to repair ownership, and npm's prefix points into `/home/core`, so an overridden uid gets
+neither a working prep nor a writable home.
 
 Under rootless Docker or Podman the engine maps container uid 1000 to a host subuid, so plain
 `chown 1000` is the wrong advice there; use `podman unshare chown` or `--userns=keep-id`.

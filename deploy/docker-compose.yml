@@ -1,7 +1,7 @@
 # The reference deployment: one Panel, one Core, one network (ADR 0016 D41).
 #
 #   docker compose up -d
-#   docker compose exec core actana pair new     # a code and a CA fingerprint
+#   docker compose exec -u core core actana pair new     # a code and a CA fingerprint
 #
 # then open http://localhost:7420, create the Operator, and give "Add Core" the
 # address core:8443 and that code — checking the fingerprint the Panel shows
@@ -119,7 +119,7 @@ services:
 # A second Core is the block above again with three things changed: the
 # service name, ACTANA_PUBLIC_HOST to match it, and its own volume. Nothing
 # here is a singleton. Uncomment, add `core2-home:` and `core2-repos:` under
-# `volumes:`, and pair it the same way — `docker compose exec core2 actana
+# `volumes:`, and pair it the same way — `docker compose exec -u core core2 actana
 # pair new` prints its own code and CA fingerprint.
 #
 # Its repos are a named volume rather than a second bind mount, which is the
