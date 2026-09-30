@@ -81,8 +81,21 @@ export const CORE_IMAGE = "actana/core";
 /** Where the Core image extracts the release tarball (ADR 0016 D13). */
 export const CORE_APP_ROOT = "/opt/actana";
 
-/** The single directory the Core image keeps all of its state under (D19). */
+/** The Core's home: its work and each Harness's own credentials (D19, narrowed by #559). */
 export const CORE_HOME = "/home/core";
+
+/**
+ * Where the daemon keeps what only it may hold (#559): its own volume, not the
+ * home. A copy of `CORE_STATE_DIR` and friends in
+ * `packages/shared/src/actana-container-contract.ts`, and deliberately a copy
+ * for the reason `CORE_REFUSED_VERBS` is one: the image smoke runs as plain
+ * node and cannot import the Core's TypeScript. A test holds the copies to it.
+ */
+export const CORE_STATE_DIR = "/var/lib/actana";
+export const CORE_STATE_DATA_DIR = `${CORE_STATE_DIR}/data`;
+export const CORE_STATE_MATERIAL_FILE = `${CORE_STATE_DIR}/config/material.json`;
+/** The hook miss drop box, which a Session may append to (#559). */
+export const CORE_HOOK_DROP_DIR = "/run/actana";
 
 /**
  * The lifecycle verbs the image owns, which refuse in a container and name the

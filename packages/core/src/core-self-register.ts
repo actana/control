@@ -15,8 +15,9 @@
 //
 // So the daemon does its own wiring, through the same module `setup` uses
 // (`@actana/shared/local-core-wiring`) and into the same directory: the
-// container's `AC_CORE_MATERIAL_FILE` already lives in `~/.config/actana`, which
-// is where the registry is. Since #287 this is the *only* place a credential
+// material lives in the state directory, not in `~/.config/actana` (#559); the
+// registry is in `~/.config/actana`, which a Session reads on purpose. Since #287
+// this is the *only* place a credential
 // this Core issued to itself is written down — the `registration-blob.txt` that
 // used to sit beside the material file is gone, along with everything that read
 // it.

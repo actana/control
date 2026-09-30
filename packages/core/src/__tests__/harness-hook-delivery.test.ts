@@ -6,8 +6,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   HookDeliveryMonitor,
   drainHookMisses,
+  ensureHookMissDropBox,
   hookMissLogPath,
 } from "../harness-hook-delivery";
+import { CORE_HOOK_MISS_LOG, CORE_STATE_DIR } from "@actana/shared/actana-container-contract";
 import { HOOK_MISS_LOG_ENV, hookCommand } from "../harness-hooks";
 import {
   startHarnessHookReceiver,
@@ -223,4 +225,136 @@ describe("the two ends together, run as a hook really runs them", () => {
     expect(code).toBe(0);
     expect(fs.existsSync(missLog)).toBe(false);
   }, DROP_PATH_TIMEOUT_MS);
+});
+
+// The miss log in the container is a drop box (#559): a Session appends to it,
+// and the daemon, whose own state a Session cannot read, reads it back. What a
+// Session wrote is input from a process that is not trusted, not a record.
+describe("the hook miss drop box", () => {
+  let dir: string;
+  let missLog: string;
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), "ac-hook-dropbox-"));
+    missLog = path.join(dir, "drop", "hook-misses.log");
+  });
+  afterEach(() => {
+    fs.rmSync(dir, { recursive: true, force: true });
+    vi.restoreAllMocks();
+  });
+
+  it("is outside the state directory in the container, and beside the database on metal", () => {
+    expect(hookMissLogPath("/data", true)).toBe(CORE_HOOK_MISS_LOG);
+    expect(CORE_HOOK_MISS_LOG.startsWith(`${CORE_STATE_DIR}/`)).toBe(false);
+    expect(hookMissLogPath("/data")).toBe("/data/hook-misses.log");
+    expect(hookMissLogPath("/data", false)).toBe("/data/hook-misses.log");
+  });
+
+  it("is made traversable and world-writable (0622) whatever the umask says", () => {
+    const umask = process.umask(0o077);
+    try {
+      expect(ensureHookMissDropBox(missLog)).toBe(true);
+    } finally {
+      process.umask(umask);
+    }
+    expect(fs.statSync(path.dirname(missLog)).mode & 0o777).toBe(0o711);
+    expect(fs.statSync(missLog).mode & 0o777).toBe(0o622);
+  });
+
+  it("keeps what is in an existing drop box and never throws when it cannot make one", () => {
+    expect(ensureHookMissDropBox(missLog)).toBe(true);
+    fs.writeFileSync(missLog, "x\ty\tz\t1\n");
+    expect(ensureHookMissDropBox(missLog)).toBe(true);
+    expect(fs.readFileSync(missLog, "utf8")).toBe("x\ty\tz\t1\n");
+
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const blocked = path.join(dir, "plain-file");
+    fs.writeFileSync(blocked, "");
+    expect(ensureHookMissDropBox(path.join(blocked, "hook-misses.log"))).toBe(false);
+    expect(warn.mock.calls.flat().join(" ")).toContain("hook-delivery.drop-box-failed");
+  });
+
+  it("does not follow a symlink where the drop box should be, and does not chmod its target", () => {
+    const target = path.join(dir, "elsewhere.log");
+    fs.writeFileSync(target, "keep", { mode: 0o600 });
+    fs.mkdirSync(path.dirname(missLog), { recursive: true });
+    fs.symlinkSync(target, missLog);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    expect(ensureHookMissDropBox(missLog)).toBe(false);
+    expect(fs.statSync(target).mode & 0o777).toBe(0o600);
+    expect(warn.mock.calls.flat().join(" ")).toContain("hook-delivery.drop-box-failed");
+  });
+
+  it.skipIf(!shellAvailable)("takes the line a real hook command appends to it", () => {
+    ensureHookMissDropBox(missLog);
+    const result = spawnSync("sh", ["-c", hookCommand("claude", "Stop")], {
+      encoding: "utf8",
+      input: "{}",
+      env: {
+        ...process.env,
+        AC_HOOK_URL: "http://127.0.0.1:1",
+        AC_HOOK_TOKEN: "t",
+        AC_HOOK_TASK_ID: "t-drop",
+        AC_HOOK_MISS_LOG: missLog,
+      },
+    });
+    expect(result.status).toBe(0);
+    expect(drainHookMisses(missLog).map((miss) => miss.taskId)).toEqual(["t-drop"]);
+  });
+
+  describe("read as untrusted input", () => {
+    beforeEach(() => {
+      ensureHookMissDropBox(missLog);
+    });
+
+    it("reads no more than the cap, and drops the line the cap cut in two", () => {
+      const line = "2026-01-01T00:00:00Z\tt-big\tStop\t28\n";
+      const filler = Math.floor(999_950 / line.length);
+      // The cap falls inside the code field of the last line, leaving a prefix
+      // that has four tab-separated fields and would parse as a miss.
+      const torn = `2026-01-01T00:00:00Z\tt-cut\tStop\t28${"1".repeat(28)}\n`;
+      fs.writeFileSync(missLog, line.repeat(filler) + "x".repeat(999_950 - filler * line.length));
+      fs.appendFileSync(missLog, torn.repeat(30_000));
+
+      const misses = drainHookMisses(missLog);
+
+      expect(misses.length).toBe(filler);
+      expect(misses.some((miss) => miss.taskId === "t-cut")).toBe(false);
+      expect(fs.statSync(missLog).size).toBe(0);
+    });
+
+    it("reads fields as data: no control characters, bounded length, extra fields ignored", () => {
+      const long = "x".repeat(10_000);
+      fs.writeFileSync(
+        missLog,
+        [
+          "2026-01-01T00:00:00Z\tt-\u001b[31mred\tSt\rop\t28\tsurplus\tfields",
+          `2026-01-01T00:00:00Z\t${long}\tStop\t28`,
+          `2026-01-01T00:00:00Z\t${"y".repeat(200)}\tStop\t28`,
+          "\t\t\t",
+          "\u0000\u0000\u0000",
+          "2026-01-01T00:00:00Z\tt-c1\u009b\u2028x\tStop\t28",
+        ].join("\n") + "\n",
+      );
+
+      const misses = drainHookMisses(missLog);
+
+      expect(misses).toEqual([
+        { at: "2026-01-01T00:00:00Z", taskId: "t-[31mred", event: "Stop", code: "28" },
+        { at: "2026-01-01T00:00:00Z", taskId: "y".repeat(128), event: "Stop", code: "28" },
+        { at: "2026-01-01T00:00:00Z", taskId: "t-c1x", event: "Stop", code: "28" },
+      ]);
+    });
+
+    it("does not follow a symlink to somewhere else, and does not clear what it points at", () => {
+      const target = path.join(dir, "elsewhere.log");
+      fs.writeFileSync(target, "2026-01-01T00:00:00Z\tt-1\tStop\t28\n");
+      fs.rmSync(missLog);
+      fs.symlinkSync(target, missLog);
+
+      expect(drainHookMisses(missLog)).toEqual([]);
+      expect(fs.readFileSync(target, "utf8")).toContain("t-1");
+    });
+  });
 });

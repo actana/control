@@ -226,11 +226,29 @@ RUN --mount=type=bind,from=tarball,target=/mnt/tarball \
 # volumes; a host bind mount that Docker created as root is repaired by the
 # one-shot `core-fs-prep.sh` (compose `core-init`), mount point only.
 RUN mkdir -p /home/core/.local/bin \
-             /home/core/.local/share/actana/data \
-             /home/core/.config/actana \
              /home/core/shared \
              /home/core/repos \
  && chown -R core:core /home/core
+
+# The daemon's own state (#559) is not in that home: pairing identity, the
+# database, the update caches and, later, the Shared-folder key live in
+# /var/lib/actana, which compose mounts as the `core-state` volume (seeded from
+# this directory, so the owner and the mode below are what a new volume gets).
+# `data` and `config` are what AC_USER_DATA_DIR and AC_CORE_MATERIAL_FILE name;
+# `shared` is reserved for #561/#562. Mode 0700 from the start: what is in it is
+# meant for the daemon alone.
+#
+# The owner is core (1000) for now because the daemon still runs as core. The
+# change to a daemon user of its own changes this one line and nothing else.
+#
+# /run/actana is the hook miss drop box: the one place a Session may append to
+# and the daemon reads, as untrusted input. The directory must exist in the
+# image because the daemon may not be able to create it under /run; the file in
+# it is made by the daemon at boot (harness-hook-delivery.ts).
+RUN mkdir -p /var/lib/actana/data /var/lib/actana/config /var/lib/actana/shared /run/actana \
+ && chown -R core:core /var/lib/actana /run/actana \
+ && chmod 0700 /var/lib/actana /var/lib/actana/data /var/lib/actana/config /var/lib/actana/shared \
+ && chmod 0711 /run/actana
 
 # Bind-mount prep only — run as root from compose `core-init` or an equivalent
 # one-shot `docker run -u 0 --entrypoint …`. No privilege-escalating binary.
@@ -288,6 +306,11 @@ WORKDIR /home/core
 #
 # HOME is pinned so os.homedir() and harness npm installs stay under /home/core
 # even if something started the process without a passwd lookup.
+#
+# The two AC_ paths are the state directory, not the home (#559). They are spelt
+# out here because an ENV line cannot call a function; `CORE_STATE_DIR` in
+# packages/shared/src/actana-container-contract.ts is the one the code uses, and
+# a test compares the two.
 ARG ACTANA_PORT=8443
 ENV ACTANA_PORT=${ACTANA_PORT} \
     HOME=/home/core \
@@ -296,8 +319,8 @@ ENV ACTANA_PORT=${ACTANA_PORT} \
     AC_CORE_LINK_HOST=0.0.0.0 \
     ACTANA_ROOT=/opt/actana \
     AC_APP_PATH=/opt/actana/app \
-    AC_USER_DATA_DIR=/home/core/.local/share/actana/data \
-    AC_CORE_MATERIAL_FILE=/home/core/.config/actana/material.json \
+    AC_USER_DATA_DIR=/var/lib/actana/data \
+    AC_CORE_MATERIAL_FILE=/var/lib/actana/config/material.json \
     NPM_CONFIG_PREFIX=/home/core/.local \
     PATH=/home/core/.local/bin:/opt/actana/bin:/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin
 
