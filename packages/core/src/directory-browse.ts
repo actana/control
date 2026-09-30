@@ -11,7 +11,7 @@
 // error box verbatim.
 
 import * as fs from "node:fs";
-import * as os from "node:os";
+import { coreHome } from "./core-identity";
 import * as path from "node:path";
 import type { CoreLinkDirEntry, CoreLinkDirListing } from "@actana/sdk/core";
 
@@ -48,7 +48,7 @@ export async function listDirectory(
   opts: DirectoryBrowseOptions = {},
 ): Promise<CoreLinkDirListing> {
   const fsp = fs.promises;
-  const home = opts.home ?? os.homedir();
+  const home = opts.home ?? coreHome();
   const limit = opts.limit ?? DEFAULT_LIST_LIMIT;
   const raw = typeof requested === "string" && requested.trim() ? requested : home;
 

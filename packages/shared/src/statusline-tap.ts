@@ -1,6 +1,6 @@
 import * as fs from "node:fs";
-import * as os from "node:os";
 import * as path from "node:path";
+import { coreHome } from "./core-home";
 import { readJsonSettingsFile, writeJsonSettingsFile } from "./json-settings-file";
 
 /**
@@ -19,16 +19,25 @@ import { readJsonSettingsFile, writeJsonSettingsFile } from "./json-settings-fil
  * the endpoint's per-account quota.
  */
 
-export const SHARED_LIMITS_DIR = path.join(os.homedir(), ".cache", "claude-limits");
-export const SHARED_LIMITS_FILE = path.join(SHARED_LIMITS_DIR, "limits.json");
+// These are functions, not constants: a path computed at import is computed
+// once, from whoever the process happens to be, before anything has said who
+// the Core's Sessions are (issue 559). In the container the daemon's own home
+// is not the home these files live in.
+export function sharedLimitsDir(home: string = coreHome()): string {
+  return path.join(home, ".cache", "claude-limits");
+}
+export function sharedLimitsFile(home: string = coreHome()): string {
+  return path.join(sharedLimitsDir(home), "limits.json");
+}
 
 // The pre-fork name survives in this path on purpose. It is written into the
 // `statusLine.command` of every ~/.claude/settings.json this has ever touched,
 // on machines this repo will never see again; renaming the directory orphans
 // the installed script rather than moving it. The *text* the script carries was
 // rebranded (v5) — that one is only ever read by a human.
-const TAP_DIR = path.join(os.homedir(), ".claude", "mission-control");
-export const STATUSLINE_TAP_PATH = path.join(TAP_DIR, "statusline-tap.sh");
+export function statuslineTapPath(home: string = coreHome()): string {
+  return path.join(home, ".claude", "mission-control", "statusline-tap.sh");
+}
 
 /** Marker present in the managed statusLine command; also the recursion guard. */
 const TAP_BASENAME = "statusline-tap.sh";
@@ -209,7 +218,7 @@ function readTapVersion(content: string): number {
 }
 
 /** Write (or refresh) the tap script under ~/.claude/mission-control. */
-export function ensureStatuslineTapScript(tapPath: string = STATUSLINE_TAP_PATH): string | null {
+export function ensureStatuslineTapScript(tapPath: string = statuslineTapPath()): string | null {
   try {
     let current: string | null = null;
     try {
@@ -240,8 +249,8 @@ export function ensureStatuslineTapScript(tapPath: string = STATUSLINE_TAP_PATH)
 export function installManagedStatusLine(
   cwd: string,
   platform: NodeJS.Platform = process.platform,
-  homedir: string = os.homedir(),
-  tapPath: string = STATUSLINE_TAP_PATH,
+  homedir: string = coreHome(),
+  tapPath: string = statuslineTapPath(),
 ): void {
   if (platform === "win32") return; // the tap is a POSIX sh script
 
@@ -275,5 +284,5 @@ export function ensureStatuslineTap(
   if (platform === "win32") return;
   const tapPath = ensureStatuslineTapScript();
   if (!tapPath) return;
-  installManagedStatusLine(cwd, platform, os.homedir(), tapPath);
+  installManagedStatusLine(cwd, platform, coreHome(), tapPath);
 }

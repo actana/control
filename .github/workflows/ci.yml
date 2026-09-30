@@ -634,6 +634,19 @@ jobs:
       # packages in an annotation and in the job summary, so a reviewer sees
       # which package failed without opening this log (#257).
       - run: pnpm test
+      # The real `asCore` wrapper (#559). It needs root to set up its caller: a
+      # non-root uid that holds only ambient CAP_SETUID and CAP_SETGID, which is
+      # what the daemon is in the container (PR 4). The test becomes that daemon
+      # with `setpriv`, then reads the child's own /proc/self/status. Under the
+      # plain `pnpm test` above it is skipped, because the runner user is not
+      # root. This is CI, not a Core: hosted runners have passwordless sudo, and
+      # nothing here runs on an operator's machine. `vitest` is called directly,
+      # not through pnpm, so root does not try to manage a pnpm version of its
+      # own. ACTANA_REQUIRE_ROOT_TESTS turns "not root" into a failure instead of
+      # a skip, so this step cannot pass without having run the wrapper.
+      - name: Real asCore wrapper (root, from a daemon holding only SETUID and SETGID)
+        working-directory: packages/shared
+        run: sudo env "PATH=$PATH" CI=1 ACTANA_REQUIRE_ROOT_TESTS=1 node_modules/.bin/vitest run src/__tests__/core-home.test.ts
       # The second opinion on the temp leak, at job scope rather than run
       # scope: the runner sandboxes its own `TMPDIR` and removes it, so
       # anything matching `mc-*`/`actana-*` still standing here came from a

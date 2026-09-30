@@ -33,8 +33,8 @@
 //      process on this machine until the Core restarted.
 
 import { spawn } from "node:child_process";
+import { asCore, coreHome, killAsCoreQuietly } from "./core-identity";
 import * as fs from "node:fs";
-import * as os from "node:os";
 import { sanitizedProcessEnv } from "@actana/shared/shell-env";
 import type { CoreExecPortResult } from "./pty-core-link-server";
 
@@ -94,7 +94,7 @@ export function outputTooLargeMessage(limitBytes: number): string {
  * it.
  */
 function resolveCwd(requested: string | null | undefined): string {
-  const raw = typeof requested === "string" && requested.trim() ? requested.trim() : os.homedir();
+  const raw = typeof requested === "string" && requested.trim() ? requested.trim() : coreHome();
   let stat: fs.Stats;
   try {
     stat = fs.statSync(raw);
@@ -126,9 +126,15 @@ export async function runCoreExec(input: CoreExecInput): Promise<CoreExecOutcome
   return new Promise<CoreExecOutcome>((resolve, reject) => {
     let child;
     try {
-      child = spawn(input.command, input.args, {
+      const launch = asCore({
+        command: input.command,
+        args: input.args,
         cwd,
         env: sanitizedProcessEnv(),
+      });
+      child = spawn(launch.command, launch.args, {
+        cwd: launch.cwd,
+        env: launch.env,
         // No shell, and no inherited stdin: this is an argv the caller chose,
         // and a child that read from a stdin nobody is typing into would hang
         // rather than finish. A caller that wants a shell asks for one by name.
@@ -159,8 +165,10 @@ export async function runCoreExec(input: CoreExecInput): Promise<CoreExecOutcome
     // settle the promise themselves and leave the killing to it.
     const stop = (settle: () => void) => {
       finish(() => {
-        child.kill("SIGTERM");
-        killTimer = setTimeout(() => child.kill("SIGKILL"), SIGTERM_GRACE_MS);
+        // Quietly: a refused or failed wrapped kill is a log line, never a
+        // promise that does not settle or a timer that throws.
+        killAsCoreQuietly(child, "SIGTERM", "core-exec.kill");
+        killTimer = setTimeout(() => killAsCoreQuietly(child, "SIGKILL", "core-exec.kill"), SIGTERM_GRACE_MS);
         killTimer.unref?.();
         settle();
       });
