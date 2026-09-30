@@ -80,12 +80,49 @@ services:
   # compose network and nothing else needs to. Nor `privileged`, `cgroup:
   # host`, `tmpfs:` or `init:` — all four belonged to the systemd fixture this
   # replaced, and tini is PID 1 inside the image itself (ADR 0016 D14).
+  #
+  # Bind-mount ownership (#551 / #558): Docker creates a missing host `./repos`
+  # as root. Named volumes are image-seeded core:core, so they need no prep.
+  # `core-init` is a root one-shot on the same volumes; it exits. The main
+  # service stays USER 1000:1000 so `docker compose exec` is never root.
+  # Without compose, the equivalent is:
+  #   docker run --rm -u 0 --entrypoint /usr/local/libexec/core-fs-prep.sh \
+  #     -v <home>:/home/core -v <repos>:/home/core/repos <image>
+  core-init:
+    image: ${ACTANA_IMAGE_NAMESPACE:-actana}/core:${ACTANA_TAG:-latest}
+    user: "0:0"
+    entrypoint: ["/usr/local/libexec/core-fs-prep.sh"]
+    # Smallest capability set that can finish prep on a 0750 home:
+    #   CHOWN         — change mount-point owners to 1000:1000
+    #   DAC_OVERRIDE  — noble seeds ~/ as 0750 (HOME_MODE); without this,
+    #                   uid 0 with only CHOWN is checked as "other" and cannot
+    #                   search or mkdir under /home/core (fresh volume or an
+    #                   upgrade that still lacks ~/shared).
+    # No network; no-new-privileges keeps the set from growing.
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+    security_opt:
+      - no-new-privileges:true
+    network_mode: none
+    volumes:
+      - core-home:/home/core
+      - ./repos:/home/core/repos
+    restart: "no"
+
   core:
     # The same `ACTANA_TAG` the Panel above reads. One variable, both services
     # — they are version-locked and moving one without the other is a pair
     # that never shipped.
     image: ${ACTANA_IMAGE_NAMESPACE:-actana}/core:${ACTANA_TAG:-latest}
     restart: unless-stopped
+    depends_on:
+      core-init:
+        condition: service_completed_successfully
+    security_opt:
+      - no-new-privileges:true
     environment:
       # The address the Panel dials, and therefore the SAN in this Core's
       # server certificate and the endpoint every pairing hands back.
@@ -114,13 +151,16 @@ services:
       # `core-repos:` added under `volumes:` — if you would rather the Core
       # own them: files the Core writes here are owned by uid 1000, which is
       # your own uid only on a host whose login user was the first created.
+      # A missing host dir is created root-owned; `core-init` chowns the
+      # mount point only (not the tree).
       - ./repos:/home/core/repos
 
 # A second Core is the block above again with three things changed: the
-# service name, ACTANA_PUBLIC_HOST to match it, and its own volume. Nothing
-# here is a singleton. Uncomment, add `core2-home:` and `core2-repos:` under
-# `volumes:`, and pair it the same way — `docker compose exec core2 actana
-# pair new` prints its own code and CA fingerprint.
+# service name, ACTANA_PUBLIC_HOST to match it, and its own volumes (including
+# a `core2-init` one-shot on those volumes). Nothing here is a singleton.
+# Uncomment, add `core2-home:` and `core2-repos:` under `volumes:`, and pair
+# it the same way — `docker compose exec core2 actana pair new` prints its
+# own code and CA fingerprint.
 #
 # Its repos are a named volume rather than a second bind mount, which is the
 # swap the first Core's comment describes: a bind mount needs a host directory
@@ -128,9 +168,30 @@ services:
 # would have neither.
 #
 # >>> second Core
+#   core2-init:
+#     image: ${ACTANA_IMAGE_NAMESPACE:-actana}/core:${ACTANA_TAG:-latest}
+#     user: "0:0"
+#     entrypoint: ["/usr/local/libexec/core-fs-prep.sh"]
+#     cap_drop:
+#       - ALL
+#     cap_add:
+#       - CHOWN
+#       - DAC_OVERRIDE
+#     security_opt:
+#       - no-new-privileges:true
+#     network_mode: none
+#     volumes:
+#       - core2-home:/home/core
+#       - core2-repos:/home/core/repos
+#     restart: "no"
 #   core2:
 #     image: ${ACTANA_IMAGE_NAMESPACE:-actana}/core:${ACTANA_TAG:-latest}
 #     restart: unless-stopped
+#     depends_on:
+#       core2-init:
+#         condition: service_completed_successfully
+#     security_opt:
+#       - no-new-privileges:true
 #     environment:
 #       - ACTANA_PUBLIC_HOST=core2
 #       - ACTANA_LABEL=core2

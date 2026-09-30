@@ -118,7 +118,6 @@ export const CORE_REFUSED_VERBS = Object.freeze([
  */
 export const CORE_PACKAGES = Object.freeze([
   "bash",
-  "sudo",
   "ca-certificates",
   "curl",
   "git",

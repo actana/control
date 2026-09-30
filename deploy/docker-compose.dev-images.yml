@@ -31,5 +31,10 @@ services:
   panel:
     image: ${ACTANA_IMAGE_NAMESPACE:-actana}/panel-dev:${ACTANA_TAG:?set ACTANA_TAG to the pull request image tag, e.g. pr-116202608}
 
+  # Same -dev tag as `core`: core-init is the root one-shot that shares the
+  # Core image, so a pre-merge ACTANA_TAG=pr-… must pull core-dev too.
+  core-init:
+    image: ${ACTANA_IMAGE_NAMESPACE:-actana}/core-dev:${ACTANA_TAG:?set ACTANA_TAG to the pull request image tag, e.g. pr-116202608}
+
   core:
     image: ${ACTANA_IMAGE_NAMESPACE:-actana}/core-dev:${ACTANA_TAG:?set ACTANA_TAG to the pull request image tag, e.g. pr-116202608}
