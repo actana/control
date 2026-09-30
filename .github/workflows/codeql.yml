@@ -6,8 +6,11 @@ name: CodeQL
 # public, so it is free.
 #
 # A file of its own rather than a job in `ci.yml`, so `ci.yml`'s jobs and the
-# required checks that name them are untouched. Making this check required is
-# the owner's step, in the branch rules, and is not done here.
+# required checks that name them are untouched. The `analyze` job below passes
+# whether or not it finds an alert; what fails on a high or critical finding is
+# the code-scanning results check `CodeQL`, or a ruleset's "Require code
+# scanning results" rule. Making that required is the owner's step, in the
+# branch rules, and is not done here.
 #
 # There is no `paths` filter, on purpose: a required check whose workflow is
 # filtered out of a run stays Pending forever (see the note on `landing.yml` in

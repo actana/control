@@ -79,7 +79,7 @@ describe("the CodeQL workflow (#599)", () => {
     expect(codeql()).toMatch(/persist-credentials: false/);
   });
 
-  it("leaves ci.yml free of CodeQL, so its required checks are untouched", () => {
+  it("regression guard: ci.yml stays free of CodeQL, so its required checks are untouched", () => {
     expect(read("ci.yml")).not.toMatch(/codeql/i);
   });
 });
