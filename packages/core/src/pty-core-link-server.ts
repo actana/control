@@ -647,6 +647,26 @@ const HEARTBEAT_TIMEOUT_MS = 45_000;
 const PTY_HOLD_LIMIT_BYTES = 100_000;
 
 /**
+ * True unless `frame` addresses a Session and carries no `sessionId` string for
+ * it: the keyed frames, and a `sessionsMutate` that is not a `create`.
+ */
+function namesItsSession(frame: CoreLinkRequestFrame): boolean {
+  const named = (id: unknown): boolean => typeof id === "string" && id.length > 0;
+  switch (frame.type) {
+    case "claim":
+    case "release":
+    case "forceTakeover":
+    case "findBySession":
+    case "harnessPrompt":
+      return named(frame.sessionId);
+    case "sessionsMutate":
+      return frame.mutation?.op === "create" || named((frame.mutation as { sessionId?: unknown })?.sessionId);
+    default:
+      return true;
+  }
+}
+
+/**
  * Hosts the loopback core-link WebSocket server. One instance per Core
  * process. The server outlives individual Panel connections — PTY state is
  * retained in the `PtyCore` across disconnects/reconnects.
@@ -1257,6 +1277,15 @@ export class PtyCoreLinkServer {
       } catch {
         /* already closed */
       }
+      return;
+    }
+    // The codec reads `type` and `reqId` and nothing else, so a 0.17 client's
+    // `{ type: "claim", taskId }` parses and would be served against `undefined`
+    // — a granted claim on nobody. The Task-to-Session rename is a hard cut with
+    // no `taskId` alias (#556): a frame that addresses a Session without naming
+    // one by `sessionId` is refused here, before any port sees it.
+    if (!namesItsSession(frame)) {
+      this.send(ws, { type: "error", reqId: frame.reqId, message: "invalid frame" });
       return;
     }
     try {
