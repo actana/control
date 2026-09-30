@@ -71,4 +71,4 @@ The declared length is a valid bound in **both** modes, which is the small fact 
 
 ## Amended by ADR 0041
 
-[ADR 0041](0041-the-0-5-0-core-model.md) D1 amends the parts that address a Project: the `/v1/projects/:projectId/…` routes and **D6** (one write transfer per Project). The Files API is re-rooted at the workspace (#557). The rest stands. The text is left as it was written.
+[ADR 0041](0041-the-0-5-0-core-model.md) D1 amends the parts that address a Project. The Files API is re-rooted at the workspace (#557). The rest stands. The text is left as it was written.

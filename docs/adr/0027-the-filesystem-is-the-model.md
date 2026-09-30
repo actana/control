@@ -60,4 +60,4 @@ The field is **present in every entry either way**, so no reader feature-detects
 
 ## Amended by ADR 0041
 
-[ADR 0041](0041-the-0-5-0-core-model.md) (D1, D5) **supersedes D1** ("a Project's files are the directory. There is no index"): the files are no longer a Project's, and the Shared folder has a change feed (#561). The other decisions stand. The text is left as it was written.
+[ADR 0041](0041-the-0-5-0-core-model.md) D1 **supersedes D1** ("a Project's files are the directory. There is no index"): the files are no longer a Project's. It **amends D2** (the address `(projectId, relative path)`) and **D6** (`/v1/projects/:projectId/files/list`), which address a Project: the Files API is re-rooted at the workspace (#557). Any other clause that says Project is read the same way. What the Shared folder does about change detection is #561's to decide. The text is left as it was written.
