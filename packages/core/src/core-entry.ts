@@ -116,7 +116,11 @@ import { CoreTaskWriter } from "./core-task-writer";
 import { CoreHarnessStatus } from "./core-harness-status";
 import { CoreTitleGenerator } from "./core-title-generator";
 import { startHarnessHookReceiver, type HarnessHookReceiver } from "./harness-hook-receiver";
-import { HookDeliveryMonitor, hookMissLogPath } from "./harness-hook-delivery";
+import {
+  HookDeliveryMonitor,
+  ensureHookMissDropBox,
+  hookMissLogPath,
+} from "./harness-hook-delivery";
 import { sweepStrandedSessions } from "./core-session-sweep";
 import { readySessionOnAgentSpawn } from "./core-session-relaunch";
 import { CoreSessionBackstop } from "./core-session-backstop";
@@ -296,7 +300,12 @@ async function startCore(): Promise<void> {
   // Core's log with a running total, starting with whatever was recorded while
   // this process was not running — a restart is exactly when hooks are
   // refused, and those are the drops nobody could otherwise hear about.
-  const hookDelivery = new HookDeliveryMonitor({ missLogPath: hookMissLogPath(userDataDir) });
+  // In the container the file is a drop box outside the state directory, which
+  // Sessions can append to (#559): the daemon makes it, then reads it as
+  // untrusted input.
+  const hookMissLog = hookMissLogPath(userDataDir, containerMode);
+  if (containerMode) ensureHookMissDropBox(hookMissLog);
+  const hookDelivery = new HookDeliveryMonitor({ missLogPath: hookMissLog });
   hookDelivery.start();
 
   const deps: PtyCoreDeps = {
@@ -307,7 +316,7 @@ async function startCore(): Promise<void> {
         ? {
             apiUrl: hookReceiver.url,
             token: hookReceiver.token,
-            missLogPath: hookMissLogPath(userDataDir),
+            missLogPath: hookMissLog,
           }
         : null,
     // Protect the core-link WS port so killLaunchProcesses never touches it —
