@@ -80,11 +80,13 @@ updates:
     commit-message:
       prefix: "build"
 
-  # The one compose image that is pinned by digest: the optional SeaweedFS
-  # service in deploy/docker-compose.yml (#566). The `docker` entry above reads
-  # Dockerfiles only, so without this entry nothing would move that pin. The
-  # panel and core images in the same file are variables, not pins, and are
-  # left alone. The cooldown is the repo's rule that a bumped image is at least
+  # The compose images that are pinned by digest: the Panel's Postgres (#567)
+  # and the optional SeaweedFS service (#566) in deploy/docker-compose.yml. The
+  # `docker` entry above reads Dockerfiles only, so without this entry nothing
+  # would move those pins. The panel and core images in the same file are
+  # variables, not pins, and are left alone. A Postgres bump must also change
+  # scripts/lib/postgres-image.mjs, which the smokes boot; a test fails until
+  # the two agree. The cooldown is the repo's rule that a bumped image is at least
   # a week old.
   - package-ecosystem: "docker-compose"
     directory: "/deploy"

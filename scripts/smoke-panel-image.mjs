@@ -32,6 +32,7 @@ import { spawnSync } from "node:child_process";
 
 import { parseArgs } from "./lib/cli.mjs";
 import { makeDie, pickFreePort } from "./lib/core-smoke.mjs";
+import { redactDockerArgs, startPostgres } from "./lib/postgres-fixture.mjs";
 import {
   PANEL_DOCKERFILE,
   PANEL_NODE_BIN,
@@ -51,6 +52,8 @@ const timeoutMs = Number(args.timeout ?? 120_000);
 const suffix = `${process.pid}-${Date.now().toString(36)}`;
 const containerName = `actana-panel-smoke-${suffix}`;
 const volumeName = `actana-panel-smoke-data-${suffix}`;
+const networkName = `actana-panel-smoke-net-${suffix}`;
+const postgresName = `actana-panel-smoke-pg-${suffix}`;
 
 const OPERATOR = { name: "Smoke Operator", password: "smoke-operator-passphrase" };
 
@@ -58,14 +61,18 @@ function docker(dockerArgs, { allowFailure = false } = {}) {
   const result = spawnSync("docker", dockerArgs, { encoding: "utf8" });
   if (result.error) die(`docker ${dockerArgs[0]}: ${result.error.message}`);
   if (result.status !== 0 && !allowFailure) {
-    die(`docker ${dockerArgs.join(" ")} exited ${result.status}:\n${result.stderr}`);
+    die(`docker ${redactDockerArgs(dockerArgs).join(" ")} exited ${result.status}:\n${result.stderr}`);
   }
   return result;
 }
 
+let databaseUrl = null;
+
 function cleanup() {
   docker(["rm", "-f", containerName], { allowFailure: true });
+  docker(["rm", "-f", postgresName], { allowFailure: true });
   docker(["volume", "rm", "-f", volumeName], { allowFailure: true });
+  docker(["network", "rm", networkName], { allowFailure: true });
 }
 process.on("exit", cleanup);
 for (const signal of ["SIGINT", "SIGTERM"]) {
@@ -82,6 +89,10 @@ function startContainer(hostPort) {
     `127.0.0.1:${hostPort}:${PANEL_PORT}`,
     "--volume",
     `${volumeName}:/data`,
+    "--network",
+    networkName,
+    "--env",
+    `AC_PANEL_DATABASE_URL=${databaseUrl}`,
     image,
   ]);
 }
@@ -127,7 +138,9 @@ log("validating deploy/docker-compose.yml …");
 const composeCheck = spawnSync(
   "docker",
   ["compose", "-f", "deploy/docker-compose.yml", "config", "--quiet"],
-  { cwd: repoRoot, encoding: "utf8" },
+  // The compose file refuses to resolve without a database password (#567);
+  // this one is only here so `config` can read it, and opens nothing.
+  { cwd: repoRoot, encoding: "utf8", env: { ...process.env, AC_PANEL_DB_PASSWORD: "config-only" } },
 );
 if (composeCheck.status !== 0) {
   die(`docker compose config rejected the reference compose file:\n${composeCheck.stderr}`);
@@ -164,6 +177,44 @@ if (config?.User !== PANEL_RUNTIME_USER) {
 }
 
 docker(["volume", "create", volumeName]);
+
+// The Panel refuses to start without a Postgres (#567), so one runs beside it on
+// a private network — the shape of the reference compose, where it is reached by
+// service name and publishes nothing.
+docker(["network", "create", networkName]);
+log("starting Postgres beside the Panel …");
+const postgres = await startPostgres({ name: postgresName, network: networkName }).catch((err) =>
+  die(`postgres fixture failed to start: ${err.message}`),
+);
+databaseUrl = postgres.url;
+
+// Boot 0: no database URL. The Panel must refuse to start — exit non-zero, and
+// say why on stderr — rather than come up and fail on its first query. Docker
+// keeps a container's stderr apart from its stdout, so this reads the stream the
+// message has to be on.
+log("boot 0 without AC_PANEL_DATABASE_URL — expecting a refusal to start");
+docker([
+  "run",
+  "--detach",
+  "--name",
+  containerName,
+  "--volume",
+  `${volumeName}:/data`,
+  image,
+]);
+const refusal = docker(["wait", containerName]).stdout.trim();
+const refusalLogs = docker(["logs", containerName]);
+if (refusal !== "1") {
+  die(`the Panel without a database exited ${refusal}, expected 1. Logs:\n${containerLogsTail()}`);
+}
+if (!refusalLogs.stderr.includes("AC_PANEL_DATABASE_URL is not set")) {
+  die(
+    `the Panel refused to start but not with the expected message on stderr:\n` +
+      `${refusalLogs.stderr}\n(stdout was: ${refusalLogs.stdout})`,
+  );
+}
+log("the Panel refused to start without a database, and said why on stderr");
+docker(["rm", "-f", containerName]);
 
 // Boot 1: a clean machine. First boot must ask for setup, and setup must
 // create the Operator.
@@ -228,5 +279,5 @@ if (!login.headers.getSetCookie().some((c) => c.includes("HttpOnly"))) {
   die("login set no HttpOnly session cookie");
 }
 
-log("PASS — image boots, sets up, and its state survives container recreation");
+log("PASS — image boots against Postgres, sets up, and its state survives container recreation");
 process.exit(0);

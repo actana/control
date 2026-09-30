@@ -23,6 +23,7 @@ import {
   repoRoot,
   secondCoreBlock,
 } from "../lib/panel-image.mjs";
+import { POSTGRES_IMAGE } from "../lib/postgres-image.mjs";
 
 // The one-deployable contract (web-panel-extraction issue 09): the two
 // Dockerfiles, the one reference compose, and the release workflow are
@@ -236,7 +237,13 @@ describe("reference compose", () => {
     );
     // `seaweedfs` is the opt-in Shared-folder backend (#566): behind a profile,
     // so it is in the file but not in a plain `up` — see seaweedfs-deploy.test.mjs.
-    expect(Object.keys(compose.services)).toEqual(["panel", "core-init", "core", "seaweedfs"]);
+    expect(Object.keys(compose.services)).toEqual([
+      "panel",
+      "postgres",
+      "core-init",
+      "core",
+      "seaweedfs",
+    ]);
   });
 
   it("moves both services from one tag variable, because they are version-locked", () => {
@@ -300,6 +307,44 @@ describe("reference compose", () => {
     expect(compose.volumes).toContain("panel-data");
   });
 
+  // #567. The Panel refuses to start without a database, so the reference
+  // deployment brings one, pinned like every other image it pulls.
+  describe("the Panel's Postgres", () => {
+    const postgres = compose.services.postgres;
+
+    it("is the pinned image the smoke scripts boot, by version and digest", () => {
+      expect(postgres.image).toBe(POSTGRES_IMAGE);
+      expect(postgres.image).toMatch(/^postgres:\d+\.\d+-[a-z]+@sha256:[0-9a-f]{64}$/);
+    });
+
+    it("keeps its data on a named volume and publishes no port", () => {
+      expect(postgres.volumes).toEqual(["postgres-data:/var/lib/postgresql"]);
+      expect(postgres.ports).toEqual([]);
+    });
+
+    it("has a healthcheck, and the Panel waits for it", () => {
+      expect(postgres.scalars).toHaveProperty("healthcheck");
+      expect(composeText).toMatch(/pg_isready -h 127\.0\.0\.1 -U panel -d panel/);
+      expect(panel.scalars).toHaveProperty("depends_on");
+      expect(composeText).toMatch(/^ {6}postgres:\n {8}condition: service_healthy$/m);
+    });
+
+    it("takes its password from the environment with no default, and commits none", () => {
+      const password = postgres.environment.find((e) => e.startsWith("POSTGRES_PASSWORD="));
+      expect(password).toMatch(/^POSTGRES_PASSWORD=\$\{AC_PANEL_DB_PASSWORD:\?/);
+      expect(composeText).not.toMatch(/AC_PANEL_DB_PASSWORD:-/);
+      const example = readRepoFile("deploy/.env.example");
+      expect(example).toMatch(/^AC_PANEL_DB_PASSWORD=$/m);
+    });
+
+    it("hands the Panel a database URL that defaults to this service", () => {
+      const url = panel.environment.find((e) => e.startsWith("AC_PANEL_DATABASE_URL="));
+      expect(url).toContain("@postgres:5432/panel");
+      expect(url).toContain("${AC_PANEL_DATABASE_URL:-");
+      expect(readRepoFile("deploy/.env.example")).toMatch(/^AC_PANEL_DATABASE_URL=$/m);
+    });
+  });
+
   it("passes AC_SECRETS_KEY through so the key can live outside the volume", () => {
     expect(panel.environment.some((e) => e.startsWith("AC_SECRETS_KEY="))).toBe(true);
   });
@@ -330,7 +375,12 @@ describe("reference compose", () => {
   // point when Docker created the host dir as root (#551 / #558).
   it("gives the Core one named volume — its home — plus a swappable repos mount", () => {
     expect(coreService.volumes).toEqual([`core-home:${CORE_HOME}`, `./repos:${CORE_HOME}/repos`]);
-    expect(compose.volumes).toEqual(["panel-data", "core-home", "seaweedfs-data"]);
+    expect(compose.volumes).toEqual([
+      "panel-data",
+      "postgres-data",
+      "core-home",
+      "seaweedfs-data",
+    ]);
     expect(composeText).toMatch(/Swappable for a named volume/);
     expect(fs.existsSync(path.join(repoRoot, "deploy/repos"))).toBe(true);
   });

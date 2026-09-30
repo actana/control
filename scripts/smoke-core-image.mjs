@@ -69,6 +69,7 @@ import {
   CORE_REFUSED_VERBS,
   repoRoot,
 } from "./lib/panel-image.mjs";
+import { ensurePanelDatabase } from "./lib/postgres-fixture.mjs";
 
 const die = makeDie("core-image-smoke");
 const log = (message) => console.log(`[core-image-smoke] ${message}`);
@@ -969,6 +970,9 @@ if (!fs.existsSync(panelEntry)) die(`no built Panel at ${panelEntry} — run \`p
 
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "ac-core-image-panel-"));
 teardown.push(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+
+// The Panel refuses to start without a Postgres (#567), so one runs beside it.
+teardown.push(await ensurePanelDatabase({ name: `ac-core-image-panel-pg-${process.pid}`, log }));
 
 log("booting the Panel …");
 const panel = await startPanelService({

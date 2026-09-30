@@ -62,7 +62,18 @@ services:
       # Change this to "7420:7420" only once a TLS proxy is the thing in
       # front of it.
       - "127.0.0.1:7420:7420"
+    depends_on:
+      # The Panel refuses to start without its database (#567), so it waits
+      # for Postgres to answer rather than crash-looping until it does.
+      postgres:
+        condition: service_healthy
     environment:
+      # The Panel's Postgres. Unset, it is the bundled `postgres` service
+      # below with the password from .env. Set it to use a Postgres of your
+      # own instead (then the bundled one is idle and you can drop it). A
+      # password with URL-special characters must be percent-encoded, which is
+      # why the generated one in deploy/.env.example is hex.
+      - AC_PANEL_DATABASE_URL=${AC_PANEL_DATABASE_URL:-postgres://panel:${AC_PANEL_DB_PASSWORD}@postgres:5432/panel}
       # Optional: hold the secrets key outside the data volume so a copied
       # volume alone can't open the Core credentials. Empty means the Panel
       # keeps the key at /data/secrets.key instead.
@@ -72,9 +83,46 @@ services:
       # `docker compose pull && docker compose up -d`, run by you, here.
       - ACTANA_UPDATE_CHECK=${ACTANA_UPDATE_CHECK:-}
     volumes:
-      # The single place all Panel state lives. Backing up this volume is
-      # backing up the Panel.
+      # The Panel's files: the Operator, sessions and Core registry still live
+      # here for now, along with the secrets key. The state is moving to the
+      # Postgres below (#567), so a backup is this volume *and* `postgres-data`.
       - panel-data:/data
+
+  # The Panel's database (#567, ADR 0041 D16). No published ports: only the
+  # Panel, on this network, reaches it. Nothing in the Panel reads it yet; the
+  # Panel only opens a connection to it at boot.
+  #
+  # The image is pinned to an exact version and its digest (never `latest`):
+  # postgres:18.6-bookworm, pushed to Docker Hub 2026-09-19, the multi-arch
+  # index digest read from the registry. Dependabot's `docker-compose` entry
+  # keeps it current. The same pin is in scripts/lib/postgres-image.mjs, which
+  # the smoke scripts boot, and a test holds the two together.
+  #
+  # The password is never in this file: set AC_PANEL_DB_PASSWORD in .env
+  # (deploy/.env.example). There is deliberately no default, so `docker
+  # compose up` stops and says so rather than start a database anyone can
+  # guess the password to.
+  postgres:
+    image: postgres:18.6-bookworm@sha256:3725f4e2499eef5134592b3b4ab79a543ed7f8e533b05b5b637af926630f6650
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      - POSTGRES_USER=panel
+      - POSTGRES_DB=panel
+      - POSTGRES_PASSWORD=${AC_PANEL_DB_PASSWORD:?set AC_PANEL_DB_PASSWORD in deploy/.env, e.g. openssl rand -hex 24}
+    volumes:
+      # Postgres 18 keeps its cluster in a versioned directory under here.
+      - postgres-data:/var/lib/postgresql
+    healthcheck:
+      # `-h 127.0.0.1`: over TCP, not the socket. On first boot the image's
+      # init-time server listens on the socket only, so a socket check can pass
+      # before the Panel's `postgres:5432` accepts a connection.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U panel -d panel"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
 
   # No published ports, deliberately: the Panel reaches this Core over the
   # compose network and nothing else needs to. Nor `privileged`, `cgroup:
@@ -281,5 +329,6 @@ services:
 
 volumes:
   panel-data:
+  postgres-data:
   core-home:
   seaweedfs-data:
