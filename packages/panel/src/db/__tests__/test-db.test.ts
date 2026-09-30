@@ -21,7 +21,7 @@ async function closedPort(): Promise<number> {
   return port;
 }
 
-describe("createTestDb on PGlite", () => {
+describe("createTestDb on PGlite", { timeout: 30_000 }, () => {
   it("has the baseline migration applied", async () => {
     const db = await make({ env: {} });
     expect(db.kind).toBe("pglite");

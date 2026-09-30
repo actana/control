@@ -88,8 +88,56 @@ function isCommentOnly(sql: string): boolean {
   return sql.split("\n").every((line) => line.trim() === "" || line.trim().startsWith("--"));
 }
 
+export interface AppliedMigration {
+  hash: string;
+  createdAt: number;
+}
+
+const short = (hash: string) => hash.slice(0, 12);
+
 /**
- * Apply every migration newer than the last one recorded, in one transaction
+ * Decide what is left to apply, or refuse. The Panel will not start when the
+ * database and the migrations it ships disagree, because it would then run
+ * against a schema it does not know:
+ *  - a recorded migration this Panel does not ship (a newer Panel's, or a
+ *    downgrade);
+ *  - a shipped migration whose recorded hash differs (edited after it ran);
+ *  - an unapplied migration that sorts before one already applied (generated
+ *    earlier, merged later), which a max-timestamp rule would skip forever.
+ * Migrations are matched by hash, never by the newest timestamp alone.
+ */
+export function selectPending(recorded: AppliedMigration[], migrations: Migration[]): Migration[] {
+  const shippedHashes = new Set(migrations.map((m) => m.hash));
+  for (const row of recorded) {
+    if (shippedHashes.has(row.hash)) continue;
+    const edited = migrations.find((m) => m.folderMillis === row.createdAt);
+    if (edited) {
+      throw new PanelMigrationError(
+        `the applied migration ${edited.tag} differs from the file this Panel ships ` +
+          `(database hash ${short(row.hash)}, Panel hash ${short(edited.hash)}); a migration must not be edited after it ran`,
+      );
+    }
+    throw new PanelMigrationError(
+      `the database holds a migration this Panel does not know (hash ${short(row.hash)}, created_at ${row.createdAt}); ` +
+        "it was applied by a newer Panel, so run the newer Panel or restore a database that matches this one",
+    );
+  }
+  const appliedHashes = new Set(recorded.map((row) => row.hash));
+  const newestApplied = recorded.reduce((max, row) => Math.max(max, row.createdAt), -Infinity);
+  const pending = migrations.filter((m) => !appliedHashes.has(m.hash));
+  for (const migration of pending) {
+    if (migration.folderMillis < newestApplied) {
+      throw new PanelMigrationError(
+        `the migration ${migration.tag} has not been applied but sorts before one that has; ` +
+          "regenerate it so it sorts after the newest applied migration",
+      );
+    }
+  }
+  return pending;
+}
+
+/**
+ * Apply every migration not yet recorded ({@link selectPending}), in one transaction
  * that first takes a transaction-scoped advisory lock. Two Panels starting at
  * once therefore queue on the lock: the second finds the first's rows and
  * applies nothing. The lock goes with the transaction, so a Panel that dies
@@ -103,6 +151,7 @@ export async function runMigrations(
   const client = await source.connect();
   const applied: string[] = [];
   let current = "taking the migration lock";
+  let failure: Error | undefined;
   try {
     await client.query("BEGIN");
     await client.query("select pg_advisory_xact_lock($1::bigint)", [MIGRATION_LOCK_KEY]);
@@ -112,13 +161,15 @@ export async function runMigrations(
       `CREATE TABLE IF NOT EXISTS "${MIGRATIONS_SCHEMA}"."${MIGRATIONS_TABLE}" (` +
         "id SERIAL PRIMARY KEY, hash text NOT NULL, created_at bigint)",
     );
-    const last = await client.query(
-      `select created_at from "${MIGRATIONS_SCHEMA}"."${MIGRATIONS_TABLE}" ` +
-        "order by created_at desc limit 1",
+    current = "checking the applied migrations";
+    const recorded = await client.query(
+      `select hash, created_at from "${MIGRATIONS_SCHEMA}"."${MIGRATIONS_TABLE}" order by created_at`,
     );
-    const lastMillis = last.rows[0] ? Number(last.rows[0].created_at) : -Infinity;
-    for (const migration of migrations) {
-      if (migration.folderMillis <= lastMillis) continue;
+    const pending = selectPending(
+      recorded.rows.map((row) => ({ hash: String(row.hash), createdAt: Number(row.created_at) })),
+      migrations,
+    );
+    for (const migration of pending) {
       current = `applying ${migration.tag}`;
       for (const statement of migration.statements) {
         if (isCommentOnly(statement)) continue;
@@ -135,9 +186,10 @@ export async function runMigrations(
     return applied;
   } catch (err) {
     await client.query("ROLLBACK").catch(() => {});
-    const reason = err instanceof Error ? err.message : String(err);
-    throw new PanelMigrationError(`database migration failed while ${current}: ${reason}`);
+    failure = err instanceof Error ? err : new Error(String(err));
+    throw new PanelMigrationError(`database migration failed while ${current}: ${failure.message}`);
   } finally {
-    client.release();
+    // Handing the error back makes the pool destroy the connection, not reuse it.
+    client.release(failure);
   }
 }

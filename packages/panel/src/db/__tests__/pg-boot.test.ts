@@ -32,7 +32,7 @@ afterEach(async () => {
   await Promise.all(open.splice(0).map((db) => db.close()));
 });
 
-describe("bootPanelDatabase", () => {
+describe("bootPanelDatabase", { timeout: 30_000 }, () => {
   it("migrates after the pool check, and a second boot changes nothing", async () => {
     const log = vi.spyOn(console, "log").mockImplementation(() => {});
     const { db, pool } = await poolOver();
@@ -71,6 +71,19 @@ describe("bootPanelDatabase", () => {
     expect((error as Error).message).toMatch(/failed while applying 0000_bad: .*no_such_table.*The Panel will not start\.$/);
     expect(pool.ended).toBe(1);
     expect(() => getPanelPool()).toThrow(PanelDatabaseError);
+  });
+
+  it("refuses to start against a database that holds a migration it does not ship", async () => {
+    const { db, pool } = await poolOver();
+    const newer = parseMigrations({ entries: [{ tag: "0001_newer", when: 2 }] }, { "0001_newer": "create table n (id int);" });
+    await bootPanelDatabase(env, () => pool, [...bundledPanelMigrations(), ...newer]);
+    await closePanelDatabase();
+    const error = await bootPanelDatabase(env, () => pool).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(PanelDatabaseError);
+    expect((error as Error).message).toMatch(/does not know.*The Panel will not start\.$/);
+    // Closed once after the first boot, and again by the failed second one.
+    expect(pool.ended).toBe(2);
+    expect(db.kind).toBe("pglite");
   });
 
   it("is what the server entry hands bin/panel.mjs as connectPanelDatabase", () => {

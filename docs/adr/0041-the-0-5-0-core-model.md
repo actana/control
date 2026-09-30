@@ -7,7 +7,7 @@
 > **Amended 2026-09-30 by [#567](https://github.com/actana/control/issues/567)** with D14–D21, the Panel's Postgres
 > decisions, which further **amend** ADR 0010, ADR 0011 and ADR 0016 (D20, D25). The decisions are the owner's, in
 > their comment on #567 and their comment on [#556](https://github.com/actana/control/issues/556), both dated
-> 2026-09-30. Nothing in D1–D13 is changed.
+> 2026-09-30. D22 was added by [#595](https://github.com/actana/control/pull/595). Nothing in D1–D13 is changed.
 
 > **On the number.** This record takes **0041**, the next free number after
 > [`0040-pi-project-trust-answered-by-extension.md`](0040-pi-project-trust-answered-by-extension.md).
@@ -124,7 +124,7 @@ These are not decided here. Each is the named ticket's to settle.
 Decided by the owner on 2026-09-30 ([#567](https://github.com/actana/control/issues/567), and
 [#556](https://github.com/actana/control/issues/556) for D21). D8 already says the layers above a Core live in the
 Panel (Postgres); these clauses say what that means for the Panel's own database. They are appended, so no earlier
-number moves. D14–D20 come from #567. D21 comes from #556. This record only writes the decisions down. The code, the deploy files and the packages change in the
+number moves. D14–D20 come from #567. D21 comes from #556. D22 comes from #595. This record only writes the decisions down. The code, the deploy files and the packages change in the
 later pull requests of #567, and until they land the Panel still runs on SQLite.
 
 **D14 — The Panel's state lives in Postgres only.** Every Panel table moves, including the Projects family, which
@@ -159,6 +159,20 @@ the Postgres image itself (D16).
 bumped, and a 0.5.0 Core and SDK do not talk to 0.4.x. 0.5.0 Cores are installed fresh. The SDK side is
 actana/client#10.
 
+**D22 — How the boot migration behaves (settled in [#595](https://github.com/actana/control/pull/595), PR 3 of #567).**
+D17 did not say, so these rules come from that pull request and its review, not from the owner's comments. The owner
+may change them by amending this record. (a) **Concurrent boots:** every Panel runs its pending migrations in one
+transaction that first takes a transaction-scoped Postgres advisory lock (`pg_advisory_xact_lock`, one fixed key). A
+second Panel starting at once waits, then finds the first's rows and applies nothing. The lock goes with the
+transaction, so a Panel that dies mid-migration releases it. (b) **A database that does not match the Panel:** the Panel
+refuses to start, exits 1 and says why, when the database records a migration it does not ship (a newer Panel's, or a
+downgrade), when a shipped migration's recorded hash differs (edited after it ran), or when an unapplied migration
+sorts before one already applied. Migrations are matched by hash, never by the newest timestamp alone, so a migration
+generated early and merged late is an error, not silently skipped. (c) **Still to do before the first pull request that
+adds real DDL:** a `lock_timeout` on the migration transaction and a "waiting for the migration lock" log line, so a
+new Panel does not hang silently behind a holder. (d) The migrations table is drizzle's own
+(`drizzle.__drizzle_migrations`), so a role behind an external `AC_PANEL_DATABASE_URL` needs `CREATE` on the database.
+
 **No backward compatibility.** A 0.5.0 Panel starts on an **empty** Postgres. **0.4.x Panel data is not migrated.**
 There is no import of the SQLite file.
 
@@ -188,7 +202,7 @@ These are not decided here. Each is for the pull request that needs it, and is s
 - **The name of the Postgres service and its volume, how the dump is taken and restored**, and whether the Panel
   image carries any Postgres client tool (D20 in ADR 0016 leaves nothing but Node in it).
 - **How the boot migration behaves** when two Panel processes start at once, and when the database holds migrations
-  newer than the Panel. The real-Postgres CI job exists for pool and lock behaviour, but the behaviour is not chosen.
+  newer than the Panel: settled in D22. The real-Postgres CI job still exists for pool and lock behaviour.
 - **The Panel image's healthcheck** while the database is down (ADR 0016 D23), given that the Panel refuses to start
   without it.
 - **What "refuse to start" does about a database that is up later**: exit and let the restart policy retry, or

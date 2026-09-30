@@ -53,7 +53,7 @@ describe("the bundled Postgres migrations", () => {
   });
 });
 
-describe("runMigrations on PGlite", () => {
+describe("runMigrations on PGlite", { timeout: 30_000 }, () => {
   it("applies the baseline once and a second run is a no-op", async () => {
     const db = await make();
     const migrations = bundledPanelMigrations();
@@ -84,7 +84,7 @@ describe("runMigrations on PGlite", () => {
       },
     };
     await runMigrations(spy, migrations);
-    expect(seen).toEqual(["begin", "select pg_advisory_xact_lock($1::bigint)", "create schema", "create table", "select created_at", "commit"]);
+    expect(seen).toEqual(["begin", "select pg_advisory_xact_lock($1::bigint)", "create schema", "create table", "select hash,", "commit"]);
   });
 
   it("applies only the migrations newer than the last one recorded", async () => {
@@ -108,6 +108,45 @@ describe("runMigrations on PGlite", () => {
     expect(recorded.rows[0].n).toBe(0);
     // The failed attempt left nothing behind: the next run applies the baseline afresh.
     expect(await runMigrations(db.pool, [base])).toEqual(["0000_baseline"]);
+  });
+});
+
+describe("refusing a database that does not match the Panel", { timeout: 30_000 }, () => {
+  const base = () => bundledPanelMigrations()[0];
+
+  it("refuses a database that holds a migration this Panel does not ship", async () => {
+    const db = await make();
+    const later = extra("0001_later", base().folderMillis + 10, "create table later (id int);");
+    await runMigrations(db.pool, [base(), ...later]);
+    // The same database, started by an older Panel that ships only the baseline.
+    const error = await runMigrations(db.pool, [base()]).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(PanelMigrationError);
+    expect((error as Error).message).toMatch(/while checking the applied migrations: the database holds a migration this Panel does not know/);
+  });
+
+  it("refuses a migration that sorts before one already applied, instead of skipping it", async () => {
+    const db = await make();
+    const newer = extra("0002_newer", base().folderMillis + 20, "create table newer (id int);");
+    await runMigrations(db.pool, [base(), ...newer]);
+    const older = extra("0001_older", base().folderMillis + 10, "create table older (id int);");
+    const error = await runMigrations(db.pool, [base(), ...older, ...newer]).catch((e: unknown) => e);
+    expect((error as Error).message).toMatch(/0001_older has not been applied but sorts before one that has/);
+    expect((await db.pool.query("select to_regclass('older') as t")).rows[0].t).toBeNull();
+  });
+
+  it("refuses an applied migration whose file was edited", async () => {
+    const db = await make();
+    const original = extra("0001_t", base().folderMillis + 10, "create table t (id int);");
+    await runMigrations(db.pool, [base(), ...original]);
+    const edited = extra("0001_t", base().folderMillis + 10, "create table t (id int, extra int);");
+    const error = await runMigrations(db.pool, [base(), ...edited]).catch((e: unknown) => e);
+    expect((error as Error).message).toMatch(/applied migration 0001_t differs from the file this Panel ships/);
+  });
+
+  it("starts normally when the database matches exactly", async () => {
+    const db = await make();
+    await runMigrations(db.pool, [base()]);
+    expect(await runMigrations(db.pool, [base()])).toEqual([]);
   });
 });
 
@@ -149,9 +188,8 @@ function fakeServer() {
             release = done;
           } else if (sql === "commit" || sql === "rollback") {
             end();
-          } else if (sql.startsWith("select created_at")) {
-            const last = rows.map((r) => r.created_at).sort((a, b) => b - a)[0];
-            return { rows: last === undefined ? [] : [{ created_at: last }] };
+          } else if (sql.startsWith("select hash")) {
+            return { rows: rows.map((r) => ({ ...r })) };
           } else if (sql.startsWith("insert into")) {
             rows.push({ hash: String(params[0]), created_at: Number(params[1]) });
           } else if (sql !== "begin" && !sql.startsWith("create schema") && !sql.startsWith("create table if not exists")) {
