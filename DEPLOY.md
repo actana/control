@@ -151,6 +151,11 @@ by extracting into a fresh volume and starting the container. If you set
 `AC_SECRETS_KEY`, the key is *not* in the backup — store it wherever you
 store secrets, and provide it to the restored Panel.
 
+If you opted in to [SeaweedFS](deploy/seaweedfs/README.md), its objects are in
+the `seaweedfs-data` volume, which is not in that archive. Back it up the same
+way (`-v deploy_seaweedfs-data:/data`, with the container stopped). The STS
+signing key and the admin keys live in your `.env`, not in the volume.
+
 ## Upgrade
 
 The Panel has no in-app updater; the image is the release artifact. The

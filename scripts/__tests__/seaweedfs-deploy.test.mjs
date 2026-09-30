@@ -54,7 +54,7 @@ function render(env) {
     .replace("TEMPLATE=/seaweedfs-config/iam.json.tmpl", `TEMPLATE=${TEMPLATE}`)
     .replace("OUT_DIR=/run/seaweedfs", `OUT_DIR=${dir}/out`)
     .replace("chown -R seaweed:seaweed \"$OUT_DIR\"", ":")
-    .replace('exec /entrypoint.sh "$@"', 'echo "HANDOVER $*"');
+    .replace('exec /entrypoint.sh "$@"', 'echo "HANDOVER $*"; echo "JWT=$WEED_JWT_FILER_SIGNING_KEY"');
   const copy = path.join(dir, "entrypoint.sh");
   fs.writeFileSync(copy, script, { mode: 0o755 });
   const result = spawnSync("sh", [copy, "server", "-s3"], {
@@ -88,6 +88,44 @@ describe("compose: the seaweedfs service is opt-in", () => {
     const image = block.match(/^ {4}image: (\S+)$/m)?.[1] ?? "";
     expect(image).toMatch(/^chrislusf\/seaweedfs:\d+\.\d+(\.\d+)?@sha256:[0-9a-f]{64}$/);
     expect(image).not.toMatch(/latest/);
+  });
+
+  it("pins 4.47 by its digest, a release more than a week old", () => {
+    expect(block).toContain(
+      "chrislusf/seaweedfs:4.47@sha256:ce9e796f1fe6f06968f4c04bdaf8f678dad9c8acdfef3d244133d71bfa6bf882",
+    );
+  });
+
+  // The master, volume server and filer take no authentication, and a Core
+  // shares this network. Only the S3 gateway may listen beyond loopback.
+  it("binds everything except the S3 gateway to loopback", () => {
+    const args = block
+      .split("\n")
+      .filter((l) => /^ {6}- -/.test(l))
+      .map((l) => l.replace(/^ {6}- /, ""));
+    expect(args).toContain("-ip=127.0.0.1");
+    expect(args).toContain("-ip.bind=127.0.0.1");
+    expect(args).toContain("-s3.ip.bind=0.0.0.0");
+    expect(args.filter((a) => a.startsWith("-ip"))).toEqual(["-ip=127.0.0.1", "-ip.bind=127.0.0.1"]);
+    expect(args.filter((a) => /^-(s3\.)?ip\.bind=/.test(a) && !a.startsWith("-s3."))).toEqual([
+      "-ip.bind=127.0.0.1",
+    ]);
+    // Neither the service name nor a wildcard as the base address, and no
+    // other component opted out of the loopback bind.
+    expect(args.join(" ")).not.toMatch(/-ip=seaweedfs|-ip=0\.0\.0\.0|-(master|volume|filer)\.ip/);
+    // The one published port is the S3 gateway's, on the host's loopback.
+    expect(block).toMatch(/^ {6}- "127\.0\.0\.1:8333:8333"$/m);
+    expect(block.match(/^ {6}- "\d/gm)).toHaveLength(1);
+  });
+
+  it("keeps the gateway's open gRPC port behind a generated JWT key", () => {
+    const one = render(GOOD_ENV);
+    const two = render(GOOD_ENV);
+    const key = (o) => o.stdout.match(/^JWT=([0-9a-f]{64})$/m)?.[1];
+    expect(key(one)).toBeTruthy();
+    expect(key(two)).toBeTruthy();
+    expect(key(one)).not.toBe(key(two));
+    expect(fs.readFileSync(ENTRYPOINT, "utf8")).toMatch(/^export WEED_JWT_FILER_SIGNING_KEY$/m);
   });
 
   it("enables the S3 gateway and reads its IAM/STS config from the rendered file", () => {
@@ -166,9 +204,19 @@ describe("the rendered IAM config", () => {
     expect(objects.Action).not.toContain("s3:ListBucket");
     const list = s3.find((s) => s.Sid === "ListOwnPrefixOnly");
     expect(list.Resource).toEqual(["arn:aws:s3:::actana-shared"]);
+    // The trailing slash is the point: without it `core-a` lists `core-ab`.
     expect(list.Condition).toEqual({
-      StringLike: { "s3:prefix": ["cores/${jwt:sub}", "cores/${jwt:sub}/*"] },
+      StringLike: { "s3:prefix": ["cores/${jwt:sub}/*"] },
     });
+    expect(JSON.stringify(list.Condition)).not.toMatch(/\$\{jwt:sub\}"/);
+  });
+
+  it("has no statement on every resource", () => {
+    const text = JSON.stringify(iam.policies[0].document);
+    expect(text).not.toContain("sts:ValidateSession");
+    for (const statement of iam.policies[0].document.Statement) {
+      expect(statement.Resource).not.toContain("*");
+    }
   });
 
   it("grants no wildcard action and no bucket-management action", () => {
@@ -192,6 +240,12 @@ describe("the entrypoint fails closed", () => {
     const out = render({ ...GOOD_ENV, SEAWEEDFS_S3_ADMIN_SECRET_KEY: "change-me" });
     expect(out.status).not.toBe(0);
     expect(out.stderr).toContain("placeholder");
+  });
+
+  it("refuses a signing key that is not base64", () => {
+    const out = render({ ...GOOD_ENV, SEAWEEDFS_STS_SIGNING_KEY: "not base64 not base64 not base64 not base64 !!" });
+    expect(out.status).not.toBe(0);
+    expect(out.stderr).toContain("base64");
   });
 
   it("refuses a signing key shorter than 32 bytes of base64", () => {
@@ -224,5 +278,36 @@ describe("no secret is committed", () => {
       expect(text).not.toMatch(/SEAWEEDFS_[A-Z_]*(KEY|SECRET)=[^\s$]/);
       expect(text).not.toMatch(/AKIA[0-9A-Z]{16}/);
     }
+  });
+});
+
+describe("the docs and the update path", () => {
+  const readme = fs.readFileSync(path.join(repoRoot, "deploy/seaweedfs/README.md"), "utf8");
+  const dependabot = fs.readFileSync(path.join(repoRoot, ".github/dependabot.yml"), "utf8");
+
+  it("names the case rule, the unescaped substitution and the trailing slash", () => {
+    expect(readme).toMatch(/lowercase, or at least unique ignoring case/);
+    expect(readme).toMatch(/without escaping/);
+    expect(readme).toMatch(/`ListBucket prefix=cores\/core-a` \(no slash\) \| denied/);
+    expect(readme).not.toMatch(/\(or `cores\/core-a`\)/);
+  });
+
+  it("does not claim the docker ecosystem moves the compose pin", () => {
+    expect(COMPOSE).not.toMatch(/docker` ecosystem reads this file/);
+    expect(readme).not.toMatch(/`docker` ecosystem\s+already watches/);
+  });
+
+  it("has a docker-compose Dependabot entry for /deploy, so the pin has an owner", () => {
+    expect(dependabot).toMatch(/package-ecosystem: "docker-compose"\n\s+directory: "\/deploy"/);
+    expect(dependabot).toMatch(/cooldown:\n\s+default-days: 7/);
+  });
+
+  it("lists seaweedfs-data where the volumes are documented", () => {
+    for (const file of ["deploy/README.md", "DEPLOY.md"]) {
+      expect(fs.readFileSync(path.join(repoRoot, file), "utf8"), file).toContain("seaweedfs-data");
+    }
+    expect(fs.readFileSync(path.join(repoRoot, "deploy/README.md"), "utf8")).not.toContain(
+      "deletes the two named volumes",
+    );
   });
 });

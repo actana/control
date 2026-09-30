@@ -45,6 +45,9 @@ need SEAWEEDFS_BUCKET
 need SEAWEEDFS_PREFIX
 
 # The signing key is base64 of at least 32 bytes (SeaweedFS refuses shorter).
+case "$SEAWEEDFS_STS_SIGNING_KEY" in
+  *[!A-Za-z0-9+/=]*) die "SEAWEEDFS_STS_SIGNING_KEY must be base64 (openssl rand -base64 32)" ;;
+esac
 [ "${#SEAWEEDFS_STS_SIGNING_KEY}" -ge 44 ] ||
   die "SEAWEEDFS_STS_SIGNING_KEY must be base64 of at least 32 bytes (openssl rand -base64 32)"
 
@@ -69,6 +72,15 @@ sed \
   "$TEMPLATE" >"$OUT"
 ! grep -q '@@' "$OUT" || die "unrendered placeholder left in $OUT"
 chown -R seaweed:seaweed "$OUT_DIR"
+
+# SeaweedFS's gRPC services take no authentication unless a filer signing key
+# is set, and the S3 gateway's gRPC port (18333, which can rewrite identities
+# and policies) shares the gateway's bind address, which has to be reachable
+# from the Cores. A key generated here, per start and never written down, makes
+# those calls require a signed token that only this process can mint.
+WEED_JWT_FILER_SIGNING_KEY=$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')
+[ "${#WEED_JWT_FILER_SIGNING_KEY}" -eq 64 ] || die "could not generate the filer JWT key"
+export WEED_JWT_FILER_SIGNING_KEY
 
 # The one static credential: the Panel's key issuer uses it to create the
 # bucket and to manage this deployment. Cores never see it.

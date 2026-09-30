@@ -44,19 +44,37 @@ deploy/
 
 Nothing secret is committed: the template holds `@@…@@` slots, and the
 entrypoint fills them from the environment into `/run/seaweedfs/iam.json`
-(mode 0400, owned by the `seaweed` user, inside the container only).
+(mode 0600, owned by the `seaweed` user, inside the container only).
 
 ## The image
 
-`chrislusf/seaweedfs:4.48@sha256:4e61d15fd35994cb1e43e1e553dff106794841fd9a99ade2fc8c8bfce4d7872d`
+`chrislusf/seaweedfs:4.47@sha256:ce9e796f1fe6f06968f4c04bdaf8f678dad9c8acdfef3d244133d71bfa6bf882`
 
 An exact version and its digest, never `latest`. The digest is the multi-arch
-image index for the `4.48` tag, read from the Docker Hub registry
-(`docker-content-digest` of `GET /v2/chrislusf/seaweedfs/manifests/4.48`, and
-the same value in the Hub tags API), against release `4.48` of
-`seaweedfs/seaweedfs` published 2026-09-28. Dependabot's `docker` ecosystem
-already watches `deploy/` and moves this pin like the other two
-([`docs/ci-cd.md`](../../docs/ci-cd.md)).
+image index for the `4.47` tag, read from the Docker Hub registry
+(`docker-content-digest` of `GET /v2/chrislusf/seaweedfs/manifests/4.47`, and
+the same value in the Hub tags API), against release `4.47` of
+`seaweedfs/seaweedfs` published 2026-09-14, so 16 days old when pinned. Every
+flag the service uses (`-ip`, `-ip.bind`, `-filer`, `-s3`, `-s3.port`,
+`-s3.ip.bind`, `-s3.port.iceberg`, `-s3.port.lance`, `-s3.iam.config`,
+`-s3.iam.readOnly`) exists in 4.47's `weed/command/server.go`.
+
+Nothing reads a compose file by default, so the pin is kept current by a
+`docker-compose` entry for `/deploy` in `.github/dependabot.yml` (weekly, with a
+7-day cooldown), next to the `docker` entry that moves the two Dockerfile bases.
+
+## What listens where
+
+`weed server` runs the master (9333), volume server (8080), filer (8888) and the
+S3 gateway in one process, and none of the first three authenticates anything. A
+Core on the compose network must reach the gateway and nothing else, so
+`-ip=127.0.0.1 -ip.bind=127.0.0.1` puts everything on the container's loopback
+and only `-s3.ip.bind=0.0.0.0` opens the gateway: port 8333 (S3 and STS). Its
+gRPC port (18333) shares that bind address and can rewrite identities and
+policies, and SeaweedFS leaves it open when no filer signing key is set, so the
+entrypoint generates one per start (`WEED_JWT_FILER_SIGNING_KEY`, 32 random
+bytes, never written down) and the gRPC calls then need a token only this
+process can sign. The Iceberg and Lance ports are off. A test pins all of it.
 
 ## How a Core gets its keys
 
@@ -85,8 +103,7 @@ resolved by SeaweedFS from the validated token, so the Core cannot choose it:
 | Statement | Allows | On |
 | --- | --- | --- |
 | `ObjectsUnderOwnPrefix` | `GetObject`, `PutObject`, `DeleteObject`, `AbortMultipartUpload`, `ListMultipartUploadParts` | `arn:aws:s3:::BUCKET/PREFIX/${jwt:sub}/*` |
-| `ListOwnPrefixOnly` | `ListBucket`, `ListBucketMultipartUploads` | `arn:aws:s3:::BUCKET`, only when `s3:prefix` is `PREFIX/${jwt:sub}` or `PREFIX/${jwt:sub}/*` |
-| `KeepTheSessionValid` | `sts:ValidateSession` | `*` (the session itself; SeaweedFS's own test configs grant it to every role) |
+| `ListOwnPrefixOnly` | `ListBucket`, `ListBucketMultipartUploads` | `arn:aws:s3:::BUCKET`, only when `s3:prefix` matches `PREFIX/${jwt:sub}/*`, so the prefix carries the trailing slash |
 
 `policy.defaultEffect` is `Deny`, so anything not allowed is refused. With
 `BUCKET=actana-shared`, `PREFIX=cores` and a Core `core-a`:
@@ -95,7 +112,8 @@ resolved by SeaweedFS from the validated token, so the Core cannot choose it:
 | --- | --- | --- |
 | `PutObject cores/core-a/notes/todo.md` | allowed | under `arn:…:actana-shared/cores/core-a/*` |
 | `GetObject` / `DeleteObject cores/core-a/x` | allowed | same resource |
-| `ListBucket prefix=cores/core-a/` (or `cores/core-a`) | allowed | `s3:prefix` matches the condition |
+| `ListBucket prefix=cores/core-a/` (or a deeper prefix such as `cores/core-a/notes/`) | allowed | `s3:prefix` matches `cores/core-a/*` |
+| `ListBucket prefix=cores/core-a` (no slash) | denied | it would also list `cores/core-ab/…` and `cores/core-a-evil/…`; the condition needs the slash |
 | `GetObject cores/core-b/x` | denied | another Core's prefix; no statement matches |
 | `ListBucket prefix=cores/core-b/` | denied | `s3:prefix` fails the condition |
 | `ListBucket` with no prefix, or `prefix=cores/` or `prefix=` | denied | above the Core's prefix; condition fails |
@@ -109,8 +127,12 @@ Two properties the isolation rests on, both for the **Panel's key issuer** to
 honour ([actana/client#5](https://github.com/actana/client/issues/5)):
 
 - `sub` must be exactly the Core id, and a Core id must never contain `*`, `?`,
-  `/` or `..`. The list condition uses `StringLike`, so a wildcard in `sub`
-  would widen it.
+  `/` or `..`. SeaweedFS substitutes `${jwt:sub}` without escaping, and the list
+  condition uses `StringLike`, so a wildcard in `sub` would widen it.
+- Core ids must be lowercase, or at least unique ignoring case. SeaweedFS
+  compares policy resources case-insensitively, so `core-a` can read and write
+  `cores/CORE-A/…`: two ids that differ only in case are one Core to it. Nothing
+  in this deployment can check that; the issuer has to.
 - The Panel is the only holder of the token signer, so whoever can sign a token
   can name any Core. That is the trust this issue asks for.
 
@@ -128,6 +150,9 @@ This is part 1 of #566 (steps 1 and 2). Not done here, and not claimed:
   ([actana/client#5](https://github.com/actana/client/issues/5)) and the
   Panel's token signer with a JWKS endpoint: nothing in the Panel publishes an
   issuer or JWKS URL today, so `SEAWEEDFS_OIDC_*` has nothing to point at yet.
+- **Container hardening.** The entrypoint runs as root to hand a file to the
+  `seaweed` user, and the service has no `cap_drop`. Dropping all capabilities
+  but CHOWN, SETUID, SETGID, DAC_OVERRIDE and FOWNER should work; it needs a live run.
 - **Not run against a live SeaweedFS.** The config was written from the
-  SeaweedFS 4.48 source and its own IAM test configs; no container was started
+  SeaweedFS 4.47 source and its own IAM test configs; no container was started
   for this change.

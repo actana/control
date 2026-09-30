@@ -43,7 +43,7 @@ service names. Every path in the file is relative to the file.
 | **`panel`** | The web service. Publishes `127.0.0.1:7420`, holds the Operator login, the Core registry and the presentation layer, and nothing else. |
 | **`core`** | A Core daemon. Publishes **no port at all** — the Panel reaches it over the compose network. Owns its projects, sessions, SQLite database and PTYs. |
 | **one network** | Compose's default. It is what lets the Panel dial `wss://core:8443` by service name. |
-| **three volumes** | `panel-data`, `core-home`, and a bind mount of `./repos`. See [Volumes](#volumes--what-survives-what). |
+| **three volumes** | `panel-data`, `core-home`, and a bind mount of `./repos` (plus `seaweedfs-data` if you opt in to SeaweedFS). See [Volumes](#volumes--what-survives-what). |
 
 The Panel dials the Core, never the reverse. That direction is why the Core
 needs no published port, and it is the same direction on a real fleet — see
@@ -147,11 +147,14 @@ does.
 | --- | --- | --- |
 | `panel-data` | Operator login, Core registry, sealed pairing credentials, the secrets key (unless `AC_SECRETS_KEY` is set), your Panel-side preferences | `docker compose down -v` |
 | `core-home` | The Core's whole home: its pairing identity, its SQLite database, and **each Harness's own credentials** (`~/.claude`, `~/.codex`, …) | `docker compose down -v` |
+| `seaweedfs-data` | Only with `--profile seaweedfs`: the Shared folder's stored objects | `docker compose down -v` |
 | `./repos` (bind mount) | Your checkouts, where **Add project** finds them | nothing — it is a directory on your host |
 
-`docker compose down` stops and removes the containers and leaves all three.
-**`docker compose down -v` deletes the two named volumes**: the Operator, every
-Core's pairing, every session, and every Harness login inside the Core. The
+`docker compose down` stops and removes the containers and leaves every volume.
+**`docker compose down -v` deletes the named volumes** (`panel-data` and
+`core-home`, plus `seaweedfs-data` if you opted in): the Operator, every
+Core's pairing, every session, every Harness login inside the Core, and the
+Shared folder's stored objects. The
 bind-mounted `./repos` is untouched either way, which is the point of it being a
 bind mount.
 

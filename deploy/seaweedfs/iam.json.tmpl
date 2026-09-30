@@ -84,21 +84,10 @@
             "Condition": {
               "StringLike": {
                 "s3:prefix": [
-                  "@@PREFIX@@/${jwt:sub}",
                   "@@PREFIX@@/${jwt:sub}/*"
                 ]
               }
             }
-          },
-          {
-            "Sid": "KeepTheSessionValid",
-            "Effect": "Allow",
-            "Action": [
-              "sts:ValidateSession"
-            ],
-            "Resource": [
-              "*"
-            ]
           }
         ]
       }
