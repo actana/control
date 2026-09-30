@@ -13,11 +13,12 @@ import { coreLinkManager } from "~/server/services/core-link-manager";
 export { attachPanelLink } from "~/server/panel-link/ws-server";
 
 /**
- * The Panel's Postgres pool, opened and checked by `bin/panel.mjs` before it
- * listens (#567): a Panel with no reachable database refuses to start. Nothing
- * reads through the pool yet.
+ * The Panel's Postgres pool, opened, checked and migrated by `bin/panel.mjs`
+ * before it listens (#567): a Panel with no reachable database, or one whose
+ * migrations fail, refuses to start. Nothing reads through the pool yet.
  */
-export { connectPanelDatabase, closePanelDatabase } from "~/db/pg";
+export { bootPanelDatabase as connectPanelDatabase } from "~/db/pg-boot";
+export { closePanelDatabase } from "~/db/pg";
 
 /**
  * The Node ↔ Web translation `bin/panel.mjs` serves every request through

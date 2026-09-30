@@ -32,6 +32,9 @@ function fakePool(query: () => Promise<unknown>): PanelPoolLike & { ended: numbe
   const pool = {
     ended: 0,
     query,
+    connect: async () => {
+      throw new Error("connect is not used by the pool check");
+    },
     end: async () => {
       pool.ended += 1;
     },
