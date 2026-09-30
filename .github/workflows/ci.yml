@@ -48,7 +48,7 @@ on:
       # run. Here `+` means "one or more of the preceding character" and `.` is
       # a literal dot, so this matches `feat/` and three dot-separated digit
       # runs and nothing else: not `feat/553-adopt-actana-client`, not
-      # `feat/0.5`, not `feat/0.5.0-rc1`. `scripts/__tests__/workflows.test.mjs`
+      # `feat/0.5`, not `feat/0.5.0-rc1`. `scripts/__tests__/integration-branch-push.test.mjs`
       # holds the table of names.
       - "feat/[0-9]+.[0-9]+.[0-9]+"
   # Republishing a train's images without a new commit, for when a registry
@@ -1079,7 +1079,7 @@ jobs:
             # Never `pass` — that is the vacuous ten-second skip a draft gets,
             # and this push exists to be the run that is not.
             #
-            # `feat-x.y.z`, not `pr-<n>`: per-arch tags are keyed on the stage
+            # `integration-feat-x.y.z`, not `pr-<n>`: per-arch tags are keyed on the stage
             # (D12), so it names the branch rather than a pull request.
             mode=build
             stage="integration-${REF_NAME//\//-}"

@@ -142,7 +142,10 @@ describe("the push trigger for integration branches (#584)", () => {
     for (const name of names.match) expect(triggers(name), name).toBe(true);
   });
 
-  it("starts no run for a ticket branch or any other name", () => {
+  it("starts no run for a ticket branch or any other name, while it does for feat/x.y.z", () => {
+    // Paired with the positive case: before the trigger existed, no name
+    // matched, so the negatives alone passed on any workflow.
+    expect(triggers("feat/0.5.0")).toBe(true);
     for (const name of names.noMatch) expect(triggers(name), name).toBe(false);
   });
 
@@ -173,7 +176,10 @@ describe("which jobs a push to feat/x.y.z reaches (#584)", () => {
     }
   });
 
-  it("reaches no publishing job", () => {
+  it("reaches the image builds but no publishing job", () => {
+    // The positive half makes this fail before the change; the negatives alone
+    // would pass on any workflow that never ran a feat push.
+    expect(evaluate(jobIf("panel-image"), events["push feat/0.5.0"])).toBe(true);
     for (const job of PUBLISHING) {
       expect(evaluate(jobIf(job), events["push feat/0.5.0"]), `${job} on push feat/0.5.0`).toBe(false);
     }
@@ -214,7 +220,8 @@ describe("which jobs a push to feat/x.y.z reaches (#584)", () => {
     }
   });
 
-  it("does not put a dispatch on a ticket branch into the image jobs", () => {
+  it("does not put a dispatch on a ticket branch into the image jobs, while a feat push is", () => {
+    expect(evaluate(jobIf("panel-image"), events["push feat/0.5.0"])).toBe(true);
     const dispatch = { event_name: "workflow_dispatch", ref: "refs/heads/feat/553-adopt-actana-client" };
     for (const job of ["pr-image-mode", "panel-image", "core-image", "conventions", ...PUBLISHING]) {
       expect(evaluate(jobIf(job), dispatch), job).toBe(false);
@@ -363,5 +370,73 @@ describe("the image-mode resolver on a pull request is unchanged (#584)", () => 
     expect(out.mode).toBe("build");
     expect(out.push).toBe("true");
     expect(out.dev_tags).toMatch(/^pr-584\d{6}$/);
+  });
+});
+
+describe("the Conventions push path (#584)", () => {
+  const git = (cwd, ...args) =>
+    spawnSync("git", args, { cwd, encoding: "utf8", env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null" } });
+
+  /** Run "Lint commits in PR" in a scratch repo with a commitlint that records its arguments. */
+  const lint = (event, pick) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "actana-conv-"));
+    try {
+      const repo = path.join(dir, "repo");
+      fs.mkdirSync(repo);
+      git(repo, "init", "-q");
+      const shas = [];
+      for (const n of [1, 2, 3]) {
+        git(repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", `ci: c${n}`);
+        shas.push(git(repo, "rev-parse", "HEAD").stdout.trim());
+      }
+      const bin = path.join(dir, "tmp/commitlint/node_modules/.bin");
+      fs.mkdirSync(bin, { recursive: true });
+      const args = path.join(dir, "args");
+      fs.writeFileSync(path.join(bin, "commitlint"), `#!/usr/bin/env bash\necho "$@" > ${args}\n`, {
+        mode: 0o755,
+      });
+      const env = {
+        PATH: process.env.PATH,
+        RUNNER_TEMP: path.join(dir, "tmp"),
+        GITHUB_WORKSPACE: repo,
+        BASE_SHA: "",
+        HEAD_SHA: "",
+        BEFORE_SHA: "",
+        AFTER_SHA: shas[2],
+        ...pick(shas),
+        ...event,
+      };
+      const run = spawnSync("bash", ["-c", stepScript("Lint commits in PR")], { cwd: repo, env, encoding: "utf8" });
+      expect(run.status, run.stderr).toBe(0);
+      return { called: fs.readFileSync(args, "utf8").trim(), shas };
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  };
+
+  it("lints the commits a push brought: before..after", () => {
+    const { called, shas } = lint({ EVENT_NAME: "push" }, (s) => ({ BEFORE_SHA: s[0] }));
+    expect(called).toContain(`--from ${shas[0]} --to ${shas[2]}`);
+    expect(called).not.toContain("--last");
+  });
+
+  it("lints only the tip when the branch is new (all-zero before)", () => {
+    const { called } = lint({ EVENT_NAME: "push" }, () => ({ BEFORE_SHA: "0".repeat(40) }));
+    expect(called).toContain("--last");
+    expect(called).not.toContain("--from");
+  });
+
+  it("lints only the tip when before is no longer in the clone", () => {
+    const { called } = lint({ EVENT_NAME: "push" }, () => ({ BEFORE_SHA: "deadbeef".repeat(5) }));
+    expect(called).toContain("--last");
+    expect(called).not.toContain("--from");
+  });
+
+  it("still lints base..head on a pull request", () => {
+    const { called, shas } = lint({ EVENT_NAME: "pull_request" }, (s) => ({
+      BASE_SHA: s[0],
+      HEAD_SHA: s[1],
+    }));
+    expect(called).toContain(`--from ${shas[0]} --to ${shas[1]}`);
   });
 });

@@ -307,7 +307,7 @@ jobs:
               if [[ "$PUSH" == "true" ]]; then
                 echo "::notice title=${IMAGE} image — build + push::Building and smoking the ${IMAGE} image, then publishing ${TAGS} ${DEV_TAGS}."
               else
-                echo "::notice title=${IMAGE} image — build, no push::Building and smoking the ${IMAGE} image. Nothing is published — a fork pull request has no registry credential, by design (ADR 0023 D34)."
+                echo "::notice title=${IMAGE} image — build, no push::Building and smoking the ${IMAGE} image. Nothing is published — a fork pull request has no registry credential, by design (ADR 0023 D34), and an integration-branch push publishes nothing by design (#584)."
               fi
               ;;
             promote)
