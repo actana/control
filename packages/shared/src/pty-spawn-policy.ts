@@ -54,7 +54,7 @@ export type ShellSpawnRequest = BaseSpawnRequest & {
   dangerouslySkipPermissions?: never;
   // Project-less "home" shell terminal (the dashboard terminals). When set, the
   // spawn HANDLER — not this pure policy — replaces cwd with its own
-  // os.homedir() and passes that dir through `homeShellRoots` so the cwd-root
+  // the Core's home and passes that dir through `homeShellRoots` so the cwd-root
   // check accepts it. This lets a dashboard terminal open at ~ on whichever
   // runtime it lands on (local host or remote agent) without the renderer ever
   // learning or supplying a host filesystem path.
@@ -72,7 +72,7 @@ export type ShellSpawnRequest = BaseSpawnRequest & {
  * Panel gesture. The "SSH-equivalent" escape hatch.
  *
  * `cwd` is optional/empty from the renderer; the spawn handler
- * ({@link PtyCore.spawn}) replaces it with its own `os.homedir()`
+ * ({@link PtyCore.spawn}) replaces it with the Core's home (`coreHome()`)
  * before calling {@link resolveSpawnPlan}, so the plan's `cwd` is the real
  * home path on the Core machine.
  *
@@ -88,7 +88,7 @@ export type ShellSessionSpawnRequest = {
   /**
    * Optional cwd on the Core machine. The renderer never knows a host
    * path, so it sends "" (or omits); the spawn handler
-   * ({@link PtyCore.spawn}) replaces it with its own `os.homedir()`.
+   * ({@link PtyCore.spawn}) replaces it with the Core's home (`coreHome()`).
    * A non-empty value (e.g. handler-supplied home) is passed through verbatim
    * — the project-root check is skipped for VM shells regardless.
    */
@@ -526,7 +526,7 @@ export function resolveSpawnPlan(req: SpawnRequest, deps: SpawnPolicyDeps): Spaw
   // with NO project-root requirement. It is gated by core-link auth (mTLS +
   // bearer), not by cwd containment, so the project-root check below is
   // skipped entirely. The handler (PtyCore.spawn) supplies the real
-  // cwd (its own os.homedir()); the renderer never sends a host path.
+  // cwd (the Core's home (`coreHome()`)); the renderer never sends a host path.
   if (req.shellSession === true) {
     // Mutually exclusive with the agent and shell modes — forces every
     // callsite to declare which boundary it's on, mirroring the shell/agent

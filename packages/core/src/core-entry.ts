@@ -62,7 +62,6 @@
 // pasted into the Panel's "Add Core", and #287 removed the hand-carry it
 // belonged to. A client enrolls with a code from `actana pair new`.
 
-import * as os from "node:os";
 import * as path from "node:path";
 import {
   PtyCore,
@@ -83,6 +82,7 @@ import { pairingStorePath } from "@actana/sdk/pairing/stores/json-file";
 import { corePairingStore } from "./core-pairing-store";
 import { createDirectory, listDirectory } from "./directory-browse";
 import { runCoreExec } from "./core-exec";
+import { coreHome } from "./core-identity";
 import { configureProjectRootsDb } from "./project-roots";
 import {
   configureEventLogStore,
@@ -409,9 +409,9 @@ async function startCore(): Promise<void> {
   // hold: it sees each event once, in order, as it is produced. The guard is
   // there anyway, because "this is only ever fed live events" is a property of
   // this one call site and not of the class.
-  ensureOrchestrationSkill(os.homedir());
+  ensureOrchestrationSkill(coreHome());
   const skillWatcher = new HarnessSkillWatcher({
-    ensure: () => ensureOrchestrationSkill(os.homedir()),
+    ensure: () => ensureOrchestrationSkill(coreHome()),
   });
   const availabilityStore = new HarnessAvailabilityStore({
     appendEvent: (kind, payload, opts) => {
@@ -431,14 +431,15 @@ async function startCore(): Promise<void> {
   // Issue 83 (ADR 0021): the Panel can now ask this Core to install a Harness
   // it found missing. Same non-interactive path `actana harnesses install <id>`
   // takes, and the same re-probe afterwards — the difference is only who asked.
-  // `os.homedir()` is the daemon's own operator, whose login PATH the install
-  // writes; the daemon runs as that operator on metal and in the container.
+  // `coreHome()` is the home the Sessions (and the Harness CLIs) live in: the
+  // operator's on metal, `core`'s in the container, where the daemon is another
+  // user and the daemon's own home would be the wrong place to install into.
   const harnessInstalls = new HarnessInstallService({
     availability: () => availabilityStore.snapshot(),
     reprobe: () => availabilityStore.runProbe(),
     system: daemonHarnessSystem(),
     platform: process.platform,
-    homeDir: os.homedir(),
+    homeDir: coreHome(),
   });
 
   // ─── mTLS + bearer auth (issue 04) ───
@@ -712,7 +713,7 @@ async function startCore(): Promise<void> {
           label,
           bearerDays,
           env: process.env,
-          home: os.homedir(),
+          home: coreHome(),
         });
         if (!registered.ok) {
           // Serving Panels does not depend on this, so a registry that cannot
