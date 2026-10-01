@@ -1,16 +1,14 @@
 import { createFileRoute, useRouter } from "@tanstack/react-router";
 import { useQueryClient } from "@tanstack/react-query";
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { toast } from "sonner";
 import { Btn } from "~/components/ui/Btn";
 import { CardFrame } from "~/components/ui/CardFrame";
-import { DropdownMenuItem, DropdownMenuSeparator } from "~/components/ui/DropdownMenuItem";
+import { DropdownMenuItem } from "~/components/ui/DropdownMenuItem";
 import { Icon } from "~/components/ui/Icon";
 import { GridViewToggleIcon } from "~/components/ui/GridViewToggleIcon";
 import { Z_INDEX } from "~/lib/z-index";
-import { openExternal } from "~/lib/open-external";
-import { ProjectIcon } from "~/components/ui/ProjectIcon";
 import { EmptyState } from "~/components/ui/EmptyState";
 import { SessionColumn } from "~/components/views/SessionColumn";
 import { NewHarnessDialog } from "~/components/views/NewHarnessDialog";
@@ -20,14 +18,8 @@ import {
   markCodexHooksNoticeSeen,
 } from "~/components/views/CodexHooksNoticeDialog";
 import { HarnessUpdateRequiredDialog } from "~/components/views/HarnessUpdateRequiredDialog";
-import { ProjectDialog } from "~/components/views/ProjectDialog";
 import { GridLayoutButton } from "~/components/views/GridLayoutButton";
-import { ProjectFilesPanel } from "~/components/views/ProjectFilesPanel";
 import { SessionGrid } from "~/components/views/SessionGrid";
-import { filesFromDrop, type DroppedFile } from "~/lib/core-files";
-import { dragTargetIsSessionPane } from "~/lib/board-drop-arbiter";
-import { dragCarriesFiles, useProjectFilesAvailability } from "~/lib/use-project-files";
-import { takeProjectFileDrop } from "~/lib/pending-file-drop";
 import { archiveOpenSession, invalidateSessionQueries } from "~/lib/archive-session";
 import { openClickedSession } from "~/lib/open-clicked-session";
 import {
@@ -43,12 +35,9 @@ import { CursorGlow } from "~/components/ui/CursorGlow";
 import { HotkeyTooltip, StaticHotkeyTooltip } from "~/components/ui/Tooltip";
 import { Modal } from "~/components/ui/Modal";
 import { ConfirmDialog } from "~/components/ui/ConfirmDialog";
-import { RemoveProjectConfirmDialog } from "~/components/views/RemoveProjectConfirmDialog";
 import { isEditableTarget, useHotkey } from "~/lib/use-hotkey";
 import { api } from "~/lib/api";
 import { mutateProjectForCore } from "~/lib/mutate-project-for-core";
-import { saveProjectEdits } from "~/lib/save-project-edits";
-import { removeProject } from "~/lib/remove-project";
 import { mutateSessionForCore } from "~/lib/mutate-session-for-core";
 import { newSessionId } from "~/lib/claude-command";
 import { TITLE_WAITING } from "~/lib/session-sentinels";
@@ -93,8 +82,6 @@ import {
   groupSessionsByStatusForDisplay,
 } from "~/lib/session-display-order";
 import {
-  DEFAULT_BRANCH,
-  type Harness,
   STATUS_DISPLAY_ORDER,
 } from "@actana/shared/domain";
 import { harnessLaunchesWithSkipPermissions } from "@actana/shared/harnesses";
@@ -105,12 +92,10 @@ import {
   useArchivedSessions,
   useCoreArchivedSessionCount,
   useHookToken,
-  useGroups,
   useProject,
   useSettings,
   useSessions,
 } from "~/queries";
-import { useActiveGroup } from "~/lib/active-group";
 import { useCoreLiveQueries } from "~/lib/use-core-live-queries";
 import {
   availabilityFor,
@@ -123,7 +108,7 @@ import {
   readPendingSessionOpen,
   type PendingSessionOpen,
 } from "~/lib/session-notification-store";
-import type { Group, Session, SessionStatus } from "~/db/schema";
+import type { Session } from "~/db/schema";
 import type { ProjectPathStatus } from "~/shared/projects";
 import { projectScopeKey, scopeKeyForProject } from "~/lib/scoped-project";
 import {
@@ -177,14 +162,11 @@ function ProjectPage() {
   const router = useRouter();
   const queryClient = useQueryClient();
   const { data: settings } = useSettings();
-  const settingsLoaded = settings !== undefined;
-  const { hideElementContextMenu, hideableMenu } = useHideableMenu();
+  const { hideableMenu } = useHideableMenu();
   // Which discretionary project-header buttons are shown (Settings → Interface,
   // or right-click → Hide on the button itself).
   const headerButtons = settings?.headerButtons ?? DEFAULT_HEADER_BUTTON_VISIBILITY;
   const projectQuery = useProject(id, { coreId });
-  const { setActiveGroup } = useActiveGroup();
-  const groupsQuery = useGroups();
   const project = projectQuery.data;
   const selectedScopeKey = projectScopeKey(id);
   const scopedProject = project ?? null;
@@ -236,9 +218,6 @@ function ProjectPage() {
     };
   }, [coreId, pathScopeKey, project]);
   const projectPathReady = projectPathCheck.state === "valid";
-  const projectPathBlocked =
-    projectPathCheck.state === "invalid" || projectPathCheck.state === "error";
-  const projectPathUsable = projectPathReady || projectPathCheck.state === "checking";
   const projectPathIssue =
     projectPathCheck.state === "invalid" ? projectPathCheck.status : null;
   const terminalProject = projectPathReady ? scopedProject : null;
@@ -284,38 +263,12 @@ function ProjectPage() {
     () => new Set(sessions.filter((t) => !t.archived && t.pinned).map((t) => t.id)),
     [sessions],
   );
-  const groups = groupsQuery.data ?? [];
   useHookToken();
   const [showNewHarness, setShowNewHarness] = useState(false);
   // Where the session created from the New Harness dialog should land in the grid:
   // "newRow" is set by the grid's "New row" button so the result starts a fresh
   // row; "default" (the New session button / hotkey) uses the current row.
   const [newHarnessTarget, setNewHarnessTarget] = useState<"default" | "newRow">("default");
-  const [showEdit, setShowEdit] = useState(false);
-  const [confirmRemove, setConfirmRemove] = useState(false);
-  // The Project's files, on the Core that owns them (#129 F6/F11, #169).
-  //
-  // The affordance is withheld entirely against a Core that announces no `files`
-  // capability — no button, no drop target, no empty panel to explain itself.
-  // Such a Core predates the surface, which is a supported state and not a
-  // fault (F9, ADR 0024 D11), so the honest UI is the one that has never heard
-  // of files either.
-  const filesAvailable = useProjectFilesAvailability(coreId).available;
-  const [showFiles, setShowFiles] = useState(false);
-  const [fileDropHot, setFileDropHot] = useState(false);
-  // A drop that landed on the board rather than in the panel. The `File`
-  // handles survive the event; the `DataTransfer` they came from does not, so
-  // they are read out here and handed on.
-  const [pendingFileDrop, setPendingFileDrop] = useState<DroppedFile[] | null>(null);
-  // A drop that landed on this Project's tile in the rail and navigated here.
-  // Taken once, on arrival: the handoff is one-shot by construction, so a
-  // remount cannot replay it as a second upload.
-  useEffect(() => {
-    const parked = takeProjectFileDrop(id);
-    if (!parked) return;
-    setShowFiles(true);
-    setPendingFileDrop(parked.files);
-  }, [id]);
   const [sessionView, setSessionView] = useState<SessionView>("active");
   const showArchived = sessionView === "archived";
   const showPinned = sessionView === "pinned";
@@ -379,14 +332,8 @@ function ProjectPage() {
   useEffect(() => {
     if (sessionView === "archived" && !hasArchivedSessions) setSessionView("active");
   }, [sessionView, hasArchivedSessions]);
-  const [pinning, setPinning] = useState(false);
   const [cleanupStatus, setCleanupStatus] = useState<string | null>(null);
-  const [removingMissingProject, setRemovingMissingProject] = useState(false);
   const [retryingProjectPath, setRetryingProjectPath] = useState(false);
-  const [projectPathActionError, setProjectPathActionError] = useState<string | null>(null);
-  useEffect(() => {
-    setProjectPathActionError(null);
-  }, [projectPathCheck.state, projectPathIssue?.path]);
   const cliAvailability = useCliAvailability(coreId);
 
   const [overflowOpen, setOverflowOpen] = useState(false);
@@ -515,7 +462,6 @@ function ProjectPage() {
   }, [terminals, enterGridView, terminalProject, sessions]);
   const {
     setProject: setActiveUserTerminalProject,
-    setPanelOpen,
   } = useUserTerminals();
 
   useEffect(() => {
@@ -722,21 +668,6 @@ function ProjectPage() {
     () => queryClient.invalidateQueries({ queryKey: queryKeys.projects }),
     [queryClient]
   );
-  const invalidateGroups = useCallback(
-    () => queryClient.invalidateQueries({ queryKey: queryKeys.groups }),
-    [queryClient],
-  );
-  const createGroupForSelection = useCallback(
-    async (name: string) => {
-      const { group } = await api.createGroup({ name });
-      queryClient.setQueryData<Group[]>(queryKeys.groups, (current) =>
-        current ? [...current, group] : [group],
-      );
-      await invalidateGroups();
-      return group;
-    },
-    [invalidateGroups, queryClient],
-  );
   const refresh = useCallback(async () => {
     await Promise.all([
       invalidateProject(),
@@ -745,28 +676,6 @@ function ProjectPage() {
       invalidateProjects(),
     ]);
   }, [invalidateProject, invalidateSessions, invalidateArchivedSessions, invalidateProjects]);
-
-  const toggleProjectPin = useCallback(async () => {
-    if (!project || pinning) return;
-    setOverflowOpen(false);
-    setPinning(true);
-    try {
-      // Pin is Core-owned state; the mutation goes over the coreId-
-      // parameterised core-link surface (issue 10, ADR-0005), never through
-      // the local HTTP server. Every Core shares the same call
-      // shape via {@link mutateProjectForCore}.
-      await mutateProjectForCore(coreId, {
-        op: "pin",
-        projectId: project.id,
-        pinned: project.pinned !== true,
-      });
-      await Promise.all([invalidateProject(), invalidateProjects()]);
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Could not update project pin");
-    } finally {
-      setPinning(false);
-    }
-  }, [project, pinning, invalidateProject, invalidateProjects, coreId]);
 
   const [showCodexHooksNotice, setShowCodexHooksNotice] = useState(false);
   const [harnessUpdateRequired, setHarnessUpdateRequired] = useState<{
@@ -967,13 +876,13 @@ function ProjectPage() {
 
   const onNewHarnessPrimary = useCallback(() => {
     if (!projectPathReady) return;
-    if (showNewHarness || showEdit) return;
+    if (showNewHarness) return;
     if (project?.rememberHarnessSettings && project.savedHarness) {
       void startWithSaved();
       return;
     }
     setShowNewHarness(true);
-  }, [project, projectPathReady, showNewHarness, showEdit, startWithSaved]);
+  }, [project, projectPathReady, showNewHarness, startWithSaved]);
 
   useHotkey("agent.new", onNewHarnessPrimary, { ignoreEditable: true });
 
@@ -1031,19 +940,14 @@ function ProjectPage() {
   // outside the grid.
   const onNewRowPrimary = useCallback(() => {
     if (!projectPathReady) return;
-    if (showNewHarness || showEdit) return;
+    if (showNewHarness) return;
     if (project?.rememberHarnessSettings && project.savedHarness) {
       void startWithSavedInNewRow();
       return;
     }
     setNewHarnessTarget("newRow");
     setShowNewHarness(true);
-  }, [project, projectPathReady, showNewHarness, showEdit, startWithSavedInNewRow]);
-
-  useHotkey("project.edit", () => {
-    if (showNewHarness || projectPathIssue || projectPathCheck.state === "error") return;
-    setShowEdit((v) => !v);
-  });
+  }, [project, projectPathReady, showNewHarness, startWithSavedInNewRow]);
 
   // Ship: open an AI session that pushes/syncs with remote using Settings → Defaults → Ship.
   const startShipSession = useCallback(() => {
@@ -1076,8 +980,6 @@ function ProjectPage() {
 
   const anyBlockingDialogOpen =
     showNewHarness ||
-    showEdit ||
-    confirmRemove ||
     confirmDeleteArchived ||
     !!projectPathIssue ||
     projectPathCheck.state === "error" ||
@@ -1352,7 +1254,7 @@ function ProjectPage() {
                 Retry
               </Btn>
               <Btn variant="ghost" onClick={() => void router.navigate({ to: "/" })}>
-                Back to projects
+                Back to Fleet
               </Btn>
             </div>
           }
@@ -1513,45 +1415,6 @@ function ProjectPage() {
         setCleanupStatus(null);
       }
     })();
-  };
-
-  const confirmRemoveProject = async () => {
-    if (!project) return;
-    setConfirmRemove(false);
-    try {
-      await terminals.closeForProject(project.id);
-      // Route to the Core that owns the row (ADR 0005) — the Panel's own
-      // delete endpoint only knows Panel-owned rows.
-      await removeProject(coreId, project.id);
-      // void: a failed navigation shows in the router's own error state.
-      void router.navigate({ to: "/" });
-    } catch (e: unknown) {
-      // Without this catch the rejection was unhandled: the dialog closed, no
-      // toast appeared, and the project was still there (issue 97).
-      toast.error(e instanceof Error ? e.message : "Could not remove project");
-    } finally {
-      setCleanupStatus(null);
-    }
-  };
-
-  const removeMissingProject = async () => {
-    if (!project) return;
-    setRemovingMissingProject(true);
-    setProjectPathActionError(null);
-    setCleanupStatus("Removing this project from Actana Control.");
-    try {
-      await terminals.closeForProject(project.id);
-      await removeProject(coreId, project.id);
-      // void: a failed navigation shows in the router's own error state.
-      void router.navigate({ to: "/" });
-    } catch (e: unknown) {
-      const message = e instanceof Error ? e.message : "Could not remove project";
-      setProjectPathActionError(message);
-      toast.error(message);
-    } finally {
-      setCleanupStatus(null);
-      setRemovingMissingProject(false);
-    }
   };
 
   const retryProjectPathCheck = async () => {
@@ -1845,67 +1708,6 @@ function ProjectPage() {
       <div
         ref={boardRef}
         tabIndex={-1}
-        // Dropping a file anywhere on a Project's board sends it to that
-        // Project on its Core. `dragCarriesFiles` is what keeps this off the
-        // Panel's own drags — a project path dragged from the rail into a
-        // terminal still belongs to the handler that already understands it.
-        //
-        // And `dragTargetIsSessionPane` is what keeps it off the sessions
-        // (#401). In grid view the grid renders inside this div, so a drag
-        // aimed at a session's terminal bubbles here too; the board answering
-        // it would upload to the Project root, which is not where the operator
-        // was pointing. It still has to `preventDefault` over the grid —
-        // leaving the browser's default alone makes the drop navigate the Panel
-        // to the dropped file — but it says `none`, so the cursor reads no-drop
-        // and the board never paints itself hot for a gesture it will refuse.
-        //
-        // Writing `dropEffect` unconditionally is safe only while nothing
-        // inside the grid handles a file drag. This handler runs last, on the
-        // bubble, so it stomps whatever a nested one set: if a per-session drop
-        // is ever added — an image attached into a grid cell — it will
-        // `preventDefault` and set `copy`, and the `none` below would overwrite
-        // it and suppress that pane's `drop` entirely. The repo's convention
-        // for nested drop targets is the inner one claiming the gesture with
-        // `stopPropagation` (`ProjectFilesPanel.tsx`, #400/#227); a per-session
-        // drop should do the same, and then this branch never runs for it.
-        onDragOver={
-          filesAvailable
-            ? (e) => {
-                if (!dragCarriesFiles(e)) return;
-                e.preventDefault();
-                if (dragTargetIsSessionPane(e)) {
-                  e.dataTransfer.dropEffect = "none";
-                  setFileDropHot(false);
-                  return;
-                }
-                e.dataTransfer.dropEffect = "copy";
-                setFileDropHot(true);
-              }
-            : undefined
-        }
-        onDragLeave={filesAvailable ? () => setFileDropHot(false) : undefined}
-        onDrop={
-          filesAvailable
-            ? (e) => {
-                if (!dragCarriesFiles(e)) return;
-                // Swallowed before the arbiter runs: whoever the drop belonged
-                // to, the browser's default for a file dropped on a page is to
-                // navigate to it, and that must not happen on either path.
-                e.preventDefault();
-                setFileDropHot(false);
-                // Aimed at a session, so it was never the board's to take
-                // (#401). No upload, no drawer, no toast — refusing quietly is
-                // what the no-drop cursor above already told the operator.
-                if (dragTargetIsSessionPane(e)) return;
-                // Opened first: the upload is about to run, and a progress list
-                // nobody can see is the same as no progress at all.
-                setShowFiles(true);
-                void filesFromDrop(e.dataTransfer).then((files) => {
-                  if (files.length > 0) setPendingFileDrop(files);
-                });
-              }
-            : undefined
-        }
         style={{
           flex: 1,
           minHeight: 0,
@@ -1913,8 +1715,6 @@ function ProjectPage() {
           padding: 0,
           display: "flex",
           flexDirection: "column",
-          outline: fileDropHot ? "2px dashed var(--accent, #60a5fa)" : "none",
-          outlineOffset: -4,
         }}
         className="dot-grid-bg"
       >
@@ -1947,104 +1747,47 @@ function ProjectPage() {
             zIndex: 2,
           }}
         >
-          <div ref={overflowRef} style={{ position: "relative", flex: "0 0 auto", display: "inline-flex", alignItems: "center" }}>
-            <div
-              role="button"
-              tabIndex={0}
-              onClick={() => setOverflowOpen((v) => !v)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" || e.key === " ") {
-                  e.preventDefault();
-                  setOverflowOpen((v) => !v);
-                }
-              }}
-              aria-haspopup="menu"
-              aria-expanded={overflowOpen}
-              aria-label={`${project.name} project actions`}
-              title={project.name}
-              className="mc-project-header-trigger"
-              style={{
-                display: "inline-flex",
-                alignItems: "center",
-                gap: 6,
-                padding: "6px 8px 6px 6px",
-                color: "var(--text)",
-                cursor: "pointer",
-                borderRadius: 10,
-                flexShrink: 0,
-              }}
-            >
-              <ProjectIcon project={project} size={32} />
-              <span
-                style={{
-                  fontFamily: "var(--mono)",
-                  fontSize: 14,
-                  fontWeight: 600,
-                  color: "var(--text)",
-                  letterSpacing: "-0.01em",
-                  maxWidth: 220,
-                  overflow: "hidden",
-                  textOverflow: "ellipsis",
-                  whiteSpace: "nowrap",
-                }}
-              >
-                {project.name}
-              </span>
-              <Icon
-                name="chevron-down"
-                size={14}
-                style={{
-                  color: "var(--text-dim)",
-                  flexShrink: 0,
-                  transform: overflowOpen ? "rotate(180deg)" : undefined,
-                  transition: "transform 120ms ease",
-                }}
+          <Btn
+            variant="ghost"
+            icon="chevron-left"
+            onClick={() =>
+              void router.navigate(
+                coreId
+                  ? { to: "/cores/$coreId", params: { coreId } }
+                  : { to: "/" },
+              )
+            }
+            title="Back to this Core's Sessions"
+          >
+            Sessions
+          </Btn>
+          {showGrid && gridScopeSessionCount > 0 && (
+            <div ref={overflowRef} style={{ position: "relative", flex: "0 0 auto", display: "inline-flex" }}>
+              <Btn
+                variant="ghost"
+                icon="more"
+                onClick={() => setOverflowOpen((v) => !v)}
+                aria-haspopup="menu"
+                aria-expanded={overflowOpen}
+                aria-label="Session actions"
               />
-            </div>
-            {overflowOpen &&
-              overflowMenuRect &&
-              createPortal(
-              <CardFrame
-                ref={overflowDropdownRef}
-                role="menu"
-                solid
-                className="mc-project-actions-menu"
-                style={{
-                  position: "fixed",
-                  top: overflowMenuRect.top,
-                  left: overflowMenuRect.left,
-                  minWidth: overflowMenuRect.minWidth,
-                  boxShadow: "0 14px 32px rgba(0,0,0,0.42)",
-                  zIndex: Z_INDEX.popover,
-                }}
-              >
-                <DropdownMenuItem
-                  icon={project.pinned ? "pin-fill" : "pin"}
-                  onClick={() => void toggleProjectPin()}
-                  disabled={pinning}
-                >
-                  {pinning
-                    ? project.pinned
-                      ? "Unpinning..."
-                      : "Pinning..."
-                    : project.pinned
-                      ? "Unpin project"
-                      : "Pin project"}
-                </DropdownMenuItem>
-                {project.githubUrl ? (
-                  <DropdownMenuItem
-                    icon="github"
-                    onClick={() => {
-                      setOverflowOpen(false);
-                      openExternal(project.githubUrl!);
+              {overflowOpen &&
+                overflowMenuRect &&
+                createPortal(
+                  <CardFrame
+                    ref={overflowDropdownRef}
+                    role="menu"
+                    solid
+                    className="mc-project-actions-menu"
+                    style={{
+                      position: "fixed",
+                      top: overflowMenuRect.top,
+                      left: overflowMenuRect.left,
+                      minWidth: overflowMenuRect.minWidth,
+                      boxShadow: "0 14px 32px rgba(0,0,0,0.42)",
+                      zIndex: Z_INDEX.popover,
                     }}
                   >
-                    Open GitHub
-                  </DropdownMenuItem>
-                ) : null}
-                {showGrid && gridScopeSessionCount > 0 && (
-                  <>
-                    <DropdownMenuSeparator />
                     <DropdownMenuItem
                       icon="archive"
                       onClick={() => {
@@ -2055,85 +1798,11 @@ function ProjectPage() {
                     >
                       Archive all sessions
                     </DropdownMenuItem>
-                  </>
+                  </CardFrame>,
+                  document.body,
                 )}
-                <DropdownMenuSeparator />
-                <HotkeyTooltip action="project.edit">
-                  <DropdownMenuItem
-                    icon="settings"
-                    onClick={() => {
-                      setOverflowOpen(false);
-                      setShowEdit(true);
-                    }}
-                  >
-                    Edit project
-                  </DropdownMenuItem>
-                </HotkeyTooltip>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem
-                  danger
-                  icon="trash"
-                  onClick={() => {
-                    setOverflowOpen(false);
-                    setConfirmRemove(true);
-                  }}
-                  title="Remove this project from Actana Control. The folder on disk is not touched."
-                >
-                  Remove project
-                </DropdownMenuItem>
-              </CardFrame>,
-              document.body,
-            )}
-          </div>
-          {(() => {
-            if (!(settings?.showProjectHeaderGroup ?? true)) return null;
-            const projectGroup = project.groupId
-              ? groups.find((g) => g.id === project.groupId)
-              : undefined;
-            if (!projectGroup) return null;
-            return (
-              <button
-                type="button"
-                onClick={() => {
-                  setActiveGroup(projectGroup.id);
-                  void router.navigate({ to: "/" });
-                }}
-                onContextMenu={hideElementContextMenu("project-header-group")}
-                title={`Group: ${projectGroup.name} — open dashboard scoped to this group`}
-                aria-label={`Group ${projectGroup.name} — open dashboard scoped to this group`}
-                style={{
-                  display: "inline-flex",
-                  alignItems: "center",
-                  gap: 7,
-                  padding: "4px 11px",
-                  borderRadius: 999,
-                  border: "1px solid var(--border-strong)",
-                  background: "var(--surface-1)",
-                  color: "var(--text-dim)",
-                  fontFamily: "var(--mono)",
-                  fontSize: 11,
-                  cursor: "pointer",
-                  flexShrink: 0,
-                  maxWidth: 160,
-                }}
-              >
-                <span
-                  aria-hidden
-                  style={{
-                    width: 7,
-                    height: 7,
-                    borderRadius: "50%",
-                    background: projectGroup.color,
-                    boxShadow: `0 0 6px ${projectGroup.color}66`,
-                    flexShrink: 0,
-                  }}
-                />
-                <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                  {projectGroup.name}
-                </span>
-              </button>
-            );
-          })()}
+            </div>
+          )}
           {hideableMenu}
           {showSessionScopeToggle && (
             <SessionScopeToggle
@@ -2162,17 +1831,6 @@ function ProjectPage() {
               minWidth: 0,
             }}
           >
-            {filesAvailable && (
-              <Btn
-                variant={showFiles ? "primary" : "ghost"}
-                icon="folder"
-                onClick={() => setShowFiles((open) => !open)}
-                title="This Project's files, on its Core"
-                aria-pressed={showFiles}
-              >
-                Files
-              </Btn>
-            )}
             {headerButtons.gridView && gridViewToggle}
             {!showArchived && (
               <NewHarnessButton
@@ -2446,7 +2104,7 @@ function ProjectPage() {
       <Modal
         open={!!projectPathIssue}
         onClose={closePathIssue}
-        title="Project folder missing"
+        title="Working folder missing"
         width={540}
         footer={
           <>
@@ -2455,17 +2113,9 @@ function ProjectPage() {
                 variant="ghost"
                 onClick={closePathIssue}
               >
-                Back to projects
+                Back to Fleet
               </Btn>
             </StaticHotkeyTooltip>
-            <Btn
-              variant="danger"
-              icon="trash"
-              onClick={() => void removeMissingProject()}
-              disabled={removingMissingProject}
-            >
-              {removingMissingProject ? "Removing..." : "Remove project"}
-            </Btn>
           </>
         }
       >
@@ -2473,30 +2123,8 @@ function ProjectPage() {
           <div style={{ fontSize: 13, lineHeight: 1.55, color: "var(--text)" }}>
             {projectPathIssue?.message ?? "Actana Control cannot find this project folder."}
             {" "}
-            {/* Repointing is only an option where the Panel owns the row. A
-                Core-owned project's path is set at create and immutable
-                afterwards (ADR 0022), so offering Edit project here would send
-                the operator to a field they cannot change. */}
-            {coreId
-              ? "This project's folder is on its Core and cannot be repointed from here — remove it from Actana Control and add it again at the new path."
-              : "Point the project at its new location from Edit project, or remove it from Actana Control."}
+            This Session's working folder is gone from disk. Nothing in the Panel can repoint it.
           </div>
-          {projectPathActionError && (
-            <div
-              style={{
-                border: "1px solid color-mix(in srgb, var(--status-failed) 55%, transparent)",
-                borderRadius: 10,
-                background: "color-mix(in srgb, var(--status-failed) 12%, transparent)",
-                color: "var(--status-failed)",
-                padding: "9px 11px",
-                fontFamily: "var(--mono)",
-                fontSize: 11.5,
-                lineHeight: 1.45,
-              }}
-            >
-              {projectPathActionError}
-            </div>
-          )}
           <div
             style={{
               border: "1px solid var(--border)",
@@ -2524,7 +2152,7 @@ function ProjectPage() {
           <>
             <StaticHotkeyTooltip hotkey="Esc">
               <Btn variant="ghost" onClick={closePathIssue}>
-                Back to projects
+                Back to Fleet
               </Btn>
             </StaticHotkeyTooltip>
             <Btn
@@ -2592,31 +2220,6 @@ function ProjectPage() {
         }}
       />
 
-      <ProjectDialog
-        open={showEdit}
-        project={project}
-        groups={groups}
-        // Editing browses the folders of the Core that owns this project —
-        // the dialog has no other way to know whose disk to walk.
-        initialCoreId={coreId ?? undefined}
-        projectCoreId={coreId}
-        onCreateGroup={createGroupForSelection}
-        onClose={() => setShowEdit(false)}
-        onSave={async (data) => {
-          await saveProjectEdits(coreId, project, data);
-          setShowEdit(false);
-          await refresh();
-        }}
-      />
-
-      <RemoveProjectConfirmDialog
-        open={confirmRemove}
-        onClose={() => setConfirmRemove(false)}
-        onConfirm={() => void confirmRemoveProject()}
-        projectName={project.name}
-        projectPath={project.path}
-      />
-
       <ConfirmDialog
         open={confirmDeleteArchived}
         onClose={() => setConfirmDeleteArchived(false)}
@@ -2663,56 +2266,6 @@ function ProjectPage() {
         </div>
       </ConfirmDialog>
 
-      {/* The Project files view, as a drawer beside the board rather than a modal: an
-        * operator watching a folder's worth of files land wants the Project
-        * still in front of them, and a drop that arrives while the drawer is
-        * open must not have to fight a backdrop for the event. */}
-      {filesAvailable && showFiles && (
-        <CardFrame
-          solid
-          style={{
-            position: "fixed",
-            top: 64,
-            right: 12,
-            bottom: 12,
-            width: 380,
-            maxWidth: "calc(100vw - 24px)",
-            display: "flex",
-            flexDirection: "column",
-            padding: 0,
-            overflow: "hidden",
-            zIndex: Z_INDEX.popover,
-            boxShadow: "0 14px 32px rgba(0,0,0,0.42)",
-          }}
-        >
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "space-between",
-              padding: "8px 8px 0 12px",
-            }}
-          >
-            <span style={{ fontSize: 13, fontWeight: 600 }}>Files</span>
-            <Btn
-              variant="ghost"
-              size="sm"
-              icon="x"
-              onClick={() => setShowFiles(false)}
-              title="Close the file view"
-            />
-          </div>
-          <div style={{ flex: 1, minHeight: 0, padding: 8 }}>
-            <ProjectFilesPanel
-              coreId={coreId}
-              projectId={project.id}
-              projectName={project.name}
-              pendingDrop={pendingFileDrop}
-              onPendingDropTaken={() => setPendingFileDrop(null)}
-            />
-          </div>
-        </CardFrame>
-      )}
       </div>
     </>
   );

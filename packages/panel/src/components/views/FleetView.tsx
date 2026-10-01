@@ -1,18 +1,17 @@
 import { useCallback } from "react";
 import { useRouter } from "@tanstack/react-router";
-import { toast } from "sonner";
 import { Btn } from "~/components/ui/Btn";
 import { CardFrame } from "~/components/ui/CardFrame";
 import { EmptyState } from "~/components/ui/EmptyState";
 import { Section } from "~/components/ui/Section";
 import { Icon } from "~/components/ui/Icon";
 import { CursorGlow } from "~/components/ui/CursorGlow";
-import { getPanelBridge } from "~/lib/panel-bridge";
 import { CoreNeedsUpdateNotice } from "~/components/views/CoreNeedsUpdate";
 import { formatRelativeTime } from "~/lib/format-relative-time";
-import { useCoreProjects, useFleetSessions } from "~/lib/use-fleet";
+import { FleetSessionRow } from "~/components/views/FleetSessionRow";
+import { useFleet } from "~/lib/fleet-context";
 import { setSelectedCoreId as writeSelectedCoreId } from "~/lib/selected-core-store";
-import { useAddProject } from "~/lib/add-project-store";
+import { OPEN_SETTINGS_EVENT } from "~/lib/design-meta";
 import { coreOrder, type CoreWithDial } from "~/shared/cores";
 
 // Fleet view — a live, non-persisted dashboard. `sessionRowsList` fans out to every
@@ -21,51 +20,32 @@ import { coreOrder, type CoreWithDial } from "~/shared/cores";
 // session rows: the Panel caches nothing session-shaped, so a downed Core is honestly
 // blank rather than stale.
 //
-// Clicking a row (or picking a Core) navigates *out* of Fleet view into the
-// per-Core shell on `/projects/$id?coreId=`. Fleet view hosts no drill of its
-// own — the Singular UI invariant (ADR-0005) says the shell is the same
-// whichever Core owns the work.
+// Clicking a row opens the Session; picking a Core opens that Core's page
+// (`/cores/$coreId`). Fleet hosts no drill of its own.
 
 export function FleetView() {
-  const bridge = getPanelBridge();
   const router = useRouter();
-  const { fleet, cores, loading, error, refresh } = useFleetSessions();
-  const addProject = useAddProject();
+  const { fleet, cores, loading, error, refresh } = useFleet();
 
-  // Into the per-Core shell, tagged with the owning Core so SessionGrid /
-  // ProjectBar / NewHarnessDialog address their reads and writes at it.
-  const openProject = useCallback(
-    (coreId: string, projectId: string) => {
-      void router.navigate({
-        to: "/projects/$id",
-        params: { id: projectId },
-        search: { coreId },
-      });
+  const openCore = useCallback(
+    (coreId: string, tab?: "sessions") => {
+      writeSelectedCoreId(coreId);
+      void router.navigate({ to: "/cores/$coreId", params: { coreId }, search: tab ? { tab } : {} });
     },
     [router],
   );
-
-  // Picking a Core in the CorePicker resolves its first project asynchronously
-  // and navigates into that Core's shell. Without a project, open the global
-  // Add Project dialog scoped to the picked Core (the shell has nothing to
-  // mount without a project — landing on an empty route would be a dead end).
-  // The shell itself has no Core switcher; switching Cores means returning to
-  // Fleet view and picking a different one (ADR-0005 §5).
-  const openCoreShell = useCallback(
-    async (core: CoreWithDial) => {
-      if (!bridge) return;
-      writeSelectedCoreId(core.id);
-      try {
-        const projects = await bridge.listProjects(core.id);
-        const first = projects[0];
-        if (first) openProject(core.id, first.projectId);
-        else addProject.open();
-      } catch (e) {
-        toast.error(e instanceof Error ? e.message : String(e));
-      }
+  // A Session is opened in the session workspace of the project it was
+  // started in, on the Core that owns it.
+  const openSession = useCallback(
+    (coreId: string, projectId: string) => {
+      void router.navigate({ to: "/projects/$id", params: { id: projectId }, search: { coreId } });
     },
-    [bridge, openProject, addProject],
+    [router],
   );
+  // Pairing lives in Settings > Cores; this is the Fleet's way in.
+  const pairCore = useCallback(() => {
+    window.dispatchEvent(new CustomEvent(OPEN_SETTINGS_EVENT, { detail: { panel: "cores" } }));
+  }, []);
 
   return (
     <>
@@ -92,11 +72,9 @@ export function FleetView() {
               </div>
             </div>
             <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-              <CorePicker cores={cores} onPick={(core) => void openCoreShell(core)} />
-              {/* Global Add Project — the shared dialog reads the last picked
-                  Core (selected-core-store) and seeds its Core selector. */}
-              <Btn variant="ghost" icon="plus" onClick={() => addProject.open()}>
-                Add project
+              <CorePicker cores={cores} onPick={(core) => openCore(core.id)} />
+              <Btn variant="ghost" icon="plus" onClick={pairCore}>
+                Pair a Core
               </Btn>
               <Btn variant="ghost" icon="refresh" onClick={refresh}>
                 Refresh
@@ -126,7 +104,8 @@ export function FleetView() {
               loading={loading}
               cores={cores}
               fleetRows={fleet.rows}
-              onOpenProject={openProject}
+              onOpenCore={openCore}
+              onOpenSession={openSession}
             />
           )}
         </CardFrame>
@@ -145,12 +124,14 @@ function FleetDashboard({
   loading,
   cores,
   fleetRows,
-  onOpenProject,
+  onOpenCore,
+  onOpenSession,
 }: {
   loading: boolean;
   cores: CoreWithDial[];
-  fleetRows: ReturnType<typeof useFleetSessions>["fleet"]["rows"];
-  onOpenProject: (coreId: string, projectId: string) => void;
+  fleetRows: ReturnType<typeof useFleet>["fleet"]["rows"];
+  onOpenCore: (coreId: string) => void;
+  onOpenSession: (coreId: string, projectId: string) => void;
 }) {
   if (loading && fleetRows.length === 0) {
     return (
@@ -183,6 +164,10 @@ function FleetDashboard({
             marginBottom={32}
             labelSize={13}
           >
+            <div data-core-section={core.id}>
+            <Btn variant="ghost" size="sm" icon="chevron-right" onClick={() => onOpenCore(core.id)}>
+              Open {core.label}
+            </Btn>
             <CoreDialLine dial={core.dial} />
             {core.dial.state === "needs-update" ? (
               // No rows, no "no active sessions": a Core whose protocol this
@@ -190,12 +175,21 @@ function FleetDashboard({
               // the chore stands in place of the data (ADR 0005).
               <CoreNeedsUpdateNotice dial={core.dial} />
             ) : rows.length > 0 ? (
-              <CoreProjectGroups coreId={core.id} rows={rows} onOpenProject={onOpenProject} />
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                {rows.map((row) => (
+                  <FleetSessionRow
+                    key={`${row.coreId}/${row.sessionId}`}
+                    row={row}
+                    onOpen={() => onOpenSession(row.coreId, row.projectId)}
+                  />
+                ))}
+              </div>
             ) : (
               <div style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-faint)" }}>
                 {core.dial.state === "connected" ? "no active sessions" : "no sessions to show"}
               </div>
             )}
+            </div>
           </Section>
         );
       })}
@@ -241,139 +235,10 @@ function CoreDialLine({ dial }: { dial: CoreWithDial["dial"] }) {
   );
 }
 
-// Sub-groups a Core's rows by project so the dashboard reads as:
-//   Core label
-//     Project name
-//       Session, Session, …
-// Project names come from the Core's own `projectsList` — session snapshots carry
-// only `projectId`, so names are resolved here rather than plumbed through the
-// fan-out shape. Until a name lands the projectId stands in, so a group is
-// never anonymous.
-function CoreProjectGroups({
-  coreId,
-  rows,
-  onOpenProject,
-}: {
-  coreId: string;
-  rows: ReturnType<typeof useFleetSessions>["fleet"]["rows"];
-  onOpenProject: (coreId: string, projectId: string) => void;
-}) {
-  const { projects } = useCoreProjects(coreId);
-  const nameByProjectId = new Map(projects.map((p) => [p.projectId, p.name]));
-
-  // Preserve the incoming `updatedAt`-desc order per project bucket, and order
-  // buckets by their most-recent row's updatedAt so the freshest project
-  // surfaces first under the Core.
-  const rowsByProject = new Map<string, typeof rows>();
-  for (const row of rows) {
-    const bucket = rowsByProject.get(row.projectId);
-    if (bucket) bucket.push(row);
-    else rowsByProject.set(row.projectId, [row]);
-  }
-
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
-      {[...rowsByProject.entries()].map(([projectId, projectRows]) => {
-        const projectName = nameByProjectId.get(projectId) ?? projectId;
-        return (
-          <div key={projectId}>
-            <button
-              type="button"
-              onClick={() => onOpenProject(coreId, projectId)}
-              title={`Open ${projectName}`}
-              style={{
-                display: "inline-flex",
-                alignItems: "center",
-                gap: 6,
-                marginBottom: 8,
-                padding: "2px 4px",
-                background: "transparent",
-                border: 0,
-                borderRadius: 4,
-                cursor: "pointer",
-                fontFamily: "var(--mono)",
-                fontSize: 11,
-                fontWeight: 500,
-                letterSpacing: "0.06em",
-                textTransform: "uppercase",
-                color: "var(--text-dim)",
-              }}
-            >
-              <Icon name="folder" size={11} style={{ color: "var(--text-faint)" }} />
-              <span>{projectName}</span>
-              <span
-                style={{
-                  fontSize: 10,
-                  color: "var(--text-faint)",
-                  fontVariantNumeric: "tabular-nums",
-                }}
-              >
-                {projectRows.length}
-              </span>
-            </button>
-            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-              {projectRows.map((row) => (
-                <FleetSessionRow
-                  key={`${row.coreId}/${row.sessionId}`}
-                  row={row}
-                  onOpen={() => onOpenProject(row.coreId, row.projectId)}
-                />
-              ))}
-            </div>
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
-function FleetSessionRow({
-  row,
-  onOpen,
-}: {
-  row: { coreId: string; coreLabel: string; sessionId: string; projectId: string; title: string; agent: string; status: string; updatedAt: number };
-  onOpen: () => void;
-}) {
-  return (
-    <button
-      onClick={onOpen}
-      style={{
-        display: "flex",
-        alignItems: "center",
-        gap: 12,
-        padding: "10px 14px",
-        background: "var(--surface-0)",
-        border: "1px solid var(--border)",
-        borderRadius: 7,
-        cursor: "pointer",
-        textAlign: "left",
-        width: "100%",
-      }}
-    >
-      <StatusBadge status={row.status} />
-      <div style={{ minWidth: 0, flex: 1 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-            {row.title}
-          </span>
-        </div>
-        <div style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-dim)", marginTop: 2 }}>
-          {row.agent} · {formatRelativeTime(row.updatedAt)}
-        </div>
-      </div>
-      {/* Core label lives on the section heading now — the per-row badge
-          would just repeat what's above the group. */}
-      <Icon name="chevron-right" size={12} style={{ color: "var(--text-faint)" }} />
-    </button>
-  );
-}
-
 // ─── Shared bits ─────────────────────────────────────────────────────────────
 
-// CorePicker: pick a Core to jump into its per-Core shell. The picker doesn't
-// hold a selection — every change fires `onPick` and navigates. Keeping it
-// stateless matches ADR-0005 §5: "the shell has no in-shell Core switcher" and
-// avoids the Fleet view growing a bespoke drill in disguise.
+// CorePicker: pick a Core to jump to its page. The picker doesn't hold a
+// selection — every change fires `onPick` and navigates.
 function CorePicker({
   cores,
   onPick,
@@ -391,7 +256,7 @@ function CorePicker({
           const core = cores.find((c) => c.id === e.target.value);
           if (core) onPick(core);
         }}
-        aria-label="Open a Core's shell"
+        aria-label="Open a Core"
         style={{
           flex: 1,
           minWidth: 0,
@@ -417,27 +282,3 @@ function CorePicker({
     </div>
   );
 }
-
-function StatusBadge({ status }: { status: string }) {
-  const color =
-    status === "running"
-      ? "var(--accent)"
-      : status === "needs-input"
-        ? "var(--warning, #f5a524)"
-        : status === "done"
-          ? "var(--text-faint)"
-          : "var(--text-dim)";
-  return (
-    <span
-      style={{
-        width: 8,
-        height: 8,
-        borderRadius: "50%",
-        background: color,
-        flexShrink: 0,
-        animation: status === "running" ? "pulse-dot 1.5s ease-in-out infinite" : undefined,
-      }}
-    />
-  );
-}
-
