@@ -341,6 +341,45 @@ operator moves `assigned` and `draft` (the dispatcher and the result watcher
 own the rest). API keys themselves are managed only with the Operator's
 session (`POST/GET /api/api-keys`, `POST /api/api-keys/:id/revoke`).
 
+## The Panel's MCP server (`/mcp`)
+
+The Panel serves the Tasks as tools to any MCP client ([#573](https://github.com/actana/control/issues/573)): a
+stateless Streamable-HTTP endpoint (MCP 2025-06-18) at `POST /mcp`, on the same API keys as `/api/v1`.
+
+Connect Claude Code to it:
+
+```sh
+claude mcp add --transport http actana https://panel.example.com/mcp --header "Authorization: Bearer ak_…"
+```
+
+Use the Panel's own address and a key from Settings › API & integrations (until that screen ships, `POST /api/api-keys`
+with the Operator's session creates one; the key is shown once). Then `claude mcp list` shows `actana` connected, and
+the tools below are available to the model.
+
+| Property | Value |
+| --- | --- |
+| Auth | `Authorization: Bearer ak_…` and nothing else: no key, an unknown or a revoked key is `401` with `WWW-Authenticate: Bearer`; the Operator's session cookie is never read on this path |
+| Who it runs as | the key's owner, every call; every tool runs the same handler the `/api/v1` route runs, so the owner and Core-scope rules are one implementation |
+| Scope | a key limited to some Cores sees only those; a tool aimed at another Core answers a tool error starting `403`, another owner's data `404` |
+| Transport | JSON-RPC over `POST /mcp`; a request gets one `application/json` answer, a notification gets `202`; no `Mcp-Session-Id`, nothing kept between requests |
+| `GET` / `DELETE /mcp` | `405` with `Allow: POST` (no server-to-client stream, no session to end) |
+
+| Tool | Does |
+| --- | --- |
+| `list_cores` | the Cores the key reaches, with their connection state |
+| `list_agents` | Agents, optionally on one Core |
+| `get_tasks` | Tasks, optionally one `status` or one `coreId` |
+| `get_task` | one Task with its comment thread |
+| `create_task` | a draft, or an assigned Task with `startNow` (needs `coreId` and `agent`) |
+| `assign_task` | `assigned` (default) or `draft`, the operator moves only; every other status is refused |
+| `comment_task` | a comment; `reassign: true` also sends a finished Task back (Comment & re-assign) |
+| `list_shared` | a folder of a Core's Shared folder, read-only, cut at 500 entries |
+| `get_shared` | one UTF-8 text file from it, read-only, refused over 256 KiB |
+
+`list_shared` and `get_shared` take a `coreId` and a `path` relative to the Shared folder. A path with `..`, a leading `/`,
+a `.` or empty segment, a backslash or a control character is refused before the Core is asked. A refusal is a tool
+result with `isError: true` whose text starts with the HTTP-style status (`403 …`), so the model can read why.
+
 ## The Panel's own routes
 
 The Panel's unversioned `/api/*` surface (outside `/api/v1`) exists to serve
