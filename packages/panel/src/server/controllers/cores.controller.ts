@@ -10,10 +10,10 @@ import {
   pairCore,
 } from "../services/core-pairing";
 import { coreLinkManager } from "../services/core-link-manager";
-import { describeSharedFolder, sharedFolders } from "../services/shared-folders";
+import { describeSharedFolder, describeSharedFolders, sharedFolders } from "../services/shared-folders";
 import { findSharedFolder } from "../repositories/core-shared-folders.repo";
 import { OPERATOR_ID } from "../services/operator";
-import type { Core, CoreWithDial } from "~/shared/cores";
+import type { Core, CoreSharedFolder, CoreWithDial } from "~/shared/cores";
 
 /**
  * The Cores surface: list the fleet with live link state, add a Core by pairing
@@ -42,9 +42,9 @@ const pairBody = z.object({
 });
 
 /** The row, its live link, and where its Shared folder stands (absent for a Core registered before 0.5.0). */
-async function withDial(core: Core): Promise<CoreWithDial> {
-  const sharedFolder = await describeSharedFolder(core.id);
-  return { ...core, dial: coreLinkManager().status(core.id), ...(sharedFolder ? { sharedFolder } : {}) };
+async function withDial(core: Core, sharedFolder?: CoreSharedFolder): Promise<CoreWithDial> {
+  const folder = sharedFolder ?? (await describeSharedFolder(core.id));
+  return { ...core, dial: coreLinkManager().status(core.id), ...(folder ? { sharedFolder: folder } : {}) };
 }
 
 /**
@@ -55,7 +55,9 @@ async function withDial(core: Core): Promise<CoreWithDial> {
 export async function list(principal: ApiPrincipal): Promise<Response> {
   const all = await listCores(principal.ownerId);
   const visible = principal.kind === "api-key" ? all.filter((c) => scopeReaches(principal.scope, c.id)) : all;
-  return json({ cores: await Promise.all(visible.map(withDial)) });
+  // One query for every Core's folder, not one per Core on every poll.
+  const folders = await describeSharedFolders(principal.ownerId);
+  return json({ cores: await Promise.all(visible.map((core) => withDial(core, folders.get(core.id)))) });
 }
 
 /** One Core. A key restricted to other Cores gets a 403 whether or not the Core exists, so it learns nothing about it. */

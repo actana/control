@@ -220,6 +220,11 @@ describe("delete: the Core and its Shared folder", () => {
     CORES = [core({ sharedFolder: undefined })];
     await openSettings();
     expect(screen.queryByRole("button", { name: /Delete Core/ })).toBeNull();
+    cleanup();
+    // The same page for a Core that does have one: the button is there, so the absence above is a decision.
+    CORES = [attached()];
+    await openSettings();
+    expect(screen.getByRole("button", { name: /Delete Core workstation-berlin and its Shared folder/ })).toBeTruthy();
   });
 
   it("cannot be confirmed with anything but the exact prefix", async () => {

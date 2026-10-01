@@ -1,3 +1,4 @@
+import { sql } from "drizzle-orm";
 import { ownedBy } from "~/db/owner";
 import { panelDb } from "~/db/panel-db-handle";
 import { storageConfig } from "~/db/pg-schema";
@@ -21,7 +22,8 @@ export async function findStorageConfig(ownerId: number): Promise<StorageConfigR
       oidcIssuer: storageConfig.oidcIssuer,
       oidcAudience: storageConfig.oidcAudience,
       keyId: storageConfig.keyId,
-      masterKeySealed: storageConfig.masterKeySealed,
+      // Whether a key is stored, computed in the database: the sealed key itself is not selected here.
+      masterKeySet: sql<boolean>`${storageConfig.masterKeySealed} is not null`,
       updatedAt: storageConfig.updatedAt,
     })
     .from(storageConfig)
@@ -29,8 +31,7 @@ export async function findStorageConfig(ownerId: number): Promise<StorageConfigR
     .limit(1);
   const row = rows[0];
   if (!row) return null;
-  const { masterKeySealed, ...rest } = row;
-  return { ...rest, masterKeySet: masterKeySealed !== null };
+  return row;
 }
 
 /** The sealed master key of one owner, or null. Read by the key issuer and by nothing that answers a request. */

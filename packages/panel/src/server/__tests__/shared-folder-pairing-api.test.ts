@@ -482,6 +482,21 @@ describe("delete", () => {
     expect((await call(`/api/cores/${id}/delete`, { method: "POST", json: { confirmPrefix: `${PREFIX}/${id}/` } })).status).toBe(404);
   }, 40_000);
 
+  it("refuses with a 409 and removes nothing while the Core has not let go of S3", async () => {
+    const rig = await startCore();
+    const id = await attachedCore(rig);
+    seedFolders(id);
+    const before = [...s3.objects.keys()].sort();
+    rig.core.failures = 1;
+
+    const res = await call(`/api/cores/${id}/delete`, { method: "POST", json: { confirmPrefix: `${PREFIX}/${id}/` } });
+    expect(res.status).toBe(409);
+    expect((await res.json()).error).toMatch(/has not let go of/);
+    expect((await listed()).find((c) => c.id === id)?.sharedFolder?.state).toBe("attached");
+    expect([...s3.objects.keys()].sort()).toEqual(before);
+    expect(s3.requests.filter((q) => q.method === "DELETE")).toEqual([]);
+  }, 40_000);
+
   it("says which prefix it could not empty when S3 refuses, after the Core is already gone", async () => {
     const rig = await startCore();
     const id = await attachedCore(rig);

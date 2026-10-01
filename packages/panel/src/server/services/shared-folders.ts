@@ -9,6 +9,7 @@ import type { CoreShared } from "@actana/sdk/shared";
 import { refreshAtMs, type SharedKey, type SharedKeyIssuer } from "@actana/sdk/shared-key";
 import { ConflictError, NotFoundError, ValidationError } from "../errors";
 import {
+  findAllSharedFolders,
   findLiveSharedFolders,
   findSharedFolder,
   updateLiveSharedFolder,
@@ -66,6 +67,7 @@ export class SharedFolderError extends ConflictError {
       | "isolation-failed"
       | "core-refused"
       | "confirmation"
+      | "still-attached"
       | "prefix-delete-failed",
   ) {
     super(message);
@@ -106,6 +108,10 @@ function statusOf(frame: CoreLinkResponseFrame): CoreLinkSharedMountStatus {
   if (frame.type === "sharedStatus") return frame.status;
   // Anything else (a bare `error`, say) is a Core that did not answer the way the contract says.
   return { state: "error", code: "mount-failed", message: "the Core did not answer with a sharedStatus" };
+}
+
+function describe(status: CoreLinkSharedMountStatus): string {
+  return status.state === "error" ? `${status.code}: ${status.message}` : status.state;
 }
 
 export class SharedFolders {
@@ -227,26 +233,48 @@ export class SharedFolders {
       expiresAt,
     });
 
+    // True only when the Core accepted a `sharedAttach` for this folder: the stored prefix is where the Core is
+    // attached, so a plain `sharedCredentials` (which keeps whatever the Core is attached to) never rewrites it.
+    let attachedHere = false;
+    const attach = async (): Promise<CoreLinkSharedMountStatus> => {
+      const answer = await send(attachFrame());
+      attachedHere = answer.state === "attached";
+      return answer;
+    };
     let status: CoreLinkSharedMountStatus;
     if (mode === "attach") {
-      status = await send(attachFrame());
+      status = await attach();
       if (status.state === "error" && status.code === "already-attached") {
-        status = await send({ type: "sharedCredentials", reqId: reqId(), credentials, expiresAt });
+        // Mounted somewhere this Panel did not record: let go (the Core copies S3 into its folder and keeps it),
+        // then attach to this Core's own folder, so the row names where the Core really is.
+        const letGoStatus = await send({ type: "sharedDetach", reqId: reqId(), keepLocalCopy: true });
+        if (letGoStatus.state !== "detached") {
+          throw new SharedFolderError(
+            `The Core is attached to a Shared folder this Panel did not set up and would not let go of it: ${describe(letGoStatus)}.`,
+            "core-refused",
+          );
+        }
+        status = await attach();
       }
     } else {
       status = await send({ type: "sharedCredentials", reqId: reqId(), credentials, expiresAt });
-      if (status.state === "error" && status.code === "not-attached") status = await send(attachFrame());
+      if (status.state === "error" && status.code === "not-attached") status = await attach();
     }
     if (status.state !== "attached") {
       throw new SharedFolderError(
-        `The Core refused the Shared folder: ${status.state === "error" ? `${status.code}: ${status.message}` : status.state}.`,
+        `The Core refused the Shared folder: ${describe(status)}.`,
         "core-refused",
       );
     }
     await updateSharedFolder(
       ownerId,
       coreId,
-      { state: "attached", s3Prefix: folder, keyExpiresAt: key.expiresAt.getTime(), lastError: null },
+      {
+        state: "attached",
+        ...(attachedHere ? { s3Prefix: folder } : {}),
+        keyExpiresAt: key.expiresAt.getTime(),
+        lastError: null,
+      },
       this.deps.now(),
     );
     this.attempts.delete(coreId);
@@ -329,6 +357,11 @@ export class SharedFolders {
    */
   async detach(coreId: string): Promise<{ detached: boolean; error?: string }> {
     this.cancel(coreId);
+    return this.sendDetach(coreId);
+  }
+
+  /** The `sharedDetach` request alone: the refresh timer is left running, for a caller that may not go on. */
+  private async sendDetach(coreId: string): Promise<{ detached: boolean; error?: string }> {
     const link = this.deps.link(coreId);
     if (!link) return { detached: false, error: "the Core is not connected; its key ends within the hour" };
     if (link.sharedCapability && link.sharedCapability() === null) return { detached: true };
@@ -352,8 +385,8 @@ export class SharedFolders {
   }
 
   /**
-   * Delete a Core: after a confirmation that is exactly its prefix, remove the Core row, then empty its S3
-   * prefix with a key issued for that Core. The key is limited to `<prefix>/<core id>/` by the role, and the SDK's
+   * Delete a Core: after a confirmation that is exactly its prefix, and once the Core has let go of S3, remove the
+   * Core row, then empty its S3 prefix with a key issued for that Core. The key is limited to `<prefix>/<core id>/` by the role, and the SDK's
    * S3 mode cannot leave the prefix it was made with, so no other Core's folder is touched. A prefix that could
    * not be emptied is an error that names it (the Core is already gone from the registry).
    */
@@ -362,17 +395,28 @@ export class SharedFolders {
     if (confirmation !== expected) {
       throw new SharedFolderError(`Type the prefix ${expected} exactly to delete this Core and its Shared folder.`, "confirmation");
     }
-    const folder = (await findSharedFolder(ownerId, coreId))?.s3Prefix ?? "";
-    // Let the machine stop syncing and keep its files; its answer does not hold up a delete.
-    await this.detach(coreId);
+    const row = await findSharedFolder(ownerId, coreId);
+    const folder = row?.s3Prefix ?? "";
+    // The machine keeps its own `~/shared` only if it has let go of S3 before the prefix is emptied: a Core still
+    // syncing sees every file it had uploaded as gone there and deletes it here. So the prefix is touched only once
+    // the Core answered `detached` (or `not-attached`), or the key it holds has run out and it cannot sync.
+    const letGo = await this.sendDetach(coreId);
+    if (folder && !letGo.detached && (row?.keyExpiresAt ?? 0) > this.deps.now()) {
+      throw new SharedFolderError(
+        `The Core has not let go of ${folder} (${letGo.error ?? "no answer"}), so nothing was deleted: it would delete its own ` +
+          `~/shared. Try again when it is connected, or after its key ends at ${new Date(row!.keyExpiresAt!).toISOString()}.`,
+        "still-attached",
+      );
+    }
+    this.cancel(coreId);
     coreLinkManager().hangup(coreId);
     await removeCore(coreId, ownerId);
     if (!folder) return { prefix: null, removed: 0 };
 
     try {
       const { issuer, target } = await this.deps.issuer(ownerId);
-      // The folder recorded at attach is what is deleted, so a prefix edited since cannot move it; it must
-      // still be this Core's own folder, whatever the row says.
+      // The folder is the one the Core was attached to (a refresh never rewrites it), so a prefix edited since cannot
+      // move it; it must still be this Core's own folder, whatever the row says.
       if (!folder.endsWith(`/${coreId}/`)) {
         throw new ValidationError(`the stored folder ${folder} is not this Core's folder`);
       }
@@ -417,14 +461,22 @@ export function resetSharedFoldersForTests(next: SharedFolders | null = null): v
   singleton = next;
 }
 
-/** The folder state a browser may see: where it stands and when the key ends, nothing of the key. */
-export async function describeSharedFolder(coreId: string, ownerId = OPERATOR_ID): Promise<CoreSharedFolder | undefined> {
-  const row = await findSharedFolder(ownerId, coreId);
-  if (!row) return undefined;
+function viewOf(row: CoreSharedFolderRow): CoreSharedFolder {
   return {
     state: row.state as CoreSharedFolder["state"],
     prefix: row.s3Prefix || null,
     keyExpiresAt: row.keyExpiresAt,
     error: row.lastError,
   };
+}
+
+/** Every Core's folder state in one query, by Core id: what the Cores list reads on every poll. */
+export async function describeSharedFolders(ownerId = OPERATOR_ID): Promise<Map<string, CoreSharedFolder>> {
+  return new Map((await findAllSharedFolders(ownerId)).map((row) => [row.coreId, viewOf(row)]));
+}
+
+/** The folder state a browser may see: where it stands and when the key ends, nothing of the key. */
+export async function describeSharedFolder(coreId: string, ownerId = OPERATOR_ID): Promise<CoreSharedFolder | undefined> {
+  const row = await findSharedFolder(ownerId, coreId);
+  return row ? viewOf(row) : undefined;
 }

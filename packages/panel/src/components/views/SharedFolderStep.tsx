@@ -235,8 +235,8 @@ export function SharedFolderStep({
       </div>
 
       <div style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-dim)", lineHeight: 1.5 }}>
-        Required when pairing with a Panel. Unpair later and the S3 link is removed while ~/shared stays. Delete the Core and the
-        Core, its Shared folder and its S3 folder are removed.
+        Required when pairing with a Panel. Unpair later and the S3 link is removed while ~/shared stays. Deleting the Core removes it
+        from the Panel and empties its S3 folder; ~/shared on the machine stays.
       </div>
     </div>
   );

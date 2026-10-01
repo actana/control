@@ -50,8 +50,9 @@ async function rig(opts: { leaky?: boolean } = {}) {
   const sts = fakeSts({ s3, masterPublic: masterPair.publicKey, prefix: PREFIX, clock, leaky: opts.leaky });
   const link = new FakeCoreLink();
   const logs: string[] = [];
+  const online = { value: true };
   const service = new SharedFolders({
-    link: () => link,
+    link: () => (online.value ? link : null),
     isConnected: () => true,
     issuer: (ownerId) => storageKeyIssuer(ownerId, { fetch: sts.fetch, now: clock.now }),
     now: clock.now,
@@ -62,7 +63,7 @@ async function rig(opts: { leaky?: boolean } = {}) {
     log: (m) => logs.push(m),
     fetch: s3.fetch,
   });
-  return { clock, s3, sts, link, logs, service };
+  return { clock, s3, sts, link, logs, service, online };
 }
 
 beforeEach(async () => {
@@ -159,13 +160,15 @@ describe("attaching the Shared folder", () => {
     expect(r.link.frames).toEqual([]);
   });
 
-  it("continues with sharedCredentials when the Core is already attached", async () => {
+  it("lets go of a Shared folder the Panel did not set up, then attaches the Core's own", async () => {
     const r = await rig();
     const coreId = await pairedCore();
     r.link.attached = true;
     await r.service.finishPairing(coreId);
-    expect(r.link.frames.map((f) => f.type)).toEqual(["sharedAttach", "sharedCredentials"]);
-    expect((await findSharedFolder(1, coreId))?.state).toBe("attached");
+    // Mounted somewhere this Panel did not record: it lets go first, then attaches to this Core's own folder,
+    // so the row names where the Core really is.
+    expect(r.link.frames.map((f) => f.type)).toEqual(["sharedAttach", "sharedDetach", "sharedAttach"]);
+    expect(await findSharedFolder(1, coreId)).toMatchObject({ state: "attached", s3Prefix: `${PREFIX}/${coreId}/` });
   });
 });
 
@@ -330,5 +333,109 @@ describe("unpair", () => {
     const result = await r.service.detach(coreId);
     expect(result.detached).toBe(false);
     expect(result.error).toMatch(/timed out/);
+  });
+});
+
+describe("the stored prefix is where the Core is attached", () => {
+  it("is not rewritten by a key refresh after the configured prefix was edited", async () => {
+    const r = await rig();
+    const coreId = await pairedCore();
+    await r.service.finishPairing(coreId);
+    expect((await findSharedFolder(1, coreId))?.s3Prefix).toBe(`${PREFIX}/${coreId}/`);
+
+    await saveStorageConfig({
+      backend: "seaweedfs",
+      endpoint: "http://seaweedfs.test:8333",
+      bucket: BUCKET,
+      prefix: "moved",
+      oidcIssuer: "https://panel.test",
+      keyId: "k1",
+    });
+    await r.clock.advance(45 * MINUTE);
+    await settle();
+    // A plain sharedCredentials: the Core keeps syncing the prefix it was attached to, and so does the row.
+    expect(r.link.ofType("sharedCredentials")).toHaveLength(1);
+    expect(await findSharedFolder(1, coreId)).toMatchObject({ state: "attached", s3Prefix: `${PREFIX}/${coreId}/` });
+    expect(await r.service.deleteConfirmation(coreId)).toBe(`${PREFIX}/${coreId}/`);
+  });
+
+  it("follows the Core when it had to be attached again, because that is where it now is", async () => {
+    const r = await rig();
+    const coreId = await pairedCore();
+    await r.service.finishPairing(coreId);
+    await saveStorageConfig({
+      backend: "seaweedfs",
+      endpoint: "http://seaweedfs.test:8333",
+      bucket: BUCKET,
+      prefix: "moved",
+      oidcIssuer: "https://panel.test",
+      keyId: "k1",
+    });
+    r.link.attached = false;
+    await r.clock.advance(45 * MINUTE);
+    await settle();
+    expect(r.link.ofType("sharedAttach").at(-1)?.prefix).toBe(`moved/${coreId}`);
+    expect((await findSharedFolder(1, coreId))?.s3Prefix).toBe(`moved/${coreId}/`);
+  });
+});
+
+describe("delete waits for the Core to let go of S3", () => {
+  async function attachedWithFiles(r: Awaited<ReturnType<typeof rig>>) {
+    const coreId = await pairedCore();
+    await r.service.finishPairing(coreId);
+    r.s3.seed(`${PREFIX}/${coreId}/a.txt`, "a");
+    r.s3.seed(`${PREFIX}/${coreId}/sub/b.txt`, "b");
+    r.s3.requests.length = 0;
+    return coreId;
+  }
+  const refused = async (r: Awaited<ReturnType<typeof rig>>, coreId: string) => {
+    await expect(r.service.deleteCore(coreId, `${PREFIX}/${coreId}/`)).rejects.toMatchObject({ code: "still-attached" });
+    // Nothing happened: the Core is registered, S3 is untouched, and the key keeps being refreshed.
+    expect(await findSharedFolder(1, coreId)).toMatchObject({ state: "attached" });
+    expect(r.s3.requests.filter((q) => q.method === "DELETE")).toEqual([]);
+    expect([...r.s3.objects.keys()].sort()).toEqual([`${PREFIX}/${coreId}/a.txt`, `${PREFIX}/${coreId}/sub/b.txt`]);
+    expect(r.clock.delays().length).toBe(1);
+  };
+
+  it("keeps the prefix when the Core does not answer the detach", async () => {
+    const r = await rig();
+    const coreId = await attachedWithFiles(r);
+    r.link.failures = 1;
+    await refused(r, coreId);
+    expect((await r.service.deleteCore(coreId, `${PREFIX}/${coreId}/`)).prefix).toBe(`${PREFIX}/${coreId}/`);
+  });
+
+  it("keeps the prefix when the Core answers mount-failed (its copy pass failed)", async () => {
+    const r = await rig();
+    const coreId = await attachedWithFiles(r);
+    r.link.answer = { state: "error", code: "mount-failed", message: "could not copy S3 into the folder" };
+    await refused(r, coreId);
+  });
+
+  it("keeps the prefix when the Core is not connected and its key has not run out", async () => {
+    const r = await rig();
+    const coreId = await attachedWithFiles(r);
+    r.online.value = false;
+    await refused(r, coreId);
+  });
+
+  it("empties the prefix once the key the Core holds has run out, even though it cannot be reached", async () => {
+    const r = await rig();
+    const coreId = await attachedWithFiles(r);
+    r.online.value = false;
+    // Every refresh fails (the Core is away), so after the last key's hour it cannot sync any more.
+    await r.clock.advance(61 * MINUTE);
+    await settle();
+    const result = await r.service.deleteCore(coreId, `${PREFIX}/${coreId}/`);
+    expect(result.prefix).toBe(`${PREFIX}/${coreId}/`);
+    expect([...r.s3.objects.keys()]).toEqual([]);
+  });
+
+  it("empties the prefix after the Core answered detached", async () => {
+    const r = await rig();
+    const coreId = await attachedWithFiles(r);
+    await r.service.deleteCore(coreId, `${PREFIX}/${coreId}/`);
+    expect(r.link.ofType("sharedDetach")).toHaveLength(1);
+    expect([...r.s3.objects.keys()]).toEqual([]);
   });
 });
