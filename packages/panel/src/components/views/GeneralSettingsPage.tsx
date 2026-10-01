@@ -189,7 +189,7 @@ export function GeneralSettingsPage() {
       </SettingsSection>
       <SettingsSection
         title="Session finish notifications"
-        subtitle="Get notified when a Claude session finishes in any project."
+        subtitle="Get notified when a Claude session finishes on any Core."
       >
         <Field label="Sound">
           <ToggleRow

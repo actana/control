@@ -1,3 +1,4 @@
+import { requestSessionOpen } from "~/lib/session-notification-store";
 import { useCallback } from "react";
 import { useRouter } from "@tanstack/react-router";
 import { Btn } from "~/components/ui/Btn";
@@ -36,7 +37,8 @@ export function FleetView() {
   );
   // A Session opens in that Core's workspace (issue 560) — no /projects/$id.
   const openSession = useCallback(
-    (coreId: string, _projectId: string) => {
+    (coreId: string, sessionId: string) => {
+      requestSessionOpen(coreId, sessionId);
       void router.navigate({ to: "/cores/$coreId/workspace", params: { coreId } });
     },
     [router],
@@ -130,7 +132,7 @@ function FleetDashboard({
   cores: CoreWithDial[];
   fleetRows: ReturnType<typeof useFleet>["fleet"]["rows"];
   onOpenCore: (coreId: string) => void;
-  onOpenSession: (coreId: string, projectId: string) => void;
+  onOpenSession: (coreId: string, sessionId: string) => void;
 }) {
   if (loading && fleetRows.length === 0) {
     return (
@@ -179,7 +181,7 @@ function FleetDashboard({
                   <FleetSessionRow
                     key={`${row.coreId}/${row.sessionId}`}
                     row={row}
-                    onOpen={() => onOpenSession(row.coreId, row.projectId)}
+                    onOpen={() => onOpenSession(row.coreId, row.sessionId)}
                   />
                 ))}
               </div>

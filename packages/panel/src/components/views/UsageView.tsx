@@ -19,7 +19,7 @@ export function UsageView({ data }: { data: UsageSummary }) {
         <PageHeader lastSyncedAt={data.lastSyncedAt} />
         <EmptyState
           title="No token usage yet"
-          subtitle="Run a Claude Code session from a project, then come back to see usage here."
+          subtitle="Run a Claude Code session on a Core, then come back to see usage here."
         />
       </div>
     );
@@ -51,7 +51,7 @@ export function UsageView({ data }: { data: UsageSummary }) {
         <TimeSeriesBars data={data.perDay} />
       </Section>
 
-      <Section label="Per Project" count={data.perProject.length} icon="folder">
+      <Section label="Per Workspace" count={data.perProject.length} icon="folder">
         <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
           {data.perProject.map((p) => {
             const total = totalOfRow(p);

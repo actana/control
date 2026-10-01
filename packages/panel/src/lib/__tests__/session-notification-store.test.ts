@@ -9,6 +9,7 @@ import {
   mergeSessionFinishNotification,
   pruneSessionFinishNotifications,
   requestSessionNotificationOpen,
+  readPendingSessionOpen,
   saveSessionFinishNotifications,
   type AppNotification,
   type SessionFinishNotification,
@@ -197,6 +198,35 @@ describe("requestSessionNotificationOpen", () => {
         kind: "session-finished",
         projectId: "project-1",
         sessionId: "session-1",
+      });
+    } finally {
+      globalThis.window = previousWindow;
+    }
+  });
+});
+
+describe("opening a 0.5.0 Core's finish (no project id)", () => {
+  it("scopes the open request by Core id, which is what the workspace matches on", () => {
+    const store = new Map<string, string>();
+    const previousWindow = globalThis.window;
+    globalThis.window = {
+      localStorage: {
+        getItem: (key: string) => store.get(key) ?? null,
+        setItem: (key: string, value: string) => void store.set(key, value),
+        removeItem: (key: string) => void store.delete(key),
+      },
+      dispatchEvent: () => true,
+    } as unknown as Window & typeof globalThis;
+    try {
+      requestSessionNotificationOpen({
+        ...notifications[0]!,
+        projectId: "",
+        coreId: "core-x",
+        coreAlias: null,
+      });
+      expect(readPendingSessionOpen("core-x")).toMatchObject({
+        sessionId: "session-1",
+        coreId: "core-x",
       });
     } finally {
       globalThis.window = previousWindow;

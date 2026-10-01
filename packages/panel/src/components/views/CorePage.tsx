@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { useRouter } from "@tanstack/react-router";
 import { toast } from "sonner";
 import { CardFrame } from "~/components/ui/CardFrame";
@@ -16,6 +17,10 @@ import { mutateSessionForCore } from "~/lib/mutate-session-for-core";
 import { TITLE_WAITING } from "~/lib/session-sentinels";
 import { newClientId } from "@actana/shared/client-id";
 import { setPendingInitialInput } from "~/lib/pending-initial-input";
+import { availabilityFor, useCliAvailability } from "~/lib/cli-availability";
+import { appendOptimisticSession } from "~/lib/optimistic-session";
+import { remoteSessionFromSnapshot, sessionsCacheKey } from "~/queries";
+import { requestSessionOpen } from "~/lib/session-notification-store";
 import type { Harness } from "@actana/shared/domain";
 
 /**
@@ -26,6 +31,8 @@ import type { Harness } from "@actana/shared/domain";
  */
 export function CorePage({ coreId, tab }: { coreId: string; tab: CoreTab }) {
   const router = useRouter();
+  const queryClient = useQueryClient();
+  const cliAvailability = useCliAvailability(coreId);
   const { cores, fleet, loading } = useFleet();
   const { togglePanel, panelOpen, setHomeActive } = useUserTerminals();
   const [showNew, setShowNew] = useState(false);
@@ -53,9 +60,15 @@ export function CorePage({ coreId, tab }: { coreId: string; tab: CoreTab }) {
     },
     [router, tab],
   );
-  const openWorkspace = useCallback(() => {
-    void router.navigate({ to: "/cores/$coreId/workspace", params: { coreId } });
-  }, [router, coreId]);
+  // The workspace opens the named Session (spawning it if it has no terminal
+  // yet); without an id it just opens the workspace.
+  const openWorkspace = useCallback(
+    (sessionId?: string) => {
+      if (sessionId) requestSessionOpen(coreId, sessionId);
+      void router.navigate({ to: "/cores/$coreId/workspace", params: { coreId } });
+    },
+    [router, coreId],
+  );
 
   const startSession = useCallback(
     async (agent: Harness, prompt: string) => {
@@ -72,23 +85,36 @@ export function CorePage({ coreId, tab }: { coreId: string; tab: CoreTab }) {
           agent,
         } as Parameters<typeof mutateSessionForCore>[1]);
         if (!snapshot) throw new Error("Core did not return a session snapshot");
+        // The workspace finds the Session in its list, so put it there first.
+        appendOptimisticSession(
+          queryClient,
+          coreId,
+          { ...remoteSessionFromSnapshot(snapshot), projectId: coreId },
+          coreId,
+        );
+        void queryClient.invalidateQueries({ queryKey: sessionsCacheKey(coreId, coreId) });
+        // The pane consumes the prompt once, at the Session's first spawn.
         if (prompt.trim()) setPendingInitialInput(snapshot.sessionId, prompt.trim());
         setShowNew(false);
-        openWorkspace();
+        openWorkspace(snapshot.sessionId);
       } catch (e) {
         toast.error(e instanceof Error ? e.message : String(e));
       }
     },
-    [coreId, openWorkspace],
+    [coreId, openWorkspace, queryClient],
   );
 
   const openNewSessionDialog = useCallback(() => {
     if (remembered.rememberHarnessSettings && remembered.savedHarness) {
-      void startSession(remembered.savedHarness, "");
-      return;
+      // Only a harness this Core can run starts without asking; otherwise the
+      // dialog shows what is missing.
+      if (availabilityFor(cliAvailability, remembered.savedHarness).status === "available") {
+        void startSession(remembered.savedHarness, "");
+        return;
+      }
     }
     setShowNew(true);
-  }, [remembered, startSession]);
+  }, [remembered, startSession, cliAvailability]);
 
   if (!core) {
     return (
@@ -134,7 +160,7 @@ export function CorePage({ coreId, tab }: { coreId: string; tab: CoreTab }) {
                     ...row,
                     projectId: "projectId" in row && row.projectId ? String(row.projectId) : coreId,
                   }}
-                  onOpen={openWorkspace}
+                  onOpen={() => openWorkspace(row.sessionId)}
                 />
               ))}
             </div>
