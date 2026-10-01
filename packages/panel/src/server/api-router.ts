@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { jsonError } from "./http-responses";
 import { requireHookToken } from "./hook-auth";
-import { requireOperatorSession } from "./panel-auth";
+import { authenticateApiRequest, type ApiPrincipal } from "./api-key-auth";
 import {
   HTTP_BAD_REQUEST,
   HTTP_INTERNAL_SERVER_ERROR,
@@ -20,6 +20,7 @@ import * as eventsController from "./controllers/events.controller";
 import * as healthController from "./controllers/health.controller";
 import * as aiRuntimeModelsController from "./controllers/ai-runtime-models.controller";
 import * as authController from "./controllers/auth.controller";
+import * as apiKeysController from "./controllers/api-keys.controller";
 import * as coresController from "./controllers/cores.controller";
 import * as coreFilesController from "./controllers/core-files.controller";
 import * as updateCheckController from "./controllers/update-check.controller";
@@ -29,6 +30,7 @@ import * as webhooksController from "./controllers/webhooks.controller";
 
 const HARNESS_HOOK_PATH = /^\/api\/hooks\/([a-z0-9-]+)$/;
 const CORE_PATH = /^\/api\/cores\/([^/]+)$/;
+const API_KEY_REVOKE_PATH = /^\/api\/api-keys\/([^/]+)\/revoke$/;
 const WEBHOOK_PATH = /^\/api\/webhooks\/([^/]+)$/;
 const WEBHOOK_PING_PATH = /^\/api\/webhooks\/([^/]+)\/ping$/;
 const WEBHOOK_DELIVERIES_PATH = /^\/api\/webhooks\/([^/]+)\/deliveries$/;
@@ -120,17 +122,22 @@ function isAnonymousRoute(method: string, pathname: string): boolean {
 
 /**
  * Centralized auth gate. Default: every /api/* route requires the Operator's
- * session cookie. Opt-outs: the anonymous auth handoff surface above, and the
- * agent hook endpoints, which carry the machine token instead.
+ * session cookie, or an API key on the few routes that accept one (#572).
+ * Opt-outs: the anonymous auth handoff surface above, and the agent hook
+ * endpoints, which carry the machine token instead. What comes back is who the
+ * call runs as.
  */
 async function requireApiAuth(
   request: Request,
   method: string,
   pathname: string,
-): Promise<{ ok: true } | { ok: false; response: Response }> {
-  if (isAnonymousRoute(method, pathname)) return { ok: true };
-  if (isHookRoute(pathname)) return requireHookToken(request);
-  return await requireOperatorSession(request);
+): Promise<{ ok: true; principal: ApiPrincipal | null } | { ok: false; response: Response }> {
+  if (isAnonymousRoute(method, pathname)) return { ok: true, principal: null };
+  if (isHookRoute(pathname)) {
+    const hook = requireHookToken(request);
+    return hook.ok ? { ok: true, principal: null } : hook;
+  }
+  return await authenticateApiRequest(request, method, pathname);
 }
 
 const SENSITIVE_QUERY_PARAM_RE = /([?&])(token|ticket)=[^&#\s"']+/gi;
@@ -162,7 +169,7 @@ function withApiAuth(fn: typeof dispatch) {
     if (!auth.ok) return auth.response;
 
     try {
-      return await fn(request, url, method, pathname);
+      return await fn(request, url, method, pathname, auth.principal);
     } catch (err) {
       const message = redactSensitiveErrorText(errorMessage(err));
       if (isCallerFacingError(err)) return jsonError(HTTP_BAD_REQUEST, message);
@@ -198,6 +205,7 @@ async function dispatch(
   url: URL,
   method: string,
   pathname: string,
+  principal: ApiPrincipal | null,
 ): Promise<Response> {
   // Operator auth — first boot, login, logout, password change.
   if (pathname === "/api/auth/state" && method === "GET") return authController.state(request);
@@ -210,8 +218,16 @@ async function dispatch(
 
   // Cores — the registry the Panel service dials from.
   if (pathname === "/api/cores") {
-    if (method === "GET") return coresController.list();
+    if (method === "GET") return coresController.list(principal!);
   }
+  // API keys (#572). The Operator's session creates, lists and revokes them; a
+  // key never does, because these routes are not in API_KEY_ROUTES.
+  if (pathname === "/api/api-keys") {
+    if (method === "GET") return apiKeysController.list(principal!);
+    if (method === "POST") return apiKeysController.create(principal!, request);
+  }
+  const revokeMatch = pathname.match(API_KEY_REVOKE_PATH);
+  if (revokeMatch && method === "POST") return apiKeysController.revoke(principal!, decode(revokeMatch[1]));
   // Webhooks (#574): signed Task event delivery. No UI in this PR.
   if (pathname === "/api/webhooks") {
     if (method === "GET") return webhooksController.list();
@@ -268,6 +284,7 @@ async function dispatch(
   m = pathname.match(CORE_PATH);
   if (m) {
     const id = decode(m[1]);
+    if (method === "GET") return coresController.getOne(id, principal!);
     // PATCH is the alias, and only the alias: a Core's endpoint and credentials
     // are what its pairing produced, and pairing again is the only way to
     // change them.
