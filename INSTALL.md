@@ -23,7 +23,7 @@ which most distributions let a user enable for themselves.
 
 **One user here; two in the container.** On a machine installed this way the daemon and the Sessions it starts are the
 same user, you, and `actana pair` and `actana status` run as you with nothing extra. The Core *container* is different
-([ADR 0041](docs/adr/0041-the-0-5-0-core-model.md) D23–D25): the daemon is `actana` (uid 1001, state in
+([ADR 0041](docs/adr/0041-the-0-5-0-core-model.md) D24–D26): the daemon is `actana` (uid 1001, state in
 `/var/lib/actana`) and Sessions are `core` (uid 1000, home `/home/core`), which cannot read the daemon's state. There
 `pair` and `status` run as `docker compose exec -u actana core actana pair new`, and anything else is refused with
 that command. [`deploy/README.md`](deploy/README.md#two-users-in-the-core) has the details.

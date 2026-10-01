@@ -184,25 +184,25 @@ that bites, swap it for a named volume (`core-repos:/home/core/repos`, with
 ## Two users in the Core
 
 The `core` container has two users, and what each can read is the point
-([ADR 0041](../docs/adr/0041-the-0-5-0-core-model.md) D23–D25). This section describes the image and
-compose file as the pull request that switches them over, which was a draft when this was written, makes them.
+([ADR 0041](../docs/adr/0041-the-0-5-0-core-model.md) D24–D26). This section describes the image and
+compose file as #611 made them.
 
 | User | uid | What it is | What it owns |
 | --- | --- | --- | --- |
 | `actana` | 1001 | The daemon: pairing, the core link, the database. A system user | `/var/lib/actana` (the `core-state` volume, mode 700) |
 | `core` | 1000 | Sessions, and everything a Harness does. Has no sudo | `/home/core` (the `core-home` volume): the work, `~/shared`, each Harness's login |
 
-The container starts as root only for the entrypoint's step before it starts the daemon as `actana`; tini as PID 1
-is the only other root process. The daemon holds two capabilities, `CAP_SETUID` and `CAP_SETGID`, and no others. It
-starts every Session as `core` with no capabilities and `no_new_privs` set, so a Session cannot read
-`/var/lib/actana` and cannot become the daemon's user. The compose file asks for exactly those two
+The container starts as root only for the entrypoint's step before it `exec`s tini as `actana`; tini is PID 1 as
+uid 1001, and no process of the container is root after that. The daemon holds two capabilities, `CAP_SETUID` and
+`CAP_SETGID`, and no others. It starts every Session as `core` with no capabilities and `no_new_privs` set, so a
+Session cannot read `/var/lib/actana` and cannot become the daemon's user. The compose file asks for exactly those two
 capabilities (`cap_drop: ALL`, `cap_add: [SETUID, SETGID]`) and sets `no-new-privileges`.
 
 **Which user to `docker compose exec` as.** Without `-u` you are root. That root cannot override file permissions, so it
 can read neither the home nor the state. Name the user:
 
 ```bash
-docker compose exec -u core core bash                    # a shell as a Session would have it
+docker compose exec -u core core bash -l                 # a shell as a Session would have it (-l for ~/.local/bin)
 docker compose exec -u actana core actana pair new       # the daemon's own files: pairing
 docker compose exec -u actana core actana status
 ```
