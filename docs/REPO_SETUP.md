@@ -667,8 +667,8 @@ documented exception to "no force-push".
 > App: `promote.yml`'s `next-train` job is deleted and **a train is cut by a
 > person** ([ADR 0023](adr/0023-release-trains-and-digest-promotion.md) D3 and
 > D25 as amended; 0023:179's own amendment already says so). That person pushes
-> the cut commit directly to a new `beta/x.y.z` branch, with `--no-verify`, for
-> the reason [`ci-cd.md` §Cutting a train](ci-cd.md#cutting-a-train) gives — so
+> the cut commit directly to a new `beta/x.y.z` branch, as
+> [`ci-cd.md` §Cutting a train](ci-cd.md#cutting-a-train) describes — so
 > **a human identity must also bypass this ruleset**, or no train can be cut at
 > all. Two operations stay the App's; the third became a person's.
 >
@@ -1197,21 +1197,22 @@ new "stale"               795548 "Inactive; scheduled for auto-close"
 ([`housekeeping.yml`](../.github/workflows/housekeeping.yml)'s `stale` job) — an issue waiting on a
 maintainer's question should not be closed for the reporter's silence.
 
-## 8. Local hooks (optional, per clone)
+## 8. Local hooks (installed by `pnpm install`)
 
-The hooks in `.husky/` run under plain git — husky itself is not a dependency:
+The hooks in `.husky/` run under plain git — husky itself is not a dependency.
+`pnpm install` runs the root `prepare` script, which sets `core.hooksPath` to
+`.husky` when the directory is a git checkout and does nothing where there is no
+`.git` (the image builds, a tarball):
 
 ```bash
-git config core.hooksPath .husky
+git config core.hooksPath .husky   # only if you installed with --ignore-scripts
 ```
 
 `commit-msg` checks the message against `commitlint.config.mjs`; `pre-push`
-checks the branch name. Both mirror the `Conventions` job in
-[`ci.yml`](../.github/workflows/ci.yml), so they only tell
-you earlier what CI would have told you later. `commit-msg` no-ops with a hint
-if commitlint is not installed locally; the install line is in
-[`ci-cd.md`](ci-cd.md#running-ci-locally) — it goes through a temp directory
-because npm cannot parse this pnpm workspace's root `package.json`.
+checks the branch name and every commit being pushed. Both, and the
+`Conventions` job in [`ci.yml`](../.github/workflows/ci.yml), call
+`scripts/check-conventions.sh`, so they cannot disagree. commitlint is a pinned
+root devDependency; CI installs the same pinned version beside the config copy.
 
 ## 9. Org-level reuse
 

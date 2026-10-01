@@ -1,7 +1,7 @@
 {
   "name": "actana-control",
   "version": "0.5.0",
-  "description": "Actana Control \u2014 self-hosted Panel service for driving AI coding agents across many Cores.",
+  "description": "Actana Control — self-hosted Panel service for driving AI coding agents across many Cores.",
   "license": "MIT",
   "private": true,
   "type": "module",
@@ -12,6 +12,7 @@
   "scripts": {
     "check:node": "node scripts/require-node-24.mjs",
     "preinstall": "node scripts/require-node-24.mjs",
+    "prepare": "[ -e .git ] && git config core.hooksPath .husky || true",
     "predev": "node scripts/require-node-24.mjs",
     "prestart": "node scripts/require-node-24.mjs",
     "prebuild": "node scripts/require-node-24.mjs",
@@ -76,6 +77,8 @@
     "ws": "8.21.0"
   },
   "devDependencies": {
+    "@commitlint/cli": "21.2.3",
+    "@commitlint/config-conventional": "21.2.3",
     "@eslint/js": "10.0.1",
     "@types/better-sqlite3": "7.6.13",
     "@types/node": "25.8.0",

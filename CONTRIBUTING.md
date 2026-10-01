@@ -270,18 +270,14 @@ Allowed types: `feat` `feature` `fix` `bugfix` `hotfix` `release` `chore`
 `docs` `refactor` `perf` `test` `ci` `revert`. Lowercase only, hyphen-separated,
 no leading/trailing/doubled separators.
 
-CI checks this (the `Conventions` job in `ci.yml`). To be told before you push instead
-of after, enable the local hooks once per clone:
-
-```bash
-git config core.hooksPath .husky
-```
-
-Husky is not a dependency — these run under plain git. The `commit-msg` hook
-checks your message with commitlint if it is available and steps aside with a
-hint if it is not; [`docs/ci-cd.md`](docs/ci-cd.md#running-ci-locally) has the
-install line (it goes through a temp directory — npm cannot parse this
-workspace's root `package.json`).
+CI checks this (the `Conventions` job in `ci.yml`), and so does your machine:
+`pnpm install` points `core.hooksPath` at `.husky/`, so `commit-msg` refuses a
+message that breaks `commitlint.config.mjs` and `pre-push` refuses a branch name
+outside the list above or any commit in the push that breaks the commit rules.
+Both hooks and the `Conventions` job run `scripts/check-conventions.sh`, so they
+cannot disagree. A pushed commit can never be rewritten; this is the cheap place
+to catch one. (`pnpm install --ignore-scripts` skips the hook install; run
+`git config core.hooksPath .husky` yourself.)
 
 ## Commits and PRs
 
