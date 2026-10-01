@@ -7,6 +7,7 @@ import {
   index,
   integer,
   pgTable,
+  primaryKey,
   text,
   unique,
   uniqueIndex,
@@ -216,4 +217,47 @@ export const agents = pgTable(
     uniqueIndex("agents_default_per_harness").on(t.coreId, t.harness).where(sql`${t.isDefault}`),
     index("agents_owner_core_idx").on(t.ownerId, t.coreId),
   ],
+);
+
+/**
+ * An API key (#572): a credential a user creates for the public REST API. Only
+ * the sha256 of the key and a short display `prefix` are stored; the plaintext
+ * is shown once at creation and kept nowhere. `all_cores` is true for the
+ * default, a key that reaches every Core of its owner; false means it reaches
+ * only the Cores in `api_key_cores`, so a restricted key whose Cores were all
+ * forgotten reaches none. `revoked_at` is set once and never cleared: a
+ * trigger in the migration refuses to change or clear it.
+ */
+export const apiKeys = pgTable(
+  "api_keys",
+  {
+    id: text("id").primaryKey(),
+    ownerId: integer("owner_id")
+      .notNull()
+      .references(() => operator.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    prefix: text("prefix").notNull(),
+    keyHash: text("key_hash").notNull().unique(),
+    allCores: boolean("all_cores").notNull().default(true),
+    createdAt: epochMs("created_at").notNull(),
+    revokedAt: epochMs("revoked_at"),
+  },
+  (t) => [index("api_keys_owner_prefix_idx").on(t.ownerId, t.prefix)],
+);
+
+/** The Cores a restricted key reaches. `owner_id` repeats the key's owner so the guard's rule holds here too. */
+export const apiKeyCores = pgTable(
+  "api_key_cores",
+  {
+    keyId: text("key_id")
+      .notNull()
+      .references(() => apiKeys.id, { onDelete: "cascade" }),
+    coreId: text("core_id")
+      .notNull()
+      .references(() => cores.id, { onDelete: "cascade" }),
+    ownerId: integer("owner_id")
+      .notNull()
+      .references(() => operator.id, { onDelete: "cascade" }),
+  },
+  (t) => [primaryKey({ columns: [t.keyId, t.coreId] })],
 );

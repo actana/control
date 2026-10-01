@@ -27,13 +27,15 @@ async function seedOperator(db: TestDb, id = 1) {
 }
 
 describe("the panel.db tables on Postgres", { timeout: 30_000 }, () => {
-  it("creates operator, panel_sessions, cores, core_secrets, the Task tables and agents", async () => {
+  it("creates operator, panel_sessions, cores, core_secrets, the Task tables, agents and the API key tables", async () => {
     const db = await make();
     const { rows } = await db.pool.query(
       "select table_name from information_schema.tables where table_schema = 'public' order by 1",
     );
     expect(rows.map((r) => r.table_name)).toEqual([
       "agents",
+      "api_key_cores",
+      "api_keys",
       "core_secrets",
       "cores",
       "operator",
@@ -50,7 +52,7 @@ describe("the panel.db tables on Postgres", { timeout: 30_000 }, () => {
       `select table_name, column_name, data_type from information_schema.columns
        where table_schema = 'public' and column_name in ('created_at','updated_at','last_seen_at','expires_at','last_event_id','password_changed_at','changed_at','dispatched_at')`,
     );
-    expect(rows.length).toBe(16);
+    expect(rows.length).toBe(17);
     for (const r of rows) expect(r.data_type, `${r.table_name}.${r.column_name}`).toBe("bigint");
     await seedOperator(db);
     // An int4 column would reject this outright.
