@@ -96,7 +96,7 @@ function project(id: string, entries: Parameters<typeof makeTree>[0] = {}): stri
 describe("GET a file", () => {
   it("returns its raw bytes", async () => {
     project("p1", { "a.txt": "hello" });
-    const res = await call("GET", "/v1/projects/p1/files?path=a.txt");
+    const res = await call("GET", "/v1/files?path=a.txt");
 
     expect(res.status).toBe(200);
     expect(res.headers["content-type"]).toBe("application/octet-stream");
@@ -105,7 +105,7 @@ describe("GET a file", () => {
 
   it("returns the Project root as a tar when the path is a directory", async () => {
     project("p1", { "src/a.txt": "a" });
-    const res = await call("GET", "/v1/projects/p1/files?path=src");
+    const res = await call("GET", "/v1/files?path=src");
 
     expect(res.status).toBe(200);
     expect(res.headers["content-type"]).toBe("application/x-tar");
@@ -120,7 +120,7 @@ describe("GET a file", () => {
     fs.writeFileSync(path.join(root, "run.sh"), "#!/bin/sh\n", { mode: 0o755 });
     fs.chmodSync(path.join(root, "run.sh"), 0o755);
 
-    const res = await call("GET", "/v1/projects/p1/files?path=run.sh");
+    const res = await call("GET", "/v1/files?path=run.sh");
 
     expect(res.headers["x-actana-file-mode"]).toBe(String(0o755));
     expect(res.headers["x-actana-file-size"]).toBe("10");
@@ -129,7 +129,7 @@ describe("GET a file", () => {
 
   it("answers HEAD with the headers and no body", async () => {
     project("p1", { "a.txt": "hello" });
-    const res = await call("HEAD", "/v1/projects/p1/files?path=a.txt");
+    const res = await call("HEAD", "/v1/files?path=a.txt");
 
     expect(res.status).toBe(200);
     expect(res.headers["content-length"]).toBe("5");
@@ -141,7 +141,7 @@ describe("GET a file", () => {
     // `HEAD` that starts packing a `node_modules` to answer a question about
     // whether it exists is the shape of bug that only shows up on a big tree.
     project("p1", { "src/a.txt": "a" });
-    const res = await call("HEAD", "/v1/projects/p1/files?path=src");
+    const res = await call("HEAD", "/v1/files?path=src");
 
     expect(res.status).toBe(200);
     expect(res.headers["content-type"]).toBe("application/x-tar");
@@ -150,33 +150,24 @@ describe("GET a file", () => {
 
   it("404s a path that is not there", async () => {
     project("p1");
-    const res = await call("GET", "/v1/projects/p1/files?path=missing.txt");
+    const res = await call("GET", "/v1/files?path=missing.txt");
 
     expect(res.status).toBe(404);
     expect(json(res.body).code).toBe("not-found");
   });
 
-  it("404s when this Core has no workspace to serve", async () => {
-    const res = await call("GET", "/v1/projects/nope/files?path=a.txt");
+  it("404s when this Core has no home to serve", async () => {
+    const res = await call("GET", "/v1/files?path=a.txt");
 
     expect(res.status).toBe(404);
-    expect(json(res.body)).toEqual({ code: "not-found", error: "this Core has no workspace to serve" });
-  });
-
-  it("serves the one workspace whatever id the URL carries: the id names nothing", async () => {
-    project("p1", { "a.txt": "from the workspace" });
-    for (const id of ["p1", "nope", "any-id-at-all"]) {
-      const res = await call("GET", `/v1/projects/${id}/files?path=a.txt`);
-      expect(res.status).toBe(200);
-      expect(res.body.toString("utf8")).toBe("from the workspace");
-    }
+    expect(json(res.body)).toEqual({ code: "not-found", error: "this Core has no home to serve" });
   });
 
   it("follows a symlink that stays inside the Project, because a read asked for what it names", async () => {
     const root = project("p1", { "real.txt": "real" });
     fs.symlinkSync("real.txt", path.join(root, "alias.txt"));
 
-    const res = await call("GET", "/v1/projects/p1/files?path=alias.txt");
+    const res = await call("GET", "/v1/files?path=alias.txt");
 
     expect(res.body.toString("utf8")).toBe("real");
   });
@@ -186,7 +177,7 @@ describe("reads are unrestricted and concurrent (F8)", () => {
   it("serves many reads of one Project at once", async () => {
     project("p1", { "a.txt": "a".repeat(5000) });
     const results = await Promise.all(
-      Array.from({ length: 8 }, () => call("GET", "/v1/projects/p1/files?path=a.txt")),
+      Array.from({ length: 8 }, () => call("GET", "/v1/files?path=a.txt")),
     );
     expect(results.map((r) => r.status)).toEqual(Array(8).fill(200));
   });
@@ -196,7 +187,7 @@ describe("reads are unrestricted and concurrent (F8)", () => {
     const lease = locks.acquire("elsewhere");
     expect(lease.ok).toBe(true);
 
-    const read = await call("GET", "/v1/projects/p1/files?path=a.txt");
+    const read = await call("GET", "/v1/files?path=a.txt");
 
     expect(read.status).toBe(200);
     expect(read.body.toString("utf8")).toBe("a");
@@ -208,7 +199,7 @@ describe("reads are unrestricted and concurrent (F8)", () => {
 describe("confinement (F3)", () => {
   it("refuses an absolute path with 400 and a distinguishable code", async () => {
     project("p1");
-    const res = await call("GET", "/v1/projects/p1/files?path=%2Fetc%2Fpasswd");
+    const res = await call("GET", "/v1/files?path=%2Fetc%2Fpasswd");
 
     expect(res.status).toBe(400);
     expect(json(res.body).code).toBe("absolute-path");
@@ -216,7 +207,7 @@ describe("confinement (F3)", () => {
 
   it("refuses a `..` escape", async () => {
     project("p1");
-    const res = await call("GET", "/v1/projects/p1/files?path=..%2F..%2Fetc%2Fpasswd");
+    const res = await call("GET", "/v1/files?path=..%2F..%2Fetc%2Fpasswd");
 
     expect(res.status).toBe(400);
     expect(json(res.body).code).toBe("dot-dot-segment");
@@ -227,7 +218,7 @@ describe("confinement (F3)", () => {
     const root = project("p1");
     fs.symlinkSync(outside, path.join(root, "escape"));
 
-    const res = await call("GET", "/v1/projects/p1/files?path=escape%2Fsecret.txt");
+    const res = await call("GET", "/v1/files?path=escape%2Fsecret.txt");
 
     expect(res.status).toBe(400);
     expect(json(res.body).code).toBe("outside-project-root");
@@ -243,7 +234,7 @@ describe("confinement (F3)", () => {
       ["..%2F..%2Fpwned.txt", "dot-dot-segment"],
       ["escape%2Fpwned.txt", "outside-project-root"],
     ] as const) {
-      const res = await call("PUT", `/v1/projects/p1/files?path=${requested}`, { body: Buffer.from("owned") });
+      const res = await call("PUT", `/v1/files?path=${requested}`, { body: Buffer.from("owned") });
       expect(res.status).toBe(400);
       expect(json(res.body).code).toBe(code);
     }
@@ -252,7 +243,7 @@ describe("confinement (F3)", () => {
 
   it("is a 400, not a 403 — this is an accident guard and not a permission model", async () => {
     project("p1");
-    const res = await call("GET", "/v1/projects/p1/files?path=..%2Fx");
+    const res = await call("GET", "/v1/files?path=..%2Fx");
     expect(res.status).toBe(400);
     expect(res.status).not.toBe(403);
   });
@@ -263,7 +254,7 @@ describe("confinement (F3)", () => {
 describe("PUT a single file", () => {
   it("writes it and reports one NDJSON entry plus a done line", async () => {
     const root = project("p1");
-    const res = await call("PUT", "/v1/projects/p1/files?path=notes.txt", { body: Buffer.from("hello") });
+    const res = await call("PUT", "/v1/files?path=notes.txt", { body: Buffer.from("hello") });
 
     expect(res.status).toBe(200);
     expect(res.headers["content-type"]).toBe("application/x-ndjson");
@@ -287,13 +278,13 @@ describe("PUT a single file", () => {
 
   it("creates missing parent directories", async () => {
     const root = project("p1");
-    await call("PUT", "/v1/projects/p1/files?path=a%2Fb%2Fc.txt", { body: Buffer.from("deep") });
+    await call("PUT", "/v1/files?path=a%2Fb%2Fc.txt", { body: Buffer.from("deep") });
     expect(fs.readFileSync(path.join(root, "a/b/c.txt"), "utf8")).toBe("deep");
   });
 
   it("overwrites by default and says `overwritten` (F5)", async () => {
     const root = project("p1", { "notes.txt": "old" });
-    const res = await call("PUT", "/v1/projects/p1/files?path=notes.txt", { body: Buffer.from("new") });
+    const res = await call("PUT", "/v1/files?path=notes.txt", { body: Buffer.from("new") });
 
     expect(fs.readFileSync(path.join(root, "notes.txt"), "utf8")).toBe("new");
     expect(ndjson(res.body)[0]).toMatchObject({ result: "overwritten" });
@@ -301,7 +292,7 @@ describe("PUT a single file", () => {
 
   it("carries an executable bit sent as a header", async () => {
     const root = project("p1");
-    await call("PUT", "/v1/projects/p1/files?path=run.sh", {
+    await call("PUT", "/v1/files?path=run.sh", {
       body: Buffer.from("#!/bin/sh\n"),
       headers: { "x-actana-file-mode": String(0o755) },
     });
@@ -313,7 +304,7 @@ describe("PUT a single file", () => {
     const root = project("p1");
     fs.symlinkSync(path.join(outside, "target.txt"), path.join(root, "notes.txt"));
 
-    await call("PUT", "/v1/projects/p1/files?path=notes.txt", { body: Buffer.from("replaced") });
+    await call("PUT", "/v1/files?path=notes.txt", { body: Buffer.from("replaced") });
 
     expect(fs.readFileSync(path.join(outside, "target.txt"), "utf8")).toBe("original");
     expect(fs.readFileSync(path.join(root, "notes.txt"), "utf8")).toBe("replaced");
@@ -330,7 +321,7 @@ describe("PUT a folder as one tar (F4)", () => {
     const root = project("p1");
     const archive = await tarOf({ "a.txt": "a", "sub/b.txt": "b" });
 
-    const res = await call("PUT", "/v1/projects/p1/files?path=drop", {
+    const res = await call("PUT", "/v1/files?path=drop", {
       body: archive,
       headers: { "content-type": "application/x-tar" },
     });
@@ -350,7 +341,7 @@ describe("PUT a folder as one tar (F4)", () => {
     project("p1");
     const archive = await tarOf({ "x.txt": "x" });
 
-    const res = await call("PUT", "/v1/projects/p1/files?path=vendor%2Fdeep", {
+    const res = await call("PUT", "/v1/files?path=vendor%2Fdeep", {
       body: archive,
       headers: { "content-type": "application/x-tar" },
     });
@@ -362,7 +353,7 @@ describe("PUT a folder as one tar (F4)", () => {
     const root = project("p1");
     const archive = await tarOf({ "bin/run.sh": { content: "#!/bin/sh\n", mode: 0o755 } });
 
-    await call("PUT", "/v1/projects/p1/files?path=", {
+    await call("PUT", "/v1/files?path=", {
       body: archive,
       headers: { "content-type": "application/x-tar" },
     });
@@ -389,7 +380,7 @@ describe("PUT a folder as one tar (F4)", () => {
     for (let i = 0; i < 512; i += 1) sum += header[i]!;
     header.write(`${sum.toString(8).padStart(6, "0")}\0 `, 148, 8, "ascii");
 
-    const res = await call("PUT", "/v1/projects/p1/files?path=", {
+    const res = await call("PUT", "/v1/files?path=", {
       body: malicious,
       headers: { "content-type": "application/x-tar" },
     });
@@ -408,7 +399,7 @@ describe("a second concurrent write is refused immediately (F8)", () => {
     const held = locks.acquire("src/vendor");
     expect(held.ok).toBe(true);
 
-    const res = await call("PUT", "/v1/projects/p1/files?path=notes.txt", { body: Buffer.from("x") });
+    const res = await call("PUT", "/v1/files?path=notes.txt", { body: Buffer.from("x") });
 
     expect(res.status).toBe(409);
     const body = json(res.body);
@@ -421,7 +412,7 @@ describe("a second concurrent write is refused immediately (F8)", () => {
     const root = project("p1");
     locks.acquire("elsewhere");
 
-    await call("PUT", "/v1/projects/p1/files?path=notes.txt", { body: Buffer.from("x") });
+    await call("PUT", "/v1/files?path=notes.txt", { body: Buffer.from("x") });
 
     expect(fs.existsSync(path.join(root, "notes.txt"))).toBe(false);
   });
@@ -430,7 +421,7 @@ describe("a second concurrent write is refused immediately (F8)", () => {
     project("p1");
     locks.acquire("elsewhere");
 
-    const res = await call("PUT", "/v1/projects/p1/files?path=notes.txt", {
+    const res = await call("PUT", "/v1/files?path=notes.txt", {
       body: Buffer.from("x".repeat(4096)),
       headers: { expect: "100-continue" },
     });
@@ -445,17 +436,17 @@ describe("a second concurrent write is refused immediately (F8)", () => {
     if (!held.ok) throw new Error("unreachable");
     held.lease.release();
 
-    const res = await call("PUT", "/v1/projects/p1/files?path=notes.txt", { body: Buffer.from("x") });
+    const res = await call("PUT", "/v1/files?path=notes.txt", { body: Buffer.from("x") });
 
     expect(res.status).toBe(200);
     expect(fs.readFileSync(path.join(root, "notes.txt"), "utf8")).toBe("x");
   });
 
-  it("refuses a write under another id too: there is one workspace, so there is one lease", async () => {
+  it("refuses a write while another one holds the lease: there is one home, so there is one lease", async () => {
     const root = project("p1");
     locks.acquire("elsewhere");
 
-    const res = await call("PUT", "/v1/projects/p2/files?path=notes.txt", { body: Buffer.from("x") });
+    const res = await call("PUT", "/v1/files?path=notes.txt", { body: Buffer.from("x") });
 
     expect(res.status).toBe(409);
     expect(json(res.body).code).toBe("transfer-in-progress");
@@ -464,16 +455,16 @@ describe("a second concurrent write is refused immediately (F8)", () => {
 
   it("releases the lease when the transfer finishes, so the next one is not refused forever", async () => {
     project("p1");
-    await call("PUT", "/v1/projects/p1/files?path=a.txt", { body: Buffer.from("a") });
+    await call("PUT", "/v1/files?path=a.txt", { body: Buffer.from("a") });
     expect(locks.current()).toBeNull();
 
-    const second = await call("PUT", "/v1/projects/p1/files?path=b.txt", { body: Buffer.from("b") });
+    const second = await call("PUT", "/v1/files?path=b.txt", { body: Buffer.from("b") });
     expect(second.status).toBe(200);
   });
 
   it("releases the lease even when the transfer failed mid-stream", async () => {
     project("p1");
-    await call("PUT", "/v1/projects/p1/files?path=", {
+    await call("PUT", "/v1/files?path=", {
       body: Buffer.from("this is not a tar at all, not even close"),
       headers: { "content-type": "application/x-tar" },
     });
@@ -513,7 +504,7 @@ describe("the free-space precheck (F8: no size cap, but a precheck)", () => {
     project("p1");
     const rig = await withFreeSpace(4);
     try {
-      const res = await callAt(rig.url, "/v1/projects/p1/files?path=big.bin", Buffer.alloc(100));
+      const res = await callAt(rig.url, "/v1/files?path=big.bin", Buffer.alloc(100));
       expect(res.status).toBe(507);
       expect(json(res.body).code).toBe("insufficient-storage");
     } finally {
@@ -525,7 +516,7 @@ describe("the free-space precheck (F8: no size cap, but a precheck)", () => {
     const root = project("p1");
     const rig = await withFreeSpace(1_000_000);
     try {
-      const res = await callAt(rig.url, "/v1/projects/p1/files?path=big.bin", Buffer.alloc(100));
+      const res = await callAt(rig.url, "/v1/files?path=big.bin", Buffer.alloc(100));
       expect(res.status).toBe(200);
       expect(fs.statSync(path.join(root, "big.bin")).size).toBe(100);
     } finally {
@@ -537,7 +528,7 @@ describe("the free-space precheck (F8: no size cap, but a precheck)", () => {
     const root = project("p1");
     const rig = await withFreeSpace(null);
     try {
-      const res = await callAt(rig.url, "/v1/projects/p1/files?path=a.bin", Buffer.alloc(10));
+      const res = await callAt(rig.url, "/v1/files?path=a.bin", Buffer.alloc(10));
       expect(res.status).toBe(200);
       expect(fs.existsSync(path.join(root, "a.bin"))).toBe(true);
     } finally {
@@ -550,7 +541,7 @@ describe("the free-space precheck (F8: no size cap, but a precheck)", () => {
     const rig = await withFreeSpace(4);
     try {
       const res = await new Promise<Response>((resolve, reject) => {
-        const req = http.request(`${rig.url}/v1/projects/p1/files?path=chunked.bin`, { method: "PUT", agent: false }, (r) => {
+        const req = http.request(`${rig.url}/v1/files?path=chunked.bin`, { method: "PUT", agent: false }, (r) => {
           const chunks: Buffer[] = [];
           r.on("data", (chunk: Buffer) => chunks.push(chunk));
           r.on("end", () => resolve({ status: r.statusCode ?? 0, headers: r.headers, body: Buffer.concat(chunks) }));
@@ -571,7 +562,7 @@ describe("the free-space precheck (F8: no size cap, but a precheck)", () => {
 
 describe("the surface is a closed list", () => {
   it("404s a `/v1/` path this build does not serve", async () => {
-    const res = await call("GET", "/v1/projects/p1/somethingelse");
+    const res = await call("GET", "/v1/files/somethingelse");
     expect(res.status).toBe(404);
     expect(json(res.body).code).toBe("not-found");
   });
@@ -583,7 +574,7 @@ describe("the surface is a closed list", () => {
 
   it("405s a method it does not answer", async () => {
     project("p1");
-    const res = await call("DELETE", "/v1/projects/p1/files?path=a.txt");
+    const res = await call("PATCH", "/v1/files?path=a.txt");
     expect(res.status).toBe(405);
     expect(json(res.body).code).toBe("method-not-allowed");
   });
@@ -612,7 +603,7 @@ describe("the bearer gate", () => {
 
   function callAt(url: string, headers: Record<string, string> = {}): Promise<Response> {
     return new Promise((resolve, reject) => {
-      const req = http.request(`${url}/v1/projects/p1/files?path=a.txt`, { method: "GET", headers, agent: false }, (res) => {
+      const req = http.request(`${url}/v1/files?path=a.txt`, { method: "GET", headers, agent: false }, (res) => {
         const chunks: Buffer[] = [];
         res.on("data", (chunk: Buffer) => chunks.push(chunk));
         res.on("end", () => resolve({ status: res.statusCode ?? 0, headers: res.headers, body: Buffer.concat(chunks) }));
@@ -673,7 +664,7 @@ describe("a single-file PUT onto a path that holds a directory", () => {
       "src/nested/deep.ts": "still here",
     });
 
-    const res = await call("PUT", "/v1/projects/p1/files?path=src", {
+    const res = await call("PUT", "/v1/files?path=src", {
       body: Buffer.from("a regular file called src"),
       headers: { "content-type": "text/plain" },
     });
@@ -691,7 +682,7 @@ describe("a single-file PUT onto a path that holds a directory", () => {
     // success status and after the client has uploaded its body.
     project("p1", { "src/index.ts": "x" });
 
-    const res = await call("PUT", "/v1/projects/p1/files?path=src", {
+    const res = await call("PUT", "/v1/files?path=src", {
       body: Buffer.from("clobber"),
       headers: { "content-type": "text/plain" },
     });
@@ -704,7 +695,7 @@ describe("a single-file PUT onto a path that holds a directory", () => {
   it("is distinguishable by code from the other 409 this surface has", async () => {
     project("p1", { "src/index.ts": "x" });
 
-    const res = await call("PUT", "/v1/projects/p1/files?path=src", {
+    const res = await call("PUT", "/v1/files?path=src", {
       body: Buffer.from("clobber"),
       headers: { "content-type": "text/plain" },
     });
@@ -717,7 +708,7 @@ describe("a single-file PUT onto a path that holds a directory", () => {
   it("still replaces an empty directory, which has nothing to lose", async () => {
     const root = project("p1", { "placeholder/": "" });
 
-    const res = await call("PUT", "/v1/projects/p1/files?path=placeholder", {
+    const res = await call("PUT", "/v1/files?path=placeholder", {
       body: Buffer.from("now a file"),
       headers: { "content-type": "text/plain" },
     });
@@ -732,7 +723,7 @@ describe("a single-file PUT onto a path that holds a directory", () => {
     // lease would be the same defect this branch just fixed, by another route.
     project("p1", { "src/index.ts": "x" });
 
-    await call("PUT", "/v1/projects/p1/files?path=src", {
+    await call("PUT", "/v1/files?path=src", {
       body: Buffer.from("clobber"),
       headers: { "content-type": "text/plain" },
     });
@@ -763,9 +754,9 @@ describe("a single-file PUT that resolves to the Project root", () => {
   }
 
   const spellings: Array<[string, string]> = [
-    ["no path parameter at all", "/v1/projects/p1/files"],
-    ["an explicitly empty path", "/v1/projects/p1/files?path="],
-    ["a path of `.`", "/v1/projects/p1/files?path=."],
+    ["no path parameter at all", "/v1/files"],
+    ["an explicitly empty path", "/v1/files?path="],
+    ["a path of `.`", "/v1/files?path=."],
   ];
 
   for (const [label, url] of spellings) {
@@ -805,7 +796,7 @@ describe("a single-file PUT that resolves to the Project root", () => {
     // this to be neither the 409 of `directory-in-the-way` nor a bare 400.
     project("p1");
 
-    const res = await call("PUT", "/v1/projects/p1/files", {
+    const res = await call("PUT", "/v1/files", {
       body: Buffer.from("x"),
       headers: { "content-type": "text/plain" },
     });
@@ -819,7 +810,7 @@ describe("a single-file PUT that resolves to the Project root", () => {
   it("refuses before the 200, and without taking the write lease", async () => {
     project("p1");
 
-    const res = await call("PUT", "/v1/projects/p1/files", {
+    const res = await call("PUT", "/v1/files", {
       body: Buffer.from("x"),
       headers: { "content-type": "text/plain" },
     });
@@ -835,7 +826,7 @@ describe("a single-file PUT that resolves to the Project root", () => {
     const root = project("p1");
     const archive = await tarOf({ "a.txt": "a", "sub/b.txt": "b" });
 
-    const res = await call("PUT", "/v1/projects/p1/files", {
+    const res = await call("PUT", "/v1/files", {
       body: archive,
       headers: { "content-type": "application/x-tar" },
     });
@@ -853,7 +844,7 @@ describe("a single-file PUT that resolves to the Project root", () => {
     // write to it is untouched.
     const root = project("p1");
 
-    const res = await call("PUT", "/v1/projects/p1/files?path=notes.txt", {
+    const res = await call("PUT", "/v1/files?path=notes.txt", {
       body: Buffer.from("kept"),
       headers: { "content-type": "text/plain" },
     });
@@ -912,7 +903,7 @@ describe("a tar entry that resolves to the Project root", () => {
     it(`refuses ${label} against an empty Project, leaving the root a directory`, async () => {
       const root = project("p1");
 
-      const res = await call("PUT", "/v1/projects/p1/files", {
+      const res = await call("PUT", "/v1/files", {
         body: rawTar(name, { content: "CLOBBER" }),
         headers: { "content-type": "application/x-tar" },
       });
@@ -927,7 +918,7 @@ describe("a tar entry that resolves to the Project root", () => {
     it(`refuses ${label} against a populated Project, losing nothing`, async () => {
       const root = project("p1", { "a.txt": "a", "src/index.ts": "export const x = 1;\n" });
 
-      const res = await call("PUT", "/v1/projects/p1/files", {
+      const res = await call("PUT", "/v1/files", {
         body: rawTar(name, { content: "CLOBBER" }),
         headers: { "content-type": "application/x-tar" },
       });
@@ -951,7 +942,7 @@ describe("a tar entry that resolves to the Project root", () => {
     // the entry naming the root, not about what the root happens to hold.
     project("p1");
 
-    const res = await call("PUT", "/v1/projects/p1/files", {
+    const res = await call("PUT", "/v1/files", {
       body: rawTar(".", { content: "CLOBBER" }),
       headers: { "content-type": "application/x-tar" },
     });
@@ -965,7 +956,7 @@ describe("a tar entry that resolves to the Project root", () => {
   it("releases the write lease after refusing, so the Project is not wedged", async () => {
     project("p1");
 
-    await call("PUT", "/v1/projects/p1/files", {
+    await call("PUT", "/v1/files", {
       body: rawTar(".", { content: "CLOBBER" }),
       headers: { "content-type": "application/x-tar" },
     });
@@ -984,7 +975,7 @@ describe("a tar entry that resolves to the Project root", () => {
       await tarOf({ "a.txt": "a", "sub/b.txt": "b" }),
     ]);
 
-    const res = await call("PUT", "/v1/projects/p1/files", {
+    const res = await call("PUT", "/v1/files", {
       body: archive,
       headers: { "content-type": "application/x-tar" },
     });
@@ -1005,7 +996,7 @@ describe("a tar entry that resolves to the Project root", () => {
     const root = project("p1");
     const archive = await tarOf({ "a.txt": "a" });
 
-    const res = await call("PUT", "/v1/projects/p1/files?path=drop", {
+    const res = await call("PUT", "/v1/files?path=drop", {
       body: archive,
       headers: { "content-type": "application/x-tar" },
     });

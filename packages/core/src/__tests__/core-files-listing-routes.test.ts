@@ -104,7 +104,7 @@ describe("the listing stream", () => {
   it("answers NDJSON, chunked, and says which kind of transfer it is", async () => {
     project("p1", { "a.txt": "a" });
 
-    const res = await call("GET", "/v1/projects/p1/files/list");
+    const res = await call("GET", "/v1/files/list");
 
     expect(res.status).toBe(200);
     expect(res.headers["content-type"]).toBe("application/x-ndjson");
@@ -116,7 +116,7 @@ describe("the listing stream", () => {
   it("lists a Project's tree to arbitrary depth, one line per entry", async () => {
     project("p1", { "a.txt": "a", "src/index.ts": "x", "src/deep/deeper/leaf.txt": "l" });
 
-    const res = await call("GET", "/v1/projects/p1/files/list");
+    const res = await call("GET", "/v1/files/list");
 
     expect(listed(res.body)).toEqual(["a.txt", "src", "src/deep", "src/deep/deeper", "src/deep/deeper/leaf.txt", "src/index.ts"]);
   });
@@ -127,7 +127,7 @@ describe("the listing stream", () => {
     fs.chmodSync(path.join(root, "run.sh"), 0o755);
     const stats = fs.statSync(path.join(root, "run.sh"));
 
-    const res = await call("GET", "/v1/projects/p1/files/list");
+    const res = await call("GET", "/v1/files/list");
 
     expect(entries(res.body)).toEqual([
       {
@@ -145,7 +145,7 @@ describe("the listing stream", () => {
   it("closes with a done line counting what it produced", async () => {
     project("p1", { "a.txt": "aaaa", "b/c.txt": "bb" });
 
-    const res = await call("GET", "/v1/projects/p1/files/list");
+    const res = await call("GET", "/v1/files/list");
 
     const lines = ndjson(res.body);
     expect(lines.at(-1)).toEqual({ type: "done", entries: 3, skipped: 0, bytes: 6 });
@@ -154,7 +154,7 @@ describe("the listing stream", () => {
   it("lists a subtree, with every path still relative to the Project root", async () => {
     project("p1", { "src/lib/util.ts": "u", "elsewhere.txt": "e" });
 
-    const res = await call("GET", "/v1/projects/p1/files/list?path=src");
+    const res = await call("GET", "/v1/files/list?path=src");
 
     // `src/lib/util.ts`, not `lib/util.ts`: the string that comes back is the
     // string that goes to `GET ?path=` (ADR 0027 D2).
@@ -164,7 +164,7 @@ describe("the listing stream", () => {
   it("lists a single file when the path names one", async () => {
     project("p1", { "notes.md": "hello" });
 
-    const res = await call("GET", "/v1/projects/p1/files/list?path=notes.md");
+    const res = await call("GET", "/v1/files/list?path=notes.md");
 
     expect(entries(res.body)).toEqual([expect.objectContaining({ path: "notes.md", kind: "file", size: 5 })]);
   });
@@ -172,7 +172,7 @@ describe("the listing stream", () => {
   it("answers an empty Project with a done line and nothing else", async () => {
     project("p1");
 
-    const res = await call("GET", "/v1/projects/p1/files/list");
+    const res = await call("GET", "/v1/files/list");
 
     expect(ndjson(res.body)).toEqual([{ type: "done", entries: 0, skipped: 0, bytes: 0 }]);
   });
@@ -180,7 +180,7 @@ describe("the listing stream", () => {
   it("answers HEAD with the headers and no body, without walking anything", async () => {
     project("p1", { "a.txt": "a" });
 
-    const res = await call("HEAD", "/v1/projects/p1/files/list");
+    const res = await call("HEAD", "/v1/files/list");
 
     expect(res.status).toBe(200);
     expect(res.headers["content-type"]).toBe("application/x-ndjson");
@@ -196,7 +196,7 @@ describe("depth", () => {
   it("bounds the walk when asked", async () => {
     project("p1", tree);
 
-    const res = await call("GET", "/v1/projects/p1/files/list?depth=1");
+    const res = await call("GET", "/v1/files/list?depth=1");
 
     expect(listed(res.body)).toEqual(["one", "top.txt"]);
   });
@@ -204,8 +204,8 @@ describe("depth", () => {
   it("takes the whole tree for depth=all, which is also the default", async () => {
     project("p1", tree);
 
-    const explicit = await call("GET", "/v1/projects/p1/files/list?depth=all");
-    const implied = await call("GET", "/v1/projects/p1/files/list");
+    const explicit = await call("GET", "/v1/files/list?depth=all");
+    const implied = await call("GET", "/v1/files/list");
 
     expect(listed(explicit.body)).toEqual(["one", "one/mid.txt", "one/two", "one/two/leaf.txt", "top.txt"]);
     expect(listed(implied.body)).toEqual(listed(explicit.body));
@@ -214,7 +214,7 @@ describe("depth", () => {
   it("refuses a depth it does not understand rather than quietly listing everything", async () => {
     project("p1", tree);
 
-    const res = await call("GET", "/v1/projects/p1/files/list?depth=two");
+    const res = await call("GET", "/v1/files/list?depth=two");
 
     expect(res.status).toBe(400);
     expect(json(res.body).code).toBe("bad-request");
@@ -223,8 +223,8 @@ describe("depth", () => {
   it("refuses depth=0 and a negative depth, which name no listing at all", async () => {
     project("p1", tree);
 
-    expect((await call("GET", "/v1/projects/p1/files/list?depth=0")).status).toBe(400);
-    expect((await call("GET", "/v1/projects/p1/files/list?depth=-1")).status).toBe(400);
+    expect((await call("GET", "/v1/files/list?depth=0")).status).toBe(400);
+    expect((await call("GET", "/v1/files/list?depth=-1")).status).toBe(400);
   });
 });
 
@@ -232,7 +232,7 @@ describe("sha256 — on request, not eagerly (ADR 0027 D6)", () => {
   it("is null on every entry by default, because a listing does not have the bytes in hand", async () => {
     project("p1", { "a.txt": "a", "b/c.txt": "c" });
 
-    const res = await call("GET", "/v1/projects/p1/files/list");
+    const res = await call("GET", "/v1/files/list");
 
     expect(entries(res.body).every((entry) => entry.sha256 === null)).toBe(true);
   });
@@ -240,7 +240,7 @@ describe("sha256 — on request, not eagerly (ADR 0027 D6)", () => {
   it("is computed when the client asks for it", async () => {
     project("p1", { "a.txt": "hello" });
 
-    const res = await call("GET", "/v1/projects/p1/files/list?sha256=1");
+    const res = await call("GET", "/v1/files/list?sha256=1");
 
     expect(entries(res.body)[0]).toMatchObject({
       path: "a.txt",
@@ -252,8 +252,8 @@ describe("sha256 — on request, not eagerly (ADR 0027 D6)", () => {
   it("keeps the field present either way, so a reader never has to feature-detect it", async () => {
     project("p1", { "a.txt": "hello" });
 
-    const without = entries((await call("GET", "/v1/projects/p1/files/list")).body)[0]!;
-    const with256 = entries((await call("GET", "/v1/projects/p1/files/list?sha256=1")).body)[0]!;
+    const without = entries((await call("GET", "/v1/files/list")).body)[0]!;
+    const with256 = entries((await call("GET", "/v1/files/list?sha256=1")).body)[0]!;
 
     expect("sha256" in without).toBe(true);
     expect(Object.keys(without).sort()).toEqual(Object.keys(with256).sort());
@@ -262,7 +262,7 @@ describe("sha256 — on request, not eagerly (ADR 0027 D6)", () => {
   it("refuses a value it does not understand rather than reading it as no", async () => {
     project("p1", { "a.txt": "a" });
 
-    const res = await call("GET", "/v1/projects/p1/files/list?sha256=yes");
+    const res = await call("GET", "/v1/files/list?sha256=yes");
 
     expect(res.status).toBe(400);
     expect(json(res.body).code).toBe("bad-request");
@@ -273,7 +273,7 @@ describe("sha256 — on request, not eagerly (ADR 0027 D6)", () => {
 
 describe("refusals", () => {
   it("404s when this Core has no workspace to serve, with the same code the read route uses", async () => {
-    const res = await call("GET", "/v1/projects/nope/files/list");
+    const res = await call("GET", "/v1/files/list");
 
     expect(res.status).toBe(404);
     expect(json(res.body).code).toBe("not-found");
@@ -282,7 +282,7 @@ describe("refusals", () => {
   it("404s a path that is not there, before the stream starts rather than as a line in it", async () => {
     project("p1");
 
-    const res = await call("GET", "/v1/projects/p1/files/list?path=missing");
+    const res = await call("GET", "/v1/files/list?path=missing");
 
     expect(res.status).toBe(404);
     expect(json(res.body)).toMatchObject({ code: "not-found" });
@@ -294,7 +294,7 @@ describe("refusals", () => {
   it("405s a write to the listing route rather than creating a file called `list`", async () => {
     project("p1");
 
-    const res = await call("PUT", "/v1/projects/p1/files/list");
+    const res = await call("PUT", "/v1/files/list");
 
     expect(res.status).toBe(405);
     expect(json(res.body)).toMatchObject({ code: "method-not-allowed" });
@@ -305,8 +305,8 @@ describe("refusals", () => {
   it("404s a leaf under `files` that is not `list`, so the surface stays a closed list", async () => {
     project("p1");
 
-    expect((await call("GET", "/v1/projects/p1/files/listing")).status).toBe(404);
-    expect((await call("GET", "/v1/projects/p1/files/list/more")).status).toBe(404);
+    expect((await call("GET", "/v1/files/listing")).status).toBe(404);
+    expect((await call("GET", "/v1/files/list/more")).status).toBe(404);
   });
 
   it("requires the bearer when the Core's core link does", async () => {
@@ -318,8 +318,8 @@ describe("refusals", () => {
     });
     project("p1", { "a.txt": "a" });
 
-    const anonymous = await call("GET", "/v1/projects/p1/files/list");
-    const authorised = await call("GET", "/v1/projects/p1/files/list", { authorization: "Bearer good" });
+    const anonymous = await call("GET", "/v1/files/list");
+    const authorised = await call("GET", "/v1/files/list", { authorization: "Bearer good" });
 
     expect(anonymous.status).toBe(401);
     expect(json(anonymous.body).code).toBe("unauthorized");
@@ -357,7 +357,7 @@ describe("a large tree is streamed, not assembled", () => {
     wideProject("p1");
 
     const firstLine = await new Promise<{ line: Record<string, unknown>; complete: boolean }>((resolve, reject) => {
-      const req = http.request(`${base}/v1/projects/p1/files/list`, { agent: false }, (res) => {
+      const req = http.request(`${base}/v1/files/list`, { agent: false }, (res) => {
         res.once("data", (chunk: Buffer) => {
           // `res.complete` is false while the body is still arriving. Reading a
           // line here is reading it *during* the walk, which is the claim.
@@ -380,7 +380,7 @@ describe("a large tree is streamed, not assembled", () => {
   it("arrives in many chunks, which a response built in memory would not", async () => {
     wideProject("p1");
 
-    const res = await call("GET", "/v1/projects/p1/files/list");
+    const res = await call("GET", "/v1/files/list");
 
     // 4001 entries is a few hundred kilobytes of NDJSON. One chunk would mean
     // the whole listing was held somewhere before any of it was sent.
@@ -412,7 +412,7 @@ describe("a large tree is streamed, not assembled", () => {
     let sawOneInFlight = false;
 
     await new Promise<void>((resolve) => {
-      const req = http.request(`${base}/v1/projects/p1/files/list`, { agent: false }, (res) => {
+      const req = http.request(`${base}/v1/files/list`, { agent: false }, (res) => {
         // Never read it. That is what backs the response up and parks the
         // handler inside `drained`, which is the state the abort has to unwind.
         res.pause();
@@ -490,7 +490,7 @@ describe("a listing that fails after the 200 is spent", () => {
     project("p1", { "a.txt": "a", "b.txt": "b", "c.txt": "c", "d.txt": "d" });
     failReadingDirectoriesAfter(2);
 
-    const res = await call("GET", "/v1/projects/p1/files/list");
+    const res = await call("GET", "/v1/files/list");
 
     // The 200 and its headers went out with the first line and cannot be taken
     // back — which is the whole reason this line type exists.
@@ -505,7 +505,7 @@ describe("a listing that fails after the 200 is spent", () => {
     project("p1", { "a.txt": "a", "b.txt": "b", "c.txt": "c", "d.txt": "d" });
     failReadingDirectoriesAfter(2);
 
-    const res = await call("GET", "/v1/projects/p1/files/list");
+    const res = await call("GET", "/v1/files/list");
 
     const lines = ndjson(res.body);
     // The assertion #167's reader depends on: `done` is the only proof a
@@ -518,7 +518,7 @@ describe("a listing that fails after the 200 is spent", () => {
     project("p1", { "a.txt": "a", "b.txt": "b", "c.txt": "c", "d.txt": "d" });
     failReadingDirectoriesAfter(2);
 
-    const res = await call("GET", "/v1/projects/p1/files/list");
+    const res = await call("GET", "/v1/files/list");
 
     // Two real entries out of the real directory handle, then the fault. A
     // reader that stopped at the error line still has a valid partial tree —
@@ -537,7 +537,7 @@ describe("a listing that fails after the 200 is spent", () => {
     const root = project("p1", { "a.txt": "a", "vendor/locked/x.txt": "x" });
     fs.chmodSync(path.join(root, "vendor/locked"), 0o000);
     try {
-      const res = await call("GET", "/v1/projects/p1/files/list");
+      const res = await call("GET", "/v1/files/list");
 
       const lines = ndjson(res.body);
       expect(lines.filter((line) => line.type === "error")).toEqual([]);

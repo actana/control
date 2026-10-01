@@ -171,7 +171,7 @@ async function listIfOffered(
   if (readFilesCapability(ready.files) === null) {
     return { asked: false, reason: "this Core announces no file surface on `ready`" };
   }
-  const res = await fetch(`${base}/v1/projects/${projectId}/files/list`);
+  const res = await fetch(`${base}/v1/files/list`);
   return { asked: true, status: res.status, body: await res.text() };
 }
 
@@ -189,7 +189,7 @@ describe("a Core that serves the listing route", () => {
     expect(result.asked).toBe(true);
     expect(result.status).toBe(200);
     expect(result.body).toContain('"path":"a.txt"');
-    expect(arrived).toEqual(["GET /v1/projects/p1/files/list"]);
+    expect(arrived).toEqual(["GET /v1/files/list"]);
   });
 
   it("announces version 1 for listing too, because no Core has ever shipped a version 1 without it", () => {
@@ -235,7 +235,7 @@ describe("a Core with no file surface — every Core that shipped before this", 
     expect(result.asked).toBe(false);
     expect(arrived).toEqual([]);
 
-    const proof = await fetch(`${base}/v1/projects/p1/files/list`);
+    const proof = await fetch(`${base}/v1/files/list`);
     expect(proof.status).toBe(200);
   });
 });

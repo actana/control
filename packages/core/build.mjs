@@ -37,6 +37,15 @@ await build({
   outfile: "dist/core-home-ops.cjs",
 });
 
+// The Files API helper (issue 557, ADR 0041 D25). One short-lived process per request,
+// started through `asCore`, does the reading and writing in `core`'s home so the
+// daemon never touches it. Same externals and target.
+await build({
+  ...shared,
+  entryPoints: ["src/core-files-op-entry.ts"],
+  outfile: "dist/core-files-op.cjs",
+});
+
 // **No second daemon bundle here.** `dist/actana-cli.cjs` used to be emitted from this
 // package too, because the operator CLI lived in `packages/core/src`. It does
 // not any more: `packages/cli` owns the whole `actana` command and emits both

@@ -114,7 +114,7 @@ describe("a client that hangs up mid-transfer", () => {
     projects.p1 = makeTree();
     const tar = await backpressuringTar();
 
-    const upload = abortableUpload("/v1/projects/p1/files?path=drop", tar);
+    const upload = abortableUpload("/v1/files?path=drop", tar);
 
     // Wait for the handler to be genuinely in the middle of the transfer: the
     // lease taken, the 200 sent, and enough entries written that the response
@@ -136,7 +136,7 @@ describe("a client that hangs up mid-transfer", () => {
     projects.p1 = makeTree();
     const tar = await backpressuringTar();
 
-    const upload = abortableUpload("/v1/projects/p1/files?path=drop", tar);
+    const upload = abortableUpload("/v1/files?path=drop", tar);
     expect(await eventually(() => locks.current() !== null)).toBe(true);
     await delay(250);
     upload.abort();
@@ -146,7 +146,7 @@ describe("a client that hangs up mid-transfer", () => {
     // later write to the same Project is served, not refused.
     const after = await new Promise<{ status: number; body: string }>((resolve, reject) => {
       const req = http.request(
-        `${base}/v1/projects/p1/files?path=after.txt`,
+        `${base}/v1/files?path=after.txt`,
         { method: "PUT", headers: { "content-type": "text/plain" }, agent: false },
         (res) => {
           const chunks: Buffer[] = [];
@@ -206,7 +206,7 @@ describe("a client that hangs up mid-transfer", () => {
 
     const abortOneDownload = async (): Promise<void> => {
       await new Promise<void>((resolve, reject) => {
-        const req = http.request(`${base}/v1/projects/p1/files?path=payload`, { method: "GET", agent: false }, (res) => {
+        const req = http.request(`${base}/v1/files?path=payload`, { method: "GET", agent: false }, (res) => {
           res.pause();
           res.on("error", () => {});
           // Long enough for the server to fill the socket and park mid-file.

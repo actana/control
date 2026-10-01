@@ -527,7 +527,7 @@ describe("the pre-auth hole is exactly one route wide", () => {
   it("refuses every other route to that same client", async () => {
     const rig = await startCore();
 
-    const files = await post(rig, "/v1/projects/p1/files?path=a.txt", "", { method: "GET" });
+    const files = await post(rig, "/v1/files?path=a.txt", "", { method: "GET" });
     const unknown = await post(rig, "/healthz", "", { method: "GET" });
 
     expect(files.status).toBe(403);
@@ -561,7 +561,7 @@ describe("the pre-auth hole is exactly one route wide", () => {
     const { csrPem, privateKeyPem } = await generateClientCsr("laptop");
     const issued = JSON.parse((await redeem(rig, { sessionId, code, csr: csrPem })).body) as Record<string, string>;
 
-    const res = await post(rig, "/v1/projects/p1/files?path=a.txt", "", {
+    const res = await post(rig, "/v1/files?path=a.txt", "", {
       method: "GET",
       clientCert: { cert: issued.clientCert!, key: privateKeyPem },
     });

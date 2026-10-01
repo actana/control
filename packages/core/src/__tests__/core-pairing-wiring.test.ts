@@ -54,7 +54,7 @@ describe("composeCoreHttpRoutes", () => {
     const claimed: string[] = [];
     const routes = composeCoreHttpRoutes(family("/v1/pair/", claimed), family("/v1/", claimed));
 
-    expect(routes.handle(request("/v1/projects/p1/files"), response())).toBe(true);
+    expect(routes.handle(request("/v1/files"), response())).toBe(true);
     expect(claimed).toEqual(["/v1/"]);
   });
 
@@ -124,7 +124,7 @@ describe("auditPairingRoutes", () => {
     const info = vi.spyOn(log, "info").mockImplementation(() => {});
     const routes = auditPairingRoutes(family("/v1/pair/", []));
     const { req, res } = exchange("203.0.113.9");
-    req.url = "/v1/projects/p1/files";
+    req.url = "/v1/files";
 
     expect(routes.handle(req, res)).toBe(false);
     res.emit("finish");
