@@ -849,7 +849,14 @@ export class PtyCoreLinkServer {
 
     ws.on("message", (raw) => {
       conn.lastInboundAt = Date.now();
-      this.onMessage(conn, raw);
+      // Nothing awaits this promise. `onMessage` answers a failed dispatch
+      // itself, but the reply can throw too (a socket that throws on read or
+      // write) — an unhandled rejection that takes the daemon down.
+      this.onMessage(conn, raw).catch((err) => {
+        log.warn("core-link.message.unhandled", {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      });
     });
     ws.on("close", () => {
       this.dropConnection(ws, conn);

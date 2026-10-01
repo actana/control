@@ -78,6 +78,10 @@ export function KeybindingsSettings() {
     cancelRecording();
   };
 
+  // A failed reset changes nothing, and the list keeps showing the bindings the
+  // server still holds — the same keep-current stance as `refresh` in the store.
+  const ignoreFailedReset = () => {};
+
   return (
     <div>
       {conflicts.size > 0 && (
@@ -109,15 +113,15 @@ export function KeybindingsSettings() {
                   setRecordError(null);
                 }}
                 onCaptureError={(msg) => setRecordError(msg)}
-                onSave={saveRecording}
-                onReset={() => onReset(action)}
+                onSave={() => void saveRecording()}
+                onReset={() => void onReset(action).catch(ignoreFailedReset)}
               />
             ))}
           </BindingGroup>
         ))}
       </div>
       <div style={{ marginTop: 16, display: "flex", justifyContent: "flex-end" }}>
-        <Btn variant="ghost" size="sm" icon="refresh" onClick={onResetAll}>
+        <Btn variant="ghost" size="sm" icon="refresh" onClick={() => void onResetAll().catch(ignoreFailedReset)}>
           Reset all to defaults
         </Btn>
       </div>
