@@ -115,7 +115,7 @@ describe("the protocol version moved for this frame", () => {
   });
 
   it("still ignores patch, so a fix that touches no frame grounds no fleet", () => {
-    expect(coreLinkProtocolCompatible("0.17.4")).toBe(true);
+    expect(coreLinkProtocolCompatible("0.18.4")).toBe(true);
   });
 
   it("marks a Core on the previous minor incompatible — an unstamping Core is not a degraded one", () => {
@@ -124,6 +124,10 @@ describe("the protocol version moved for this frame", () => {
     // cursor, and answer a `--wait` with the status the Session was already
     // parked at. The gate is what stops that, one sentence before the send.
     expect(coreLinkProtocolCompatible("0.16.0")).toBe(false);
+  });
+
+  it("marks a 0.17 Core incompatible — it says Task on the wire, and the rename is a hard cut (#556)", () => {
+    expect(coreLinkProtocolCompatible("0.17.0")).toBe(false);
   });
 
   it("announces no `exec` capability on `ready` — the version is the whole signal", () => {
