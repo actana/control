@@ -136,7 +136,7 @@ describe("a reconnected SSE stream reconciles the gap it left (issue 484)", () =
     expect(reconnected).toHaveBeenCalledTimes(1);
   });
 
-  it("re-reads the projects, groups and archived buckets on the way back", async () => {
+  it("re-reads every Core's sessions and archived buckets on the way back", async () => {
     const client = new QueryClient({
       defaultOptions: { queries: { staleTime: 30_000, refetchOnWindowFocus: false } },
     });
@@ -159,11 +159,10 @@ describe("a reconnected SSE stream reconciles the gap it left (issue 484)", () =
     act(() => opened[1]!.onopen?.());
 
     const keys = invalidate.mock.calls.map(([filters]) => filters?.queryKey);
-    // `["projects"]` is a prefix: it reaches the list, every project row and
-    // every session bucket beneath them. The archived buckets sit outside that
-    // tree by design (ADR 0019), so they are named separately.
-    expect(keys).toContainEqual(["projects"]);
-    expect(keys).toContainEqual(["groups"]);
+    // `["cores"]` is a prefix: it reaches every Core's session bucket. The
+    // archived buckets sit outside that tree by design (ADR 0019), so they are
+    // named separately.
+    expect(keys).toContainEqual(["cores"]);
     expect(keys).toContainEqual(["core-archived-sessions"]);
   });
 

@@ -112,7 +112,7 @@ export interface TerminalSurfaceCache {
 
 /**
  * Cap on surfaces kept alive while PARKED (offscreen). Parking never disposed,
- * so navigating across many projects/sessions used to accumulate live xterm
+ * so navigating across many Cores/sessions used to accumulate live xterm
  * instances + PTY subscriptions without bound (only GPU contexts were capped).
  * Beyond this many parked surfaces, the least-recently-parked is destroyed; its
  * session's PTY stays alive in the store, so returning to it just rebuilds the

@@ -5,7 +5,7 @@
  * commit; unthrottled, N builds (`new Terminal()` + `open()` renderer init +
  * font measurement + a WebGL context each) land in one long main-thread session
  * and the route transition can't paint until all of them finish — a
- * multi-second freeze when opening a project whose grid holds many sessions.
+ * multi-second freeze when opening a Core whose grid holds many sessions.
  * Builds instead take turns, and each turn begins after the browser has had a
  * chance to paint (rAF → macrotask), so the page renders immediately and the
  * cells fill in over the next few frames.

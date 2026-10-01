@@ -111,7 +111,7 @@ describe("panel link · one socket for the whole fleet", () => {
     link.watch("core_a");
     link.watch("core_b");
     link.request("core_a", { type: "sessionRowsList" }).catch(() => {});
-    link.request("core_b", { type: "projectsList" }).catch(() => {});
+    link.request("core_b", { type: "archivedSessionRowsList" }).catch(() => {});
 
     expect(FakeSocket.opened).toHaveLength(1);
     link.close();

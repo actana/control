@@ -6,7 +6,6 @@ import { Icon } from "~/components/ui/Icon";
 import { getCorePtyBridge } from "~/lib/panel-bridge";
 import {
   attachTerminalKeyHandler,
-  wireTerminalFileDrop,
 } from "~/lib/terminal-pane-helpers";
 import {
   applyTerminalFontSize,
@@ -43,27 +42,14 @@ import { CLEAR_USER_TERMINAL_EVENT } from "~/lib/design-meta";
 import type { UserTerminal } from "~/db/schema";
 import { normalizePtySize } from "~/shared/pty-size";
 
-// Pattern for the launch-URL detector (port capture group for dev-server URLs).
-const LOOPBACK_URL_BASE = String.raw`\bhttps?:\/\/(?:localhost|127\.0\.0\.1|\[::1\])`;
-const LOOPBACK_URL_TAIL = String.raw`(?:\/[^\s'"<>)\]]*)?`;
-const LOOPBACK_URL_WITH_PORT_GROUP_REGEX = new RegExp(
-  `${LOOPBACK_URL_BASE}(?::(\\d+))?${LOOPBACK_URL_TAIL}`,
-  "g",
-);
-const ANSI_ESCAPE_REGEX = /\x1b\[[0-9;?]*[ -/]*[@-~]/g;
-
 export function UserTerminalPane({
   terminal,
   ptyId,
-  cwd,
   coreId,
-  isHome = false,
-  shellSession = false,
   focused,
   onFocus,
   onPtyReady,
   onPtyExit,
-  onLaunchUrlDetected,
   onHide,
   onDelete,
   onRename,
@@ -71,31 +57,15 @@ export function UserTerminalPane({
 }: {
   terminal: UserTerminal;
   ptyId: string | null;
-  cwd: string;
   /**
    * The Core this shell runs on. Its PTY rides that Core's leg of the panel
    * link; without one there is nowhere to spawn.
    */
   coreId?: string;
-  /**
-   * Project-less "home" (dashboard) terminal. Opens at the host/remote home dir
-   * (resolved by the spawn handler via the `home` flag), so it skips the
-   * project-clone path and the project-cwd transforms.
-   */
-  isHome?: boolean;
-  /**
-   * A VM Shell Session (issue 06) — a free-form interactive shell on the
-   * Core's machine with no project folder. Spawned with `shellSession:
-   * true` (the Core skips project-root validation and starts a login shell
-   * at its own home), rendered with a distinct "VM shell" surface. Gated by
-   * core-link auth, never auto-spawned. Mutually exclusive with `isHome`.
-   */
-  shellSession?: boolean;
   focused: boolean;
   onFocus: () => void;
   onPtyReady: (ptyId: string) => void;
   onPtyExit: () => void;
-  onLaunchUrlDetected?: (url: string) => void;
   onHide: () => void;
   onDelete: () => void;
   onRename: (name: string) => void;
@@ -151,22 +121,18 @@ export function UserTerminalPane({
   useEffect(() => {
     const cache = terminalSurfaceCache;
     const surfaceId = terminal.id;
-    // A change to the spawn inputs — the Core the shell runs on, which kind of
-    // shell it is, its cwd — or to the retry nonce means "build a fresh
-    // terminal"; a plain remount (scope switch, navigation, un-hide) keeps the
-    // same buildKey and reattaches the existing surface instantly.
+    // A change to the spawn inputs — the Core the shell runs on — or to the
+    // retry nonce means "build a fresh terminal"; a plain remount (scope switch,
+    // navigation, un-hide) keeps the same buildKey and reattaches the existing
+    // surface instantly.
     //
-    // Core and kind belong in that key (issue 394). They pick which spawn this
-    // pane makes and which machine it makes it on, so leaving them out let a
-    // pane that first rendered with no Core — or before a restored session's
-    // kind was known — keep the shell that first render started: the wrong one.
+    // The Core belongs in that key (issue 394): it picks which machine this pane
+    // spawns on, so leaving it out let a pane that first rendered with no Core
+    // keep the shell that first render started: the wrong one.
     //
     // The separator is U+0001, written as an escape so the source stays plain
-    // text: a cwd may contain spaces, so a space would leave the key injective
-    // only by luck of the other fields' shapes, while a control character
-    // cannot occur in any of them.
-    const kind = shellSession ? "vm-shell" : isHome ? "home" : "project";
-    const buildKey = [coreId ?? "", kind, cwd, retryNonce].join("\u0001");
+    // text.
+    const buildKey = [coreId ?? "", retryNonce].join("\u0001");
     const container = containerRef.current;
     if (!container) return;
 
@@ -209,7 +175,7 @@ export function UserTerminalPane({
       const detach = bindMount(existing);
       return () => detach();
     }
-    // A stale build (Retry / cwd change) must not reattach the old terminal.
+    // A stale build (Retry / Core change) must not reattach the old terminal.
     if (existing) cache.destroy(surfaceId);
 
     void (async () => {
@@ -283,29 +249,8 @@ export function UserTerminalPane({
         return ptyApi.write(id, data);
       };
 
-      const detachFileDrop = wireTerminalFileDrop({
-        host: el,
-        write: writeToPty,
-        onFocus: () => term.focus(),
-      });
-
       attachTerminalKeyHandler({ term, write: writeToPty });
 
-      const seenLaunchUrls = new Set<string>();
-      const detectLaunchUrl = (data: string) => {
-        if (!onLaunchUrlDetected) return;
-        const cleaned = data.replace(ANSI_ESCAPE_REGEX, "");
-        const matches = cleaned.matchAll(
-          new RegExp(LOOPBACK_URL_WITH_PORT_GROUP_REGEX.source, "g"),
-        );
-        for (const match of matches) {
-          const url = match[0]!;
-          if (seenLaunchUrls.has(url)) continue;
-          seenLaunchUrls.add(url);
-          onLaunchUrlDetected(url);
-          return;
-        }
-      };
       const handleExit = (exitCode?: number) => {
         setActivePty(null);
         term.writeln("");
@@ -354,7 +299,6 @@ export function UserTerminalPane({
                 return;
               }
               term.write(msg.data);
-              detectLaunchUrl(msg.data);
             },
             exit: (msg) => {
               if (replayingPtyId === id) {
@@ -397,11 +341,9 @@ export function UserTerminalPane({
 
         if (replay.data) {
           term.write(replay.data);
-          detectLaunchUrl(replay.data);
         }
         for (const chunk of dataAfterReplay(duringReplayData, replay)) {
           term.write(chunk);
-          detectLaunchUrl(chunk);
         }
         duringReplayData = [];
 
@@ -424,57 +366,22 @@ export function UserTerminalPane({
             return;
           }
 
-          if (shellSession) {
-            // A VM Shell Session lives on the Core's machine itself and has no
-            // project folder. The Core skips project-root validation
-            // (`shellSession: true`) and starts a login shell at its own home;
-            // the browser sends no cwd/command path.
-            if (!ptyApi) return;
-            const ptySize = normalizePtySize({ cols: term.cols, rows: term.rows });
-            const { ptyId: newId } = await ptyApi.spawn({
-              sessionId: terminal.id,
-              // No command: the Core starts an interactive login shell, rc
-              // files and all. The launch/ephemeral `startCommand` hint that
-              // used to be threaded through here went with the project-root
-              // terminal (issue 266).
-              command: "",
-              cols: ptySize.cols,
-              rows: ptySize.rows,
-              shellSession: true,
-            });
-            if (surface.destroyed) {
-              await ptyApi.kill(newId).catch(() => undefined);
-              return;
-            }
-            onPtyReady(newId);
-            wirePty(newId);
-            for (const chunk of ptyRouter?.takePendingData(newId) ?? []) {
-              term.write(chunk.data);
-              detectLaunchUrl(chunk.data);
-            }
-            const earlyExit = ptyRouter?.takePendingExit(newId);
-            if (earlyExit) handleExit(earlyExit.exitCode);
-            return;
-          }
-
+          // A VM Shell Session lives on the Core's machine itself: the Core
+          // starts a login shell as `core` in its own home folder
+          // (`shellSession: true`), and the browser sends no cwd/command path.
           if (!ptyApi) return;
           const ptySize = normalizePtySize({ cols: term.cols, rows: term.rows });
           const { ptyId: newId } = await ptyApi.spawn({
             sessionId: terminal.id,
-            // Home terminals open at the Core's home dir (resolved by the
-            // Core from the `home` flag); the browser supplies no path.
-            cwd: isHome ? "" : cwd,
+            // No command: the Core starts an interactive login shell, rc
+            // files and all.
             command: "",
             cols: ptySize.cols,
             rows: ptySize.rows,
-            // User-shell terminal: opts into the shell branch, so the Core
-            // starts a login shell rather than an allow-listed direct-argv
-            // spawn. Harness terminals (TerminalPane.tsx) leave this unset.
-            shell: true,
-            home: isHome || undefined,
+            shellSession: true,
           });
           if (surface.destroyed) {
-            if (ptyApi) await ptyApi.kill(newId).catch(() => undefined);
+            await ptyApi.kill(newId).catch(() => undefined);
             return;
           }
           onPtyReady(newId);
@@ -483,7 +390,6 @@ export function UserTerminalPane({
           // the first paint isn't missing the shell's opening bytes.
           for (const chunk of ptyRouter?.takePendingData(newId) ?? []) {
             term.write(chunk.data);
-            detectLaunchUrl(chunk.data);
           }
           const earlyExit = ptyRouter?.takePendingExit(newId);
           if (earlyExit) handleExit(earlyExit.exitCode);
@@ -499,7 +405,6 @@ export function UserTerminalPane({
         cancelAnimationFrame(rafHandle);
         settledPtyResize.cancel();
         el.removeEventListener("focusin", onFocusIn);
-        detachFileDrop();
         detachLinks();
         stopWatchingColorScheme();
         for (const off of subscriptions) off();
@@ -523,7 +428,7 @@ export function UserTerminalPane({
       cancelled = true;
       detachMount?.();
     };
-  }, [terminal.id, coreId, isHome, shellSession, cwd, retryNonce]);
+  }, [terminal.id, coreId, retryNonce]);
 
   // Bring focus to the xterm when this pane becomes focused via cycling or
   // after a sibling pane is closed. Defer to the next frame so the focus call
@@ -629,25 +534,23 @@ export function UserTerminalPane({
             {terminal.name}
           </span>
         )}
-        {shellSession && (
-          <span
-            title="VM Shell Session — a free-form shell on this Core's machine (the SSH-equivalent escape hatch). Gated by core-link auth; not a project workspace."
-            style={{
-              padding: "1px 7px",
-              borderRadius: 999,
-              fontFamily: "var(--mono)",
-              fontSize: 10,
-              color: "var(--accent)",
-              background: "var(--accent-faint, var(--accent-dim))",
-              border: "1px solid var(--accent-border)",
-              whiteSpace: "nowrap",
-              opacity: 0.85,
-              marginLeft: 6,
-            }}
-          >
-            VM shell
-          </span>
-        )}
+        <span
+          title="VM Shell Session — a free-form shell on this Core's machine (the SSH-equivalent escape hatch). Gated by core-link auth."
+          style={{
+            padding: "1px 7px",
+            borderRadius: 999,
+            fontFamily: "var(--mono)",
+            fontSize: 10,
+            color: "var(--accent)",
+            background: "var(--accent-faint, var(--accent-dim))",
+            border: "1px solid var(--accent-border)",
+            whiteSpace: "nowrap",
+            opacity: 0.85,
+            marginLeft: 6,
+          }}
+        >
+          VM shell
+        </span>
         <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
           <TerminalZoomControls
             level={zoomLevel}

@@ -35,7 +35,7 @@ export function FleetView() {
     },
     [router],
   );
-  // A Session opens in that Core's workspace (issue 560) — no /projects/$id.
+  // A Session opens in that Core's workspace (issue 560).
   const openSession = useCallback(
     (coreId: string, sessionId: string) => {
       requestSessionOpen(coreId, sessionId);

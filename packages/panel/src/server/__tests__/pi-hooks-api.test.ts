@@ -8,10 +8,9 @@ process.env.AC_USER_DATA_DIR = tmpRoot;
 
 const { handleApiRequest } = await import("../api-router");
 const { getOrCreateApiToken } = await import("../services/settings");
-const { createProject } = await import("../services/projects");
 const { createSession, getSession } = await import("../services/sessions");
 const { getDb } = await import("~/db/client");
-const { projects, sessions, groups, appSettings } = await import("~/db/schema");
+const { sessions, appSettings } = await import("~/db/schema");
 
 const LOOPBACK_HEADERS = { origin: "http://127.0.0.1:5173" };
 /** Shape Pi's extension posts from ctx.sessionManager.getSessionId(). */
@@ -34,14 +33,9 @@ describe("Pi hook API (ADO #4986)", () => {
   beforeEach(() => {
     const db = getDb();
     db.delete(sessions).run();
-    db.delete(projects).run();
-    db.delete(groups).run();
-    db.delete(appSettings).run();
+        db.delete(appSettings).run();
 
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mc-pi-hooks-proj-"));
-    const project = createProject({ name: "pi-hooks", path: dir });
     const session = createSession({
-      projectId: project.id,
       title: "Waiting for initial prompt...",
       agent: "pi",
       claudeSessionId: null,

@@ -17,64 +17,22 @@ describe("dedupKey", () => {
     expect(a).not.toBe(b);
   });
 
-  it("collapses a Panel-local SSE finish (null eventId) against itself", () => {
-    const a = dedupKey({ coreId: null, sessionId: "s1", eventId: null });
-    const b = dedupKey({ coreId: null, sessionId: "s1", eventId: null });
+  it("collapses a finish with no eventId against itself", () => {
+    const a = dedupKey({ coreId: "core-a", sessionId: "s1", eventId: null });
+    const b = dedupKey({ coreId: "core-a", sessionId: "s1", eventId: null });
     expect(a).toBe(b);
   });
-});
 
-describe("normalizeSessionFinishedEvent — SSE", () => {
-  it("maps a Panel-local SSE event to a NormalizedFinish", () => {
-    const finish = normalizeSessionFinishedEvent("sse", {
-      type: "session:finished",
-      id: "session-1",
-      projectId: "project-1",
-      projectName: "Core",
-      sessionTitle: "Answer question",
-    });
-    expect(finish).toEqual({
-      coreId: null,
-      coreAlias: null,
-      eventId: null,
-      // The Panel's own stream is live by construction: no older time to carry,
-      // so the dispatch stamps it with the clock that is right for it.
-      finishedAt: null,
-      sessionId: "session-1",
-      projectId: "project-1",
-      projectName: "Core",
-      sessionTitle: "Answer question",
-    });
-  });
-
-  it("returns null for non-session:finished SSE events", () => {
-    expect(
-      normalizeSessionFinishedEvent("sse", { type: "session:updated", id: "x" }),
-    ).toBeNull();
-  });
-
-  it("returns null when required fields are missing", () => {
-    expect(
-      normalizeSessionFinishedEvent("sse", {
-        type: "session:finished",
-        id: "",
-        projectId: "p",
-      }),
-    ).toBeNull();
-    expect(
-      normalizeSessionFinishedEvent("sse", {
-        type: "session:finished",
-        id: "t",
-        projectId: "",
-      }),
-    ).toBeNull();
+  it("tells a finish with no eventId from a numbered one", () => {
+    const a = dedupKey({ coreId: "core-a", sessionId: "s1", eventId: null });
+    const b = dedupKey({ coreId: "core-a", sessionId: "s1", eventId: 5 });
+    expect(a).not.toBe(b);
   });
 });
 
-describe("normalizeSessionFinishedEvent — fleet", () => {
+describe("normalizeSessionFinishedEvent", () => {
   it("parses a remote session:finished frame into NormalizedFinish with alias", () => {
     const finish = normalizeSessionFinishedEvent(
-      "fleet",
       {
         coreId: "core-a",
         event: {
@@ -85,8 +43,6 @@ describe("normalizeSessionFinishedEvent — fleet", () => {
           sessionId: "session-42",
           payload: JSON.stringify({
             id: "session-42",
-            projectId: "project-9",
-            projectName: "Remote",
             sessionTitle: "Ship it",
           }),
         },
@@ -101,15 +57,12 @@ describe("normalizeSessionFinishedEvent — fleet", () => {
       // finished rather than by when a tab was handed it (issue 388).
       finishedAt: 1_700_000_000_000,
       sessionId: "session-42",
-      projectId: "project-9",
-      projectName: "Remote",
       sessionTitle: "Ship it",
     });
   });
 
   it("falls back to event.sessionId when payload lacks id", () => {
     const finish = normalizeSessionFinishedEvent(
-      "fleet",
       {
         coreId: "core-a",
         event: {
@@ -118,7 +71,7 @@ describe("normalizeSessionFinishedEvent — fleet", () => {
           kind: "session:finished",
           ptyId: null,
           sessionId: "session-fallback",
-          payload: JSON.stringify({ projectId: "p" }),
+          payload: JSON.stringify({ sessionTitle: "t" }),
         },
       },
       null,
@@ -128,7 +81,7 @@ describe("normalizeSessionFinishedEvent — fleet", () => {
   });
 
   it("returns null when payload JSON is malformed", () => {
-    const finish = normalizeSessionFinishedEvent("fleet", {
+    const finish = normalizeSessionFinishedEvent({
       coreId: "core-a",
       event: {
         eventId: 1,
@@ -143,7 +96,7 @@ describe("normalizeSessionFinishedEvent — fleet", () => {
   });
 
   it("returns null when kind is not session:finished", () => {
-    const finish = normalizeSessionFinishedEvent("fleet", {
+    const finish = normalizeSessionFinishedEvent({
       coreId: "core-a",
       event: {
         eventId: 1,

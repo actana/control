@@ -10,13 +10,12 @@ import { isUserTerminalXtermFocused } from "~/lib/terminal-pane-helpers";
 import { mutateSessionForCore } from "~/lib/mutate-session-for-core";
 import { useTerminals } from "~/lib/terminal-store";
 import { useUserTerminals } from "~/lib/user-terminal-store";
-import { queryKeys, sessionsCacheKey } from "~/queries";
+import { sessionsCacheKey } from "~/queries";
 import { TerminalPane, type TerminalDescriptor } from "./TerminalPane";
-import type { Project, Session } from "~/db/schema";
-import { scopeKeyForProject } from "~/lib/scoped-project";
+import type { Session } from "~/db/schema";
+import { coreScopeKey } from "~/lib/core-scope";
 
 export type OpenTerminal = TerminalDescriptor & {
-  project: Project;
   session: Session;
 };
 
@@ -45,9 +44,9 @@ export function TerminalPanel({
   const [deleting, setDeleting] = useState(false);
   const [archiving, setArchiving] = useState(false);
   const archivingRef = useRef(false);
-  const activeScopeKey = active ? scopeKeyForProject(active.project) : null;
+  const activeScopeKey = active ? coreScopeKey(active.coreId) : null;
 
-  // Archive the open session via the project page handler so repointing,
+  // Archive the open session via the Core workspace handler so repointing,
   // optimistic cache updates, and PTY teardown stay in one place.
   const archiveActive = useCallback(() => {
     if (!active || archivingRef.current) return;
@@ -65,9 +64,7 @@ export function TerminalPanel({
 
   const currentActiveSession = useCallback((): Session | null => {
     if (!active) return null;
-    const sessions = queryClient.getQueryData<Session[]>(
-      sessionsCacheKey(active.project.id, active.coreId),
-    );
+    const sessions = queryClient.getQueryData<Session[]>(sessionsCacheKey(active.coreId));
     return sessions?.find((session) => session.id === active.sessionId) ?? active.session;
   }, [active, queryClient]);
 
@@ -81,23 +78,14 @@ export function TerminalPanel({
     }
     setDeleting(true);
     try {
-      // Tear the terminal down first, then delete — not both at once, the way
-      // this ran while the delete could only 404 for a Core-owned row. Both
-      // halves now land on the same Core, and the row's delete cascades the
+      // Tear the terminal down first, then delete — not both at once: both
+      // halves land on the same Core, and the row's delete cascades the
       // terminal_logs a still-running PTY is writing to.
       await onClose(active.sessionId);
       // The row lives in the owning Core's database (ADR 0004/0005), so the
-      // delete rides the panel link to that Core — the Panel's own endpoint
-      // has no such row and would 404. `active.coreId` is null for a
-      // Panel-owned row, which routes back to that endpoint.
+      // delete rides the panel link to that Core.
       await mutateSessionForCore(active.coreId, { op: "delete", sessionId: active.sessionId });
-      await Promise.all([
-        queryClient.invalidateQueries({
-          queryKey: sessionsCacheKey(active.project.id, active.coreId),
-        }),
-        queryClient.invalidateQueries({ queryKey: queryKeys.project(active.project.id) }),
-        queryClient.invalidateQueries({ queryKey: queryKeys.projects }),
-      ]);
+      await queryClient.invalidateQueries({ queryKey: sessionsCacheKey(active.coreId) });
     } finally {
       setDeleting(false);
       setConfirmDelete(false);
@@ -176,7 +164,7 @@ export function TerminalPanel({
     axis: "x",
     defaultSize: 560,
     minSize: MIN_WIDTH,
-    // Reserve room for the Cores rail (64px, with the former 96px margin kept) plus the project view's 640px
+    // Reserve room for the Cores rail (64px, with the former 96px margin kept) plus the Core workspace's 640px
     // left-panel floor so dragging the terminal wider shrinks itself rather
     // than clipping/wrapping the session columns.
     maxSize: (vw) => vw - 736,
@@ -195,7 +183,7 @@ export function TerminalPanel({
         minWidth: expanded ? 0 : MIN_WIDTH,
         // Hard cap relative to the actual flex-row width (not window.innerWidth)
         // so the panel can never paint past the right edge: 96px rail margin +
-        // the project view's 640px left-panel floor = 736px reserved.
+        // the Core workspace's 640px left-panel floor = 736px reserved.
         maxWidth: expanded ? undefined : "calc(100% - 736px)",
         display: "flex",
         flexDirection: "column",
@@ -221,7 +209,6 @@ export function TerminalPanel({
       <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
         <TerminalPane
           key={`${active.sessionId}:${activeScopeKey ?? ""}`}
-          project={active.project}
           session={active.session}
           descriptor={active}
           isLast

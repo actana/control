@@ -19,12 +19,10 @@ import {
   buildHarnessLaunchCommand,
   newSessionId,
 } from "./harness-command";
-import { api, ApiError } from "./api";
 import type { Harness } from "@actana/shared/domain";
 import type { Session } from "~/db/schema";
-import type { CoreLinkProjectSnapshot, CoreLinkSessionRow } from "@actana/shared/sdk-link-frames";
-import { projectScopeKey, scopeKeyForProject, type ScopedProject } from "./scoped-project";
-import { projectSettingsFromSnapshot } from "~/shared/projects";
+import type { CoreLinkSessionRow } from "@actana/shared/sdk-link-frames";
+import { coreScopeKey } from "./core-scope";
 import { getDefaultModelForHarness } from "./default-model-store";
 import { peekPendingSessionModel } from "./session-model-overrides";
 
@@ -43,77 +41,53 @@ export type OpenTerminal = {
   ptyId: string | null;
   startCommand: string;
   dangerouslySkipPermissions: boolean;
-  cwd: string;
-  project: ScopedProject;
   session: Session;
   /** PTY spawn waits until the session row exists on the server. */
   awaitingCreate?: boolean;
   /** Restored from localStorage; PTY spawn waits until the session is revalidated
    *  against the server. Dead/archived sessions are dropped instead of respawning,
-   *  and live ones get a fresh snapshot + rebuilt start command. */
+   *  and live ones get a fresh snapshot. */
   pendingValidation?: boolean;
   /** The Core that owns this session. Its PTY and its session row both live on
-   *  that Core's Core, so spawn/write/resize/kill/replay and revalidation
-   *  all ride the panel link to it. Null only for a Panel-local row. */
-  coreId?: string | null;
+   *  that Core, so spawn/write/resize/kill/replay and revalidation all ride the
+   *  panel link to it. A Session belongs to a Core and nothing narrower (ADR 0041 D1),
+   *  and a Core starts every Session in its home folder, so there is no cwd. */
+  coreId: string;
 };
 
 type Ctx = {
   /** All live sessions (PTYs alive in background). */
   sessions: OpenTerminal[];
-  /** The session currently displayed in the panel for `projectId`, if any. */
-  activeFor: (projectId: string) => OpenTerminal | null;
-  /** The active sessionId persisted for `projectId` (null = explicitly closed). */
-  activeSessionIdFor: (projectId: string) => string | null;
+  /** The session currently displayed in the panel for `coreId`, if any. */
+  activeFor: (coreId: string) => OpenTerminal | null;
+  /** The active sessionId persisted for `coreId` (null = explicitly closed). */
+  activeSessionIdFor: (coreId: string) => string | null;
   /**
-   * Select `session` in `project`'s scope. Navigation, not a toggle: the requested
+   * Select `session` in `coreId`'s scope. Navigation, not a toggle: the requested
    * session always ends up active, so calling this for the already-active session
-   * keeps it selected rather than hiding the panel. See `nextActiveByProject`.
+   * keeps it selected rather than hiding the panel. See `nextActiveByCore`.
    *
-   * The name is a misnomer kept on purpose — renaming it would touch
-   * `projects.$id.tsx`, which parallel tickets own. Read it as "select". To
-   * hide the panel, call `deselect`; nothing here will do it for you.
+   * The name is a misnomer kept on purpose — read it as "select". To hide the
+   * panel, call `deselect`; nothing here will do it for you.
    */
-  toggle: (
-    project: ScopedProject,
-    session: Session,
-    opts?: { awaitCreate?: boolean; coreId?: string | null },
-  ) => void;
+  toggle: (coreId: string, session: Session, opts?: { awaitCreate?: boolean }) => void;
   /** Select a session and optionally attach an already-running PTY (warm pool claim). */
-  openSession: (
-    project: ScopedProject,
-    session: Session,
-    opts?: { ptyId?: string | null; coreId?: string | null },
-  ) => void;
-  /**
-   * Open a session on a remote Core (issue 07). Synthesizes the `ScopedProject`
-   * and `Session` shapes the store/pane wiring is typed on from the two Core-link
-   * snapshots, tags the session with `coreId` so `TerminalPane` routes spawn/
-   * write/resize/kill through `getCorePtyBridge` instead of the local pty, and
-   * uses the Core's own project `path` as `cwd` (a VM path, not a Panel path).
-   */
-  openRemoteSession: (
-    coreId: string,
-    project: CoreLinkProjectSnapshot,
-    session: CoreLinkSessionRow,
-  ) => void;
-  /** Deselect the active card for `projectId` and hide the panel without killing the PTY. */
-  deselect: (projectId: string) => void;
+  openSession: (coreId: string, session: Session, opts?: { ptyId?: string | null }) => void;
+  /** Deselect the active card for `coreId` and hide the panel without killing the PTY. */
+  deselect: (coreId: string) => void;
   /** Mark an already-open session as the active one for its scope, without
    *  materializing or mutating the session. Focus mode uses it so switching the
    *  focused tab also moves the scope's active selection — exiting then restores
    *  the default view onto the session that was on screen while floating. */
-  setActiveSession: (project: ScopedProject, sessionId: string) => void;
-  /** Tell root-level panel lookup which scope is currently visible for a project. */
-  setVisibleScope: (projectId: string, scopeKey: string | null) => void;
+  setActiveSession: (coreId: string, sessionId: string) => void;
   /** Materialize a session entry from a persisted sessionId after reload, if not already present. */
-  rehydrate: (project: ScopedProject, session: Session, opts?: { coreId?: string | null }) => void;
+  rehydrate: (coreId: string, session: Session) => void;
   /** Permanently close one session and kill its PTY. */
   close: (sessionId: string, opts?: { activateSessionId?: string | null }) => Promise<void>;
   /** Swap a provisional session id (optimistic create) for the persisted session. */
   adoptSessionId: (fromSessionId: string, session: Session) => void;
-  /** Permanently close every session for a project (kills PTYs). */
-  closeForProject: (projectId: string) => Promise<void>;
+  /** Permanently close every session for a Core (kills PTYs). */
+  closeForCore: (coreId: string) => Promise<void>;
   setPtyId: (sessionId: string, ptyId: string | null, scopeKey?: string) => void;
   syncSession: (session: Session) => void;
   startCommandFor: (agent: Harness) => string;
@@ -123,9 +97,8 @@ type Ctx = {
   gridView: boolean;
   /**
    * Set the grid view. It is one global preference, persisted across reloads —
-   * so `persist: false` is for callers applying a *contextual* layout (a
-   * project's own default grid view, issue 22) that must not overwrite what the
-   * operator last chose for every other project.
+   * so `persist: false` is for callers applying a *contextual* layout that must
+   * not overwrite what the operator last chose for every other Core.
    */
   setGridView: (value: boolean, opts?: { persist?: boolean }) => void;
   /** Flip the grid view on/off. */
@@ -142,7 +115,7 @@ type Ctx = {
   focusGridSession: (sessionId: string, opts?: { flash?: boolean }) => void;
   /** Claim a spotlight request for handling. True exactly once per nonce: the
    *  request state lingers after the grid's focus effect runs, and the grid
-   *  remounts across project switches, so without this a stale request would
+   *  remounts across Core switches, so without this a stale request would
    *  replay on mount and un-hide the session it targeted. */
   consumeGridFocusRequest: (nonce: number) => boolean;
   /** Ask the grid to drop the next newly-created session directly after this
@@ -192,7 +165,7 @@ const TerminalDataContext = createContext<TerminalData | null>(null);
 type TerminalStoreBridge = {
   subscribe: (cb: () => void) => () => void;
   getGridViewSnapshot: () => boolean;
-  getHasActiveSessionSnapshot: (projectId: string | null) => boolean;
+  getHasActiveSessionSnapshot: (coreId: string | null) => boolean;
 };
 const TerminalStoreBridgeContext = createContext<TerminalStoreBridge | null>(null);
 
@@ -229,55 +202,22 @@ export function commandForSession(session: Session): string {
 }
 
 /**
- * Synthesize a Session-shaped row from a remote-Core {@link CoreLinkSessionRow}.
+ * Synthesize a Session-shaped row from a {@link CoreLinkSessionRow}.
  * The Panel's terminal store, TerminalPane, and grid views are all typed on
  * the Panel DB's `Session` shape, but a Core's session only travels the wire as a
  * thin snapshot (`sessionId, title, agent, status, pinned, archived, updatedAt`).
  * The missing fields take the Panel DB's defaults; when we have a prior
  * snapshot from the persisted session (`prior`), its fields (claudeSessionId,
  * ...) are preferred so continuity across a Panel reload doesn't reset the
- * agent's session id. Remote sessions carry `coreId` on the OpenTerminal, not on
- * the Session itself.
+ * agent's session id. The owning Core rides on the OpenTerminal, not on the
+ * Session itself.
  */
-/**
- * Synthesize a {@link ScopedProject} from a remote-Core project snapshot. The
- * store, panel, and grid are typed on the Panel DB's `Project` shape, so
- * remote-Core opens need a compatible object; missing columns default to the
- * the Panel DB's defaults. The `id` uses the Core-side projectId directly — the
- * Panel doesn't persist a separate id per remote project, and scope keys are
- * derived from it. `path` is the Core's VM path (used as the pty `cwd`).
- */
-function remoteScopedProjectFromSnapshot(
-  _coreId: string,
-  snap: CoreLinkProjectSnapshot,
-): ScopedProject {
-  const now = snap.updatedAt;
-  return {
-    id: snap.projectId,
-    name: snap.name,
-    path: snap.path,
-    icon: snap.icon,
-    iconColor: snap.iconColor,
-    imagePath: null,
-    groupId: null,
-    pinned: snap.pinned,
-    pinnedOrder: null,
-    launchUrl: null,
-    // Remembered session settings are Core facts on the project row (issue 22),
-    // so they come off the snapshot rather than defaulting to empty.
-    ...projectSettingsFromSnapshot(snap),
-    createdAt: now,
-    updatedAt: now,
-  };
-}
-
 function remoteSessionFromSnapshot(
   snapshot: CoreLinkSessionRow,
   prior?: Session,
 ): Session {
   const base: Session = prior ?? {
     id: snapshot.sessionId,
-    projectId: snapshot.projectId,
     title: snapshot.title,
     titleManuallySet: false,
     icon: snapshot.icon,
@@ -321,14 +261,10 @@ function baseCommandForSession(session: Session, model: string | null): string {
   // relaunch would never reach `pi --session <uuid>` (ADO #4986).
   if (!sessionId && session.agent !== "codex" && session.agent !== "opencode" && session.agent !== "pi") {
     sessionId = newSessionId();
-    // The row for a Core's session lives on that Core, so the Panel's own
-    // PATCH would 404. `sessionsMutate` doesn't carry claudeSessionId today
-    // (protocol gap) — the minted id still gets baked into the launch
-    // command below, so the current spawn resumes with it; only cross-Panel-
-    // restart persistence is missing.
-    if (!isRemoteSession(session.id)) {
-      void api.updateSession(session.id, { claudeSessionId: sessionId }).catch(() => undefined);
-    }
+    // The row for a Core's session lives on that Core, and the Panel has no
+    // write for this id: the minted id still gets baked into the launch command
+    // below, so the current spawn resumes with it; only cross-Panel-restart
+    // persistence is missing.
   }
 
   const mode = harnessLaunchMode({ ...session, claudeSessionId: sessionId });
@@ -343,7 +279,7 @@ function baseCommandForSession(session: Session, model: string | null): string {
   return buildHarnessLaunchCommand(session, sessionId, mode, { model });
 }
 
-const ACTIVE_BY_PROJECT_KEY = "mc.terminalActiveByProject";
+const ACTIVE_BY_CORE_KEY = "mc.terminalActiveByCore";
 const GRID_VIEW_KEY = "mc.gridView";
 const OPEN_SESSIONS_KEY = "mc.terminalOpenSessions";
 /** Sessions change on hot paths (session sync per server event, per-pane ptyId
@@ -359,33 +295,13 @@ function loadGridView(): boolean {
   }
 }
 
-// Sessions whose row lives on a Core rather than in the Panel's own DB. Populated
-// by `toggle` / `openSession` when they tag an OpenTerminal with a coreId, and
-// read by `baseCommandForSession` so it can skip the Panel-local
-// `PATCH /api/sessions/:id` that would 404 for a Core-owned row. Stays a
-// module-level Set (not React state) because `commandForSession` is a top-level
-// export called from paths without access to the store's hooks.
-const remoteSessionIds = new Set<string>();
-
-function markSessionRemote(sessionId: string, coreId: string | null | undefined): void {
-  if (coreId) remoteSessionIds.add(sessionId);
-}
-
-function unmarkSessionRemote(sessionId: string): void {
-  remoteSessionIds.delete(sessionId);
-}
-
-function isRemoteSession(sessionId: string): boolean {
-  return remoteSessionIds.has(sessionId);
-}
-
 /**
  * The scope-to-active-session map after a request to select `requestedSessionId`.
  *
  * Selecting a session — a pin in the sidebar, a card in the list — is
  * navigation, not a toggle: the requested session always ends up active. A repeat
  * request for the already-active session keeps it selected, and a rapid
- * A -> B -> A burst lands on A. Returns `activeByProject` unchanged when the
+ * A -> B -> A burst lands on A. Returns `activeByCore` unchanged when the
  * request is a no-op, so callers can hand the result straight to `setState`
  * without forcing a re-render; the caller's own focus request still fires.
  *
@@ -398,18 +314,18 @@ function isRemoteSession(sessionId: string): boolean {
  *
  * Clearing a scope is a separate gesture with its own writers: `deselect`
  * (the pane's hide affordance, the `terminal.close` hotkey, and the
- * delete/archive-with-no-replacement paths), `close` and `closeForProject`.
- * Nothing on a selection path may clear. `projects.$id.tsx` documents the same
- * rule for card clicks.
+ * delete/archive-with-no-replacement paths), `close` and `closeForCore`.
+ * Nothing on a selection path may clear. The Core workspace route documents the
+ * same rule for card clicks.
  */
-export function nextActiveByProject(
-  activeByProject: Record<string, string | null>,
+export function nextActiveByCore(
+  activeByCore: Record<string, string | null>,
   scopeKey: string,
   requestedSessionId: string
 ): Record<string, string | null> {
-  return activeByProject[scopeKey] === requestedSessionId
-    ? activeByProject
-    : { ...activeByProject, [scopeKey]: requestedSessionId };
+  return activeByCore[scopeKey] === requestedSessionId
+    ? activeByCore
+    : { ...activeByCore, [scopeKey]: requestedSessionId };
 }
 
 /** Grace period before an un-selected archived session's PTY is reaped. */
@@ -426,22 +342,22 @@ export const ARCHIVED_SESSION_REAP_DELAY_MS = 60_000;
  */
 export function archivedSessionsEligibleForReap(
   sessions: OpenTerminal[],
-  activeByProject: Record<string, string | null>,
+  activeByCore: Record<string, string | null>,
 ): string[] {
   const eligible: string[] = [];
   for (const session of sessions) {
     if (!session.session.archived) continue;
-    const scopeKey = scopeKeyForProject(session.project);
-    if ((activeByProject[scopeKey] ?? null) === session.sessionId) continue;
+    const scopeKey = coreScopeKey(session.coreId);
+    if ((activeByCore[scopeKey] ?? null) === session.sessionId) continue;
     eligible.push(session.sessionId);
   }
   return eligible;
 }
 
-function loadActiveByProject(): Record<string, string | null> {
+function loadActiveByCore(): Record<string, string | null> {
   if (typeof window === "undefined") return {};
   try {
-    const raw = window.localStorage.getItem(ACTIVE_BY_PROJECT_KEY);
+    const raw = window.localStorage.getItem(ACTIVE_BY_CORE_KEY);
     return raw ? (JSON.parse(raw) as Record<string, string | null>) : {};
   } catch {
     return {};
@@ -453,7 +369,7 @@ function loadActiveByProject(): Record<string, string | null> {
  *  renders every open session at once. */
 type PersistedSession = Pick<
   OpenTerminal,
-  "sessionId" | "startCommand" | "dangerouslySkipPermissions" | "cwd" | "project" | "session" | "coreId"
+  "sessionId" | "startCommand" | "dangerouslySkipPermissions" | "session" | "coreId"
 >;
 
 function serializeSessions(sessions: OpenTerminal[]): PersistedSession[] {
@@ -465,10 +381,8 @@ function serializeSessions(sessions: OpenTerminal[]): PersistedSession[] {
       sessionId: s.sessionId,
       startCommand: s.startCommand,
       dangerouslySkipPermissions: s.dangerouslySkipPermissions,
-      cwd: s.cwd,
-      project: s.project,
       session: s.session,
-      coreId: s.coreId ?? null,
+      coreId: s.coreId,
     }));
 }
 
@@ -482,7 +396,14 @@ function loadPersistedSessions(): OpenTerminal[] {
     const seen = new Set<string>();
     const restored: OpenTerminal[] = [];
     for (const entry of parsed as PersistedSession[]) {
-      if (!entry || typeof entry.sessionId !== "string" || !entry.project || !entry.session) continue;
+      if (
+        !entry ||
+        typeof entry.sessionId !== "string" ||
+        typeof entry.coreId !== "string" ||
+        !entry.session
+      ) {
+        continue;
+      }
       // Dedupe by session id alone (not scope key): the same id under two scope
       // keys is the same underlying agent session. Restoring both would resume
       // one pinned session id twice and the second spawn dies with
@@ -495,10 +416,8 @@ function loadPersistedSessions(): OpenTerminal[] {
         ptyId: null,
         startCommand: entry.startCommand,
         dangerouslySkipPermissions: entry.dangerouslySkipPermissions,
-        cwd: entry.cwd,
-        project: entry.project,
         session: entry.session,
-        coreId: entry.coreId ?? null,
+        coreId: entry.coreId,
         // Gate the pane's PTY spawn until the snapshot is revalidated against
         // the server (see the validation effect in TerminalProvider).
         pendingValidation: true,
@@ -510,49 +429,27 @@ function loadPersistedSessions(): OpenTerminal[] {
   }
 }
 
-export function resolveActiveSessionIdForProject(
-  activeByProject: Record<string, string | null>,
-  projectId: string,
-  visibleScopeByProject: Record<string, string | null> = {},
-): { scopeKey: string | null; sessionId: string | null } {
-  if (projectId.includes(":")) {
-    return { scopeKey: projectId, sessionId: activeByProject[projectId] ?? null };
-  }
-
-  const visibleScopeKey = visibleScopeByProject[projectId] ?? null;
-  if (visibleScopeKey) {
-    return { scopeKey: visibleScopeKey, sessionId: activeByProject[visibleScopeKey] ?? null };
-  }
-
-  const mainScopeKey = projectScopeKey(projectId);
-  const mainSessionId = activeByProject[mainScopeKey] ?? activeByProject[projectId] ?? null;
-  if (mainSessionId) return { scopeKey: mainScopeKey, sessionId: mainSessionId };
-
-  for (const [key, sessionId] of Object.entries(activeByProject)) {
-    if (sessionId && key.startsWith(`${projectId}:`)) {
-      return { scopeKey: key, sessionId };
-    }
-  }
-
-  return { scopeKey: null, sessionId: null };
+export function resolveActiveSessionIdForCore(
+  activeByCore: Record<string, string | null>,
+  coreId: string,
+): { scopeKey: string; sessionId: string | null } {
+  const scopeKey = coreScopeKey(coreId);
+  return { scopeKey, sessionId: activeByCore[scopeKey] ?? null };
 }
 
 export function TerminalProvider({ children }: { children: ReactNode }) {
   const [sessions, setSessions] = useState<OpenTerminal[]>(loadPersistedSessions);
-  const [activeByProject, setActiveByProject] = useState<Record<string, string | null>>(
-    loadActiveByProject
+  const [activeByCore, setActiveByCore] = useState<Record<string, string | null>>(
+    loadActiveByCore
   );
-  const [visibleScopeByProject, setVisibleScopeByProject] = useState<Record<string, string>>({});
   const [gridView, setGridViewState] = useState<boolean>(loadGridView);
   // Read via a ref so `toggleGridView` keeps a stable identity (it lives in the
   // stable actions context) instead of re-creating on every gridView flip.
   const gridViewRef = useRef(gridView);
   gridViewRef.current = gridView;
   // Mirrors for the narrow-subscription bridge below (getSnapshot reads these).
-  const activeByProjectRef = useRef(activeByProject);
-  activeByProjectRef.current = activeByProject;
-  const visibleScopeByProjectRef = useRef(visibleScopeByProject);
-  visibleScopeByProjectRef.current = visibleScopeByProject;
+  const activeByCoreRef = useRef(activeByCore);
+  activeByCoreRef.current = activeByCore;
 
   const setGridView = useCallback((value: boolean, opts?: { persist?: boolean }) => {
     setGridViewState(value);
@@ -578,7 +475,7 @@ export function TerminalProvider({ children }: { children: ReactNode }) {
     setGridFocusRequest({ sessionId, nonce: gridFocusNonceRef.current, flash: opts?.flash });
   }, []);
   // Highest nonce the grid has handled. Kept here (not in the grid) so it
-  // survives the grid unmounting/remounting across project switches — a ref,
+  // survives the grid unmounting/remounting across Core switches — a ref,
   // not state, so consuming never re-renders (and never cancels the grid's
   // in-flight focus polling).
   const gridFocusConsumedNonceRef = useRef(0);
@@ -601,7 +498,7 @@ export function TerminalProvider({ children }: { children: ReactNode }) {
     return source;
   }, []);
   // The grid cell whose terminal most recently held focus — the pane the user is
-  // "on". The grid reports it on focusin; the project route reads it to anchor a
+  // "on". The grid reports it on focusin; the Core workspace route reads it to anchor a
   // new session beside the active pane even when the click that created it (e.g.
   // the header "New session" button) pulled DOM focus off the grid. A ref so
   // reporting focus never re-renders the whole terminal tree.
@@ -617,8 +514,8 @@ export function TerminalProvider({ children }: { children: ReactNode }) {
     // time — always populated by the time a focusin fires.
     const session = sessionsRef.current.find((s) => s.sessionId === sessionId);
     if (!session) return;
-    const scopeKey = scopeKeyForProject(session.project);
-    setActiveByProject((prev) => nextActiveByProject(prev, scopeKey, sessionId));
+    const scopeKey = coreScopeKey(session.coreId);
+    setActiveByCore((prev) => nextActiveByCore(prev, scopeKey, sessionId));
   }, []);
   const getGridFocusedSessionId = useCallback(() => gridFocusedSessionIdRef.current, []);
   // Pending "New row" request: the grid drops the next new session into a fresh
@@ -643,15 +540,15 @@ export function TerminalProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (typeof window === "undefined") return;
     try {
-      window.localStorage.setItem(ACTIVE_BY_PROJECT_KEY, JSON.stringify(activeByProject));
+      window.localStorage.setItem(ACTIVE_BY_CORE_KEY, JSON.stringify(activeByCore));
     } catch {
       /* quota or disabled */
     }
-  }, [activeByProject]);
+  }, [activeByCore]);
 
   // Persist the full open-session set so a reload can restore every session
   // (the grid renders all of them), not just the active one per scope. Each
-  // entry embeds its project + session, so serializing on every sessions change
+  // entry embeds its session, so serializing on every sessions change
   // would put a large synchronous stringify + write on hot paths — debounce
   // it, skip writes whose payload is unchanged, and flush on pagehide (and
   // provider teardown) so a quit never loses the latest set.
@@ -693,66 +590,48 @@ export function TerminalProvider({ children }: { children: ReactNode }) {
   };
 
   const toggle = useCallback(
-    (
-      project: ScopedProject,
-      session: Session,
-      opts?: { awaitCreate?: boolean; coreId?: string | null },
-    ) => {
-      const scopeKey = scopeKeyForProject(project);
+    (coreId: string, session: Session, opts?: { awaitCreate?: boolean }) => {
+      const scopeKey = coreScopeKey(coreId);
       setSessions((prev) => {
         const existing = prev.find(
-          (p) => p.sessionId === session.id && scopeKeyForProject(p.project) === scopeKey
+          (p) => p.sessionId === session.id && coreScopeKey(p.coreId) === scopeKey,
         );
         if (existing) {
           if (!opts?.awaitCreate || existing.awaitingCreate) return prev;
           return prev.map((p) =>
-            p.sessionId === session.id && scopeKeyForProject(p.project) === scopeKey
+            p.sessionId === session.id && coreScopeKey(p.coreId) === scopeKey
               ? { ...p, awaitingCreate: true, session }
-              : p
+              : p,
           );
         }
-        // Register remote-Core sessions BEFORE computing the start command,
-        // so `baseCommandForSession` sees the marker and skips the Panel's own
-        // claudeSessionId PATCH for a Core-owned row.
-        markSessionRemote(session.id, opts?.coreId);
         const next: OpenTerminal = {
           sessionId: session.id,
           ptyId: null,
           startCommand: commandForSession(session),
           dangerouslySkipPermissions: harnessLaunchesWithSkipPermissions(session.agent),
-          cwd: project.path,
-          project,
           session,
           awaitingCreate: opts?.awaitCreate,
           // Tag the session with its owning Core so TerminalPane addresses
           // spawn/write/etc. to the right Core.
-          coreId: opts?.coreId ?? null,
+          coreId,
         };
         return [...prev, next];
       });
-      setActiveByProject((prev) => nextActiveByProject(prev, scopeKey, session.id));
+      setActiveByCore((prev) => nextActiveByCore(prev, scopeKey, session.id));
     },
-    []
+    [],
   );
 
   const openSession = useCallback(
-    (
-      project: ScopedProject,
-      session: Session,
-      opts?: { ptyId?: string | null; coreId?: string | null },
-    ) => {
-      const scopeKey = scopeKeyForProject(project);
-      const coreId = opts?.coreId ?? null;
-      // Same rationale as `toggle`: register before the setState reads
-      // `commandForSession` so the PATCH gate is honoured on the first spawn.
-      if (opts?.coreId !== undefined) markSessionRemote(session.id, coreId);
+    (coreId: string, session: Session, opts?: { ptyId?: string | null }) => {
+      const scopeKey = coreScopeKey(coreId);
       setSessions((prev) => {
         const existing = prev.find(
-          (p) => p.sessionId === session.id && scopeKeyForProject(p.project) === scopeKey
+          (p) => p.sessionId === session.id && coreScopeKey(p.coreId) === scopeKey,
         );
         if (existing) {
           return prev.map((p) =>
-            p.sessionId === session.id && scopeKeyForProject(p.project) === scopeKey
+            p.sessionId === session.id && coreScopeKey(p.coreId) === scopeKey
               ? {
                   ...p,
                   session,
@@ -762,9 +641,8 @@ export function TerminalProvider({ children }: { children: ReactNode }) {
                   awaitingCreate: false,
                   // The caller holds a live session row — no revalidation needed.
                   pendingValidation: undefined,
-                  coreId: opts?.coreId !== undefined ? coreId : p.coreId,
                 }
-              : p
+              : p,
           );
         }
         return [
@@ -774,87 +652,47 @@ export function TerminalProvider({ children }: { children: ReactNode }) {
             ptyId: opts?.ptyId ?? null,
             startCommand: commandForSession(session),
             dangerouslySkipPermissions: harnessLaunchesWithSkipPermissions(session.agent),
-            cwd: project.path,
-            project,
             session,
             coreId,
           },
         ];
       });
-      setActiveByProject((prev) => nextActiveByProject(prev, scopeKey, session.id));
-    },
-    []
-  );
-
-  const openRemoteSession = useCallback(
-    (
-      coreId: string,
-      projectSnap: CoreLinkProjectSnapshot,
-      sessionSnap: CoreLinkSessionRow,
-    ) => {
-      const project = remoteScopedProjectFromSnapshot(coreId, projectSnap);
-      const session = remoteSessionFromSnapshot(sessionSnap);
-      openSession(project, session, { coreId });
-    },
-    [openSession],
-  );
-
-  const rehydrate = useCallback(
-    (project: ScopedProject, session: Session, opts?: { coreId?: string | null }) => {
-      const scopeKey = scopeKeyForProject(project);
-      const coreId = opts?.coreId ?? null;
-      if (opts?.coreId !== undefined) markSessionRemote(session.id, coreId);
-      setSessions((prev) => {
-        if (prev.some((p) => p.sessionId === session.id && scopeKeyForProject(p.project) === scopeKey)) {
-          return prev;
-        }
-        return [
-          ...prev,
-          {
-            sessionId: session.id,
-            ptyId: null,
-            startCommand: commandForSession(session),
-            dangerouslySkipPermissions: harnessLaunchesWithSkipPermissions(session.agent),
-            cwd: project.path,
-            project,
-            session,
-            coreId,
-          },
-        ];
-      });
+      setActiveByCore((prev) => nextActiveByCore(prev, scopeKey, session.id));
     },
     [],
   );
 
-  const setVisibleScope = useCallback((projectId: string, scopeKey: string | null) => {
-    setVisibleScopeByProject((prev) => {
-      if (scopeKey === null) {
-        if (!(projectId in prev)) return prev;
-        const next = { ...prev };
-        delete next[projectId];
-        return next;
+  const rehydrate = useCallback((coreId: string, session: Session) => {
+    const scopeKey = coreScopeKey(coreId);
+    setSessions((prev) => {
+      if (prev.some((p) => p.sessionId === session.id && coreScopeKey(p.coreId) === scopeKey)) {
+        return prev;
       }
-      return prev[projectId] === scopeKey ? prev : { ...prev, [projectId]: scopeKey };
+      return [
+        ...prev,
+        {
+          sessionId: session.id,
+          ptyId: null,
+          startCommand: commandForSession(session),
+          dangerouslySkipPermissions: harnessLaunchesWithSkipPermissions(session.agent),
+          session,
+          coreId,
+        },
+      ];
     });
   }, []);
 
-  const deselect = useCallback((projectId: string) => {
-    setActiveByProject((prev) => {
-      const next = { ...prev };
-      let changed = false;
-      for (const key of Object.keys(next)) {
-        if (key === projectId || key.startsWith(`${projectId}:`)) {
-          next[key] = null;
-          changed = true;
-        }
-      }
-      return changed ? next : prev;
+  const deselect = useCallback((coreId: string) => {
+    const scopeKey = coreScopeKey(coreId);
+    setActiveByCore((prev) => {
+      if (!(scopeKey in prev) || prev[scopeKey] === null) return prev;
+      return { ...prev, [scopeKey]: null };
     });
   }, []);
 
-  const setActiveSession = useCallback((project: ScopedProject, sessionId: string) => {
-    const scopeKey = scopeKeyForProject(project);
-    setActiveByProject((prev) => nextActiveByProject(prev, scopeKey, sessionId));
+  const setActiveSession = useCallback((coreId: string, sessionId: string) => {
+    const scopeKey = coreScopeKey(coreId);
+    setActiveByCore((prev) => nextActiveByCore(prev, scopeKey, sessionId));
   }, []);
 
   const adoptSessionId = useCallback((fromSessionId: string, session: Session) => {
@@ -862,13 +700,6 @@ export function TerminalProvider({ children }: { children: ReactNode }) {
     // follow the session in place instead of treating it as a fresh add.
     if (fromSessionId !== session.id) {
       sessionIdRenamesRef.current.push({ from: fromSessionId, to: session.id });
-      // Carry the remote-session marker across the id swap so the fresh id
-      // still bypasses the Panel's own claudeSessionId PATCH on subsequent
-      // command builds.
-      if (isRemoteSession(fromSessionId)) {
-        unmarkSessionRemote(fromSessionId);
-        remoteSessionIds.add(session.id);
-      }
     }
     // The pane re-keys to the persisted id and remounts under it; dispose the
     // provisional-id surface so it doesn't leak (the new pane re-attaches to the
@@ -890,7 +721,7 @@ export function TerminalProvider({ children }: { children: ReactNode }) {
       });
       return changed ? next : prev;
     });
-    setActiveByProject((prev) => {
+    setActiveByCore((prev) => {
       let changed = false;
       const next: Record<string, string | null> = { ...prev };
       for (const [key, tid] of Object.entries(prev)) {
@@ -905,7 +736,6 @@ export function TerminalProvider({ children }: { children: ReactNode }) {
 
   const close = useCallback(async (sessionId: string, opts?: { activateSessionId?: string | null }) => {
     markIntentionalSessionClose(sessionId);
-    unmarkSessionRemote(sessionId);
     setSessions((prev) => {
       const target = prev.find((p) => p.sessionId === sessionId);
       if (target) {
@@ -914,7 +744,7 @@ export function TerminalProvider({ children }: { children: ReactNode }) {
       }
       return prev.filter((p) => p.sessionId !== sessionId);
     });
-    setActiveByProject((prev) => {
+    setActiveByCore((prev) => {
       const next: Record<string, string | null> = {};
       let changed = false;
       for (const [pid, tid] of Object.entries(prev)) {
@@ -939,7 +769,7 @@ export function TerminalProvider({ children }: { children: ReactNode }) {
   const reapTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
   useEffect(() => {
     const timers = reapTimersRef.current;
-    const eligible = new Set(archivedSessionsEligibleForReap(sessions, activeByProject));
+    const eligible = new Set(archivedSessionsEligibleForReap(sessions, activeByCore));
     for (const sessionId of eligible) {
       if (timers.has(sessionId)) continue;
       timers.set(
@@ -955,7 +785,7 @@ export function TerminalProvider({ children }: { children: ReactNode }) {
       clearTimeout(timer);
       timers.delete(sessionId);
     }
-  }, [sessions, activeByProject, close]);
+  }, [sessions, activeByCore, close]);
 
   useEffect(() => {
     const timers = reapTimersRef.current;
@@ -965,19 +795,16 @@ export function TerminalProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
-  // Revalidate restored sessions against the server once on startup. Sessions
+  // Revalidate restored sessions against their Core once on startup. Sessions
   // are seeded straight from the localStorage snapshot, which can be stale: a
-  // session archived or deleted while this window was closed (server cleanup, a
-  // second window) must not resurrect as a live cell — or worse, respawn its
-  // agent — and a live session's launch command may have changed since the
-  // snapshot (agent/model/skip-permissions), so it is rebuilt from the fresh
-  // row. Panes hold off spawning until their session's gate clears
+  // session archived or deleted while this window was closed (a second window,
+  // a hand at the VM) must not resurrect as a live cell — or worse, respawn its
+  // agent. Panes hold off spawning until their session's gate clears
   // (pendingValidation), so a dead session's agent never boots.
   //
-  // A Core-owned session's `sessionId` lives on that Core's Core, so
-  // `api.getSession` would 404 for every one of them and drop live sessions on
-  // reload. Revalidate those over the panel link with `listSessionRows(coreId)` and
-  // match on `sessionId`. Session metadata is refreshed from the returned
+  // A session's row lives on its Core, so this asks each Core touched by the
+  // pending set for its rows over the panel link (`listSessionRows(coreId)`) and
+  // matches on `sessionId`. Session metadata is refreshed from the returned
   // {@link CoreLinkSessionRow}, but the persisted `startCommand` is kept —
   // the snapshot doesn't carry the fields (`claudeSessionId`, ...) that
   // `commandForSession` needs to rebuild it.
@@ -989,26 +816,24 @@ export function TerminalProvider({ children }: { children: ReactNode }) {
     if (pending.length === 0) return;
     void (async () => {
       const bridge = getPanelBridge();
-      const remoteCoreIds = new Set(
-        pending.map((s) => s.coreId).filter((id): id is string => !!id),
-      );
+      const coreIds = new Set(pending.map((s) => s.coreId));
       // Fan out one `listSessionRows(coreId)` per Core touched by the pending set —
       // fewer round-trips than one call per session, and the result is a full
       // snapshot the closure below can look up by sessionId.
-      const remoteByCore = new Map<string, Map<string, Session> | null>();
+      const byCore = new Map<string, Map<string, Session> | null>();
       await Promise.all(
-        [...remoteCoreIds].map(async (coreId) => {
+        [...coreIds].map(async (coreId) => {
           if (!bridge) {
-            remoteByCore.set(coreId, null);
+            byCore.set(coreId, null);
             return;
           }
           const listed = await bridge.listSessionRows(coreId).catch(() => null);
           const sessions = listed?.sessions;
           if (!sessions) {
-            remoteByCore.set(coreId, null);
+            byCore.set(coreId, null);
             return;
           }
-          remoteByCore.set(
+          byCore.set(
             coreId,
             new Map(
               sessions.map((t) => [
@@ -1019,48 +844,19 @@ export function TerminalProvider({ children }: { children: ReactNode }) {
           );
         }),
       );
-      const checks = await Promise.all(
-        pending.map(async (entry) => {
-          const coreId = entry.coreId;
-          if (coreId) {
-            const snapshots = remoteByCore.get(coreId);
-            if (snapshots === null) {
-              // Core unreachable — release the gate, keep the snapshot rather
-              // than dropping a session whose Core is just briefly down.
-              return { sessionId: entry.sessionId, session: undefined, remote: true as const };
-            }
-            const session = snapshots?.get(entry.sessionId) ?? null;
-            return { sessionId: entry.sessionId, session, remote: true as const };
-          }
-          try {
-            const { session } = await api.getSession(entry.sessionId);
-            return { sessionId: entry.sessionId, session: session as Session | null, remote: false as const };
-          } catch (err) {
-            // 404 → the session is gone; drop the entry. Any other failure
-            // (server briefly unreachable) → release the gate and run on the
-            // snapshot rather than leaving the pane blocked forever.
-            const gone = err instanceof ApiError && err.status === 404;
-            return {
-              sessionId: entry.sessionId,
-              session: gone ? null : undefined,
-              remote: false as const,
-            };
-          }
-        }),
-      );
-      // Rebuild launch commands outside the state updater — commandForSession can
-      // persist a missing session id, and updaters must stay side-effect free.
-      // Remote-Core sessions keep their persisted startCommand (see note above).
-      const refreshed = new Map<
-        string,
-        { session: Session; startCommand: string | null }
-      >();
+      const checks = pending.map((entry) => {
+        const snapshots = byCore.get(entry.coreId);
+        if (snapshots === null || snapshots === undefined) {
+          // Core unreachable — release the gate, keep the snapshot rather
+          // than dropping a session whose Core is just briefly down.
+          return { sessionId: entry.sessionId, session: undefined };
+        }
+        return { sessionId: entry.sessionId, session: snapshots.get(entry.sessionId) ?? null };
+      });
+      const refreshed = new Map<string, Session>();
       for (const c of checks) {
         if (!c.session || c.session.archived) continue;
-        refreshed.set(c.sessionId, {
-          session: c.session,
-          startCommand: c.remote ? null : commandForSession(c.session),
-        });
+        refreshed.set(c.sessionId, c.session);
       }
       for (const c of checks) {
         if (c.session === null || c.session?.archived) void close(c.sessionId);
@@ -1070,14 +866,13 @@ export function TerminalProvider({ children }: { children: ReactNode }) {
           if (!p.pendingValidation) return p;
           const fresh = refreshed.get(p.sessionId);
           if (!fresh) {
-            // Validation errored (non-404): release the gate, keep the snapshot.
+            // Core unreachable: release the gate, keep the snapshot.
             return { ...p, pendingValidation: undefined };
           }
           return {
             ...p,
-            session: fresh.session,
-            startCommand: fresh.startCommand ?? p.startCommand,
-            dangerouslySkipPermissions: harnessLaunchesWithSkipPermissions(fresh.session.agent),
+            session: fresh,
+            dangerouslySkipPermissions: harnessLaunchesWithSkipPermissions(fresh.agent),
             pendingValidation: undefined,
           };
         }),
@@ -1085,11 +880,11 @@ export function TerminalProvider({ children }: { children: ReactNode }) {
     })();
   }, [sessions, close]);
 
-  const closeForProject = useCallback(async (projectId: string) => {
+  const closeForCore = useCallback(async (coreId: string) => {
     setSessions((prev) => {
       const remaining: OpenTerminal[] = [];
       for (const t of prev) {
-        if (t.project.id === projectId) {
+        if (t.coreId === coreId) {
           markIntentionalSessionClose(t.sessionId);
           terminalSurfaceCache.destroy(t.sessionId);
           void killPty(t.coreId, t.ptyId);
@@ -1097,21 +892,11 @@ export function TerminalProvider({ children }: { children: ReactNode }) {
       }
       return remaining;
     });
-    setActiveByProject((prev) => {
+    const scopeKey = coreScopeKey(coreId);
+    setActiveByCore((prev) => {
+      if (!(scopeKey in prev)) return prev;
       const next = { ...prev };
-      let changed = false;
-      for (const key of Object.keys(next)) {
-        if (key === projectId || key.startsWith(`${projectId}:`)) {
-          delete next[key];
-          changed = true;
-        }
-      }
-      return changed ? next : prev;
-    });
-    setVisibleScopeByProject((prev) => {
-      if (!(projectId in prev)) return prev;
-      const next = { ...prev };
-      delete next[projectId];
+      delete next[scopeKey];
       return next;
     });
   }, []);
@@ -1121,7 +906,7 @@ export function TerminalProvider({ children }: { children: ReactNode }) {
       let changed = false;
       const next = prev.map((p) => {
         if (p.sessionId !== sessionId) return p;
-        const sessionScopeKey = scopeKeyForProject(p.project);
+        const sessionScopeKey = coreScopeKey(p.coreId);
         if (scopeKey && sessionScopeKey !== scopeKey) return p;
         if (p.ptyId === ptyId) return p;
         changed = true;
@@ -1159,30 +944,19 @@ export function TerminalProvider({ children }: { children: ReactNode }) {
   );
 
   const activeFor = useCallback(
-    (projectId: string): OpenTerminal | null => {
-      const { scopeKey, sessionId } = resolveActiveSessionIdForProject(
-        activeByProject,
-        projectId,
-        visibleScopeByProject,
-      );
-      if (!scopeKey || !sessionId) return null;
+    (coreId: string): OpenTerminal | null => {
+      const { scopeKey, sessionId } = resolveActiveSessionIdForCore(activeByCore, coreId);
+      if (!sessionId) return null;
       return (
-        sessions.find((s) => s.sessionId === sessionId && scopeKeyForProject(s.project) === scopeKey) ??
-        null
+        sessions.find((s) => s.sessionId === sessionId && coreScopeKey(s.coreId) === scopeKey) ?? null
       );
     },
-    [activeByProject, sessions, visibleScopeByProject]
+    [activeByCore, sessions],
   );
 
   const activeSessionIdFor = useCallback(
-    (projectId: string) => {
-      return resolveActiveSessionIdForProject(
-        activeByProject,
-        projectId,
-        visibleScopeByProject,
-      ).sessionId;
-    },
-    [activeByProject, visibleScopeByProject]
+    (coreId: string) => resolveActiveSessionIdForCore(activeByCore, coreId).sessionId,
+    [activeByCore],
   );
 
   // Stable slice: every dependency is a constant-identity callback, so this memo
@@ -1192,14 +966,12 @@ export function TerminalProvider({ children }: { children: ReactNode }) {
     () => ({
       toggle,
       openSession,
-      openRemoteSession,
       deselect,
       setActiveSession,
-      setVisibleScope,
       rehydrate,
       close,
       adoptSessionId,
-      closeForProject,
+      closeForCore,
       setPtyId,
       syncSession,
       startCommandFor: commandFor,
@@ -1219,14 +991,12 @@ export function TerminalProvider({ children }: { children: ReactNode }) {
     [
       toggle,
       openSession,
-      openRemoteSession,
       deselect,
       setActiveSession,
-      setVisibleScope,
       rehydrate,
       close,
       adoptSessionId,
-      closeForProject,
+      closeForCore,
       setPtyId,
       syncSession,
       runIn,
@@ -1257,18 +1027,14 @@ export function TerminalProvider({ children }: { children: ReactNode }) {
   }, []);
   useEffect(() => {
     for (const cb of bridgeListenersRef.current) cb();
-  }, [sessions, activeByProject, visibleScopeByProject, gridView]);
+  }, [sessions, activeByCore, gridView]);
   const getGridViewSnapshot = useCallback(() => gridViewRef.current, []);
-  const getHasActiveSessionSnapshot = useCallback((projectId: string | null) => {
-    if (!projectId) return false;
-    const { scopeKey, sessionId } = resolveActiveSessionIdForProject(
-      activeByProjectRef.current,
-      projectId,
-      visibleScopeByProjectRef.current,
-    );
-    if (!scopeKey || !sessionId) return false;
+  const getHasActiveSessionSnapshot = useCallback((coreId: string | null) => {
+    if (!coreId) return false;
+    const { scopeKey, sessionId } = resolveActiveSessionIdForCore(activeByCoreRef.current, coreId);
+    if (!sessionId) return false;
     return sessionsRef.current.some(
-      (s) => s.sessionId === sessionId && scopeKeyForProject(s.project) === scopeKey,
+      (s) => s.sessionId === sessionId && coreScopeKey(s.coreId) === scopeKey,
     );
   }, []);
   const bridge = useMemo<TerminalStoreBridge>(
@@ -1339,15 +1105,15 @@ export function useGridView(): boolean {
   return useSyncExternalStore(bridge.subscribe, bridge.getGridViewSnapshot, () => false);
 }
 
-/** Whether `projectId` currently has a materialized active session. Re-renders
+/** Whether `coreId` currently has a materialized active session. Re-renders
  *  its consumer only when that boolean flips — the shell reads it to gate the
  *  expanded-terminal layout without subscribing to the churning data slice. */
-export function useHasActiveSession(projectId: string | null): boolean {
+export function useHasActiveSession(coreId: string | null): boolean {
   const bridge = useContext(TerminalStoreBridgeContext);
   if (!bridge) throw new Error("useHasActiveSession must be used inside TerminalProvider");
   const getSnapshot = useCallback(
-    () => bridge.getHasActiveSessionSnapshot(projectId),
-    [bridge, projectId],
+    () => bridge.getHasActiveSessionSnapshot(coreId),
+    [bridge, coreId],
   );
   return useSyncExternalStore(bridge.subscribe, getSnapshot, () => false);
 }

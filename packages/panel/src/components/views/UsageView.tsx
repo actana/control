@@ -1,10 +1,9 @@
 import type { UsageSummary } from "~/shared/token-usage";
 import { PER_SESSION_LIMIT } from "~/shared/token-usage";
-import { ProjectIcon } from "~/components/ui/ProjectIcon";
 import { Section } from "~/components/ui/Section";
 import { EmptyState } from "~/components/ui/EmptyState";
 import { formatRelativeTime } from "~/lib/format-relative-time";
-import { formatN, HorizontalBar, TimeSeriesBars } from "./UsageCharts";
+import { formatN, TimeSeriesBars } from "./UsageCharts";
 
 export function UsageView({ data }: { data: UsageSummary }) {
   const grandTotal =
@@ -24,10 +23,6 @@ export function UsageView({ data }: { data: UsageSummary }) {
       </div>
     );
   }
-
-  const projectMax = data.perProject[0]
-    ? totalOfRow(data.perProject[0])
-    : 1;
 
   return (
     <div style={{ padding: "32px 40px", overflowY: "auto" }}>
@@ -49,55 +44,6 @@ export function UsageView({ data }: { data: UsageSummary }) {
 
       <Section label="Per Day" count={data.perDay.length} icon="grid">
         <TimeSeriesBars data={data.perDay} />
-      </Section>
-
-      <Section label="Per Workspace" count={data.perProject.length} icon="folder">
-        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-          {data.perProject.map((p) => {
-            const total = totalOfRow(p);
-            return (
-              <div
-                key={p.projectId}
-                style={{
-                  display: "grid",
-                  gridTemplateColumns: "28px 1fr auto",
-                  gap: 12,
-                  alignItems: "center",
-                }}
-              >
-                <ProjectIcon project={{ icon: p.icon, iconColor: p.iconColor }} size={22} />
-                <div style={{ minWidth: 0 }}>
-                  <div
-                    style={{
-                      fontSize: 13,
-                      color: "var(--text)",
-                      marginBottom: 6,
-                      whiteSpace: "nowrap",
-                      overflow: "hidden",
-                      textOverflow: "ellipsis",
-                    }}
-                  >
-                    {p.name}
-                  </div>
-                  <HorizontalBar value={total} max={projectMax} color={p.iconColor} />
-                </div>
-                <div
-                  style={{
-                    fontFamily: "var(--mono)",
-                    fontSize: 12,
-                    fontVariantNumeric: "tabular-nums",
-                    color: "var(--text-dim)",
-                    minWidth: 80,
-                    textAlign: "right",
-                  }}
-                  title={`${total.toLocaleString()} tokens`}
-                >
-                  {formatN(total)}
-                </div>
-              </div>
-            );
-          })}
-        </div>
       </Section>
 
       <Section
@@ -135,7 +81,6 @@ export function UsageView({ data }: { data: UsageSummary }) {
                 }}
               >
                 <Th align="left">Session</Th>
-                <Th align="left">Workspace</Th>
                 <Th>Input</Th>
                 <Th>Output</Th>
                 <Th>Cache W</Th>
@@ -162,9 +107,6 @@ export function UsageView({ data }: { data: UsageSummary }) {
                       >
                         {s.title || "(untitled)"}
                       </span>
-                    </Td>
-                    <Td>
-                      <span style={{ color: "var(--text-dim)" }}>{s.projectName}</span>
                     </Td>
                     <Td mono>{formatN(s.inputTokens)}</Td>
                     <Td mono>{formatN(s.outputTokens)}</Td>

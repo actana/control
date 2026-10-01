@@ -10,13 +10,11 @@ export {
   parseAskUserQuestionInput,
 } from "@actana/shared/harness-questions";
 
-// The Panel's own pending-question row. It lived in `@actana/shared` with the
-// project id it carries, but a Core has no Projects (ADR 0041 D1), so the type
-// is the Panel's now, until #560 removes the id from it.
+// The Panel's own pending-question row. A Core has no Projects (ADR 0041 D1), so
+// the row names a Session and nothing wider.
 export type PendingQuestion = {
   id: string;
   sessionId: string;
-  projectId: string;
   questions: HarnessQuestion[];
   createdAt: number;
 };

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 //
-// Coming back to a project shows what is true now (issue 484, symptom W2).
+// Coming back to a Core shows what is true now (issue 484, symptom W2).
 //
 // A Session that finished while the operator was on another page read
 // `running` on return, and only a browser refresh corrected it. The Core was
@@ -15,7 +15,7 @@
 //      refetching only a STALE query, so a remount inside those 30 seconds is
 //      served the cached, pre-finish list; and a refocus never asks at all.
 //      This is the one that enforces the bug, and the first two tests are it.
-//   3. The scope-cancel guard from #381, which cancels an in-flight project
+//   3. The scope-cancel guard from #381, which cancels an in-flight Core
 //      read when the last viewer leaves. It is NOT a cause — a cancel reverts
 //      the query to its pre-fetch state, invalidation included, so the return
 //      path still refetches — and the last test pins that down so the guard is
@@ -33,7 +33,6 @@ import type { ReactNode } from "react";
 import type { CoreLinkSessionRow } from "@actana/sdk/core";
 
 const CORE_ID = "core-a";
-const PROJECT_ID = "project-1";
 
 const h = vi.hoisted(() => ({
   /** What the Core would answer right now. Mutated by the tests. */
@@ -58,12 +57,11 @@ vi.mock("~/lib/panel-bridge", () => ({
 }));
 
 const { useSessions, sessionsCacheKey } = await import("~/queries");
-const { __resetProjectScopesForTests } = await import("~/lib/visible-project-scope");
+const { __resetCoreScopesForTests } = await import("~/lib/visible-core-scope");
 
 function snapshot(status: string): CoreLinkSessionRow {
   return {
     sessionId: "session-1",
-    projectId: PROJECT_ID,
     title: "session-1",
     titleManuallySet: false,
     claudeSessionId: null,
@@ -73,7 +71,7 @@ function snapshot(status: string): CoreLinkSessionRow {
     archived: false,
     icon: null,
     updatedAt: Date.now(),
-  } as unknown as CoreLinkSessionRow;
+  };
 }
 
 /** Exactly the client `getRouter()` builds — see `src/router.tsx`. */
@@ -96,7 +94,7 @@ function wrapperFor(client: QueryClient) {
 }
 
 const renderBoard = (wrapper: ReturnType<typeof wrapperFor>) =>
-  renderHook(() => useSessions(PROJECT_ID, { coreId: CORE_ID }), { wrapper });
+  renderHook(() => useSessions(CORE_ID), { wrapper });
 
 /** Let a mount-triggered refetch start, run and paint. */
 async function settle(): Promise<void> {
@@ -105,9 +103,9 @@ async function settle(): Promise<void> {
   });
 }
 
-describe("returning to a project reads the Session's current status (issue 484)", () => {
+describe("returning to a Core reads the Session's current status (issue 484)", () => {
   beforeEach(() => {
-    __resetProjectScopesForTests();
+    __resetCoreScopesForTests();
     h.status = "running";
     h.listSessionRowsCalls = 0;
     h.inFlight = [];
@@ -123,7 +121,7 @@ describe("returning to a project reads the Session's current status (issue 484)"
 
     const board = renderBoard(wrapper);
     await waitFor(() => expect(board.result.current.data?.[0]?.status).toBe("running"));
-    // The operator walks away. Nothing on screen is reading this project now.
+    // The operator walks away. Nothing on screen is reading this Core now.
     board.unmount();
 
     // The Session finishes on the Core. No route is mounted to hear it, and
@@ -167,7 +165,7 @@ describe("returning to a project reads the Session's current status (issue 484)"
     // leaves — which is precisely when the scope guard cancels.
     h.hold = true;
     await act(async () => {
-      void client.invalidateQueries({ queryKey: sessionsCacheKey(PROJECT_ID, CORE_ID) });
+      void client.invalidateQueries({ queryKey: sessionsCacheKey(CORE_ID) });
       await new Promise((resolve) => setTimeout(resolve, 10));
     });
     await waitFor(() => expect(h.inFlight.length).toBe(1));

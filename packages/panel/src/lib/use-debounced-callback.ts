@@ -15,7 +15,7 @@ import { useCallback, useEffect, useRef } from "react";
  *
  * Used to coalesce bursts of SSE-driven query invalidations: an agent doing
  * several tool calls in a second emits several `session:updated` events, and
- * without debouncing each one refetches the (heavy) projects list / sessions list.
+ * without debouncing each one refetches the (heavy) sessions list.
  */
 export function useDebouncedCallback<A extends unknown[]>(
   fn: (...args: A) => void,

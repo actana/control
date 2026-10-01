@@ -98,7 +98,7 @@ export function FirstRunGate({ children }: { children: ReactNode }) {
  *
  * `count` starts at whatever this browser was last told (`readCachedCoreCount`)
  * so a paired Panel paints its shell on the first client render, the same
- * bargain `installShellQueryCache` makes for projects, groups and settings. The
+ * bargain `installShellQueryCache` makes for settings. The
  * seed is never an answer: the live read lands on the same tick and corrects
  * it, and a *stale* seed can only cost one frame in either direction.
  *

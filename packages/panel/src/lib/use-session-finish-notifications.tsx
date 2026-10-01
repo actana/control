@@ -5,7 +5,6 @@ import { mcToastCustom, McToastActions, McToastCloseButton } from "~/lib/mc-toas
 import { useSettings } from "~/queries";
 import { useCores } from "~/lib/use-fleet";
 import { getPanelBridge } from "~/lib/panel-bridge";
-import { useServerEvents, type ServerEvent } from "~/lib/use-events";
 import { CardFrame } from "~/components/ui/CardFrame";
 import { Btn } from "~/components/ui/Btn";
 import { Icon } from "~/components/ui/Icon";
@@ -27,14 +26,13 @@ import {
 import type { CoreLinkEvent } from "@actana/shared/sdk-link-frames";
 
 export type NormalizedFinish = {
-  /** The Core the session ran on; null for a row in the Panel's own DB. */
-  coreId: string | null;
+  /** The Core the session ran on. */
+  coreId: string;
   coreAlias: string | null;
   eventId: number | null;
   /**
    * When the Session actually finished, off the event's own `ts`; null when the
-   * source carries no time and "now" is the truth (the Panel's SSE stream is
-   * live by construction).
+   * event carries no usable time and "now" is the truth.
    *
    * A replayed finish may be hours old — that is what the replay is for — and
    * stamping it `Date.now()` would put it at the top of the bell above rows
@@ -42,22 +40,20 @@ export type NormalizedFinish = {
    */
   finishedAt: number | null;
   sessionId: string;
-  projectId: string;
-  projectName: string;
   sessionTitle: string;
 };
 
 export function dedupKey(n: {
-  coreId: string | null;
+  coreId: string;
   sessionId: string;
   eventId: number | null;
 }): string {
-  return `${n.coreId}::${n.sessionId}::${n.eventId ?? "sse"}`;
+  return `${n.coreId}::${n.sessionId}::${n.eventId ?? "none"}`;
 }
 
 // Module-scope bounded LRU. Insertion-ordered Set gives us drop-oldest for free
 // via delete-then-add. Cap 500 keys; the fast-path (toast/ding/OS) checks this
-// before firing so replay tails and duplicate SSE frames don't double-notify.
+// before firing so replay tails and duplicate frames don't double-notify.
 const DEDUP_CAP = 500;
 const seenFinishKeys = new Set<string>();
 
@@ -88,34 +84,10 @@ export function __resetSessionFinishDedupForTests() {
   seenFinishKeys.clear();
 }
 
-type NormalizeSource = "sse" | "fleet";
-
 export function normalizeSessionFinishedEvent(
-  source: NormalizeSource,
   raw: unknown,
   coreAlias: string | null = null,
 ): NormalizedFinish | null {
-  if (source === "sse") {
-    const e = raw as Record<string, unknown> | null;
-    if (!e || e.type !== "session:finished") return null;
-    const sessionId = typeof e.id === "string" ? e.id : "";
-    const projectId = typeof e.projectId === "string" ? e.projectId : "";
-    if (!sessionId || !projectId) return null;
-    const projectName = typeof e.projectName === "string" ? e.projectName : "";
-    const sessionTitle = typeof e.sessionTitle === "string" ? e.sessionTitle : "Session";
-    return {
-      coreId: null,
-      coreAlias: null,
-      eventId: null,
-      // The Panel's own stream pushes as it happens; there is no older time to
-      // carry, and the dispatch stamps it with the clock that is right for it.
-      finishedAt: null,
-      sessionId,
-      projectId,
-      projectName,
-      sessionTitle,
-    };
-  }
   const msg = raw as { coreId?: unknown; event?: unknown } | null;
   if (!msg || typeof msg.coreId !== "string" || !msg.event) return null;
   const event = msg.event as CoreLinkEvent;
@@ -132,13 +104,7 @@ export function normalizeSessionFinishedEvent(
       : typeof event.sessionId === "string"
         ? event.sessionId
         : "";
-  // A Core has no Projects (ADR 0041 D1) and its finish event carries none, so a
-  // missing id is the normal case here, not a malformed event. The notification
-  // still fires; #560 takes the id out of it.
-  const projectId = typeof payload.projectId === "string" ? payload.projectId : "";
   if (!sessionId) return null;
-  const projectName =
-    typeof payload.projectName === "string" ? payload.projectName : "";
   const sessionTitle =
     typeof payload.sessionTitle === "string" ? payload.sessionTitle : "Session";
   return {
@@ -147,8 +113,6 @@ export function normalizeSessionFinishedEvent(
     eventId: typeof event.eventId === "number" ? event.eventId : null,
     finishedAt: finishedAtFrom(event.ts),
     sessionId,
-    projectId,
-    projectName,
     sessionTitle,
   };
 }
@@ -175,14 +139,6 @@ type FinishDelivery = "live" | "cold-replay";
 function finishedAtFrom(ts: unknown): number | null {
   if (typeof ts !== "number" || !Number.isFinite(ts) || ts <= 0) return null;
   return ts > Date.now() ? null : ts;
-}
-
-type RemoteDeletionKind = "session" | "project";
-
-function classifyRemoteDeletion(kind: string): RemoteDeletionKind | null {
-  if (kind === "session:deleted") return "session";
-  if (kind === "project:deleted") return "project";
-  return null;
 }
 
 export function useSessionFinishNotifications() {
@@ -224,7 +180,6 @@ export function useSessionFinishNotifications() {
         (item) =>
           !(
             item.id === notification.id &&
-            item.projectId === notification.projectId &&
             item.coreId === notification.coreId
           ),
       );
@@ -235,7 +190,6 @@ export function useSessionFinishNotifications() {
             !(
               item.kind === "session-finished" &&
               item.id === notification.id &&
-              item.projectId === notification.projectId &&
               item.coreId === notification.coreId
             ),
         ),
@@ -296,17 +250,14 @@ export function useSessionFinishNotifications() {
       // allows, so it is left as it is rather than locked.
       if (delivery === "cold-replay" && hasAnnouncedFinish(key)) return;
       if (!markSeen(key)) return;
-      // Remembered across tabs only for a finish the Core numbered. An SSE
-      // finish has no eventId, so its key cannot tell one finish of a Session
-      // from the next one, and a durable record of it would silence a real
-      // second finish forever.
+      // Remembered across tabs only for a finish the Core numbered. A finish
+      // with no eventId cannot tell one finish of a Session from the next one,
+      // and a durable record of it would silence a real second finish forever.
       if (finish.eventId !== null) recordAnnouncedFinish(key);
 
       const notification: SessionFinishNotification = {
         kind: "session-finished",
         id: finish.sessionId,
-        projectId: finish.projectId,
-        projectName: finish.projectName,
         sessionTitle: finish.sessionTitle,
         // The event's own time when it carries one: a finish replayed at 09:00
         // happened at 02:00, and the list is ordered and capped on this.
@@ -326,22 +277,15 @@ export function useSessionFinishNotifications() {
 
       playNotificationDing(soundEnabled);
 
-      const isRemote = !!finish.coreId;
-      const aliasSuffix = isRemote
-        ? ` on ${finish.coreAlias && finish.coreAlias.length > 0 ? finish.coreAlias : finish.coreId}`
-        : "";
-      const toastTitle = `Session finished${finish.projectName ? ` — ${finish.projectName}` : ""}${aliasSuffix}`;
+      const coreName = finish.coreAlias && finish.coreAlias.length > 0 ? finish.coreAlias : finish.coreId;
+      const toastTitle = `Session finished on ${coreName}`;
 
-      const goToProject = () => {
+      const goToSession = () => {
         requestSessionNotificationOpen(notification);
-        if (finish.coreId) {
-          void router.navigate({
-            to: "/cores/$coreId/workspace",
-            params: { coreId: finish.coreId },
-          });
-          return;
-        }
-        void router.navigate({ to: "/" });
+        void router.navigate({
+          to: "/cores/$coreId/workspace",
+          params: { coreId: finish.coreId },
+        });
       };
 
       if (toastEnabled) {
@@ -405,7 +349,7 @@ export function useSessionFinishNotifications() {
                   variant="primary"
                   size="sm"
                   onClick={() => {
-                    goToProject();
+                    goToSession();
                     toast.dismiss(t);
                   }}
                 >
@@ -426,55 +370,12 @@ export function useSessionFinishNotifications() {
             title: toastTitle,
             body: finish.sessionTitle,
           },
-          { onClick: goToProject },
+          { onClick: goToSession },
         );
       }
     },
     [toastEnabled, osEnabled, soundEnabled, router],
   );
-
-  const handler = useCallback(
-    (e: ServerEvent) => {
-      if (e.type === "session:deleted") {
-        const sessionId = String(e.id ?? "");
-        const projectId = typeof e.projectId === "string" ? e.projectId : undefined;
-        if (sessionId) {
-          pruneNotifications({
-            type: "session",
-            sessionId,
-            projectId,
-            coreId: null,
-          });
-        }
-        return;
-      }
-
-      if (e.type === "project:deleted") {
-        const projectId = String(e.id ?? "");
-        if (projectId) {
-          pruneNotifications({
-            type: "project",
-            projectId,
-            coreId: null,
-          });
-        }
-        return;
-      }
-
-      if (e.type !== "session:finished") return;
-      const finish = normalizeSessionFinishedEvent("sse", e);
-      if (!finish) return;
-      dispatchNormalizedFinish(finish);
-    },
-    [pruneNotifications, dispatchNormalizedFinish],
-  );
-
-  // The Panel's own SSE stream, carrying finishes for rows in the Panel's own
-  // DB. It cannot collide with the panel-link source below: its finishes key on
-  // `coreId: null`, which is not an id any registered Core can have, so
-  // ADR 0008's `(coreId, sessionId, eventId)` dedup separates the two sources
-  // by construction. It retires with the Panel-local rows themselves.
-  useServerEvents(handler);
 
   // Every registered Core's event stream, over this tab's one panel link. The
   // hook watches the whole fleet rather than the Core on screen: a Session
@@ -492,36 +393,25 @@ export function useSessionFinishNotifications() {
     const off = bridge.onEvent((msg) => {
       const kind = msg.event?.kind;
       if (!kind) return;
-      const deletion = classifyRemoteDeletion(kind);
-      if (deletion) {
+      if (kind === "session:deleted") {
         let payload: Record<string, unknown> = {};
         try {
           payload = JSON.parse(msg.event.payload) as Record<string, unknown>;
         } catch {
           return;
         }
-        if (deletion === "session") {
-          const sessionId =
-            typeof payload.id === "string" && payload.id
-              ? payload.id
-              : typeof msg.event.sessionId === "string"
-                ? msg.event.sessionId
-                : "";
-          const projectId = typeof payload.projectId === "string" ? payload.projectId : undefined;
-          if (sessionId) {
-            pruneNotifications({ type: "session", sessionId, projectId, coreId: msg.coreId });
-          }
-          return;
-        }
-        const projectId = typeof payload.id === "string" ? payload.id : "";
-        if (projectId) {
-          pruneNotifications({ type: "project", projectId, coreId: msg.coreId });
-        }
+        const sessionId =
+          typeof payload.id === "string" && payload.id
+            ? payload.id
+            : typeof msg.event.sessionId === "string"
+              ? msg.event.sessionId
+              : "";
+        if (sessionId) pruneNotifications({ type: "session", sessionId, coreId: msg.coreId });
         return;
       }
       if (kind !== "session:finished") return;
       const alias = coreAliasByIdRef.current.get(msg.coreId) ?? null;
-      const finish = normalizeSessionFinishedEvent("fleet", msg, alias);
+      const finish = normalizeSessionFinishedEvent(msg, alias);
       if (!finish) return;
       dispatchNormalizedFinish(finish, msg.coldReplay === true ? "cold-replay" : "live");
     });

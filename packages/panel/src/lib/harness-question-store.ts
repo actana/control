@@ -98,13 +98,12 @@ function setEntry(sessionId: string, entry: Entry): void {
 
 function parseQuestionEvent(event: ServerEvent): PendingQuestion | null {
   const sessionId = typeof event.sessionId === "string" ? event.sessionId : "";
-  const projectId = typeof event.projectId === "string" ? event.projectId : "";
   const questionId = typeof event.questionId === "string" ? event.questionId : "";
   // The SSE payload is our own emit, but it crosses a JSON boundary — reuse
   // the defensive parser rather than trusting the shape.
   const questions = parseAskUserQuestionInput({ questions: event.questions });
-  if (!sessionId || !projectId || !questionId || !questions) return null;
-  return { id: questionId, sessionId, projectId, questions, createdAt: Date.now() };
+  if (!sessionId || !questionId || !questions) return null;
+  return { id: questionId, sessionId, questions, createdAt: Date.now() };
 }
 
 export function applyQuestionServerEvent(event: ServerEvent): void {

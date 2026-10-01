@@ -1,11 +1,10 @@
 import type { Session } from "~/db/schema";
-import type { ScopedProject } from "~/lib/scoped-project";
 
 export type RequestedSessionTerminals = {
-  activeFor: (scopeKey: string) => { sessionId: string } | null | undefined;
-  activeSessionIdFor: (scopeKey: string) => string | null | undefined;
-  rehydrate: (project: ScopedProject, session: Session, opts: { coreId: string | null }) => void;
-  toggle: (project: ScopedProject, session: Session, opts: { coreId: string | null }) => void;
+  activeFor: (coreId: string) => { sessionId: string } | null | undefined;
+  activeSessionIdFor: (coreId: string) => string | null | undefined;
+  rehydrate: (coreId: string, session: Session) => void;
+  toggle: (coreId: string, session: Session) => void;
 };
 
 /**
@@ -15,16 +14,14 @@ export type RequestedSessionTerminals = {
  */
 export function showRequestedSession(deps: {
   terminals: RequestedSessionTerminals;
-  scopeKey: string;
-  project: ScopedProject;
   session: Session;
-  coreId: string | null;
+  coreId: string;
 }): void {
-  const { terminals, scopeKey, project, session, coreId } = deps;
-  if (terminals.activeFor(scopeKey)?.sessionId === session.id) return;
-  if (terminals.activeSessionIdFor(scopeKey) === session.id) {
-    terminals.rehydrate(project, session, { coreId });
+  const { terminals, session, coreId } = deps;
+  if (terminals.activeFor(coreId)?.sessionId === session.id) return;
+  if (terminals.activeSessionIdFor(coreId) === session.id) {
+    terminals.rehydrate(coreId, session);
   } else {
-    terminals.toggle(project, session, { coreId });
+    terminals.toggle(coreId, session);
   }
 }

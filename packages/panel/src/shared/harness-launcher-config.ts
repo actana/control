@@ -2,8 +2,8 @@ import { HARNESSES, type Harness } from "@actana/shared/domain";
 
 /**
  * User preference for the New Session agent picker: display order plus a set
- * of hidden agents. Hiding only removes an agent from the picker — a project's
- * saved agent still launches through the skip-dialog path.
+ * of hidden agents. Hiding only removes an agent from the picker — a Core's
+ * remembered harness still launches through the skip-dialog path.
  */
 export type HarnessLauncherConfig = {
   order: Harness[];

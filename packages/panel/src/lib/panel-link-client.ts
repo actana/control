@@ -84,8 +84,8 @@ const DEFAULT_STALE_AFTER_MS = 15 * 60_000;
 /**
  * A request frame minus the `reqId` the client assigns. Distributed over the
  * union so each member keeps its own fields — a plain `Omit` over the union
- * would collapse them to the ones every member shares, and `sessionRowsList`'s
- * `projectId` would stop type-checking.
+ * would collapse them to the ones every member shares, and a frame's own
+ * fields would stop type-checking.
  */
 type UnsentRequest = CoreLinkRequestFrame extends infer F
   ? F extends { reqId: string }

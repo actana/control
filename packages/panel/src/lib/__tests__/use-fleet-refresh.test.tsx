@@ -16,7 +16,6 @@ import { act, renderHook, waitFor } from "@testing-library/react";
 import type { CoreLinkSessionRow } from "@actana/sdk/core";
 
 const CORE_ID = "core-a";
-const PROJECT_ID = "project-1";
 
 const h = vi.hoisted(() => ({
   /** Every `onEvent` subscriber currently mounted. */
@@ -31,7 +30,6 @@ const h = vi.hoisted(() => ({
 function session(sessionId: string, status: string): CoreLinkSessionRow {
   return {
     sessionId,
-    projectId: PROJECT_ID,
     title: sessionId,
     titleManuallySet: false,
     claudeSessionId: null,

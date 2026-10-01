@@ -529,16 +529,6 @@ body .font-mono {
   z-index: 1;
 }
 
-.auth-pending-project-rail {
-  width: 0;
-  flex-shrink: 0;
-  border-right: 1px solid transparent;
-}
-
-[data-has-pinned-projects="true"] .auth-pending-project-rail {
-  width: 72px;
-}
-
 button {
   font-family: inherit;
   color: inherit;
@@ -549,8 +539,7 @@ a,
 input,
 textarea,
 select,
-[role="button"],
-.mc-project-card {
+[role="button"] {
   -webkit-app-region: no-drag;
 }
 
@@ -1141,7 +1130,7 @@ input[type="range"] {
 }
 
 /* =====================================================================
-   App chrome — top bar, dashboard, project header. Flush Studio chrome:
+   App chrome — top bar, dashboard, Core header. Flush Studio chrome:
    surface-on-surface separation with quiet hairlines, no painted frames.
    ===================================================================== */
 
@@ -1150,7 +1139,6 @@ input[type="range"] {
   background: var(--surface-1) !important;
 }
 
-.mc-project-rail,
 [data-user-terminal-panel] {
   border: none !important;
   border-radius: 0 !important;
@@ -1178,41 +1166,22 @@ input[type="range"] {
   background: var(--surface-1) !important;
 }
 
-/* Project page wrapper: dissolve its opaque card surface so the session grid
+/* Core workspace wrapper: dissolve its opaque card surface so the session grid
    sits directly on the page ground. */
-.mc-project-frame {
+.mc-core-frame {
   background: transparent !important;
   border: none !important;
   border-radius: 0 !important;
   box-shadow: none !important;
 }
 
-/* Project header: a tight toolbar strip so the project name + actions sit
+/* Core header: a tight toolbar strip so the Core name + actions sit
    close to the grid. Overrides the component's inline padding. */
-.mc-project-header {
+.mc-core-header {
   border-bottom: 1px solid var(--border) !important;
   border-radius: 0 !important;
   background: var(--surface-1) !important;
   padding: 6px 20px !important;
-}
-
-.mc-project-header-trigger {
-  border: 1px solid transparent;
-  background: transparent;
-  transition:
-    background 120ms ease,
-    border-color 120ms ease;
-}
-
-.mc-project-header-trigger:hover {
-  background: var(--surface-hover);
-  border-color: var(--border-1);
-}
-
-.mc-project-header-trigger:focus-visible {
-  outline: none;
-  border-color: var(--accent);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 35%, transparent);
 }
 
 .mc-dashboard-hero-copy,
@@ -1230,18 +1199,10 @@ input[type="range"] {
     width: 100%;
   }
 
-  .mc-project-header {
+  .mc-core-header {
     margin: -8px -8px 24px !important;
     padding: 18px 16px 16px !important;
   }
-}
-
-/* Pinned-project hotkey badge (1, 2, …): a defined notch on the rail ground
-   so the digit pops. Inline styles, so !important. */
-.mc-project-hotkey-badge {
-  background: var(--bg) !important;
-  border-color: var(--border-strong) !important;
-  color: var(--text-dim) !important;
 }
 
 /* Focus Mode session bar: scrolls horizontally without a visible scrollbar so
@@ -1287,7 +1248,7 @@ input[type="range"] {
   background: var(--surface-3) !important;
 }
 
-/* Dashboard/project focused cards: solid accent border + soft drop shadow. */
+/* Dashboard/Core focused cards: solid accent border + soft drop shadow. */
 .mc-card-frame[data-focused="true"] {
   border-color: color-mix(in srgb, var(--accent) 60%, transparent) !important;
   box-shadow:
@@ -1375,23 +1336,7 @@ input[type="range"] {
     transform: rotate(360deg);
   }
 }
-@keyframes pinned-project-running-sweep {
-  0% {
-    opacity: 0;
-    transform: translateX(-115%) skewX(-18deg);
-  }
-  18% {
-    opacity: 0.88;
-  }
-  68% {
-    opacity: 0.88;
-  }
-  100% {
-    opacity: 0;
-    transform: translateX(115%) skewX(-18deg);
-  }
-}
-/* Needs-input badge on pinned project tiles: a periodic double-bounce so a
+/* Needs-input badge on Core rail tiles: a periodic double-bounce so a
    session waiting on the user keeps drawing the eye without a constant pulse. */
 .mc-needs-input-badge {
   animation: mc-needs-input-bounce 2s ease-in-out infinite;
@@ -1768,52 +1713,7 @@ html[data-window-idle] .mc-session-icon-drawing > * {
     transform: none;
   }
 }
-/* ── Add-project dialog: selections register physically ─────────────────── */
-.mc-pick-card {
-  transition:
-    border-color 150ms ease,
-    background 150ms ease;
-}
-.mc-pick-card::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  z-index: -1;
-  border-radius: inherit;
-  background: color-mix(in srgb, var(--text) 5%, transparent);
-  opacity: 0;
-  transition: opacity 150ms ease;
-  pointer-events: none;
-}
-.mc-pick-card[data-selected="true"]::before {
-  background: color-mix(in srgb, var(--accent) 8%, transparent);
-}
-.mc-pick-card:not(:disabled):hover::before {
-  opacity: 1;
-}
-.mc-pick-card:not(:disabled):active::before {
-  opacity: 1;
-  background: color-mix(in srgb, var(--text) 12%, transparent);
-}
-.mc-pick-card:focus-visible,
-.mc-color-swatch:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-}
-.mc-pick-pop {
-  animation: mc-pick-pop 0.26s cubic-bezier(0.16, 1, 0.3, 1) backwards;
-}
-@keyframes mc-pick-pop {
-  0% {
-    transform: scale(0.72);
-  }
-  55% {
-    transform: scale(1.08);
-  }
-  100% {
-    transform: scale(1);
-  }
-}
+/* ── Harness availability: the probe is still running ────────────────────── */
 .mc-availability-checking {
   animation: mc-availability-pulse 1.2s ease-in-out infinite;
 }
@@ -1826,116 +1726,7 @@ html[data-window-idle] .mc-session-icon-drawing > * {
     opacity: 0.9;
   }
 }
-.mc-color-swatch {
-  transition:
-    transform 150ms cubic-bezier(0.16, 1, 0.3, 1),
-    box-shadow 150ms ease;
-}
-.mc-color-swatch:hover {
-  transform: translateY(-1px) scale(1.06);
-}
-.mc-color-swatch:active {
-  transform: translateY(0) scale(0.94);
-}
-.mc-identity-pop {
-  animation: mc-pick-pop 0.3s cubic-bezier(0.16, 1, 0.3, 1) backwards;
-}
-.mc-identity-fallback {
-  animation: mc-identity-fallback-in 0.22s cubic-bezier(0.16, 1, 0.3, 1) backwards;
-}
-@keyframes mc-identity-fallback-in {
-  0% {
-    opacity: 0;
-    transform: translateX(-6px);
-  }
-  100% {
-    opacity: 1;
-    transform: translateX(0);
-  }
-}
-/* Project-dialog avatar tile: the identity preview doubles as the image
-   upload button — hover/focus reveals a camera scrim over it. */
-.mc-avatar-tile {
-  transition: border-color 150ms ease;
-}
-.mc-avatar-tile-overlay {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: rgba(0, 0, 0, 0.45);
-  color: #fff;
-  opacity: 0;
-  transition: opacity 150ms ease;
-  pointer-events: none;
-}
-.mc-avatar-tile:not(:disabled):hover .mc-avatar-tile-overlay,
-.mc-avatar-tile:focus-visible .mc-avatar-tile-overlay {
-  opacity: 1;
-}
-.mc-avatar-tile:focus-visible,
-.mc-color-trigger:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-}
-.mc-avatar-upload-badge {
-  position: absolute;
-  bottom: -5px;
-  right: -5px;
-  z-index: 1;
-  width: 19px;
-  height: 19px;
-  border-radius: 50%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: var(--surface-3);
-  border: 1px solid var(--border);
-  color: var(--text-dim);
-  pointer-events: none;
-  transition: color 150ms ease, border-color 150ms ease;
-}
-.mc-avatar-tile:not(:disabled):hover ~ .mc-avatar-upload-badge,
-.mc-avatar-tile:focus-visible ~ .mc-avatar-upload-badge {
-  color: var(--text);
-  border-color: var(--text-faint);
-}
-.mc-avatar-remove {
-  position: absolute;
-  top: -5px;
-  right: -5px;
-  z-index: 1;
-  width: 18px;
-  height: 18px;
-  padding: 0;
-  border-radius: 50%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: var(--surface-3);
-  border: 1px solid var(--border);
-  color: var(--text-dim);
-  cursor: pointer;
-}
-.mc-avatar-remove:hover {
-  color: var(--text);
-  border-color: var(--text-faint);
-}
-.mc-avatar-remove:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 1px;
-}
 @media (prefers-reduced-motion: reduce) {
-  .mc-pick-card:not(:disabled):hover,
-  .mc-pick-card:not(:disabled):active,
-  .mc-color-swatch:hover,
-  .mc-color-swatch:active {
-    transform: none;
-  }
-  .mc-pick-pop,
-  .mc-identity-pop,
-  .mc-identity-fallback,
   .mc-availability-checking {
     animation: none;
   }
@@ -2058,209 +1849,6 @@ html[data-window-idle] .mc-session-icon-drawing > * {
     0 0 / 24px 24px;
 }
 
-/* =====================================================================
-   Projects table
-   ===================================================================== */
-
-.mc-projects-table-scroll {
-  overflow-x: auto;
-}
-
-.mc-projects-table-grid {
-  width: 100%;
-  border-collapse: collapse;
-  font-family: var(--mono);
-  font-size: 12px;
-}
-
-.mc-projects-table-grid thead tr {
-  border-bottom: 1px solid color-mix(in srgb, var(--accent) 14%, var(--border));
-}
-
-.mc-projects-table-head {
-  padding: 10px 14px;
-  text-align: left;
-  white-space: nowrap;
-}
-
-.mc-projects-table-pin-head {
-  width: 88px;
-  padding: 10px 14px;
-  border-bottom: 1px solid color-mix(in srgb, var(--accent) 14%, var(--border));
-}
-
-.mc-projects-table-sort {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  border: 0;
-  background: transparent;
-  color: var(--text-faint);
-  cursor: pointer;
-  padding: 0;
-  font: inherit;
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-}
-
-.mc-projects-table-sort[data-active="true"] {
-  color: var(--text);
-}
-
-.mc-projects-table-sort:hover {
-  color: var(--text);
-}
-
-.mc-projects-table-row {
-  position: relative;
-  border-bottom: 1px solid var(--border);
-  transition: background 0.12s ease;
-}
-
-.mc-projects-table-row:last-child {
-  border-bottom: 0;
-}
-
-.mc-projects-table-row:hover {
-  background: var(--surface-hover);
-}
-
-.mc-projects-table-row[data-active="true"]::before {
-  content: "";
-  position: absolute;
-  left: 0;
-  top: 0;
-  bottom: 0;
-  width: 3px;
-  background: var(--accent);
-  box-shadow: 0 0 12px var(--accent-glow);
-}
-
-.mc-projects-table-cell {
-  padding: 12px 14px;
-  vertical-align: middle;
-}
-
-.mc-projects-table-name {
-  min-width: 220px;
-}
-
-.mc-projects-table-name-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 10px;
-  width: 100%;
-  min-width: 0;
-  border: 0;
-  background: transparent;
-  color: inherit;
-  cursor: pointer;
-  padding: 0;
-  text-align: left;
-}
-
-.mc-projects-table-name-text {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-weight: 600;
-  color: var(--text);
-  letter-spacing: -0.01em;
-}
-
-.mc-projects-table-group {
-  min-width: 120px;
-  color: var(--text);
-}
-
-.mc-projects-table-group-label {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.mc-projects-table-group-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  flex-shrink: 0;
-}
-
-.mc-projects-table-pills {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex-wrap: wrap;
-  min-width: 120px;
-}
-
-.mc-projects-table-date {
-  min-width: 100px;
-  color: var(--text-dim);
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-}
-
-.mc-projects-table-muted {
-  color: var(--text-faint);
-  font-size: 11px;
-}
-
-.mc-projects-table-pin {
-  text-align: right;
-}
-
-.pinned-project-logo {
-  overflow: visible;
-  isolation: isolate;
-}
-
-.pinned-project-logo-surface {
-  position: relative;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  overflow: hidden;
-  isolation: isolate;
-}
-
-.pinned-project-logo-surface > img,
-.pinned-project-logo-surface > div {
-  position: relative;
-  z-index: 1;
-}
-
-.pinned-project-logo-surface--running::after {
-  content: "";
-  position: absolute;
-  pointer-events: none;
-  inset: 2px;
-  z-index: 2;
-  border-radius: 10px;
-  background: linear-gradient(
-    105deg,
-    transparent 0%,
-    transparent 26%,
-    color-mix(in srgb, var(--accent) 18%, transparent) 41%,
-    color-mix(in srgb, var(--status-running) 52%, transparent) 50%,
-    color-mix(in srgb, var(--accent) 24%, transparent) 59%,
-    transparent 74%,
-    transparent 100%
-  );
-  mix-blend-mode: screen;
-  animation: pinned-project-running-sweep 1.7s cubic-bezier(0.16, 1, 0.3, 1) infinite;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .pinned-project-logo-surface--running::after {
-    animation: none;
-    opacity: 0.28;
-    transform: none;
-  }
-}
-
 /* Cursor glow: a quiet accent-tinted spotlight following the pointer. */
 .cursor-glow {
   --cursor-glow-size: 320px;
@@ -2341,7 +1929,7 @@ body[data-card-glow] .cursor-glow {
    Menus, popovers, tooltips
    ===================================================================== */
 
-.mc-project-actions-menu {
+.mc-actions-menu {
   display: flex;
   flex-direction: column;
   gap: 0;
@@ -2513,117 +2101,14 @@ body[data-card-glow] .cursor-glow {
   background: transparent;
 }
 
-/* Pinned-project rail tiles (ProjectBar.tsx): a faint tonal wash on hover. */
-.mc-pinned-tile {
-  background: transparent;
-  border: 1px solid transparent;
-  transition: background 120ms ease, border-color 150ms ease;
-}
-.mc-pinned-tile:hover {
-  background: var(--surface-hover);
-}
-
-/* Group-cluster header in the pinned rail (ProjectBar.tsx). */
-.mc-group-header {
-  background: transparent;
-}
-.mc-group-header:hover {
-  background: var(--surface-hover);
-}
-.mc-group-header:focus-visible {
-  outline: 2px solid color-mix(in srgb, var(--accent) 55%, transparent);
-  outline-offset: 1px;
-}
-.mc-groups-dialog-drag-handle {
-  background: transparent;
-  color: var(--text-faint);
-  transition:
-    background 120ms cubic-bezier(0.25, 1, 0.5, 1),
-    color 120ms cubic-bezier(0.25, 1, 0.5, 1);
-}
-.mc-groups-dialog-drag-handle:hover,
-.mc-groups-dialog-drag-handle[data-active="true"] {
-  background: var(--surface-hover);
-  color: var(--text-dim);
-}
-.mc-groups-dialog-drag-handle:focus-visible {
-  outline: 2px solid color-mix(in srgb, var(--accent) 72%, transparent);
-  outline-offset: 2px;
-}
-.mc-group-header__grip {
-  opacity: 0;
-  transition: opacity 140ms ease;
-}
-.mc-group-header:hover .mc-group-header__grip,
-.mc-group-header:focus-visible .mc-group-header__grip {
-  opacity: 0.85;
-}
-@media (prefers-reduced-motion: reduce) {
-  .mc-groups-dialog-row,
-  .mc-groups-dialog-drag-handle {
-    transition: none !important;
-  }
-  .mc-group-header__grip {
-    transition: none;
-  }
-}
-
-/* Floating name label for the pinned-project rail (ProjectBar.tsx). */
-.mc-project-hover-label {
-  position: fixed;
-  z-index: 9999;
-  pointer-events: none;
-  transform: translateY(-50%);
-  max-width: 260px;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-  background: var(--surface-3);
-  color: var(--text);
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius-sm);
-  padding: 6px 11px;
-  font-family: var(--sans);
-  font-size: 13px;
-  font-weight: 500;
-  line-height: 1.2;
-  box-shadow: var(--shadow-medium);
-  animation: mc-project-hover-label-in 160ms cubic-bezier(0.22, 1, 0.36, 1);
-  transition: top 220ms cubic-bezier(0.22, 1, 0.36, 1);
-}
-@keyframes mc-project-hover-label-in {
-  from {
-    opacity: 0;
-    transform: translateY(-50%) translateX(-8px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(-50%) translateX(0);
-  }
-}
-@media (prefers-reduced-motion: reduce) {
-  .mc-project-hover-label {
-    animation-duration: 1ms;
-    transition: none;
-  }
-}
-
-/* Status pills (StatusDot.tsx) and project activity badges: tonal fill + the
+/* Status pills (StatusDot.tsx) and activity badges: tonal fill + the
    status dot carry the pill; no hairline noise. */
 .mc-status-pill {
   background: var(--surface-3);
   border: 1px solid transparent;
 }
-.mc-project-status-badge {
-  background: var(--surface-3);
-  border: 1px solid transparent;
-}
-.mc-project-status-badge[data-active] {
-  background: var(--accent-faint);
-  border-color: var(--accent-border);
-}
 
-/* Terminal tabs (project/user terminal bar): borderless-tonal; the active tab
+/* Terminal tabs (terminal bar): borderless-tonal; the active tab
    reads by accent-tinted fill. */
 .mc-terminal-tab {
   background: transparent;

@@ -1,12 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 import { openClickedSession } from "../open-clicked-session";
 import type { Session } from "~/db/schema";
-import type { ScopedProject } from "~/lib/scoped-project";
-
-const project = { id: "p1", path: "/work" } as ScopedProject;
 
 function session(id: string, over: Partial<Session> = {}): Session {
-  return { id, projectId: "p1", status: "ready", archived: false, ...over } as Session;
+  return { id, status: "ready", archived: false, ...over } as Session;
 }
 
 function openerStub() {
@@ -21,13 +18,12 @@ describe("openClickedSession", () => {
     const opened = openClickedSession("t-archived", {
       sessions: [session("t-active")],
       archivedSessions: [archived],
-      project,
       coreId: "core-a",
       terminals,
     });
 
     expect(opened).toBe(true);
-    expect(terminals.openSession).toHaveBeenCalledWith(project, archived, { coreId: "core-a" });
+    expect(terminals.openSession).toHaveBeenCalledWith("core-a", archived);
     expect(terminals.focusGridSession).toHaveBeenCalledWith("t-archived");
   });
 
@@ -38,17 +34,16 @@ describe("openClickedSession", () => {
     const opened = openClickedSession("t-active", {
       sessions: [active],
       archivedSessions: [session("t-archived", { archived: true })],
-      project,
       coreId: "core-a",
       terminals,
     });
 
     expect(opened).toBe(true);
-    expect(terminals.openSession).toHaveBeenCalledWith(project, active, { coreId: "core-a" });
+    expect(terminals.openSession).toHaveBeenCalledWith("core-a", active);
     expect(terminals.focusGridSession).toHaveBeenCalledWith("t-active");
   });
 
-  it("prefers the active row when both lists carry the id (Panel-owned project)", () => {
+  it("prefers the active row when both lists carry the id", () => {
     const terminals = openerStub();
     // Distinct `title`s, and an identity assertion on the argument: two
     // structurally equal fixtures would pass whichever object the helper picked,
@@ -59,16 +54,14 @@ describe("openClickedSession", () => {
     openClickedSession("t1", {
       sessions: [fromSessions],
       archivedSessions: [fromArchived],
-      project,
-      coreId: null,
+      coreId: "core-a",
       terminals,
     });
 
     expect(terminals.openSession.mock.calls[0]?.[1]).toBe(fromSessions);
     expect(terminals.openSession).toHaveBeenCalledWith(
-      project,
+      "core-a",
       expect.objectContaining({ title: "from sessions" }),
-      { coreId: null },
     );
   });
 
@@ -78,7 +71,6 @@ describe("openClickedSession", () => {
     const opened = openClickedSession("gone", {
       sessions: [session("t-active")],
       archivedSessions: [session("t-archived", { archived: true })],
-      project,
       coreId: "core-a",
       terminals,
     });
@@ -88,14 +80,13 @@ describe("openClickedSession", () => {
     expect(terminals.focusGridSession).not.toHaveBeenCalled();
   });
 
-  it("opens nothing before the project path is ready", () => {
+  it("opens nothing when there is no Core to open it on", () => {
     const terminals = openerStub();
 
     const opened = openClickedSession("t-archived", {
       sessions: [],
       archivedSessions: [session("t-archived", { archived: true })],
-      project: null,
-      coreId: "core-a",
+      coreId: null,
       terminals,
     });
 

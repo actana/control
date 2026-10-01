@@ -1,11 +1,11 @@
 // Which discretionary buttons the app chrome shows — the top bar's tools and
-// notifications, and the project header's per-project actions. Like the session
+// notifications, and the Core header's per-Core actions. Like the session
 // header buttons, every one of these has a keyboard shortcut (or another entry
 // point), so a user who leans on the hotkeys can hide it for quieter chrome.
 // Each key is hideable in place (right-click → Hide, see `useHideableMenu`) and
 // toggleable in Settings → Interface — both drive this same map.
 //
-// The structural chrome (settings, project picker, scope dropdown, ship/changes
+// The structural chrome (settings, the Core switcher, ship/changes
 // controls) is intentionally NOT listed here: those have no hotkey-only path,
 // so hiding them would strand the action.
 
