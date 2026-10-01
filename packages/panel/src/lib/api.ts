@@ -18,6 +18,14 @@ import type { SessionHeaderButtonVisibility } from "~/shared/session-header-butt
 import type { HeaderButtonVisibility } from "~/shared/header-buttons";
 import { pruneStoredSessionFinishNotifications } from "~/lib/session-notification-store";
 import { HTTP_NO_CONTENT } from "~/shared/http-status";
+import type { TaskStatus } from "~/shared/tasks";
+import type {
+  AgentDto,
+  NewTaskCommentRequest,
+  NewTaskRequest,
+  TaskCommentDto,
+  TaskDto,
+} from "~/shared/task-wire";
 
 export type AppSettings = {
   agentSystemBannerDisabled: boolean;
@@ -137,6 +145,27 @@ async function req<T>(url: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
+  /** Every Task the owner has, across Cores. */
+  listTasks: () => req<{ tasks: TaskDto[] }>("/api/tasks"),
+  getTask: (id: string) =>
+    req<{ task: TaskDto; comments: TaskCommentDto[] }>(`/api/tasks/${encodeURIComponent(id)}`),
+  createTask: (body: NewTaskRequest) =>
+    req<{ task: TaskDto }>("/api/tasks", { method: "POST", body: JSON.stringify(body) }),
+  /** Assign or send back to draft. The server decides whether the move is legal. */
+  setTaskStatus: (id: string, status: TaskStatus) =>
+    req<{ task: TaskDto }>(`/api/tasks/${encodeURIComponent(id)}/status`, {
+      method: "POST",
+      body: JSON.stringify({ status }),
+    }),
+  /** A comment; with `reassign`, the service's single Comment & re-assign call. */
+  commentOnTask: (id: string, body: NewTaskCommentRequest) =>
+    req<{ comment?: TaskCommentDto; task?: TaskDto; comments?: TaskCommentDto[] }>(
+      `/api/tasks/${encodeURIComponent(id)}/comments`,
+      { method: "POST", body: JSON.stringify(body) },
+    ),
+  /** One Core's Agents, from the Agents service. */
+  listCoreAgents: (coreId: string) =>
+    req<{ agents: AgentDto[] }>(`/api/cores/${encodeURIComponent(coreId)}/agents`),
   /** The fleet: every registered Core with the service's live view of its link. */
   listCores: () => req<CoreListResponse>("/api/cores"),
   /**

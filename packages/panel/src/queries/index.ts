@@ -23,6 +23,10 @@ export const queryKeys = {
   /** Prefix over every Core's archived bucket, for a blanket invalidation. */
   coreArchivedSessionsAll: ["core-archived-sessions"] as const,
   coreArchivedSessionCount: (coreId: string) => ["core-archived-session-count", coreId] as const,
+  /** The Tasks board: every Task the owner has, across Cores. */
+  tasks: ["tasks"] as const,
+  task: (id: string) => ["tasks", id] as const,
+  coreAgents: (coreId: string) => ["core-agents", coreId] as const,
   settings: ["settings"] as const,
   hookToken: ["hook-token"] as const,
   keybindings: ["keybindings"] as const,
@@ -333,6 +337,37 @@ function useScopedToVisibleCore(queryKey: readonly unknown[], coreId: string): v
     // render, its hash only changes when the key really does.
   }, [queryClient, coreId, keyHash]);
 }
+
+// Tasks move on the server (the dispatcher claims, a result file finishes), and
+// nothing pushes that to the browser, so the board and an open Task poll.
+const TASKS_POLL_MS = 5_000;
+
+export const tasksQueryOptions = () =>
+  queryOptions({
+    queryKey: queryKeys.tasks,
+    queryFn: async () => (await api.listTasks()).tasks,
+    refetchInterval: TASKS_POLL_MS,
+    refetchOnMount: "always",
+  });
+
+export const taskQueryOptions = (id: string) =>
+  queryOptions({
+    queryKey: queryKeys.task(id),
+    queryFn: () => api.getTask(id),
+    refetchInterval: TASKS_POLL_MS,
+    refetchOnMount: "always",
+  });
+
+export const coreAgentsQueryOptions = (coreId: string) =>
+  queryOptions({
+    queryKey: queryKeys.coreAgents(coreId),
+    queryFn: async () => (await api.listCoreAgents(coreId)).agents,
+    enabled: !!coreId,
+  });
+
+export const useTasks = () => useQuery(tasksQueryOptions());
+export const useTask = (id: string) => useQuery(taskQueryOptions(id));
+export const useCoreAgents = (coreId: string) => useQuery(coreAgentsQueryOptions(coreId));
 
 export const useSessions = (coreId: string) => {
   const options = sessionsQueryOptions(coreId);
