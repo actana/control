@@ -373,3 +373,45 @@ export const apiKeyCores = pgTable(
   },
   (t) => [primaryKey({ columns: [t.keyId, t.coreId] })],
 );
+
+/**
+ * Where the Shared folders live (#564, ADR 0041 D5, D33): one row per owner. `master_key_sealed` is
+ * the controller's signing key for the SDK key issuer, sealed with `secrets-at-rest.ts` like
+ * `core_secrets.sealed`. It is written by one write-only route and read by the issuer alone: no
+ * query that feeds a response or a frame selects it.
+ */
+export const storageConfig = pgTable("storage_config", {
+  ownerId: integer("owner_id")
+    .primaryKey()
+    .references(() => operator.id, { onDelete: "cascade" }),
+  backend: text("backend").notNull(),
+  endpoint: text("endpoint").notNull(),
+  bucket: text("bucket").notNull(),
+  prefix: text("prefix").notNull(),
+  region: text("region").notNull(),
+  oidcIssuer: text("oidc_issuer").notNull(),
+  oidcAudience: text("oidc_audience").notNull(),
+  keyId: text("key_id").notNull(),
+  masterKeySealed: bytea("master_key_sealed"),
+  updatedAt: epochMs("updated_at").notNull(),
+});
+
+/**
+ * Where one Core's Shared folder stands (#564). A row exists from the moment a Core is paired from the
+ * Panel; a Core without a row was registered before 0.5.0 and is not asked for storage. `pending` is a
+ * Core whose pairing is not finished: its Shared folder is not attached. `s3_prefix` is kept so that
+ * deleting the Core can still name, and then empty, exactly its folder.
+ */
+export const coreSharedFolders = pgTable("core_shared_folders", {
+  coreId: text("core_id")
+    .primaryKey()
+    .references(() => cores.id, { onDelete: "cascade" }),
+  ownerId: integer("owner_id")
+    .notNull()
+    .references(() => operator.id, { onDelete: "cascade" }),
+  state: text("state").notNull(),
+  s3Prefix: text("s3_prefix").notNull(),
+  keyExpiresAt: epochMs("key_expires_at"),
+  lastError: text("last_error"),
+  updatedAt: epochMs("updated_at").notNull(),
+});

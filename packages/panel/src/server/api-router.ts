@@ -22,6 +22,7 @@ import * as aiRuntimeModelsController from "./controllers/ai-runtime-models.cont
 import * as authController from "./controllers/auth.controller";
 import * as apiKeysController from "./controllers/api-keys.controller";
 import * as coresController from "./controllers/cores.controller";
+import * as storageController from "./controllers/storage.controller";
 import * as coreFilesController from "./controllers/core-files.controller";
 import * as updateCheckController from "./controllers/update-check.controller";
 import * as tasksController from "./controllers/tasks.controller";
@@ -281,6 +282,11 @@ async function dispatch(
   if (m && method === "GET") return webhooksController.deliveries(decode(m[1]));
   m = pathname.match(WEBHOOK_PATH);
   if (m && method === "DELETE") return webhooksController.remove(decode(m[1]));
+  // The Shared-folder storage config (#564): the key is write-only, so there is a GET without it and a PUT.
+  if (pathname === "/api/storage") {
+    if (method === "GET") return storageController.read();
+    if (method === "PUT") return storageController.write(request);
+  }
   // Pairing (#286). Literal paths, and matched before CORE_PATH so `pairing`
   // is never read as a Core id. Both are Node-side work the browser cannot do:
   // a TLS chain is read here, a key pair is born here, and a code is spent
