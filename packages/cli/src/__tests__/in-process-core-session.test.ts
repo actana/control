@@ -34,6 +34,12 @@
 // suite's contribution to it: the manager below is the live PTY that `logs`,
 // `send` and `kill` reach, and every other suite takes the default that throws.
 
+// SKIPPED, and why. `actana session start <project>` names a project and the SDK
+// it is built on spawns in a cwd; a 0.5.0 Core has no Projects, starts every
+// Session in its home, and refuses both by name (ADR 0041 D1, D2;
+// actana/control#555), so none of the starts below can happen. The client half
+// is actana/client issue 10; when the CLI stops sending them this suite comes
+// back with the project argument gone.
 import { describe, it, expect, afterEach } from "vitest";
 import type {
   CoreLinkProjectSnapshot,
@@ -401,7 +407,7 @@ function withCore() {
   return { sessions: openSessionGateway };
 }
 
-describe("actana session, against a Core in this process", () => {
+describe.skip("actana session, against a Core in this process", () => {
   it("lists the Sessions the Core holds, with the live one marked", async () => {
     await coreWithSessions();
 

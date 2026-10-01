@@ -38,10 +38,8 @@ export const LISTENING_SENTINEL = "@@AC_CORE_LISTENING@@";
 export const BAD_LOG_TAGS = [
   "event-log.open-failed",
   "core-query.open-failed",
-  "project-roots.open-failed",
   "event-log.db-missing",
   "core-query.db-missing",
-  "project-roots.db-missing",
 ];
 
 const LOG_TAIL_LINES = 200;
@@ -298,17 +296,17 @@ export async function dialAndRequest(blob, request, resultType, resultField, tim
 }
 
 /**
- * `projectsList` over a fresh dial, resolving the returned array.
+ * `sessionRowsList` over a fresh dial, resolving the returned array.
  *
  * Reaching a real result proves the schema migrated: the `db-missing`
  * degradation path never gets this far.
  */
-export function dialAndListProjects(blob, timeoutMs = DIAL_TIMEOUT_MS) {
+export function dialAndListSessions(blob, timeoutMs = DIAL_TIMEOUT_MS) {
   return dialAndRequest(
     blob,
-    { type: "projectsList" },
-    "projectsListResult",
-    "projects",
+    { type: "sessionRowsList" },
+    "sessionRowsListResult",
+    "sessions",
     timeoutMs,
   );
 }
@@ -327,7 +325,7 @@ export function dialAndListHarnessAvailability(blob, timeoutMs = DIAL_TIMEOUT_MS
 /**
  * The assertion both smokes make about an already-spawned Core: it reaches the
  * listening marker, logs nothing from the degradation paths, prints no
- * credential, and answers `projectsList` with `[]` against a real migrated
+ * credential, and answers `sessionRowsList` with `[]` against a real migrated
  * schema over an authenticated mTLS dial.
  *
  * `home` is the throwaway home the Core was given, which is where it persisted
@@ -462,16 +460,16 @@ export async function assertBootsAndDials(child, { home, port, timeoutMs, die, l
     die(`could not build a client credential from the Core's material: ${err.message}`, observer.logLines);
   }
 
-  let projects;
+  let sessions;
   try {
-    projects = await dialAndListProjects(blob, DIAL_TIMEOUT_MS);
+    sessions = await dialAndListSessions(blob, DIAL_TIMEOUT_MS);
   } catch (err) {
     die(`core-link dial failed: ${err.message}`, observer.logLines);
   }
-  if (!Array.isArray(projects) || projects.length !== 0) {
-    die(`projectsList did not return []: got ${JSON.stringify(projects)}`, observer.logLines);
+  if (!Array.isArray(sessions) || sessions.length !== 0) {
+    die(`sessionRowsList did not return []: got ${JSON.stringify(sessions)}`, observer.logLines);
   }
-  log("projectsList returned [] against a real schema");
+  log("sessionRowsList returned [] against a real schema");
 
   // Give a schema regression (absent → open-failed on the first poll) a chance
   // to log before declaring the boot clean.

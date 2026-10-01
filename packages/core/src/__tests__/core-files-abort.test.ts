@@ -25,20 +25,20 @@ import * as fs from "node:fs";
 import * as http from "node:http";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createCoreFilesRequestHandler, type CoreFilesPort } from "../core-files-routes";
-import { ProjectWriteLocks } from "../files-transfer-locks";
+import { WorkspaceWriteLocks } from "../files-transfer-locks";
 import { packDirectory } from "../files-tar";
 import { cleanupTrees, collect, makeTree } from "./files-fixture";
 
 let server: http.Server;
 let base: string;
 let projects: Record<string, string> = {};
-let locks: ProjectWriteLocks;
+let locks: WorkspaceWriteLocks;
 
-const filesPort: CoreFilesPort = { projectRoot: (id) => projects[id] ?? null };
+const filesPort: CoreFilesPort = { workspaceRoot: () => Object.values(projects)[0] ?? null };
 
 beforeEach(async () => {
   projects = {};
-  locks = new ProjectWriteLocks();
+  locks = new WorkspaceWriteLocks();
   const routes = createCoreFilesRequestHandler({ filesPort, locks });
   server = http.createServer();
   server.on("request", (req, res) => {
@@ -119,7 +119,7 @@ describe("a client that hangs up mid-transfer", () => {
     // Wait for the handler to be genuinely in the middle of the transfer: the
     // lease taken, the 200 sent, and enough entries written that the response
     // has stopped accepting them.
-    expect(await eventually(() => locks.current("p1") !== null)).toBe(true);
+    expect(await eventually(() => locks.current() !== null)).toBe(true);
     expect(await eventually(() => upload.responded())).toBe(true);
     await delay(250);
 
@@ -128,8 +128,8 @@ describe("a client that hangs up mid-transfer", () => {
     // The assertion the review asked for. Before the fix this stayed held for
     // the lifetime of the process, because the handler was parked inside
     // `writeLine` awaiting a `'drain'` that a destroyed socket never emits.
-    expect(await eventually(() => locks.current("p1") === null)).toBe(true);
-    expect(locks.current("p1")).toBeNull();
+    expect(await eventually(() => locks.current() === null)).toBe(true);
+    expect(locks.current()).toBeNull();
   });
 
   it("leaves the Project writable, rather than 409 for the lifetime of the process", async () => {
@@ -137,10 +137,10 @@ describe("a client that hangs up mid-transfer", () => {
     const tar = await backpressuringTar();
 
     const upload = abortableUpload("/v1/projects/p1/files?path=drop", tar);
-    expect(await eventually(() => locks.current("p1") !== null)).toBe(true);
+    expect(await eventually(() => locks.current() !== null)).toBe(true);
     await delay(250);
     upload.abort();
-    expect(await eventually(() => locks.current("p1") === null)).toBe(true);
+    expect(await eventually(() => locks.current() === null)).toBe(true);
 
     // The refusal F8 asks to be immediate must not have become permanent: a
     // later write to the same Project is served, not refused.

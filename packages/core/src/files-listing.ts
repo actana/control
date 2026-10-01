@@ -1,4 +1,4 @@
-// Walking a Project's tree, one entry at a time (#166, F7 and the manifest half
+// Walking the workspace's tree, one entry at a time (#166, F7 and the manifest half
 // of F10).
 //
 // **Nothing here builds a tree.** The walk is an async generator that yields an
@@ -9,12 +9,12 @@
 // the tree and not by its size.
 //
 // It reads the disk and nothing else, because there is nothing else to read —
-// ADR 0027 D1: a Project's files are the directory, there is no index, and a
+// ADR 0027 D1: the workspace's files are the directory, there is no index, and a
 // `readdir` is right at the moment it returns. Which is also why an entry that
 // vanishes between the `opendir` and the `lstat` is skipped rather than raised:
-// a Project is a folder a harness is actively writing to, and a listing that
+// the workspace is a folder a harness is actively writing to, and a listing that
 // fails because a build deleted a temp file underneath it would fail most of
-// the time on exactly the Projects worth looking at.
+// the time on exactly the workspaces worth looking at.
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -24,13 +24,13 @@ import * as path from "node:path";
  *
  * Deliberately the same five names, in the same units, as `TarEntryReport` in
  * `files-tar.ts`: `mtime` in epoch milliseconds, `mode` masked to `0o777`, a
- * POSIX-shaped path relative to the **Project root** rather than to whatever
+ * POSIX-shaped path relative to the **workspace root** rather than to whatever
  * subtree was asked for. A client that reads a listing and a client that reads
  * an upload's progress stream are reading the same manifest shape, which is
  * the shape F10's future diff endpoint compares.
  */
 export type FileListingEntry = {
-  /** Project-relative, `/`-separated. Never absolute, never `..`. */
+  /** workspace-relative, `/`-separated. Never absolute, never `..`. */
   path: string;
   kind: "file" | "directory" | "symlink";
   /** Bytes of content. 0 for a directory; the target's length for a symlink. */
@@ -99,7 +99,7 @@ export type FileListingOptions = {
 /**
  * Walk `absolute`, yielding a line per entry, deepest-last within a directory.
  *
- * `base` is where `absolute` sits relative to the Project root, and every path
+ * `base` is where `absolute` sits relative to the workspace root, and every path
  * yielded is prefixed with it — so a listing of `src` reports `src/index.ts`,
  * which is the string an operator hands back to `GET`. The caller has already
  * confined both (`files-confinement.ts`); this function does no path checking
@@ -110,8 +110,8 @@ export type FileListingOptions = {
  * thing a digest covers — and the walk does not descend through it. Two
  * reasons, and the second is the load-bearing one: following links makes a
  * self-referential link an infinite listing, and a link pointing out of the
- * Project would put paths from outside the root into a stream whose every path
- * is supposed to be Project-relative. Confinement is checked on the way in;
+ * workspace would put paths from outside the root into a stream whose every path
+ * is supposed to be workspace-relative. Confinement is checked on the way in;
  * not descending through links is what keeps it true for the whole walk.
  *
  * A directory can still contain one of its own ancestors without a symlink —
@@ -134,7 +134,7 @@ export async function* listTree(
   const digests = options.sha256 === true;
 
   // `lstat`, not `stat`, and it makes no difference for the path that was
-  // asked for: `confineToProjectRoot` already resolved it through every
+  // asked for: `confineToWorkspace` already resolved it through every
   // symlink, so what is here is the real thing it named.
   const stats = await fs.promises.lstat(absolute);
   if (!stats.isDirectory()) {
@@ -188,7 +188,7 @@ async function* walk(
       stats = await fs.promises.lstat(childAbsolute);
     } catch {
       // Gone between the `opendir` and here. The ordinary case on a live
-      // Project (ADR 0027 D1), not a failure: the answer is what was there
+      // workspace (ADR 0027 D1), not a failure: the answer is what was there
       // when it was asked, and this was not there.
       continue;
     }
@@ -230,7 +230,7 @@ async function* walk(
  * reported as a skip, exactly as `packDirectory` skips them. They are not
  * missing from the listing by accident and there is nothing an operator can do
  * about a `.sock` a running daemon left behind; a `skipped` line per socket
- * would be noise in every listing of a Project with a dev server in it.
+ * would be noise in every listing of a workspace with a dev server in it.
  */
 async function describeLeaf(
   absolute: string,

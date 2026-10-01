@@ -1,6 +1,6 @@
 import Database from "better-sqlite3";
 import { describe, it, expect } from "vitest";
-import { dropLegacyWorktreeSchema, ensureSchema } from "@actana/shared/schema-bootstrap";
+import { dropLegacyWorktreeSchema, ensureSchema } from "../schema-bootstrap";
 
 function columns(db: Database.Database, table: string): string[] {
   return (

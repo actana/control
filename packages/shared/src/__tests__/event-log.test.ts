@@ -98,7 +98,7 @@ describe("event-log", () => {
 
     it("allows null ptyId and sessionId (default)", () => {
       const db = freshDb();
-      const id = appendEvent(db as unknown as EventLogSqlite, "project:created", "{}");
+      const id = appendEvent(db as unknown as EventLogSqlite, "session:created", "{}");
       const row = db
         .prepare("SELECT pty_id, session_id FROM event_log WHERE event_id = ?")
         .get(id) as { pty_id: string | null; session_id: string | null };

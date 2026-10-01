@@ -12,7 +12,7 @@ import { createCoreFilesRequestHandler } from "../core-files-routes";
 
 /** The real file routes, over a Project root nothing in this suite reads. */
 function fileRoutes(): ReturnType<typeof createCoreFilesRequestHandler> {
-  return createCoreFilesRequestHandler({ filesPort: { projectRoot: () => "/tmp/project" } });
+  return createCoreFilesRequestHandler({ filesPort: { workspaceRoot: () => "/tmp/workspace" } });
 }
 
 // The `files` capability on `ready` (#165 F9, ADR 0024 D11).

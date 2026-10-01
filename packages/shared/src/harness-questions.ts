@@ -18,14 +18,6 @@ export type HarnessQuestion = {
   options: HarnessQuestionOption[];
 };
 
-export type PendingQuestion = {
-  id: string;
-  sessionId: string;
-  projectId: string;
-  questions: HarnessQuestion[];
-  createdAt: number;
-};
-
 function capText(value: unknown): string {
   if (typeof value !== "string") return "";
   return value.trim().slice(0, MAX_TEXT_LENGTH);

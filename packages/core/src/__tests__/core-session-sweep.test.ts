@@ -53,7 +53,6 @@ describe("settling the Sessions a Core restart stranded", () => {
     coreMutationStore.mutateSession({
       op: "create",
       sessionId,
-      projectId: "p1",
       title: sessionId,
       agent: "claude-code",
       status,
@@ -87,12 +86,6 @@ describe("settling the Sessions a Core restart stranded", () => {
       mutationPort: coreMutationStore,
       queryPort: coreQueryStore,
       eventLog: { appendEvent, getLastEventId, readEventTail },
-    });
-    coreMutationStore.mutateProject({
-      op: "create",
-      projectId: "p1",
-      name: "Warehouse",
-      path: userDataDir,
     });
   });
 
@@ -210,7 +203,6 @@ describe("settling the Sessions a Core restart stranded", () => {
     // a Session while this Core boots. It must cost that row, not the sweep.
     const failing = new CoreSessionWriter({
       mutationPort: {
-        mutateProject: coreMutationStore.mutateProject,
         mutateSession: (mutation) => {
           if (mutation.op === "update" && mutation.sessionId === "t-a") {
             throw new Error("row vanished");

@@ -179,16 +179,9 @@ describe("a Session finishing on a Core notifies the Panel (issue 20)", () => {
     wss.connect(ws);
     ws.receive({ type: "subscribe", reqId: "s1", lastEventId: 0 });
 
-    coreMutationStore.mutateProject({
-      op: "create",
-      projectId: "p1",
-      name: "Warehouse",
-      path: userDataDir,
-    });
     coreMutationStore.mutateSession({
       op: "create",
       sessionId: "t1",
-      projectId: "p1",
       title: "Rebuild the picker",
       agent: "claude-code",
       status: "running",
@@ -225,7 +218,7 @@ describe("a Session finishing on a Core notifies the Panel (issue 20)", () => {
     return from + events.length;
   }
 
-  it("raises one notification carrying the real project, Session, and Core alias", async () => {
+  it("raises one notification carrying the real Session and Core alias", async () => {
     const hook = renderHook(() => useSessionFinishNotifications());
     await finishOnCore();
     deliverToPanel();
@@ -237,8 +230,7 @@ describe("a Session finishing on a Core notifies the Panel (issue 20)", () => {
     expect(stored).toHaveLength(1);
     expect(stored[0]).toMatchObject({
       id: "t1",
-      projectId: "p1",
-      projectName: "Warehouse",
+      projectId: "",
       sessionTitle: "Rebuild the picker",
       coreId: "core-a",
       coreAlias: "Warehouse VM",

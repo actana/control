@@ -1,7 +1,7 @@
 import Database from "better-sqlite3";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { restrictDbFilePermissions } from "@actana/shared/schema-bootstrap";
+import { restrictDbFilePermissions } from "../db/schema-bootstrap";
 import { resolvePanelDataDir } from "./panel-data-dir";
 
 /**

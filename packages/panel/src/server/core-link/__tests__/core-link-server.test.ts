@@ -235,7 +235,7 @@ describe("PtyCoreLinkServer", () => {
     pair.server.receive({
       type: "spawn",
       reqId: "r1",
-      opts: { sessionId: "t1", cwd: "/tmp", command: "claude", agent: "claude-code" },
+      opts: { sessionId: "t1", command: "claude", agent: "claude-code" },
     });
     await vi.waitFor(() => expect(core.spawn).toHaveBeenCalled());
     expect(pair.server.lastSent()).toMatchObject({
@@ -307,51 +307,37 @@ describe("PtyCoreLinkServer", () => {
   });
 });
 
-// ─── projectsList / sessionRowsList via CoreQueryPort (issue 07) ───────────────
+// ─── sessionRowsList via CoreQueryPort (issue 07) ───────────────
 
 import type { CoreQueryPort } from "@actana/core/pty-core-link-server";
-import type {
-  CoreLinkProjectSnapshot,
-  CoreLinkSessionRow,
-} from "@actana/sdk/core";
+import type { CoreSessionRow } from "@actana/shared/core-query";
 
 /** In-memory CoreQueryPort for tests. */
 class FakeQueryPort implements CoreQueryPort {
-  projects: CoreLinkProjectSnapshot[] = [];
-  sessions: CoreLinkSessionRow[] = [];
-  listProjectsCalls = 0;
-  listSessionRowsCalls: (string | undefined)[] = [];
-
-  listProjects(): CoreLinkProjectSnapshot[] {
-    this.listProjectsCalls++;
-    return this.projects;
-  }
-  listArchivedSessionsCalls: (string | undefined)[] = [];
+  sessions: CoreSessionRow[] = [];
+  listSessionRowsCalls = 0;
+  listArchivedSessionsCalls = 0;
 
   // Mirrors the real port's split: `listSessionRows` is the active list and has no
   // argument that reaches an archived row; the archived rows have their own
   // method behind their own frame (ADR 0019).
-  listSessionRows(projectId?: string): CoreLinkSessionRow[] {
-    this.listSessionRowsCalls.push(projectId);
-    return this.inScope(projectId).filter((t) => !t.archived);
+  listSessionRows(): CoreSessionRow[] {
+    this.listSessionRowsCalls++;
+    return this.sessions.filter((t) => !t.archived);
   }
-  listArchivedSessions(projectId?: string): CoreLinkSessionRow[] {
-    this.listArchivedSessionsCalls.push(projectId);
-    return this.inScope(projectId).filter((t) => t.archived);
+  listArchivedSessions(): CoreSessionRow[] {
+    this.listArchivedSessionsCalls++;
+    return this.sessions.filter((t) => t.archived);
   }
-  countArchivedSessions(projectId?: string): number {
-    return this.inScope(projectId).filter((t) => t.archived).length;
+  countArchivedSessions(): number {
+    return this.sessions.filter((t) => t.archived).length;
   }
-  getSession(sessionId: string): CoreLinkSessionRow | null {
+  getSession(sessionId: string): CoreSessionRow | null {
     return this.sessions.find((t) => t.sessionId === sessionId) ?? null;
-  }
-  private inScope(projectId?: string): CoreLinkSessionRow[] {
-    if (projectId === undefined) return this.sessions;
-    return this.sessions.filter((t) => t.projectId === projectId);
   }
 }
 
-describe("PtyCoreLinkServer projectsList / sessionRowsList (issue 07)", () => {
+describe("PtyCoreLinkServer sessionRowsList (issue 07)", () => {
   let core: ReturnType<typeof makeMockCore>;
   let server: PtyCoreLinkServer;
   let fakeWss: FakeWebSocketServer;
@@ -376,37 +362,11 @@ describe("PtyCoreLinkServer projectsList / sessionRowsList (issue 07)", () => {
     server.close();
   });
 
-  it("answers projectsList with the query port's project snapshots", async () => {
-    queryPort.projects = [
-      {
-        projectId: "p1",
-        name: "mission-control",
-        path: "/home/op/mission-control",
-        icon: "MC",
-        iconColor: "#7ce58a",
-        pinned: true,
-        rememberHarnessSettings: false,
-        savedHarness: null,
-        savedSkipPermissions: false,
-        savedBareSession: false,
-        defaultGridView: false,
-        updatedAt: 1,
-      },
-    ];
-    pair.server.receive({ type: "projectsList", reqId: "r1" });
-    await vi.waitFor(() => expect(queryPort.listProjectsCalls).toBe(1));
-    expect(pair.server.lastSent()).toEqual({
-      type: "projectsListResult",
-      reqId: "r1",
-      projects: queryPort.projects,
-    });
-  });
-
-  it("answers sessionRowsList (no projectId) with every session from the query port", async () => {
+  it("answers sessionRowsList with every session from the query port", async () => {
     queryPort.sessions = [
       {
         sessionId: "t1",
-        projectId: "p1",
+       
         title: "fix bug",
         titleManuallySet: false,
         claudeSessionId: null,
@@ -419,7 +379,7 @@ describe("PtyCoreLinkServer projectsList / sessionRowsList (issue 07)", () => {
       },
       {
         sessionId: "t2",
-        projectId: "p2",
+       
         title: "ship",
         titleManuallySet: false,
         claudeSessionId: null,
@@ -432,7 +392,7 @@ describe("PtyCoreLinkServer projectsList / sessionRowsList (issue 07)", () => {
       },
     ];
     pair.server.receive({ type: "sessionRowsList", reqId: "r2" });
-    await vi.waitFor(() => expect(queryPort.listSessionRowsCalls).toEqual([undefined]));
+    await vi.waitFor(() => expect(queryPort.listSessionRowsCalls).toBe(1));
     expect(pair.server.lastSent()).toEqual({
       type: "sessionRowsListResult",
       reqId: "r2",
@@ -441,30 +401,15 @@ describe("PtyCoreLinkServer projectsList / sessionRowsList (issue 07)", () => {
     });
   });
 
-  it("forwards the projectId filter on sessionRowsList to the query port", async () => {
-    queryPort.sessions = [
-      { sessionId: "t1", projectId: "p1", title: "a", titleManuallySet: false, claudeSessionId: null, agent: "claude-code", status: "running", pinned: false, archived: false, icon: null, updatedAt: 1 },
-      { sessionId: "t2", projectId: "p2", title: "b", titleManuallySet: false, claudeSessionId: null, agent: "claude-code", status: "running", pinned: false, archived: false, icon: null, updatedAt: 1 },
-    ];
-    pair.server.receive({ type: "sessionRowsList", reqId: "r3", projectId: "p1" });
-    await vi.waitFor(() => expect(queryPort.listSessionRowsCalls).toEqual(["p1"]));
-    expect(pair.server.lastSent()).toEqual({
-      type: "sessionRowsListResult",
-      reqId: "r3",
-      sessions: published([queryPort.sessions[0]]),
-      archivedCount: 0,
-    });
-  });
-
   // ─── Archived read path (issue 62, ADR 0019) ───
 
   it("keeps archived rows off sessionRowsListResult and reports only how many there are", async () => {
     queryPort.sessions = [
-      { sessionId: "live", projectId: "p1", title: "a", titleManuallySet: false, claudeSessionId: null, agent: "claude-code", status: "running", pinned: false, archived: false, icon: null, updatedAt: 3 },
-      { sessionId: "old1", projectId: "p1", title: "b", titleManuallySet: false, claudeSessionId: null, agent: "claude-code", status: "done", pinned: false, archived: true, icon: null, updatedAt: 2 },
-      { sessionId: "old2", projectId: "p1", title: "c", titleManuallySet: false, claudeSessionId: null, agent: "claude-code", status: "done", pinned: false, archived: true, icon: null, updatedAt: 1 },
+      { sessionId: "live", title: "a", titleManuallySet: false, claudeSessionId: null, agent: "claude-code", status: "running", pinned: false, archived: false, icon: null, updatedAt: 3 },
+      { sessionId: "old1", title: "b", titleManuallySet: false, claudeSessionId: null, agent: "claude-code", status: "done", pinned: false, archived: true, icon: null, updatedAt: 2 },
+      { sessionId: "old2", title: "c", titleManuallySet: false, claudeSessionId: null, agent: "claude-code", status: "done", pinned: false, archived: true, icon: null, updatedAt: 1 },
     ];
-    pair.server.receive({ type: "sessionRowsList", reqId: "r4", projectId: "p1" });
+    pair.server.receive({ type: "sessionRowsList", reqId: "r4" });
     await vi.waitFor(() => expect(pair.server.lastSent()?.type).toBe("sessionRowsListResult"));
     expect(pair.server.lastSent()).toEqual({
       type: "sessionRowsListResult",
@@ -476,32 +421,18 @@ describe("PtyCoreLinkServer projectsList / sessionRowsList (issue 07)", () => {
 
   it("answers archivedSessionRowsList with the archived rows and nothing else", async () => {
     queryPort.sessions = [
-      { sessionId: "live", projectId: "p1", title: "a", titleManuallySet: false, claudeSessionId: null, agent: "claude-code", status: "running", pinned: false, archived: false, icon: null, updatedAt: 3 },
-      { sessionId: "old", projectId: "p1", title: "b", titleManuallySet: false, claudeSessionId: null, agent: "claude-code", status: "done", pinned: false, archived: true, icon: null, updatedAt: 2 },
+      { sessionId: "live", title: "a", titleManuallySet: false, claudeSessionId: null, agent: "claude-code", status: "running", pinned: false, archived: false, icon: null, updatedAt: 3 },
+      { sessionId: "old", title: "b", titleManuallySet: false, claudeSessionId: null, agent: "claude-code", status: "done", pinned: false, archived: true, icon: null, updatedAt: 2 },
     ];
-    pair.server.receive({ type: "archivedSessionRowsList", reqId: "r5", projectId: "p1" });
-    await vi.waitFor(() => expect(queryPort.listArchivedSessionsCalls).toEqual(["p1"]));
+    pair.server.receive({ type: "archivedSessionRowsList", reqId: "r5" });
+    await vi.waitFor(() => expect(queryPort.listArchivedSessionsCalls).toBe(1));
     expect(pair.server.lastSent()).toEqual({
       type: "archivedSessionRowsListResult",
       reqId: "r5",
       sessions: published([queryPort.sessions[1]]),
     });
     // The archived read path never reaches the active one.
-    expect(queryPort.listSessionRowsCalls).toEqual([]);
-  });
-
-  it("scopes archivedSessionRowsList to one project, and lists every Core-wide row without one", async () => {
-    queryPort.sessions = [
-      { sessionId: "o1", projectId: "p1", title: "a", titleManuallySet: false, claudeSessionId: null, agent: "claude-code", status: "done", pinned: false, archived: true, icon: null, updatedAt: 2 },
-      { sessionId: "o2", projectId: "p2", title: "b", titleManuallySet: false, claudeSessionId: null, agent: "claude-code", status: "done", pinned: false, archived: true, icon: null, updatedAt: 1 },
-    ];
-    pair.server.receive({ type: "archivedSessionRowsList", reqId: "r6", projectId: "p2" });
-    await vi.waitFor(() => expect(pair.server.lastSent()?.type).toBe("archivedSessionRowsListResult"));
-    expect(pair.server.lastSent()).toMatchObject({ sessions: [queryPort.sessions[1]] });
-
-    pair.server.receive({ type: "archivedSessionRowsList", reqId: "r7" });
-    await vi.waitFor(() => expect(queryPort.listArchivedSessionsCalls).toEqual(["p2", undefined]));
-    expect(pair.server.lastSent()).toMatchObject({ reqId: "r7", sessions: queryPort.sessions });
+    expect(queryPort.listSessionRowsCalls).toBe(0);
   });
 
   it("returns empty results when no queryPort is configured (backward compat)", async () => {
@@ -525,10 +456,6 @@ describe("PtyCoreLinkServer projectsList / sessionRowsList (issue 07)", () => {
     const p = new FakeWebSocketPair();
     wss.simulateConnection(p.server);
     p.openClient();
-
-    p.server.receive({ type: "projectsList", reqId: "r1" });
-    await vi.waitFor(() => expect(p.server.lastSent()?.type).toBe("projectsListResult"));
-    expect(p.server.lastSent()).toMatchObject({ type: "projectsListResult", reqId: "r1", projects: [] });
 
     p.server.receive({ type: "sessionRowsList", reqId: "r2" });
     await vi.waitFor(() => expect(p.server.lastSent()?.type).toBe("sessionRowsListResult"));
@@ -633,7 +560,7 @@ describe("PtyCoreLinkServer event log", () => {
     pair.server.receive({
       type: "spawn",
       reqId: "r1",
-      opts: { sessionId: "t1", cwd: "/tmp", command: "claude", agent: "claude-code" },
+      opts: { sessionId: "t1", command: "claude", agent: "claude-code" },
     });
     await vi.waitFor(() => expect(core.spawn).toHaveBeenCalled());
     expect(eventLog.readEventTail(0)).toContainEqual(
@@ -665,7 +592,7 @@ describe("PtyCoreLinkServer event log", () => {
     pair.server.receive({
       type: "spawn",
       reqId: "r3",
-      opts: { sessionId: "t1", cwd: "/tmp", command: "claude", agent: "claude-code" },
+      opts: { sessionId: "t1", command: "claude", agent: "claude-code" },
     });
     await vi.waitFor(() => expect(core.spawn).toHaveBeenCalled());
     const spawns = eventLog.readEventTail(0).filter((e) => e.kind === "pty:spawn");
@@ -848,7 +775,7 @@ describe("PtyCoreLinkServer bearer auth", () => {
     pair.server.receive({
       type: "spawn",
       reqId: "r1",
-      opts: { sessionId: "t1", cwd: "/tmp", command: "claude", agent: "claude-code" },
+      opts: { sessionId: "t1", command: "claude", agent: "claude-code" },
     });
     await vi.waitFor(() => expect(core.spawn).toHaveBeenCalled());
     expect(pair.server.lastSent()).toMatchObject({ type: "spawned", reqId: "r1" });
@@ -856,75 +783,25 @@ describe("PtyCoreLinkServer bearer auth", () => {
 });
 
 
-// ─── projectsMutate / sessionsMutate / sessionsList via CoreMutationPort ────
+// ─── sessionsMutate / sessionsList via CoreMutationPort ────
 // Issue 04 (ADR 0004): the Core process owns the write path against its
 // SQLite. The server dispatches these frames to the mutation port; a null
 // port keeps backward-compat stubs.
 
 import type { CoreMutationPort } from "@actana/core/pty-core-link-server";
-import type {
-  CoreLinkProjectMutation,
-  CoreLinkSessionSnapshot,
-  CoreLinkSessionMutation,
-} from "@actana/sdk/core";
+import type { CoreLinkSessionSnapshot } from "@actana/sdk/core";
+import type { CoreSessionMutation } from "@actana/shared/core-mutations";
 
 /** In-memory CoreMutationPort for tests. Records every call so assertions
  *  can verify the server threaded the frame through unchanged. */
 class FakeMutationPort implements CoreMutationPort {
-  projects: CoreLinkProjectSnapshot[] = [];
-  sessionRows: CoreLinkSessionRow[] = [];
+  sessionRows: CoreSessionRow[] = [];
   sessions: CoreLinkSessionSnapshot[] = [];
-  mutateProjectCalls: CoreLinkProjectMutation[] = [];
-  mutateSessionCalls: CoreLinkSessionMutation[] = [];
-  listSessionsCalls: (string | undefined)[] = [];
-  throwOnNextMutateProject: string | null = null;
+  mutateSessionCalls: CoreSessionMutation[] = [];
+  listSessionsCalls = 0;
   throwOnNextMutateSession: string | null = null;
 
-  mutateProject(mutation: CoreLinkProjectMutation): CoreLinkProjectSnapshot | null {
-    this.mutateProjectCalls.push(mutation);
-    if (this.throwOnNextMutateProject) {
-      const msg = this.throwOnNextMutateProject;
-      this.throwOnNextMutateProject = null;
-      throw new Error(msg);
-    }
-    if (mutation.op === "create") {
-      const snap: CoreLinkProjectSnapshot = {
-        projectId: mutation.projectId ?? `p-${this.projects.length + 1}`,
-        name: mutation.name,
-        path: mutation.path,
-        icon: mutation.icon ?? "PR",
-        iconColor: mutation.iconColor ?? "#7ce58a",
-        pinned: mutation.pinned === true,
-        rememberHarnessSettings: false,
-        savedHarness: null,
-        savedSkipPermissions: false,
-        savedBareSession: false,
-        defaultGridView: false,
-        updatedAt: 1,
-      };
-      this.projects.push(snap);
-      return snap;
-    }
-    if (mutation.op === "rename") {
-      const p = this.projects.find((x) => x.projectId === mutation.projectId);
-      if (!p) return null;
-      p.name = mutation.name;
-      return p;
-    }
-    if (mutation.op === "pin") {
-      const p = this.projects.find((x) => x.projectId === mutation.projectId);
-      if (!p) return null;
-      p.pinned = mutation.pinned;
-      return p;
-    }
-    // archive
-    const idx = this.projects.findIndex((x) => x.projectId === mutation.projectId);
-    if (idx < 0) return null;
-    const [removed] = this.projects.splice(idx, 1);
-    return removed ?? null;
-  }
-
-  mutateSession(mutation: CoreLinkSessionMutation): CoreLinkSessionRow | null {
+  mutateSession(mutation: CoreSessionMutation): CoreSessionRow | null {
     this.mutateSessionCalls.push(mutation);
     if (this.throwOnNextMutateSession) {
       const msg = this.throwOnNextMutateSession;
@@ -937,9 +814,8 @@ class FakeMutationPort implements CoreMutationPort {
       throw new Error(`unknown session mutation op: ${(mutation as { op?: string }).op}`);
     }
     if (mutation.op === "create") {
-      const snap: CoreLinkSessionRow = {
+      const snap: CoreSessionRow = {
         sessionId: mutation.sessionId ?? `t-${this.sessionRows.length + 1}`,
-        projectId: mutation.projectId,
         title: mutation.title,
         titleManuallySet: false,
         claudeSessionId: null,
@@ -963,14 +839,13 @@ class FakeMutationPort implements CoreMutationPort {
     return t;
   }
 
-  listSessions(projectId?: string): CoreLinkSessionSnapshot[] {
-    this.listSessionsCalls.push(projectId);
-    if (projectId === undefined) return this.sessions;
-    return this.sessions.filter((s) => this.sessionRows.find((t) => t.sessionId === s.sessionId)?.projectId === projectId);
+  listSessions(): CoreLinkSessionSnapshot[] {
+    this.listSessionsCalls++;
+    return this.sessions;
   }
 }
 
-describe("PtyCoreLinkServer projectsMutate / sessionsMutate / sessionsList (issue 04)", () => {
+describe("PtyCoreLinkServer sessionsMutate / sessionsList (issue 04)", () => {
   let core: ReturnType<typeof makeMockCore>;
   let server: PtyCoreLinkServer;
   let fakeWss: FakeWebSocketServer;
@@ -998,79 +873,13 @@ describe("PtyCoreLinkServer projectsMutate / sessionsMutate / sessionsList (issu
     server.close();
   });
 
-  it("round-trips projectsMutate create → response carries the new snapshot", async () => {
-    pair.server.receive({
-      type: "projectsMutate",
-      reqId: "r1",
-      mutation: { op: "create", name: "New Project", path: "/home/op/np" },
-    });
-    await vi.waitFor(() =>
-      expect(mutationPort.mutateProjectCalls).toHaveLength(1),
-    );
-    expect(pair.server.lastSent()).toMatchObject({
-      type: "projectsMutateResult",
-      reqId: "r1",
-      project: { name: "New Project", path: "/home/op/np" },
-    });
-  });
-
-  it("appends a project:created event on a successful create", async () => {
-    pair.server.receive({
-      type: "projectsMutate",
-      reqId: "r1",
-      mutation: { op: "create", projectId: "p-x", name: "X", path: "/x" },
-    });
-    await vi.waitFor(() =>
-      expect(mutationPort.mutateProjectCalls).toHaveLength(1),
-    );
-    const events = eventLog.readEventTail(0);
-    expect(events).toContainEqual(
-      expect.objectContaining({ kind: "project:created" }),
-    );
-    const created = events.find((e) => e.kind === "project:created");
-    expect(JSON.parse(created!.payload)).toEqual({ projectId: "p-x" });
-  });
-
-  it("does not append an event when the mutation returns null (unknown row)", async () => {
-    pair.server.receive({
-      type: "projectsMutate",
-      reqId: "r1",
-      mutation: { op: "rename", projectId: "missing", name: "y" },
-    });
-    await vi.waitFor(() =>
-      expect(pair.server.lastSent()?.type).toBe("projectsMutateResult"),
-    );
-    expect(pair.server.lastSent()).toMatchObject({ project: null });
-    expect(eventLog.readEventTail(0)).toEqual([]);
-  });
-
-  it("translates a mutation-store throw into an error frame with the message", async () => {
-    mutationPort.throwOnNextMutateProject =
-      "project path does not exist on the Core: /nowhere";
-    pair.server.receive({
-      type: "projectsMutate",
-      reqId: "r1",
-      mutation: { op: "create", name: "X", path: "/nowhere" },
-    });
-    await vi.waitFor(() => expect(pair.server.lastSent()?.type).toBe("error"));
-    expect(pair.server.lastSent()).toMatchObject({
-      type: "error",
-      reqId: "r1",
-      message: expect.stringContaining("does not exist on the Core"),
-    });
-    expect(eventLog.readEventTail(0)).toEqual([]);
-  });
-
   it("round-trips sessionsMutate create → response carries the new session", async () => {
     pair.server.receive({
       type: "sessionsMutate",
       reqId: "r1",
       mutation: {
         op: "create",
-        projectId: "p1",
         title: "fix bug",
-        titleManuallySet: false,
-        claudeSessionId: null,
         agent: "claude-code",
       },
     });
@@ -1078,62 +887,24 @@ describe("PtyCoreLinkServer projectsMutate / sessionsMutate / sessionsList (issu
     expect(pair.server.lastSent()).toMatchObject({
       type: "sessionsMutateResult",
       reqId: "r1",
-      session: { projectId: "p1", title: "fix bug", titleManuallySet: false, claudeSessionId: null, agent: "claude-code" },
+      session: { title: "fix bug", agent: "claude-code" },
     });
   });
 
-  it("appends project:renamed on a rename (not project:updated — matches ADR-0004)", async () => {
-    // Seed a project.
+  it("translates a session mutation-store throw into an error frame with the message", async () => {
+    mutationPort.throwOnNextMutateSession = "session title is required";
     pair.server.receive({
-      type: "projectsMutate",
-      reqId: "seed",
-      mutation: { op: "create", projectId: "p1", name: "old", path: "/p" },
+      type: "sessionsMutate",
+      reqId: "r1",
+      mutation: { op: "create", title: "", agent: "claude-code" },
     });
-    await vi.waitFor(() => expect(mutationPort.mutateProjectCalls).toHaveLength(1));
-    pair.server.receive({
-      type: "projectsMutate",
-      reqId: "r2",
-      mutation: { op: "rename", projectId: "p1", name: "new" },
+    await vi.waitFor(() => expect(pair.server.lastSent()?.type).toBe("error"));
+    expect(pair.server.lastSent()).toMatchObject({
+      type: "error",
+      reqId: "r1",
+      message: expect.stringContaining("title is required"),
     });
-    await vi.waitFor(() => expect(mutationPort.mutateProjectCalls).toHaveLength(2));
-    const kinds = eventLog.readEventTail(0).map((e) => e.kind);
-    expect(kinds).toEqual(["project:created", "project:renamed"]);
-  });
-
-  it("appends project:archived on an archive", async () => {
-    pair.server.receive({
-      type: "projectsMutate",
-      reqId: "seed",
-      mutation: { op: "create", projectId: "p1", name: "x", path: "/p" },
-    });
-    await vi.waitFor(() => expect(mutationPort.mutateProjectCalls).toHaveLength(1));
-    pair.server.receive({
-      type: "projectsMutate",
-      reqId: "r2",
-      mutation: { op: "archive", projectId: "p1" },
-    });
-    await vi.waitFor(() => expect(mutationPort.mutateProjectCalls).toHaveLength(2));
-    const kinds = eventLog.readEventTail(0).map((e) => e.kind);
-    expect(kinds).toEqual(["project:created", "project:archived"]);
-  });
-
-  it("appends project:pinnedChanged on a pin (issue 10)", async () => {
-    pair.server.receive({
-      type: "projectsMutate",
-      reqId: "seed",
-      mutation: { op: "create", projectId: "p1", name: "x", path: "/p" },
-    });
-    await vi.waitFor(() => expect(mutationPort.mutateProjectCalls).toHaveLength(1));
-    pair.server.receive({
-      type: "projectsMutate",
-      reqId: "r2",
-      mutation: { op: "pin", projectId: "p1", pinned: true },
-    });
-    await vi.waitFor(() => expect(mutationPort.mutateProjectCalls).toHaveLength(2));
-    // Dedicated kind so a Panel listening for pin-only events can subscribe
-    // distinctly from other project edits (see subscribe-core-project-events).
-    const kinds = eventLog.readEventTail(0).map((e) => e.kind);
-    expect(kinds).toEqual(["project:created", "project:pinnedChanged"]);
+    expect(eventLog.readEventTail(0)).toEqual([]);
   });
 
   it("translates a stale-shape sessionsMutate (missing op) into an error frame, not a silent no-op", async () => {
@@ -1143,7 +914,7 @@ describe("PtyCoreLinkServer projectsMutate / sessionsMutate / sessionsList (issu
       type: "sessionsMutate",
       reqId: "r1",
       // Missing `op` — the old flat shape a stale Panel might still send.
-      mutation: { sessionId: "t1", status: "running" } as unknown as CoreLinkSessionMutation,
+      mutation: { sessionId: "t1", status: "running" } as unknown as CoreSessionMutation,
     });
     await vi.waitFor(() => expect(pair.server.lastSent()?.type).toBe("error"));
     expect(pair.server.lastSent()).toMatchObject({
@@ -1159,7 +930,7 @@ describe("PtyCoreLinkServer projectsMutate / sessionsMutate / sessionsList (issu
     pair.server.receive({
       type: "sessionsMutate",
       reqId: "seed",
-      mutation: { op: "create", sessionId: "t1", projectId: "p1", title: "a", titleManuallySet: false, claudeSessionId: null, agent: "claude-code" },
+      mutation: { op: "create", sessionId: "t1", title: "a", agent: "claude-code" },
     });
     await vi.waitFor(() => expect(mutationPort.mutateSessionCalls).toHaveLength(1));
     pair.server.receive({
@@ -1177,7 +948,7 @@ describe("PtyCoreLinkServer projectsMutate / sessionsMutate / sessionsList (issu
     pair.server.receive({
       type: "sessionsMutate",
       reqId: "seed",
-      mutation: { op: "create", sessionId: "t1", projectId: "p1", title: "a", titleManuallySet: false, claudeSessionId: null, agent: "claude-code" },
+      mutation: { op: "create", sessionId: "t1", title: "a", agent: "claude-code" },
     });
     await vi.waitFor(() => expect(mutationPort.mutateSessionCalls).toHaveLength(1));
     // Icon-only patch → dedicated kind.
@@ -1195,7 +966,7 @@ describe("PtyCoreLinkServer projectsMutate / sessionsMutate / sessionsList (issu
     pair.server.receive({
       type: "sessionsMutate",
       reqId: "seed",
-      mutation: { op: "create", sessionId: "t1", projectId: "p1", title: "a", titleManuallySet: false, claudeSessionId: null, agent: "claude-code" },
+      mutation: { op: "create", sessionId: "t1", title: "a", agent: "claude-code" },
     });
     await vi.waitFor(() => expect(mutationPort.mutateSessionCalls).toHaveLength(1));
     // Pin-only patch → dedicated kind so consumers that only track pinned
@@ -1214,7 +985,7 @@ describe("PtyCoreLinkServer projectsMutate / sessionsMutate / sessionsList (issu
     pair.server.receive({
       type: "sessionsMutate",
       reqId: "seed",
-      mutation: { op: "create", sessionId: "t1", projectId: "p1", title: "a", titleManuallySet: false, claudeSessionId: null, agent: "claude-code" },
+      mutation: { op: "create", sessionId: "t1", title: "a", agent: "claude-code" },
     });
     await vi.waitFor(() => expect(mutationPort.mutateSessionCalls).toHaveLength(1));
     pair.server.receive({
@@ -1231,7 +1002,7 @@ describe("PtyCoreLinkServer projectsMutate / sessionsMutate / sessionsList (issu
     pair.server.receive({
       type: "sessionsMutate",
       reqId: "seed",
-      mutation: { op: "create", sessionId: "t1", projectId: "p1", title: "a", titleManuallySet: false, claudeSessionId: null, agent: "claude-code" },
+      mutation: { op: "create", sessionId: "t1", title: "a", agent: "claude-code" },
     });
     await vi.waitFor(() => expect(mutationPort.mutateSessionCalls).toHaveLength(1));
     pair.server.receive({
@@ -1250,19 +1021,12 @@ describe("PtyCoreLinkServer projectsMutate / sessionsMutate / sessionsList (issu
       { sessionId: "t2", ptyId: null, status: "ready", updatedAt: 5 },
     ];
     pair.server.receive({ type: "sessionsList", reqId: "r1" });
-    await vi.waitFor(() => expect(mutationPort.listSessionsCalls).toEqual([undefined]));
+    await vi.waitFor(() => expect(mutationPort.listSessionsCalls).toBe(1));
     expect(pair.server.lastSent()).toEqual({
       type: "sessionsListResult",
       reqId: "r1",
       sessions: published(mutationPort.sessions),
     });
-  });
-
-  it("forwards a projectId filter on sessionsList", async () => {
-    pair.server.receive({ type: "sessionsList", reqId: "r1", projectId: "p9" });
-    await vi.waitFor(() =>
-      expect(mutationPort.listSessionsCalls).toEqual(["p9"]),
-    );
   });
 
   it("falls back to stubs when no mutationPort is configured (backward compat)", async () => {
@@ -1278,19 +1042,9 @@ describe("PtyCoreLinkServer projectsMutate / sessionsMutate / sessionsList (issu
     p.openClient();
 
     p.server.receive({
-      type: "projectsMutate",
-      reqId: "r1",
-      mutation: { op: "create", name: "x", path: "/x" },
-    });
-    await vi.waitFor(() =>
-      expect(p.server.lastSent()?.type).toBe("projectsMutateResult"),
-    );
-    expect(p.server.lastSent()).toMatchObject({ project: null });
-
-    p.server.receive({
       type: "sessionsMutate",
       reqId: "r2",
-      mutation: { op: "create", projectId: "p1", title: "x", titleManuallySet: false, claudeSessionId: null, agent: "claude-code" },
+      mutation: { op: "create", title: "x", agent: "claude-code" },
     });
     await vi.waitFor(() =>
       expect(p.server.lastSent()?.type).toBe("sessionsMutateResult"),
@@ -1306,86 +1060,6 @@ describe("PtyCoreLinkServer projectsMutate / sessionsMutate / sessionsList (issu
     bareServer.close();
   });
 
-  it("round-trips the full create-project → list → create-session → list → sessions flow", async () => {
-    // 1. Create a project.
-    pair.server.receive({
-      type: "projectsMutate",
-      reqId: "r1",
-      mutation: { op: "create", projectId: "p1", name: "MC", path: "/mc" },
-    });
-    await vi.waitFor(() =>
-      expect(mutationPort.mutateProjectCalls).toHaveLength(1),
-    );
-
-    // 2. projectsList must include the new project — served from a query port
-    // sharing the same in-memory rows. Wire a query port that reads from the
-    // fake mutation port's projects[] so the round-trip flows through both.
-    server.close();
-    const queryPort: CoreQueryPort = {
-      listProjects: () => mutationPort.projects,
-      listSessionRows: (projectId?: string) =>
-        (projectId
-          ? mutationPort.sessionRows.filter((t) => t.projectId === projectId)
-          : mutationPort.sessionRows
-        ).filter((t) => !t.archived),
-      listArchivedSessions: (projectId?: string) =>
-        (projectId
-          ? mutationPort.sessionRows.filter((t) => t.projectId === projectId)
-          : mutationPort.sessionRows
-        ).filter((t) => t.archived),
-      countArchivedSessions: (projectId?: string) =>
-        (projectId
-          ? mutationPort.sessionRows.filter((t) => t.projectId === projectId)
-          : mutationPort.sessionRows
-        ).filter((t) => t.archived).length,
-      getSession: (sessionId: string) =>
-        mutationPort.sessionRows.find((t) => t.sessionId === sessionId) ?? null,
-    };
-    const wss2 = new FakeWebSocketServer();
-    const server2 = new PtyCoreLinkServer(core, {
-      port: 0,
-      createServer: () => wss2 as unknown as WebSocketServerLike,
-      queryPort,
-      mutationPort,
-      eventLog,
-    });
-    const p2 = new FakeWebSocketPair();
-    wss2.simulateConnection(p2.server);
-    p2.openClient();
-
-    p2.server.receive({ type: "projectsList", reqId: "r2" });
-    await vi.waitFor(() => expect(p2.server.lastSent()?.type).toBe("projectsListResult"));
-    expect(p2.server.lastSent()).toMatchObject({
-      projects: [expect.objectContaining({ projectId: "p1", name: "MC" })],
-    });
-
-    // 3. Create a session.
-    p2.server.receive({
-      type: "sessionsMutate",
-      reqId: "r3",
-      mutation: { op: "create", sessionId: "t1", projectId: "p1", title: "fix", titleManuallySet: false, claudeSessionId: null, agent: "claude-code" },
-    });
-    await vi.waitFor(() => expect(mutationPort.mutateSessionCalls).toHaveLength(1));
-
-    // 4. sessionRowsList must include the new session.
-    p2.server.receive({ type: "sessionRowsList", reqId: "r4", projectId: "p1" });
-    await vi.waitFor(() => expect(p2.server.lastSent()?.type).toBe("sessionRowsListResult"));
-    expect(p2.server.lastSent()).toMatchObject({
-      sessions: [expect.objectContaining({ sessionId: "t1", title: "fix" })],
-    });
-
-    // 5. sessionsList must include the new session as a session (no PTY yet → ptyId null).
-    mutationPort.sessions = [
-      { sessionId: "t1", ptyId: null, status: "ready", updatedAt: 1 },
-    ];
-    p2.server.receive({ type: "sessionsList", reqId: "r5" });
-    await vi.waitFor(() => expect(p2.server.lastSent()?.type).toBe("sessionsListResult"));
-    expect(p2.server.lastSent()).toMatchObject({
-      sessions: [{ sessionId: "t1", ptyId: null, status: "ready", updatedAt: 1 }],
-    });
-
-    server2.close();
-  });
 });
 
 // ─── Heartbeat / dead-connection detection ──────────────────────────────────

@@ -15,7 +15,9 @@ import {
   type SpawnPolicyErrorCode,
 } from "@actana/shared/pty-spawn-policy";
 
-const PROJECT_ROOT = "/Users/me/code/myproject";
+// Every spawn starts in the Core's home (ADR 0041 D2): the policy takes it from
+// `deps.home`, and the request names no cwd.
+const HOME_DIR = "/Users/me";
 
 function writeExecutable(file: string, contents = "#!/bin/sh\nexit 0\n"): void {
   fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -27,7 +29,7 @@ function depsFor(overrides: Partial<SpawnPolicyDeps> = {}): SpawnPolicyDeps {
   return {
     cwdExists: () => true,
     realpath: (p) => p,
-    projectRoots: () => [PROJECT_ROOT],
+    home: () => HOME_DIR,
     resolveCommand: (name) => `/usr/local/bin/${name}`,
     resolveShell: () => ({
       shell: "/bin/zsh",
@@ -40,7 +42,6 @@ function depsFor(overrides: Partial<SpawnPolicyDeps> = {}): SpawnPolicyDeps {
 function spawnReq(overrides: Record<string, unknown> = {}): SpawnRequest {
   return {
     sessionId: "t1",
-    cwd: PROJECT_ROOT,
     command: "claude --resume 00000000-0000-4000-8000-000000000000",
     agent: "claude-code",
     ...overrides,
@@ -67,7 +68,7 @@ function expectRejected(
 }
 
 describe("resolveSpawnPlan — agent allow-list", () => {
-  it("accepts a claude-code spawn at the project root and returns argv directly", () => {
+  it("accepts a claude-code spawn in the home directory and returns argv directly", () => {
     const plan = resolveSpawnPlan(spawnReq(), depsFor());
     expect(plan.mode).toBe("agent");
     if (plan.mode !== "agent") throw new Error("wrong mode");
@@ -645,15 +646,15 @@ describe("resolveSpawnPlan — shell env integration", () => {
 describe("resolveSpawnPlan — shell terminals", () => {
   it("requires the explicit shell:true flag when no agent is set", () => {
     expectRejected(
-      { sessionId: "t", cwd: PROJECT_ROOT, command: "pnpm dev" },
+      { sessionId: "t", command: "pnpm dev" },
       depsFor(),
       "missing-agent-or-shell-flag",
     );
   });
 
-  it("accepts an opted-in user-shell spawn at the project root", () => {
+  it("accepts an opted-in user-shell spawn", () => {
     const plan = resolveSpawnPlan(
-      { sessionId: "t", cwd: PROJECT_ROOT, command: "pnpm dev", shell: true },
+      { sessionId: "t", command: "pnpm dev", shell: true },
       depsFor(),
     );
     expect(plan.mode).toBe("shell");
@@ -664,7 +665,7 @@ describe("resolveSpawnPlan — shell terminals", () => {
 
   it("accepts an empty command in shell mode (just open the shell prompt)", () => {
     const plan = resolveSpawnPlan(
-      { sessionId: "t", cwd: PROJECT_ROOT, command: "", shell: true },
+      { sessionId: "t", command: "", shell: true },
       depsFor(),
     );
     if (plan.mode !== "shell") throw new Error("wrong mode");
@@ -673,132 +674,43 @@ describe("resolveSpawnPlan — shell terminals", () => {
 
   it("rejects when both agent and shell:true are set", () => {
     expectRejected(
-      { sessionId: "t", cwd: PROJECT_ROOT, command: "claude", agent: "claude-code", shell: true },
+      { sessionId: "t", command: "claude", agent: "claude-code", shell: true },
       depsFor(),
       "shell-with-agent",
     );
   });
 });
 
-describe("resolveSpawnPlan — cwd confinement", () => {
-  it("accepts the project root itself", () => {
-    expect(() =>
-      resolveSpawnPlan(spawnReq({ cwd: PROJECT_ROOT }), depsFor()),
-    ).not.toThrow();
-  });
-
-  it("accepts a subdirectory of a project root", () => {
-    expect(() =>
-      resolveSpawnPlan(
-        spawnReq({ cwd: path.join(PROJECT_ROOT, "packages", "core") }),
-        depsFor(),
-      ),
-    ).not.toThrow();
-  });
-
-  it("rejects a cwd outside every registered project root (the cross-project escape)", () => {
-    expectRejected(
-      spawnReq({ cwd: "/tmp/elsewhere" }),
-      depsFor(),
-      "cwd-outside-project-roots",
-    );
-  });
-
-  it("rejects /etc, /, and other dangerous absolute paths", () => {
-    for (const cwd of ["/", "/etc", "/usr/local"]) {
-      expectRejected(spawnReq({ cwd }), depsFor(), "cwd-outside-project-roots");
-    }
-  });
-
-  it("rejects a path that's a sibling-prefix of a project root (no string-startsWith escape)", () => {
-    // Without `path.sep`-aware comparison, "/Users/me/code/myproject-evil"
-    // startsWith "/Users/me/code/myproject" → true. Confirm the policy uses
-    // separator-aware matching so a sibling can't impersonate a project root.
-    expectRejected(
-      spawnReq({ cwd: `${PROJECT_ROOT}-evil` }),
-      depsFor({ projectRoots: () => [PROJECT_ROOT] }),
-      "cwd-outside-project-roots",
-    );
-  });
-
-  it("realpaths both sides so a symlinked cwd can't escape its project", () => {
-    // cwd is a symlink that resolves OUTSIDE every project root. The pre-fix
-    // handler would have accepted it because the literal string is "inside"; a
-    // realpath-aware check catches the escape.
-    expectRejected(
-      spawnReq({ cwd: path.join(PROJECT_ROOT, "evil-link") }),
-      depsFor({
-        realpath: (p) =>
-          p === path.join(PROJECT_ROOT, "evil-link") ? "/etc" : p,
-      }),
-      "cwd-outside-project-roots",
-    );
-  });
-
-  it("rejects when the cwd directory does not exist or is not readable", () => {
-    expectRejected(spawnReq(), depsFor({ cwdExists: () => false }), "invalid-cwd");
-  });
-
-  it("rejects empty cwd", () => {
-    expectRejected(spawnReq({ cwd: "" }), depsFor(), "invalid-cwd");
-  });
-
-  it("rejects when there are no registered project roots", () => {
-    expectRejected(spawnReq(), depsFor({ projectRoots: () => [] }), "cwd-outside-project-roots");
-  });
-});
-
-describe("resolveSpawnPlan — home shell roots (dashboard home terminals)", () => {
-  const HOME_DIR = "/Users/me";
-
-  it("accepts a shell terminal started in an allowed home root", () => {
-    const plan = resolveSpawnPlan(
-      { sessionId: "t", cwd: HOME_DIR, command: "", shell: true, home: true },
-      depsFor({ homeShellRoots: () => [HOME_DIR] }),
-    );
-    expect(plan.mode).toBe("shell");
-    if (plan.mode !== "shell") throw new Error("wrong mode");
+describe("resolveSpawnPlan — every spawn starts in the Core's home", () => {
+  it("plans an agent spawn in the home directory, though the request names no cwd", () => {
+    const plan = resolveSpawnPlan(spawnReq(), depsFor());
     expect(plan.cwd).toBe(HOME_DIR);
   });
 
-  it("accepts a subdirectory of the home root", () => {
-    expect(() =>
-      resolveSpawnPlan(
-        { sessionId: "t", cwd: path.join(HOME_DIR, "Downloads"), command: "", shell: true, home: true },
-        depsFor({ homeShellRoots: () => [HOME_DIR] }),
-      ),
-    ).not.toThrow();
+  it("plans a shell spawn in the home directory", () => {
+    const plan = resolveSpawnPlan({ sessionId: "t", command: "", shell: true }, depsFor());
+    expect(plan.cwd).toBe(HOME_DIR);
   });
 
-  it("rejects the home dir when no homeShellRoots are provided", () => {
-    // The allowance is opt-in: without homeShellRoots a shell at ~ is still
-    // confined to project roots, exactly like before this feature.
-    expectRejected(
-      { sessionId: "t", cwd: HOME_DIR, command: "", shell: true },
-      depsFor(),
-      "cwd-outside-project-roots",
+  it("plans the canonical home: a home that is a symlink is followed, as the cwd always was", () => {
+    const plan = resolveSpawnPlan(
+      spawnReq(),
+      depsFor({ realpath: (p) => (p === HOME_DIR ? "/data/users/me" : p) }),
     );
+    expect(plan.cwd).toBe("/data/users/me");
   });
 
-  it("does NOT extend the home allowance to agent spawns", () => {
-    // homeShellRoots is shell-only; an agent must never start outside a project
-    // root even when a home root is configured.
-    expectRejected(
-      spawnReq({ cwd: HOME_DIR }),
-      depsFor({ homeShellRoots: () => [HOME_DIR] }),
-      "cwd-outside-project-roots",
-    );
+  it("takes the directory from the Core, never from the request: a cwd on the request is not read", () => {
+    const plan = resolveSpawnPlan(spawnReq({ cwd: "/etc" }), depsFor());
+    expect(plan.cwd).toBe(HOME_DIR);
   });
 
-  it("realpaths home roots so a symlinked home cwd can't escape", () => {
-    expectRejected(
-      { sessionId: "t", cwd: path.join(HOME_DIR, "evil-link"), command: "", shell: true, home: true },
-      depsFor({
-        homeShellRoots: () => [HOME_DIR],
-        realpath: (p) => (p === path.join(HOME_DIR, "evil-link") ? "/etc" : p),
-      }),
-      "cwd-outside-project-roots",
-    );
+  it("rejects when the home is not an accessible directory", () => {
+    expectRejected(spawnReq(), depsFor({ cwdExists: () => false }), "invalid-cwd");
+  });
+
+  it("rejects when the Core names no home at all", () => {
+    expectRejected(spawnReq(), depsFor({ home: () => "" }), "invalid-cwd");
   });
 });
 
@@ -814,13 +726,13 @@ describe("SpawnPolicyError surfaces typed codes", () => {
   });
 
   it("does not echo rejected request input in user-facing messages", () => {
-    const rawCwd = `${PROJECT_ROOT}\x1b[2J`;
+    const rawHome = `${HOME_DIR}\x1b[2J`;
     try {
-      resolveSpawnPlan(spawnReq({ cwd: rawCwd }), depsFor({ cwdExists: () => false }));
+      resolveSpawnPlan(spawnReq(), depsFor({ home: () => rawHome, cwdExists: () => false }));
       throw new Error("expected throw");
     } catch (err) {
       expect(err).toBeInstanceOf(SpawnPolicyError);
-      expect((err as SpawnPolicyError).message).not.toContain(PROJECT_ROOT);
+      expect((err as SpawnPolicyError).message).not.toContain(HOME_DIR);
       expect((err as SpawnPolicyError).message).not.toContain("\x1b");
     }
 
@@ -840,71 +752,30 @@ describe("SpawnPolicyError surfaces typed codes", () => {
 
 // ─── VM Shell Sessions (issue 06) ─────────────────────────────────────────────
 //
-// A `shellSession: true` spawn is a free-form interactive shell on the
-// Core's machine with NO project-root requirement (a VM shell has no
-// project folder). The policy must skip cwd/project-root validation entirely
-// and resolve to a login shell — the Core's own home dir is supplied by
-// the spawn handler (pty-manager), not the renderer, so the renderer never
-// learns or supplies a host filesystem path.
+// A `shellSession: true` spawn is a free-form interactive shell on the Core's
+// machine. Like every spawn it starts in the Core's home, which the policy
+// supplies; the renderer never learns or supplies a host filesystem path.
 
 describe("resolveSpawnPlan — VM shell sessions (shellSession: true)", () => {
-  const VM_HOME = "/home/op";
-
-  it("accepts a shellSession spawn with an empty cwd and no project roots", () => {
-    // No project roots registered, cwd empty — a VM shell doesn't belong to a
-    // project, so the project-root check must be skipped entirely.
-    const plan = resolveSpawnPlan(
-      { sessionId: "vm1", cwd: "", command: "", shellSession: true },
-      depsFor({ projectRoots: () => [] }),
-    );
+  it("accepts a shellSession spawn and starts it in the home directory", () => {
+    const plan = resolveSpawnPlan({ sessionId: "vm1", command: "", shellSession: true }, depsFor());
     expect(plan.mode).toBe("shell-session");
     if (plan.mode !== "shell-session") throw new Error("wrong mode");
     expect(plan.shellPath).toBe("/bin/zsh");
     expect(plan.shellArgs).toEqual(["-l"]);
+    expect(plan.cwd).toBe(HOME_DIR);
   });
 
   it("accepts a shellSession spawn with a starting command", () => {
-    const plan = resolveSpawnPlan(
-      { sessionId: "vm2", cwd: "", command: "htop", shellSession: true },
-      depsFor({ projectRoots: () => [] }),
-    );
+    const plan = resolveSpawnPlan({ sessionId: "vm2", command: "htop", shellSession: true }, depsFor());
     if (plan.mode !== "shell-session") throw new Error("wrong mode");
     expect(plan.shellArgs).toEqual(["-l", "-c", "htop"]);
     expect(plan.command).toBe("htop");
   });
 
-  it("accepts the Core's own home dir as cwd (handler-supplied, not renderer)", () => {
-    // The handler (PtyCore.spawn) replaces the empty cwd with its own
-    // os.homedir() before calling resolveSpawnPlan, so the plan's cwd is the
-    // real home path on the Core machine — never a renderer-supplied path.
-    const plan = resolveSpawnPlan(
-      { sessionId: "vm3", cwd: VM_HOME, command: "", shellSession: true },
-      depsFor({ projectRoots: () => [PROJECT_ROOT], homeShellRoots: () => [] }),
-    );
-    if (plan.mode !== "shell-session") throw new Error("wrong mode");
-    expect(plan.cwd).toBe(VM_HOME);
-  });
-
-  it("skips the project-root check even when cwd is outside every root", () => {
-    // A path that would be rejected for ordinary shell/agent spawns is fine
-    // here — the VM shell is the SSH-equivalent escape hatch and is gated by
-    // core-link auth, not project-root containment.
-    const plan = resolveSpawnPlan(
-      { sessionId: "vm4", cwd: "/etc", command: "", shellSession: true },
-      depsFor({ projectRoots: () => [PROJECT_ROOT] }),
-    );
-    expect(plan.mode).toBe("shell-session");
-  });
-
   it("rejects setting both shellSession: true and agent", () => {
     expectRejected(
-      {
-        sessionId: "vm5",
-        cwd: "",
-        command: "claude",
-        agent: "claude-code",
-        shellSession: true,
-      },
+      { sessionId: "vm5", command: "claude", agent: "claude-code", shellSession: true },
       depsFor(),
       "shell-with-agent",
     );
@@ -912,13 +783,7 @@ describe("resolveSpawnPlan — VM shell sessions (shellSession: true)", () => {
 
   it("rejects setting both shellSession: true and shell: true", () => {
     expectRejected(
-      {
-        sessionId: "vm6",
-        cwd: "",
-        command: "",
-        shell: true,
-        shellSession: true,
-      },
+      { sessionId: "vm6", command: "", shell: true, shellSession: true },
       depsFor(),
       "shell-with-agent",
     );
@@ -930,21 +795,10 @@ describe("resolveSpawnPlan — VM shell sessions (shellSession: true)", () => {
     // login shell verbatim (mirrors `shell: true` mode); the policy gates on
     // core-link auth, not command content. A `;` is the user's own shell.
     const plan = resolveSpawnPlan(
-      { sessionId: "vm7", cwd: "", command: "ls; echo done", shellSession: true },
+      { sessionId: "vm7", command: "ls; echo done", shellSession: true },
       depsFor(),
     );
     if (plan.mode !== "shell-session") throw new Error("wrong mode");
     expect(plan.shellArgs).toEqual(["-l", "-c", "ls; echo done"]);
-  });
-
-  it("does not consult homeShellRoots for a shellSession (it's not a home terminal)", () => {
-    // homeShellRoots is the project-less home terminal allowance; a VM shell is
-    // a different concept and must not piggyback on it. Even with no
-    // homeShellRoots, the shellSession is accepted.
-    const plan = resolveSpawnPlan(
-      { sessionId: "vm8", cwd: "", command: "", shellSession: true },
-      depsFor({ homeShellRoots: undefined }),
-    );
-    expect(plan.mode).toBe("shell-session");
   });
 });

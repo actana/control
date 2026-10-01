@@ -145,23 +145,23 @@ describe("CoreClient", () => {
     const core = authenticatingRig();
     const { client: c, dial } = await connected(core);
 
-    const [spawned, found, replayed] = await Promise.all([
-      c.spawn({ sessionId: "t1", cwd: "/tmp", command: "claude", agent: "claude-code" }),
+    // Not a `spawn`: a Core refuses the one this client builds, because it
+    // still names a cwd and every Session starts in the Core's home (ADR 0041).
+    const [found, replayed, again] = await Promise.all([
       c.findBySession("t1"),
       c.replay("pty-1", 3),
+      c.findBySession("t2"),
     ]);
 
-    // `hooksReportTurnStart` rides on every spawn answer now (issue 177
-    // finding 4); this rig's Core omits it, and absent reads as false.
-    expect(spawned).toEqual({ ptyId: "pty-1", hooksReportTurnStart: false });
     expect(found).toEqual({ ptyId: "pty-1" });
     expect(replayed).toEqual({ data: "scrollback", nextSeq: 7, from: undefined });
+    expect(again).toEqual({ ptyId: "pty-1" });
     // Three questions, three distinct ids, and the Core answered each with the
     // id it was asked under.
     const asked = dial
       .last()
       .client.frames()
-      .filter((f) => f.type === "spawn" || f.type === "findBySession" || f.type === "replay")
+      .filter((f) => f.type === "findBySession" || f.type === "replay")
       .map((f) => f.reqId);
     expect(new Set(asked).size).toBe(3);
   });
@@ -173,9 +173,6 @@ describe("CoreClient", () => {
     rig = startCoreRig({
       authVerifier: (bearer) => verifyBearer(bearer, SECRET),
       mutationPort: {
-        mutateProject: () => {
-          throw new Error("Folder not found");
-        },
         mutateSession: () => {
           throw new Error("no such session");
         },
@@ -193,9 +190,6 @@ describe("CoreClient", () => {
     // No `code` on this frame, and none invented: a reader takes the code when
     // it is there and falls back to the message when it is not.
     expect((err as CoreLinkRequestError).code).toBeUndefined();
-    await expect(c.projectsMutate({ op: "rename", projectId: "p1", name: "n" })).rejects.toThrow(
-      "Folder not found",
-    );
   });
 
   it("carries a coded error frame's code onto the rejection", () => {

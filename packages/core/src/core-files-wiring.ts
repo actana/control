@@ -30,10 +30,10 @@ import {
   type CoreHttpRoutes,
   type FilesAuthVerifier,
 } from "./core-files-routes";
-import type { ProjectWriteLocks } from "./files-transfer-locks";
+import type { WorkspaceWriteLocks } from "./files-transfer-locks";
 
 export type CoreFileRoutesWiring = {
-  /** The Project-root lookup the routes read (ADR 0027: the filesystem is the model). */
+  /** The workspace-root lookup the routes read (ADR 0027: the filesystem is the model). */
   filesPort: CoreFilesPort;
   /**
    * The core-link server's own bearer verifier, or `undefined` on a loopback
@@ -56,7 +56,7 @@ export type CoreFileRoutesWiring = {
  */
 export function buildCoreFileRoutes(
   wiring: CoreFileRoutesWiring,
-): CoreHttpRoutes & { locks: ProjectWriteLocks } {
+): CoreHttpRoutes & { locks: WorkspaceWriteLocks } {
   return createCoreFilesRequestHandler({
     filesPort: wiring.filesPort,
     // Spread rather than `authVerifier: wiring.authVerifier`, so that "no

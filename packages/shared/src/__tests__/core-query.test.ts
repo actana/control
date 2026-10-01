@@ -4,42 +4,23 @@ import {
   countArchivedSessions,
   queryActiveSessions,
   queryArchivedSessions,
-  queryProjects,
   queryStrandedReadySessions,
   querySessionProvenNeverWorked,
   querySessionRows,
   type CoreQuerySqlite,
 } from "../core-query";
-import type {
-  CoreLinkProjectSnapshot,
-  CoreLinkSessionRow,
-} from "@actana/sdk/core";
+import type { CoreSessionRow } from "../core-query";
 
-// Pure SQL helpers that read the Core's projects + sessions tables and map
-// them to core-link snapshots (issue 07). The Core is the single source of
+// Pure SQL helpers that read the Core's sessions table and map it to
+// core-link snapshots (issue 07). The Core is the single source of
 // truth; the Panel holds none. These helpers operate on a minimal sqlite
 // interface so tests pass an in-memory better-sqlite3 handle.
 
 function openDb(): Database.Database {
   const db = new Database(":memory:");
   db.exec(`
-    CREATE TABLE projects (
-      id TEXT PRIMARY KEY,
-      name TEXT NOT NULL,
-      path TEXT NOT NULL,
-      icon TEXT NOT NULL,
-      icon_color TEXT NOT NULL,
-      pinned INTEGER NOT NULL DEFAULT 0,
-      remember_agent_settings INTEGER NOT NULL DEFAULT 0,
-      saved_agent TEXT,
-      saved_skip_permissions INTEGER NOT NULL DEFAULT 0,
-      saved_bare_session INTEGER NOT NULL DEFAULT 0,
-      default_grid_view INTEGER NOT NULL DEFAULT 0,
-      updated_at INTEGER NOT NULL
-    );
     CREATE TABLE sessions (
       id TEXT PRIMARY KEY,
-      project_id TEXT NOT NULL,
       title TEXT NOT NULL,
       agent TEXT NOT NULL,
       status TEXT NOT NULL DEFAULT 'running',
@@ -60,41 +41,14 @@ function asQuery(db: Database.Database): CoreQuerySqlite {
   return db as unknown as CoreQuerySqlite;
 }
 
-function insertProject(
-  db: Database.Database,
-  p: Partial<CoreLinkProjectSnapshot> & Pick<CoreLinkProjectSnapshot, "projectId" | "name" | "path">,
-): void {
-  db.prepare(
-    `INSERT INTO projects (
-       id, name, path, icon, icon_color, pinned,
-       remember_agent_settings, saved_agent, saved_skip_permissions,
-       saved_bare_session, default_grid_view, updated_at
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).run(
-    p.projectId,
-    p.name,
-    p.path,
-    p.icon ?? "MC",
-    p.iconColor ?? "#7ce58a",
-    p.pinned ? 1 : 0,
-    p.rememberHarnessSettings ? 1 : 0,
-    p.savedHarness ?? null,
-    p.savedSkipPermissions ? 1 : 0,
-    p.savedBareSession ? 1 : 0,
-    p.defaultGridView ? 1 : 0,
-    p.updatedAt ?? 1,
-  );
-}
-
 function insertSession(
   db: Database.Database,
-  t: Partial<CoreLinkSessionRow> & Pick<CoreLinkSessionRow, "sessionId" | "projectId">,
+  t: Partial<CoreSessionRow> & Pick<CoreSessionRow, "sessionId">,
 ): void {
   db.prepare(
-    "INSERT INTO sessions (id, project_id, title, agent, status, pinned, archived, icon, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    "INSERT INTO sessions (id, title, agent, status, pinned, archived, icon, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
   ).run(
     t.sessionId,
-    t.projectId,
     t.title ?? "session",
     t.agent ?? "claude-code",
     t.status ?? "running",
@@ -143,89 +97,9 @@ function sessionUpdated(db: Database.Database, sessionId: string, status?: strin
     "session:updated",
     null,
     sessionId,
-    JSON.stringify({ sessionId, projectId: "p1", ...(status === undefined ? {} : { status }) }),
+    JSON.stringify({ sessionId, ...(status === undefined ? {} : { status }) }),
   );
 }
-
-describe("queryProjects", () => {
-  let db: Database.Database;
-  beforeEach(() => {
-    db = openDb();
-  });
-
-  it("returns project snapshots from the projects table", () => {
-    insertProject(db, { projectId: "p1", name: "mission-control", path: "/home/op/mc", icon: "MC", iconColor: "#7ce58a", pinned: true, updatedAt: 100 });
-    insertProject(db, { projectId: "p2", name: "scratch", path: "/home/op/scratch", icon: "SC", iconColor: "#e5484d", pinned: false, updatedAt: 200 });
-    const projects = queryProjects(asQuery(db));
-    expect(projects).toHaveLength(2);
-    expect(projects).toContainEqual({
-      projectId: "p1",
-      name: "mission-control",
-      path: "/home/op/mc",
-      icon: "MC",
-      iconColor: "#7ce58a",
-      pinned: true,
-      rememberHarnessSettings: false,
-      savedHarness: null,
-      savedSkipPermissions: false,
-      savedBareSession: false,
-      defaultGridView: false,
-      updatedAt: 100,
-    });
-    expect(projects).toContainEqual({
-      projectId: "p2",
-      name: "scratch",
-      path: "/home/op/scratch",
-      icon: "SC",
-      iconColor: "#e5484d",
-      pinned: false,
-      rememberHarnessSettings: false,
-      savedHarness: null,
-      savedSkipPermissions: false,
-      savedBareSession: false,
-      defaultGridView: false,
-      updatedAt: 200,
-    });
-  });
-
-  it("carries the remembered session settings off the project row", () => {
-    insertProject(db, {
-      projectId: "p1",
-      name: "mission-control",
-      path: "/home/op/mc",
-      rememberHarnessSettings: true,
-      savedHarness: "codex",
-      savedSkipPermissions: true,
-      savedBareSession: true,
-      defaultGridView: true,
-    });
-    const [project] = queryProjects(asQuery(db));
-    expect(project).toMatchObject({
-      rememberHarnessSettings: true,
-      savedHarness: "codex",
-      savedSkipPermissions: true,
-      savedBareSession: true,
-      defaultGridView: true,
-    });
-  });
-
-  it("maps pinned 1/0 to boolean true/false", () => {
-    insertProject(db, { projectId: "p1", name: "a", path: "/a", pinned: true });
-    insertProject(db, { projectId: "p2", name: "b", path: "/b", pinned: false });
-    const projects = queryProjects(asQuery(db));
-    expect(projects.find((p) => p.projectId === "p1")?.pinned).toBe(true);
-    expect(projects.find((p) => p.projectId === "p2")?.pinned).toBe(false);
-  });
-
-  it("returns empty when there are no projects", () => {
-    expect(queryProjects(asQuery(db))).toEqual([]);
-  });
-
-  it("returns empty when the projects table does not exist", () => {
-    const db2 = new Database(":memory:");
-    expect(queryProjects(asQuery(db2))).toEqual([]);
-  });
-});
 
 describe("querySessionRows", () => {
   let db: Database.Database;
@@ -234,13 +108,12 @@ describe("querySessionRows", () => {
   });
 
   it("returns session snapshots from the sessions table", () => {
-    insertSession(db, { sessionId: "t1", projectId: "p1", title: "fix bug", agent: "claude-code", status: "running", icon: "bug", updatedAt: 10 });
-    insertSession(db, { sessionId: "t2", projectId: "p1", title: "ship", agent: "codex", status: "needs-input", pinned: true, updatedAt: 20 });
+    insertSession(db, { sessionId: "t1", title: "fix bug", agent: "claude-code", status: "running", icon: "bug", updatedAt: 10 });
+    insertSession(db, { sessionId: "t2", title: "ship", agent: "codex", status: "needs-input", pinned: true, updatedAt: 20 });
     const sessions = querySessionRows(asQuery(db));
     expect(sessions).toHaveLength(2);
     expect(sessions).toContainEqual({
       sessionId: "t2",
-      projectId: "p1",
       title: "ship",
       titleManuallySet: false,
       claudeSessionId: null,
@@ -255,30 +128,16 @@ describe("querySessionRows", () => {
   });
 
   it("omits archived sessions (the Fleet view is for active work)", () => {
-    insertSession(db, { sessionId: "live", projectId: "p1", archived: false });
-    insertSession(db, { sessionId: "done", projectId: "p1", archived: true });
+    insertSession(db, { sessionId: "live", archived: false });
+    insertSession(db, { sessionId: "done", archived: true });
     const sessions = querySessionRows(asQuery(db));
     expect(sessions.map((t) => t.sessionId)).toEqual(["live"]);
   });
 
-  it("filters by projectId when given", () => {
-    insertSession(db, { sessionId: "t1", projectId: "p1" });
-    insertSession(db, { sessionId: "t2", projectId: "p2" });
-    insertSession(db, { sessionId: "t3", projectId: "p1" });
-    const sessions = querySessionRows(asQuery(db), "p1");
-    expect(sessions.map((t) => t.sessionId).sort()).toEqual(["t1", "t3"]);
-  });
-
-  it("returns every active session when no projectId is given", () => {
-    insertSession(db, { sessionId: "t1", projectId: "p1" });
-    insertSession(db, { sessionId: "t2", projectId: "p2" });
-    expect(querySessionRows(asQuery(db))).toHaveLength(2);
-  });
-
   it("orders by updated_at descending (most recent first)", () => {
-    insertSession(db, { sessionId: "old", projectId: "p1", updatedAt: 100 });
-    insertSession(db, { sessionId: "new", projectId: "p1", updatedAt: 999 });
-    insertSession(db, { sessionId: "mid", projectId: "p1", updatedAt: 500 });
+    insertSession(db, { sessionId: "old", updatedAt: 100 });
+    insertSession(db, { sessionId: "new", updatedAt: 999 });
+    insertSession(db, { sessionId: "mid", updatedAt: 500 });
     expect(querySessionRows(asQuery(db)).map((t) => t.sessionId)).toEqual(["new", "mid", "old"]);
   });
 
@@ -298,33 +157,27 @@ describe("queryArchivedSessions", () => {
   });
 
   it("returns the archived rows, and only those", () => {
-    insertSession(db, { sessionId: "live", projectId: "p1", archived: false });
-    insertSession(db, { sessionId: "old", projectId: "p1", archived: true });
+    insertSession(db, { sessionId: "live", archived: false });
+    insertSession(db, { sessionId: "old", archived: true });
     const sessions = queryArchivedSessions(asQuery(db));
     expect(sessions.map((t) => t.sessionId)).toEqual(["old"]);
     expect(sessions[0]!.archived).toBe(true);
   });
 
   it("is the exact complement of querySessionRows — no row appears in both, none is lost", () => {
-    insertSession(db, { sessionId: "a", projectId: "p1", archived: false });
-    insertSession(db, { sessionId: "b", projectId: "p1", archived: true });
-    insertSession(db, { sessionId: "c", projectId: "p1", archived: false });
+    insertSession(db, { sessionId: "a", archived: false });
+    insertSession(db, { sessionId: "b", archived: true });
+    insertSession(db, { sessionId: "c", archived: false });
     const active = querySessionRows(asQuery(db)).map((t) => t.sessionId);
     const archived = queryArchivedSessions(asQuery(db)).map((t) => t.sessionId);
     expect(active.filter((id) => archived.includes(id))).toEqual([]);
     expect([...active, ...archived].sort()).toEqual(["a", "b", "c"]);
   });
 
-  it("filters by projectId when given", () => {
-    insertSession(db, { sessionId: "t1", projectId: "p1", archived: true });
-    insertSession(db, { sessionId: "t2", projectId: "p2", archived: true });
-    expect(queryArchivedSessions(asQuery(db), "p1").map((t) => t.sessionId)).toEqual(["t1"]);
-  });
-
   it("orders by updated_at descending, like the active list", () => {
-    insertSession(db, { sessionId: "old", projectId: "p1", archived: true, updatedAt: 100 });
-    insertSession(db, { sessionId: "new", projectId: "p1", archived: true, updatedAt: 999 });
-    insertSession(db, { sessionId: "mid", projectId: "p1", archived: true, updatedAt: 500 });
+    insertSession(db, { sessionId: "old", archived: true, updatedAt: 100 });
+    insertSession(db, { sessionId: "new", archived: true, updatedAt: 999 });
+    insertSession(db, { sessionId: "mid", archived: true, updatedAt: 500 });
     expect(queryArchivedSessions(asQuery(db)).map((t) => t.sessionId)).toEqual(["new", "mid", "old"]);
   });
 
@@ -340,11 +193,11 @@ describe("queryActiveSessions (the Core's boot sweep read, issue 243)", () => {
   });
 
   it("returns only the rows that still claim a live harness process", () => {
-    insertSession(db, { sessionId: "t-running", projectId: "p1", status: "running" });
-    insertSession(db, { sessionId: "t-waiting", projectId: "p1", status: "needs-input" });
-    insertSession(db, { sessionId: "t-ready", projectId: "p1", status: "ready" });
-    insertSession(db, { sessionId: "t-done", projectId: "p1", status: "finished" });
-    insertSession(db, { sessionId: "t-gone", projectId: "p1", status: "disconnected" });
+    insertSession(db, { sessionId: "t-running", status: "running" });
+    insertSession(db, { sessionId: "t-waiting", status: "needs-input" });
+    insertSession(db, { sessionId: "t-ready", status: "ready" });
+    insertSession(db, { sessionId: "t-done", status: "finished" });
+    insertSession(db, { sessionId: "t-gone", status: "disconnected" });
 
     expect(queryActiveSessions(asQuery(db)).map((t) => t.sessionId).sort()).toEqual([
       "t-running",
@@ -353,13 +206,13 @@ describe("queryActiveSessions (the Core's boot sweep read, issue 243)", () => {
   });
 
   it("includes archived rows — an archived Session claiming to work is just as wrong", () => {
-    insertSession(db, { sessionId: "t-archived", projectId: "p1", status: "running", archived: true });
+    insertSession(db, { sessionId: "t-archived", status: "running", archived: true });
     expect(queryActiveSessions(asQuery(db)).map((t) => t.sessionId)).toEqual(["t-archived"]);
   });
 
-  it("spans every project: a dead process did not die for one Project only", () => {
-    insertSession(db, { sessionId: "t-a", projectId: "p1", status: "running" });
-    insertSession(db, { sessionId: "t-b", projectId: "p2", status: "needs-input" });
+  it("spans every Session: a dead process did not die for one group only", () => {
+    insertSession(db, { sessionId: "t-a", status: "running" });
+    insertSession(db, { sessionId: "t-b", status: "needs-input" });
     expect(queryActiveSessions(asQuery(db))).toHaveLength(2);
   });
 
@@ -380,25 +233,25 @@ describe("queryStrandedReadySessions (the ready zombie, issue 387)", () => {
   it("finds a ready row a PTY was spawned for, and no other ready row", () => {
     // The bare Session: a PTY of some previous run, no hook ever fired, still
     // sitting on "Waiting for initial prompt…" hours after the process died.
-    insertSession(db, { sessionId: "t-zombie", projectId: "p1", status: "ready" });
+    insertSession(db, { sessionId: "t-zombie", status: "ready" });
     spawnedPty(db, "t-zombie");
     // The Session the operator created and has not started. It has no process
     // because it never had one — sweeping it would be the regression.
-    insertSession(db, { sessionId: "t-unstarted", projectId: "p1", status: "ready" });
+    insertSession(db, { sessionId: "t-unstarted", status: "ready" });
 
     expect(queryStrandedReadySessions(asQuery(db)).map((t) => t.sessionId)).toEqual(["t-zombie"]);
   });
 
   it("leaves every other status to the query that owns it", () => {
     for (const status of ["running", "needs-input", "finished", "disconnected"]) {
-      insertSession(db, { sessionId: `t-${status}`, projectId: "p1", status });
+      insertSession(db, { sessionId: `t-${status}`, status });
       spawnedPty(db, `t-${status}`);
     }
     expect(queryStrandedReadySessions(asQuery(db))).toEqual([]);
   });
 
   it("ignores a spawn recorded against some other Session", () => {
-    insertSession(db, { sessionId: "t-ready", projectId: "p1", status: "ready" });
+    insertSession(db, { sessionId: "t-ready", status: "ready" });
     spawnedPty(db, "t-other");
     expect(queryStrandedReadySessions(asQuery(db))).toEqual([]);
   });
@@ -406,7 +259,7 @@ describe("queryStrandedReadySessions (the ready zombie, issue 387)", () => {
   it("does not read a VM Shell Session spawn as harness evidence", () => {
     // `shellSession: true` carries a sessionId for routing and is not harness
     // work — a shell opened against a Session must not settle its card.
-    insertSession(db, { sessionId: "t-ready", projectId: "p1", status: "ready" });
+    insertSession(db, { sessionId: "t-ready", status: "ready" });
     spawnedPty(db, "t-ready", true);
     expect(queryStrandedReadySessions(asQuery(db))).toEqual([]);
 
@@ -420,16 +273,16 @@ describe("queryStrandedReadySessions (the ready zombie, issue 387)", () => {
     // agent — it is separated by its id instead. The CLI addresses those with
     // a synthetic `cli_shell_<uuid>`, which no `sessions` row carries, so the
     // join drops it. Pinning the shape here is what keeps that true.
-    insertSession(db, { sessionId: "t-ready", projectId: "p1", status: "ready" });
+    insertSession(db, { sessionId: "t-ready", status: "ready" });
     spawnedPty(db, "cli_shell_2f1c9a4e-0d3b-4c77-9f21-6b8e5a0d1c34");
     spawnedPty(db, "user-terminal-1");
     expect(queryStrandedReadySessions(asQuery(db))).toEqual([]);
   });
 
-  it("includes an archived row, and spans every project", () => {
-    insertSession(db, { sessionId: "t-arch", projectId: "p1", status: "ready", archived: true });
+  it("includes an archived row, and spans every Session", () => {
+    insertSession(db, { sessionId: "t-arch", status: "ready", archived: true });
     spawnedPty(db, "t-arch");
-    insertSession(db, { sessionId: "t-p2", projectId: "p2", status: "ready" });
+    insertSession(db, { sessionId: "t-p2", status: "ready" });
     spawnedPty(db, "t-p2");
     expect(queryStrandedReadySessions(asQuery(db)).map((t) => t.sessionId).sort()).toEqual([
       "t-arch",
@@ -440,7 +293,6 @@ describe("queryStrandedReadySessions (the ready zombie, issue 387)", () => {
   it("maps the row the way every other listing here does", () => {
     insertSession(db, {
       sessionId: "t-zombie",
-      projectId: "p1",
       status: "ready",
       title: "Waiting for initial prompt…",
       agent: "opencode",
@@ -450,7 +302,6 @@ describe("queryStrandedReadySessions (the ready zombie, issue 387)", () => {
     spawnedPty(db, "t-zombie");
     expect(queryStrandedReadySessions(asQuery(db))[0]).toMatchObject({
       sessionId: "t-zombie",
-      projectId: "p1",
       title: "Waiting for initial prompt…",
       agent: "opencode",
       status: "ready",
@@ -465,7 +316,7 @@ describe("queryStrandedReadySessions (the ready zombie, issue 387)", () => {
     // A Core whose log never bootstrapped sweeps nothing extra rather than
     // failing its whole boot read — and rather than sweeping every ready row.
     const noLog = openDb();
-    insertSession(noLog, { sessionId: "t-ready", projectId: "p1", status: "ready" });
+    insertSession(noLog, { sessionId: "t-ready", status: "ready" });
     expect(queryStrandedReadySessions(asQuery(noLog))).toEqual([]);
     noLog.close();
   });
@@ -556,20 +407,14 @@ describe("countArchivedSessions", () => {
   });
 
   it("counts archived rows and ignores active ones", () => {
-    insertSession(db, { sessionId: "live", projectId: "p1", archived: false });
-    insertSession(db, { sessionId: "o1", projectId: "p1", archived: true });
-    insertSession(db, { sessionId: "o2", projectId: "p1", archived: true });
+    insertSession(db, { sessionId: "live", archived: false });
+    insertSession(db, { sessionId: "o1", archived: true });
+    insertSession(db, { sessionId: "o2", archived: true });
     expect(countArchivedSessions(asQuery(db))).toBe(2);
   });
 
-  it("scopes to one project when given", () => {
-    insertSession(db, { sessionId: "o1", projectId: "p1", archived: true });
-    insertSession(db, { sessionId: "o2", projectId: "p2", archived: true });
-    expect(countArchivedSessions(asQuery(db), "p1")).toBe(1);
-  });
-
   it("is 0 when nothing is archived", () => {
-    insertSession(db, { sessionId: "live", projectId: "p1", archived: false });
+    insertSession(db, { sessionId: "live", archived: false });
     expect(countArchivedSessions(asQuery(db))).toBe(0);
   });
 

@@ -113,7 +113,7 @@ import {
   clearSubagentActivity,
   noteSessionFinished,
 } from "@actana/shared/subagent-activity";
-import type { CoreLinkSessionRow } from "@actana/sdk/core";
+import type { CoreSessionRow } from "@actana/shared/core-query";
 import type { CoreSessionWriter } from "./core-session-writer";
 
 /**
@@ -228,7 +228,7 @@ const MAX_TRACKED_SESSIONS = 500;
 
 export type CoreSessionBackstopDeps = {
   /** Every row this Core still claims is working. */
-  listActiveSessions: () => CoreLinkSessionRow[];
+  listActiveSessions: () => CoreSessionRow[];
   /** The one seam a session row changes through, events included. */
   writer: CoreSessionWriter;
   /**

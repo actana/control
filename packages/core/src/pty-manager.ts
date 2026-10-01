@@ -26,7 +26,6 @@ import {
   sanitizedProcessEnv,
   shellArgsForCommand,
 } from "@actana/shared/shell-env";
-import { loadProjectRoots } from "./project-roots";
 import { MAX_TCP_PORT } from "@actana/shared/tcp-port";
 import { shortId } from "@actana/shared/short-id";
 import {
@@ -88,9 +87,8 @@ type Pty = {
   shell: boolean;
   /**
    * True for VM Shell Sessions (issue 06) — a free-form shell on this Core's
-   * machine with no project folder. Like `shell`, findBySession skips it; the
-   * Panel renders it with a distinct "VM shell" surface. Gated by core-link
-   * auth, not project-root validation.
+   * machine. Like `shell`, findBySession skips it; the Panel renders it with a
+   * distinct "VM shell" surface. Gated by core-link auth.
    */
   shellSession?: boolean;
   /** Last renderer write (user keystroke) — marks the PTY as interactive so
@@ -414,7 +412,7 @@ function killProcessTreeWindows(pid: number | undefined): void {
  * job), the slave stays open, the master never sees EIO, and node-pty keeps the
  * master fd open for the life of the app. Every leaked master counts against
  * macOS's system-wide `kern.tty.ptmx_max` (~511), so a long-lived window that
- * churns PTYs (e.g. the warm-session pool re-preparing on every project query
+ * churns PTYs (e.g. the warm-session pool re-preparing on every session query
  * refetch) eventually exhausts the cap and makes EVERY pty spawn on the whole
  * machine fail with posix_spawnp/ENXIO.
  *
@@ -585,11 +583,10 @@ async function killPty(p: Pty): Promise<boolean> {
 
 /**
  * The spawn policy's `cwdExists` and `realpath`, answered from what `core` said
- * about the paths. The cwd falls back to its lexical path when core could not
- * resolve it, which is `defaultRealpath`'s own fallback and cannot matter:
- * `cwdOk` is what rejects a cwd core cannot reach. A project root core could not
- * resolve (missing, or outside what it may look at) is an error, so the policy
- * drops it, which is the safe direction; so is a path nobody asked about.
+ * about the paths. The cwd (always the Core's home) falls back to its lexical
+ * path when core could not resolve it, which is `defaultRealpath`'s own
+ * fallback and cannot matter: `cwdOk` is what rejects a home core cannot reach.
+ * A path nobody asked about is an error.
  */
 function policyPathDeps(
   facts: SpawnPathFacts,
@@ -657,38 +654,27 @@ export class PtyCore {
     const platform = os.platform();
     const { userDataDir, appPath, getHookEnv } = this.deps;
 
-    // Home shell terminals: the renderer never learns the host's home path, so
-    // the handler replaces cwd with the Core's home before the policy's
-    // project-root check. VM Shell Sessions (issue 06) use the same trick — a
-    // VM shell has no project folder, and the Core's own home is the only
-    // sensible place to drop the operator. The policy's `shellSession` branch
-    // skips the project-root check entirely regardless of cwd, but supplying
-    // the real home here means node-pty gets a valid cwd to chdir into.
-    const spawnReq: SpawnRequest =
-      opts.shell === true && opts.home
-        ? ({ ...opts, cwd: coreHome() } as SpawnRequest)
-        : opts.shellSession === true
-          ? ({ ...opts, cwd: opts.cwd || coreHome() } as SpawnRequest)
-          : opts;
+    // Every Session starts in the Core's home (ADR 0041 D2): a spawn names no
+    // cwd, and the policy takes the home from `deps.home`, never from the
+    // request.
+    const spawnReq: SpawnRequest = opts;
+    const home = coreHome();
     let plan: ReturnType<typeof resolveSpawnPlan>;
-    // The policy's two questions about the disk (is this cwd a directory, and
-    // where do these paths really lead) are answered by `core`, once, before the
+    // The policy's two questions about the disk (is the home a directory, and
+    // where does it really lead) are answered by `core`, once, before the
     // synchronous policy runs. In the container the daemon cannot look inside
     // core's home (issue 559); elsewhere this is `undefined` and the policy
     // asks `fs` itself, as it always did.
-    const projectRoots = loadProjectRoots();
     const pathFacts = isContainerMode()
-      ? spawnReq.cwd
-        ? await spawnPathFactsViaCore(spawnReq.cwd, [coreHome(), ...projectRoots]).catch((err: unknown) => {
-            // A cwd the helper will not look at is an invalid cwd, said the way the
-            // policy says it. (A helper that hangs or crashes is still a plain error.)
-            if (err instanceof CoreHomeOpRefusedError) {
-              log.warn("pty.spawn.rejected", { code: "invalid-cwd", cwd: safeLogValue(opts.cwd), sessionId: safeLogValue(opts.sessionId) });
-              throw new Error("pty:spawn rejected (invalid-cwd)");
-            }
-            throw err;
-          })
-        : { cwdOk: false, realpaths: {} }
+      ? await spawnPathFactsViaCore(home, [home]).catch((err: unknown) => {
+          // A home the helper will not look at is an invalid cwd, said the way the
+          // policy says it. (A helper that hangs or crashes is still a plain error.)
+          if (err instanceof CoreHomeOpRefusedError) {
+            log.warn("pty.spawn.rejected", { code: "invalid-cwd", sessionId: safeLogValue(opts.sessionId) });
+            throw new Error("pty:spawn rejected (invalid-cwd)");
+          }
+          throw err;
+        })
       : undefined;
     // The CLI lookup is the same kind of question: `~/.local/bin` is core's, so in
     // the container core lists the matches and the daemon picks by version.
@@ -711,9 +697,8 @@ export class PtyCore {
         : null;
     try {
       plan = resolveSpawnPlan(spawnReq, {
-        ...(pathFacts ? policyPathDeps(pathFacts, spawnReq.cwd ?? "") : {}),
-        projectRoots: () => projectRoots,
-        homeShellRoots: () => [coreHome()],
+        ...(pathFacts ? policyPathDeps(pathFacts, home) : {}),
+        home: () => home,
         resolveCommand: (name) => {
           const env = lookupEnv ?? sanitizedProcessEnv();
           const requirement = HARNESS_CLI_CONFIG_BY_COMMAND[name];
@@ -739,7 +724,6 @@ export class PtyCore {
           code: err.code,
           agent: safeLogValue(opts.agent ?? null),
           shell: opts.shell === true,
-          cwd: safeLogValue(opts.cwd),
           sessionId: safeLogValue(opts.sessionId),
         });
         throw new Error(`pty:spawn rejected (${err.code})`);
@@ -867,7 +851,7 @@ export class PtyCore {
       buffer: [],
       bufferBytes: 0,
       nextSeq: 1,
-      cwd: opts.shellSession ? plan.cwd : (opts.cwd ?? plan.cwd),
+      cwd: plan.cwd,
       command: opts.command ?? "",
       agent: opts.agent,
       shell: opts.shell === true,
@@ -1127,7 +1111,7 @@ export class PtyCore {
    * the session writer — that are nobody's client and hold nobody's lock, and a
    * gate in this class would have the Core start refusing itself.
    *
-   * Unlike `findBySession` this answers for **every** PTY, including project shells
+   * Unlike `findBySession` this answers for **every** PTY, including shells
    * and VM Shell Sessions. `findBySession` skips those because handing a raw shell
    * back to an agent reattach would be wrong; here the question is the opposite
    * one — "whose Session would this mutation be touching?" — and a shell's
@@ -1142,7 +1126,7 @@ export class PtyCore {
     if (typeof sessionId !== "string" || !sessionId) return { ptyId: null };
     let found: string | null = null;
     for (const p of ptys.values()) {
-      // Only agent sessions match by session. Shell terminals (project-scoped and
+      // Only agent sessions match by session. Shell terminals (plain and
       // VM Shell Sessions) carry a sessionId for routing but are not agent work —
       // a `findBySession` must not hand back a raw shell PTY to an agent reattach.
       if (p.sessionId === sessionId && !p.shell && !p.shellSession) found = p.id;

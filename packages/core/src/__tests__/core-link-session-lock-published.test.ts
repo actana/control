@@ -7,6 +7,7 @@ import {
   type WebSocketLike,
   type WebSocketServerLike,
 } from "../pty-core-link-server";
+import type { CoreSessionRow } from "@actana/shared/core-query";
 import type { PtyCore, PtyCoreEvent } from "../pty-manager";
 import {
   SESSION_LOCK_CHANGED_EVENT_KIND,
@@ -14,7 +15,6 @@ import {
   type CoreLinkSessionLock,
   type CoreLinkSessionLockChangedPayload,
   type CoreLinkSessionSnapshot,
-  type CoreLinkSessionRow,
 } from "@actana/sdk/core";
 
 // Lock state is published, not discovered by failing (issue 145, ADR 0024 D8).
@@ -116,10 +116,9 @@ function fakeEventLog() {
   return { port, events };
 }
 
-function sessionSnapshot(sessionId: string, archived = false): CoreLinkSessionRow {
+function sessionSnapshot(sessionId: string, archived = false): CoreSessionRow {
   return {
     sessionId,
-    projectId: "p1",
     title: "t",
     titleManuallySet: false,
     claudeSessionId: null,
@@ -142,7 +141,6 @@ function mockQueryPort(): CoreQueryPort {
   const active = [sessionSnapshot("session-a"), sessionSnapshot("session-b")];
   const archived = [sessionSnapshot("session-old", true)];
   return {
-    listProjects: () => [],
     listSessionRows: () => active,
     listArchivedSessions: () => archived,
     countArchivedSessions: () => archived.length,
@@ -156,7 +154,6 @@ function mockMutationPort(): CoreMutationPort {
     { sessionId: "session-b", ptyId: null, status: "ready", updatedAt: 1 },
   ];
   return {
-    mutateProject: () => null,
     mutateSession: (mutation) =>
       "sessionId" in mutation && mutation.sessionId ? sessionSnapshot(mutation.sessionId) : null,
     listSessions: () => sessions,
@@ -190,7 +187,7 @@ function mockCore() {
 
 /** The lock a connection was told about one Session in its last `sessionRowsList`. */
 function lockOf(ws: FakeWebSocket, sessionId: string): CoreLinkSessionLock | undefined {
-  const result = ws.ofType<{ sessions: CoreLinkSessionRow[] }>("sessionRowsListResult").at(-1);
+  const result = ws.ofType<{ sessions: CoreSessionRow[] }>("sessionRowsListResult").at(-1);
   return result?.sessions.find((session) => session.sessionId === sessionId)?.lock;
 }
 
@@ -273,7 +270,7 @@ describe("published Session lock state (issue 145, ADR 0024 D8)", () => {
     it("agrees with the gate: what a snapshot calls writable is what is served", async () => {
       const holder = connect();
       const watcher = connect();
-      holder.receive({ type: "spawn", reqId: "s1", opts: { sessionId: "session-a", cwd: "/w", command: "c" } });
+      holder.receive({ type: "spawn", reqId: "s1", opts: { sessionId: "session-a", command: "c" } });
       await vi.waitFor(() => expect(holder.ofType("spawned").length).toBe(1));
       const ptyId = String(holder.ofType("spawned")[0].ptyId);
       holder.receive({ type: "claim", reqId: "h1", sessionId: "session-a" });
@@ -330,9 +327,9 @@ describe("published Session lock state (issue 145, ADR 0024 D8)", () => {
         writable: false,
         state: "held-by-another",
       });
-      const archived = watcher.answerTo("w2") as { sessions: CoreLinkSessionRow[] };
+      const archived = watcher.answerTo("w2") as { sessions: CoreSessionRow[] };
       expect(archived.sessions[0].lock).toEqual({ writable: true, state: "unlocked" });
-      const mutated = watcher.answerTo("w3") as { session: CoreLinkSessionRow };
+      const mutated = watcher.answerTo("w3") as { session: CoreSessionRow };
       expect(mutated.session.lock).toEqual({ writable: true, state: "unlocked" });
     });
 
@@ -361,7 +358,7 @@ describe("published Session lock state (issue 145, ADR 0024 D8)", () => {
 
       // Such a Core has told the client it has no lock table (D11). Absent is
       // the honest answer, and it is what an older Panel already handles.
-      const sessions = (ws.answerTo("t1") as { sessions: CoreLinkSessionRow[] }).sessions;
+      const sessions = (ws.answerTo("t1") as { sessions: CoreSessionRow[] }).sessions;
       expect(sessions.every((session) => session.lock === undefined)).toBe(true);
       expect(log.events.filter((e) => e.kind === SESSION_LOCK_CHANGED_EVENT_KIND)).toHaveLength(0);
     });

@@ -17,7 +17,7 @@ import {
 
 // Integration test: exercises the real `coreMutationStore` (RW handle) and
 // the real `coreQueryStore` (RO handle) against a real SQLite bootstrapped
-// with the actual `ensureSchema` DDL — the same shape a fresh VM boots into
+// with the actual `ensureCoreSchema` DDL — the same shape a fresh VM boots into
 // (issue 02). Pins the invariant that ADR-0004's write path lands rows that
 // the read path sees, in the shape the loopback server also produces.
 //
@@ -45,113 +45,38 @@ describe("coreMutationStore (integration against real schema)", () => {
     fs.rmSync(userDataDir, { recursive: true, force: true });
   });
 
-  it("round-trips create-project → projectsList", () => {
-    const created = coreMutationStore.mutateProject({
-      op: "create",
-      projectId: "p-int-1",
-      name: "MC",
-      path: userDataDir,
-    });
-    expect(created?.projectId).toBe("p-int-1");
-    expect(created?.name).toBe("MC");
-    expect(created?.path).toBe(userDataDir);
-
-    const listed = coreQueryStore.listProjects();
-    expect(listed).toHaveLength(1);
-    expect(listed[0]!.projectId).toBe("p-int-1");
-  });
-
-  it("round-trips create-session → sessionRowsList", () => {
-    coreMutationStore.mutateProject({
-      op: "create",
-      projectId: "p-int-2",
-      name: "MC",
-      path: userDataDir,
-    });
+  it("round-trips create-session → sessionRowsList, with no project and no path anywhere", () => {
     const t = coreMutationStore.mutateSession({
       op: "create",
       sessionId: "t-int-1",
-      projectId: "p-int-2",
       title: "fix bug",
       agent: "claude-code",
     });
     expect(t?.sessionId).toBe("t-int-1");
-
-    const sessions = coreQueryStore.listSessionRows("p-int-2");
-    expect(sessions.map((x) => x.sessionId)).toEqual(["t-int-1"]);
-  });
-
-  it("rejects a project path that doesn't exist with an actionable error", () => {
-    expect(() =>
-      coreMutationStore.mutateProject({
-        op: "create",
-        name: "bogus",
-        path: "/definitely/does/not/exist/on/this/vm/xyzzy",
-      }),
-    ).toThrow(/does not exist on the Core/);
-    expect(coreQueryStore.listProjects()).toEqual([]);
-  });
-
-  it("rejects a non-absolute project path", () => {
-    expect(() =>
-      coreMutationStore.mutateProject({
-        op: "create",
-        name: "bogus",
-        path: "relative/dir",
-      }),
-    ).toThrow(/must be absolute/);
-  });
-
-  it("archive cascades child sessions and returns the pre-delete snapshot", () => {
-    coreMutationStore.mutateProject({
-      op: "create",
-      projectId: "p-int-3",
-      name: "cascade-src",
-      path: userDataDir,
-    });
-    coreMutationStore.mutateSession({
-      op: "create",
-      sessionId: "t-int-2",
-      projectId: "p-int-3",
-      title: "child",
+    expect(t).toEqual({
+      sessionId: "t-int-1",
+      title: "fix bug",
+      titleManuallySet: false,
+      claudeSessionId: null,
       agent: "claude-code",
+      status: "ready",
+      pinned: false,
+      archived: false,
+      icon: null,
+      updatedAt: expect.any(Number),
     });
-    expect(coreQueryStore.listSessionRows("p-int-3")).toHaveLength(1);
 
-    const snap = coreMutationStore.mutateProject({
-      op: "archive",
-      projectId: "p-int-3",
-    });
-    expect(snap?.projectId).toBe("p-int-3");
-    expect(snap?.name).toBe("cascade-src");
-    expect(coreQueryStore.listProjects()).toEqual([]);
-    expect(coreQueryStore.listSessionRows("p-int-3")).toEqual([]);
+    const sessions = coreQueryStore.listSessionRows();
+    expect(sessions.map((x) => x.sessionId)).toEqual(["t-int-1"]);
+    expect(sessions[0]).toEqual(t);
   });
 
   it("sessionsList returns sessions enriched with the live PTY probe", () => {
-    coreMutationStore.mutateProject({
-      op: "create",
-      projectId: "p-int-4",
-      name: "sess",
-      path: userDataDir,
-    });
-    coreMutationStore.mutateSession({
-      op: "create",
-      sessionId: "t-live",
-      projectId: "p-int-4",
-      title: "live",
-      agent: "claude-code",
-    });
-    coreMutationStore.mutateSession({
-      op: "create",
-      sessionId: "t-idle",
-      projectId: "p-int-4",
-      title: "idle",
-      agent: "claude-code",
-    });
+    coreMutationStore.mutateSession({ op: "create", sessionId: "t-live", title: "live", agent: "claude-code" });
+    coreMutationStore.mutateSession({ op: "create", sessionId: "t-idle", title: "idle", agent: "claude-code" });
     setLivePtyProbe((sessionId) => (sessionId === "t-live" ? "pty-abc" : null));
 
-    const sessions = coreMutationStore.listSessions("p-int-4");
+    const sessions = coreMutationStore.listSessions();
     const live = sessions.find((s) => s.sessionId === "t-live");
     const idle = sessions.find((s) => s.sessionId === "t-idle");
     expect(live?.ptyId).toBe("pty-abc");
@@ -159,69 +84,24 @@ describe("coreMutationStore (integration against real schema)", () => {
   });
 
   it("delete removes the session from sessionRowsList and hands back what it removed", () => {
-    coreMutationStore.mutateProject({
-      op: "create",
-      projectId: "p-int-5",
-      name: "delete-src",
-      path: userDataDir,
-    });
-    coreMutationStore.mutateSession({
-      op: "create",
-      sessionId: "t-doomed",
-      projectId: "p-int-5",
-      title: "doomed",
-      agent: "claude-code",
-    });
-    coreMutationStore.mutateSession({
-      op: "create",
-      sessionId: "t-spared",
-      projectId: "p-int-5",
-      title: "spared",
-      agent: "claude-code",
-    });
+    coreMutationStore.mutateSession({ op: "create", sessionId: "t-doomed", title: "doomed", agent: "claude-code" });
+    coreMutationStore.mutateSession({ op: "create", sessionId: "t-spared", title: "spared", agent: "claude-code" });
 
     const removed = coreMutationStore.mutateSession({ op: "delete", sessionId: "t-doomed" });
     expect(removed?.sessionId).toBe("t-doomed");
     expect(removed?.title).toBe("doomed");
-    expect(coreQueryStore.listSessionRows("p-int-5").map((t) => t.sessionId)).toEqual(["t-spared"]);
+    expect(coreQueryStore.listSessionRows().map((t) => t.sessionId)).toEqual(["t-spared"]);
   });
 
   it("reports a delete of a row that isn't there as null, not an exception", () => {
     expect(coreMutationStore.mutateSession({ op: "delete", sessionId: "t-ghost" })).toBeNull();
   });
 
-  // Issue 98: the icons were Core facts with no op to change them, so the
-  // Edit-project dialog PATCHed a Panel row a Core-owned project does not have.
-  it("round-trips an appearance patch → projectsList", () => {
-    coreMutationStore.mutateProject({
-      op: "create",
-      projectId: "p-int-6",
-      name: "MC",
-      path: userDataDir,
-      icon: "MC",
-      iconColor: "#111111",
-    });
-
-    const patched = coreMutationStore.mutateProject({
-      op: "appearance",
-      projectId: "p-int-6",
-      icon: "ZZ",
-      iconColor: "#abcdef",
-    });
-
-    expect(patched).toMatchObject({ icon: "ZZ", iconColor: "#abcdef" });
-    expect(coreQueryStore.listProjects()[0]).toMatchObject({
-      icon: "ZZ",
-      iconColor: "#abcdef",
-    });
-  });
-
-  it("throws on an unknown project mutation op (stale-shape guard)", () => {
+  it("throws on an unknown session mutation op (stale-shape guard)", () => {
     expect(() =>
-      coreMutationStore.mutateProject({
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      coreMutationStore.mutateSession({
         op: "bogus",
-      } as any),
-    ).toThrow(/unknown project mutation op/);
+      } as never),
+    ).toThrow(/unknown session mutation op/);
   });
 });

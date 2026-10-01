@@ -170,9 +170,9 @@ describe("Core client over mTLS", () => {
     expect(info.coreId).toBe("core_mtls");
     expect(info.compatible).toBe(true);
     expect(client.isAuthenticated()).toBe(true);
-    await expect(
-      client.spawn({ sessionId: "t1", cwd: "/tmp", command: "claude", agent: "claude-code" }),
-    ).resolves.toEqual({ ptyId: "pty-1", hooksReportTurnStart: false });
+    // Not a `spawn`: a Core refuses the one this client builds, because it
+    // still names a cwd and every Session starts in the Core's home (ADR 0041).
+    await expect(client.findBySession("t1")).resolves.toEqual({ ptyId: "pty-1" });
   }, 20_000);
 
   it("never authenticates without the pinned client cert — the handshake fails first", async () => {

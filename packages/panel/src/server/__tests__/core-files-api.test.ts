@@ -128,7 +128,7 @@ async function startCore(label: string, opts: { withFiles?: boolean } = {}): Pro
     ...(withFiles
       ? {
           httpRoutes: buildCoreFileRoutes({
-            filesPort: { projectRoot: (id) => (id === PROJECT_ID ? projectRoot : null) },
+            filesPort: { workspaceRoot: () => projectRoot },
             authVerifier,
           }),
         }
@@ -321,10 +321,10 @@ describe("the Panel validates no path", () => {
     expect(await response.json()).toMatchObject({ code: "absolute-path" });
   }, 40_000);
 
-  it("passes the Core's 404 for an unknown Project through unchanged", async () => {
+  it("passes the Core's 404 for a path it does not have through unchanged", async () => {
     const { id } = await pair();
-    const response = await call(`/api/cores/${id}/projects/p-unknown/files/list?path=`);
+    const response = await call(`/api/cores/${id}/projects/${PROJECT_ID}/files/list?path=nowhere`);
     expect(response.status).toBe(404);
-    expect(await response.json()).toMatchObject({ code: "project-not-found" });
+    expect(await response.json()).toMatchObject({ code: "not-found" });
   }, 40_000);
 });

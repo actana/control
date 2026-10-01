@@ -69,7 +69,7 @@ const PROJECT = { projectId: "proj_live", name: "api", path: "" };
 async function startCore(): Promise<{ root: string; open: OpenProjectFilesFn }> {
   const root = scratch();
   const routes = createCoreFilesRequestHandler({
-    filesPort: { projectRoot: (id) => (id === PROJECT.projectId ? root : null) },
+    filesPort: { workspaceRoot: () => root },
   });
   const server = http.createServer((req, res) => {
     if (routes.handle(req, res)) return;

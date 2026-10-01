@@ -1,9 +1,8 @@
-// Pure SQL helpers that read the Core's projects + sessions tables and map
-// them to core-link snapshots for the per-Core navigation + Fleet view (issue
-// 07, ADR 0001).
+// Pure SQL helpers that read the Core's sessions table and map it to core-link
+// snapshots for the Fleet view (issue 07, ADR 0001).
 //
-// The Core is the single source of truth for projects and sessions; the Panel
-// holds none. The `projectsList` / `sessionRowsList` core-link frames delegate to a
+// The Core is the single source of truth for its Sessions; the Panel holds
+// none. The `sessionRowsList` core-link frame delegates to a
 // `CoreQueryPort` whose real implementation (packages/core/src/core-query-store.ts)
 // opens the shared SQLite read-only and calls these helpers.
 //
@@ -13,7 +12,43 @@
 // better-sqlite3 handle without the full db/client bootstrap — mirroring
 // `event-log.ts`.
 
-import type { CoreLinkProjectSnapshot, CoreLinkSessionRow } from "./sdk-link-frames";
+import type { CoreLinkSessionRow as WireSessionRow } from "./sdk-link-frames";
+
+/**
+ * A Session row as this Core knows it. It is the wire's row less the one field
+ * the published SDK still types and a 0.5.0 Core no longer has: a Session
+ * belongs to the Core, to nothing narrower (ADR 0041 D1). Spelled as a pick so
+ * that field is never named here; {@link toWireSessionRows} is the one place the
+ * two meet.
+ */
+export type CoreSessionRow = Pick<
+  WireSessionRow,
+  | "sessionId"
+  | "title"
+  | "titleManuallySet"
+  | "claudeSessionId"
+  | "agent"
+  | "status"
+  | "pinned"
+  | "archived"
+  | "icon"
+  | "updatedAt"
+  | "lock"
+>;
+
+/**
+ * Hand rows to the published SDK's frame types.
+ *
+ * `@actana/sdk` 0.6.0-next.0 still declares a required grouping field on its row
+ * type, which this Core neither stores nor sends. Removing it from the SDK is
+ * actana/client issue 10, part 3; until that ships this cast is the whole of
+ * the mismatch, and it widens nothing: a client reads a row with one field
+ * fewer than its type promises. Delete this function, and the cast, when the
+ * SDK drops the field.
+ */
+export function toWireSessionRows(rows: CoreSessionRow[]): WireSessionRow[] {
+  return rows as unknown as WireSessionRow[];
+}
 
 /**
  * Minimal slice of `better-sqlite3.Database` that the query helpers need.
@@ -25,24 +60,8 @@ export interface CoreQuerySqlite {
   };
 }
 
-type ProjectRow = {
-  id: string;
-  name: string;
-  path: string;
-  icon: string;
-  icon_color: string;
-  pinned: number;
-  remember_agent_settings: number;
-  saved_agent: string | null;
-  saved_skip_permissions: number;
-  saved_bare_session: number;
-  default_grid_view: number;
-  updated_at: number;
-};
-
 type SessionRow = {
   id: string;
-  project_id: string;
   title: string;
   title_manually_set: number;
   claude_session_id: string | null;
@@ -55,65 +74,18 @@ type SessionRow = {
 };
 
 /**
- * Read every project on this Core as a flattened snapshot. Returns an empty
- * array when the table is absent (a Core whose DB hasn't bootstrapped yet)
- * or when there are no rows. `path` is a VM path — only the Core can
- * validate it (CONTEXT.md "Project").
- */
-export function queryProjects(sqlite: CoreQuerySqlite): CoreLinkProjectSnapshot[] {
-  let rows: ProjectRow[];
-  try {
-    rows = sqlite
-      .prepare(
-        `SELECT id, name, path, icon, icon_color, pinned,
-                remember_agent_settings, saved_agent, saved_skip_permissions,
-                saved_bare_session, default_grid_view, updated_at
-         FROM projects
-         ORDER BY pinned DESC, updated_at DESC`,
-      )
-      .all() as ProjectRow[];
-  } catch {
-    // Table missing (DB not bootstrapped) — the Fleet view shows no projects
-    // for this Core rather than crashing.
-    return [];
-  }
-  return rows.map(rowToSnapshot);
-}
-
-function rowToSnapshot(row: ProjectRow): CoreLinkProjectSnapshot {
-  return {
-    projectId: row.id,
-    name: row.name,
-    path: row.path,
-    icon: row.icon,
-    iconColor: row.icon_color,
-    pinned: row.pinned === 1,
-    rememberHarnessSettings: row.remember_agent_settings === 1,
-    savedHarness: row.saved_agent,
-    savedSkipPermissions: row.saved_skip_permissions === 1,
-    savedBareSession: row.saved_bare_session === 1,
-    defaultGridView: row.default_grid_view === 1,
-    updatedAt: row.updated_at,
-  };
-}
-
-/**
- * Read every active (non-archived) session on this Core, optionally filtered
- * to one project. Archived sessions are omitted — the Fleet view is for active
+ * Read every active (non-archived) session on this Core. Archived sessions are omitted — the Fleet view is for active
  * work, and the Panel caches nothing, so archived rows never cross the
- * core-link. Ordered by `updated_at` descending (most recent first) so a
- * single-Project view shows live work at the top. Returns an empty array when
+ * core-link. Ordered by `updated_at` descending (most recent first) so live
+ * work is at the top. Returns an empty array when
  * the table is absent or no rows match.
  */
-export function querySessionRows(
-  sqlite: CoreQuerySqlite,
-  projectId?: string,
-): CoreLinkSessionRow[] {
-  return listSessionsWhereArchived(sqlite, 0, projectId);
+export function querySessionRows(sqlite: CoreQuerySqlite): CoreSessionRow[] {
+  return listSessionsWhereArchived(sqlite, 0);
 }
 
 /**
- * Read every archived session on this Core, optionally filtered to one project.
+ * Read every archived session on this Core.
  * The exact mirror of {@link querySessionRows} — same columns, same ordering, the
  * opposite side of the `archived` flag.
  *
@@ -123,11 +95,8 @@ export function querySessionRows(
  * passes: the two lists are different queries, answered by different frames.
  * Returns an empty array when the table is absent or no rows match.
  */
-export function queryArchivedSessions(
-  sqlite: CoreQuerySqlite,
-  projectId?: string,
-): CoreLinkSessionRow[] {
-  return listSessionsWhereArchived(sqlite, 1, projectId);
+export function queryArchivedSessions(sqlite: CoreQuerySqlite): CoreSessionRow[] {
+  return listSessionsWhereArchived(sqlite, 1);
 }
 
 /**
@@ -136,37 +105,21 @@ export function queryArchivedSessions(
  * bound parameter, and the two public helpers are the only callers — so
  * neither list can be talked into returning the other's rows.
  */
-function listSessionsWhereArchived(
-  sqlite: CoreQuerySqlite,
-  archived: 0 | 1,
-  projectId?: string,
-): CoreLinkSessionRow[] {
+function listSessionsWhereArchived(sqlite: CoreQuerySqlite, archived: 0 | 1): CoreSessionRow[] {
   const columns =
-    `id, project_id, title, title_manually_set, claude_session_id, agent, status, ` +
+    `id, title, title_manually_set, claude_session_id, agent, status, ` +
     `pinned, archived, icon, updated_at`;
   let rows: SessionRow[];
   try {
-    rows = (
-      projectId === undefined
-        ? sqlite
-            .prepare(
-              `SELECT ${columns}
-               FROM sessions
-               WHERE archived = ${archived}
-               ORDER BY updated_at DESC`,
-            )
-            .all()
-        : sqlite
-            .prepare(
-              `SELECT ${columns}
-               FROM sessions
-               WHERE archived = ${archived} AND project_id = ?
-               ORDER BY updated_at DESC`,
-            )
-            .all(projectId)
-    ) as SessionRow[];
+    rows = sqlite
+      .prepare(
+        `SELECT ${columns}
+         FROM sessions
+         WHERE archived = ${archived}
+         ORDER BY updated_at DESC`,
+      )
+      .all() as SessionRow[];
   } catch {
-    // Table missing (DB not bootstrapped), same as the project listing.
     return [];
   }
   return rows.map(sessionRowToSnapshot);
@@ -184,17 +137,17 @@ function listSessionsWhereArchived(
  *    does this database still claim is running?", and an archived Session that
  *    claims to be working is exactly as wrong as an active one — it is the same
  *    stale row, one tab further away from the operator who could notice it.
- *  - **No project filter.** A process that did not survive the Core's restart
- *    did not survive it for one Project only.
+ *  - **No filter.** A process that did not survive the Core's restart did not
+ *    survive it for one group of Sessions only.
  *
  * Returns an empty array when the table is absent, like every helper here.
  */
-export function queryActiveSessions(sqlite: CoreQuerySqlite): CoreLinkSessionRow[] {
+export function queryActiveSessions(sqlite: CoreQuerySqlite): CoreSessionRow[] {
   let rows: SessionRow[];
   try {
     rows = sqlite
       .prepare(
-        `SELECT id, project_id, title, title_manually_set, claude_session_id, agent, status,
+        `SELECT id, title, title_manually_set, claude_session_id, agent, status,
                 pinned, archived, icon, updated_at
          FROM sessions
          WHERE status IN ('running', 'needs-input')
@@ -240,7 +193,7 @@ export function queryActiveSessions(sqlite: CoreQuerySqlite): CoreLinkSessionRow
  * synthetic id (`cli_shell_<uuid>`, or a user-terminal id) that matches no
  * `sessions` row, so the join drops them. The test pins that shape.
  *
- * Archived rows are included and no project filter applies, for the same
+ * Archived rows are included and no filter applies, for the same
  * reasons as {@link queryActiveSessions}.
  *
  * **The evidence is permanent.** Nothing in this repo prunes `event_log` —
@@ -261,12 +214,12 @@ export function queryActiveSessions(sqlite: CoreQuerySqlite): CoreLinkSessionRow
  *
  * Returns an empty array when either table is absent.
  */
-export function queryStrandedReadySessions(sqlite: CoreQuerySqlite): CoreLinkSessionRow[] {
+export function queryStrandedReadySessions(sqlite: CoreQuerySqlite): CoreSessionRow[] {
   let rows: SessionRow[];
   try {
     rows = sqlite
       .prepare(
-        `SELECT t.id AS id, t.project_id AS project_id, t.title AS title,
+        `SELECT t.id AS id, t.title AS title,
                 t.title_manually_set AS title_manually_set,
                 t.claude_session_id AS claude_session_id, t.agent AS agent,
                 t.status AS status, t.pinned AS pinned, t.archived AS archived,
@@ -316,7 +269,7 @@ export function queryStrandedReadySessions(sqlite: CoreQuerySqlite): CoreLinkSes
  * **"For logs written by this version" is the whole of the difficulty.**
  * `session:updated` only began carrying `status` in `2dd34a8` ("feat: await a
  * session turn"), shipped in v0.4.0; before it the payload was
- * `{sessionId, projectId}` and nothing more. `event_log` is created
+ * `{sessionId}` and a grouping id, and nothing more. `event_log` is created
  * `IF NOT EXISTS` and — as {@link queryStrandedReadySessions} establishes — is
  * never pruned, so a Core upgraded from 0.3.x still holds every one of those
  * status-less rows, for Sessions that worked for hours.
@@ -372,7 +325,7 @@ export function querySessionProvenNeverWorked(
 }
 
 /**
- * How many archived sessions this Core holds, optionally scoped to one project.
+ * How many archived sessions this Core holds.
  *
  * The Panel needs this number continuously — it gates the Archived tab, labels
  * it, and drives the auto-exit when the list empties — while the rows
@@ -380,16 +333,12 @@ export function querySessionProvenNeverWorked(
  * `sessionRowsList` answer as a scalar and {@link queryArchivedSessions} stays lazy
  * (ADR 0019). Returns 0 when the table is absent.
  */
-export function countArchivedSessions(sqlite: CoreQuerySqlite, projectId?: string): number {
+export function countArchivedSessions(sqlite: CoreQuerySqlite): number {
   let rows: Array<{ n: number }>;
   try {
-    rows = (
-      projectId === undefined
-        ? sqlite.prepare(`SELECT COUNT(*) AS n FROM sessions WHERE archived = 1`).all()
-        : sqlite
-            .prepare(`SELECT COUNT(*) AS n FROM sessions WHERE archived = 1 AND project_id = ?`)
-            .all(projectId)
-    ) as Array<{ n: number }>;
+    rows = sqlite.prepare(`SELECT COUNT(*) AS n FROM sessions WHERE archived = 1`).all() as Array<{
+      n: number;
+    }>;
   } catch {
     return 0;
   }
@@ -405,12 +354,12 @@ export function countArchivedSessions(sqlite: CoreQuerySqlite, projectId?: strin
 export function querySession(
   sqlite: CoreQuerySqlite,
   sessionId: string,
-): CoreLinkSessionRow | null {
+): CoreSessionRow | null {
   let rows: SessionRow[];
   try {
     rows = sqlite
       .prepare(
-        `SELECT id, project_id, title, title_manually_set, claude_session_id, agent, status,
+        `SELECT id, title, title_manually_set, claude_session_id, agent, status,
                   pinned, archived, icon, updated_at
          FROM sessions
          WHERE id = ?`,
@@ -423,10 +372,9 @@ export function querySession(
   return row ? sessionRowToSnapshot(row) : null;
 }
 
-function sessionRowToSnapshot(row: SessionRow): CoreLinkSessionRow {
+function sessionRowToSnapshot(row: SessionRow): CoreSessionRow {
   return {
     sessionId: row.id,
-    projectId: row.project_id,
     title: row.title,
     titleManuallySet: row.title_manually_set === 1,
     claudeSessionId: row.claude_session_id,

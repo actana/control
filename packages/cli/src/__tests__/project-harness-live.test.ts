@@ -1,4 +1,6 @@
-// `project` and `harness` against a Core that is actually running (#161).
+// `project browse` and `harness` against a Core that is actually running (#161).
+// A Core has no Projects now (ADR 0041), so the Project verbs that read or wrote
+// them are not tested against one; the folder picker's `dirList` is still served.
 //
 // `project-command.test.ts` and `harness-command.test.ts` inject a client, which
 // is what makes the flags, the columns and the exit codes testable — and is
@@ -18,7 +20,6 @@ import { connectCore } from "../core-connection.ts";
 import { EXIT_FAILURE, EXIT_OK } from "../exit-codes.ts";
 import {
   makeCliFixture,
-  projectSnapshot,
   registerCore,
   type CliFixture,
 } from "./cli-harness.ts";
@@ -27,13 +28,9 @@ import {
   HARNESS_INSTALL_FAILED_EVENT_KIND,
   HARNESSES_AVAILABILITY_EVENT_KIND,
   type CoreLinkHarnessAvailabilityMap,
-  type CoreLinkProjectMutation,
-  type CoreLinkProjectSnapshot,
 } from "@actana/sdk/core";
 import type {
   CoreDirectoryPort,
-  CoreMutationPort,
-  CoreQueryPort,
   HarnessInstallPort,
 } from "@actana/core/pty-core-link-server";
 
@@ -46,36 +43,6 @@ afterEach(() => {
   fixture?.cleanup();
   fixture = null;
 });
-
-/** A project store in memory, with the two ports the Core reads and writes through. */
-function projectStore(initial: CoreLinkProjectSnapshot[] = []) {
-  const rows = [...initial];
-  const mutations: CoreLinkProjectMutation[] = [];
-  const queryPort: CoreQueryPort = {
-    listProjects: () => rows,
-    listSessionRows: () => [],
-    listArchivedSessions: () => [],
-    countArchivedSessions: () => 0,
-    getSession: () => null,
-  };
-  const mutationPort: CoreMutationPort = {
-    mutateProject: (mutation) => {
-      mutations.push(mutation);
-      if (mutation.op !== "create") return null;
-      // The Core's own rule, in miniature: a path is validated on the machine
-      // that owns it, and a bad one comes back as an `error` frame.
-      if (!mutation.path.startsWith("/srv")) {
-        throw new Error(`project path does not exist on the Core: ${mutation.path}`);
-      }
-      const row = projectSnapshot(mutation.name, mutation.path);
-      rows.push(row);
-      return row;
-    },
-    mutateSession: () => null,
-    listSessions: () => [],
-  };
-  return { rows, mutations, queryPort, mutationPort };
-}
 
 /** A disk that exists on no machine, which is what makes the browse assertion mean something. */
 const coreDisk: CoreDirectoryPort = {
@@ -99,48 +66,7 @@ const coreDisk: CoreDirectoryPort = {
   create: async (parent, name) => `${parent}/${name}`,
 };
 
-describe("actana project, against a Core in this process", () => {
-  it("lists the Core's Projects over the link", async () => {
-    const store = projectStore([projectSnapshot("api", "/srv/work/api", { pinned: true })]);
-    core = await startInProcessCore({ queryPort: store.queryPort });
-    fixture = makeCliFixture();
-    registerCore(fixture.paths, "inproc", core.blobText);
-
-    const run = await fixture.run(["project", "ls", "--json"], { connect: connectCore });
-
-    expect(run.code, run.err.join("\n")).toBe(EXIT_OK);
-    expect(JSON.parse(run.out.join("\n"))).toEqual([
-      expect.objectContaining({ name: "api", path: "/srv/work/api", pinned: true }),
-    ]);
-  }, 30_000);
-
-  it("registers a Project at the path it was given, on the Core", async () => {
-    const store = projectStore();
-    core = await startInProcessCore({ queryPort: store.queryPort, mutationPort: store.mutationPort });
-    fixture = makeCliFixture();
-    registerCore(fixture.paths, "inproc", core.blobText);
-
-    await fixture.run(["project", "add", "api", "/srv/work/api"], { connect: connectCore });
-    expect(store.mutations).toEqual([{ op: "create", name: "api", path: "/srv/work/api" }]);
-
-    // It is there when asked again — the round trip, not just the frame.
-    const listed = await fixture.run(["project", "ls", "--json"], { connect: connectCore });
-    expect(JSON.parse(listed.out.join("\n"))).toHaveLength(1);
-  }, 30_000);
-
-  it("reports the Core's own rejection of a path", async () => {
-    const store = projectStore();
-    core = await startInProcessCore({ queryPort: store.queryPort, mutationPort: store.mutationPort });
-    fixture = makeCliFixture();
-    registerCore(fixture.paths, "inproc", core.blobText);
-
-    const run = await fixture.run(["project", "add", "api", "/elsewhere/api"], {
-      connect: connectCore,
-    });
-
-    expect(run.code).toBe(EXIT_FAILURE);
-    expect(run.err.join("\n")).toContain("does not exist on the Core");
-  }, 30_000);
+describe("actana project browse, against a Core in this process", () => {
 
   it("browses the Core's disk, not the operator's", async () => {
     core = await startInProcessCore({ directoryPort: coreDisk });

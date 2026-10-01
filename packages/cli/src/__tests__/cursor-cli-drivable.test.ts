@@ -46,7 +46,7 @@ function policyDeps(): SpawnPolicyDeps {
   return {
     cwdExists: () => true,
     realpath: (p) => p,
-    projectRoots: () => [PROJECT_ROOT],
+    home: () => PROJECT_ROOT,
     resolveCommand: (name) => `/usr/local/bin/${name}`,
     resolveShell: () => ({
       shell: "/bin/zsh",
@@ -60,7 +60,6 @@ function planFor(harness: CoreLinkPtySpawnHarness, autoMode: boolean) {
   return resolveSpawnPlan(
     {
       sessionId: "t1",
-      cwd: PROJECT_ROOT,
       command: harnessLaunchCommand(harness, autoMode),
       agent: harness,
       ...(autoMode ? { dangerouslySkipPermissions: true } : {}),
@@ -146,7 +145,6 @@ describe("finding 2 — auto mode reaches the harness, or the spawn is refused",
       resolveSpawnPlan(
         {
           sessionId: "t1",
-          cwd: PROJECT_ROOT,
           command: "cursor-agent",
           agent: "cursor-cli",
           dangerouslySkipPermissions: true,
@@ -165,7 +163,6 @@ describe("finding 2 — auto mode reaches the harness, or the spawn is refused",
       resolveSpawnPlan(
         {
           sessionId: "t1",
-          cwd: PROJECT_ROOT,
           command: "cursor-agent --force",
           agent: "cursor-cli",
         } as SpawnRequest,

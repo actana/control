@@ -83,7 +83,7 @@ async function startCore(): Promise<{ blob: CoreRegistrationBlob; caCert: string
 
   const projectRoot = root;
   const routes = createCoreFilesRequestHandler({
-    filesPort: { projectRoot: (id) => (id === PROJECT ? projectRoot : null) },
+    filesPort: { workspaceRoot: () => projectRoot },
     authVerifier: (bearer) => verifyBearer(bearer, SECRET),
   });
   server = https.createServer(

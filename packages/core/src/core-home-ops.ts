@@ -423,9 +423,9 @@ export function handleCoreHomeOpSync(request: CoreHomeOpRequest, ctx: CoreHomeOp
       }
     }
     case "spawnPathFacts": {
-      // Looking is not refused, it just finds nothing: a project root that is
-      // outside the home is one this Core cannot run a Session in, and the
-      // policy on the daemon's side drops a root whose answer is null.
+      // Looking is not refused, it just finds nothing: a path outside the home
+      // is one this Core cannot run a Session in, and the policy on the
+      // daemon's side drops a path whose answer is null.
       const facts: SpawnPathFacts = { cwdOk: false, realpaths: {} };
       const cwd = confined(request.cwd, ctx);
       facts.cwdOk = cwd !== null && isEnterableDirectory(cwd);

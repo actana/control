@@ -16,15 +16,12 @@ import { createDirectory, listDirectory } from "@actana/core/directory-browse";
 import { generateCertMaterial } from "@actana/shared/core-cert-material";
 import { signBearer, verifyBearer } from "@actana/shared/core-link-bearer";
 import type { PtyCore } from "@actana/core/pty-manager";
-import type {
-  CoreLinkEvent,
-  CoreLinkProjectSnapshot,
-  CoreLinkSessionRow,
-} from "@actana/sdk/core";
+import type { CoreLinkEvent } from "@actana/sdk/core";
+import type { CoreSessionRow } from "@actana/shared/core-query";
 import type { PanelLinkClientFrame, PanelLinkServerFrame } from "~/shared/panel-link";
 
 /**
- * The write path, end to end: a browser tab creates a project, starts a
+ * The write path, end to end: a browser tab starts a
  * session, pins and renames and re-icons things, and browses folders — all as
  * frames on one panel link, across the router, down a real mTLS core-link, to
  * a Core that owns the rows and the disk.
@@ -237,59 +234,17 @@ function eventLog(): EventLogPort {
 }
 
 /**
- * A Core's project/session tables, standing in for its SQLite. It validates the
- * project path against the real filesystem the same way the store does — that
- * is the point of the write living here rather than in the Panel.
+ * A Core's sessions table, standing in for its SQLite.
  */
 function mutationPort(): CoreMutationPort {
-  const projects = new Map<string, CoreLinkProjectSnapshot>();
-  const sessions = new Map<string, CoreLinkSessionRow>();
+  const sessions = new Map<string, CoreSessionRow>();
   let seq = 0;
   return {
-    mutateProject(mutation) {
-      if (mutation.op === "create") {
-        if (!fs.existsSync(mutation.path) || !fs.statSync(mutation.path).isDirectory()) {
-          throw new Error(`Not a folder on this machine: ${mutation.path}`);
-        }
-        const projectId = mutation.projectId ?? `proj_${++seq}`;
-        const snapshot: CoreLinkProjectSnapshot = {
-          projectId,
-          name: mutation.name,
-          path: mutation.path,
-          icon: mutation.icon ?? "PR",
-          iconColor: mutation.iconColor ?? "#3b6ea5",
-          pinned: mutation.pinned ?? false,
-          rememberHarnessSettings: false,
-          savedHarness: null,
-          savedSkipPermissions: false,
-          savedBareSession: false,
-          defaultGridView: false,
-          updatedAt: ++seq,
-        };
-        projects.set(projectId, snapshot);
-        return snapshot;
-      }
-      const existing = projects.get(mutation.projectId);
-      if (!existing) return null;
-      const next: CoreLinkProjectSnapshot = {
-        ...existing,
-        ...(mutation.op === "rename" ? { name: mutation.name } : {}),
-        ...(mutation.op === "pin" ? { pinned: mutation.pinned } : {}),
-        updatedAt: ++seq,
-      };
-      if (mutation.op === "archive") {
-        projects.delete(mutation.projectId);
-        return existing;
-      }
-      projects.set(next.projectId, next);
-      return next;
-    },
     mutateSession(mutation) {
       if (mutation.op === "create") {
         const sessionId = mutation.sessionId ?? `session_${++seq}`;
-        const snapshot: CoreLinkSessionRow = {
+        const snapshot: CoreSessionRow = {
           sessionId,
-          projectId: mutation.projectId,
           title: mutation.title,
           titleManuallySet: false,
           claudeSessionId: null,
@@ -309,7 +264,7 @@ function mutationPort(): CoreMutationPort {
         sessions.delete(mutation.sessionId);
         return existing;
       }
-      const next: CoreLinkSessionRow = {
+      const next: CoreSessionRow = {
         ...existing,
         ...(mutation.title === undefined ? {} : { title: mutation.title }),
         ...(mutation.pinned === undefined ? {} : { pinned: mutation.pinned }),
@@ -443,37 +398,6 @@ afterAll(async () => {
 });
 
 describe("writing to a Core from the browser", () => {
-  it("creates a project at a path the Core accepts", async () => {
-    const { coreId, core } = await pair();
-    const tab = await openTab();
-
-    const answer = await tab.ask(coreId, {
-      type: "projectsMutate",
-      mutation: {
-        op: "create",
-        name: "warehouse",
-        path: path.join(core.disk, "projects", "warehouse"),
-      },
-    });
-
-    expect(answer).toMatchObject({
-      type: "projectsMutateResult",
-      project: expect.objectContaining({ name: "warehouse" }),
-    });
-  });
-
-  it("refuses a path that machine says is not a folder, with the Core's own words", async () => {
-    const { coreId, core } = await pair();
-    const tab = await openTab();
-
-    const answer = await tab.ask(coreId, {
-      type: "projectsMutate",
-      mutation: { op: "create", name: "ghost", path: path.join(core.disk, "nowhere") },
-    });
-
-    expect(answer.type).toBe("error");
-    expect(String(answer.message)).toContain("Not a folder on this machine");
-  });
 
   it("starts a session and hands back the row the Core recorded", async () => {
     const { coreId } = await pair();
@@ -481,7 +405,7 @@ describe("writing to a Core from the browser", () => {
 
     const answer = await tab.ask(coreId, {
       type: "sessionsMutate",
-      mutation: { op: "create", projectId: "proj_1", title: "restock", agent: "claude-code" },
+      mutation: { op: "create", title: "restock", agent: "claude-code" },
     });
 
     expect(answer).toMatchObject({
@@ -491,41 +415,24 @@ describe("writing to a Core from the browser", () => {
   });
 
   it("shows a pin, a rename and an icon made in one tab to a second tab", async () => {
-    const { coreId, core } = await pair();
+    const { coreId } = await pair();
     const author = await openTab();
     const observer = await openTab();
 
-    const created = (
-      await author.ask(coreId, {
-        type: "projectsMutate",
-        mutation: {
-          op: "create",
-          name: "warehouse",
-          path: path.join(core.disk, "projects", "warehouse"),
-        },
-      })
-    ).project as CoreLinkProjectSnapshot;
     const session = (
       await author.ask(coreId, {
         type: "sessionsMutate",
-        mutation: {
-          op: "create",
-          projectId: created.projectId,
-          title: "restock",
-          titleManuallySet: false,
-          claudeSessionId: null,
-          agent: "claude-code",
-        },
+        mutation: { op: "create", title: "restock", agent: "claude-code" },
       })
-    ).session as CoreLinkSessionRow;
+    ).session as CoreSessionRow;
 
     await author.ask(coreId, {
-      type: "projectsMutate",
-      mutation: { op: "pin", projectId: created.projectId, pinned: true },
+      type: "sessionsMutate",
+      mutation: { op: "update", sessionId: session.sessionId, pinned: true },
     });
     await author.ask(coreId, {
-      type: "projectsMutate",
-      mutation: { op: "rename", projectId: created.projectId, name: "depot" },
+      type: "sessionsMutate",
+      mutation: { op: "update", sessionId: session.sessionId, title: "depot" },
     });
     await author.ask(coreId, {
       type: "sessionsMutate",
@@ -537,17 +444,11 @@ describe("writing to a Core from the browser", () => {
     const sessions = await observer.ask(coreId, { type: "sessionsList" });
     expect(sessions.sessions).toEqual([expect.objectContaining({ sessionId: session.sessionId })]);
 
-    const renamed = await observer.ask(coreId, {
-      type: "projectsMutate",
-      mutation: { op: "pin", projectId: created.projectId, pinned: true },
-    });
-    expect(renamed.project).toMatchObject({ name: "depot", pinned: true });
-
-    const reIconed = await observer.ask(coreId, {
+    const reRead = await observer.ask(coreId, {
       type: "sessionsMutate",
-      mutation: { op: "update", sessionId: session.sessionId, title: "restock" },
+      mutation: { op: "update", sessionId: session.sessionId, status: "ready" },
     });
-    expect(reIconed.session).toMatchObject({ icon: "rocket" });
+    expect(reRead.session).toMatchObject({ title: "depot", pinned: true, icon: "rocket" });
   });
 
   it("deletes a session on the Core and tells a watching tab it is gone", async () => {
@@ -558,9 +459,9 @@ describe("writing to a Core from the browser", () => {
     const session = (
       await tab.ask(coreId, {
         type: "sessionsMutate",
-        mutation: { op: "create", projectId: "proj_1", title: "restock", agent: "claude-code" },
+        mutation: { op: "create", title: "restock", agent: "claude-code" },
       })
-    ).session as CoreLinkSessionRow;
+    ).session as CoreSessionRow;
 
     const removed = await tab.ask(coreId, {
       type: "sessionsMutate",
@@ -593,28 +494,24 @@ describe("writing to a Core from the browser", () => {
   });
 
   it("tells a watching tab which kind of change happened", async () => {
-    const { coreId, core } = await pair();
+    const { coreId } = await pair();
     const tab = await openTab();
     tab.subscribe(coreId, 0);
 
     const created = (
       await tab.ask(coreId, {
-        type: "projectsMutate",
-        mutation: {
-          op: "create",
-          name: "warehouse",
-          path: path.join(core.disk, "projects", "warehouse"),
-        },
+        type: "sessionsMutate",
+        mutation: { op: "create", title: "restock", agent: "claude-code" },
       })
-    ).project as CoreLinkProjectSnapshot;
+    ).session as CoreSessionRow;
     await tab.ask(coreId, {
-      type: "projectsMutate",
-      mutation: { op: "pin", projectId: created.projectId, pinned: true },
+      type: "sessionsMutate",
+      mutation: { op: "update", sessionId: created.sessionId, pinned: true },
     });
 
     await vi.waitFor(() => {
       expect(tab.events(coreId).map((e) => e.kind)).toEqual(
-        expect.arrayContaining(["project:created", "project:pinnedChanged"]),
+        expect.arrayContaining(["session:created", "session:pinnedChanged"]),
       );
     }, 5_000);
   });

@@ -9,15 +9,15 @@
 //
 // The surface:
 //
-//   GET  /v1/projects/:projectId/files?path=<relative>
+//   GET  /v1/projects/:id/files?path=<relative>
 //        A file's raw bytes, or a directory as one streamed tar.
-//   HEAD /v1/projects/:projectId/files?path=<relative>
+//   HEAD /v1/projects/:id/files?path=<relative>
 //        The same headers, no body.
-//   PUT  /v1/projects/:projectId/files?path=<relative>
+//   PUT  /v1/projects/:id/files?path=<relative>
 //        Write. `Content-Type: application/x-tar` unpacks an archive into that
 //        path; anything else writes one file at it. The response is a chunked
 //        NDJSON progress stream, one line per entry.
-//   GET  /v1/projects/:projectId/files/list?path=<relative>&depth=<n>&sha256=1
+//   GET  /v1/projects/:id/files/list?path=<relative>&depth=<n>&sha256=1
 //        The tree under that path, as a chunked NDJSON stream — one line per
 //        entry, to arbitrary depth (#166, F7).
 //
@@ -36,23 +36,25 @@ import * as fs from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import * as path from "node:path";
 import type { CoreFilesErrorCode } from "@actana/sdk/core";
-import { confineToProjectRoot, confineWriteTarget, freeSpaceBytes } from "./files-confinement";
+import { FILES_ROUTE_SCOPE } from "./files-wire";
+import { confineToWorkspace, confineWriteTarget, freeSpaceBytes } from "./files-confinement";
 import { listTree, type FileListingOptions } from "./files-listing";
 import { packDirectory, TarError, unpackTarInto, type TarEntryReport, type TarWriteOutcome } from "./files-tar";
-import { ProjectWriteLocks } from "./files-transfer-locks";
+import { WorkspaceWriteLocks } from "./files-transfer-locks";
 import log from "@actana/shared/log";
 
 /**
- * A Project's root on this machine.
+ * The workspace's root on this machine.
  *
  * The whole of #129 F1 is behind this one method: **the filesystem is the
  * model.** There is no file index, no per-file id, no shadow table to keep in
- * step with the disk — a path plus a Project root is the entire address space,
- * and `readdir` is the query engine. See ADR 0027.
+ * step with the disk — a path plus the workspace root is the entire address
+ * space, and `readdir` is the query engine. See ADR 0027. The workspace is the
+ * home of the Core's user (ADR 0041 D1); there is one.
  */
 export interface CoreFilesPort {
-  /** Absolute path of a Project on this machine, or null when the id is unknown. */
-  projectRoot(projectId: string): string | null;
+  /** Absolute path of the workspace on this machine, or null when it cannot be served. */
+  workspaceRoot(): string | null;
 }
 
 /** Verifies a presented bearer — the same one the core-link `auth` frame uses. */
@@ -73,8 +75,8 @@ export type CoreFilesRoutesOptions = {
    * pairing is still current and has not been revoked by a reissue.
    */
   authVerifier?: FilesAuthVerifier;
-  /** One write transfer per Project (F8). A fresh table is made when omitted. */
-  locks?: ProjectWriteLocks;
+  /** One write transfer into the workspace at a time (F8). A fresh one is made when omitted. */
+  locks?: WorkspaceWriteLocks;
   /** Injectable for tests. Defaults to a real `statfs`. */
   freeSpace?: (target: string) => Promise<number | null>;
 };
@@ -124,8 +126,8 @@ type Refusal = { status: number; code: CoreFilesErrorCode; message: string };
  */
 export function createCoreFilesRequestHandler(
   opts: CoreFilesRoutesOptions,
-): CoreHttpRoutes & { locks: ProjectWriteLocks } {
-  const locks = opts.locks ?? new ProjectWriteLocks();
+): CoreHttpRoutes & { locks: WorkspaceWriteLocks } {
+  const locks = opts.locks ?? new WorkspaceWriteLocks();
   const freeSpace = opts.freeSpace ?? freeSpaceBytes;
 
   function handle(req: IncomingMessage, res: ServerResponse): boolean {
@@ -154,8 +156,8 @@ export function createCoreFilesRequestHandler(
     const url = new URL(req.url ?? "/", "https://core.invalid");
     if (!url.pathname.startsWith(CORE_FILES_ROUTE_PREFIX)) return false;
     // Everything that can be known before the body is checked here: the bearer,
-    // the Project, and — the point of the exercise — whether some other
-    // transfer already holds this Project's write lease.
+    // the workspace, and — the point of the exercise — whether some other
+    // transfer already holds the write lease.
     const refusal = precheck(req, url) ?? peekWriteLease(req, url);
     if (refusal) {
       sendRefusal(res, refusal);
@@ -179,7 +181,7 @@ export function createCoreFilesRequestHandler(
     if (!target) return { status: 404, code: "not-found", message: `no route for ${url.pathname}` };
     // A listing is a read and only a read. `PUT /files/list` is refused here
     // rather than falling through to the write path, which would otherwise
-    // create a *file called `list`* inside the Project — the one request on
+    // create a *file called `list`* inside the workspace — the one request on
     // this surface where a typo's consequence is a write.
     const allowed = target.leaf === "list" ? ["GET", "HEAD"] : ["GET", "HEAD", "PUT"];
     if (!allowed.includes(req.method ?? "")) {
@@ -189,14 +191,14 @@ export function createCoreFilesRequestHandler(
         message: `${req.method ?? "?"} is not allowed here — use ${allowed.join(", ")}`,
       };
     }
-    if (!opts.filesPort.projectRoot(target.projectId)) {
-      return { status: 404, code: "project-not-found", message: `no Project ${target.projectId} on this Core` };
+    if (!opts.filesPort.workspaceRoot()) {
+      return { status: 404, code: "not-found", message: "this Core has no workspace to serve" };
     }
     return null;
   }
 
   /**
-   * Is this Project already being written?
+   * Is the workspace already being written?
    *
    * A **peek, not a claim**. The lease is taken in `handlePut` and nowhere
    * else, so this cannot leave one stranded when a client that asked for
@@ -209,7 +211,7 @@ export function createCoreFilesRequestHandler(
     if (req.method !== "PUT") return null;
     const target = parseRoute(url);
     if (!target) return null;
-    const held = locks.current(target.projectId);
+    const held = locks.current();
     if (!held) return null;
     return transferInProgress(held.path, held.startedAt);
   }
@@ -219,30 +221,30 @@ export function createCoreFilesRequestHandler(
     if (refusal) return sendRefusal(res, refusal);
 
     const target = parseRoute(url)!;
-    const root = opts.filesPort.projectRoot(target.projectId)!;
+    const root = opts.filesPort.workspaceRoot()!;
     const requested = url.searchParams.get("path") ?? "";
     // A read follows every symlink, including the last component — the
     // operator asked for what the path names. A write follows the parents and
     // not the last component, so `PUT path=notes.txt` replaces `notes.txt`
     // rather than the file a `notes.txt` symlink happens to point at.
     const confined =
-      req.method === "PUT" ? confineWriteTarget(root, requested) : confineToProjectRoot(root, requested);
+      req.method === "PUT" ? confineWriteTarget(root, requested) : confineToWorkspace(root, requested);
     if (!confined.ok) {
       // 400, not 403. This is an accident guard and the honest status for
-      // "the path you sent does not name anything inside this Project" is that
+      // "the path you sent does not name anything inside the workspace" is that
       // the request was malformed. A 403 would claim a permission model that
       // does not exist here — `core shell` is the sanctioned way onto this
       // machine's disk and it is not gated by anything this module knows about.
       return sendRefusal(res, { status: 400, code: confined.reason, message: confined.message });
     }
 
-    if (req.method === "PUT") return await handlePut(req, res, target.projectId, root, confined.absolute, confined.relative);
+    if (req.method === "PUT") return await handlePut(req, res, root, confined.absolute, confined.relative);
     if (target.leaf === "list") return await handleList(req, res, url, confined.absolute, confined.relative);
     return await handleGet(req, res, confined.absolute, confined.relative);
   }
 
   /**
-   * `GET /v1/projects/:projectId/files/list` — the tree as NDJSON (#166 F7).
+   * `GET /v1/projects/:id/files/list` — the tree as NDJSON (#166 F7).
    *
    * Chunked from the first entry and buffered nowhere: `listTree` yields a line
    * at a time and this loop writes each one straight out, waiting on
@@ -268,7 +270,7 @@ export function createCoreFilesRequestHandler(
       return sendRefusal(res, {
         status: 404,
         code: "not-found",
-        message: `no such path in this Project: ${relative || "."}`,
+        message: `no such path in the workspace: ${relative || "."}`,
       });
     }
 
@@ -328,13 +330,13 @@ export function createCoreFilesRequestHandler(
   ): Promise<void> {
     let stats: fs.Stats;
     try {
-      // `stat`, not `lstat`: `confineToProjectRoot` has already resolved the
-      // path through every symlink and refused any that left the Project, so
+      // `stat`, not `lstat`: `confineToWorkspace` has already resolved the
+      // path through every symlink and refused any that left the workspace, so
       // what is left points somewhere legitimate and the operator asked for
       // what is *there*.
       stats = await fs.promises.stat(absolute);
     } catch {
-      return sendRefusal(res, { status: 404, code: "not-found", message: `no such path in this Project: ${relative || "."}` });
+      return sendRefusal(res, { status: 404, code: "not-found", message: `no such path in the workspace: ${relative || "."}` });
     }
 
     if (stats.isDirectory()) {
@@ -414,24 +416,23 @@ export function createCoreFilesRequestHandler(
   async function handlePut(
     req: IncomingMessage,
     res: ServerResponse,
-    projectId: string,
     root: string,
     absolute: string,
     relative: string,
   ): Promise<void> {
     const asTar = isTarUpload(req);
 
-    // A single-file write has to name a file, and the Project root is not one.
+    // A single-file write has to name a file, and the workspace root is not one.
     //
     // `?path=` — and `path` omitted altogether, and `?path=.` — all confine to
-    // an empty `relative`, which *is* the Project root. Without this guard the
+    // an empty `relative`, which *is* the workspace root. Without this guard the
     // empty-directory carve-out below reasons about it as it would about any
     // other directory ("nothing to lose") and `writeSingleFile` then removes
-    // whatever is not a file and creates one in its place: on an empty Project
+    // whatever is not a file and creates one in its place: on an empty workspace
     // that is `rm -r` of the root followed by a regular file at the root's
     // path. Nothing is lost in bytes, and everything is lost in shape —
     // listing, transfers and the harness's working directory all fail against
-    // a Project whose root is a file, and only a hand-fix on the Core machine
+    // a workspace whose root is a file, and only a hand-fix on the Core machine
     // brings it back.
     //
     // Refused here rather than inside `writeSingleFile`, for the reason the
@@ -443,7 +444,7 @@ export function createCoreFilesRequestHandler(
     // which are about what is on the disk.
     //
     // The *tar* branch is not guarded here, and deliberately: an empty path
-    // there is the legitimate "unpack into the Project root", which is a write
+    // there is the legitimate "unpack into the workspace root", which is a write
     // of the root's contents and not a write of the root. The archive can still
     // *name* the root as an entry, which is the same defect one branch over —
     // that one is refused inside `unpackTarInto`, as `root-entry-path`, on the
@@ -453,7 +454,7 @@ export function createCoreFilesRequestHandler(
         status: 400,
         code: "malformed-path",
         message:
-          "a single-file write needs a name — this path resolves to the Project root itself. " +
+          "a single-file write needs a name — this path resolves to the workspace root itself. " +
           "Send `?path=<file>` for a file, or `Content-Type: application/x-tar` to unpack an archive into the root.",
       });
     }
@@ -461,7 +462,7 @@ export function createCoreFilesRequestHandler(
     // The lease is taken before anything is read, and refused without reading.
     // "Immediate" is the requirement (F8), and a refusal that first drains a
     // multi-gigabyte body is not one.
-    const acquisition = locks.acquire(projectId, relative);
+    const acquisition = locks.acquire(relative);
     if (!acquisition.ok) {
       return sendRefusal(res, transferInProgress(acquisition.held.path, acquisition.held.startedAt));
     }
@@ -469,7 +470,7 @@ export function createCoreFilesRequestHandler(
     // Belt and braces, and deliberately not the only guarantee. `drained` now
     // throws when the connection dies, so the `finally` below runs and this
     // listener finds nothing left to do — but the lease is the one piece of
-    // state whose leak outlives the request (the Project stays unwritable until
+    // state whose leak outlives the request (the workspace stays unwritable until
     // the Core restarts), so it is also released the moment the socket closes,
     // whatever this handler happens to be awaiting at the time. `release` is
     // idempotent and compares identity before deleting, so the two paths cannot
@@ -479,7 +480,7 @@ export function createCoreFilesRequestHandler(
     try {
       const declared = Number(req.headers["content-length"] ?? Number.NaN);
       if (Number.isFinite(declared) && declared > 0) {
-        // No size cap — a Project takes whatever fits. What is checked is
+        // No size cap — the workspace takes whatever fits. What is checked is
         // whether it fits, and the request's own length is the bound: a tar is
         // never smaller than the files inside it, so the declared body length
         // is an upper bound on the bytes about to land in both modes.
@@ -489,7 +490,7 @@ export function createCoreFilesRequestHandler(
             status: 507,
             code: "insufficient-storage",
             message:
-              `this transfer declares ${declared} bytes and the filesystem holding this Project ` +
+              `this transfer declares ${declared} bytes and the filesystem holding the workspace ` +
               `has ${available} available`,
           });
         }
@@ -515,7 +516,7 @@ export function createCoreFilesRequestHandler(
       // replaced: there is nothing to lose, and a stray `mkdir` should not
       // wedge a path forever.
       //
-      // "Nothing to lose" is true of a subfolder and false of the Project root,
+      // "Nothing to lose" is true of a subfolder and false of the workspace root,
       // which has its shape to lose even when it holds no bytes. The root never
       // reaches this check — the guard at the top of `handlePut` refused it —
       // and that ordering is the point: this check reasons about *contents*,
@@ -558,7 +559,7 @@ export function createCoreFilesRequestHandler(
           // Nothing to report to a client that is gone, and nothing to log as a
           // failure — the operator aborted their own upload. What matters is
           // that it *threw*, so the `finally` below releases the lease.
-          log.info("core-files.write-aborted", { projectId, path: relative });
+          log.info("core-files.write-aborted", { path: relative });
           res.destroy();
           return;
         }
@@ -568,7 +569,7 @@ export function createCoreFilesRequestHandler(
         // and this one stops in the middle by design.
         const code: CoreFilesErrorCode = err instanceof TarError ? err.code : "write-failed";
         const message = err instanceof Error ? err.message : String(err);
-        log.warn("core-files.write-failed", { projectId, path: relative, code, error: message });
+        log.warn("core-files.write-failed", { path: relative, code, error: message });
         await writeLine({ type: "error", code, message }).catch(() => {});
       }
       res.end();
@@ -584,7 +585,7 @@ export function createCoreFilesRequestHandler(
  * The one refusal a client is guaranteed to be able to tell apart (F8).
  *
  * 409 plus `transfer-in-progress`: distinguishable by status from a bad path
- * (400) and a missing Project (404), and by code from any other 409 this
+ * (400) and a missing workspace (404), and by code from any other 409 this
  * surface might ever grow. The prose says which transfer and since when,
  * because "try again" is useless advice without it.
  */
@@ -593,9 +594,9 @@ function transferInProgress(heldPath: string, startedAt: number): Refusal {
     status: 409,
     code: "transfer-in-progress",
     message:
-      "another write transfer is already running on this Project " +
+      "another write transfer is already running in the workspace " +
       `(${heldPath || "."}, started ${new Date(startedAt).toISOString()}) — ` +
-      "one write at a time per Project; reads are unrestricted and concurrent",
+      "one write at a time; reads are unrestricted and concurrent",
   };
 }
 
@@ -691,10 +692,10 @@ async function writeSingleFile(
 }
 
 /**
- * Report an unpacked entry's path relative to the *Project*, not to the folder
+ * Report an unpacked entry's path relative to the *workspace*, not to the folder
  * the archive was unpacked into.
  *
- * Every path on this surface is Project-relative — that is the address space
+ * Every path on this surface is workspace-relative — that is the address space
  * F1 gives the operator — so a tar landing in `vendor/` reports
  * `vendor/lib/x.js`, which is the string they would pass back to `GET`.
  */
@@ -704,17 +705,23 @@ function prefixed<T extends { path: string }>(base: string, entry: T): T {
 }
 
 /**
- * `/v1/projects/:projectId/files[/list]` → the Project and which leaf.
+ * `/v1/projects/:id/files[/list]` → which leaf.
+ *
+ * The URL shape is the published SDK client's, which still builds it from a
+ * Project id. A Core has no Projects, so the id names nothing and is not read:
+ * there is one workspace and every id reaches it. Re-addressing the surface is
+ * #557's, and when it lands this literal goes with it.
+ *
  * Anything else → null, and the caller keeps its 404.
  */
-function parseRoute(url: URL): { projectId: string; leaf: "files" | "list" } | null {
+function parseRoute(url: URL): { leaf: "files" | "list" } | null {
   const segments = url.pathname.split("/").filter((s) => s.length > 0);
   if (segments.length !== 4 && segments.length !== 5) return null;
-  const [v1, projects, projectId, files, list] = segments;
-  if (v1 !== "v1" || projects !== "projects" || files !== "files") return null;
-  if (!projectId || projectId.length === 0) return null;
+  const [v1, legacyScope, id, files, list] = segments;
+  if (v1 !== "v1" || legacyScope !== FILES_ROUTE_SCOPE || files !== "files") return null;
+  if (!id || id.length === 0) return null;
   if (segments.length === 5 && list !== "list") return null;
-  return { projectId: decodeURIComponent(projectId), leaf: segments.length === 5 ? "list" : "files" };
+  return { leaf: segments.length === 5 ? "list" : "files" };
 }
 
 /**
@@ -823,7 +830,7 @@ class ClientGoneError extends Error {
  * **`'drain'` is never emitted on a destroyed stream.** A promise that waits
  * for that event alone therefore never settles once the client hangs up, and
  * the handler awaiting it parks forever: no `finally` between here and the top
- * of the call stack ever runs. On the write side that stranded the Project's
+ * of the call stack ever runs. On the write side that stranded the workspace's
  * write lease for the lifetime of the process, so every later `PUT` answered
  * `409 transfer-in-progress` — the refusal F8 asks to be *immediate* became
  * permanent. On the read side it suspended the `packDirectory` generator, so

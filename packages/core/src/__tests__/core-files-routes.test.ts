@@ -3,7 +3,7 @@ import * as http from "node:http";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createCoreFilesRequestHandler, type CoreFilesPort } from "../core-files-routes";
-import { ProjectWriteLocks } from "../files-transfer-locks";
+import { WorkspaceWriteLocks } from "../files-transfer-locks";
 import { packDirectory, packEntryHeader } from "../files-tar";
 import { cleanupTrees, collect, makeTree, readTree } from "./files-fixture";
 
@@ -17,13 +17,13 @@ import { cleanupTrees, collect, makeTree, readTree } from "./files-fixture";
 let server: http.Server;
 let base: string;
 let projects: Record<string, string> = {};
-let locks: ProjectWriteLocks;
+let locks: WorkspaceWriteLocks;
 
-const filesPort: CoreFilesPort = { projectRoot: (id) => projects[id] ?? null };
+const filesPort: CoreFilesPort = { workspaceRoot: () => Object.values(projects)[0] ?? null };
 
 beforeEach(async () => {
   projects = {};
-  locks = new ProjectWriteLocks();
+  locks = new WorkspaceWriteLocks();
   const routes = createCoreFilesRequestHandler({ filesPort, locks });
   server = http.createServer();
   server.on("request", (req, res) => {
@@ -156,11 +156,20 @@ describe("GET a file", () => {
     expect(json(res.body).code).toBe("not-found");
   });
 
-  it("404s a Project this Core does not have", async () => {
+  it("404s when this Core has no workspace to serve", async () => {
     const res = await call("GET", "/v1/projects/nope/files?path=a.txt");
 
     expect(res.status).toBe(404);
-    expect(json(res.body).code).toBe("project-not-found");
+    expect(json(res.body)).toEqual({ code: "not-found", error: "this Core has no workspace to serve" });
+  });
+
+  it("serves the one workspace whatever id the URL carries: the id names nothing", async () => {
+    project("p1", { "a.txt": "from the workspace" });
+    for (const id of ["p1", "nope", "any-id-at-all"]) {
+      const res = await call("GET", `/v1/projects/${id}/files?path=a.txt`);
+      expect(res.status).toBe(200);
+      expect(res.body.toString("utf8")).toBe("from the workspace");
+    }
   });
 
   it("follows a symlink that stays inside the Project, because a read asked for what it names", async () => {
@@ -184,7 +193,7 @@ describe("reads are unrestricted and concurrent (F8)", () => {
 
   it("serves a read while a write holds the Project's lease", async () => {
     project("p1", { "a.txt": "a" });
-    const lease = locks.acquire("p1", "elsewhere");
+    const lease = locks.acquire("elsewhere");
     expect(lease.ok).toBe(true);
 
     const read = await call("GET", "/v1/projects/p1/files?path=a.txt");
@@ -396,7 +405,7 @@ describe("PUT a folder as one tar (F4)", () => {
 describe("a second concurrent write is refused immediately (F8)", () => {
   it("answers 409 with `transfer-in-progress`, distinguishable from every other refusal", async () => {
     project("p1");
-    const held = locks.acquire("p1", "src/vendor");
+    const held = locks.acquire("src/vendor");
     expect(held.ok).toBe(true);
 
     const res = await call("PUT", "/v1/projects/p1/files?path=notes.txt", { body: Buffer.from("x") });
@@ -410,7 +419,7 @@ describe("a second concurrent write is refused immediately (F8)", () => {
 
   it("refuses without writing anything", async () => {
     const root = project("p1");
-    locks.acquire("p1", "elsewhere");
+    locks.acquire("elsewhere");
 
     await call("PUT", "/v1/projects/p1/files?path=notes.txt", { body: Buffer.from("x") });
 
@@ -419,7 +428,7 @@ describe("a second concurrent write is refused immediately (F8)", () => {
 
   it("refuses before reading the body when the client asks with Expect: 100-continue", async () => {
     project("p1");
-    locks.acquire("p1", "elsewhere");
+    locks.acquire("elsewhere");
 
     const res = await call("PUT", "/v1/projects/p1/files?path=notes.txt", {
       body: Buffer.from("x".repeat(4096)),
@@ -432,7 +441,7 @@ describe("a second concurrent write is refused immediately (F8)", () => {
 
   it("lets a write through once the other transfer releases", async () => {
     const root = project("p1");
-    const held = locks.acquire("p1", "elsewhere");
+    const held = locks.acquire("elsewhere");
     if (!held.ok) throw new Error("unreachable");
     held.lease.release();
 
@@ -442,21 +451,21 @@ describe("a second concurrent write is refused immediately (F8)", () => {
     expect(fs.readFileSync(path.join(root, "notes.txt"), "utf8")).toBe("x");
   });
 
-  it("lets a write to a different Project through at the same time", async () => {
-    project("p1");
-    const two = project("p2");
-    locks.acquire("p1", "elsewhere");
+  it("refuses a write under another id too: there is one workspace, so there is one lease", async () => {
+    const root = project("p1");
+    locks.acquire("elsewhere");
 
     const res = await call("PUT", "/v1/projects/p2/files?path=notes.txt", { body: Buffer.from("x") });
 
-    expect(res.status).toBe(200);
-    expect(fs.readFileSync(path.join(two, "notes.txt"), "utf8")).toBe("x");
+    expect(res.status).toBe(409);
+    expect(json(res.body).code).toBe("transfer-in-progress");
+    expect(fs.existsSync(path.join(root, "notes.txt"))).toBe(false);
   });
 
   it("releases the lease when the transfer finishes, so the next one is not refused forever", async () => {
     project("p1");
     await call("PUT", "/v1/projects/p1/files?path=a.txt", { body: Buffer.from("a") });
-    expect(locks.current("p1")).toBeNull();
+    expect(locks.current()).toBeNull();
 
     const second = await call("PUT", "/v1/projects/p1/files?path=b.txt", { body: Buffer.from("b") });
     expect(second.status).toBe(200);
@@ -468,7 +477,7 @@ describe("a second concurrent write is refused immediately (F8)", () => {
       body: Buffer.from("this is not a tar at all, not even close"),
       headers: { "content-type": "application/x-tar" },
     });
-    expect(locks.current("p1")).toBeNull();
+    expect(locks.current()).toBeNull();
   });
 });
 
@@ -476,7 +485,7 @@ describe("a second concurrent write is refused immediately (F8)", () => {
 
 describe("the free-space precheck (F8: no size cap, but a precheck)", () => {
   async function withFreeSpace(available: number | null): Promise<{ close: () => Promise<void>; url: string }> {
-    const routes = createCoreFilesRequestHandler({ filesPort, locks: new ProjectWriteLocks(), freeSpace: async () => available });
+    const routes = createCoreFilesRequestHandler({ filesPort, locks: new WorkspaceWriteLocks(), freeSpace: async () => available });
     const small = http.createServer();
     small.on("request", (req, res) => {
       if (routes.handle(req, res)) return;
@@ -584,7 +593,7 @@ describe("the bearer gate", () => {
   async function withAuth(): Promise<{ url: string; close: () => Promise<void> }> {
     const routes = createCoreFilesRequestHandler({
       filesPort,
-      locks: new ProjectWriteLocks(),
+      locks: new WorkspaceWriteLocks(),
       authVerifier: (bearer) =>
         bearer === "good" ? { ok: true, coreId: "core-1", exp: 1 } : { ok: false, reason: "bad-signature" },
     });
@@ -728,7 +737,7 @@ describe("a single-file PUT onto a path that holds a directory", () => {
       headers: { "content-type": "text/plain" },
     });
 
-    expect(locks.current("p1")).toBeNull();
+    expect(locks.current()).toBeNull();
   });
 });
 
@@ -817,7 +826,7 @@ describe("a single-file PUT that resolves to the Project root", () => {
 
     expect(res.status).not.toBe(200);
     expect(res.headers["content-type"]).toContain("application/json");
-    expect(locks.current("p1")).toBeNull();
+    expect(locks.current()).toBeNull();
   });
 
   it("still unpacks a tar at the root, which is the legitimate empty-path write", async () => {
@@ -961,7 +970,7 @@ describe("a tar entry that resolves to the Project root", () => {
       headers: { "content-type": "application/x-tar" },
     });
 
-    expect(locks.current("p1")).toBeNull();
+    expect(locks.current()).toBeNull();
   });
 
   it("still accepts the `./` directory entry every `tar -cf - .` archive opens with", async () => {

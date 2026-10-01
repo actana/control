@@ -104,12 +104,12 @@ describe("which spawns ask the relaunch port (issue 387)", () => {
   });
 
   it("asks for an agent spawn — the relaunch a settled bare Session gets", async () => {
-    await spawn({ sessionId: "t-1", cwd: "/w", command: "claude", agent: "claude-code" }, "a1");
+    await spawn({ sessionId: "t-1", command: "claude", agent: "claude-code" }, "a1");
     expect(asked).toEqual(["t-1"]);
   });
 
   it("never asks for a plain shell, which is not harness work", async () => {
-    await spawn({ sessionId: "t-1", cwd: "/w", command: "bash", shell: true }, "s1");
+    await spawn({ sessionId: "t-1", command: "bash", shell: true }, "s1");
     expect(asked).toEqual([]);
   });
 
@@ -126,7 +126,7 @@ describe("which spawns ask the relaunch port (issue 387)", () => {
       createServer: () => wss as unknown as WebSocketServerLike,
       liveEventPollMs: 10_000,
     });
-    await spawn({ sessionId: "t-1", cwd: "/w", command: "claude", agent: "claude-code" }, "n1");
+    await spawn({ sessionId: "t-1", command: "claude", agent: "claude-code" }, "n1");
     expect(asked).toEqual([]);
   });
 });
