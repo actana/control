@@ -171,7 +171,7 @@ has expired the sync waits for the push.
 `core` did not is updated, a file both changed is left as `core` has it, and nothing is deleted. Then the sync stops, the key
 and the sync's state are removed, and the folder keeps every file. If the key has expired, or a file could not be copied,
 the answer is `mount-failed` and the Core stays attached: push credentials and detach again. Removing the S3 prefix of a
-deleted Core is the controller's ([#564](https://github.com/actana/control/issues/564)).
+deleted Core is the controller's ([#564](https://github.com/actana/control/issues/564)), described in *The Panel's side* below.
 
 ### Events
 
@@ -189,3 +189,48 @@ becomes the same `shared:changed` event as any other write (`shared-sync-events.
 | a refresh during an upload | `shared-sync-seaweedfs.test.ts`; `shared-sync.test.ts` |
 | an expired key, and writing again after a push | `shared-sync.test.ts` (fake clock) |
 | unpair keeps the folder's contents | `shared-sync.test.ts`, `shared-sync-seaweedfs.test.ts` |
+
+## The Panel's side
+
+Issue [#564](https://github.com/actana/control/issues/564), the controller of the frames above. The Panel holds the storage config and the
+master key, makes the Shared folder the last step of pairing, and keeps each Core's 1-hour key fresh.
+
+```
+Settings / pairing step 4 ──PUT /api/storage (master key write-only)──▶ storage_config  (key sealed like core_secrets)
+pairing step 4 ──POST /api/cores/:id/shared/test──▶ issuer.issue(core) ──▶ probe own folder ✓, another Core's folder ✗
+               ──POST /api/cores/:id/pairing/finish──▶ sharedAttach ──▶ Core ──▶ core_shared_folders: attached
+timer (refresh point of the SDK: 15 min before the end, at most half its life) ──▶ sharedCredentials ──▶ Core
+DELETE /api/cores/:id ──▶ sharedDetach (Core keeps ~/shared) ──▶ Core row forgotten, S3 prefix left
+POST /api/cores/:id/delete {confirmPrefix} ──▶ prefix typed exactly ──▶ Core row removed, then only its prefix emptied
+```
+
+| File | What it is |
+|---|---|
+| `packages/panel/src/server/services/storage.ts` | the config, and the only place the master key is unsealed (into the SDK issuer) |
+| `packages/panel/src/server/services/shared-folders.ts` | test, finish pairing, push, rotation, detach, delete |
+| `packages/panel/src/server/repositories/{storage,core-shared-folders}.repo.ts` | `storage_config`, `core_shared_folders` (migration `0006`) |
+| `packages/panel/src/components/views/SharedFolderStep.tsx` | step 4 of the pairing wizard |
+
+- **The master key** is an RSA private key. It is written by `PUT /api/storage`, which is write-only: nothing returns it, and the read
+  says only `masterKeySet`. It is never logged, never in an error message, never in a frame. The SDK issuer signs a short token
+  per Core with it and returns the four fields of a key; those are all a Core ever receives. There is no public credentials route.
+- **Pairing from the Panel** registers the Core with its folder `pending` in the same transaction as the Core row. The finish route repeats the connection
+  test, sends `sharedAttach`, and only then marks it `attached`. A refusal (no storage, a Core that is offline or announces no
+  `shared`, a key that reaches another folder, a Core that answers with an error) leaves it `pending`. The first-run wizard does not count a
+  pending Core as a fleet. The CLI's pairing has no such step, and a Core registered before 0.5.0 has no folder row and is not asked for one.
+- **Rotation** pushes `sharedCredentials` at the SDK's refresh point, falling back to `sharedAttach` when the Core says `not-attached`. A push
+  that fails is retried (5 s, 15 s, 60 s, then 5 min), the Core's folder goes to `error` with the reason, and the Panel logs it:
+  never silently. A reconnecting Core gets a new key at once; at boot every attached Core does.
+- **Unpair** sends `sharedDetach` with `keepLocalCopy`; the Core copies S3 into `~/shared` and stops. A Core that cannot be told is still forgotten, and
+  the answer says so.
+- **Delete** needs the folder's exact prefix (`<prefix>/<core id>/`) typed back. It then removes the Core row and empties that prefix with a key issued
+  for that Core, which the role limits to it and which the SDK's S3 mode cannot widen. A prefix that could not be emptied is an error that names it.
+
+| Claim | Test |
+|---|---|
+| the master key is in no response, log line or frame | `storage-config-api.test.ts`, `shared-folders.test.ts`, `shared-folder-pairing-api.test.ts` |
+| the key is sealed at rest, rotated by a write, kept by an edit | `storage-config-api.test.ts` |
+| the Panel refuses to finish pairing without storage, offline, or with a leaking key | `shared-folder-pairing-api.test.ts`, `shared-folders.test.ts` |
+| keys rotate 15 minutes early, hourly, with a back-off and a visible error | `shared-folders.test.ts` (fake clock) |
+| unpair keeps the Core's folder | `shared-folder-pairing-api.test.ts` |
+| delete touches only its own prefix | `shared-folder-pairing-api.test.ts` (fake S3), `shared-folders-seaweedfs.test.ts` (real SeaweedFS in CI) |
