@@ -172,7 +172,7 @@ describe("the stable client id, for reaping only (issue 146, ADR 0024 D9)", () =
     ws.receive({
       type: "spawn",
       reqId: `spawn-${sessionId}`,
-      opts: { sessionId, cwd: "/w", command: "c" },
+      opts: { sessionId, command: "c" },
     });
     await vi.waitFor(() => expect(ws.frames().some((f) => f.type === "spawned")).toBe(true));
     return String(ws.answerTo(`spawn-${sessionId}`)!.ptyId);

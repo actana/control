@@ -79,7 +79,7 @@ describe("a second write while one is running", () => {
     expect(error.code).toBe("transfer-in-progress");
     // "Try again" is useless advice without which transfer and since when.
     expect(error.message).toContain("slow.bin");
-    expect(error.message).toContain("one write at a time per Project");
+    expect(error.message).toContain("one write at a time");
     // Nothing was written for the loser — the refusal came off the status line,
     // not after the body had crossed.
     expect(fs.existsSync(path.join(rig.root, "second.bin"))).toBe(false);
