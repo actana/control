@@ -25,11 +25,35 @@ vi.mock("~/lib/fleet-context", () => ({
 vi.mock("~/lib/user-terminal-store", () => ({
   useUserTerminals: () => ({ togglePanel, panelOpen: false, setHomeActive }),
 }));
-vi.mock("~/lib/panel-bridge", () => ({ getPanelBridge: () => null }));
+const bridge = {
+  isConnected: () => true,
+  listHarnessAvailability: vi.fn(async () => ({
+    "claude-code": { status: "available", path: "/usr/bin/claude" },
+  })),
+  installHarness: vi.fn(async () => ({ accepted: true })),
+  watchCore: vi.fn(() => () => {}),
+  onEvent: vi.fn(() => () => {}),
+  onDialStatus: vi.fn(() => () => {}),
+};
+vi.mock("~/lib/panel-bridge", () => ({ getPanelBridge: () => bridge }));
+vi.mock("~/queries", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("~/queries")>()),
+  useSettings: () => ({ data: undefined }),
+}));
+vi.mock("~/lib/api", () => ({ api: { getKeybindings: async () => ({ bindings: {} }) } }));
+const mutateSessionForCore = vi.fn();
+vi.mock("~/lib/mutate-session-for-core", () => ({
+  mutateSessionForCore: (...args: unknown[]) => mutateSessionForCore(...args),
+}));
 
 const { RouterProvider, createRootRoute, createRoute, createRouter, createMemoryHistory } =
   await import("@tanstack/react-router");
 const { CorePage } = await import("../CorePage");
+const { readPendingSessionOpen } = await import("~/lib/session-notification-store");
+const { showRequestedSession } = await import("~/lib/open-requested-session");
+const { takePendingInitialInput } = await import("~/lib/pending-initial-input");
+const { __resetCliAvailabilityStoresForTests } = await import("~/lib/cli-availability");
+const { __resetCoreRememberForTests } = await import("~/lib/core-remember");
 
 function core(id: string, label: string, state: CoreWithDial["dial"]["state"] = "connected"): CoreWithDial {
   return {
@@ -59,6 +83,11 @@ function row(over: Record<string, unknown>) {
 
 async function mount(tab: "sessions" | "files" | "tasks", coreId = "a") {
   const root = createRootRoute();
+  const workspaceRoute = createRoute({
+    getParentRoute: () => root,
+    path: "/cores/$coreId/workspace",
+    component: () => <div>workspace</div>,
+  });
   const coreRoute = createRoute({
     getParentRoute: () => root,
     path: "/cores/$coreId",
@@ -66,7 +95,7 @@ async function mount(tab: "sessions" | "files" | "tasks", coreId = "a") {
     component: () => <CorePage coreId={coreId} tab={tab} />,
   });
   const router = createRouter({
-    routeTree: root.addChildren([coreRoute]),
+    routeTree: root.addChildren([coreRoute, workspaceRoute]),
     history: createMemoryHistory({ initialEntries: [`/cores/${coreId}`] }),
   });
   await act(async () => {
@@ -84,6 +113,10 @@ async function mount(tab: "sessions" | "files" | "tasks", coreId = "a") {
 
 afterEach(() => {
   cleanup();
+  mutateSessionForCore.mockReset();
+  window.localStorage.clear();
+  __resetCliAvailabilityStoresForTests();
+  __resetCoreRememberForTests();
   togglePanel.mockReset();
   setHomeActive.mockReset();
   rows = [];
@@ -169,5 +202,71 @@ describe("CorePage", () => {
     cores = [core("a", "alpha")];
     await mount("sessions", "ghost");
     expect(screen.getByText("Core not found")).toBeTruthy();
+  });
+
+  // Issue 560 R2: starting a Session from the Core page must hand the workspace
+  // the Session it created, and the prompt it was started with, to spawn.
+  it("starts the Session it creates: create frame, prompt staged, workspace asked to open it", async () => {
+    cores = [core("a", "alpha")];
+    mutateSessionForCore.mockImplementation(async (_core: string, frame: { sessionId: string }) => ({
+      sessionId: frame.sessionId,
+      title: "Waiting",
+      titleManuallySet: false,
+      icon: null,
+      agent: "claude-code",
+      status: "idle",
+      archived: false,
+      pinned: false,
+      claudeSessionId: null,
+      updatedAt: 1,
+    }));
+    const router = await mount("sessions");
+    await act(async () => {
+      fireEvent.click(screen.getAllByRole("button", { name: /new session/i })[0]!);
+    });
+    await act(async () => {
+      fireEvent.change(screen.getByLabelText(/^prompt$/i), { target: { value: "fix the build" } });
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /start session/i }));
+    });
+    await act(async () => {});
+
+    expect(mutateSessionForCore).toHaveBeenCalledTimes(1);
+    const [coreId, frame] = mutateSessionForCore.mock.calls[0]!;
+    expect(coreId).toBe("a");
+    expect(frame).toMatchObject({ op: "create", agent: "claude-code" });
+    expect(frame).not.toHaveProperty("cwd");
+    // The workspace is told which Session to open, scoped to this Core, and the
+    // pane will find the prompt waiting for the first spawn.
+    expect(readPendingSessionOpen("a")).toMatchObject({ sessionId: frame.sessionId, coreId: "a" });
+    expect(router.state.location.pathname).toBe("/cores/a/workspace");
+
+    // The workspace consumes that request: the terminal it creates must name
+    // this Core, or the pane has no transport and never spawns the Session.
+    const request = readPendingSessionOpen("a")!;
+    const session = { id: request.sessionId, agent: "claude-code" } as never;
+    const project = { id: "a", path: "" } as never;
+    const terminals = {
+      activeFor: vi.fn(() => null),
+      activeSessionIdFor: vi.fn(() => null),
+      rehydrate: vi.fn(),
+      toggle: vi.fn(),
+    };
+    showRequestedSession({ terminals, scopeKey: "a", project, session, coreId: request.coreId });
+    expect(terminals.toggle).toHaveBeenCalledWith(project, session, { coreId: "a" });
+    // The prompt is still staged for that spawn.
+    expect(takePendingInitialInput(frame.sessionId)).toBe("fix the build");
+  });
+
+  it("opens an existing Session by id, not just the workspace", async () => {
+    cores = [core("a", "alpha")];
+    rows = [row({ sessionId: "s9" })];
+    const router = await mount("sessions");
+    await act(async () => {
+      fireEvent.click(screen.getByText("Refactor executor"));
+    });
+    expect(readPendingSessionOpen("a")).toMatchObject({ sessionId: "s9", coreId: "a" });
+    expect(router.state.location.pathname).toBe("/cores/a/workspace");
   });
 });

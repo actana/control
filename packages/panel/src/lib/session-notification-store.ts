@@ -63,7 +63,7 @@ function toSessionFinishNotification(
 ): SessionFinishNotification | null {
   const id = typeof value.id === "string" ? value.id : "";
   const projectId = typeof value.projectId === "string" ? value.projectId : "";
-  const projectName = typeof value.projectName === "string" ? value.projectName : "Project";
+  const projectName = typeof value.projectName === "string" ? value.projectName : "";
   const sessionTitle = typeof value.sessionTitle === "string" ? value.sessionTitle : "Session";
   const finishedAt = typeof value.finishedAt === "number" ? value.finishedAt : 0;
   // `projectId` may be empty: a Core's finish event names no Project (ADR 0041 D1).
@@ -402,13 +402,31 @@ function dispatchPendingOpen(request: PendingNotificationOpen) {
   );
 }
 
+/**
+ * Ask the Core's workspace to open one Session. The workspace scopes its
+ * Sessions by Core id, so that is the scope id a request carries; a 0.5.0
+ * Core's finish names no project at all.
+ */
+export function requestSessionOpen(coreId: string, sessionId: string) {
+  if (typeof window === "undefined" || !coreId || !sessionId) return;
+  const request: PendingNotificationOpen = {
+    kind: "session-finished",
+    projectId: coreId,
+    sessionId,
+    requestedAt: Date.now(),
+    coreId,
+  };
+  writePendingOpen(request);
+  dispatchPendingOpen(request);
+}
+
 export function requestSessionNotificationOpen(
   notification: SessionFinishNotification,
 ) {
   if (typeof window === "undefined") return;
   const request: PendingNotificationOpen = {
     kind: "session-finished",
-    projectId: notification.projectId,
+    projectId: notification.coreId || notification.projectId,
     sessionId: notification.id,
     requestedAt: Date.now(),
     coreId: notification.coreId,

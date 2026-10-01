@@ -1,3 +1,4 @@
+import { showRequestedSession } from "~/lib/open-requested-session";
 import { createFileRoute, useRouter } from "@tanstack/react-router";
 import { useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
@@ -27,17 +28,19 @@ import {
   rememberActiveSession,
   type LastActiveSession,
 } from "~/lib/active-session-memory";
-import { consumeProjectOnboardIntent, type ProjectOnboardIntent } from "~/lib/project-onboard-intent";
+import { coreWorkspaceProject } from "~/lib/core-workspace-project";
+type ProjectOnboardIntent = { gridView?: boolean };
+import { readCoreRemember, writeCoreRemember } from "~/lib/core-remember";
+import { useCores } from "~/lib/use-fleet";
 import { useHideableMenu } from "~/lib/hideable-elements";
 import { DEFAULT_HEADER_BUTTON_VISIBILITY } from "~/shared/header-buttons";
 import { NewHarnessButton } from "~/components/views/NewHarnessButton";
 import { CursorGlow } from "~/components/ui/CursorGlow";
-import { HotkeyTooltip, StaticHotkeyTooltip } from "~/components/ui/Tooltip";
-import { Modal } from "~/components/ui/Modal";
+import { HotkeyTooltip } from "~/components/ui/Tooltip";
 import { ConfirmDialog } from "~/components/ui/ConfirmDialog";
 import { isEditableTarget, useHotkey } from "~/lib/use-hotkey";
 import { api } from "~/lib/api";
-import { mutateProjectForCore } from "~/lib/mutate-project-for-core";
+
 import { mutateSessionForCore } from "~/lib/mutate-session-for-core";
 import { newSessionId } from "~/lib/claude-command";
 import { TITLE_WAITING } from "~/lib/session-sentinels";
@@ -92,7 +95,6 @@ import {
   useArchivedSessions,
   useCoreArchivedSessionCount,
   useHookToken,
-  useProject,
   useSettings,
   useSessions,
 } from "~/queries";
@@ -109,7 +111,7 @@ import {
   type PendingSessionOpen,
 } from "~/lib/session-notification-store";
 import type { Session } from "~/db/schema";
-import type { ProjectPathStatus } from "~/shared/projects";
+
 import { projectScopeKey, scopeKeyForProject } from "~/lib/scoped-project";
 import {
   ARCHIVE_ACTIVE_SESSION_EVENT,
@@ -119,29 +121,13 @@ import {
   type ArchiveActiveSessionEventDetail,
 } from "~/lib/design-meta";
 
-// Hand-rolled to keep zod out of the eager chunk (matches /settings). The route
-// accepts an optional `coreId` search param so the shell knows which Core owns
-// the project — the Panel's own rows are implied when absent. See
-// issue 08 (Singular UI across Cores).
-function validateProjectSearch(
-  search: Record<string, unknown>,
-): { coreId?: string } {
-  const raw = search.coreId;
-  if (typeof raw !== "string" || raw.length === 0) return {};
-  return { coreId: raw };
-}
-
-export const Route = createFileRoute("/projects/$id")({
-  validateSearch: validateProjectSearch,
-  component: ProjectPage,
+// Session workspace for a Core (issue 560). Replaces the legacy /projects/$id
+// route: Sessions belong to the Core and always start in ~ (ADR 0041 D1, D2).
+export const Route = createFileRoute("/cores/$coreId/workspace")({
+  component: CoreWorkspacePage,
 });
 
 type SessionView = "active" | "pinned" | "archived";
-
-type ProjectPathCheck =
-  | { state: "idle" | "checking" | "valid" }
-  | { state: "invalid"; status: Extract<ProjectPathStatus, { ok: false }> }
-  | { state: "error"; message: string };
 
 /** The session id of the grid cell whose terminal currently holds focus (the pane
  *  the user is looking at), or null outside grid view / when nothing is focused.
@@ -153,74 +139,32 @@ function readFocusedGridSessionId(): string | null {
   return cell?.getAttribute("data-session-id") ?? null;
 }
 
-function ProjectPage() {
-  const { id } = Route.useParams();
-  // Which Core owns this shell instance (Singular UI across Cores). Absent
-  // means the Panel's own rows, which have no machine behind them.
-  const { coreId: routeCoreId } = Route.useSearch();
-  const coreId = routeCoreId ?? null;
+function CoreWorkspacePage() {
+  const { coreId: routeCoreId } = Route.useParams();
+  const coreId = routeCoreId;
+  const id = coreId; // terminal/session caches still key off a scope id = Core id
   const router = useRouter();
   const queryClient = useQueryClient();
   const { data: settings } = useSettings();
   const { hideableMenu } = useHideableMenu();
-  // Which discretionary project-header buttons are shown (Settings → Interface,
-  // or right-click → Hide on the button itself).
+  const { cores } = useCores();
+  const coreLabel = cores.find((c) => c.id === coreId)?.label || coreId;
+  // Which discretionary header buttons are shown (Settings → Interface).
   const headerButtons = settings?.headerButtons ?? DEFAULT_HEADER_BUTTON_VISIBILITY;
-  const projectQuery = useProject(id, { coreId });
-  const project = projectQuery.data;
+  const [rememberTick, setRememberTick] = useState(0);
+  const remembered = useMemo(() => {
+    void rememberTick;
+    return readCoreRemember(coreId);
+  }, [coreId, rememberTick]);
+  const project = useMemo(
+    () => coreWorkspaceProject(coreId, coreLabel),
+    [coreId, coreLabel, remembered.rememberHarnessSettings, remembered.savedHarness],
+  );
   const selectedScopeKey = projectScopeKey(id);
-  const scopedProject = project ?? null;
-  const [projectPathCheck, setProjectPathCheck] = useState<ProjectPathCheck>({
-    state: "idle",
-  });
-  const pathScopeKey = `${project?.id ?? ""}:${project?.path ?? ""}`;
-  const pathScopeRef = useRef(pathScopeKey);
-  useEffect(() => {
-    if (!project) {
-      setProjectPathCheck({ state: "idle" });
-      pathScopeRef.current = pathScopeKey;
-      return;
-    }
-    // Filesystem checks are Core-owned — the path lives on the Core's
-    // machine. There's no core-link frame for it yet; treat a Core's path as
-    // valid so launch controls & terminals unblock.
-    if (coreId) {
-      pathScopeRef.current = pathScopeKey;
-      setProjectPathCheck({ state: "valid" });
-      return;
-    }
-    const scopeChanged = pathScopeRef.current !== pathScopeKey;
-    pathScopeRef.current = pathScopeKey;
-    let cancelled = false;
-    // Keep the last-known-good path while revalidating the same scope so
-    // launch controls don't flicker on unrelated cache refreshes (e.g.
-    // deleting a session only touches sessions, not the project path).
-    setProjectPathCheck((prev) => {
-      if (scopeChanged || prev.state === "idle") return { state: "checking" };
-      if (prev.state === "valid") return prev;
-      return { state: "checking" };
-    });
-    void api
-      .getProjectPathStatus(project.id)
-      .then(({ status }) => {
-        if (cancelled) return;
-        setProjectPathCheck(status.ok ? { state: "valid" } : { state: "invalid", status });
-      })
-      .catch((error) => {
-        if (cancelled) return;
-        setProjectPathCheck({
-          state: "error",
-          message: error?.message || "Could not verify this project path.",
-        });
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [coreId, pathScopeKey, project]);
-  const projectPathReady = projectPathCheck.state === "valid";
-  const projectPathIssue =
-    projectPathCheck.state === "invalid" ? projectPathCheck.status : null;
-  const terminalProject = projectPathReady ? scopedProject : null;
+  const scopedProject = project;
+  // Every Session starts in ~ on this Core — there is no path to verify (ADR 0041 D2).
+  const projectPathReady = true;
+  const terminalProject = scopedProject;
   const defaultWarmPayload = useMemo(
     () => (project ? defaultSessionPayload(project) : null),
     [
@@ -333,7 +277,6 @@ function ProjectPage() {
     if (sessionView === "archived" && !hasArchivedSessions) setSessionView("active");
   }, [sessionView, hasArchivedSessions]);
   const [cleanupStatus, setCleanupStatus] = useState<string | null>(null);
-  const [retryingProjectPath, setRetryingProjectPath] = useState(false);
   const cliAvailability = useCliAvailability(coreId);
 
   const [overflowOpen, setOverflowOpen] = useState(false);
@@ -603,12 +546,13 @@ function ProjectPage() {
           }
         }
 
-        const active = terminals.activeFor(selectedScopeKey);
-        if (active?.sessionId !== session.id) {
-          const activeSessionId = terminals.activeSessionIdFor(selectedScopeKey);
-          if (activeSessionId === session.id) terminals.rehydrate(terminalProject, session, { coreId });
-          else terminals.toggle(terminalProject, session);
-        }
+        showRequestedSession({
+          terminals,
+          scopeKey: selectedScopeKey,
+          project: terminalProject,
+          session,
+          coreId,
+        });
         // Now that the session is materialized in the grid, spotlight its cell.
         if (terminals.gridView) terminals.focusGridSession(session.id);
         clearPendingSessionOpen(request);
@@ -759,15 +703,19 @@ function ProjectPage() {
           // resume until the protocol grows them. Skip-permissions is not a row
           // field any launch path reads — it is derived from the Harness
           // (issue 22).
+          // A 0.5.0 Core refuses projectId on create (ADR 0041 D27). The published
+          // SDK types still name it until actana/client#10 ships — cast away.
           const snapshot = await mutateSessionForCore(coreId, {
             op: "create",
             sessionId: clientSessionId,
-            projectId: project.id,
             title: TITLE_WAITING,
             agent: payload.agent,
-          });
+          } as Parameters<typeof mutateSessionForCore>[1]);
           if (!snapshot) throw new Error("Core did not return a session snapshot");
-          const createdSession: Session = remoteSessionFromSnapshot(snapshot);
+          const createdSession: Session = {
+            ...remoteSessionFromSnapshot(snapshot),
+            projectId: project.id,
+          };
           replaceOptimisticSession(
             queryClient,
             project.id,
@@ -899,9 +847,9 @@ function ProjectPage() {
     if (onboardConsumedForRef.current === id) return;
     onboardConsumedForRef.current = id;
     onboardStartedRef.current = false;
-    const intent = consumeProjectOnboardIntent(id);
+    const intent = null as ProjectOnboardIntent | null;
     onboardIntentRef.current = intent;
-    if (intent) {
+    if (intent?.gridView != null) {
       terminals.setGridView(intent.gridView);
       // The intent already carries the layout for this first navigation; don't
       // re-apply the stored default on top of it.
@@ -929,7 +877,7 @@ function ProjectPage() {
   }, [id, project, terminals]);
   useEffect(() => {
     const intent = onboardIntentRef.current;
-    if (!intent?.autoStart || onboardStartedRef.current) return;
+    if (!intent || onboardStartedRef.current) return;
     if (!project || !projectPathReady) return;
     onboardStartedRef.current = true;
     onNewHarnessPrimary();
@@ -981,8 +929,6 @@ function ProjectPage() {
   const anyBlockingDialogOpen =
     showNewHarness ||
     confirmDeleteArchived ||
-    !!projectPathIssue ||
-    projectPathCheck.state === "error" ||
     showCodexHooksNotice ||
     harnessUpdateRequired !== null;
 
@@ -1241,40 +1187,6 @@ function ProjectPage() {
     return () => cancelAnimationFrame(raf);
   }, [id, project, anyBlockingDialogOpen]);
 
-  if (projectQuery.isError) {
-    return (
-      <div style={{ flex: 1, padding: 32 }}>
-        <EmptyState
-          title="Could not load project"
-          subtitle="Actana Control could not load this hosted project. Check your connection, then retry."
-          icon="shield"
-          action={
-            <div style={{ display: "flex", gap: 8 }}>
-              <Btn variant="primary" icon="refresh" onClick={() => void projectQuery.refetch()}>
-                Retry
-              </Btn>
-              <Btn variant="ghost" onClick={() => void router.navigate({ to: "/" })}>
-                Back to Fleet
-              </Btn>
-            </div>
-          }
-        />
-      </div>
-    );
-  }
-
-  if (!project) {
-    return (
-      <div style={{ flex: 1, padding: 32 }}>
-        <EmptyState
-          title="Loading project"
-          subtitle="Fetching the hosted project, sessions, terminals, and runtime state."
-          icon="sparkles"
-        />
-      </div>
-    );
-  }
-
   const activeSessions = sessions.filter((t) => !t.archived);
   const pinnedSessions = activeSessions.filter((t) => t.pinned);
   const visibleSessions = showArchived ? archivedSessions : showPinned ? pinnedSessions : activeSessions;
@@ -1415,27 +1327,6 @@ function ProjectPage() {
         setCleanupStatus(null);
       }
     })();
-  };
-
-  const retryProjectPathCheck = async () => {
-    if (!project) return;
-    setRetryingProjectPath(true);
-    try {
-      const { status } = await api.getProjectPathStatus(project.id);
-      setProjectPathCheck(status.ok ? { state: "valid" } : { state: "invalid", status });
-    } catch (e: unknown) {
-      setProjectPathCheck({
-        state: "error",
-        message: e instanceof Error ? e.message : "Could not verify this project path.",
-      });
-    } finally {
-      setRetryingProjectPath(false);
-    }
-  };
-
-  const closePathIssue = () => {
-    // void: a failed navigation shows in the router's own error state.
-    void router.navigate({ to: "/" });
   };
 
   // Archive one or more active sessions: kill each tty, flip the archived flag,
@@ -1655,25 +1546,26 @@ function ProjectPage() {
   const startHarness = (data: {
     agent: Session["agent"];
     title: string;
+    prompt: string;
     bareSession: boolean;
   }) => {
     setShowNewHarness(false);
     if (newHarnessTarget === "newRow") {
-      // The "New row" button asked for this session to start a fresh grid row.
       terminals.requestNewRow();
     } else {
-      // Default: drop the new session beside the active one, like Clone.
       const anchor = anchorSessionId();
       if (anchor) terminals.requestCloneInsertAfter(anchor);
     }
     setNewHarnessTarget("default");
-    // void: `createSession` reports a failed create as a toast.
     void createSession(
       {
         agent: data.agent,
         bareSession: data.bareSession,
       },
-      { focusOnCreate: true },
+      {
+        focusOnCreate: true,
+        initialInput: data.prompt || undefined,
+      },
     );
   };
 
@@ -1751,11 +1643,11 @@ function ProjectPage() {
             variant="ghost"
             icon="chevron-left"
             onClick={() =>
-              void router.navigate(
-                coreId
-                  ? { to: "/cores/$coreId", params: { coreId } }
-                  : { to: "/" },
-              )
+              void router.navigate({
+                to: "/cores/$coreId",
+                params: { coreId },
+                search: { tab: "sessions" },
+              })
             }
             title="Back to this Core's Sessions"
           >
@@ -1834,7 +1726,8 @@ function ProjectPage() {
             {headerButtons.gridView && gridViewToggle}
             {!showArchived && (
               <NewHarnessButton
-                project={project}
+                remembered={!!(project.rememberHarnessSettings && project.savedHarness)}
+                savedHarness={project.savedHarness}
                 onPrimary={onNewHarnessPrimary}
                 onNewRow={showGrid ? onNewRowPrimary : undefined}
                 disabled={!projectPathReady}
@@ -1905,7 +1798,7 @@ function ProjectPage() {
           ) : sessionsQuery.isError ? (
             <EmptyState
               title="Could not load sessions"
-              subtitle="Actana Control could not load sessions for this project. Retry before starting new work."
+              subtitle="Actana Control could not load sessions for this Core. Retry before starting new work."
               icon="shield"
               action={
                 <Btn variant="primary" icon="refresh" onClick={() => void sessionsQuery.refetch()}>
@@ -1920,7 +1813,7 @@ function ProjectPage() {
             // whose query is disabled and so never pending-and-fetching.
             <EmptyState
               title="Loading archived sessions"
-              subtitle="Fetching this project's archived sessions from the Core that owns them."
+              subtitle="Fetching this Core's archived sessions."
               icon="sparkles"
             />
           ) : showArchived && archivedSessionsQuery.isError ? (
@@ -1963,11 +1856,12 @@ function ProjectPage() {
           ) : visibleSessions.length === 0 ? (
             <EmptyState
               title="No active sessions"
-              subtitle="Start a new session to begin working on this project."
+              subtitle="Start a new session on this Core."
               action={
                 <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                   <NewHarnessButton
-                    project={project}
+                    remembered={!!(project.rememberHarnessSettings && project.savedHarness)}
+                    savedHarness={project.savedHarness}
                     onPrimary={onNewHarnessPrimary}
                     disabled={!projectPathReady}
                     onConfigure={() => {
@@ -2101,122 +1995,23 @@ function ProjectPage() {
         onClose={() => setHarnessUpdateRequired(null)}
       />
 
-      <Modal
-        open={!!projectPathIssue}
-        onClose={closePathIssue}
-        title="Working folder missing"
-        width={540}
-        footer={
-          <>
-            <StaticHotkeyTooltip hotkey="Esc">
-              <Btn
-                variant="ghost"
-                onClick={closePathIssue}
-              >
-                Back to Fleet
-              </Btn>
-            </StaticHotkeyTooltip>
-          </>
-        }
-      >
-        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-          <div style={{ fontSize: 13, lineHeight: 1.55, color: "var(--text)" }}>
-            {projectPathIssue?.message ?? "Actana Control cannot find this project folder."}
-            {" "}
-            This Session's working folder is gone from disk. Nothing in the Panel can repoint it.
-          </div>
-          <div
-            style={{
-              border: "1px solid var(--border)",
-              borderRadius: 10,
-              background: "var(--surface-0)",
-              padding: "10px 12px",
-              fontFamily: "var(--mono)",
-              fontSize: 11.5,
-              color: "var(--text-dim)",
-              lineHeight: 1.45,
-              wordBreak: "break-all",
-            }}
-          >
-            {projectPathIssue?.path}
-          </div>
-        </div>
-      </Modal>
-
-      <Modal
-        open={projectPathCheck.state === "error"}
-        onClose={closePathIssue}
-        title="Could not check project folder"
-        width={500}
-        footer={
-          <>
-            <StaticHotkeyTooltip hotkey="Esc">
-              <Btn variant="ghost" onClick={closePathIssue}>
-                Back to Fleet
-              </Btn>
-            </StaticHotkeyTooltip>
-            <Btn
-              variant="primary"
-              icon="refresh"
-              onClick={() => void retryProjectPathCheck()}
-              disabled={retryingProjectPath}
-            >
-              {retryingProjectPath ? "Checking..." : "Retry"}
-            </Btn>
-          </>
-        }
-      >
-        <div style={{ fontSize: 13, lineHeight: 1.55, color: "var(--text)" }}>
-          {projectPathCheck.state === "error"
-            ? projectPathCheck.message
-            : "Actana Control could not verify this project path."}
-        </div>
-      </Modal>
-
       <NewHarnessDialog
         open={showNewHarness}
-        project={project}
         coreId={coreId}
+        coreLabel={coreLabel}
+        initialRemember={{
+          rememberHarnessSettings: project.rememberHarnessSettings,
+          savedHarness: project.savedHarness,
+        }}
         onClose={() => {
           setShowNewHarness(false);
           setNewHarnessTarget("default");
         }}
         onStart={startHarness}
         onHarnessUpdateRequired={showHarnessUpdateRequired}
-        onPersistRemember={async (patch) => {
-          const previous = queryClient.getQueryData<typeof project>(queryKeys.project(project.id));
-          queryClient.setQueryData(queryKeys.project(project.id), (prev: typeof project | undefined) =>
-            prev ? { ...prev, ...patch } : prev
-          );
-          try {
-            if (coreId) {
-              // "Remember these settings" persists to the projects row, which
-              // lives on the Core that owns it (ADR 0004/0005) — so the write
-              // is a `settings` mutation frame to that Core, not a PATCH that
-              // would 404 on the Panel's own rows. Every Panel connected to
-              // that Core converges on the result, as it does for pinning.
-              const updated = await mutateProjectForCore(coreId, {
-                op: "settings",
-                projectId: project.id,
-                rememberHarnessSettings: patch.rememberHarnessSettings,
-                savedHarness: patch.savedHarness,
-                savedSkipPermissions: patch.savedSkipPermissions,
-                savedBareSession: patch.savedBareSession,
-              });
-              if (!updated) throw new Error("The Core did not save the session settings.");
-            } else {
-              await api.updateProject(project.id, patch);
-            }
-            await refresh();
-          } catch (error) {
-            queryClient.setQueryData(queryKeys.project(project.id), previous);
-            // Callers `void` this promise (NewHarnessDialog:166,171,195), so
-            // rethrowing would become an unhandled rejection. Surface it as
-            // a toast and swallow.
-            toast.error(
-              error instanceof Error ? error.message : "Could not save agent settings",
-            );
-          }
+        onPersistRemember={(patch) => {
+          writeCoreRemember(coreId, patch);
+          setRememberTick((n) => n + 1);
         }}
       />
 
@@ -2230,7 +2025,7 @@ function ProjectPage() {
         width={460}
       >
         <div style={{ fontSize: 13, color: "var(--text)", marginBottom: 8 }}>
-          Permanently delete all archived sessions in &ldquo;{project.name}&rdquo;?
+          Permanently delete all archived sessions on &ldquo;{coreLabel}&rdquo;?
         </div>
         <div style={{ fontSize: 12, color: "var(--text-dim)" }}>
           {archivedCount} archived session{archivedCount === 1 ? "" : "s"} will be deleted. This cannot be undone. Active sessions are unaffected.
@@ -2258,7 +2053,7 @@ function ProjectPage() {
       >
         <div style={{ fontSize: 13, color: "var(--text)", marginBottom: 8 }}>
           Archive all {gridScopeSessionCount} open session
-          {gridScopeSessionCount === 1 ? "" : "s"} in &ldquo;{project.name}&rdquo;?
+          {gridScopeSessionCount === 1 ? "" : "s"} on &ldquo;{coreLabel}&rdquo;?
         </div>
         <div style={{ fontSize: 12, color: "var(--text-dim)" }}>
           Any running sessions will be disconnected and their agents stopped. You

@@ -237,7 +237,7 @@ export function UserTerminalPanel({ coreId }: { coreId?: string }) {
               flex: "0 0 auto",
             }}
           >
-            {homeActive ? "Terminals" : "Project Terminals"}
+            {homeActive ? "Terminals" : "Core Terminals"}
           </span>
           {sessions.length > 0 && (
             <span

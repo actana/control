@@ -134,9 +134,13 @@ export function sessionsCacheKey(
 // typed on its own DB shape. Fields the snapshot doesn't carry
 // get safe defaults; the Core stays authoritative for the ones it does.
 export function remoteSessionFromSnapshot(snapshot: CoreLinkSessionRow): Session {
+  const projectId =
+    "projectId" in snapshot && typeof (snapshot as { projectId?: unknown }).projectId === "string"
+      ? (snapshot as { projectId: string }).projectId
+      : "";
   return {
     id: snapshot.sessionId,
-    projectId: snapshot.projectId,
+    projectId,
     title: snapshot.title,
     // The Core owns this flag (issue 84). Synthesizing `false` told the card
     // that every Core-owned Session was un-renamed, so an operator's rename

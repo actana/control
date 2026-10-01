@@ -101,7 +101,7 @@ export function normalizeSessionFinishedEvent(
     const sessionId = typeof e.id === "string" ? e.id : "";
     const projectId = typeof e.projectId === "string" ? e.projectId : "";
     if (!sessionId || !projectId) return null;
-    const projectName = typeof e.projectName === "string" ? e.projectName : "Project";
+    const projectName = typeof e.projectName === "string" ? e.projectName : "";
     const sessionTitle = typeof e.sessionTitle === "string" ? e.sessionTitle : "Session";
     return {
       coreId: null,
@@ -138,7 +138,7 @@ export function normalizeSessionFinishedEvent(
   const projectId = typeof payload.projectId === "string" ? payload.projectId : "";
   if (!sessionId) return null;
   const projectName =
-    typeof payload.projectName === "string" ? payload.projectName : "Project";
+    typeof payload.projectName === "string" ? payload.projectName : "";
   const sessionTitle =
     typeof payload.sessionTitle === "string" ? payload.sessionTitle : "Session";
   return {
@@ -315,7 +315,7 @@ export function useSessionFinishNotifications() {
         coreAlias: finish.coreAlias,
       };
 
-      setNotifications((prev) => {
+      setNotifications((_prev) => {
         const all = loadAppNotifications();
         const nextAll = mergeSessionFinishNotification(all, notification);
         publishAppNotifications(nextAll);
@@ -330,18 +330,18 @@ export function useSessionFinishNotifications() {
       const aliasSuffix = isRemote
         ? ` on ${finish.coreAlias && finish.coreAlias.length > 0 ? finish.coreAlias : finish.coreId}`
         : "";
-      const toastTitle = `Session finished — ${finish.projectName}${aliasSuffix}`;
+      const toastTitle = `Session finished${finish.projectName ? ` — ${finish.projectName}` : ""}${aliasSuffix}`;
 
       const goToProject = () => {
         requestSessionNotificationOpen(notification);
-        // Narrows on `finish.coreId` rather than the equivalent `isRemote`, so
-        // the `string | null` loses its `null` for the search param's `string`.
-        const search = finish.coreId ? { coreId: finish.coreId } : undefined;
-        void router.navigate({
-          to: "/projects/$id",
-          params: { id: finish.projectId },
-          search,
-        });
+        if (finish.coreId) {
+          void router.navigate({
+            to: "/cores/$coreId/workspace",
+            params: { coreId: finish.coreId },
+          });
+          return;
+        }
+        void router.navigate({ to: "/" });
       };
 
       if (toastEnabled) {

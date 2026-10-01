@@ -85,13 +85,6 @@ export function InterfaceSettingsPage() {
       <Field label="Top bar">
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
           <ToggleRow
-            title="Group switcher pill"
-            description="The active-group pill (colored dot + group name) leading the top bar breadcrumb. While hidden, switch groups with the dashboard chips or the group-cycle hotkey."
-            checked={settings?.showGroupSwitcher ?? true}
-            onChange={(next) => update({ showGroupSwitcher: next })}
-            label="Show group switcher pill"
-          />
-          <ToggleRow
             title="AI usage indicator"
             description="The provider-usage chip (ring or status dots) in the top bar. Hiding it also stops the usage polling — the same switch as Settings → Usage, where you pick which providers it covers."
             checked={settings?.providerUsageEnabled ?? false}
@@ -101,15 +94,8 @@ export function InterfaceSettingsPage() {
           {headerButtonRow("notifications")}
         </div>
       </Field>
-      <Field label="Project header">
+      <Field label="Workspace header">
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-          <ToggleRow
-            title="Group tag"
-            description="The group tag (colored dot + group name) in an open project's header, showing which group it belongs to. Click it to scope the dashboard to that group."
-            checked={settings?.showProjectHeaderGroup ?? true}
-            onChange={(next) => update({ showProjectHeaderGroup: next })}
-            label="Show project group tag"
-          />
           {headerButtonRow("gridView")}
         </div>
       </Field>

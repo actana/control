@@ -3,7 +3,7 @@ import { CorePage } from "~/components/views/CorePage";
 import type { CoreTab } from "~/components/views/CoreHeader";
 
 // A Core's page. `?tab=` picks Sessions (the default), Files or Tasks. Hand-
-// rolled validation, like /projects/$id, to keep zod out of the eager chunk.
+// rolled validation, to keep zod out of the eager chunk.
 function validateCoreSearch(search: Record<string, unknown>): { tab?: CoreTab } {
   const raw = search.tab;
   return raw === "files" || raw === "tasks" || raw === "sessions" ? { tab: raw } : {};

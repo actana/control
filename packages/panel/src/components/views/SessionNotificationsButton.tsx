@@ -59,12 +59,12 @@ export function SessionNotificationsButton({
     setOpen(false);
     const coreId =
       notification.kind === "session-finished" ? notification.coreId : null;
-    const search = coreId ? { coreId } : undefined;
-    void router.navigate({
-      to: "/projects/$id",
-      params: { id: notification.projectId },
-      search,
-    });
+    if (coreId) {
+      void router.navigate({ to: "/cores/$coreId/workspace", params: { coreId } });
+      return;
+    }
+    // Panel-local finish without a Core: land on Fleet (no project route left).
+    void router.navigate({ to: "/" });
   };
 
   const clearNotifications = () => {
@@ -255,7 +255,9 @@ function NotificationRow({
       ? notification.coreAlias
       : notification.coreId
     : null;
-  const headline = `Session finished — ${notification.projectName}`;
+  const headline = notification.projectName
+    ? `Session finished — ${notification.projectName}`
+    : "Session finished";
   const subtitle = notification.sessionTitle;
   const timestamp = notification.finishedAt;
   const openLabel = `Open ${subtitle}`;

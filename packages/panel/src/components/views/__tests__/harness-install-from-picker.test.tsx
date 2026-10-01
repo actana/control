@@ -61,14 +61,6 @@ function availability(claude: CoreLinkHarnessAvailabilityMap["x"]): CoreLinkHarn
   };
 }
 
-const PROJECT = {
-  id: "p1",
-  name: "Warehouse",
-  path: "/srv/warehouse",
-  savedHarness: "codex",
-  rememberHarnessSettings: false,
-} as never;
-
 /** Push one Core event onto every live listener, as the panel link would. */
 function emit(kind: string, payload: unknown): void {
   act(() => {
@@ -90,8 +82,9 @@ async function openPicker(): Promise<void> {
     <KeybindingsProvider>
       <NewHarnessDialog
         open
-        project={PROJECT}
         coreId="core_a"
+        coreLabel="Core A"
+        initialRemember={{ rememberHarnessSettings: false, savedHarness: "codex" }}
         onClose={() => {}}
         onStart={() => {}}
         onPersistRemember={() => {}}
@@ -147,8 +140,9 @@ describe("installing a missing Harness from the picker (issue 83)", () => {
       <KeybindingsProvider>
         <NewHarnessDialog
           open
-          project={PROJECT}
           coreId="core_a"
+          coreLabel="Core A"
+          initialRemember={{ rememberHarnessSettings: false, savedHarness: "codex" }}
           onClose={() => {}}
           onStart={() => {}}
           onPersistRemember={() => {}}

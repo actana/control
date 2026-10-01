@@ -181,7 +181,8 @@ describe("panel bridge — the archived read path", () => {
 
     const pending = bridge.listSessionRows("core_a", "proj_1");
     const sent = lastRequest(socket);
-    expect(sent.frame).toMatchObject({ type: "sessionRowsList", projectId: "proj_1" });
+    expect(sent.frame).toMatchObject({ type: "sessionRowsList" });
+    expect(sent.frame).not.toHaveProperty("projectId");
 
     socket.push({
       t: "core",
@@ -205,7 +206,8 @@ describe("panel bridge — the archived read path", () => {
     const pending = bridge.listArchivedSessions("core_a", "proj_1");
     const sent = lastRequest(socket);
     expect(sent.coreId).toBe("core_a");
-    expect(sent.frame).toMatchObject({ type: "archivedSessionRowsList", projectId: "proj_1" });
+    expect(sent.frame).toMatchObject({ type: "archivedSessionRowsList" });
+    expect(sent.frame).not.toHaveProperty("projectId");
 
     socket.push({
       t: "core",

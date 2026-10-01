@@ -225,7 +225,7 @@ describe("a deep route's parameters", () => {
   it("survive on the route that owns them", () => {
     // Not a path this module redirects to today — pinned so the rule reads as
     // "carried where it means something", not "always deleted".
-    expect(withCarriedQuery("/projects/p1", "?coreId=core-b")).toBe("/projects/p1?coreId=core-b");
+    expect(withCarriedQuery("/cores/core-b", "?coreId=core-b")).toBe("/cores/core-b?coreId=core-b");
   });
 
   it("are dropped on every destination the auth round trip uses", () => {
