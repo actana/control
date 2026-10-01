@@ -215,6 +215,14 @@ describe("resolving a Harness CLI", () => {
     await expect(resolveCommandViaCore("codex", `${bin}:/usr/bin`)).resolves.toEqual([]);
   });
 
+  it("reads a malformed answer as finding nothing, not as a TypeError", async () => {
+    inContainer();
+    for (const result of [{}, { candidates: "/usr/bin/claude" }, { candidates: [1, null, ""] }, null]) {
+      configureCoreHomeOps({ run: async () => ({ status: 0, stdout: JSON.stringify({ ok: true, result }), stderr: "" }) });
+      await expect(resolveCommandViaCore("claude", null)).resolves.toEqual([]);
+    }
+  });
+
   it("refuses a command that is not a bare name, before any process", async () => {
     inContainer();
     const helper = cannedHelper();

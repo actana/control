@@ -318,5 +318,9 @@ export async function resolveCommandViaCore(
   searchPath: string | null,
   options: CoreHomeOpsOptions = {},
 ): Promise<string[]> {
-  return (await coreHomeOp({ op: "resolveCommand", command, path: searchPath }, options)).candidates;
+  const answer = await coreHomeOp({ op: "resolveCommand", command, path: searchPath }, options);
+  const candidates = (answer as { candidates?: unknown } | null)?.candidates;
+  // An answer that is not a list of paths finds nothing (the policy says binary-not-found)
+  // rather than a TypeError in the middle of a spawn.
+  return Array.isArray(candidates) ? candidates.filter((c): c is string => typeof c === "string" && c.length > 0) : [];
 }

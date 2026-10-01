@@ -8,7 +8,7 @@ import {
   FILE_CAPABILITY_SCAN,
   checkProcessStatus,
   expectedStatusLines,
-  rootProcessesBesideInit,
+  checkNoRootProcesses,
   statusLines,
 } from "../lib/core-smoke.mjs";
 import { CORE_DAEMON_CAPS, CORE_DAEMON_CAP_MASK, CORE_NO_CAP_MASK, readRepoFile } from "../lib/panel-image.mjs";
@@ -180,17 +180,48 @@ describe("reading a status text", () => {
   });
 });
 
-describe("no root process beside tini", () => {
-  const proc = (pid, uid) => ({ pid, status: status({ Uid: `${uid}\t${uid}\t${uid}\t${uid}` }) });
+describe("no root process in the container", () => {
+  const proc = (pid, uid, gid = uid) =>
+    ({ pid, status: status({ Uid: `${uid}\t${uid}\t${uid}\t${uid}`, Gid: `${gid}\t${gid}\t${gid}\t${gid}` }) });
+  // What a good scan reads: tini (PID 1) and the daemon as actana, a Session as core, and the
+  // root exec shell that ran the scan (pid 90), which proves the scan can see a root process.
+  const good = () => [proc(1, 1001), proc(7, 1001), proc(30, 1000), proc(90, 0)];
 
-  it("lets PID 1 be root and nothing else be", () => {
-    expect(rootProcessesBesideInit([proc(1, 0), proc(7, 1001), proc(9, 1000)])).toEqual([]);
+  it("passes when the only root process is the probe that ran the scan", () => {
+    expect(checkNoRootProcesses(good(), 90)).toEqual([]);
   });
 
-  it("names every other process that is root, by its effective uid", () => {
-    expect(rootProcessesBesideInit([proc(1, 0), proc(7, 0), proc(12, 1001), proc(30, 0)])).toEqual([7, 30]);
-    // A leftover entrypoint shell that did not exec: pid 8 is the one a bad edit would leave.
-    expect(rootProcessesBesideInit([proc(1, 0), proc(8, 0)])).toEqual([8]);
+  it("fails on a scan that saw nothing, instead of passing vacuously", () => {
+    expect(checkNoRootProcesses([], 90).join()).toMatch(/no process at all/);
+    expect(checkNoRootProcesses(undefined, 90).join()).toMatch(/no process at all/);
+  });
+
+  it("fails when it cannot see a root process, its own shell: finding none then proves nothing", () => {
+    const withoutProbe = [proc(1, 1001), proc(7, 1001)];
+    expect(checkNoRootProcesses(withoutProbe, 90).join()).toMatch(/cannot see a root process/);
+    // And a probe pid that was never in the list, e.g. a failed `$$` read (NaN).
+    expect(checkNoRootProcesses(good(), Number.NaN).join()).toMatch(/cannot see a root process/);
+  });
+
+  it("fails on a pid whose status could not be read, rather than counting it as not root", () => {
+    const unread = [...good(), { pid: 55, status: "" }, { pid: 56, status: "Name:\tx\n" }];
+    const problems = checkNoRootProcesses(unread, 90).join("\n");
+    expect(problems).toMatch(/pid 55: no Uid\/Gid line/);
+    expect(problems).toMatch(/pid 56: no Uid\/Gid line/);
+  });
+
+  it("fails without PID 1", () => {
+    expect(checkNoRootProcesses(good().slice(1), 90).join()).toMatch(/did not see PID 1/);
+  });
+
+  it("names every other process with a root id in any of the four, uid or gid", () => {
+    expect(checkNoRootProcesses([...good(), proc(8, 0)], 90).join()).toMatch(/root uid or gid: 8$/);
+    // tini left as root (the old shape), a leftover entrypoint shell, and a saved uid of 0.
+    expect(checkNoRootProcesses([proc(1, 0), ...good().slice(1)], 90).join()).toMatch(/: 1$/);
+    const saved = { pid: 9, status: status({ Uid: "1001\t1001\t1001\t0" }) };
+    expect(checkNoRootProcesses([...good(), saved], 90).join()).toMatch(/: 9$/);
+    const rootGid = { pid: 10, status: status({ Gid: "1001\t1001\t1001\t0" }) };
+    expect(checkNoRootProcesses([...good(), rootGid], 90).join()).toMatch(/: 10$/);
   });
 });
 
@@ -243,9 +274,21 @@ describe("the image smoke still asks every question of the privilege model", () 
     .filter((line) => !line.trim().startsWith("//"))
     .join("\n");
 
+  it("R8. also asserts the stop's exit code and duration", () => {
+    expect(code).toContain('if (stopExit !== "0") die(');
+    expect(code).toContain("if (stopMs >= 25_000) die(");
+  });
+
   it.each([
     ["1. the daemon's node process, line for line", 'checkProcessStatus(daemonStatus, "daemon")'],
-    ["1. and no root process beside tini", "rootProcessesBesideInit(statuses)"],
+    ["1. and no root process at all, tini included, from a scan that sees its own root probe", "checkNoRootProcesses(statuses, scanSelf)"],
+    ["1. PID 1 is tini as actana with the two capabilities", 'checkProcessStatus(initStatus, "daemon")'],
+    ["R3. a planted actana in the home never runs", "if (fakeActanaRan.trim()) {"],
+    ["R3. and the trap is proven armed first", "if (armed.status !== 0) die("],
+    ["R8. docker stop: exit 0, logged shutdown, inside the grace period", "if (!/core\\.shutdown.*SIGTERM/.test(stopLogs)) {"],
+    ["R8. tini reaps an orphan", "if (zombies) die(`tini left zombies behind"],
+    ["the bounding set is refused when it is not exactly c0", "the bounding set is [0-9a-f]+, expected 00000000000000c0"],
+    ["a wrong mode is refused as well as a wrong owner", "1001:1001 755 (uid:gid mode), expected 1001:1001 700"],
     ["2. the state is 1001:1001 mode 700 on a mount of its own", 'stateStat !== "1001:1001 700"'],
     ["2. a Session's user cannot read the state", "core could read ${kept}"],
     ["3. a Session, line for line", 'checkProcessStatus(read.output, "session")'],
@@ -258,7 +301,7 @@ describe("the image smoke still asks every question of the privilege model", () 
     ["6. no file capability", "FILE_CAPABILITY_SCAN"],
     ["7. pairing as actana, and not as core", 'pairAsCore.status === 0 || /Pairing code/.test(pairAsCore.stdout)'],
     ["8. the entrypoint refuses 1000 and 1001", "must start as root (uid 0), not uid ${user.uid}"],
-    ["8. and a state volume with the wrong owner, repairing nothing", "the entrypoint changed the owner of a state volume it refused"],
+    ["8. and a state volume with the wrong owner, repairing nothing", "the entrypoint changed a state volume it refused"],
     ["9. core-init hands the state volume to actana", "core-init left the state volume ${repaired}"],
     ["the compose file as Docker resolves it", '"config", "--format", "json"'],
     ["a plain exec is root with no DAC override", "root without a DAC override read ${unreadable}"],

@@ -13,6 +13,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import log from "@actana/shared/log";
 
 vi.mock("node:child_process", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:child_process")>();
@@ -189,7 +190,11 @@ describe("resolving the Harness CLI in container mode", () => {
     await run();
     expect(workspace.lookups).toEqual([]);
     const request = seen.find((r) => r.op === "resolveCommand")!;
-    expect(request).toEqual({ op: "resolveCommand", command: "claude", path: expect.stringContaining("/home/core/.local/bin") });
+    // core's own `~/.local/bin` leads the PATH it is asked to search: its home is whatever
+    // this test made it (the runner's HOME is not core's, and CI's is a temp dir).
+    const coreBin = `${path.dirname(workspace.dir)}/.local/bin`;
+    expect(request).toEqual({ op: "resolveCommand", command: "claude", path: expect.stringMatching(/.+/) });
+    expect((request as { path: string }).path.split(":")[0]).toBe(coreBin);
     expect(JSON.stringify(spawn.mock.calls[0])).toContain("/home/core/.local/bin/claude");
   });
 
@@ -229,11 +234,20 @@ describe("resolving the Harness CLI in container mode", () => {
     expect(spawn).not.toHaveBeenCalled();
   });
 
-  it("asks no one about a command for an agent the policy does not know", async () => {
+  // A regression guard, not a test of the change: on the base nothing is ever
+  // looked up, so it passes there too. It fails if the own-property check on the
+  // agent name goes (`toString` is on every object, and would be "a harness").
+  it("regression guard: asks no one about a command for an agent the policy does not know", async () => {
     inContainer();
-    const { seen, run } = spawnWith(["/x"], "not-a-harness", "claude");
-    await expect(run()).rejects.toThrow("pty:spawn rejected (unknown-agent)");
-    expect(seen.map((r) => r.op)).toEqual(["spawnPathFacts"]);
+    // Without the own-property check a function would be sent as the command, refused
+    // by the helper's validation (so `seen` stays quiet) and logged: that log is the tell.
+    const warn = vi.spyOn(log, "warn").mockImplementation(() => undefined);
+    for (const agent of ["not-a-harness", "toString", "constructor"]) {
+      const { seen, run } = spawnWith(["/x"], agent, "claude");
+      await expect(run()).rejects.toThrow(/pty:spawn rejected \(/);
+      expect(seen.map((r) => r.op), agent).toEqual(["spawnPathFacts"]);
+    }
+    expect(warn.mock.calls.map((c) => c[0])).not.toContain("pty.spawn.command-lookup-refused");
   });
 });
 

@@ -277,9 +277,9 @@ RUN find / -xdev -type f -perm /6000 -exec chmod a-s {} +
 # a non-root USER no capabilities, and Docker never sets ambient ones, so a
 # daemon that must keep CAP_SETUID and CAP_SETGID cannot be started as `actana`
 # directly: the entrypoint, which needs uid 0, switches to it with `setpriv` and
-# keeps exactly those two. After that `exec` no process of this container runs
-# as root except tini (PID 1), which holds nothing but the compose capability
-# set. `docker exec` without `-u` is therefore root *without* any DAC override:
+# keeps exactly those two, then execs tini as that user. After that `exec` no
+# process of this container runs as root at all. `docker exec` without `-u` is
+# root *without* any DAC override:
 # it cannot read /home/core or /var/lib/actana. Use `docker exec -u core` for a
 # Session's view and `docker exec -u actana` for `actana pair`.
 #
@@ -350,10 +350,20 @@ ENV ACTANA_PORT=${ACTANA_PORT} \
 # The same ARG, so the exposed port cannot drift from the documented default.
 EXPOSE ${ACTANA_PORT}
 
-# tini is PID 1; the entrypoint checks the state volume, then switches to
-# `actana` (uid 1001) with CAP_SETUID and CAP_SETGID as ambient capabilities and
-# no-new-privs, and execs CMD (D14 + #558 + #559). Bind-mount prep is not here —
+# The entrypoint checks the runtime (root, a bounding set of exactly SETUID and
+# SETGID) and the state volume, then `exec`s `setpriv` to `actana` (uid 1001) with
+# CAP_SETUID and CAP_SETGID as inheritable and ambient capabilities and
+# no-new-privs, and that `exec`s tini, which runs CMD (D14 + #558 + #559). So tini
+# is still PID 1, but as uid 1001 with the same ambient set: a root tini without
+# CAP_KILL could not forward SIGTERM to the daemon (EPERM, which tini treats as
+# fatal), and `docker stop` would be a hard kill. The entrypoint's pre-switch
+# step is the only root this container ever has. Bind-mount prep is not here —
 # see core-fs-prep.sh / core-init.
+#
+# CMD is an absolute path: the image PATH starts with ~/.local/bin, which a
+# Session writes, and a PATH lookup after the switch would run a planted
+# `actana` as uid 1001 with the two capabilities. (The entrypoint also gives the
+# daemon a PATH without it.)
 #
 # node-pty forks a shell and the shell forks a Harness, so when the shell
 # exits first that Harness reparents to PID 1 — and libuv only waitpid()s
@@ -362,5 +372,5 @@ EXPOSE ${ACTANA_PORT}
 # `init: true`, because those are opt-in and anyone copying a bare `docker
 # run` off a README would get the broken configuration by default. tini is
 # 10 kB and is not a supervisor.
-ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/core-entrypoint.sh"]
-CMD ["actana", "daemon"]
+ENTRYPOINT ["/usr/local/bin/core-entrypoint.sh"]
+CMD ["/opt/actana/bin/actana", "daemon"]

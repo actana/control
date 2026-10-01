@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import {
   CORE_APP_ROOT,
   CORE_DAEMON_CAPS,
+  CORE_DAEMON_CAP_MASK,
   CORE_DAEMON_USER,
   CORE_HOME,
   CORE_HOOK_DROP_DIR,
@@ -989,9 +990,7 @@ describe("core image", () => {
     expect(prep).toContain("STATE=/var/lib/actana");
     expect(prep).not.toMatch(/CORE_HOME=\$\{/);
     expect(prep).not.toMatch(/CORE_USER=\$\{/);
-    expect(coreImage.entrypoint).toBe(
-      '["/usr/bin/tini", "--", "/usr/local/bin/core-entrypoint.sh"]',
-    );
+    expect(coreImage.entrypoint).toBe('["/usr/local/bin/core-entrypoint.sh"]');
     expect(coreDockerfile).toContain("COPY core-fs-prep.sh");
     const seed = coreImage.runs.find((run) => run.includes("/home/core/shared"));
     expect(seed).toContain("/home/core/repos");
@@ -1029,22 +1028,46 @@ describe("core image", () => {
       expect(doing).not.toMatch(/\bchown\b|\bchmod\b/);
     });
 
-    it("execs setpriv to actana with exactly setuid and setgid as inh, ambient and bounding, and no-new-privs", () => {
+    it("execs setpriv to actana with exactly setuid and setgid as inheritable and ambient, no-new-privs, and tini after the switch", () => {
       const exec = code.slice(code.lastIndexOf("exec /usr/bin/setpriv"));
       expect(exec).toContain('--reuid="$ACTANA_UID" --regid="$ACTANA_GID" --clear-groups');
-      expect(exec).toContain("--inh-caps=+setuid,+setgid");
-      expect(exec).toContain("--ambient-caps=+setuid,+setgid");
-      expect(exec).toContain("--bounding-set=+setuid,+setgid");
-      expect(exec).toContain('--no-new-privs -- "$@"');
-      // Nothing after the exec: no root process is left behind, and no third capability anywhere.
-      expect(exec.trim().split("\n").at(-1)).toContain('--no-new-privs -- "$@"');
-      for (const wider of ["kill", "setpcap", "dac_override", "chown", "sys_admin", "all"]) {
+      // `-all,+…`: exact whatever the runtime handed in, not additive to it.
+      expect(exec).toContain("--inh-caps=-all,+setuid,+setgid");
+      expect(exec).toContain("--ambient-caps=-all,+setuid,+setgid");
+      // Never a bounding-set flag: without CAP_SETPCAP setpriv refuses it, and `+cap` cannot narrow.
+      expect(code).not.toContain("--bounding-set");
+      // tini is exec'd AFTER the switch, so PID 1 is uid 1001 and can signal the daemon.
+      expect(exec.trim().split("\n").at(-1)).toContain('--no-new-privs -- /usr/bin/tini -- "$@"');
+      expect(exec).not.toMatch(/--(inh|ambient)-caps=\+/);
+      for (const wider of ["kill", "setpcap", "dac_override", "chown", "sys_admin"]) {
         expect(exec).not.toMatch(new RegExp(`[+,=]${wider}\\b`));
       }
     });
 
+    it("refuses any bounding set but exactly SETUID and SETGID, read from /proc/self/status before the switch", () => {
+      expect(code).toContain(`EXPECTED_BOUNDING=${CORE_DAEMON_CAP_MASK}`);
+      expect(code).toContain("done < /proc/self/status");
+      expect(code).toContain('[ "$field" = "CapBnd:" ]');
+      expect(code).toContain('if [ "$bounding" != "$EXPECTED_BOUNDING" ]; then');
+      expect(code.indexOf("EXPECTED_BOUNDING\" ]")).toBeLessThan(code.indexOf("exec /usr/bin/setpriv"));
+      expect(code).toContain("the bounding set is ${bounding:-unreadable}, expected ${EXPECTED_BOUNDING}");
+    });
+
+    it("gives the daemon a PATH with no directory a Session writes, and runs it by absolute path", () => {
+      const pathLine = code.split("\n").find((line) => line.startsWith("export PATH="));
+      expect(pathLine).toBeTruthy();
+      expect(pathLine).not.toContain(".local");
+      expect(pathLine).not.toContain("/home/");
+      expect(pathLine.startsWith("export PATH=/opt/actana/bin:")).toBe(true);
+      // The image PATH still leads with ~/.local/bin, for `docker exec -u core`: it is why the
+      // daemon is started by an absolute path and not looked up.
+      expect(coreImage.env.PATH.startsWith(`${CORE_HOME}/.local/bin`)).toBe(true);
+      expect(coreImage.cmd).toBe('["/opt/actana/bin/actana", "daemon"]');
+      expect(coreImage.cmd.startsWith('["/')).toBe(true);
+    });
+
     it("runs everything as root by absolute path, because the image PATH leads with a volume the Session writes", () => {
-      for (const binary of ["id", "stat", "setpriv"]) {
+      for (const binary of ["id", "stat", "setpriv", "tini"]) {
         expect(code).toContain(`/usr/bin/${binary}`);
         expect(code).not.toMatch(new RegExp(`(^|[\\s(=])${binary}\\s`, "m"));
       }
@@ -1073,11 +1096,12 @@ describe("core image", () => {
 
   // D14 — tini is PID 1 so reparented Harnesses get reaped; baked in, because
   // `--init` is opt-in and a bare `docker run` would skip it.
-  it("runs the daemon under tini as PID 1", () => {
-    expect(coreImage.entrypoint).toBe(
-      '["/usr/bin/tini", "--", "/usr/local/bin/core-entrypoint.sh"]',
-    );
-    expect(coreImage.cmd).toBe('["actana", "daemon"]');
+  it("runs the daemon under tini as PID 1, started by the entrypoint after the switch to actana", () => {
+    expect(coreImage.entrypoint).toBe('["/usr/local/bin/core-entrypoint.sh"]');
+    expect(coreImage.cmd).toBe('["/opt/actana/bin/actana", "daemon"]');
+    const entrypoint = readRepoFile("deploy/core-entrypoint.sh");
+    expect(entrypoint).toContain("--no-new-privs -- /usr/bin/tini -- \"$@\"");
+    expect(coreDockerfile).not.toMatch(/ENTRYPOINT \[.*tini/);
   });
 
   // D15 — the operator contract is three ACTANA_* variables; everything here

@@ -25,13 +25,16 @@
 //   • the privilege model (#559), read out of /proc and compared line for line:
 //     the daemon's node process is `actana` (1001) with CAP_SETUID and CAP_SETGID
 //     as its inheritable, permitted, effective, ambient and bounding sets and
-//     no-new-privs; no process but tini is root; a Session — opened over the
+//     no-new-privs; no process at all is root (tini, PID 1, is actana too, so it
+//     can forward SIGTERM: `docker stop` exits 0 and the daemon logs its shutdown;
+//     it reaps orphans); a planted `actana` in the home never runs; a Session — opened over the
 //     core-link the way a client opens one — is `core` (1000) with no capability
 //     in any set but the bounding set, and so is a `core exec` child; a Session
 //     cannot read the state, `setuid` back, or signal the daemon; its terminal
 //     works; and a Session that ignores HUP and TERM dies when it is stopped;
-//   • the entrypoint refuses to start as 1000 or 1001 and refuses a state
-//     volume with the wrong owner, without repairing it;
+//   • the entrypoint refuses to start as 1000 or 1001, with a bounding set that is
+//     not exactly SETUID and SETGID, and with a state volume of the wrong owner or
+//     mode, without repairing it;
 //   • no setuid, setgid or file capability anywhere in the image, no sudo;
 //   • the lifecycle verbs the image owns refuse, and each names its Docker
 //     equivalent rather than just saying no (D16);
@@ -79,7 +82,7 @@ import {
   makeDie,
   openCoreSession,
   pickFreePort,
-  rootProcessesBesideInit,
+  checkNoRootProcesses,
 } from "./lib/core-smoke.mjs";
 import {
   PANEL_SESSION_COOKIE,
@@ -438,14 +441,14 @@ if (!args["skip-build"]) {
 // the daemon).
 log("verifying the built image's entrypoint and identity …");
 const config = JSON.parse(docker(["image", "inspect", "--format", "{{json .Config}}", image]).stdout);
-if ((config?.Entrypoint ?? []).join(" ") !== "/usr/bin/tini -- /usr/local/bin/core-entrypoint.sh") {
-  die(
-    `${image} entrypoint is ${JSON.stringify(config?.Entrypoint)}, ` +
-      `expected ["/usr/bin/tini","--","/usr/local/bin/core-entrypoint.sh"]`,
-  );
+// The entrypoint is the script; it execs tini after the switch, so tini is PID 1
+// as the daemon's user (checked below on the running container).
+if ((config?.Entrypoint ?? []).join(" ") !== "/usr/local/bin/core-entrypoint.sh") {
+  die(`${image} entrypoint is ${JSON.stringify(config?.Entrypoint)}, expected ["/usr/local/bin/core-entrypoint.sh"]`);
 }
-if ((config?.Cmd ?? []).join(" ") !== "actana daemon") {
-  die(`${image} cmd is ${JSON.stringify(config?.Cmd)}, expected ["actana","daemon"]`);
+// An absolute path: a PATH lookup after the switch would find a Session's planted `actana`.
+if ((config?.Cmd ?? []).join(" ") !== "/opt/actana/bin/actana daemon") {
+  die(`${image} cmd is ${JSON.stringify(config?.Cmd)}, expected ["/opt/actana/bin/actana","daemon"]`);
 }
 if (config?.User !== "0:0") {
   die(`${image} starts as ${JSON.stringify(config?.User)}, expected "0:0" (the entrypoint's switch)`);
@@ -570,33 +573,40 @@ for (const user of [CORE_SESSION_USER, CORE_DAEMON_USER]) {
 }
 log("the entrypoint refuses to start as core (1000) or as actana (1001)");
 
-// A state volume with the wrong owner is a failure and is never repaired here —
-// not even with a `chown -R`: the entrypoint says so and the owner is unchanged.
-const wrongState = `actana-core-smoke-wrongstate-${suffix}`;
-docker(["volume", "create", wrongState]);
-teardown.push(() => docker(["volume", "rm", "-f", wrongState], { allowFailure: true }));
-const seedWrong = docker(
-  [
-    "run", "--rm", "-u", "0", "--entrypoint", "sh", "--volume", `${wrongState}:${CORE_STATE_DIR}`, image,
-    "-c", `mkdir -p ${CORE_STATE_DIR}/data && chown -R 0:0 ${CORE_STATE_DIR}`,
-  ],
-  { allowFailure: true },
-);
-if (seedWrong.status !== 0) die(`seeding a root-owned state volume failed:\n${seedWrong.stderr}${seedWrong.stdout}`);
-const wrongBoot = docker(["run", "--rm", ...COMPOSE_CORE_FLAGS, "--volume", `${wrongState}:${CORE_STATE_DIR}`, image], {
-  allowFailure: true,
-});
-const wrongSaid = `${wrongBoot.stderr}${wrongBoot.stdout}`;
-if (wrongBoot.status === 0 || !wrongSaid.includes(`${CORE_STATE_DIR} is 0:0 700 (uid:gid mode), expected 1001:1001 700`)) {
-  die(`a root-owned state volume did not stop the entrypoint with its owner named (exit ${wrongBoot.status}):\n${wrongSaid}`);
+// The bounding set must be exactly the compose one: `setpriv` cannot narrow it
+// without CAP_SETPCAP, so a wider set (a bare `docker run`'s default) is refused
+// with the number named, and no daemon boots.
+const wideBoot = docker(["run", "--rm", image], { allowFailure: true });
+const wideSaid = `${wideBoot.stderr}${wideBoot.stdout}`;
+if (wideBoot.status === 0 || !/the bounding set is [0-9a-f]+, expected 00000000000000c0/.test(wideSaid) || wideSaid.includes(LISTENING_SENTINEL)) {
+  die(`a start with docker's default capabilities was not refused for its bounding set (exit ${wideBoot.status}):\n${wideSaid}`);
 }
-const wrongAfter = docker(
-  ["run", "--rm", "-u", "0", "--entrypoint", "stat", "--volume", `${wrongState}:${CORE_STATE_DIR}`, image, "-c", "%u:%g", CORE_STATE_DIR, `${CORE_STATE_DIR}/data`],
-).stdout.trim();
-if (wrongAfter.split("\n").some((line) => line !== "0:0")) {
-  die(`the entrypoint changed the owner of a state volume it refused: ${wrongAfter}`);
+log("the entrypoint refuses a bounding set that is not exactly SETUID and SETGID");
+
+// A state volume with the wrong owner or the wrong mode is a failure and is never
+// repaired here, not even with a `chown -R`: the entrypoint says so and nothing changes.
+for (const [label, seed, said] of [
+  ["owner", `chown -R 0:0 ${CORE_STATE_DIR}`, `${CORE_STATE_DIR} is 0:0 700 (uid:gid mode), expected 1001:1001 700`],
+  ["mode", `chown -R 1001:1001 ${CORE_STATE_DIR} && chmod 0755 ${CORE_STATE_DIR}`, `${CORE_STATE_DIR} is 1001:1001 755 (uid:gid mode), expected 1001:1001 700`],
+]) {
+  const wrongState = `actana-core-smoke-wrong${label}-${suffix}`;
+  docker(["volume", "create", wrongState]);
+  teardown.push(() => docker(["volume", "rm", "-f", wrongState], { allowFailure: true }));
+  const seedWrong = docker(
+    ["run", "--rm", "-u", "0", "--entrypoint", "sh", "--volume", `${wrongState}:${CORE_STATE_DIR}`, image, "-c", `mkdir -p ${CORE_STATE_DIR}/data && ${seed}`],
+    { allowFailure: true },
+  );
+  if (seedWrong.status !== 0) die(`seeding a state volume with the wrong ${label} failed:\n${seedWrong.stderr}${seedWrong.stdout}`);
+  const before = docker(["run", "--rm", "-u", "0", "--entrypoint", "stat", "--volume", `${wrongState}:${CORE_STATE_DIR}`, image, "-c", "%u:%g %a", CORE_STATE_DIR, `${CORE_STATE_DIR}/data`]).stdout;
+  const wrongBoot = docker(["run", "--rm", ...COMPOSE_CORE_FLAGS, "--volume", `${wrongState}:${CORE_STATE_DIR}`, image], { allowFailure: true });
+  const wrongSaid = `${wrongBoot.stderr}${wrongBoot.stdout}`;
+  if (wrongBoot.status === 0 || !wrongSaid.includes(said) || wrongSaid.includes(LISTENING_SENTINEL)) {
+    die(`a state volume with the wrong ${label} did not stop the entrypoint with it named (exit ${wrongBoot.status}):\n${wrongSaid}`);
+  }
+  const after = docker(["run", "--rm", "-u", "0", "--entrypoint", "stat", "--volume", `${wrongState}:${CORE_STATE_DIR}`, image, "-c", "%u:%g %a", CORE_STATE_DIR, `${CORE_STATE_DIR}/data`]).stdout;
+  if (after !== before) die(`the entrypoint changed a state volume it refused (${label}): ${before.trim()} -> ${after.trim()}`);
 }
-log("a state volume with the wrong owner stops the entrypoint, which repairs nothing");
+log("a state volume with the wrong owner or the wrong mode stops the entrypoint, which repairs nothing");
 
 for (const [owned, want, user] of [
   [CORE_HOME, "1000:1000", CORE_SESSION_USER.name],
@@ -740,22 +750,35 @@ log(
     `CapInh/CapPrm/CapEff/CapAmb/CapBnd 00000000000000c0 (${CORE_DAEMON_CAPS.join(" + ")}), NoNewPrivs 1`,
 );
 
-// And nothing else in the container is root but tini: the entrypoint's `exec`
-// left no root shell behind (decision D4). Read as `actana`, from every pid.
-const everyStatus = core.exec(
-  ["sh", "-c", 'for p in /proc/[0-9]*; do printf "@@%s\\n" "${p#/proc/}"; cat "$p/status" 2>/dev/null; done'],
-  { user: CORE_DAEMON_USER.name },
-).stdout;
+// And nothing in the container is root, tini included: it is uid 1001 so that it
+// can signal and reap the daemon, and the entrypoint's `exec` left no root shell
+// behind. The scan runs in a root exec, whose own shell is the one root process
+// it must see (a scan that cannot see a root process proves nothing), and reads
+// every pid's real and effective ids, uid and gid.
+const everyStatus = docker([
+  "exec",
+  core.name,
+  "sh",
+  "-c",
+  'printf "@@SELF %s\\n" "$$"; for p in /proc/[0-9]*; do printf "@@%s\\n" "${p#/proc/}"; cat "$p/status" 2>/dev/null; done',
+]).stdout;
+const scanSelf = Number(everyStatus.match(/^@@SELF (\d+)$/m)?.[1]);
 const statuses = everyStatus
-  .split("@@")
-  .filter((block) => block.trim())
+  .split("\n@@")
+  .filter((block) => /^\d+\n/.test(block.replace(/^@@/, "")))
+  .map((block) => block.replace(/^@@/, ""))
   .map((block) => ({ pid: Number(block.split("\n")[0]), status: block.split("\n").slice(1).join("\n") }));
-if (statuses.length < 3) die(`the process scan saw ${statuses.length} processes:\n${everyStatus}`);
-const roots = rootProcessesBesideInit(statuses);
-if (roots.length > 0) {
-  die(`processes other than tini run as root: ${roots.join(", ")}\n${formatProcesses(processTable(core))}`);
+const rootProblems = checkNoRootProcesses(statuses, scanSelf);
+if (rootProblems.length > 0) {
+  die(`the root-process scan failed:\n  ${rootProblems.join("\n  ")}\n${formatProcesses(processTable(core))}`);
 }
-log("no process but tini (PID 1) runs as uid 0 — the entrypoint left no root process behind");
+// PID 1 is tini, as the daemon's user, with the daemon's capabilities.
+const initStatus = core.exec(["cat", "/proc/1/status"]).stdout;
+const initProblems = checkProcessStatus(initStatus, "daemon");
+if (initProblems.length > 0) {
+  die(`PID 1 (tini) is not exactly ${CORE_DAEMON_USER.name} with ${CORE_DAEMON_CAPS.join(" and ")}:\n  ${initProblems.join("\n  ")}\n${initStatus}`);
+}
+log("no process of the container runs as root; tini (PID 1) is actana with the same two ambient capabilities")
 
 // ─── A Session, as a client opens one ───────────────────────────────────────
 
@@ -986,10 +1009,73 @@ if (/FAKE_STAT_RAN_AS_0/.test(fakeLog)) {
 }
 log("hostile PATH/CORE_HOME prep (compose caps) left /etc 0:0, the home 1000:1000 and the state 1001:1001");
 
+// A Session plants an `actana` in its own ~/.local/bin — first on the image PATH —
+// and opens the home to others (`chmod o+x ~`, which is core's to do and which a
+// bind-mounted home may have from the host anyway). The entrypoint starts the daemon
+// by absolute path and gives it a PATH without that directory, so the fake must
+// never run, as 1001 or as anyone. First prove the trap is armed: the daemon's
+// user can reach the fake, or "it never ran" would mean nothing.
+const fakeActanaLog = `${CORE_HOME}/.local/share/actana/fake-actana.log`;
+core.exec([
+  "sh",
+  "-c",
+  [
+    `mkdir -p ${CORE_HOME}/.local/bin ${CORE_HOME}/.local/share/actana`,
+    `printf '%s\\n' '#!/bin/sh' 'echo FAKE_ACTANA_RAN_AS_$(/usr/bin/id -u) >> ${fakeActanaLog}' 'exec /opt/actana/bin/actana "$@"' > ${CORE_HOME}/.local/bin/actana`,
+    `chmod +x ${CORE_HOME}/.local/bin/actana`,
+    `chmod o+rx ${CORE_HOME} ${CORE_HOME}/.local ${CORE_HOME}/.local/bin ${CORE_HOME}/.local/share ${CORE_HOME}/.local/share/actana`,
+    `chmod o+w ${CORE_HOME}/.local/share/actana`,
+    `rm -f ${fakeActanaLog}`,
+  ].join(" && "),
+]);
+const armed = core.exec(["sh", "-c", `test -x ${CORE_HOME}/.local/bin/actana && test -r ${CORE_HOME}/.local/bin/actana`], {
+  user: CORE_DAEMON_USER.name,
+  allowFailure: true,
+});
+if (armed.status !== 0) die("the planted actana is not reachable by the daemon's user, so the leg proves nothing");
+
+// `docker stop` — and then a start with the fake in place. tini is PID 1 as the
+// daemon's user, so it can forward SIGTERM: the daemon's own shutdown handler
+// runs (it logs `core.shutdown`), the exit status is 0, and nothing waits out the
+// grace period for a SIGKILL. A root tini without CAP_KILL would get EPERM, exit,
+// and take the container down without the daemon ever hearing of it.
+log("stopping the container: the daemon must hear SIGTERM and exit 0 …");
+const stopStarted = Date.now();
+docker(["stop", "--time", "30", core.name]);
+const stopMs = Date.now() - stopStarted;
+const stopExit = docker(["inspect", "--format", "{{.State.ExitCode}}", core.name]).stdout.trim();
+const stopLogs = core.logs("all");
+if (stopExit !== "0") die(`docker stop ended the Core with exit ${stopExit}, expected 0 (137 is a SIGKILL after the grace period):\n${core.logs()}`);
+if (stopMs >= 25_000) die(`docker stop took ${stopMs} ms: the daemon did not stop on SIGTERM`);
+if (!/core\.shutdown.*SIGTERM/.test(stopLogs)) {
+  die(`the daemon never logged its shutdown (core.shutdown, SIGTERM): tini did not forward the signal:\n${core.logs()}`);
+}
+log(`docker stop: exit 0 in ${stopMs} ms, and the daemon logged its shutdown`);
+docker(["start", core.name]);
+await waitForCoreLink(core);
 // Restart the default boot (no -u 0): entrypoint must not invoke prep, so the
 // fake stat on the volume PATH cannot run as root on restart either.
 docker(["restart", core.name]);
 await waitForCoreLink(core);
+const fakeActanaRan = core.exec(["sh", "-c", `cat ${fakeActanaLog} 2>/dev/null || true`], { allowFailure: true }).stdout;
+if (fakeActanaRan.trim()) {
+  die(`a Session's planted ~/.local/bin/actana ran at a start (${fakeActanaRan.trim()}): the daemon was found through PATH`);
+}
+if (!isRunning(core)) die("the Core is not running after the restarts");
+log("a planted actana in the home's .local/bin never ran, with the home open to others, across stop, start and restart");
+
+// tini reaps what is reparented to it: an orphaned Session process that exits is
+// not left as a zombie.
+{
+  const reaper = await openCoreSession(credentialFromMaterial(materialCopy, core.endpoint)).catch((err) => die(`could not open a Session: ${err.message}`));
+  await reaper.prepare().catch((err) => die(`the Session's shell never answered: ${err.message}`));
+  await reaper.run("sh -c '(sleep 1 &) ; exit 0'; true").catch((err) => die(`could not orphan a process: ${err.message}`));
+  await delay(3_000);
+  const zombies = core.exec(["sh", "-c", `for p in /proc/[0-9]*; do read -r _ _ state _ < "$p/stat" 2>/dev/null && [ "$state" = Z ] && echo "$p"; done; true`]).stdout.trim();
+  reaper.close();
+  if (zombies) die(`tini left zombies behind, so it is not reaping what is reparented to it:\n${zombies}`);
+  log("an orphaned process was reaped by tini (no zombie)");
+}
 const fakeAfterRestart = core.exec(["sh", "-c", `cat ${marker} 2>/dev/null || true`], {
   allowFailure: true,
 }).stdout;
@@ -1241,16 +1327,31 @@ if (writeProbe.status !== 0) {
 log("core-init repaired a missing root-owned repos bind mount; core can write");
 
 // The same compose project, with the state volume core-init mounted and the
-// shipped capability set, is a Core that really came up: its daemon is `actana`.
-const composeDaemon = spawnSync(
-  "docker",
-  ["compose", "-f", compose551, "exec", "-T", "-u", CORE_DAEMON_USER.name, "core", "sh", "-c", "cat /proc/[0-9]*/status | grep -c '^CapAmb:.00000000000000c0$'"],
-  { encoding: "utf8" },
-);
-if (composeDaemon.status !== 0 || Number(composeDaemon.stdout.trim()) < 1) {
-  die(`a compose-started Core has no process with CapAmb 00000000000000c0:\n${composeDaemon.stdout}${composeDaemon.stderr}`);
+// shipped capability set, is a Core that really came up: its PID 1 (tini, as the
+// daemon's user) and the daemon under it carry exactly the two capabilities.
+const composeStatus = (pidExpr) =>
+  spawnSync(
+    "docker",
+    ["compose", "-f", compose551, "exec", "-T", "-u", CORE_DAEMON_USER.name, "core", "sh", "-c", pidExpr],
+    { encoding: "utf8" },
+  );
+const composeInit = composeStatus("cat /proc/1/status");
+const composeInitProblems = checkProcessStatus(composeInit.stdout ?? "", "daemon");
+if (composeInit.status !== 0 || composeInitProblems.length > 0) {
+  die(`PID 1 of a compose-started Core is not exactly actana with the two capabilities:\n  ${composeInitProblems.join("\n  ")}\n${composeInit.stdout}${composeInit.stderr}`);
 }
-log("a Core started by compose, with the shipped capability set, runs its daemon with the two ambient capabilities");
+const composeDaemon = composeStatus(
+  'for p in /proc/[0-9]*; do read -r _ comm rest < "$p/stat"; case "$(readlink "$p/exe")" in */node) echo "@@${p#/proc/}"; cat "$p/status";; esac; done',
+);
+const composeDaemonStatus = (composeDaemon.stdout ?? "").split("@@").filter(Boolean).map((b) => b.split("\n").slice(1).join("\n"));
+if (composeDaemon.status !== 0 || composeDaemonStatus.length === 0) {
+  die(`a compose-started Core has no node process to read:\n${composeDaemon.stdout}${composeDaemon.stderr}`);
+}
+for (const status of composeDaemonStatus) {
+  const problems = checkProcessStatus(status, "daemon");
+  if (problems.length > 0) die(`a compose-started Core's node process is not exactly actana with the two capabilities:\n  ${problems.join("\n  ")}\n${status}`);
+}
+log("a Core started by compose, with the shipped capability set, runs tini and the daemon as actana with the two ambient capabilities")
 
 if (target) {
   // A cross-architecture tarball surfaces as `exec format error` at first boot

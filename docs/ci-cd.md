@@ -728,7 +728,8 @@ pairs a real Panel with it end to end. Along the way it proves what a *build* ca
 daemon is `actana` at 1001:1001 holding exactly `CAP_SETUID` and `CAP_SETGID` as ambient capabilities
 and `NoNewPrivs`, read line for line from `/proc/<pid>/status` of the daemon's node process; a
 Session started over the core-link is `core` at 1000:1000 with no capability in any set but the
-container's bounding set; no process but `tini` is root; there is no setuid bit and no file
+container's bounding set; no process of the container is root, `tini` (PID 1) included, which runs as
+`actana`; `docker stop` exits 0 and the daemon logs its shutdown; there is no setuid bit and no file
 capability; `tini` is PID 1 with the daemon as its child, and the Core tree in `/opt/actana` is
 the *architecture-matched* one) and what the *contract* can get wrong: a Session cannot read the
 state, switch to the daemon's user or signal the daemon, its terminal works, a Session that ignores

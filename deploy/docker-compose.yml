@@ -185,8 +185,10 @@ services:
     # to the `actana` user (uid 1001) keeping CAP_SETUID and CAP_SETGID, and
     # nothing else, as ambient capabilities. Those two let the daemon start every
     # Session as `core` with no capabilities of its own. This is also the
-    # container's whole capability set (the bounding set the daemon is left with),
-    # so a root `docker exec` has no more than those two and no DAC override.
+    # container's whole capability set, i.e. its bounding set: the entrypoint
+    # refuses to start unless it is exactly these two, and a root `docker exec`
+    # has no more than they and no DAC override. tini is PID 1 as `actana`, after
+    # the switch, so `docker stop` reaches the daemon.
     # `no-new-privileges` stays: it does not stop the setuid calls, and it keeps
     # a setuid file (the image has none) or a file capability (none either) from
     # adding to them. Do not add a `user:` here: the entrypoint refuses it.

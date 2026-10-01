@@ -102,7 +102,7 @@ the reference deployment — the published Panel and Core images on one network:
 
 ```bash
 docker compose -f deploy/docker-compose.yml up -d
-docker compose -f deploy/docker-compose.yml exec core actana pair new
+docker compose -f deploy/docker-compose.yml exec -u actana core actana pair new
 ```
 
 ## Before you open a PR
@@ -122,7 +122,7 @@ Heavier suites, worth running when you have touched their seam:
 | --- | --- |
 | `pnpm panel:e2e` | the Panel service seam against a real Core |
 | `pnpm panel:image:smoke` | the Panel image boots, sets up, and survives container recreation |
-| `pnpm core:image:smoke` | the Core image boots unprivileged and a Panel pairs with it (needs `pnpm core:tarball` first) |
+| `pnpm core:image:smoke` | the Core image runs its daemon as `actana` with two capabilities and a Panel pairs with it (needs `pnpm core:tarball` first) |
 | `pnpm core:tarball:smoke` | the release tarball unpacks and runs |
 | `pnpm core:setup:e2e` | the `curl \| bash` one-liner and the lifecycle verbs against systemd (Linux) |
 

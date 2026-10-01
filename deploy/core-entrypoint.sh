@@ -1,21 +1,31 @@
 #!/bin/sh
 # Core image entrypoint (#558, #559).
 #
-# This is the one step of the container that runs as root, under tini (PID 1):
-# it checks the state volume and switches to `actana` (uid/gid 1001), keeping
-# exactly CAP_SETUID and CAP_SETGID as inheritable, ambient and bounding
-# capabilities, with no-new-privs. That pair is what lets the daemon start a
-# Session as `core` (the `asCore` wrapper) and nothing else. Docker gives a
-# non-root USER no capabilities and never sets ambient ones, so this switch
-# cannot be done by `USER actana`; it needs a process that still has them.
+# This is the one step of the container that runs as root: it checks the runtime
+# and the state volume, then switches to `actana` (uid/gid 1001), keeping exactly
+# CAP_SETUID and CAP_SETGID as inheritable and ambient capabilities (the bounding set
+# is the container's, and is checked here, not set), with no-new-privs. That pair is
+# what lets the daemon start a Session as `core` (the `asCore` wrapper) and nothing
+# else. Docker gives a non-root USER no capabilities and never sets ambient ones,
+# so this switch cannot be done by `USER actana`; it needs a process that still
+# has them.
 #
-# After the `exec` below no process of this container is root except tini, which
-# holds only what compose granted (cap_drop ALL, cap_add SETUID SETGID).
+# The switch comes BEFORE tini, not after it: this script is the container's
+# ENTRYPOINT and ends in `exec setpriv … -- tini -- <daemon>`, so tini is still
+# PID 1 but is uid 1001 with the same ambient set. A root tini without CAP_KILL
+# could not forward SIGTERM to a uid-1001 daemon (EPERM, and tini treats that as
+# fatal), so `docker stop` would be a hard kill. As uid 1001 it signals its child
+# and reaps what is reparented to it. The only process of this container that is
+# ever root is this script, before the `exec`.
 #
 # It refuses anything that is not that shape, and says why:
 #   - not uid 0: a run as 1000 or 1001 cannot make the switch (`user:` in compose,
 #     `docker run -u`). The daemon must not start as `core`, and as `actana` it
 #     would have no capabilities.
+#   - the bounding set is not exactly CAP_SETUID and CAP_SETGID (compose's
+#     `cap_drop: ALL` + `cap_add: SETUID SETGID`). `setpriv` cannot narrow it
+#     without CAP_SETPCAP, which the daemon must not have, so a wider one is
+#     refused instead of silently inherited.
 #   - /var/lib/actana is not actana:actana mode 0700 (or is a link): the state
 #     volume arrived with the wrong owner or mode. It is never repaired here, and
 #     never with `chown -R`: the owner is repaired by the root one-shot (compose
@@ -23,9 +33,10 @@
 #     /usr/local/libexec/core-fs-prep.sh …`), which does not touch the mode of
 #     a directory that exists.
 #
-# Absolute paths for everything run as root: the image PATH starts with the
-# volume-writable ~/.local/bin, and a fake `id`, `stat` or `setpriv` planted there
-# would run as root with CAP_SETUID.
+# Absolute paths for everything run as root, and for the daemon: the image PATH
+# starts with the volume-writable ~/.local/bin, and a fake `id`, `stat`,
+# `setpriv`, `tini` or `actana` planted there would run with CAP_SETUID. The daemon
+# gets a PATH of its own below that has no directory a Session can write.
 set -eu
 
 ACTANA_UID=1001
@@ -33,11 +44,23 @@ ACTANA_GID=1001
 CORE_UID=1000
 CORE_GID=1000
 STATE=/var/lib/actana
+# CAP_SETGID is bit 6 and CAP_SETUID bit 7.
+EXPECTED_BOUNDING=00000000000000c0
 
 uid=$(/usr/bin/id -u)
 if [ "$uid" -ne 0 ]; then
   echo "core-entrypoint: must start as root (uid 0), not uid ${uid}: the entrypoint's one root step is the switch to actana (uid ${ACTANA_UID})" >&2
   echo "core-entrypoint: do not set user: in compose or run with -u; use docker exec -u core or -u actana for a shell" >&2
+  exit 1
+fi
+
+bounding=
+while read -r field value; do
+  [ "$field" = "CapBnd:" ] && bounding=$value
+done < /proc/self/status
+if [ "$bounding" != "$EXPECTED_BOUNDING" ]; then
+  echo "core-entrypoint: the bounding set is ${bounding:-unreadable}, expected ${EXPECTED_BOUNDING} (only CAP_SETUID and CAP_SETGID)" >&2
+  echo "core-entrypoint: run with cap_drop: ALL and cap_add: SETUID, SETGID (docker run --cap-drop ALL --cap-add SETUID --cap-add SETGID)" >&2
   exit 1
 fi
 
@@ -57,8 +80,10 @@ fi
 # take it, see core.Dockerfile).
 export HOME="$STATE" USER=actana LOGNAME=actana
 export AC_CORE_HOME=/home/core AC_CORE_UID="$CORE_UID" AC_CORE_GID="$CORE_GID"
+# No directory a Session writes (the image PATH leads with ~/.local/bin).
+export PATH=/opt/actana/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 exec /usr/bin/setpriv \
   --reuid="$ACTANA_UID" --regid="$ACTANA_GID" --clear-groups \
-  --inh-caps=+setuid,+setgid --ambient-caps=+setuid,+setgid --bounding-set=+setuid,+setgid \
-  --no-new-privs -- "$@"
+  --inh-caps=-all,+setuid,+setgid --ambient-caps=-all,+setuid,+setgid \
+  --no-new-privs -- /usr/bin/tini -- "$@"

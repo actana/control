@@ -138,16 +138,25 @@ that `npm install` on a project with a native addon can actually invoke node-gyp
 cannot install more at run time.
 
 Two users run in the container. **`actana`** (uid 1001, gid 1001, no login shell) is the daemon:
-the entrypoint starts as root for one step only, checks that `/var/lib/actana` is
-`actana:actana` mode `0700` (it fails, and never repairs, otherwise), and switches to `actana`
-with `setpriv`, keeping `CAP_SETUID` and `CAP_SETGID` as inheritable, ambient and bounding
-capabilities and nothing else, with `no-new-privs`. Those two are what let the daemon start every
-Session as **`core`**, with no capabilities of its own. After that `exec` the only root process is
-`tini` (PID 1), which holds just what compose granted: `cap_drop: ALL`, `cap_add: SETUID, SETGID`,
-`no-new-privileges`. There is **no setuid/setgid bit and no file capability** on any file in the
-image (stripped as the last root build step, and scanned for by the smoke), and `core` cannot
-become root, nor `actana`. The image `USER` is therefore `0:0`, and so a plain `docker exec` is
-root — a root with no DAC override, which reads neither `/home/core` nor `/var/lib/actana`. Use
+the entrypoint is the container's `ENTRYPOINT` and starts as root for one step only. It checks that
+the bounding set is exactly `CAP_SETUID` and `CAP_SETGID` (what compose's `cap_drop: ALL` +
+`cap_add: SETUID, SETGID` leaves; it refuses any other, because `setpriv` cannot narrow it without
+`CAP_SETPCAP`) and that `/var/lib/actana` is `actana:actana` mode `0700` (it fails, and never
+repairs, otherwise). It then `exec`s `setpriv` to `actana`, with `CAP_SETUID` and `CAP_SETGID` as
+the only inheritable and ambient capabilities and `no-new-privs`, and that `exec`s **`tini`**, which
+runs the daemon by absolute path (`/opt/actana/bin/actana daemon`). So `tini` is still PID 1, but
+as `actana` with the same two capabilities: it can forward `SIGTERM` to the daemon, so `docker stop`
+runs the daemon's shutdown (a root `tini` without `CAP_KILL` could not signal a uid-1001 process).
+Those two capabilities are what let the daemon start every Session as **`core`**, with no
+capabilities of its own. After the switch **no process of the container is root**. There is **no
+setuid/setgid bit and no file capability** on any file in the image (stripped as the last root build
+step, and scanned for by the smoke). What `actana` can do with `CAP_SETUID`: switch to any uid,
+root included. That root has only those two capabilities, no DAC override, and under `no-new-privs`
+cannot gain more; it owns what root owns in the container's writable layer, which is why the daemon
+is not run as anything it does not need to be and why a Session (`core`) has neither capability.
+`core` cannot become `actana` or root. The image `USER` is `0:0` for the entrypoint's step, and so a
+plain `docker exec` is root — a root with no DAC override, which reads neither `/home/core` nor
+`/var/lib/actana`. Use
 `docker exec -u core` for a Session's view of the machine (a shell, `actana harnesses install`) and
 `docker exec -u actana` for `actana pair`. Named volumes are seeded in the image: the home
 `core:core`, the state `actana:actana`. A host
@@ -159,7 +168,8 @@ recursively, and never following a symlink. Compose gives that one-shot
 `0750`, so without it uid 0 cannot search or `mkdir` under the home), keeps
 `no-new-privileges` and `network_mode: none`, then exits; it also hands the state mount point to
 `actana`. The main entrypoint refuses any uid but 0, because the switch to `actana` is the one thing
-it does.
+it does, and refuses a bounding set that is not exactly the two capabilities, so a bare `docker run`
+needs `--cap-drop ALL --cap-add SETUID --cap-add SETGID`.
 
 A system Node 24, taken from nodejs.org and SHA-256 verified against that release's own
 `SHASUMS256.txt`, for `npm i -g` work. The daemon does not use it — it runs the Node bundled inside

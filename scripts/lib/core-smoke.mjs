@@ -559,14 +559,36 @@ export function checkProcessStatus(text, kind) {
 }
 
 /**
- * Pids other than 1 that run as uid 0, from `{pid, status}` pairs. PID 1 is
- * tini and is root by design (decision D4); after the entrypoint's `exec` nothing
- * else may be: not a leftover entrypoint shell, not a helper.
+ * What is wrong with a process scan, as `{pid, status}` pairs read in a *root*
+ * exec whose own shell is `probePid`; empty when it is right. After the entrypoint's
+ * `exec` nothing in the container is root, tini (PID 1) included: it runs as the
+ * daemon's user so that it can signal and reap the daemon. The scan must also be
+ * able to *see* a root process, or "none found" proves nothing, so the probe (the
+ * root shell that ran it) has to be in the list as root, and be the only root there.
+ * A scan that saw nothing, that has a pid whose status it could not read, or that
+ * has no PID 1, fails.
  */
-export function rootProcessesBesideInit(processes) {
-  return processes
-    .filter(({ pid, status }) => pid !== 1 && statusLines(status).get("Uid")?.split(/\s+/)[1] === "0")
-    .map(({ pid }) => pid);
+export function checkNoRootProcesses(processes, probePid) {
+  const problems = [];
+  if (!Array.isArray(processes) || processes.length === 0) return ["the scan saw no process at all"];
+  const roots = [];
+  let sawInit = false;
+  for (const { pid, status } of processes) {
+    const uid = statusLines(status).get("Uid");
+    const gid = statusLines(status).get("Gid");
+    if (!uid || !gid) {
+      problems.push(`pid ${pid}: no Uid/Gid line was read`);
+      continue;
+    }
+    const idsOf = (line) => line.split(/\s+/).slice(1);
+    if (pid === 1) sawInit = true;
+    if ([...idsOf(uid), ...idsOf(gid)].some((id) => id === "0")) roots.push(pid);
+  }
+  if (!sawInit) problems.push("the scan did not see PID 1");
+  if (!roots.includes(probePid)) problems.push(`the scan cannot see a root process (its own shell, pid ${probePid}), so finding none proves nothing`);
+  const others = roots.filter((pid) => pid !== probePid);
+  if (others.length > 0) problems.push(`processes run with a root uid or gid: ${others.join(", ")}`);
+  return problems;
 }
 
 /**

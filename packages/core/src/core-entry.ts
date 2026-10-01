@@ -825,7 +825,10 @@ async function startCore(): Promise<void> {
     : null;
 
   // Clean up on shutdown.
-  const shutdown = () => {
+  const shutdown = (signal: string) => {
+    // The line `docker stop` is checked against by the image smoke: it proves the
+    // signal reached the daemon (tini forwards it) and not only that the container ended.
+    log.info("core.shutdown", { signal });
     core.killAll();
     server.close();
     hookReceiver?.close();
@@ -839,8 +842,8 @@ async function startCore(): Promise<void> {
     disposeCoreMutationStore();
     process.exit(0);
   };
-  process.on("SIGTERM", shutdown);
-  process.on("SIGINT", shutdown);
+  process.on("SIGTERM", () => shutdown("SIGTERM"));
+  process.on("SIGINT", () => shutdown("SIGINT"));
 
   // The sentinel is printed on the next tick so the WS server has definitely
   // bound the port before the parent resolves readiness.
