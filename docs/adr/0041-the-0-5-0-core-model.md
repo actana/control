@@ -4,6 +4,9 @@
 > ADR 0016 (D6, D12), 0027 (D1) and **amends** parts of ADR 0016 (D19), 0027 (D2, D6), 0028 and 0030, as the table
 > below says. Older records are amended by dated or appended notes; none is rewritten or renumbered.
 >
+> **Amended by [#555](https://github.com/actana/control/issues/555)** with D24–D26 ("Landed by #555"), which only
+> record what the Core's code does; nothing in D1–D23 is changed.
+>
 > **Amended 2026-09-30 by [#567](https://github.com/actana/control/issues/567)** with D14–D21, the Panel's Postgres
 > decisions, which further **amend** ADR 0010, ADR 0011 and ADR 0016 (D20, D25). The decisions are the owner's, in
 > their comment on #567 and their comment on [#556](https://github.com/actana/control/issues/556), both dated
@@ -217,11 +220,31 @@ These are not decided here. Each is for the pull request that needs it, and is s
 - **What "refuse to start" does about a database that is up later**: exit and let the restart policy retry, or
   retry in process.
 
+## Landed by #555: what the Core does now
+
+[#555](https://github.com/actana/control/issues/555) removes Projects from the Core. These are the rules it chose where
+D1 and D2 did not say. The owner may change them by amending this record.
+
+**D24 — A Core refuses what it no longer takes.** A `spawn` that carries a `cwd`, a `projectId` or any field outside a
+fixed list is answered `spawnError` naming the field, and nothing is spawned. A list frame (`sessionRowsList`,
+`archivedSessionRowsList`, `sessionsList`) or a `sessionsMutate` `create` that carries a field it no longer takes is
+answered `error`, naming it. A frame the Core no longer handles (`projectsList`, `projectsMutate`) is answered
+`error` with `unhandled frame type`. It is a refusal and not a silent ignore, so a 0.4.x client learns why, instead of
+starting a Session somewhere other than where it asked. The published `@actana/sdk` still sends these fields, so until
+actana/client#10 ships no SDK client can start a Session on a 0.5.0 Core.
+
+**D25 — A database from before 0.5.0 is refused, not adopted.** The Core's database holds `sessions` and `event_log`
+and nothing else. A boot that finds any other table, or a column of `sessions` it does not define, throws and says to
+install fresh, before any DDL runs, and leaves the file as it found it. There is no migration (#552).
+
+**D26 — The Files API serves the workspace under any id until #557.** Its URL and the `outside-project-root` code are
+the published SDK's. The Core keeps answering them and no longer looks an id up: every id reaches `~`, with one write
+lease for the Core. `project-not-found` is no longer sent. #557 re-addresses the surface.
+
 ## Consequences
 
-- **#555 and #556 change the code to match** and #560 the Panel. Until they land,
-  the code, the DB and the wire still say Project and Task, and `CONTEXT.md`
-  says what they will say.
+- **#555 and #556 change the code to match** and #560 the Panel. #555 and the first part of #556 have landed on the
+  Core; the Panel, the CLI and the SDK still say Project, and `CONTEXT.md` says what they will say.
 - **Every later ticket in #552 cites this record** for the model.
 - **A ticket that needs a decision changed amends this record rather than settling it in a comment.** This rule is
   from `docs/adr/README.md` and ADR 0024. It is new to this record and was not decided in #552 or #554.
