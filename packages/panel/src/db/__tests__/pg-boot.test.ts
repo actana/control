@@ -45,7 +45,9 @@ describe("bootPanelDatabase", { timeout: 30_000 }, () => {
     log.mockClear();
     await bootPanelDatabase(env, () => pool);
     expect((await count()).rows[0].n).toBe(bundledPanelMigrations().length);
-    expect(log).not.toHaveBeenCalled();
+    // The migrator still takes the lock and says so; it just applies nothing.
+    expect(log).toHaveBeenCalledWith("[panel] waiting for the migration lock");
+    expect(log).not.toHaveBeenCalledWith(expect.stringMatching(/database migrations applied/));
     expect(getPanelPool()).toBe(pool);
   });
 
