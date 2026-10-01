@@ -62,7 +62,7 @@ export function OperatorSettingsPage() {
       </SettingsSection>
 
       <SettingsSection title="Password">
-        <form onSubmit={changePassword} style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+        <form onSubmit={(e) => void changePassword(e)} style={{ display: "flex", flexDirection: "column", gap: 12 }}>
           <TextField
             label="Current password"
             type="password"

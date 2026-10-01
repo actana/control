@@ -320,7 +320,9 @@ export function UserTerminalPane({
       // Harness SIGWINCH after the drag settles; targets the then-active pty.
       const settledPtyResize = createSettledPtyResize((cols, rows) => {
         const id = activePtyId;
-        if (id && ptyApi) ptyApi.resize(id, cols, rows);
+        // A resize lost to a dropped link is harmless: the next settled resize
+        // or the re-attach re-sends the size.
+        if (id && ptyApi) ptyApi.resize(id, cols, rows).catch(() => {});
       });
       surface.controls = {
         focus: () => term.focus(),
@@ -333,7 +335,9 @@ export function UserTerminalPane({
       };
       const wireTerminalInput = (id: string) => {
         term.onData((data) => {
-          if (ptyApi) ptyApi.write(id, data);
+          // Keystrokes lost to a dropped link have no caller to tell; the link
+          // layer reports the disconnect itself.
+          if (ptyApi) ptyApi.write(id, data).catch(() => {});
         });
         term.onResize((size) => settledPtyResize.schedule(size));
       };
@@ -508,7 +512,10 @@ export function UserTerminalPane({
       // Terminals opened unfocused (run/launch flow) must leave keyboard focus
       // where it is so follow-up hotkeys keep working.
       if (focusedRef.current) term.focus();
-      rafHandle = window.requestAnimationFrame(() => ensurePty());
+      rafHandle = window.requestAnimationFrame(() => {
+        // `ensurePty` reports its own failure through `setStartError`.
+        void ensurePty();
+      });
       detachMount = bindMount(surface);
     })();
 
