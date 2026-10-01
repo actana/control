@@ -83,6 +83,8 @@ import {
   openCoreSession,
   pickFreePort,
   checkNoRootProcesses,
+  checkRootOwnedDirs,
+  pathFromEnviron,
 } from "./lib/core-smoke.mjs";
 import {
   PANEL_SESSION_COOKIE,
@@ -153,6 +155,9 @@ function docker(dockerArgs, { allowFailure = false } = {}) {
  * The smoke boots the Core with exactly these and nothing more, and a test
  * holds the list to the compose file.
  */
+/** Where the root entrypoint lives: a root-owned directory of its own. */
+const ENTRYPOINT_PATH = "/usr/libexec/actana/core-entrypoint.sh";
+
 const COMPOSE_CORE_FLAGS = [
   "--cap-drop",
   "ALL",
@@ -443,8 +448,16 @@ log("verifying the built image's entrypoint and identity …");
 const config = JSON.parse(docker(["image", "inspect", "--format", "{{json .Config}}", image]).stdout);
 // The entrypoint is the script; it execs tini after the switch, so tini is PID 1
 // as the daemon's user (checked below on the running container).
-if ((config?.Entrypoint ?? []).join(" ") !== "/usr/local/bin/core-entrypoint.sh") {
-  die(`${image} entrypoint is ${JSON.stringify(config?.Entrypoint)}, expected ["/usr/local/bin/core-entrypoint.sh"]`);
+if ((config?.Entrypoint ?? []).join(" ") !== ENTRYPOINT_PATH) {
+  die(`${image} entrypoint is ${JSON.stringify(config?.Entrypoint)}, expected [${JSON.stringify(ENTRYPOINT_PATH)}]`);
+}
+// The image PATH has no directory `core` can write (a Session's planted `actana` would
+// otherwise run for `docker exec -u actana … actana pair new`, or as root for a plain exec).
+{
+  const imagePath = (config?.Env ?? []).find((e) => e.startsWith("PATH="))?.slice(5) ?? "";
+  if (!imagePath.startsWith("/opt/actana/bin:") || /\/home\/|\.local/.test(imagePath)) {
+    die(`${image} PATH is ${JSON.stringify(imagePath)}: it must start with /opt/actana/bin and name no directory under the home`);
+  }
 }
 // An absolute path: a PATH lookup after the switch would find a Session's planted `actana`.
 if ((config?.Cmd ?? []).join(" ") !== "/opt/actana/bin/actana daemon") {
@@ -780,6 +793,32 @@ if (initProblems.length > 0) {
 }
 log("no process of the container runs as root; tini (PID 1) is actana with the same two ambient capabilities")
 
+// What runs as root, and what the daemon runs, cannot be swapped by a Session: the
+// entrypoint (root, holding CAP_SETUID until its `exec`) lives in a root-owned
+// directory of its own, and every directory on the daemon's own PATH — read back from
+// its environment, not assumed — is root-owned and not writable. (The Node tarball once
+// left /usr/local owned by uid 1000.) Read as `core`, the user who would do the swapping.
+{
+  const environ = core.exec(["cat", `/proc/${daemon.pid}/environ`], { user: CORE_DAEMON_USER.name, allowFailure: true });
+  if (environ.status !== 0) die(`could not read the daemon's environment (pid ${daemon.pid}): ${environ.stderr}`);
+  const daemonPath = pathFromEnviron(environ.stdout);
+  if (!daemonPath || daemonPath.length === 0) die("the daemon's environment has no PATH");
+  const dirs = [path.posix.dirname(ENTRYPOINT_PATH), ...daemonPath];
+  const stat = core.exec(["sh", "-c", 'for d in "$@"; do [ -d "$d" ] && stat -L -c "%n\t%u:%g\t%a" "$d"; done; true', "sh", ...dirs]);
+  const seen = stat.stdout.split("\n").filter(Boolean).map((line) => {
+    const [dir, owner, mode] = line.split("\t");
+    return { path: dir, owner, mode };
+  });
+  const problems = checkRootOwnedDirs(seen);
+  if (!seen.some((d) => d.path === path.posix.dirname(ENTRYPOINT_PATH))) problems.push("the entrypoint's directory was not read");
+  if (problems.length > 0) die(`a directory root or the daemon executes from is not root-owned and closed:\n  ${problems.join("\n  ")}\nPATH ${daemonPath.join(":")}`);
+  const beside = core.exec(["sh", "-c", `touch ${path.posix.dirname(ENTRYPOINT_PATH)}/planted 2>&1`], { allowFailure: true });
+  if (beside.status === 0) die(`core created a file beside the root entrypoint in ${path.posix.dirname(ENTRYPOINT_PATH)}`);
+  const swap = core.exec(["sh", "-c", `printf x >> ${ENTRYPOINT_PATH} 2>&1`], { allowFailure: true });
+  if (swap.status === 0) die(`core wrote to the root entrypoint ${ENTRYPOINT_PATH}`);
+  log(`the entrypoint's directory and the daemon's ${daemonPath.length} PATH entries are root-owned and closed to core, which cannot create or change a file there`);
+}
+
 // ─── A Session, as a client opens one ───────────────────────────────────────
 
 // The credential a client holds: built, as `core-smoke.mjs` does for every smoke,
@@ -1057,24 +1096,27 @@ await waitForCoreLink(core);
 // fake stat on the volume PATH cannot run as root on restart either.
 docker(["restart", core.name]);
 await waitForCoreLink(core);
-const fakeActanaRan = core.exec(["sh", "-c", `cat ${fakeActanaLog} 2>/dev/null || true`], { allowFailure: true }).stdout;
-if (fakeActanaRan.trim()) {
-  die(`a Session's planted ~/.local/bin/actana ran at a start (${fakeActanaRan.trim()}): the daemon was found through PATH`);
-}
 if (!isRunning(core)) die("the Core is not running after the restarts");
-log("a planted actana in the home's .local/bin never ran, with the home open to others, across stop, start and restart");
+log("the Core restarted with a planted actana in the home's .local/bin (the check that it never ran is after the pairing leg)");
 
-// tini reaps what is reparented to it: an orphaned Session process that exits is
-// not left as a zombie.
+// tini reaps what is reparented to it: a process orphaned by its Session is
+// adopted by PID 1 (tini, not the daemon), and once it exits it is gone, not a zombie.
 {
   const reaper = await openCoreSession(credentialFromMaterial(materialCopy, core.endpoint)).catch((err) => die(`could not open a Session: ${err.message}`));
   await reaper.prepare().catch((err) => die(`the Session's shell never answered: ${err.message}`));
-  await reaper.run("sh -c '(sleep 1 &) ; exit 0'; true").catch((err) => die(`could not orphan a process: ${err.message}`));
-  await delay(3_000);
-  const zombies = core.exec(["sh", "-c", `for p in /proc/[0-9]*; do read -r _ _ state _ < "$p/stat" 2>/dev/null && [ "$state" = Z ] && echo "$p"; done; true`]).stdout.trim();
+  const orphaned = await reaper.run("sh -c '(sleep 3 & echo ORPHAN=$!); exit 0'").catch((err) => die(`could not orphan a process: ${err.message}`));
+  const orphan = Number(orphaned.output.match(/ORPHAN=(\d+)/)?.[1]);
+  if (!Number.isInteger(orphan) || orphan <= 1) die(`no orphan pid was printed:\n${orphaned.output}`);
+  const parent = () =>
+    core.exec(["sh", "-c", `sed -e 's/.*) //' /proc/${orphan}/stat 2>/dev/null | cut -d' ' -f2`], { allowFailure: true }).stdout.trim();
+  await pollUntil(`orphan ${orphan} to be adopted by PID 1`, 3_000, async () => (parent() === "1" ? true : null), { pollMs: 100 }).catch(() =>
+    die(`orphan ${orphan}'s parent is ${JSON.stringify(parent())}, expected 1 (tini)`),
+  );
+  await pollUntil(`orphan ${orphan} to be reaped`, 10_000, async () => (core.exec(["test", "-e", `/proc/${orphan}`], { allowFailure: true }).status !== 0 ? true : null), {
+    pollMs: 250,
+  }).catch(() => die(`orphan ${orphan} is still in /proc after it exited (state ${core.exec(["sh", "-c", `sed -e 's/.*) //' /proc/${orphan}/stat | cut -c1`], { allowFailure: true }).stdout.trim()}): tini is not reaping`));
   reaper.close();
-  if (zombies) die(`tini left zombies behind, so it is not reaping what is reparented to it:\n${zombies}`);
-  log("an orphaned process was reaped by tini (no zombie)");
+  log(`orphan ${orphan} was adopted by PID 1 and reaped (no zombie)`);
 }
 const fakeAfterRestart = core.exec(["sh", "-c", `cat ${marker} 2>/dev/null || true`], {
   allowFailure: true,
@@ -1568,6 +1610,17 @@ if (typeof coreId !== "string" || !coreId) {
 
 await assertConnects("the first pairing");
 log(`the Panel is paired with ${coreId} over the core-link`);
+
+// The planted actana (home open to others, first on a Session's PATH) must not have
+// run at any point of this smoke: not as the daemon at three starts, not as actana
+// for \`pair new\` through the image PATH, not as root, not as core. Checked here, after
+// the legs that look \`actana\` up by name, and the fake is removed.
+const fakeActanaRan = core.exec(["sh", "-c", `cat ${fakeActanaLog} 2>/dev/null || true`], { allowFailure: true }).stdout;
+if (fakeActanaRan.trim()) {
+  die(`a Session's planted ~/.local/bin/actana ran (${fakeActanaRan.trim()}): \`actana\` was found through a directory a Session writes`);
+}
+core.exec(["rm", "-f", `${CORE_HOME}/.local/bin/actana`, fakeActanaLog]);
+log("the planted actana never ran, through three starts, pairing and every `actana` the smoke typed; removed");
 
 // #559 — the pairing store is written beside the material, in the state
 // directory, and not in the home.

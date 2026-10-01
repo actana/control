@@ -12,7 +12,7 @@
 # from disk. A plain `docker compose exec core …` is root *without* any DAC
 # override, and reads neither the home nor that state. Use:
 #
-#   docker compose exec -u core core bash                 # a Session's own view
+#   docker compose exec -u core core bash -l              # a Session's own view
 #   docker compose exec -u actana core actana pair new    # pairing
 #
 # A Panel with no Cores opens on the first-run wizard, whose first two steps are

@@ -80,7 +80,9 @@ fi
 # take it, see core.Dockerfile).
 export HOME="$STATE" USER=actana LOGNAME=actana
 export AC_CORE_HOME=/home/core AC_CORE_UID="$CORE_UID" AC_CORE_GID="$CORE_GID"
-# No directory a Session writes (the image PATH leads with ~/.local/bin).
+# A PATH of root-owned directories only: nothing a Session can write, or swap a
+# binary in, is searched. (The image PATH is the same list; the smoke reads this
+# process's PATH back from /proc and checks every directory on it is root-owned.)
 export PATH=/opt/actana/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 exec /usr/bin/setpriv \

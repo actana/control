@@ -591,6 +591,34 @@ export function checkNoRootProcesses(processes, probePid) {
   return problems;
 }
 
+/** The `PATH` entries of a `/proc/<pid>/environ` text (NUL-separated `NAME=value`), or `null` when it has none. */
+export function pathFromEnviron(text) {
+  const entry = String(text)
+    .split("\0")
+    .find((pair) => pair.startsWith("PATH="));
+  return entry === undefined ? null : entry.slice("PATH=".length).split(":").filter(Boolean);
+}
+
+/**
+ * What is wrong with the directories the root entrypoint and the daemon execute
+ * from, as `{path, owner: "uid:gid", mode: "755"}` read by `stat`; empty when each
+ * is root-owned and not writable by group or others. A directory `core` can write
+ * is a directory in which `core` can swap a binary that runs with CAP_SETUID at the
+ * next start (#559): the Node tarball once left /usr/local owned by 1000. An empty
+ * list is itself a problem: a check that read nothing proves nothing.
+ */
+export function checkRootOwnedDirs(dirs) {
+  if (!Array.isArray(dirs) || dirs.length === 0) return ["no directory was read"];
+  const problems = [];
+  for (const { path: dir, owner, mode } of dirs) {
+    if (owner !== "0:0") problems.push(`${dir} is owned by ${owner}, expected 0:0`);
+    const bits = Number.parseInt(String(mode), 8);
+    if (!Number.isInteger(bits)) problems.push(`${dir} has unreadable mode ${JSON.stringify(mode)}`);
+    else if ((bits & 0o022) !== 0) problems.push(`${dir} is writable by its group or others (mode ${mode})`);
+  }
+  return problems;
+}
+
 /**
  * Run in a throwaway container as root (`python3` is in the image): every file
  * in the image's own filesystem that carries a `security.capability` xattr, one

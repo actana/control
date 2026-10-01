@@ -129,7 +129,7 @@ RUN set -eux; \
     curl -fsSLO "${dist}/${archive}"; \
     curl -fsSLO "${dist}/SHASUMS256.txt"; \
     grep " ${archive}\$" SHASUMS256.txt | sha256sum -c -; \
-    tar -xJf "${archive}" -C /usr/local --strip-components=1 \
+    tar -xJf "${archive}" -C /usr/local --strip-components=1 --no-same-owner \
         --exclude CHANGELOG.md --exclude LICENSE --exclude README.md; \
     rm -f "${archive}" SHASUMS256.txt; \
     npm_tgz="npm-${NPM_VERSION}.tgz"; \
@@ -139,6 +139,7 @@ RUN set -eux; \
     rm -f "${npm_tgz}"; \
     npm cache clean --force; \
     rm -rf /root/.npm; \
+    chown -R root:root /usr/local; \
     node --version; \
     [ "$(npm --version)" = "${NPM_VERSION}" ]
 
@@ -265,8 +266,16 @@ COPY core-fs-prep.sh /usr/local/libexec/core-fs-prep.sh
 RUN chown root:root /usr/local/libexec/core-fs-prep.sh \
  && chmod 0755 /usr/local/libexec/core-fs-prep.sh
 
-COPY core-entrypoint.sh /usr/local/bin/core-entrypoint.sh
-RUN chmod 0755 /usr/local/bin/core-entrypoint.sh
+# The entrypoint runs as root with CAP_SETUID before the switch, so it lives in a
+# root-owned directory that holds nothing else, and never in a directory `core`
+# can write (it was /usr/local/bin, which the Node tarball once left owned by
+# uid 1000: a Session could have swapped it and been root at the next start).
+RUN mkdir -p /usr/libexec/actana \
+ && chown root:root /usr/libexec/actana \
+ && chmod 0755 /usr/libexec/actana
+COPY core-entrypoint.sh /usr/libexec/actana/core-entrypoint.sh
+RUN chown root:root /usr/libexec/actana/core-entrypoint.sh \
+ && chmod 0755 /usr/libexec/actana/core-entrypoint.sh
 
 # Last root step (#558): strip every setuid/setgid bit the base packages ship
 # (su, mount, passwd, ssh-keysign, unix_chkpwd, …). no-new-privs on the daemon
@@ -308,8 +317,8 @@ WORKDIR /
 # refused here: since #288 the tarball's `actana` is the *whole* command, so a
 # Session running on this Core can drive Cores out of the box and the
 # `actana-sessions` skill the Core installs is honest on the machine it lands
-# on. That is also why NPM_CONFIG_PREFIX's bin coming first on PATH no longer
-# decides anything: `npm i -g @actana/cli` would put the same program there.
+# on. (`npm i -g @actana/cli` would put the same program in the home's bin, which
+# is not on this image's PATH, so it cannot shadow this one.)
 # There is deliberately no `npm install` in this image — an image whose
 # contents depend on what is on the registry at build time is not reproducible
 # from this repository (ADR 0032 D7).
@@ -335,6 +344,13 @@ WORKDIR /
 # out here because an ENV line cannot call a function; `CORE_STATE_DIR` in
 # packages/shared/src/actana-container-contract.ts is the one the code uses, and
 # a test compares the two.
+# PATH has no directory `core` can write ahead of, or among, the system ones
+# (#559): `docker exec -u actana core actana pair new` and a plain `docker exec`
+# (root) look `actana` up here, and `~/.local/bin` is a Session's to fill. Sessions
+# get the home's `.local/bin` first from the PATH `asCore` builds, and a login
+# shell from `docker exec -u core core bash -l` from the skeleton's `.profile`.
+# Every directory on it is root-owned (the Node install above is chowned), which
+# the image smoke checks as `core`.
 ARG ACTANA_PORT=8443
 ENV ACTANA_PORT=${ACTANA_PORT} \
     ACTANA_CONTAINER=1 \
@@ -345,7 +361,7 @@ ENV ACTANA_PORT=${ACTANA_PORT} \
     AC_USER_DATA_DIR=/var/lib/actana/data \
     AC_CORE_MATERIAL_FILE=/var/lib/actana/config/material.json \
     NPM_CONFIG_PREFIX=/home/core/.local \
-    PATH=/home/core/.local/bin:/opt/actana/bin:/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin
+    PATH=/opt/actana/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 # The same ARG, so the exposed port cannot drift from the documented default.
 EXPOSE ${ACTANA_PORT}
@@ -360,10 +376,9 @@ EXPOSE ${ACTANA_PORT}
 # step is the only root this container ever has. Bind-mount prep is not here —
 # see core-fs-prep.sh / core-init.
 #
-# CMD is an absolute path: the image PATH starts with ~/.local/bin, which a
-# Session writes, and a PATH lookup after the switch would run a planted
-# `actana` as uid 1001 with the two capabilities. (The entrypoint also gives the
-# daemon a PATH without it.)
+# CMD is an absolute path as well as the PATH having no Session-writable
+# directory: a lookup after the switch must never be able to run a planted
+# `actana` as uid 1001 with the two capabilities.
 #
 # node-pty forks a shell and the shell forks a Harness, so when the shell
 # exits first that Harness reparents to PID 1 — and libuv only waitpid()s
@@ -372,5 +387,5 @@ EXPOSE ${ACTANA_PORT}
 # `init: true`, because those are opt-in and anyone copying a bare `docker
 # run` off a README would get the broken configuration by default. tini is
 # 10 kB and is not a supervisor.
-ENTRYPOINT ["/usr/local/bin/core-entrypoint.sh"]
+ENTRYPOINT ["/usr/libexec/actana/core-entrypoint.sh"]
 CMD ["/opt/actana/bin/actana", "daemon"]

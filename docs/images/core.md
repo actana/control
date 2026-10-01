@@ -157,7 +157,7 @@ is not run as anything it does not need to be and why a Session (`core`) has nei
 `core` cannot become `actana` or root. The image `USER` is `0:0` for the entrypoint's step, and so a
 plain `docker exec` is root — a root with no DAC override, which reads neither `/home/core` nor
 `/var/lib/actana`. Use
-`docker exec -u core` for a Session's view of the machine (a shell, `actana harnesses install`) and
+`docker exec -u core` for a Session's view of the machine (a shell — `bash -l`, so that the home's `~/.local/bin` is on its PATH — and `actana harnesses install`) and
 `docker exec -u actana` for `actana pair`. Named volumes are seeded in the image: the home
 `core:core`, the state `actana:actana`. A host
 bind mount that Docker created as root is repaired by a separate root one-shot

@@ -9,6 +9,8 @@ import {
   checkProcessStatus,
   expectedStatusLines,
   checkNoRootProcesses,
+  checkRootOwnedDirs,
+  pathFromEnviron,
   statusLines,
 } from "../lib/core-smoke.mjs";
 import { CORE_DAEMON_CAPS, CORE_DAEMON_CAP_MASK, CORE_NO_CAP_MASK, readRepoFile } from "../lib/panel-image.mjs";
@@ -225,6 +227,39 @@ describe("no root process in the container", () => {
   });
 });
 
+describe("the directories root and the daemon execute from", () => {
+  const dir = (path, owner = "0:0", mode = "755") => ({ path, owner, mode });
+
+  it("passes when every directory is root-owned and closed to group and others", () => {
+    expect(checkRootOwnedDirs([dir("/usr/libexec/actana"), dir("/opt/actana/bin"), dir("/usr/bin", "0:0", "755"), dir("/tmp-like", "0:0", "1755")])).toEqual([]);
+  });
+
+  it.each([
+    ["owned by core (the Node tarball's owner)", dir("/usr/local/bin", "1000:1000", "755"), /\/usr\/local\/bin is owned by 1000:1000/],
+    ["owned by actana", dir("/usr/local/lib", "1001:1001", "755"), /owned by 1001:1001/],
+    ["root-owned but group-writable", dir("/usr/local/share", "0:0", "775"), /writable by its group or others \(mode 775\)/],
+    ["root-owned but world-writable", dir("/usr/local/include", "0:0", "777"), /writable/],
+    ["root-owned with the root group only owner changed", dir("/x", "0:1000", "755"), /owned by 0:1000/],
+    ["a mode that is not octal", dir("/x", "0:0", "rwx"), /unreadable mode/],
+  ])("fails on a directory that is %s", (_what, entry, message) => {
+    expect(checkRootOwnedDirs([dir("/usr/bin"), entry]).join("\n")).toMatch(message);
+  });
+
+  it("fails when it read nothing, rather than passing on an empty list", () => {
+    expect(checkRootOwnedDirs([]).join()).toMatch(/no directory was read/);
+    expect(checkRootOwnedDirs(undefined).join()).toMatch(/no directory was read/);
+  });
+
+  it("reads the PATH out of a NUL-separated environ", () => {
+    const environ = "HOME=/var/lib/actana\0PATH=/opt/actana/bin:/usr/bin::/bin\0USER=actana\0";
+    expect(pathFromEnviron(environ)).toEqual(["/opt/actana/bin", "/usr/bin", "/bin"]);
+    expect(pathFromEnviron("HOME=/x\0")).toBeNull();
+    expect(pathFromEnviron("")).toBeNull();
+    // A variable merely ending in PATH is not PATH.
+    expect(pathFromEnviron("LD_LIBRARY_PATH=/evil\0")).toBeNull();
+  });
+});
+
 describe("the file-capability scan", () => {
   const python = spawnSync("python3", ["--version"]);
   const hasPython = python.status === 0;
@@ -274,6 +309,26 @@ describe("the image smoke still asks every question of the privilege model", () 
     .filter((line) => !line.trim().startsWith("//"))
     .join("\n");
 
+  it.each([
+    ["R9. as core, every directory root or the daemon executes from is root-owned and closed", "checkRootOwnedDirs(seen)"],
+    ["R9. read from the daemon's own environment", "pathFromEnviron(environ.stdout)"],
+    ["R9. core cannot create a file beside the entrypoint", "core created a file beside the root entrypoint"],
+    ["R9. nor change the entrypoint", "if (swap.status === 0) die("],
+    ["R9. nor create beside it", "if (beside.status === 0) die("],
+    ["R10. the image PATH names nothing under the home", 'if (!imagePath.startsWith("/opt/actana/bin:") ||'],
+    ["R10. the fake actana is checked after the pairing leg", "if (fakeActanaRan.trim()) {"],
+    ["the orphan was adopted by PID 1", "expected 1 (tini)"],
+    ["the orphan is gone, not a zombie", "is still in /proc after it exited"],
+  ])("%s", (_what, fragment) => {
+    expect(code).toContain(fragment);
+  });
+
+  it("checks the planted actana only after the pairing leg, and removes it", () => {
+    expect(code.indexOf("if (fakeActanaRan.trim()) {")).toBeGreaterThan(code.indexOf('await assertConnects("the first pairing")'));
+    expect(code.indexOf("const fakeActanaRan")).toBeGreaterThan(code.indexOf("const enrollment = pairNew("));
+    expect(code).toContain('"rm", "-f", `${CORE_HOME}/.local/bin/actana`');
+  });
+
   it("R8. also asserts the stop's exit code and duration", () => {
     expect(code).toContain('if (stopExit !== "0") die(');
     expect(code).toContain("if (stopMs >= 25_000) die(");
@@ -286,7 +341,7 @@ describe("the image smoke still asks every question of the privilege model", () 
     ["R3. a planted actana in the home never runs", "if (fakeActanaRan.trim()) {"],
     ["R3. and the trap is proven armed first", "if (armed.status !== 0) die("],
     ["R8. docker stop: exit 0, logged shutdown, inside the grace period", "if (!/core\\.shutdown.*SIGTERM/.test(stopLogs)) {"],
-    ["R8. tini reaps an orphan", "if (zombies) die(`tini left zombies behind"],
+    ["R8. tini reaps an orphan", "tini is not reaping"],
     ["the bounding set is refused when it is not exactly c0", "the bounding set is [0-9a-f]+, expected 00000000000000c0"],
     ["a wrong mode is refused as well as a wrong owner", "1001:1001 755 (uid:gid mode), expected 1001:1001 700"],
     ["2. the state is 1001:1001 mode 700 on a mount of its own", 'stateStat !== "1001:1001 700"'],

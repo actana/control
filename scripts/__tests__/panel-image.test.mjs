@@ -443,7 +443,7 @@ describe("reference compose", () => {
   });
 
   it("tells the operator how to exec into a Core whose plain exec is root without a DAC override", () => {
-    expect(composeText).toContain("docker compose exec -u core core bash");
+    expect(composeText).toContain("docker compose exec -u core core bash -l");
     expect(composeText).toContain("docker compose exec -u actana core actana pair new");
     expect(composeText).not.toMatch(/^#\s+docker compose exec core actana pair new/m);
   });
@@ -990,11 +990,41 @@ describe("core image", () => {
     expect(prep).toContain("STATE=/var/lib/actana");
     expect(prep).not.toMatch(/CORE_HOME=\$\{/);
     expect(prep).not.toMatch(/CORE_USER=\$\{/);
-    expect(coreImage.entrypoint).toBe('["/usr/local/bin/core-entrypoint.sh"]');
+    expect(coreImage.entrypoint).toBe('["/usr/libexec/actana/core-entrypoint.sh"]');
     expect(coreDockerfile).toContain("COPY core-fs-prep.sh");
     const seed = coreImage.runs.find((run) => run.includes("/home/core/shared"));
     expect(seed).toContain("/home/core/repos");
     expect(seed).toContain("chown -R core:core /home/core");
+  });
+
+  // #559 — what root executes must not be something `core` can swap. The Node
+  // tarball is extracted by root and once kept the tarball's owner (1000:1000), which
+  // made /usr/local, and the entrypoint's old home /usr/local/bin, core's.
+  describe("nothing core can write is executed by root or by the daemon", () => {
+    const nodeInstall = coreImage.runs.find((run) => run.includes("SHASUMS256.txt"));
+
+    it("extracts the Node tarball without its owners and hands /usr/local to root afterwards", () => {
+      expect(nodeInstall).toMatch(/tar -xJf "\$\{archive\}" -C \/usr\/local --strip-components=1 --no-same-owner/);
+      expect(nodeInstall).toContain("chown -R root:root /usr/local");
+      // After `npm install -g`, which writes under /usr/local too.
+      expect(nodeInstall.indexOf("chown -R root:root /usr/local")).toBeGreaterThan(nodeInstall.indexOf("npm install -g"));
+    });
+
+    it("keeps the entrypoint in a root-owned directory of its own, not in /usr/local", () => {
+      expect(coreDockerfile).toContain("COPY core-entrypoint.sh /usr/libexec/actana/core-entrypoint.sh");
+      const dir = coreImage.runs.find((run) => run.includes("mkdir -p /usr/libexec/actana"));
+      expect(dir).toContain("chown root:root /usr/libexec/actana");
+      expect(dir).toContain("chmod 0755 /usr/libexec/actana");
+      const file = coreImage.runs.find((run) => run.includes("chown root:root /usr/libexec/actana/core-entrypoint.sh"));
+      expect(file).toContain("chmod 0755 /usr/libexec/actana/core-entrypoint.sh");
+      expect(coreDockerfile).not.toContain("/usr/local/bin/core-entrypoint.sh");
+      expect(coreImage.entrypoint).not.toContain("/usr/local/");
+    });
+
+    it("never chowns anything under /usr/local to core, and no later layer writes there as core", () => {
+      expect(coreDockerfile).not.toMatch(/chown[^\n]*core[^\n]*\/usr\/local/);
+      expect(coreImage.users).toEqual(["0:0"]);
+    });
   });
 
   // #559 — the entrypoint is the one root step, and these are its exact words.
@@ -1059,9 +1089,11 @@ describe("core image", () => {
       expect(pathLine).not.toContain(".local");
       expect(pathLine).not.toContain("/home/");
       expect(pathLine.startsWith("export PATH=/opt/actana/bin:")).toBe(true);
-      // The image PATH still leads with ~/.local/bin, for `docker exec -u core`: it is why the
-      // daemon is started by an absolute path and not looked up.
-      expect(coreImage.env.PATH.startsWith(`${CORE_HOME}/.local/bin`)).toBe(true);
+      // The image PATH is the same kind of list: `docker exec -u actana … actana pair new` and a
+      // plain (root) exec look `actana` up on it, so it names nothing under the home.
+      expect(coreImage.env.PATH.startsWith("/opt/actana/bin:")).toBe(true);
+      expect(coreImage.env.PATH).not.toMatch(/\/home\/|\.local/);
+      expect(coreImage.env.PATH.split(":")).toEqual(pathLine.slice("export PATH=".length).split(":"));
       expect(coreImage.cmd).toBe('["/opt/actana/bin/actana", "daemon"]');
       expect(coreImage.cmd.startsWith('["/')).toBe(true);
     });
@@ -1097,7 +1129,7 @@ describe("core image", () => {
   // D14 — tini is PID 1 so reparented Harnesses get reaped; baked in, because
   // `--init` is opt-in and a bare `docker run` would skip it.
   it("runs the daemon under tini as PID 1, started by the entrypoint after the switch to actana", () => {
-    expect(coreImage.entrypoint).toBe('["/usr/local/bin/core-entrypoint.sh"]');
+    expect(coreImage.entrypoint).toBe('["/usr/libexec/actana/core-entrypoint.sh"]');
     expect(coreImage.cmd).toBe('["/opt/actana/bin/actana", "daemon"]');
     const entrypoint = readRepoFile("deploy/core-entrypoint.sh");
     expect(entrypoint).toContain("--no-new-privs -- /usr/bin/tini -- \"$@\"");
@@ -1117,7 +1149,8 @@ describe("core image", () => {
       NPM_CONFIG_PREFIX: `${CORE_HOME}/.local`,
     });
     expect(coreImage.env.PATH).toContain(`${CORE_APP_ROOT}/bin`);
-    expect(coreImage.env.PATH).toContain(`${CORE_HOME}/.local/bin`);
+    // Never the home's bin: a Session writes it (it gets it from the PATH `asCore` builds).
+    expect(coreImage.env.PATH).not.toContain(`${CORE_HOME}/.local/bin`);
   });
 
   // #559 — the daemon's state is not under the core home. The image bakes the
