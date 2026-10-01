@@ -212,7 +212,7 @@ export function ProvidersSettingsPage() {
   return (
     <SettingsSection
       title="Providers"
-      subtitle="The AI agents offered when starting a new session. Drag to reorder, hide the ones you don't use, and keep each CLI up to date. Hiding an agent only removes it from the picker — a project's saved agent still launches."
+      subtitle="The AI agents offered when starting a new session. Drag to reorder, hide the ones you don't use, and keep each CLI up to date. Hiding an agent only removes it from the picker — a Core's saved agent still launches."
       headingLevel="h1"
     >
       <div ref={listRef} style={{ display: "flex", flexDirection: "column", gap: 8 }}>

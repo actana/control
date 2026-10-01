@@ -135,7 +135,7 @@ export function UsageView({ data }: { data: UsageSummary }) {
                 }}
               >
                 <Th align="left">Session</Th>
-                <Th align="left">Project</Th>
+                <Th align="left">Workspace</Th>
                 <Th>Input</Th>
                 <Th>Output</Th>
                 <Th>Cache W</Th>

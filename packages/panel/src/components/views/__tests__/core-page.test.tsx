@@ -50,6 +50,7 @@ const { RouterProvider, createRootRoute, createRoute, createRouter, createMemory
   await import("@tanstack/react-router");
 const { CorePage } = await import("../CorePage");
 const { readPendingSessionOpen } = await import("~/lib/session-notification-store");
+const { showRequestedSession } = await import("~/lib/open-requested-session");
 const { takePendingInitialInput } = await import("~/lib/pending-initial-input");
 const { __resetCliAvailabilityStoresForTests } = await import("~/lib/cli-availability");
 const { __resetCoreRememberForTests } = await import("~/lib/core-remember");
@@ -239,8 +240,23 @@ describe("CorePage", () => {
     // The workspace is told which Session to open, scoped to this Core, and the
     // pane will find the prompt waiting for the first spawn.
     expect(readPendingSessionOpen("a")).toMatchObject({ sessionId: frame.sessionId, coreId: "a" });
-    expect(takePendingInitialInput(frame.sessionId)).toBe("fix the build");
     expect(router.state.location.pathname).toBe("/cores/a/workspace");
+
+    // The workspace consumes that request: the terminal it creates must name
+    // this Core, or the pane has no transport and never spawns the Session.
+    const request = readPendingSessionOpen("a")!;
+    const session = { id: request.sessionId, agent: "claude-code" } as never;
+    const project = { id: "a", path: "" } as never;
+    const terminals = {
+      activeFor: vi.fn(() => null),
+      activeSessionIdFor: vi.fn(() => null),
+      rehydrate: vi.fn(),
+      toggle: vi.fn(),
+    };
+    showRequestedSession({ terminals, scopeKey: "a", project, session, coreId: request.coreId });
+    expect(terminals.toggle).toHaveBeenCalledWith(project, session, { coreId: "a" });
+    // The prompt is still staged for that spawn.
+    expect(takePendingInitialInput(frame.sessionId)).toBe("fix the build");
   });
 
   it("opens an existing Session by id, not just the workspace", async () => {

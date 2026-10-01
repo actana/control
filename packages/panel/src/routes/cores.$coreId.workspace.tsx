@@ -1,3 +1,4 @@
+import { showRequestedSession } from "~/lib/open-requested-session";
 import { createFileRoute, useRouter } from "@tanstack/react-router";
 import { useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
@@ -545,12 +546,13 @@ function CoreWorkspacePage() {
           }
         }
 
-        const active = terminals.activeFor(selectedScopeKey);
-        if (active?.sessionId !== session.id) {
-          const activeSessionId = terminals.activeSessionIdFor(selectedScopeKey);
-          if (activeSessionId === session.id) terminals.rehydrate(terminalProject, session, { coreId });
-          else terminals.toggle(terminalProject, session);
-        }
+        showRequestedSession({
+          terminals,
+          scopeKey: selectedScopeKey,
+          project: terminalProject,
+          session,
+          coreId,
+        });
         // Now that the session is materialized in the grid, spotlight its cell.
         if (terminals.gridView) terminals.focusGridSession(session.id);
         clearPendingSessionOpen(request);
