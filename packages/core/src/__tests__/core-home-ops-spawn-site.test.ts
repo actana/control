@@ -13,6 +13,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import log from "@actana/shared/log";
 
 vi.mock("node:child_process", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:child_process")>();
@@ -34,19 +35,19 @@ vi.mock("node:fs", async (importOriginal) => {
   return { ...actual, default: { ...actual, existsSync }, existsSync };
 });
 
-const workspace = vi.hoisted(() => ({ dir: "", roots: null as string[] | null }));
+const workspace = vi.hoisted(() => ({ dir: "", roots: null as string[] | null, lookups: [] as string[], checks: {} as Record<string, { ok: boolean; reason?: string; version?: string }> }));
 vi.mock("../project-roots", () => ({ loadProjectRoots: () => workspace.roots ?? [workspace.dir] }));
 vi.mock("@actana/shared/harness-cli-resolution", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@actana/shared/harness-cli-resolution")>();
   return {
     ...actual,
-    resolveHarnessCommandMeetingVersion: () => ({ binary: "/home/core/.local/bin/claude" }),
-    resolveHarnessCommandOnPath: () => "/home/core/.local/bin/claude",
+    resolveHarnessCommandMeetingVersion: (name: string) => (workspace.lookups.push(name), { binary: "/daemon/looked/up/claude" }),
+    resolveHarnessCommandOnPath: (name: string) => (workspace.lookups.push(name), "/daemon/looked/up/claude"),
   };
 });
 vi.mock("@actana/shared/harness-cli-version", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@actana/shared/harness-cli-version")>();
-  return { ...actual, checkHarnessCliVersionCached: () => ({ ok: true }) };
+  return { ...actual, checkHarnessCliVersionCached: (binary: string) => workspace.checks[binary] ?? { ok: true } };
 });
 
 import { PtyCore } from "../pty-manager";
@@ -75,6 +76,8 @@ function inContainer() {
 
 beforeEach(() => {
   workspace.roots = null;
+  workspace.lookups = [];
+  workspace.checks = {};
   workspace.dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "spawn-site-")));
 });
 afterEach(() => {
@@ -98,11 +101,12 @@ describe("spawning a Claude Code Session in container mode", () => {
       command: "claude",
     } as never);
 
-    expect(helper.requests.map((r) => r.request.op)).toEqual(["spawnPathFacts", "ensureStatuslineTap", "installHarnessHooks"]);
+    expect(helper.requests.map((r) => r.request.op)).toEqual(["spawnPathFacts", "resolveCommand", "ensureStatuslineTap", "installHarnessHooks"]);
     expect(helper.requests[0]!.request).toMatchObject({ op: "spawnPathFacts", cwd: workspace.dir });
     expect((helper.requests[0]!.request as { roots: string[] }).roots).toContain(workspace.dir);
-    expect(helper.requests[1]!.request).toEqual({ op: "ensureStatuslineTap", cwd: workspace.dir });
-    expect(helper.requests[2]!.request).toEqual({ op: "installHarnessHooks", harness: "claude-code", cwd: workspace.dir, piAgentDir: null });
+    expect(helper.requests[1]!.request).toMatchObject({ op: "resolveCommand", command: "claude" });
+    expect(helper.requests[2]!.request).toEqual({ op: "ensureStatuslineTap", cwd: workspace.dir });
+    expect(helper.requests[3]!.request).toEqual({ op: "installHarnessHooks", harness: "claude-code", cwd: workspace.dir, piAgentDir: null });
     // The helper said it installed them, so the Session reports its turn starts.
     expect(result.hooksReportTurnStart).toBe(true);
     // And the daemon's own process touched nothing in the workspace.
@@ -115,7 +119,7 @@ describe("spawning a Claude Code Session in container mode", () => {
     configureCoreHomeOps(helper.options);
     vi.spyOn(nodePty, "spawn").mockReturnValue(fakePty() as never);
     await core(false).spawn({ taskId: "t2", cwd: workspace.dir, agent: "claude-code", command: "claude" } as never);
-    expect(helper.requests.map((r) => r.request.op)).toEqual(["spawnPathFacts", "ensureStatuslineTap"]);
+    expect(helper.requests.map((r) => r.request.op)).toEqual(["spawnPathFacts", "resolveCommand", "ensureStatuslineTap"]);
   });
 
   it("refuses a cwd core cannot see, through the policy's own rejection", async () => {
@@ -140,7 +144,10 @@ describe("spawning a Claude Code Session in container mode", () => {
     fs.mkdirSync(other);
     configureCoreHomeOps({
       run: async (_spec, input) => {
-        const { cwd, roots } = JSON.parse(input) as { cwd: string; roots: string[] };
+        const { op, cwd, roots } = JSON.parse(input) as { op: string; cwd: string; roots: string[] };
+        if (op === "resolveCommand") {
+          return { status: 0, stdout: JSON.stringify({ ok: true, result: { candidates: ["/home/core/.local/bin/claude"] } }), stderr: "" };
+        }
         // core can see the cwd, but the registered root is one it cannot resolve.
         const realpaths: Record<string, string | null> = Object.fromEntries(roots.map((r) => [r, null]));
         realpaths[cwd] = cwd;
@@ -152,6 +159,95 @@ describe("spawning a Claude Code Session in container mode", () => {
       "pty:spawn rejected (cwd-outside-project-roots)",
     );
     expect(spawn).not.toHaveBeenCalled();
+  });
+});
+
+describe("resolving the Harness CLI in container mode", () => {
+  function spawnWith(candidates: string[], agent = "claude-code", command = "claude") {
+    const seen: Array<Record<string, unknown>> = [];
+    configureCoreHomeOps({
+      run: async (_spec, input) => {
+        const request = JSON.parse(input) as { op: string; cwd?: string; roots?: string[] };
+        seen.push(request);
+        const result =
+          request.op === "spawnPathFacts"
+            ? { cwdOk: true, realpaths: Object.fromEntries([request.cwd!, ...request.roots!].map((p) => [p, p])) }
+            : request.op === "resolveCommand"
+              ? { candidates }
+              : request.op === "installHarnessHooks"
+                ? { installed: false, reportsTurnStart: false, hookTrustBypassEarned: false }
+                : null;
+        return { status: 0, stdout: JSON.stringify({ ok: true, result }), stderr: "" };
+      },
+    });
+    const spawn = vi.spyOn(nodePty, "spawn").mockReturnValue(fakePty() as never);
+    return { seen, spawn, run: () => core(false).spawn({ taskId: "tr", cwd: workspace.dir, agent, command } as never) };
+  }
+
+  it("takes the CLI core found, and never looks the command up itself", async () => {
+    inContainer();
+    const { seen, spawn, run } = spawnWith(["/home/core/.local/bin/claude"]);
+    await run();
+    expect(workspace.lookups).toEqual([]);
+    const request = seen.find((r) => r.op === "resolveCommand")!;
+    // core's own `~/.local/bin` leads the PATH it is asked to search: its home is whatever
+    // this test made it (the runner's HOME is not core's, and CI's is a temp dir).
+    const coreBin = `${path.dirname(workspace.dir)}/.local/bin`;
+    expect(request).toEqual({ op: "resolveCommand", command: "claude", path: expect.stringMatching(/.+/) });
+    expect((request as { path: string }).path.split(":")[0]).toBe(coreBin);
+    expect(JSON.stringify(spawn.mock.calls[0])).toContain("/home/core/.local/bin/claude");
+  });
+
+  it("picks among core's candidates by version, so an outdated early match does not win", async () => {
+    inContainer();
+    workspace.checks["/usr/local/bin/claude"] = { ok: false, reason: "outdated", version: "0.1.0" };
+    const { spawn, run } = spawnWith(["/usr/local/bin/claude", "/home/core/.local/bin/claude"]);
+    await run();
+    const target = JSON.stringify(spawn.mock.calls[0]);
+    expect(target).toContain("/home/core/.local/bin/claude");
+    expect(target).not.toContain("/usr/local/bin/claude");
+  });
+
+  it("rejects the spawn as binary-not-found when core finds no CLI, the policy's own rejection", async () => {
+    inContainer();
+    const { spawn, run } = spawnWith([]);
+    await expect(run()).rejects.toThrow("pty:spawn rejected (binary-not-found)");
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
+  it("reads a PATH the helper refuses as finding nothing: binary-not-found, not a raw error", async () => {
+    inContainer();
+    configureCoreHomeOps({
+      run: async (_spec, input) => {
+        const request = JSON.parse(input) as { op: string; cwd: string; roots: string[] };
+        if (request.op === "resolveCommand") {
+          return { status: 2, stdout: JSON.stringify({ ok: false, code: "bad-field", message: "path is too long" }), stderr: "" };
+        }
+        const realpaths = Object.fromEntries([request.cwd, ...request.roots].map((p) => [p, p]));
+        return { status: 0, stdout: JSON.stringify({ ok: true, result: { cwdOk: true, realpaths } }), stderr: "" };
+      },
+    });
+    const spawn = vi.spyOn(nodePty, "spawn").mockReturnValue(fakePty() as never);
+    await expect(core(false).spawn({ taskId: "tp", cwd: workspace.dir, agent: "claude-code", command: "claude" } as never)).rejects.toThrow(
+      "pty:spawn rejected (binary-not-found)",
+    );
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
+  // A regression guard, not a test of the change: on the base nothing is ever
+  // looked up, so it passes there too. It fails if the own-property check on the
+  // agent name goes (`toString` is on every object, and would be "a harness").
+  it("regression guard: asks no one about a command for an agent the policy does not know", async () => {
+    inContainer();
+    // Without the own-property check a function would be sent as the command, refused
+    // by the helper's validation (so `seen` stays quiet) and logged: that log is the tell.
+    const warn = vi.spyOn(log, "warn").mockImplementation(() => undefined);
+    for (const agent of ["not-a-harness", "toString", "constructor"]) {
+      const { seen, run } = spawnWith(["/x"], agent, "claude");
+      await expect(run()).rejects.toThrow(/pty:spawn rejected \(/);
+      expect(seen.map((r) => r.op), agent).toEqual(["spawnPathFacts"]);
+    }
+    expect(warn.mock.calls.map((c) => c[0])).not.toContain("pty.spawn.command-lookup-refused");
   });
 });
 

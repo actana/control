@@ -7,11 +7,11 @@
 > **Amended 2026-09-30 by [#567](https://github.com/actana/control/issues/567)** with D14–D21, the Panel's Postgres
 > decisions, which further **amend** ADR 0010, ADR 0011 and ADR 0016 (D20, D25). The decisions are the owner's, in
 > their comment on #567 and their comment on [#556](https://github.com/actana/control/issues/556), both dated
-> 2026-09-30. D22 was added by [#595](https://github.com/actana/control/pull/595). Nothing in D1–D13 is changed.
+> 2026-09-30. D22 was added by [#595](https://github.com/actana/control/pull/595), and D23 by [#605](https://github.com/actana/control/pull/605). Nothing in D1–D13 is changed.
 >
-> **Amended 2026-10-01 by [#559](https://github.com/actana/control/issues/559)** with D23–D25, the container Core's two
+> **Amended 2026-10-01 by [#559](https://github.com/actana/control/issues/559)** with D24–D26, the container Core's two
 > users. They settle the two Open items on the state directory and on how Sessions start, and say what D10 and D11
-> mean in the container. The owner's decisions are on #559, dated 2026-09-30 and 2026-10-01. Nothing in D1–D22 is
+> mean in the container. The owner's decisions are on #559, dated 2026-09-30 and 2026-10-01. Nothing in D1–D23 is
 > changed; D10 and D11 each gain a pointer.
 
 > **On the number.** This record takes **0041**, the next free number after
@@ -58,10 +58,10 @@ Panel (Postgres).
 Studio, can therefore do the same.
 
 **D10 — `core` has no sudo.** Root is used only by the container's own startup. *What that startup is, and who the
-other users are: D23.*
+other users are: D24.*
 
 **D11 — The Core daemon runs as its own user, with its state outside `~`.** *Which user, which directory and what the
-daemon holds: D23.*
+daemon holds: D24.*
 
 **D12 — Deleting a Core removes the Core, its Shared folder and its S3 folder.**
 
@@ -82,7 +82,7 @@ rewritten.
 | [ADR 0030](0030-the-panel-is-a-dumb-pipe-for-file-bytes.md) **D5** ("a file view is not presentation") and every place it says Project | **Amended** | D1, and 0022 above. D5 argues from 0022's `project_presentation` row, which no longer exists. |
 | [ADR 0016](0016-the-0-1-0-shape.md) **D12**, the sentence keeping `NOPASSWD` sudo for `core` | **Superseded** | D10. |
 | ADR 0016 **D12**, the headline "The Core runs as `core`, uid 1000, gid 1000, always" | **Superseded** | D11: the daemon runs as its own user. Sessions still run as `core` with the pinned ids. |
-| ADR 0016 **D19** (the identity, config and SQLite in `core-home:/home/core`) | **Amended** | D11: the daemon's state lives outside `~`, in `/var/lib/actana` on its own volume (D23). |
+| ADR 0016 **D19** (the identity, config and SQLite in `core-home:/home/core`) | **Amended** | D11: the daemon's state lives outside `~`, in `/var/lib/actana` on its own volume (D24). |
 | ADR 0016 **D6**'s `sudo` package, the sudo reasoning under D12 (the `user:` override paragraph) and conflict C7 | **Superseded** | D10. |
 | `CONTEXT.md` rule "Nothing task-shaped lives on the Panel" | **Replaced** | D4 and D8. |
 | `CONTEXT.md` avoided terms "uploads" and "project storage" | **Removed** | The issue names these two. They sat under **Project files**, and D1 removes the Project. |
@@ -119,11 +119,11 @@ These are not decided here. Each is the named ticket's to settle.
   Panel remains a "dumb pipe" (ADR 0030) for them (#565).
 - **Where Remembered session settings live** (ADR 0017) now that the Project row
   they were stored against is gone. No ticket in #552 says.
-- **Which directory holds the daemon's state**, outside `~` (#559). *Decided on 2026-10-01: `/var/lib/actana`, D23.*
+- **Which directory holds the daemon's state**, outside `~` (#559). *Decided on 2026-10-01: `/var/lib/actana`, D24.*
 - **How the daemon starts Sessions as `core` and writes into `core`'s home.** D11 runs the daemon as its own user
   and D10 allows root only at container startup, so after startup the daemon has no root. Nothing in #552 says how
   it then starts a Session's PTY as `core` (D2) or writes into the workspace (D1). #559 owns it. *Decided on
-  2026-09-30: two capabilities on the daemon, D24. The Files API is not part of it: it moves with #557.*
+  2026-09-30: two capabilities on the daemon, D25. The Files API is not part of it: it moves with #557.*
 - **How an Agent relates to Remembered session settings.** Both are a Harness with settings. Only #569 defines
   Agent.
 
@@ -132,7 +132,7 @@ These are not decided here. Each is the named ticket's to settle.
 Decided by the owner on 2026-09-30 ([#567](https://github.com/actana/control/issues/567), and
 [#556](https://github.com/actana/control/issues/556) for D21). D8 already says the layers above a Core live in the
 Panel (Postgres); these clauses say what that means for the Panel's own database. They are appended, so no earlier
-number moves. D14–D20 come from #567. D21 comes from #556. D22 comes from #595. This record only writes the decisions down. The code, the deploy files and the packages change in the
+number moves. D14–D20 come from #567. D21 comes from #556. D22 comes from #595. D23 comes from #605. This record only writes the decisions down. The code, the deploy files and the packages change in the
 later pull requests of #567, and until they land the Panel still runs on SQLite.
 
 **D14 — The Panel's state lives in Postgres only.** Every Panel table moves, including the Projects family, which
@@ -181,6 +181,14 @@ adds real DDL:** a `lock_timeout` on the migration transaction and a "waiting fo
 new Panel does not hang silently behind a holder. (d) The migrations table is drizzle's own
 (`drizzle.__drizzle_migrations`), so a role behind an external `AC_PANEL_DATABASE_URL` needs `CREATE` on the database.
 
+**D23 — `owner_id` is a database foreign key to `operator.id` (settled 2026-10-01 in [#605](https://github.com/actana/control/pull/605), PR 3b of #567).**
+The owner's decision on #567 ([comment of 2026-09-30](https://github.com/actana/control/issues/567#issuecomment-5918432919))
+says "`owner_id` references `operator.id`". D15 repeated those words and the "Open questions" below recorded the
+foreign key as not answered. The orchestrator's ruling, on the review of #605, is that "references" is read as a
+foreign key: every owner-scoped table has `owner_id` as a `NOT NULL` column with a `REFERENCES operator (id)` constraint,
+and the ownership guard (`packages/panel/src/db/__tests__/owner-guard.test.ts`) fails a table without one. The owner may
+change this by amending this record. Row-level security stays out (D15), and the list of user-facing tables stays open.
+
 **No backward compatibility.** A 0.5.0 Panel starts on an **empty** Postgres. **0.4.x Panel data is not migrated.**
 There is no import of the SQLite file.
 
@@ -202,7 +210,8 @@ Each older record gets a dated note pointing here. No text is rewritten.
 These are not decided here. Each is for the pull request that needs it, and is settled by amending this record.
 
 - **Row-level security.** The owner asked for ownership "enforced in Panel code". Whether Postgres row-level security
-  is also wanted, and whether `owner_id` is also a database foreign key, was asked on #567 and not answered.
+  is also wanted was asked on #567 and not answered. Whether `owner_id` is also a database foreign key is settled
+  in D23.
 - **Which tables count as user-facing**, and so carry an `owner_id`. The #567 comment proposes cores, groups,
   projects, presentation, tasks, terminal logs and token usage. The owner did not confirm the list.
 - **The exact `pg` version and the Postgres image tag and digest.** The #567 comment names `pg` 8.23.0. The pull
@@ -221,43 +230,46 @@ These are not decided here. Each is for the pull request that needs it, and is s
 Decided by the owner on 2026-09-30 and 2026-10-01 ([#559](https://github.com/actana/control/issues/559)). They say
 what D10 and D11 mean in the Core container image. They are appended, so no earlier number moves. The code and the
 deploy files land in the five pull requests of #559: the state paths (#596), the one Core identity and `asCore`
-(#597), the daemon's file work in `core`'s home (#602), the image, entrypoint and compose (#608, a draft that is not
-merged when this is written), and the CLI and these docs. Where this section describes the image it describes #608.
+(#597), the daemon's file work in `core`'s home (#602), the image, entrypoint and compose (#611, merged), and the
+CLI and these docs.
 
-**D23 — Two users, and the daemon's state in `/var/lib/actana`.** The container has two users. `actana` is the
+**D24 — Two users, and the daemon's state in `/var/lib/actana`.** The container has two users. `actana` is the
 daemon: a system user, uid and gid 1001. It owns `/var/lib/actana` (mode 0700, its own volume `core-state`), which
 holds the pairing identity and pairings, the SQLite database, the update-check caches and, later, the Shared-folder
 key (#561, #562). `core` is the Sessions' user: uid and gid 1000, the home `/home/core` (the `core-home` volume), the
 work in `~`, `~/shared` and each Harness's own login. A Session, being `core`, cannot read `/var/lib/actana`. There is
-no sudo and no setuid binary (D10). Root is only tini as PID 1 and the entrypoint's step before it starts the
-daemon as `actana`. Hooks a Session could not deliver are noted in a drop box, `/run/actana/hook-misses.log`, which a
-Session can append to and the daemon reads as untrusted input; nothing a Session can write goes in the state
-directory. On metal (`actana setup`) the daemon and the Sessions stay one user, the operator, and this decision
-does not apply (the owner's D2 on #559). The state directory is built by one helper
-(`packages/shared/src/actana-container-contract.ts`), so a later feature does not put its file under `~`.
+no sudo and no setuid binary (D10). The only process that is ever root is the entrypoint script, before its `exec`;
+tini is PID 1 as `actana` (uid 1001) with the same two ambient capabilities. Hooks a Session could not deliver are
+noted in a drop box, `/run/actana/hook-misses.log`, which a Session can append to and the daemon reads as untrusted
+input; nothing a Session can write goes in the state directory. On metal (`actana setup`) the daemon and the Sessions
+stay one user, the operator, and this decision does not apply (the owner's D2 on #559). The state directory is built
+by one helper (`packages/shared/src/actana-container-contract.ts`), so a later feature does not put its file under `~`.
 
-**D24 — The daemon holds two capabilities and starts every Session as `core` through one wrapper.** The daemon keeps
+**D25 — The daemon holds two capabilities and starts every Session as `core` through one wrapper.** The daemon keeps
 `CAP_SETUID` and `CAP_SETGID` as its only capabilities, ambient, and no others. It starts every Session, every
 `core exec` and every Harness process through `asCore`: `setpriv` with the uid and gid of `core`, supplementary groups
 cleared, inheritable and ambient capabilities cleared and `no_new_privs` set. node-pty's own `uid` and `gid`
 options are not used, because they keep the capabilities on the child. A Session therefore has no capabilities and
 cannot gain any. Its bounding set stays the same two, which is inert with `no_new_privs` and no file capabilities (the
 owner's D1). What the daemon does in `core`'s home (hook files, the skill folders, the registry blob, a cwd check, a
-directory listing, a new folder) it asks a short-lived helper to do, which runs through `asCore` and refuses any path
-that leaves the home. The Files API is not moved by #559: it moves to run as `core` together with #557 (the owner's
-D5). The Shared folder is a userland sync run as `core`, not a FUSE mount inside the Core, so the daemon keeps exactly
-two capabilities.
+directory listing, a new folder, and the Harness CLI lookup `resolveCommand`) it asks a short-lived helper to do,
+which runs through `asCore`. The writes and listings refuse any path that leaves the home; `resolveCommand` is a
+deliberate unconfined read of PATH (the CLIs live in `~/.local/bin` and `/usr/local/bin`), so it is not confined to
+the home. The Files API is not moved by #559: it moves to run as `core` together with #557 (the owner's D5). The
+Shared folder is a userland sync run as `core`, not a FUSE mount inside the Core, so the daemon keeps exactly two
+capabilities.
 
-**D25 — In the container, `docker exec` needs `-u`, and `actana pair` and `actana status` refuse anyone but
+**D26 — In the container, `docker exec` needs `-u`, and `actana pair` and `actana status` refuse anyone but
 `actana`.** The container starts as root only for the entrypoint's step before the drop, so `docker compose exec`
 without `-u` lands as root. That root has no capability to override file permissions, so it can read neither
 `/var/lib/actana` nor `/home/core` (the owner's D3). The documented ways in are `docker compose exec -u core core
-bash`, for work as a Session would do it, and `docker compose exec -u actana core actana pair new`, for the daemon's
-own files. `actana pair` (`new`, `ls`, `revoke`) and `actana status` read the pairing material and store from disk,
-which is only the daemon's user's to read, and a channel a Session could reach would let a Session mint pairing codes.
-So in container mode they check the effective uid and, as anyone but `actana`, print one sentence naming the exact
-command, exit non-zero and change nothing. Outside the container nothing is checked. The inside of the container has
-no way to ask the daemon over a socket on purpose (the owner's D7).
+bash -l`, for work as a Session would do it (`-l` so `~/.local/bin` is on PATH; the image PATH is only
+`/opt/actana/bin` and system directories), and `docker compose exec -u actana core actana pair new`, for the
+daemon's own files. `actana pair` (`new`, `ls`, `revoke`) and `actana status` read the pairing material and store
+from disk, which is only the daemon's user's to read, and a channel a Session could reach would let a Session mint
+pairing codes. So in container mode they check the effective uid and, as anyone but `actana`, print one sentence
+naming the exact command, exit non-zero and change nothing. Outside the container nothing is checked. The inside of
+the container has no way to ask the daemon over a socket on purpose (the owner's D7).
 
 ## Consequences
 
