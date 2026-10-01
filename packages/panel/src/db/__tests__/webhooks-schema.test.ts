@@ -105,4 +105,23 @@ describe("the webhook tables", () => {
       db.pool.query(`update webhook_deliveries set status = 'sending' where id = 'del1'`),
     ).rejects.toThrow(/webhook_deliveries_status_check/);
   });
+
+  it("keeps one delivery per outbox and webhook", async () => {
+    await insertWebhook("u1");
+    await db.pool.query(
+      `insert into webhook_outbox (id, owner_id, event_type, payload, created_at) values ('ou1', 1, 'ping', '{}', 1)`,
+    );
+    await db.pool.query(
+      `insert into webhook_deliveries
+         (id, owner_id, webhook_id, outbox_id, event_type, payload, status, next_attempt_at, created_at, updated_at)
+       values ('du1', 1, 'u1', 'ou1', 'ping', '{}', 'pending', 1, 1, 1)`,
+    );
+    await expect(
+      db.pool.query(
+        `insert into webhook_deliveries
+           (id, owner_id, webhook_id, outbox_id, event_type, payload, status, next_attempt_at, created_at, updated_at)
+         values ('du2', 1, 'u1', 'ou1', 'ping', '{}', 'pending', 1, 1, 1)`,
+      ),
+    ).rejects.toThrow(/webhook_deliveries_outbox_webhook_unique/);
+  });
 });

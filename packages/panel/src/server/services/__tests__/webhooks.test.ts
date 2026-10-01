@@ -2,7 +2,7 @@ import * as fs from "node:fs";
 import * as https from "node:https";
 import * as os from "node:os";
 import * as path from "node:path";
-import { generateKeyPairSync } from "node:crypto";
+import { EventEmitter } from "node:events";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   WEBHOOK_CLAIM_LEASE_MS,
@@ -12,7 +12,7 @@ import {
   WEBHOOK_TIMESTAMP_HEADER,
 } from "~/shared/webhooks";
 import { closePanelTestDb, openPanelTestDb } from "../../__tests__/_panel-test-db";
-import { verifyWebhookSignature } from "../webhook-signing";
+import { signWebhookBody, verifyWebhookSignature } from "../webhook-signing";
 
 const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ac-webhooks-test-"));
 process.env.AC_PANEL_DATA_DIR = path.join(tmpRoot, "panel");
@@ -34,6 +34,9 @@ const { runWebhookDeliveryTick, stopWebhookDeliveryWorkerForTests } = await impo
   "../webhook-delivery-worker"
 );
 const { sendSignedWebhook } = await import("../webhook-deliver");
+const { claimAndFanOutOneOutbox, countDeliveriesForOutbox } = await import(
+  "../../repositories/webhooks.repo"
+);
 
 const A = 1;
 const publicLookup = async () => ["93.184.216.34"];
@@ -65,7 +68,7 @@ describe("outbox in the same transaction", () => {
   it("writes an outbox row when a status changes, and nothing when the change rolls back", async () => {
     const task = await createTask(A, { title: "t", startNow: true }, 500);
     const before = await testDb.pool.query("select count(*)::int as n from webhook_outbox");
-    expect(before.rows[0].n).toBe(1); // task.created
+    expect(before.rows[0].n).toBe(1);
 
     await changeTaskStatus(A, task.id, "in_progress", 1000);
     const after = await testDb.pool.query(
@@ -83,13 +86,45 @@ describe("outbox in the same transaction", () => {
 
   it("emits nothing for a comment that rolls back with a refused status move", async () => {
     const { commentAndReassign } = await import("../tasks");
-    const task = await createTask(A, { title: "t" }, 1); // draft
+    const task = await createTask(A, { title: "t" }, 1);
     const before = (await testDb.pool.query("select count(*)::int as n from webhook_outbox")).rows[0].n;
     await expect(
       commentAndReassign(A, task.id, { authorKind: "user", authorName: "u", body: "nope" }),
     ).rejects.toThrow(/cannot move/);
     const after = (await testDb.pool.query("select count(*)::int as n from webhook_outbox")).rows[0].n;
     expect(after).toBe(before);
+  });
+});
+
+describe("fan-out is exactly once per outbox row (R2)", () => {
+  it("fans the same outbox row out twice and still has one delivery", async () => {
+    const { webhook } = await createWebhook(
+      A,
+      { url: "https://hooks.example.test/once", events: ["task.created"] },
+      1,
+      { lookup: publicLookup },
+    );
+    await createTask(A, { title: "t" }, 10);
+    const outbox = await testDb.pool.query("select id from webhook_outbox where event_type = 'task.created'");
+    const outboxId = outbox.rows[0].id as string;
+
+    // First fan-out processes and marks the row.
+    const first = await claimAndFanOutOneOutbox(A, 20);
+    expect(first).toMatchObject({ outboxId, deliveryCount: 1 });
+    expect(await countDeliveriesForOutbox(A, outboxId)).toBe(1);
+
+    // Simulate a crash mid-fan-out: clear processed_at and try again. The unique
+    // key on (outbox_id, webhook_id) keeps a second delivery from appearing.
+    await testDb.pool.query("update webhook_outbox set processed_at = null where id = $1", [outboxId]);
+    const second = await claimAndFanOutOneOutbox(A, 30);
+    expect(second).toMatchObject({ outboxId, deliveryCount: 0 });
+    expect(await countDeliveriesForOutbox(A, outboxId)).toBe(1);
+    const ids = await testDb.pool.query(
+      "select id, webhook_id from webhook_deliveries where outbox_id = $1",
+      [outboxId],
+    );
+    expect(ids.rows).toHaveLength(1);
+    expect(ids.rows[0].webhook_id).toBe(webhook.id);
   });
 });
 
@@ -101,10 +136,10 @@ describe("a status change delivers one signed event", () => {
       1,
       { lookup: publicLookup },
     );
-    const task = await createTask(A, { title: "t", startNow: true, coreId: "core-a" });
+    const task = await createTask(A, { title: "t", startNow: true, coreId: "core-a" }, 1000);
     await changeTaskStatus(A, task.id, "in_progress", 2000);
 
-    const sent: { deliveryId: string; timestamp: string; body: string; signature: string }[] = [];
+    const sent: { deliveryId: string; timestamp: string; body: string }[] = [];
     const send = vi.fn(async (input: {
       url: string;
       secret: string;
@@ -112,25 +147,18 @@ describe("a status change delivers one signed event", () => {
       timestamp: string;
       body: string;
     }) => {
-      sent.push({
-        deliveryId: input.deliveryId,
-        timestamp: input.timestamp,
-        body: input.body,
-        signature: `sha256=captured`,
-      });
-      expect(verifyWebhookSignature(secret, input.timestamp, input.body, 
-        (await import("../webhook-signing")).signWebhookBody(secret, input.timestamp, input.body),
-      )).toBe(true);
+      expect(verifyWebhookSignature(secret, input.timestamp, input.body, signWebhookBody(secret, input.timestamp, input.body))).toBe(
+        true,
+      );
       expect(input.url).toBe(webhook.url);
+      sent.push({ deliveryId: input.deliveryId, timestamp: input.timestamp, body: input.body });
       return { kind: "sent" as const, statusCode: 200 };
     });
 
     const tick = await runWebhookDeliveryTick([A], 3000, { send: send as never });
     expect(tick.fannedOut).toBeGreaterThanOrEqual(1);
     expect(send).toHaveBeenCalledTimes(1);
-    expect(sent).toHaveLength(1);
-    const payload = JSON.parse(sent[0]!.body) as { type: string };
-    expect(payload.type).toBe("task.status_changed");
+    expect(JSON.parse(sent[0]!.body).type).toBe("task.status_changed");
 
     const rows = await testDb.pool.query(
       "select id, status, attempt_count from webhook_deliveries where webhook_id = $1",
@@ -140,66 +168,12 @@ describe("a status change delivers one signed event", () => {
     expect(rows.rows[0]).toMatchObject({ status: "delivered", attempt_count: 0 });
     expect(rows.rows[0].id).toBe(sent[0]!.deliveryId);
 
-    // A second tick must not re-send the delivered row.
     await runWebhookDeliveryTick([A], 4000, { send: send as never });
     expect(send).toHaveBeenCalledTimes(1);
   });
 });
 
-describe("Core restriction", () => {
-  it("delivers only when the Task's Core is in the webhook's scope", async () => {
-    const { webhook: onlyA } = await createWebhook(
-      A,
-      { url: "https://hooks.example.test/a", events: ["task.status_changed"], coreIds: ["core-a"] },
-      1,
-      { lookup: publicLookup },
-    );
-    const taskB = await createTask(A, { title: "tb", startNow: true, coreId: "core-b" });
-    await changeTaskStatus(A, taskB.id, "in_progress", 10);
-    const send = vi.fn(async () => ({ kind: "sent" as const, statusCode: 200 }));
-    await runWebhookDeliveryTick([A], 20, { send: send as never });
-    expect(send).not.toHaveBeenCalled();
-    expect(
-      (await testDb.pool.query("select count(*)::int as n from webhook_deliveries where webhook_id = $1", [onlyA.id]))
-        .rows[0].n,
-    ).toBe(0);
-
-    const taskA = await createTask(A, { title: "ta", startNow: true, coreId: "core-a" });
-    await changeTaskStatus(A, taskA.id, "in_progress", 30);
-    await runWebhookDeliveryTick([A], 40, { send: send as never });
-    expect(send).toHaveBeenCalledTimes(1);
-  });
-});
-
-describe("retries, claim lease and pruning", () => {
-  it("retries on the schedule with a fake clock, then marks failed", async () => {
-    await createWebhook(
-      A,
-      { url: "https://hooks.example.test/r", events: ["task.created"] },
-      1,
-      { lookup: publicLookup },
-    );
-    await createTask(A, { title: "t" }, 0);
-
-    const send = vi.fn(async () => ({ kind: "failed" as const, statusCode: 500, error: "HTTP 500" }));
-    let now = 1000;
-    await runWebhookDeliveryTick([A], now, { send: send as never });
-    expect(send).toHaveBeenCalledTimes(1);
-
-    for (let i = 0; i < WEBHOOK_RETRY_DELAYS_MS.length; i++) {
-      const row = await testDb.pool.query(
-        "select status, attempt_count, next_attempt_at from webhook_deliveries",
-      );
-      expect(row.rows[0].status).toBe("pending");
-      expect(Number(row.rows[0].attempt_count)).toBe(i + 1);
-      now = Number(row.rows[0].next_attempt_at);
-      await runWebhookDeliveryTick([A], now, { send: send as never });
-    }
-    expect(send).toHaveBeenCalledTimes(1 + WEBHOOK_RETRY_DELAYS_MS.length);
-    const final = await testDb.pool.query("select status, attempt_count from webhook_deliveries");
-    expect(final.rows[0].status).toBe("failed");
-  });
-
+describe("claim lease and marks (R3)", () => {
   it("re-claims under the same delivery id after the lease expires", async () => {
     const { webhook } = await createWebhook(
       A,
@@ -225,6 +199,114 @@ describe("retries, claim lease and pruning", () => {
     await runWebhookDeliveryTick([A], 200 + WEBHOOK_CLAIM_LEASE_MS, { send: capturingSend as never });
     expect(capturingSend).toHaveBeenCalledTimes(2);
     expect(ids[1]).toBe(ids[0]);
+  });
+
+  it("ignores a late mark that no longer holds the claim", async () => {
+    const { markDeliveryRetryOrFailed } = await import("../../repositories/webhooks.repo");
+    await createWebhook(
+      A,
+      { url: "https://hooks.example.test/late", events: ["task.created"] },
+      1,
+      { lookup: publicLookup },
+    );
+    await createTask(A, { title: "t" }, 1);
+    await runWebhookDeliveryTick([A], 100, {
+      send: async () => ({ kind: "sent", statusCode: 200 }),
+    });
+    const row = await testDb.pool.query(
+      "select id, status from webhook_deliveries",
+    );
+    expect(row.rows[0].status).toBe("delivered");
+    const applied = await markDeliveryRetryOrFailed(A, row.rows[0].id as string, 200, 999, {
+      attemptCount: 1,
+      nextAttemptAt: 300,
+      status: "pending",
+      statusCode: 500,
+      error: "late",
+    });
+    expect(applied).toBe(false);
+    const after = await testDb.pool.query("select status from webhook_deliveries");
+    expect(after.rows[0].status).toBe("delivered");
+  });
+
+  it("reads the clock at send time, not at tick start", async () => {
+    await createWebhook(
+      A,
+      { url: "https://hooks.example.test/ts", events: ["task.created"] },
+      1,
+      { lookup: publicLookup },
+    );
+    await createTask(A, { title: "t" }, 1);
+    let n = 0;
+    const clock = () => {
+      n += 1;
+      // Fan-out and claim read earlier; the send-time read must be later.
+      return n < 3 ? 1000 : 5555;
+    };
+    let seen = "";
+    await runWebhookDeliveryTick([A], 1000, {
+      clock,
+      send: async (input) => {
+        seen = input.timestamp;
+        return { kind: "sent", statusCode: 200 };
+      },
+    });
+    expect(seen).toBe("5555");
+  });
+});
+
+describe("Core restriction", () => {
+  it("delivers only when the Task's Core is in the webhook's scope", async () => {
+    const { webhook: onlyA } = await createWebhook(
+      A,
+      { url: "https://hooks.example.test/a", events: ["task.status_changed"], coreIds: ["core-a"] },
+      1,
+      { lookup: publicLookup },
+    );
+    const taskB = await createTask(A, { title: "tb", startNow: true, coreId: "core-b" }, 1);
+    await changeTaskStatus(A, taskB.id, "in_progress", 10);
+    const send = vi.fn(async () => ({ kind: "sent" as const, statusCode: 200 }));
+    await runWebhookDeliveryTick([A], 20, { send: send as never });
+    expect(send).not.toHaveBeenCalled();
+    expect(
+      (await testDb.pool.query("select count(*)::int as n from webhook_deliveries where webhook_id = $1", [onlyA.id]))
+        .rows[0].n,
+    ).toBe(0);
+
+    const taskA = await createTask(A, { title: "ta", startNow: true, coreId: "core-a" }, 25);
+    await changeTaskStatus(A, taskA.id, "in_progress", 30);
+    await runWebhookDeliveryTick([A], 40, { send: send as never });
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("retries and pruning", () => {
+  it("retries on the schedule with a fake clock, then marks failed", async () => {
+    await createWebhook(
+      A,
+      { url: "https://hooks.example.test/r", events: ["task.created"] },
+      1,
+      { lookup: publicLookup },
+    );
+    await createTask(A, { title: "t" }, 0);
+
+    const send = vi.fn(async () => ({ kind: "failed" as const, statusCode: 500, error: "HTTP 500" }));
+    let now = 1000;
+    await runWebhookDeliveryTick([A], now, { send: send as never, clock: () => now });
+    expect(send).toHaveBeenCalledTimes(1);
+
+    for (let i = 0; i < WEBHOOK_RETRY_DELAYS_MS.length; i++) {
+      const row = await testDb.pool.query(
+        "select status, attempt_count, next_attempt_at from webhook_deliveries",
+      );
+      expect(row.rows[0].status).toBe("pending");
+      expect(Number(row.rows[0].attempt_count)).toBe(i + 1);
+      now = Number(row.rows[0].next_attempt_at);
+      await runWebhookDeliveryTick([A], now, { send: send as never, clock: () => now });
+    }
+    expect(send).toHaveBeenCalledTimes(1 + WEBHOOK_RETRY_DELAYS_MS.length);
+    const final = await testDb.pool.query("select status, attempt_count from webhook_deliveries");
+    expect(final.rows[0].status).toBe("failed");
   });
 
   it("prunes deliveries older than 14 days", async () => {
@@ -280,7 +362,7 @@ describe("all five change events and ping", () => {
   });
 });
 
-describe("sendSignedWebhook SSRF and redirects", () => {
+describe("sendSignedWebhook on the wire (R4)", () => {
   it("refuses a URL that resolves only to a private address", async () => {
     const result = await sendSignedWebhook(
       {
@@ -309,50 +391,164 @@ describe("sendSignedWebhook SSRF and redirects", () => {
     expect(result).toEqual({ kind: "refused", error: "https only" });
   });
 
-  it("does not follow redirects", async () => {
-    const { privateKey, publicKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
-    const cert = await import("node:crypto").then(({ X509Certificate, createSign }) => {
-      // Minimal self-signed PEM via openssl-less path: use tls.createSecureContext with generate
-      void X509Certificate;
-      void createSign;
-      return null as string | null;
-    });
-    void cert;
-    void privateKey;
-    void publicKey;
+  it("pins the TCP host to the looked-up address with the original host as SNI and Host", async () => {
+    const seen: { host?: string | null; servername?: string; headers?: Record<string, unknown> } = {};
+    const result = await sendSignedWebhook(
+      {
+        url: "https://hooks.example.test/pin",
+        secret: "s",
+        deliveryId: "d-pin",
+        timestamp: "42",
+        body: '{"pin":true}',
+      },
+      {
+        lookup: async () => ["203.0.113.10"],
+        request: ((
+          options: { host?: string | null; servername?: string; headers?: Record<string, unknown> },
+          cb?: (res: EventEmitter & { statusCode: number; resume: () => void }) => void,
+        ) => {
+          seen.host = options.host;
+          seen.servername = options.servername;
+          seen.headers = options.headers;
+          const req = new EventEmitter() as EventEmitter & {
+            write: (chunk: string, enc: string) => void;
+            end: () => void;
+            destroy: (err?: Error) => void;
+          };
+          req.write = () => {};
+          req.end = () => {
+            const res = new EventEmitter() as EventEmitter & {
+              statusCode: number;
+              resume: () => void;
+            };
+            res.statusCode = 200;
+            res.resume = () => {};
+            if (cb) cb(res);
+          };
+          req.destroy = () => {};
+          return req as never;
+        }) as never,
+      },
+    );
+    expect(result).toEqual({ kind: "sent", statusCode: 200 });
+    expect(seen.host).toBe("203.0.113.10");
+    expect(seen.servername).toBe("hooks.example.test");
+    expect(seen.headers?.Host).toBe("hooks.example.test");
+    // Replacing the pin with the hostname would fail this assertion.
+    expect(seen.host).not.toBe("hooks.example.test");
+  });
 
-    // Stand up a tiny HTTPS server with a self-signed cert from openssl if available,
-    // else skip to a mocked redirect response via a custom connect.
+  it("delivers signed headers a receiver can verify with the create secret", async () => {
     const { execFileSync } = await import("node:child_process");
     const keyPath = path.join(tmpRoot, "key.pem");
     const certPath = path.join(tmpRoot, "cert.pem");
     try {
       execFileSync(
         "openssl",
-        ["req", "-x509", "-newkey", "rsa:2048", "-keyout", keyPath, "-out", certPath, "-days", "1", "-nodes", "-subj", "/CN=hooks.example.test"],
+        [
+          "req",
+          "-x509",
+          "-newkey",
+          "rsa:2048",
+          "-keyout",
+          keyPath,
+          "-out",
+          certPath,
+          "-days",
+          "1",
+          "-nodes",
+          "-subj",
+          "/CN=hooks.example.test",
+        ],
         { stdio: "pipe" },
       );
     } catch {
-      // No openssl: assert the redirect branch with a stubbed request by hitting the code path
-      // through a mock server is unavailable — still cover via unit of status handling below.
-      const result = await sendSignedWebhook(
-        {
-          url: "https://hooks.example.test/r",
-          secret: "s",
-          deliveryId: "d1",
-          timestamp: "1",
-          body: "{}",
-        },
-        {
-          lookup: publicLookup,
-          connectTo: "127.0.0.1",
-          timeoutMs: 200,
-        },
+      throw new Error("openssl is required for the on-the-wire signature proof");
+    }
+
+    const { webhook, secret } = await createWebhook(
+      A,
+      { url: "https://hooks.example.test/wire", events: ["task.created"] },
+      1,
+      { lookup: publicLookup },
+    );
+    await createTask(A, { title: "wire", startNow: true }, 1);
+
+    let hits = 0;
+    let wireBody = "";
+    const headersSeen: Record<string, string | string[] | undefined> = {};
+    const server = https.createServer(
+      { key: fs.readFileSync(keyPath), cert: fs.readFileSync(certPath) },
+      (req, res) => {
+        hits += 1;
+        headersSeen[WEBHOOK_SIGNATURE_HEADER] = req.headers[WEBHOOK_SIGNATURE_HEADER.toLowerCase()];
+        headersSeen[WEBHOOK_TIMESTAMP_HEADER] = req.headers[WEBHOOK_TIMESTAMP_HEADER.toLowerCase()];
+        headersSeen[WEBHOOK_DELIVERY_HEADER] = req.headers[WEBHOOK_DELIVERY_HEADER.toLowerCase()];
+        const chunks: Buffer[] = [];
+        req.on("data", (c) => chunks.push(c));
+        req.on("end", () => {
+          wireBody = Buffer.concat(chunks).toString("utf8");
+          res.writeHead(200);
+          res.end("ok");
+        });
+      },
+    );
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const port = (server.address() as { port: number }).port;
+
+    const prev = process.env.NODE_TLS_REJECT_UNAUTHORIZED;
+    process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
+    try {
+      await runWebhookDeliveryTick([A], 50, {
+        send: (input) =>
+          sendSignedWebhook(
+            { ...input, url: `https://hooks.example.test:${port}/wire` },
+            { lookup: publicLookup, connectTo: "127.0.0.1", timeoutMs: 2000 },
+          ),
+      });
+      expect(hits).toBe(1);
+      const signature = String(headersSeen[WEBHOOK_SIGNATURE_HEADER] ?? "");
+      const timestamp = String(headersSeen[WEBHOOK_TIMESTAMP_HEADER] ?? "");
+      const deliveryId = String(headersSeen[WEBHOOK_DELIVERY_HEADER] ?? "");
+      expect(signature).toMatch(/^sha256=[0-9a-f]{64}$/);
+      expect(timestamp).toMatch(/^\d+$/);
+      expect(deliveryId.length).toBeGreaterThan(0);
+      expect(verifyWebhookSignature(secret, timestamp, wireBody, signature)).toBe(true);
+      expect(JSON.parse(wireBody).type).toBe("task.created");
+      void webhook;
+    } finally {
+      if (prev === undefined) delete process.env.NODE_TLS_REJECT_UNAUTHORIZED;
+      else process.env.NODE_TLS_REJECT_UNAUTHORIZED = prev;
+      await new Promise<void>((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())));
+    }
+  });
+
+  it("does not follow redirects", async () => {
+    const { execFileSync } = await import("node:child_process");
+    const keyPath = path.join(tmpRoot, "key2.pem");
+    const certPath = path.join(tmpRoot, "cert2.pem");
+    try {
+      execFileSync(
+        "openssl",
+        [
+          "req",
+          "-x509",
+          "-newkey",
+          "rsa:2048",
+          "-keyout",
+          keyPath,
+          "-out",
+          certPath,
+          "-days",
+          "1",
+          "-nodes",
+          "-subj",
+          "/CN=hooks.example.test",
+        ],
+        { stdio: "pipe" },
       );
-      // Connection refused is fine for this environment without a listener; the dedicated
-      // redirect case needs openssl. Mark skipped logic via expect on refused/failed.
-      expect(["refused", "failed"]).toContain(result.kind);
-      return;
+    } catch {
+      throw new Error("openssl is required for the redirect proof");
     }
 
     let hits = 0;
@@ -360,10 +556,7 @@ describe("sendSignedWebhook SSRF and redirects", () => {
       { key: fs.readFileSync(keyPath), cert: fs.readFileSync(certPath) },
       (req, res) => {
         hits += 1;
-        expect(req.headers.host).toBe("hooks.example.test");
-        expect(req.headers[WEBHOOK_SIGNATURE_HEADER.toLowerCase()]).toMatch(/^sha256=/);
-        expect(req.headers[WEBHOOK_TIMESTAMP_HEADER.toLowerCase()]).toBeDefined();
-        expect(req.headers[WEBHOOK_DELIVERY_HEADER.toLowerCase()]).toBe("d-redirect");
+        expect(req.headers.host).toMatch(/^hooks\.example\.test/);
         res.writeHead(302, { location: "https://hooks.example.test/elsewhere" });
         res.end();
       },

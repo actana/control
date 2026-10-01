@@ -57,4 +57,5 @@ ALTER TABLE "webhook_deliveries" ADD CONSTRAINT "webhook_deliveries_outbox_id_we
 CREATE INDEX "webhooks_owner_idx" ON "webhooks" USING btree ("owner_id");--> statement-breakpoint
 CREATE INDEX "webhook_outbox_pending_idx" ON "webhook_outbox" USING btree ("owner_id","processed_at","created_at");--> statement-breakpoint
 CREATE INDEX "webhook_deliveries_due_idx" ON "webhook_deliveries" USING btree ("status","next_attempt_at","claimed_until");--> statement-breakpoint
-CREATE INDEX "webhook_deliveries_created_idx" ON "webhook_deliveries" USING btree ("created_at");
+CREATE INDEX "webhook_deliveries_created_idx" ON "webhook_deliveries" USING btree ("created_at");--> statement-breakpoint
+CREATE UNIQUE INDEX "webhook_deliveries_outbox_webhook_unique" ON "webhook_deliveries" USING btree ("outbox_id","webhook_id");

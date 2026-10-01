@@ -1,5 +1,6 @@
 import * as dns from "node:dns/promises";
 import * as https from "node:https";
+import type { IncomingMessage, RequestOptions } from "node:http";
 import { isIP } from "node:net";
 import { URL } from "node:url";
 import {
@@ -23,9 +24,16 @@ export type WebhookSendResult =
 
 export type WebhookLookup = (hostname: string) => Promise<string[]>;
 
+/** Compatible with `https.request` so tests can spy on the pinned options. */
+export type WebhookHttpsRequest = (
+  options: RequestOptions,
+  callback?: (res: IncomingMessage) => void,
+) => ReturnType<typeof https.request>;
+
 const defaultLookup: WebhookLookup = async (hostname) => {
-  if (isIP(hostname)) return [hostname];
-  const answers = await dns.lookup(hostname, { all: true, verbatim: true });
+  const host = hostname.replace(/^\[|\]$/g, "");
+  if (isIP(host)) return [host];
+  const answers = await dns.lookup(host, { all: true, verbatim: true });
   return answers.map((a) => a.address);
 };
 
@@ -45,6 +53,8 @@ export async function sendSignedWebhook(
      * pinned IP. Tests only: a local TLS server cannot bind a public address.
      */
     connectTo?: string;
+    /** Override `https.request` so a test can assert the pin without a socket. */
+    request?: WebhookHttpsRequest;
   } = {},
 ): Promise<WebhookSendResult> {
   let parsed: URL;
@@ -56,7 +66,7 @@ export async function sendSignedWebhook(
   if (parsed.protocol !== "https:") {
     return { kind: "refused", error: "https only" };
   }
-  const hostname = parsed.hostname;
+  const hostname = parsed.hostname.replace(/^\[|\]$/g, "");
   if (!hostname) return { kind: "refused", error: "invalid URL" };
 
   let addresses: string[];
@@ -76,9 +86,11 @@ export async function sendSignedWebhook(
   const signature = signWebhookBody(input.secret, input.timestamp, input.body);
   const port = parsed.port ? Number(parsed.port) : 443;
   const path = `${parsed.pathname}${parsed.search}`;
+  const hostHeader = parsed.port ? `${hostname}:${parsed.port}` : hostname;
+  const request = opts.request ?? https.request;
 
   return new Promise((resolve) => {
-    const req = https.request(
+    const req = request(
       {
         host: connectHost,
         servername: hostname,
@@ -86,7 +98,7 @@ export async function sendSignedWebhook(
         path,
         method: "POST",
         headers: {
-          Host: hostname,
+          Host: hostHeader,
           "content-type": "application/json",
           "content-length": Buffer.byteLength(input.body, "utf8"),
           [WEBHOOK_SIGNATURE_HEADER]: signature,

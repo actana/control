@@ -324,6 +324,8 @@ export const webhookDeliveries = pgTable(
       "webhook_deliveries_status_check",
       sql`${t.status} in ('pending', 'delivered', 'failed')`,
     ),
+    // One delivery per (outbox, webhook): a crash mid-fan-out must not mint a second id.
+    unique("webhook_deliveries_outbox_webhook_unique").on(t.outboxId, t.webhookId),
     index("webhook_deliveries_due_idx").on(t.status, t.nextAttemptAt, t.claimedUntil),
     index("webhook_deliveries_created_idx").on(t.createdAt),
   ],

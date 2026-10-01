@@ -1106,7 +1106,16 @@
         }
       },
       "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
+      "uniqueConstraints": {
+        "webhook_deliveries_outbox_webhook_unique": {
+          "name": "webhook_deliveries_outbox_webhook_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "outbox_id",
+            "webhook_id"
+          ]
+        }
+      },
       "policies": {},
       "checkConstraints": {
         "webhook_deliveries_status_check": {

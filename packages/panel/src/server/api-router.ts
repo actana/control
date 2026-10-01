@@ -27,20 +27,13 @@ import * as webhooksController from "./controllers/webhooks.controller";
 
 const HARNESS_HOOK_PATH = /^\/api\/hooks\/([a-z0-9-]+)$/;
 const CORE_PATH = /^\/api\/cores\/([^/]+)$/;
-<<<<<<< HEAD
 const WEBHOOK_PATH = /^\/api\/webhooks\/([^/]+)$/;
 const WEBHOOK_PING_PATH = /^\/api\/webhooks\/([^/]+)\/ping$/;
 const WEBHOOK_DELIVERIES_PATH = /^\/api\/webhooks\/([^/]+)\/deliveries$/;
-// A Project's files on a Core, addressed by both ids because the Panel holds no
-// row for a Core-owned Project (ADR 0005) and therefore cannot look one up from
-// the other. `files/list` is matched before `files` so the leaf is never read as
-// a path — the same order, and the same reason, as on the Core (#216).
-=======
 // A Core's files, addressed by both ids: the SDK's Files client still builds its
 // requests as `/v1/projects/:id/files`, which a Core answers as an alias of the
 // workspace's files (issue 557), so the Panel's proxy takes the same shape.
 // `files/list` is matched before `files` so the leaf is never read as a path — the same order, and the same reason, as on the Core (#216).
->>>>>>> origin/feat/0.5.0
 const CORE_PROJECT_FILES_LIST_PATH = /^\/api\/cores\/([^/]+)\/projects\/([^/]+)\/files\/list$/;
 const CORE_PROJECT_FILES_PATH = /^\/api\/cores\/([^/]+)\/projects\/([^/]+)\/files$/;
 // Literal path — checked before SESSION_PATH so the id patterns never see it.
