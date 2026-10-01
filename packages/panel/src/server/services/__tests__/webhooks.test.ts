@@ -495,15 +495,24 @@ describe("sendSignedWebhook on the wire (R4)", () => {
     );
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
     const port = (server.address() as { port: number }).port;
+    const ca = fs.readFileSync(certPath);
+    // Trust this test cert via `ca` — do not set NODE_TLS_REJECT_UNAUTHORIZED.
+    const requestWithCa = (
+      options: https.RequestOptions,
+      cb?: (res: import("node:http").IncomingMessage) => void,
+    ) => https.request({ ...options, ca }, cb);
 
-    const prev = process.env.NODE_TLS_REJECT_UNAUTHORIZED;
-    process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
     try {
       await runWebhookDeliveryTick([A], 50, {
         send: (input) =>
           sendSignedWebhook(
             { ...input, url: `https://hooks.example.test:${port}/wire` },
-            { lookup: publicLookup, connectTo: "127.0.0.1", timeoutMs: 2000 },
+            {
+              lookup: publicLookup,
+              connectTo: "127.0.0.1",
+              timeoutMs: 2000,
+              request: requestWithCa as never,
+            },
           ),
       });
       expect(hits).toBe(1);
@@ -517,8 +526,6 @@ describe("sendSignedWebhook on the wire (R4)", () => {
       expect(JSON.parse(wireBody).type).toBe("task.created");
       void webhook;
     } finally {
-      if (prev === undefined) delete process.env.NODE_TLS_REJECT_UNAUTHORIZED;
-      else process.env.NODE_TLS_REJECT_UNAUTHORIZED = prev;
       await new Promise<void>((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())));
     }
   });
@@ -563,9 +570,12 @@ describe("sendSignedWebhook on the wire (R4)", () => {
     );
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
     const port = (server.address() as { port: number }).port;
+    const ca = fs.readFileSync(certPath);
+    const requestWithCa = (
+      options: https.RequestOptions,
+      cb?: (res: import("node:http").IncomingMessage) => void,
+    ) => https.request({ ...options, ca }, cb);
 
-    const prev = process.env.NODE_TLS_REJECT_UNAUTHORIZED;
-    process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
     try {
       const result = await sendSignedWebhook(
         {
@@ -575,13 +585,16 @@ describe("sendSignedWebhook on the wire (R4)", () => {
           timestamp: "99",
           body: '{"ok":true}',
         },
-        { lookup: publicLookup, connectTo: "127.0.0.1", timeoutMs: 2000 },
+        {
+          lookup: publicLookup,
+          connectTo: "127.0.0.1",
+          timeoutMs: 2000,
+          request: requestWithCa as never,
+        },
       );
       expect(result).toEqual({ kind: "failed", statusCode: 302, error: "redirect not followed" });
       expect(hits).toBe(1);
     } finally {
-      if (prev === undefined) delete process.env.NODE_TLS_REJECT_UNAUTHORIZED;
-      else process.env.NODE_TLS_REJECT_UNAUTHORIZED = prev;
       await new Promise<void>((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())));
     }
   });
