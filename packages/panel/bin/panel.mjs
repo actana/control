@@ -180,7 +180,8 @@ server.listen(port, host, () => {
 for (const signal of ["SIGINT", "SIGTERM"]) {
   process.on(signal, () => {
     server.close(() => {
-      Promise.resolve(mod.closePanelDatabase?.()).finally(() => process.exit(0));
+      // `closePanel` stops the Task dispatcher and watcher, then closes the database they read.
+      Promise.resolve((mod.closePanel ?? mod.closePanelDatabase)?.()).finally(() => process.exit(0));
     });
   });
 }
