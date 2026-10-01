@@ -1,0 +1,117 @@
+{
+  "$schema": "https://unpkg.com/knip@6/schema.json",
+  // `knip` runs in CI (ci.yml, job `knip`) and fails on an unused file, export or
+  // dependency (#601). A finding is either fixed or listed below with the reason
+  // it is not dead. Nothing is listed "to make it green".
+  "workspaces": {
+    ".": {
+      // Scripts are entries: workflows and package.json scripts run them by
+      // path, and the tests under scripts/__tests__ are run by vitest. The
+      // static site (landing/), design prototypes (designs/), the docs asset
+      // builder and the spike (experiment/) are not shipped code, so they are
+      // outside `project` rather than reported as unused files.
+      "entry": ["scripts/*.mjs", "screenshot.mjs"],
+      "project": ["scripts/**", "*.{mjs,ts}"],
+      // The root manifest links the workspace packages; the Dockerfiles, the
+      // version-agreement script and `pnpm deploy` resolve them by name, which
+      // knip cannot see. Removing them changes the lockfile importers and
+      // cannot be proven safe without an image build (CI's job).
+      "ignoreDependencies": ["@actana/panel", "@actana/sdk"],
+      // `mkfifo` is a system binary the core tests shell out to, `trivy` is
+      // installed by the image-scan workflow job, not by a package.
+      "ignoreBinaries": ["mkfifo", "trivy"]
+    },
+    "packages/cli": {
+      "entry": ["src/actana-cli-entry.ts"],
+      // build.mjs keeps `undici` external: the bundle inlines @actana/sdk, whose
+      // mTLS `fetch` imports it, so it must resolve from this package at runtime.
+      "ignoreDependencies": ["undici"]
+    },
+    "packages/core": {
+      "entry": ["src/core-entry.ts", "src/core-home-ops-entry.ts"],
+      // Files PR #598 (Task -> Session) renames. Editing them here would
+      // conflict with it, so their findings are listed rather than fixed. Drop
+      // this list once #598 has merged and re-run knip.
+      "ignore": [
+        "src/__tests__/fake-core-link.ts",
+        "src/core-query-store.ts",
+        "src/pty-core-link-server.ts",
+        "src/pty-manager.ts"
+      ]
+    },
+    "packages/sdk": {
+      "entry": ["src/*.ts", "examples/*.mjs"]
+    },
+    "packages/shared": {
+      "includeEntryExports": true,
+      // `assertSignableCsr` is the pre-signing CSR guard ADR 0034 names, and
+      // nothing calls it. Deleting it would delete the guard the ADR relies on,
+      // so it stays until someone decides whether it is dead or unwired.
+      "ignoreIssues": { "src/core-cert-material.ts": ["exports"] },
+      // Files PR #598 (Task -> Session) renames. Editing them here would
+      // conflict with it, so their findings are listed rather than fixed. Drop
+      // this list once #598 has merged and re-run knip.
+      "ignore": [
+        "src/domain.ts",
+        "src/harness-availability-store.ts",
+        "src/harness-questions.ts",
+        "src/mission-control-hook-env.ts",
+        "src/pty-spawn-policy.ts",
+        "src/schema-bootstrap.ts",
+        "src/session-icons.ts",
+        "src/title-generation.ts"
+      ]
+    },
+    "packages/panel": {
+      "entry": [
+        "src/ssr.tsx",
+        "src/routes/**/*.tsx",
+        "src/server/vite-api-plugin.ts"
+      ],
+      "ignoreIssues": {
+        // `provider-usage.test.ts` spies on `loadCodexBarConfig` by name.
+        "src/server/services/provider-usage/credentials.ts": ["exports"],
+        // `resolveHookToken` reads the cache `setHookToken` fills; removing the
+        // reader leaves a write-only cache, which is a refactor, not a deletion.
+        "src/lib/hook-token.ts": ["exports"]
+      },
+      // Files PR #598 (Task -> Session) renames. Editing them here would
+      // conflict with it, so their findings are listed rather than fixed. Drop
+      // this list once #598 has merged and re-run knip.
+      "ignore": [
+        "src/components/ui/ProjectStatusBadge.tsx",
+        "src/components/ui/StatusDot.tsx",
+        "src/components/views/ApiSettingsPage.tsx",
+        "src/components/views/FocusSessionBar.tsx",
+        "src/components/views/ProjectCard.tsx",
+        "src/components/views/ProjectsTable.tsx",
+        "src/components/views/project-bar-status-dots.ts",
+        "src/lib/default-model-store.ts",
+        "src/lib/design-meta.ts",
+        "src/lib/harness-command.ts",
+        "src/lib/harness-question-store.ts",
+        "src/lib/selected-core-store.ts",
+        "src/lib/session-notification-store.ts",
+        "src/lib/session-warm-pool.ts",
+        "src/lib/session-write-store.ts",
+        "src/lib/sort-projects.ts",
+        "src/lib/subscribe-core-project-events.ts",
+        "src/lib/terminal-pane-helpers.ts",
+        "src/lib/terminal-store.tsx",
+        "src/lib/use-fleet.ts",
+        "src/lib/visible-project-scope.ts",
+        "src/queries/index.ts",
+        "src/server/repositories/tasks.repo.ts",
+        "src/server/repositories/terminal-logs.repo.ts",
+        "src/server/services/rate-limits.ts",
+        "src/server/services/session-transcripts.ts",
+        "src/server/services/subagent-activity.ts",
+        "src/shared/cores.ts",
+        "src/shared/fleet-merge.ts",
+        "src/shared/panel-link.ts"
+      ]
+    }
+  },
+  // Generated by `generate:routes` and gitignored, so absent on a clean checkout.
+  "ignoreUnresolved": ["./routeTree.gen"]
+}

@@ -708,6 +708,35 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm lint
 
+  # Dead code, unused exports and unused dependencies (#601). Agents leave all
+  # three behind, and none of them fails a typecheck, a lint or a test.
+  #
+  # A job of its own, running knip and nothing else, so a red one names the
+  # problem without a reviewer opening another job's log. It installs with
+  # `--ignore-scripts`: knip reads the source and the manifests, never a native
+  # binding, so no install script runs here. What counts as live is in
+  # `knip.jsonc`, with a reason beside every entry that is not obvious; a new
+  # unused export or dependency exits 1 and fails the step.
+  #
+  # Not yet a required check: a context no ruleset names does not gate
+  # anything (see the comment above `lint`). Adding `Knip` to
+  # `docs/rulesets/*.json` is the follow-up that makes it block a merge.
+  knip:
+    name: Knip
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 24.15.0
+          package-manager-cache: false
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          version: 11.1.2
+          cache: true
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - run: pnpm exec knip
+
   # `--prod` (ADR 0016 D37): the gate is about what ships. It still catches
   # `postcss` and `@babel/core`, which reach the runtime image through the
   # Panel's *production* graph, and it drops the dev-only `brace-expansion`

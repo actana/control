@@ -54,7 +54,9 @@
 // over `:latest` falsifies it every Monday, silently, while the promotion
 // assertion keeps passing.
 
+import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 import { describe, expect, it } from "vitest";
 
@@ -2096,5 +2098,118 @@ describe("the promotion runs the promoted commit's own release workflow (#326)",
     expect(code(promote), "promote.yml does not name the recovery").toContain(
       "When a promotion half-runs",
     );
+  });
+});
+
+// -- knip (#601) ---------------------------------------------------------------
+//
+// Dead code, unused exports and unused dependencies fail a job of their own.
+// What these pin is the wiring, since a green run cannot show that it is gone:
+// the step that is not `|| true`, the install that runs no script, the version
+// that moves only when someone moves it, and a config that knows every package.
+// The last two tests run the pinned knip on a three-file project, because "a new
+// unused export or dependency fails the job" is a claim about its exit code.
+
+describe("knip (#601)", () => {
+  const ci = () => read("ci.yml");
+  const rootManifest = () => JSON.parse(fs.readFileSync(path.join(repoRoot, "package.json"), "utf8"));
+
+  it("is a job of its own that runs knip and nothing else", () => {
+    const block = code(jobBlock(ci(), "knip"));
+    expect(block).toMatch(/^\s+name: Knip$/m);
+    const runs = [...block.matchAll(/^\s+- run: (.+)$/gm)].map((m) => m[1]);
+    expect(runs).toEqual(["pnpm install --frozen-lockfile --ignore-scripts", "pnpm exec knip"]);
+  });
+
+  it("cannot go green on a finding", () => {
+    const block = code(jobBlock(ci(), "knip"));
+    expect(block, "a failing knip must fail the job").not.toMatch(/continue-on-error/);
+    expect(block, "a failing knip must fail the step").not.toMatch(/\|\|\s*(true|:|exit 0)/);
+    expect(block).not.toMatch(/if:\s/);
+  });
+
+  it("installs from the lockfile and runs no install script", () => {
+    const block = code(jobBlock(ci(), "knip"));
+    expect(block).toContain("--frozen-lockfile");
+    expect(block).toContain("--ignore-scripts");
+  });
+
+  it("pins knip exactly, as a devDependency of the root", () => {
+    const manifest = rootManifest();
+    expect(manifest.devDependencies.knip).toMatch(/^\d+\.\d+\.\d+$/);
+    expect(manifest.dependencies?.knip).toBeUndefined();
+  });
+
+  it("configures the root and every workspace package", () => {
+    const config = fs.readFileSync(path.join(repoRoot, "knip.jsonc"), "utf8");
+    // jsonc: drop the comment-only lines, which is all this file uses.
+    const parsed = JSON.parse(
+      config
+        .split("\n")
+        .filter((line) => !line.trimStart().startsWith("//"))
+        .join("\n"),
+    );
+    const packages = fs
+      .readdirSync(path.join(repoRoot, "packages"), { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => `packages/${entry.name}`);
+    expect(packages.length).toBeGreaterThan(0);
+    expect(Object.keys(parsed.workspaces).sort()).toEqual([".", ...packages].sort());
+  });
+
+  /** A project with one used export, optionally one unused export and one unused dependency. */
+  const runKnip = ({ plantExport, plantDependency }) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "knip-fixture-"));
+    try {
+      fs.mkdirSync(path.join(dir, "src"));
+      fs.writeFileSync(
+        path.join(dir, "package.json"),
+        JSON.stringify({
+          name: "fixture",
+          version: "0.0.0",
+          type: "module",
+          main: "src/index.ts",
+          ...(plantDependency ? { dependencies: { "planted-unused-dependency": "1.0.0" } } : {}),
+        }),
+      );
+      fs.writeFileSync(path.join(dir, "src/index.ts"), 'import { used } from "./lib.ts";\nconsole.log(used);\n');
+      fs.writeFileSync(
+        path.join(dir, "src/lib.ts"),
+        `export const used = 1;\n${plantExport ? "export const plantedUnusedExport = 2;\n" : ""}`,
+      );
+      return spawnSync(
+        process.execPath,
+        [path.join(repoRoot, "node_modules/knip/bin/knip.js"), "--no-progress"],
+        { cwd: dir, encoding: "utf8" },
+      );
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  };
+
+  it("exits 0 on a project with nothing unused", () => {
+    const run = runKnip({});
+    expect({ status: run.status, stdout: run.stdout, stderr: run.stderr }).toEqual({
+      status: 0,
+      stdout: "",
+      stderr: "",
+    });
+  });
+
+  it("exits 1 for a planted unused export, naming it", () => {
+    const run = runKnip({ plantExport: true });
+    // Exit 1 is "found something"; a crash or a bad config exits 2 and writes to stderr.
+    expect(run.status).toBe(1);
+    expect(run.stderr).toBe("");
+    expect(run.stdout).toContain("Unused exports (1)");
+    expect(run.stdout).toContain("plantedUnusedExport");
+  });
+
+  it("exits 1 for a planted unused dependency, naming it", () => {
+    const run = runKnip({ plantDependency: true });
+    expect(run.status).toBe(1);
+    expect(run.stderr).toBe("");
+    expect(run.stdout).toContain("Unused dependencies (1)");
+    expect(run.stdout).toContain("planted-unused-dependency");
   });
 });
