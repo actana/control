@@ -384,6 +384,9 @@ describe("the Conventions push path (#584)", () => {
       const repo = path.join(dir, "repo");
       fs.mkdirSync(repo);
       git(repo, "init", "-q");
+      // The step calls the shared rule script (#614), as a checkout would hold it.
+      fs.mkdirSync(path.join(repo, "scripts"));
+      fs.copyFileSync(path.join(repoRoot, "scripts/check-conventions.sh"), path.join(repo, "scripts/check-conventions.sh"));
       const shas = [];
       for (const n of [1, 2, 3]) {
         git(repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", `ci: c${n}`);
@@ -398,6 +401,8 @@ describe("the Conventions push path (#584)", () => {
       const env = {
         PATH: process.env.PATH,
         RUNNER_TEMP: path.join(dir, "tmp"),
+        COMMITLINT_BIN: path.join(bin, "commitlint"),
+        COMMITLINT_CONFIG: path.join(dir, "tmp/commitlint/commitlint.config.mjs"),
         GITHUB_WORKSPACE: repo,
         BASE_SHA: "",
         HEAD_SHA: "",
