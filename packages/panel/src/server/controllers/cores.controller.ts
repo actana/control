@@ -1,7 +1,9 @@
 import { z } from "zod";
-import { json, noContent, notFound, parseJsonBody } from "./_helpers";
+import { forbidden, json, noContent, notFound, parseJsonBody } from "./_helpers";
 import { HTTP_BAD_REQUEST, HTTP_CREATED } from "~/shared/http-status";
-import { listCores, removeCore, renameCore } from "../services/cores";
+import { getCore, listCores, removeCore, renameCore } from "../services/cores";
+import { scopeReaches } from "../services/api-keys";
+import type { ApiPrincipal } from "../api-key-auth";
 import {
   CorePairingRefusedError,
   inspectCoreForPairing,
@@ -40,8 +42,25 @@ function withDial(core: Core): CoreWithDial {
   return { ...core, dial: coreLinkManager().status(core.id) };
 }
 
-export async function list(): Promise<Response> {
-  return json({ cores: (await listCores()).map(withDial) });
+/**
+ * The Cores a call may see, as the principal it runs as (#572): the Operator's
+ * session sees all of its Cores, and an API key sees its owner's Cores inside
+ * its scope. A restricted key's list holds only the Cores it was restricted to.
+ */
+export async function list(principal: ApiPrincipal): Promise<Response> {
+  const all = await listCores(principal.ownerId);
+  const visible = principal.kind === "api-key" ? all.filter((c) => scopeReaches(principal.scope, c.id)) : all;
+  return json({ cores: visible.map(withDial) });
+}
+
+/** One Core. A key restricted to other Cores gets a 403 whether or not the Core exists, so it learns nothing about it. */
+export async function getOne(id: string, principal: ApiPrincipal): Promise<Response> {
+  if (principal.kind === "api-key" && !scopeReaches(principal.scope, id)) {
+    return forbidden("this API key does not reach that Core");
+  }
+  const core = await getCore(id, principal.ownerId);
+  if (!core) return notFound("no such Core");
+  return json({ core: withDial(core) });
 }
 
 /**
