@@ -1,6 +1,6 @@
 import { readdirSync } from "node:fs";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   MIGRATION_LOCK_KEY,
   PanelMigrationError,
@@ -84,7 +84,15 @@ describe("runMigrations on PGlite", { timeout: 30_000 }, () => {
       },
     };
     await runMigrations(spy, migrations);
-    expect(seen).toEqual(["begin", "select pg_advisory_xact_lock($1::bigint)", "create schema", "create table", "select hash,", "commit"]);
+    expect(seen).toEqual([
+      "begin",
+      "set local",
+      "select pg_advisory_xact_lock($1::bigint)",
+      "create schema",
+      "create table",
+      "select hash,",
+      "commit",
+    ]);
   });
 
   it("applies only the migrations newer than the last one recorded", async () => {
@@ -188,6 +196,8 @@ function fakeServer() {
             release = done;
           } else if (sql === "commit" || sql === "rollback") {
             end();
+          } else if (sql.startsWith("set local")) {
+            // lock_timeout on the migration transaction (D22(c)).
           } else if (sql.startsWith("select hash")) {
             return { rows: rows.map((r) => ({ ...r })) };
           } else if (sql.startsWith("insert into")) {
@@ -219,8 +229,42 @@ describe("the advisory lock", () => {
       }),
     };
     await runMigrations(source, migrations);
-    expect(seen.slice(0, 3)).toEqual(["begin", `select pg_advisory_xact_lock($1::bigint):${MIGRATION_LOCK_KEY}`, "create schema"]);
+    expect(seen.slice(0, 4)).toEqual([
+      "begin",
+      "set local",
+      `select pg_advisory_xact_lock($1::bigint):${MIGRATION_LOCK_KEY}`,
+      "create schema",
+    ]);
     expect(seen.at(-1)).toBe("commit");
+  });
+
+  it("sets a lock_timeout and logs that it is waiting for the migration lock", async () => {
+    const seen: string[] = [];
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    const source: MigrateSource = {
+      connect: async () => ({
+        query: async (text) => {
+          seen.push(text.trim());
+          return { rows: [] };
+        },
+        release: () => {},
+      }),
+    };
+    try {
+      await runMigrations(source, migrations);
+      expect(seen[1]).toBe("SET LOCAL lock_timeout = '30s'");
+      expect(log).toHaveBeenCalledWith("[panel] waiting for the migration lock");
+      const lockAt = seen.findIndex((s) => s.toLowerCase().startsWith("select pg_advisory"));
+      const logAt = log.mock.calls.findIndex(
+        (call) => call[0] === "[panel] waiting for the migration lock",
+      );
+      expect(lockAt).toBeGreaterThan(1);
+      expect(logAt).toBeGreaterThanOrEqual(0);
+      // The log lands before the lock wait, not after it has already returned.
+      expect(seen.indexOf("SET LOCAL lock_timeout = '30s'")).toBeLessThan(lockAt);
+    } finally {
+      log.mockRestore();
+    }
   });
 
   it("lets two Panels starting at once migrate exactly once", async () => {

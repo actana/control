@@ -1,10 +1,12 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { closePanelTestDb, openPanelTestDb } from "../../__tests__/_panel-test-db";
 import * as fs from "node:fs";
+import * as net from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
 import http from "node:http";
 import WebSocket from "ws";
+import * as panelAuth from "../../panel-auth";
 
 /**
  * The panel-link endpoint over a real socket. What matters here is the gate: an
@@ -92,6 +94,52 @@ describe("the panel-link endpoint", () => {
 
     expect(seen).toEqual(["/something-else"]);
     expect(status).toBe(418);
+  });
+
+  it("survives a client that resets the socket while the session gate is pending", async () => {
+    // The gate awaits Postgres. Without an `error` listener on the raw socket
+    // for that window, a reset becomes an uncaughtException and the Panel exits.
+    let releaseGate!: (value: Awaited<ReturnType<typeof panelAuth.requireOperatorSession>>) => void;
+    const gate = new Promise<Awaited<ReturnType<typeof panelAuth.requireOperatorSession>>>(
+      (resolve) => {
+        releaseGate = resolve;
+      },
+    );
+    const spy = vi.spyOn(panelAuth, "requireOperatorSession").mockReturnValue(gate);
+
+    const uncaught: Error[] = [];
+    const onUncaught = (err: Error) => {
+      uncaught.push(err);
+    };
+    process.on("uncaughtException", onUncaught);
+
+    const sock = net.connect({ host: "127.0.0.1", port });
+    await new Promise<void>((resolve, reject) => {
+      sock.once("connect", resolve);
+      sock.once("error", reject);
+    });
+    sock.write(
+      `GET ${PANEL_LINK_PATH}?${PANEL_LINK_VERSION_PARAM}=${PANEL_LINK_PROTOCOL_VERSION} HTTP/1.1\r\n` +
+        `Host: 127.0.0.1:${port}\r\n` +
+        "Upgrade: websocket\r\n" +
+        "Connection: Upgrade\r\n" +
+        "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n" +
+        "Sec-WebSocket-Version: 13\r\n" +
+        "\r\n",
+    );
+
+    // Let the upgrade handler attach the error listener and reach the await.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    sock.resetAndDestroy();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    releaseGate({ ok: false, response: new Response("unauthorized", { status: 401 }) });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    process.off("uncaughtException", onUncaught);
+    spy.mockRestore();
+
+    expect(uncaught).toEqual([]);
   });
 });
 

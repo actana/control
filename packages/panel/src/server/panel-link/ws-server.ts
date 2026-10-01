@@ -38,18 +38,32 @@ export function attachPanelLink(server: Server): PanelLinkRouter {
     if (!isPanelLinkUpgrade(request)) return;
     // The session lives in Postgres, so the gate is asynchronous. A gate that
     // fails to answer refuses the upgrade; it never lets one through.
+    //
+    // Node removes its own `error` listener before emitting `upgrade`. While we
+    // await the session check the socket has nobody listening, and a client that
+    // resets in that window emits `error` as an uncaught exception (the pattern
+    // the `ws` README gives for an asynchronous authenticate).
+    const onSocketError = (err: Error) => {
+      console.error(
+        `[panel-link] upgrade socket error while checking the session: ${err.message}`,
+      );
+    };
+    socket.on("error", onSocketError);
     void (async () => {
       const rejection = await rejectUpgrade(request);
       if (rejection) {
+        socket.removeListener("error", onSocketError);
         socket.write(rejection);
         socket.destroy();
         return;
       }
+      socket.removeListener("error", onSocketError);
       const clientId = readClientId(request);
       wss.handleUpgrade(request, socket as Duplex, head, (ws) => {
         bindPanelLinkSocket(router, ws, clientId);
       });
     })().catch((err: unknown) => {
+      socket.removeListener("error", onSocketError);
       console.error(
         `[panel-link] upgrade refused, the session check failed: ${err instanceof Error ? err.message : String(err)}`,
       );
