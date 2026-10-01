@@ -141,8 +141,10 @@ export function selectPending(recorded: AppliedMigration[], migrations: Migratio
  * that first takes a transaction-scoped advisory lock. Two Panels starting at
  * once therefore queue on the lock: the second finds the first's rows and
  * applies nothing. The lock goes with the transaction, so a Panel that dies
- * mid-migration releases it by dropping its connection. Returns the tags it
- * applied; a rerun returns an empty list.
+ * mid-migration releases it by dropping its connection. A `lock_timeout` and a
+ * log line before the wait mean a Panel stuck behind a holder fails loudly
+ * rather than hanging silently (ADR 0041 D22(c)). Returns the tags it applied;
+ * a rerun returns an empty list.
  */
 export async function runMigrations(
   source: MigrateSource,
@@ -154,6 +156,10 @@ export async function runMigrations(
   let failure: Error | undefined;
   try {
     await client.query("BEGIN");
+    // Bound how long a second Panel waits on the advisory lock. Without this a
+    // holder that never commits leaves every new Panel hung at boot.
+    await client.query("SET LOCAL lock_timeout = '30s'");
+    console.log("[panel] waiting for the migration lock");
     await client.query("select pg_advisory_xact_lock($1::bigint)", [MIGRATION_LOCK_KEY]);
     current = "creating the migrations table";
     await client.query(`CREATE SCHEMA IF NOT EXISTS "${MIGRATIONS_SCHEMA}"`);

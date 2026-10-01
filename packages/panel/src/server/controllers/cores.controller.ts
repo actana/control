@@ -40,8 +40,8 @@ function withDial(core: Core): CoreWithDial {
   return { ...core, dial: coreLinkManager().status(core.id) };
 }
 
-export function list(): Response {
-  return json({ cores: listCores().map(withDial) });
+export async function list(): Promise<Response> {
+  return json({ cores: (await listCores()).map(withDial) });
 }
 
 /**
@@ -90,7 +90,7 @@ export async function pair(request: Request): Promise<Response> {
   } catch (err) {
     return refusal(err);
   }
-  coreLinkManager().dial(core.id);
+  await coreLinkManager().dial(core.id);
   return json({ core: withDial(core) }, { status: HTTP_CREATED });
 }
 
@@ -117,14 +117,14 @@ function refusal(err: unknown): Response {
 export async function rename(id: string, request: Request): Promise<Response> {
   const body = await parseJsonBody(request, renameBody);
   if (!body.ok) return body.response;
-  const core = renameCore(id, body.data.label);
+  const core = await renameCore(id, body.data.label);
   if (!core) return notFound("no such Core");
   return json({ core: withDial(core) });
 }
 
 /** Forget a Core: hang up first, then drop the registry row, secrets, and cursor. */
-export function remove(id: string): Response {
+export async function remove(id: string): Promise<Response> {
   coreLinkManager().hangup(id);
-  if (!removeCore(id)) return notFound("no such Core");
+  if (!(await removeCore(id))) return notFound("no such Core");
   return noContent();
 }

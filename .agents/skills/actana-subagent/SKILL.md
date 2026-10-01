@@ -31,9 +31,9 @@ what governs the work. This governs only how the answer gets back.
 ## The report file
 
 - **The path is `.actana/reports/<id>-r<turn>.md`, relative to this Session's
-  own working directory — its `cwd` on the machine it is running on.** Create
+  own working directory — the Core's home (`~`) on the machine it is running on.** Create
   `.actana/reports` if it is not there. It is dot-prefixed because it is machine
-  state rather than project content. Write it exactly where the prompt said,
+  state rather than workspace content. Write it exactly where the prompt said,
   and do not helpfully move it somewhere tidier: the Session that woke you
   converts that path into one it can read back, and a file at a different place
   is a file nobody collects.

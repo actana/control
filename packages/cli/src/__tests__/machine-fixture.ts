@@ -170,7 +170,6 @@ export type ClientHalf = Pick<
   | "connect"
   | "pairing"
   | "openSessions"
-  | "openFiles"
   | "now"
   | "terminal"
   | "openShell"
@@ -197,7 +196,6 @@ export function stubClientHalf(
     connect: refuse("dial a Core"),
     pairing: { identify: refuse("identify a Core"), pair: refuse("pair with a Core") },
     openSessions: refuse("open a session gateway"),
-    openFiles: refuse("open a file gateway"),
     now,
     terminal: nonInteractiveTerminal(),
     openShell: refuse("open a shell"),

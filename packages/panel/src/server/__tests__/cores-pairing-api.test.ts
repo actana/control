@@ -1,4 +1,5 @@
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
+import { closePanelTestDb, openPanelTestDb } from "./_panel-test-db";
 import * as fs from "node:fs";
 import * as https from "node:https";
 import * as os from "node:os";
@@ -39,7 +40,7 @@ process.env.AC_USER_DATA_DIR = path.join(tmpRoot, "app");
 process.env.AC_PANEL_DATA_DIR = path.join(tmpRoot, "panel");
 
 const { handleApiRequest } = await import("../api-router");
-const { closePanelDb, getPanelDb } = await import("../panel-db");
+const testDb = await openPanelTestDb();
 const { operatorSessionCookie } = await import("./_operator-session");
 const { resetCoreLinkManagerForTests } = await import("../services/core-link-manager");
 
@@ -53,7 +54,7 @@ async function call(
 ): Promise<Response> {
   const { json, anonymous, ...rest } = init;
   const headers: Record<string, string> = { ...(rest.headers as Record<string, string>) };
-  if (!anonymous) headers.cookie = operatorSessionCookie();
+  if (!anonymous) headers.cookie = (await operatorSessionCookie());
   if (json !== undefined) headers["content-type"] = "application/json";
   const response = await handleApiRequest(
     new Request(`${ORIGIN}${pathname}`, {
@@ -214,17 +215,16 @@ async function waitForListening(port: number, caCert: string): Promise<void> {
   }
 }
 
-afterEach(() => {
+afterEach(async () => {
   resetCoreLinkManagerForTests();
   for (const server of running.splice(0)) server.close();
   while (tempDirs.length > 0) fs.rmSync(tempDirs.pop()!, { recursive: true, force: true });
-  const db = getPanelDb();
-  db.prepare("DELETE FROM core_secrets").run();
-  db.prepare("DELETE FROM cores").run();
+  await testDb.pool.query("delete from core_secrets");
+  await testDb.pool.query("delete from cores");
 });
 
-afterAll(() => {
-  closePanelDb();
+afterAll(async () => {
+  await closePanelTestDb(testDb);
   fs.rmSync(tmpRoot, { recursive: true, force: true });
 });
 
@@ -238,11 +238,10 @@ async function pair(body: Record<string, unknown>): Promise<Response> {
   return call("/api/cores/pairing", { method: "POST", json: body });
 }
 
-function registryCounts(): { cores: number; secrets: number } {
-  const db = getPanelDb();
-  const cores = (db.prepare("SELECT COUNT(*) AS n FROM cores").get() as { n: number }).n;
-  const secrets = (db.prepare("SELECT COUNT(*) AS n FROM core_secrets").get() as { n: number }).n;
-  return { cores, secrets };
+async function registryCounts(): Promise<{ cores: number; secrets: number }> {
+  const count = async (table: string) =>
+    (await testDb.pool.query(`select count(*)::int as n from ${table}`)).rows[0]!.n as number;
+  return { cores: await count("cores"), secrets: await count("core_secrets") };
 }
 
 async function dialOf(id: string): Promise<{ state: string; lastSeenAt: number | null }> {
@@ -307,7 +306,7 @@ describe("a code redeemed against a Core the operator verified", () => {
 
     // The registry row and the sealed secrets are both there, and the dialer
     // gets all the way to an authenticated core-link with them.
-    expect(registryCounts()).toEqual({ cores: 1, secrets: 1 });
+    expect(await registryCounts()).toEqual({ cores: 1, secrets: 1 });
     await vi.waitFor(async () => expect((await dialOf(core.id)).state).toBe("connected"), {
       timeout: 10_000,
     });
@@ -392,7 +391,7 @@ describe("a code redeemed against a Core the operator verified", () => {
     });
     expect(response.status).toBe(400);
     expect(((await response.json()) as { error: string }).error).toContain("already registered");
-    expect(registryCounts()).toEqual({ cores: 1, secrets: 1 });
+    expect(await registryCounts()).toEqual({ cores: 1, secrets: 1 });
 
     // The collision was seen *before* the redemption, so the operator still has
     // their code: remove the Core that was in the way and the same code pairs.
@@ -464,7 +463,7 @@ describe("a fingerprint that does not match", () => {
 
     // Nothing was written, and — the part that matters — the code was not
     // spent, so the same session still redeems.
-    expect(registryCounts()).toEqual({ cores: 0, secrets: 0 });
+    expect(await registryCounts()).toEqual({ cores: 0, secrets: 0 });
     expect(
       (await pair({ address: rig.address, code, sessionId, expectedFingerprint: rig.fingerprint }))
         .status,
@@ -477,7 +476,7 @@ describe("a fingerprint that does not match", () => {
     const response = await pair({ address: rig.address, code, sessionId, expectedFingerprint: "" });
     expect(response.status).toBe(400);
     expect(((await response.json()) as Refusal).failure).toBe("fingerprint-unconfirmed");
-    expect(registryCounts()).toEqual({ cores: 0, secrets: 0 });
+    expect(await registryCounts()).toEqual({ cores: 0, secrets: 0 });
     // Still redeemable: an unconfirmed fingerprint costs the session nothing.
     expect(
       (await pair({ address: rig.address, code, sessionId, expectedFingerprint: rig.fingerprint }))
@@ -523,7 +522,7 @@ describe("the failures an operator has to tell apart", () => {
     });
     expect(((await unreachable.json()) as Refusal).failure).toBe("unreachable");
 
-    expect(registryCounts()).toEqual({ cores: 0, secrets: 0 });
+    expect(await registryCounts()).toEqual({ cores: 0, secrets: 0 });
   }, 40_000);
 
   it("never quotes the code back, even when the code is what was wrong", async () => {

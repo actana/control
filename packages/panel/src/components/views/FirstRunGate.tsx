@@ -33,7 +33,7 @@ const FirstRunWizard = lazy(() =>
  * and nothing to migrate.
  *
  * **It replaces the shell rather than covering it.** `children` here is the
- * entire app — top bar, project rail, router outlet, settings overlay — and at
+ * entire app — top bar, Cores rail, router outlet, settings overlay — and at
  * zero Cores none of it mounts. That is what makes this a gate rather than a
  * modal: there is no route to type, no escape key, no click-outside, and no
  * dead dashboard behind the wizard to glimpse. The only exit is a paired Core.

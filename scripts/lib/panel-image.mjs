@@ -55,11 +55,13 @@ export const PANEL_RUNTIME_USER = "65532:65532";
 export const PANEL_NODE_BIN = "/nodejs/bin/node";
 
 /**
- * Every table `panel-db.ts` migrates into `<data dir>/panel.db`. The smoke
- * script reads them back out of a real container to prove that better-sqlite3
- * — compiled in the build stage, against a different Node and a different
- * glibc — actually loads under the distroless runtime. A booted Panel that
- * answers `/api/healthz` does not prove that; a migrated schema does.
+ * Every table the Panel's Postgres migrations create (#567, ADR 0041 D14): the
+ * four `panel.db` tables, which are Postgres tables now. The smoke script asks
+ * the Postgres beside the Panel for them after the Panel has booted and been
+ * set up. A booted Panel that answers `/api/healthz` does not prove its
+ * migrations ran against the database it was given; the tables, and the rows
+ * setup wrote into them, are what prove it. The list is held to the migration
+ * SQL by `__tests__/panel-image.test.mjs`.
  */
 export const PANEL_TABLES = Object.freeze([
   "operator",

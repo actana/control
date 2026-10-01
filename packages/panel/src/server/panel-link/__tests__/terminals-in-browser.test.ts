@@ -1,4 +1,5 @@
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
+import { closePanelTestDb, openPanelTestDb } from "../../__tests__/_panel-test-db";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -39,7 +40,7 @@ process.env.AC_USER_DATA_DIR = path.join(tmpRoot, "app");
 process.env.AC_PANEL_DATA_DIR = path.join(tmpRoot, "panel");
 
 const { handleApiRequest } = await import("../../api-router");
-const { closePanelDb, getPanelDb } = await import("../../panel-db");
+const testDb = await openPanelTestDb();
 const { operatorSessionCookie } = await import("../../__tests__/_operator-session");
 const { attachPanelLink } = await import("../ws-server");
 const { coreLinkManager } = await import("../../services/core-link-manager");
@@ -68,10 +69,10 @@ class Tab {
     ws.on("message", (raw) => this.received.push(JSON.parse(String(raw)) as PanelLinkServerFrame));
   }
 
-  static open(): Promise<Tab> {
+  static async open(): Promise<Tab> {
     const ws = new WebSocket(
       `ws://127.0.0.1:${panelPort}${PANEL_LINK_PATH}?${PANEL_LINK_VERSION_PARAM}=${PANEL_LINK_PROTOCOL_VERSION}`,
-      { headers: { cookie: operatorSessionCookie() } },
+      { headers: { cookie: (await operatorSessionCookie()) } },
     );
     const tab = new Tab(ws);
     return new Promise((resolve, reject) => {
@@ -180,7 +181,8 @@ function adaptBrowserSocket(ws: WebSocket): PanelLinkSocketLike {
   } as PanelLinkSocketLike;
 }
 
-function openBrowser(): Browser {
+async function openBrowser(): Promise<Browser> {
+  const cookie = await operatorSessionCookie();
   let socket: WebSocket | null = null;
   // The outage is held open rather than timed: the client retries as fast as it
   // is told to, and a test that raced its backoff would assert on whichever
@@ -192,7 +194,7 @@ function openBrowser(): Browser {
     reconnectMaxMs: 20,
     createSocket: (url) => {
       if (offline) throw new Error("the tab is offline");
-      socket = new WebSocket(url, { headers: { cookie: operatorSessionCookie() } });
+      socket = new WebSocket(url, { headers: { cookie } });
       return adaptBrowserSocket(socket);
     },
   });
@@ -464,13 +466,13 @@ async function pair(label = "prod-vm-1"): Promise<{ coreId: string; core: CoreFi
   // /api/cores` to paste a blob at any more (#287). `operatorSessionCookie`
   // first because the registry row's foreign key points at the Operator, which
   // an HTTP registration used to create on the way past.
-  operatorSessionCookie();
-  const coreId = registerCoreFromCredential(core.credential).id;
-  coreLinkManager().dial(coreId);
+  (await operatorSessionCookie());
+  const coreId = (await registerCoreFromCredential(core.credential)).id;
+  await coreLinkManager().dial(coreId);
   paired.push(coreId);
   await vi.waitFor(async () => {
     const listing = await handleApiRequest(
-      new Request(`${ORIGIN}/api/cores`, { headers: { cookie: operatorSessionCookie() } }),
+      new Request(`${ORIGIN}/api/cores`, { headers: { cookie: (await operatorSessionCookie()) } }),
     );
     const cores = ((await listing!.json()) as { cores: { id: string; dial: { state: string } }[] })
       .cores;
@@ -506,19 +508,18 @@ afterEach(async () => {
     await handleApiRequest(
       new Request(`${ORIGIN}/api/cores/${coreId}`, {
         method: "DELETE",
-        headers: { cookie: operatorSessionCookie() },
+        headers: { cookie: (await operatorSessionCookie()) },
       }),
     );
   }
   for (const server of running.splice(0)) server.close();
-  const db = getPanelDb();
-  db.prepare("DELETE FROM core_secrets").run();
-  db.prepare("DELETE FROM cores").run();
+  await testDb.pool.query("delete from core_secrets");
+  await testDb.pool.query("delete from cores");
 });
 
 afterAll(async () => {
   await new Promise<void>((resolve) => panel.close(() => resolve()));
-  closePanelDb();
+  await closePanelTestDb(testDb);
   fs.rmSync(tmpRoot, { recursive: true, force: true });
 });
 
@@ -711,7 +712,7 @@ describe("terminals in the browser", () => {
 
   it("keeps a claimed pane live when the tab's own link drops and comes back", { timeout: 20_000 }, async () => {
     const { coreId, core } = await pair();
-    const browser = openBrowser();
+    const browser = await openBrowser();
     const bridge = corePtyBridgeFor(browser.link, coreId);
     const streams = createPtyStreamRouter(bridge);
 

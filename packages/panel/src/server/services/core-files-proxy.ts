@@ -104,7 +104,7 @@ class CoreFileRoutes extends CoreFiles {
  * reason the SDK checks it there — a `404` off a Core that predates the surface
  * reads as an outage, and it is not one.
  */
-export function resolveCoreFilesTarget(
+export async function resolveCoreFilesTarget(
   coreId: string,
   projectId: string,
   deps: {
@@ -114,18 +114,18 @@ export function resolveCoreFilesTarget(
     filesCapability?: (coreId: string) => { version: 1 } | null;
     createFetch?: typeof createCoreFilesFetch;
   } = {},
-): CoreFilesResolution {
+): Promise<CoreFilesResolution> {
   const readCore = deps.getCore ?? getCore;
   const readSecrets = deps.getCoreSecrets ?? getCoreSecrets;
   const dialState = deps.dialState ?? ((id: string) => coreLinkManager().status(id).state);
   const capability = deps.filesCapability ?? ((id: string) => coreLinkManager().filesCapability(id));
   const makeFetch = deps.createFetch ?? createCoreFilesFetch;
 
-  const core = readCore(coreId);
+  const core = await readCore(coreId);
   if (!core) {
     return refuse(404, "no-such-core", "no such Core is registered with this Panel");
   }
-  const secrets = readSecrets(coreId);
+  const secrets = await readSecrets(coreId);
   if (!secrets?.bearer) {
     return refuse(
       502,

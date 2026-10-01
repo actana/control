@@ -1,4 +1,5 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { closePanelTestDb, openPanelTestDb } from "./_panel-test-db";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -10,6 +11,7 @@ vi.mock("../services/claude-cli", () => ({
   runCli: vi.fn().mockResolvedValue("TITLE: Generated title\nICON: palette"),
 }));
 
+const testDb = await openPanelTestDb();
 const { runCli } = await import("../services/claude-cli");
 const { handleApiRequest } = await import("../api-router");
 const { operatorSessionCookie } = await import("./_operator-session");
@@ -22,12 +24,12 @@ const { TITLE_WAITING } = await import("~/lib/session-sentinels");
 
 const LOOPBACK_HEADERS = { origin: "http://127.0.0.1:5173" };
 
-function authed(input: string, init: RequestInit = {}): Request {
+async function authed(input: string, init: RequestInit = {}): Promise<Request> {
   return new Request(`http://127.0.0.1:5173${input}`, {
     ...init,
     headers: {
       ...LOOPBACK_HEADERS,
-      cookie: operatorSessionCookie(),
+      cookie: await operatorSessionCookie(),
       ...(init.headers as Record<string, string> | undefined),
     },
   });
@@ -61,11 +63,11 @@ describe("session title updates", () => {
     const session = createTitleSession();
 
     const res = await handleApiRequest(
-      authed(`/api/sessions/${session.id}`, {
+      (await authed(`/api/sessions/${session.id}`, {
         method: "PATCH",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ title: "  Manual session title  " }),
-      }),
+      })),
     );
 
     expect(res?.status).toBe(200);
@@ -87,4 +89,8 @@ describe("session title updates", () => {
       titleManuallySet: true,
     });
   });
+});
+
+afterAll(async () => {
+  await closePanelTestDb(testDb);
 });

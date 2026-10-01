@@ -122,14 +122,14 @@ function isAnonymousRoute(method: string, pathname: string): boolean {
  * session cookie. Opt-outs: the anonymous auth handoff surface above, and the
  * agent hook endpoints, which carry the machine token instead.
  */
-function requireApiAuth(
+async function requireApiAuth(
   request: Request,
   method: string,
   pathname: string,
-): { ok: true } | { ok: false; response: Response } {
+): Promise<{ ok: true } | { ok: false; response: Response }> {
   if (isAnonymousRoute(method, pathname)) return { ok: true };
   if (isHookRoute(pathname)) return requireHookToken(request);
-  return requireOperatorSession(request);
+  return await requireOperatorSession(request);
 }
 
 const SENSITIVE_QUERY_PARAM_RE = /([?&])(token|ticket)=[^&#\s"']+/gi;
@@ -157,7 +157,7 @@ function withApiAuth(fn: typeof dispatch) {
     method: string,
     pathname: string,
   ): Promise<Response> => {
-    const auth = requireApiAuth(request, method, pathname);
+    const auth = await requireApiAuth(request, method, pathname);
     if (!auth.ok) return auth.response;
 
     try {

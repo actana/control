@@ -45,7 +45,6 @@ import { terminalFromProcess } from "./cli-terminal.ts";
 import { connectCore } from "./core-connection.ts";
 import { sdkCorePairing } from "./core-pair.ts";
 import { openSessionGateway } from "./session-gateway.ts";
-import { openProjectFiles } from "./project-files-gateway.ts";
 import { openSessionAttach } from "./session-attach-channel.ts";
 import { EXIT_FAILURE } from "./exit-codes.ts";
 
@@ -151,10 +150,6 @@ async function main(): Promise<void> {
     // machine on a Core it has no credential for yet (#285).
     pairing: sdkCorePairing,
     openSessions: openSessionGateway,
-    // The file surface, which is the one thing in this program that does not
-    // cross the core link: `project cp` and `project files` reach the Core's
-    // HTTPS routes through the SDK (ADR 0028, #129 F12).
-    openFiles: openProjectFiles,
     now: () => Date.now(),
     // The real terminal, and the only place one is built. `core shell` is what
     // uses it; every other verb is handed it and never asks. It takes `process`

@@ -82,6 +82,7 @@ import { pairingStorePath } from "@actana/sdk/pairing/stores/json-file";
 import { corePairingStore } from "./core-pairing-store";
 import { runCoreExec } from "./core-exec";
 import { coreHome } from "./core-identity";
+import { startSharedFolder } from "./shared-folder-feed";
 import {
   configureEventLogStore,
   disposeEventLogStore,
@@ -464,6 +465,9 @@ async function startCore(): Promise<void> {
   // were.
   let pairing: ReturnType<typeof createPairing> | null = null;
 
+  // The Shared folder (#561): made here if missing, and its changes fed into the event log.
+  const sharedFolder = await startSharedFolder({ home: coreHome(), appendEvent });
+
   const serverOpts: import("./pty-core-link-server").PtyCoreLinkServerOptions = {
     port,
     host,
@@ -782,6 +786,8 @@ async function startCore(): Promise<void> {
   // pairing endpoint — the exact confusion ADR 0028 D4 warns about.
   serverOpts.httpRoutes = pairing ? composeCoreHttpRoutes(auditPairingRoutes(pairing.redeem), fileRoutes) : fileRoutes;
   serverOpts.announceFiles = shouldAnnounceFiles(fileRoutes);
+  // A function, so a watcher that comes up after the server is announced to the next connection.
+  serverOpts.shared = () => sharedFolder.capability;
   // What the mTLS gate is allowed to serve without a client certificate. Absent
   // unless pairing is mounted, and absent means the handshake keeps refusing
   // uncertificated clients outright — see `core-preauth-gate.ts`.
@@ -830,6 +836,7 @@ async function startCore(): Promise<void> {
     availabilityStore.stop();
     updateNotice?.stop();
     revocationSweep?.stop();
+    sharedFolder.stop();
     disposeEventLogStore();
     disposeCoreQueryStore();
     disposeCoreMutationStore();

@@ -33,6 +33,7 @@ import { spawnSync } from "node:child_process";
 import { parseArgs } from "./lib/cli.mjs";
 import { makeDie, pickFreePort } from "./lib/core-smoke.mjs";
 import { redactDockerArgs, startPostgres } from "./lib/postgres-fixture.mjs";
+import { POSTGRES_DB, POSTGRES_USER } from "./lib/postgres-image.mjs";
 import {
   PANEL_DOCKERFILE,
   PANEL_NODE_BIN,
@@ -231,31 +232,70 @@ const setup = await api(firstBase, "POST", "/api/auth/setup", OPERATOR);
 if (!setup.ok) die(`POST /api/auth/setup → ${setup.status}: ${await setup.text()}`);
 log("setup created the Operator");
 
-// better-sqlite3 is a native module compiled in the build stage against a
-// different Node and a different glibc from the one it dlopens under. That it
-// loads at all is the load-bearing fact behind the distroless runtime (ADR
-// 0016 D20, D25), and "the Panel answered /api/healthz" does not prove it —
-// the schema is what proves it. Read the migrated database from inside the
-// container, through the same better-sqlite3 the Panel just used.
-//
-// An absolute node: `docker exec` does not go through ENTRYPOINT, and
-// /nodejs/bin is not on the image's PATH, so a bare `node` is not found —
-// the same trap the healthcheck has.
-log("verifying the migrated schema in the volume …");
-const tables = docker([
-  "exec",
-  containerName,
-  PANEL_NODE_BIN,
-  "-e",
-  `const db=require("better-sqlite3")(process.env.AC_PANEL_DATA_DIR+"/panel.db",{readonly:true});` +
-    `console.log(db.prepare("select name from sqlite_master where type='table'").all().map(r=>r.name).join(" "))`,
-]).stdout.split(/\s+/);
+// The Panel's own state is in Postgres (#567, ADR 0041 D14): ask the server
+// beside it, not the volume. `psql` runs inside the Postgres container, on its
+// local socket, because that image is the one that carries it (the Panel image
+// is distroless and has nothing but node).
+log("verifying the migrated schema and the Operator in Postgres …");
+const psql = (sql) => {
+  const result = docker([
+    "exec",
+    postgresName,
+    "psql",
+    "-U",
+    POSTGRES_USER,
+    "-d",
+    POSTGRES_DB,
+    "--no-psqlrc",
+    "--tuples-only",
+    "--no-align",
+    "--command",
+    sql,
+  ]);
+  return result.stdout.trim();
+};
+const tables = psql("select table_name from information_schema.tables where table_schema = 'public'").split(/\s+/);
 for (const table of PANEL_TABLES) {
   if (!tables.includes(table)) {
     die(`the migrated database has no '${table}' table — found: ${tables.join(", ") || "(none)"}`);
   }
 }
-log(`better-sqlite3 loaded and migrated ${PANEL_TABLES.join(", ")} into the volume`);
+// Setup has just written the Operator and a session; both must be rows in
+// Postgres, owned by the Operator, with only the session token's hash stored.
+if (psql("select count(*) from operator") !== "1") die("setup left no Operator row in Postgres");
+if (psql("select count(*) from panel_sessions where owner_id = 1") !== "1") {
+  die("setup left no session row owned by the Operator in Postgres");
+}
+log(`the Panel migrated ${PANEL_TABLES.join(", ")} into Postgres and setup wrote its rows there`);
+
+// No SQLite file is left in the Panel's own state: the data volume holds the
+// secrets key and nothing named panel.db (a legacy missioncontrol.db is another
+// pull request's, and is not looked for here).
+const dataFiles = docker([
+  "exec",
+  containerName,
+  PANEL_NODE_BIN,
+  "-e",
+  `console.log(require("fs").readdirSync(process.env.AC_PANEL_DATA_DIR).join(" "))`,
+]).stdout.split(/\s+/);
+if (dataFiles.some((name) => name.startsWith("panel.db"))) {
+  die(`the data volume still holds a panel.db — found: ${dataFiles.join(" ")}`);
+}
+log("the data volume holds no panel.db");
+
+// better-sqlite3 still ships in the image for the legacy missioncontrol.db until
+// it goes (#567's later pull requests), and is the native module compiled in the
+// build stage against a different Node and glibc (ADR 0016 D20, D25). The Panel
+// database no longer proves it loads, so load it directly. An absolute node:
+// `docker exec` does not go through ENTRYPOINT, and /nodejs/bin is not on PATH.
+docker([
+  "exec",
+  containerName,
+  PANEL_NODE_BIN,
+  "-e",
+  `require("better-sqlite3")(":memory:").prepare("select 1").get()`,
+]);
+log("better-sqlite3 still loads under the distroless runtime");
 
 // Recreate: destroy the container (the upgrade motion — the image is
 // replaceable), keep the volume (the state is not).

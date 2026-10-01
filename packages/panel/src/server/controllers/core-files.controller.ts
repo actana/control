@@ -53,9 +53,9 @@ function refusalResponse(resolution: Extract<CoreFilesResolution, { ok: false }>
  * would have to have an opinion about an entry it does not recognise, and the
  * shape belongs to the Core.
  */
-export function list(coreId: string, projectId: string, url: URL): Promise<Response> {
-  const resolved = resolveCoreFilesTarget(coreId, projectId);
-  if (!resolved.ok) return Promise.resolve(refusalResponse(resolved));
+export async function list(coreId: string, projectId: string, url: URL): Promise<Response> {
+  const resolved = await resolveCoreFilesTarget(coreId, projectId);
+  if (!resolved.ok) return refusalResponse(resolved);
   return pipeToCore({
     target: resolved.target,
     method: "GET",
@@ -72,9 +72,9 @@ export function list(coreId: string, projectId: string, url: URL): Promise<Respo
  * invented here: the caller knows the name it asked for, and a Panel guessing at
  * one would be the second place a filename is decided.
  */
-export function read(coreId: string, projectId: string, url: URL): Promise<Response> {
-  const resolved = resolveCoreFilesTarget(coreId, projectId);
-  if (!resolved.ok) return Promise.resolve(refusalResponse(resolved));
+export async function read(coreId: string, projectId: string, url: URL): Promise<Response> {
+  const resolved = await resolveCoreFilesTarget(coreId, projectId);
+  if (!resolved.ok) return refusalResponse(resolved);
   return pipeToCore({
     target: resolved.target,
     method: "GET",
@@ -93,17 +93,17 @@ export function read(coreId: string, projectId: string, url: URL): Promise<Respo
  * "you wrote an empty file" to a browser that meant to send a gigabyte is a
  * confusing way to learn that a proxy in between dropped the body.
  */
-export function write(
+export async function write(
   coreId: string,
   projectId: string,
   url: URL,
   request: Request,
 ): Promise<Response> {
   if (!request.body) {
-    return Promise.resolve(jsonError(HTTP_BAD_REQUEST, "this write carried no body"));
+    return jsonError(HTTP_BAD_REQUEST, "this write carried no body");
   }
-  const resolved = resolveCoreFilesTarget(coreId, projectId);
-  if (!resolved.ok) return Promise.resolve(refusalResponse(resolved));
+  const resolved = await resolveCoreFilesTarget(coreId, projectId);
+  if (!resolved.ok) return refusalResponse(resolved);
   return pipeToCore({
     target: resolved.target,
     method: "PUT",

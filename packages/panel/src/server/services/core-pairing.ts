@@ -126,7 +126,7 @@ export type PairCoreInput = {
  * `core-link-manager.ts` dials the result unchanged.
  */
 export async function pairCore(input: PairCoreInput): Promise<Core> {
-  refuseIfAlreadyRegistered(input.address);
+  await refuseIfAlreadyRegistered(input.address);
 
   let credential;
   try {
@@ -144,7 +144,7 @@ export async function pairCore(input: PairCoreInput): Promise<Core> {
   // Outside the catch: a registry refusal — an endpoint already spoken for — is
   // the registry's to explain, and wrapping it as a pairing failure would tell
   // the operator to mint a code they do not need.
-  return registerCoreFromCredential(credential, { label: input.label ?? "" });
+  return await registerCoreFromCredential(credential, { label: input.label ?? "" });
 }
 
 /**
@@ -162,7 +162,7 @@ export async function pairCore(input: PairCoreInput): Promise<Core> {
  * A bad address falls through to `pairWithCore`, which owns that failure and
  * words it. Nothing here dials, so nothing here is slow.
  */
-function refuseIfAlreadyRegistered(address: string): void {
+async function refuseIfAlreadyRegistered(address: string): Promise<void> {
   let endpoint: string;
   try {
     // Via `httpsOrigin` rather than by reassembling host and port: it keeps the
@@ -171,7 +171,7 @@ function refuseIfAlreadyRegistered(address: string): void {
   } catch {
     return;
   }
-  if (coreRegisteredAt(endpoint)) {
+  if (await coreRegisteredAt(endpoint)) {
     throw new CoreRegistryError(
       `A Core at ${endpoint} is already registered. Remove it first — your pairing code has not been used.`,
     );

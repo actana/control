@@ -17,7 +17,7 @@
 # larger act for no gain.
 #
 #   bash await.sh --out ./reports \
-#     7f3a=api:.actana/reports/api-r1.md 9c1b=web:.actana/reports/web-r1.md
+#     7f3a=.actana/reports/api-r1.md 9c1b=.actana/reports/web-r1.md
 #
 # ── Why this is a file and not four paragraphs of advice ──────────────────────
 #
@@ -42,9 +42,10 @@
 #
 # ── What it needs ────────────────────────────────────────────────────────────
 #
-# `actana` on PATH and a Core selected (or `--core <name>`). `node` too, only to
-# read one field out of `actana project ls --json` — it ships with the CLI, so
-# this adds no dependency the CLI has not already made.
+# `actana` on PATH and a Core selected (or `--core <name>`). Every Session
+# starts in the Core's home (`~`), so a report path is home-relative
+# and `core exec` is enough to poll and copy — there is no Project and no
+# `project cp`.
 
 set -uo pipefail
 
@@ -59,9 +60,10 @@ usage() {
   cat <<'USAGE'
 bash await.sh [options] <lane>...
 
-  lane            <session-id>=<project>:<report-path>
-                  the report path is the Project's, exactly as `project cp`
-                  takes it — `7f3a=api:.actana/reports/api-r1.md`
+  lane            <session-id>=<report-path>
+                  the report path is relative to the Core's home (`~`),
+                  exactly as the prompt named it —
+                  `7f3a=.actana/reports/api-r1.md`
 
   --out <dir>     where saved reports land. Default: .
   --timeout <s>   give up on the round after this long. Default: 1800
@@ -76,7 +78,6 @@ USAGE
 }
 
 LANE_SESSION=()
-LANE_PROJECT=()
 LANE_REMOTE=()
 LANE_LOCAL=()
 LANE_STATE=()
@@ -114,35 +115,36 @@ while [ $# -gt 0 ]; do
 done
 
 if [ $# -eq 0 ]; then
-  echo "await.sh: name at least one lane — <session-id>=<project>:<report-path>" >&2
+  echo "await.sh: name at least one lane — <session-id>=<report-path>" >&2
   usage >&2
   exit 2
 fi
 
 for lane in "$@"; do
   session="${lane%%=*}"
-  ref="${lane#*=}"
-  if [ "$session" = "$lane" ] || [ -z "$session" ] || [ -z "$ref" ]; then
-    echo "await.sh: \"$lane\" is not <session-id>=<project>:<report-path>" >&2
+  remote="${lane#*=}"
+  if [ "$session" = "$lane" ] || [ -z "$session" ] || [ -z "$remote" ]; then
+    echo "await.sh: \"$lane\" is not <session-id>=<report-path>" >&2
     exit 2
   fi
-  project="${ref%%:*}"
-  remote="${ref#*:}"
-  if [ "$project" = "$ref" ] || [ -z "$project" ] || [ -z "$remote" ]; then
-    echo "await.sh: \"$ref\" is not <project>:<report-path>" >&2
-    exit 2
-  fi
+  # Refuse a leftover Project-shaped lane (`id=project:path`) so a skill that
+  # still remembered Projects fails loudly instead of waiting on a path nobody
+  # will write.
+  case "$remote" in
+    *:*)
+      echo "await.sh: \"$lane\" still uses <project>:<path> — lanes are home-relative now" >&2
+      exit 2
+      ;;
+  esac
   # The destination carries the Session id, because the basename alone does not
   # identify a lane. "Three Sessions, each on a different thing" naturally gives
-  # every sub-agent the same report filename inside its own Project, and two
-  # lanes writing `report.md` into one directory would overwrite each other,
-  # report `saved` twice naming the same file, and under --kill destroy both
-  # Sessions — so the second lane's bytes were saved and the first lane's were
-  # lost anyway. That is the failure "save before deleting" exists to prevent,
-  # arriving by a different route.
+  # every sub-agent the same report filename, and two lanes writing `report.md`
+  # into one directory would overwrite each other, report `saved` twice naming
+  # the same file, and under --kill destroy both Sessions — so the second lane's
+  # bytes were saved and the first lane's were lost anyway. That is the failure
+  # "save before deleting" exists to prevent, arriving by a different route.
   safe_session="$(printf '%s' "$session" | tr -c 'A-Za-z0-9._-' '_')"
   LANE_SESSION+=("$session")
-  LANE_PROJECT+=("$project")
   LANE_REMOTE+=("$remote")
   LANE_LOCAL+=("$OUT_DIR/${safe_session}-$(basename "$remote")")
   LANE_STATE+=("waiting")
@@ -166,35 +168,14 @@ done
 
 mkdir -p "$OUT_DIR" || exit 1
 
-# The Project's path on the Core, so the tail below can name an absolute file.
-# Read once per Project rather than per tick: a Project's path is fixed for the
-# life of the Project — no verb edits one — so re-reading it every 15 seconds
-# would be asking a settled question over and over.
-project_root() {
-  actana project ls --json "${CORE_ARGS[@]+"${CORE_ARGS[@]}"}" 2>/dev/null |
-    node -e '
-      let raw = "";
-      process.stdin.on("data", (chunk) => (raw += chunk));
-      process.stdin.on("end", () => {
-        let rows = [];
-        try { rows = JSON.parse(raw); } catch { process.exit(1); }
-        const want = process.argv[1];
-        const hit = rows.find((row) => row.name === want || row.projectId === want);
-        if (!hit || !hit.path) process.exit(1);
-        process.stdout.write(hit.path);
-      });
-    ' "$1"
-}
-
-ROOTS=()
-for index in "${!LANE_PROJECT[@]}"; do
-  root="$(project_root "${LANE_PROJECT[$index]}")"
-  if [ -z "$root" ]; then
-    echo "await.sh: no Project named \"${LANE_PROJECT[$index]}\" on this Core" >&2
-    exit 1
-  fi
-  ROOTS+=("$root")
-done
+# Every Session starts in the Core's home. Resolve `$HOME` once
+# so the poll below can name an absolute file without asking about Projects.
+HOME_ROOT="$(actana core exec "${CORE_ARGS[@]+"${CORE_ARGS[@]}"}" -- printenv HOME 2>/dev/null)"
+home_status=$?
+if [ "$home_status" -ne 0 ] || [ -z "$HOME_ROOT" ]; then
+  echo "await.sh: could not read HOME on this Core (actana core exec -- printenv HOME)" >&2
+  exit 1
+fi
 
 # Lesson 1. The sentinel has to be the file's LAST line, so this reads the tail
 # and nothing else. A few lines rather than exactly one, because a trailing
@@ -237,7 +218,7 @@ while [ "$pending" -gt 0 ]; do
   for index in "${!LANE_SESSION[@]}"; do
     [ "${LANE_STATE[$index]}" = "waiting" ] || continue
 
-    remote_path="${ROOTS[$index]}/${LANE_REMOTE[$index]}"
+    remote_path="${HOME_ROOT}/${LANE_REMOTE[$index]}"
     tail_text="$(actana core exec "${CORE_ARGS[@]+"${CORE_ARGS[@]}"}" -- tail -n 3 -- "$remote_path" 2>/dev/null)"
     status=$?
 
@@ -254,10 +235,10 @@ while [ "$pending" -gt 0 ]; do
     last_line_is_sentinel "$tail_text" || continue
 
     # Lesson 2. Save first. The Session is not touched until the bytes are on
-    # this disk and the file we wrote is non-empty.
+    # this disk and the file we wrote is non-empty. `core exec -- cat` is the
+    # copy via `core exec -- cat`.
     local_path="${LANE_LOCAL[$index]}"
-    if ! actana project cp "${CORE_ARGS[@]+"${CORE_ARGS[@]}"}" \
-      "${LANE_PROJECT[$index]}:${LANE_REMOTE[$index]}" "$local_path" >/dev/null 2>&1; then
+    if ! actana core exec "${CORE_ARGS[@]+"${CORE_ARGS[@]}"}" -- cat -- "$remote_path" >"$local_path" 2>/dev/null; then
       LANE_STATE[$index]="failed"
       LANE_NOTE[$index]="the report finished but could not be copied down — it is still on the Core"
       pending=$((pending - 1))
