@@ -43,7 +43,6 @@ async function pairedCore(opts: { pending?: boolean } = {}): Promise<string> {
   return core.id;
 }
 
-type Rig = Awaited<ReturnType<typeof rig>>;
 async function rig(opts: { leaky?: boolean } = {}) {
   const clock = new FakeClock();
   const s3 = new FakeS3(BUCKET);
@@ -53,6 +52,7 @@ async function rig(opts: { leaky?: boolean } = {}) {
   const logs: string[] = [];
   const service = new SharedFolders({
     link: () => link,
+    isConnected: () => true,
     issuer: (ownerId) => storageKeyIssuer(ownerId, { fetch: sts.fetch, now: clock.now }),
     now: clock.now,
     setTimer: clock.setTimer,

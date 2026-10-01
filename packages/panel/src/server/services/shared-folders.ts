@@ -40,6 +40,8 @@ export type Timer = ReturnType<typeof setTimeout>;
 
 export type SharedFolderDeps = {
   link: (coreId: string) => SharedLink | null;
+  /** Is this Core's link authenticated right now? At boot a refresh waits for it instead of failing. */
+  isConnected: (coreId: string) => boolean;
   issuer: (ownerId: number) => Promise<{ issuer: SharedKeyIssuer; target: StorageTarget }>;
   s3: (opts: { target: StorageTarget; folder: string; key: SharedKey; fetch?: typeof fetch }) => CoreShared;
   now: () => number;
@@ -87,6 +89,7 @@ const MAX_DELETE_PASSES = 100;
 function defaultDeps(): SharedFolderDeps {
   return {
     link: (coreId) => coreLinkManager().client(coreId),
+    isConnected: (coreId) => coreLinkManager().status(coreId).state === "connected",
     issuer: (ownerId) => storageKeyIssuer(ownerId),
     s3: ({ target, folder, key, fetch }) =>
       createS3CoreShared({
@@ -309,8 +312,8 @@ export class SharedFolders {
       });
     });
     for (const row of await findLiveSharedFolders(ownerId)) {
-      if (this.deps.link(row.coreId)) void this.refresh(row.coreId, ownerId, this.bump(row.coreId));
-      else this.schedule(row.coreId, ownerId, 0);
+      // A link that is still coming up announces itself through the listener above, which refreshes then.
+      if (this.deps.isConnected(row.coreId)) void this.refresh(row.coreId, ownerId, this.bump(row.coreId));
     }
     return () => {
       off();

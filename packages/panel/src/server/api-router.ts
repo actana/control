@@ -32,6 +32,9 @@ import * as webhooksController from "./controllers/webhooks.controller";
 
 const HARNESS_HOOK_PATH = /^\/api\/hooks\/([a-z0-9-]+)$/;
 const CORE_PATH = /^\/api\/cores\/([^/]+)$/;
+const CORE_SHARED_TEST_PATH = /^\/api\/cores\/([^/]+)\/shared\/test$/;
+const CORE_PAIRING_FINISH_PATH = /^\/api\/cores\/([^/]+)\/pairing\/finish$/;
+const CORE_DELETE_PATH = /^\/api\/cores\/([^/]+)\/delete$/;
 const API_KEY_REVOKE_PATH = /^\/api\/api-keys\/([^/]+)\/revoke$/;
 const WEBHOOK_PATH = /^\/api\/webhooks\/([^/]+)$/;
 const WEBHOOK_PING_PATH = /^\/api\/webhooks\/([^/]+)\/ping$/;
@@ -328,6 +331,14 @@ async function dispatch(
   if (m && method === "POST") return tasksController.comment(ownerId, decode(m[1]), request);
   m = pathname.match(CORE_AGENTS_PATH);
   if (m && method === "GET") return tasksController.listCoreAgents(ownerId, decode(m[1]));
+
+  // The Shared folder, from the pairing's last step to delete (#564).
+  m = pathname.match(CORE_SHARED_TEST_PATH);
+  if (m && method === "POST") return coresController.testSharedFolder(decode(m[1]));
+  m = pathname.match(CORE_PAIRING_FINISH_PATH);
+  if (m && method === "POST") return coresController.finishPairing(decode(m[1]), request);
+  m = pathname.match(CORE_DELETE_PATH);
+  if (m && method === "POST") return coresController.destroy(decode(m[1]), request);
 
   m = pathname.match(CORE_PATH);
   if (m) {
