@@ -132,10 +132,11 @@ export async function runFilesOp(
       return await handleWrite(body, out, ctx, confined.absolute, confined.relative, request);
     }
     case "delete":
+      return await handleDelete(out, ctx.root, request.path);
     case "mkdir":
+      return await handleMkdir(out, ctx.root, request.path);
     case "move":
-      // Built in the next commits of #557; refused until then rather than guessed at.
-      return refuse(out, { status: 501, code: "bad-request", message: `${request.op} is not implemented yet` });
+      return await handleMove(out, ctx.root, request.from, request.to);
   }
 }
 
@@ -432,4 +433,149 @@ async function writeSingleFile(
 function prefixed<T extends { path: string }>(base: string, entry: T): T {
   if (base.length === 0) return entry;
   return { ...entry, path: `${base}/${entry.path}` };
+}
+
+// ─── Delete, create folder, move ─────────────────────────────────────────────
+
+/** A small JSON answer. */
+function answerJson(out: FilesOut, status: number, value: unknown): void {
+  const body = JSON.stringify(value);
+  out.head(status, {
+    "content-type": "application/json",
+    "content-length": String(Buffer.byteLength(body)),
+    "cache-control": "no-store",
+  });
+  void out.write(body).then(() => out.end(), () => out.destroy());
+}
+
+/**
+ * `DELETE ?path=` — a file or symlink, or with a trailing `/` a folder and everything in it.
+ *
+ * **The slash is the operator saying "and everything in it".** A folder without it is
+ * refused, so a `DELETE ?path=src` that was meant for `src/old.ts` costs a 400 and not a
+ * tree; and a slash on a file is refused too, so the two spellings cannot be confused the
+ * other way. The home itself is refused whatever it is spelt as, and so is the path that
+ * is the target of nothing.
+ *
+ * The last component is *not* followed (`confineWriteTarget`): deleting `link` removes the
+ * link, never what it points at, and `fs.rm` does not follow links inside a tree it removes.
+ * A link's parents are resolved, so `link/file` with `link` leading out of the home is
+ * refused before anything is touched.
+ */
+async function handleDelete(out: FilesOut, root: string, requested: string): Promise<void> {
+  const folderIntent = requested.trim().endsWith("/");
+  const confined = confineWriteTarget(root, requested);
+  if (!confined.ok) return refuse(out, confinementRefusal(confined));
+  if (confined.relative === "") {
+    return refuse(out, {
+      status: 400,
+      code: "malformed-path",
+      message: "the home itself cannot be deleted — name something inside it",
+    });
+  }
+
+  const existing = await fs.promises.lstat(confined.absolute).catch(() => null);
+  if (!existing) {
+    return refuse(out, { status: 404, code: "not-found", message: `no such path in the home: ${confined.relative}` });
+  }
+  if (existing.isDirectory() && !folderIntent) {
+    return refuse(out, {
+      status: 400,
+      code: "bad-request",
+      message: `${confined.relative} is a folder — end the path with / to delete it and everything in it`,
+    });
+  }
+  if (!existing.isDirectory() && folderIntent) {
+    return refuse(out, { status: 400, code: "bad-request", message: `${confined.relative} is not a folder` });
+  }
+
+  try {
+    await fs.promises.rm(confined.absolute, { recursive: existing.isDirectory(), force: false });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    log.warn("core-files.delete-failed", { path: confined.relative, error: message });
+    return refuse(out, { status: 500, code: "write-failed", message: `could not delete ${confined.relative}: ${message}` });
+  }
+  answerJson(out, 200, { path: confined.relative, kind: existing.isDirectory() ? "directory" : "file", deleted: true });
+}
+
+/** `POST /folder?path=` — make a folder and its parents. One that is already there answers 200, not 201. */
+async function handleMkdir(out: FilesOut, root: string, requested: string): Promise<void> {
+  const confined = confineWriteTarget(root, requested);
+  if (!confined.ok) return refuse(out, confinementRefusal(confined));
+  if (confined.relative === "") {
+    return refuse(out, { status: 400, code: "malformed-path", message: "the home exists — name a folder inside it" });
+  }
+
+  const existing = await fs.promises.lstat(confined.absolute).catch(() => null);
+  if (existing) {
+    if (existing.isDirectory()) return answerJson(out, 200, { path: confined.relative, created: false });
+    return refuse(out, {
+      status: 400,
+      code: "bad-request",
+      message: `${confined.relative} already exists and is not a folder`,
+    });
+  }
+  try {
+    await fs.promises.mkdir(confined.absolute, { recursive: true });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    log.warn("core-files.mkdir-failed", { path: confined.relative, error: message });
+    return refuse(out, { status: 500, code: "write-failed", message: `could not create ${confined.relative}: ${message}` });
+  }
+  answerJson(out, 201, { path: confined.relative, created: true });
+}
+
+/**
+ * `POST /move {from, to}` — rename or move inside the home.
+ *
+ * Nothing is overwritten and nothing is created on the way: the destination must not
+ * exist and its folder must. A folder cannot go into itself. Both ends are confined as
+ * writes (parents resolved, last component literal), so a link is moved as a link and
+ * never as what it points at.
+ */
+async function handleMove(out: FilesOut, root: string, from: string, to: string): Promise<void> {
+  const source = confineWriteTarget(root, from);
+  if (!source.ok) return refuse(out, confinementRefusal(source));
+  const target = confineWriteTarget(root, to);
+  if (!target.ok) return refuse(out, confinementRefusal(target));
+  if (source.relative === "" || target.relative === "") {
+    return refuse(out, { status: 400, code: "malformed-path", message: "the home cannot be moved, or moved onto" });
+  }
+
+  const existing = await fs.promises.lstat(source.absolute).catch(() => null);
+  if (!existing) {
+    return refuse(out, { status: 404, code: "not-found", message: `no such path in the home: ${source.relative}` });
+  }
+  if (target.absolute === source.absolute || target.absolute.startsWith(source.absolute + path.sep)) {
+    return refuse(out, {
+      status: 400,
+      code: "bad-request",
+      message: `${source.relative} cannot be moved onto itself or into itself`,
+    });
+  }
+  if (await fs.promises.lstat(target.absolute).catch(() => null)) {
+    return refuse(out, {
+      status: 409,
+      code: "bad-request",
+      message: `${target.relative} already exists — a move does not overwrite`,
+    });
+  }
+  const parent = await fs.promises.stat(path.dirname(target.absolute)).catch(() => null);
+  if (!parent?.isDirectory()) {
+    return refuse(out, {
+      status: 404,
+      code: "not-found",
+      message: `the folder for ${target.relative} does not exist — create it first`,
+    });
+  }
+
+  try {
+    await fs.promises.rename(source.absolute, target.absolute);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    log.warn("core-files.move-failed", { from: source.relative, to: target.relative, error: message });
+    return refuse(out, { status: 500, code: "write-failed", message: `could not move ${source.relative}: ${message}` });
+  }
+  answerJson(out, 200, { from: source.relative, to: target.relative, moved: true });
 }

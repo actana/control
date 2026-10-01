@@ -321,3 +321,50 @@ describe("the Files API as core: upload and tar", () => {
     expect(fs.readFileSync(path.join(home, "after.txt"), "utf8")).toBe("fine");
   });
 });
+
+describe("the Files API as core: delete, create folder and move", () => {
+  const post = (url: string, body?: unknown): Promise<Answer> =>
+    call("POST", url, body === undefined ? undefined : Buffer.from(JSON.stringify(body)));
+  const json = (answer: Answer): Record<string, unknown> => JSON.parse(answer.body.toString("utf8")) as Record<string, unknown>;
+
+  it("creates a folder owned by core, and the daemon's own process touches nothing in the home", async () => {
+    const touched = spyOnDaemonFilesystem();
+
+    const answer = await post("/v1/files/folder?path=shared/reports/2026");
+    // Taken before the test's own `lstat` below, which the spy sees too.
+    const daemonTouched = touched.filter((t) => t.target.startsWith(home));
+
+    expect(answer.status).toBe(201);
+    expect(fs.lstatSync(path.join(home, "shared", "reports", "2026")).uid).toBe(uid);
+    expect(daemonTouched).toEqual([]);
+    expect(launches).toHaveLength(1);
+    expect(launches[0]!.args).toContain(`--reuid=${uid}`);
+  });
+
+  it("deletes a folder as core, and refuses the home from the helper with nothing deleted", async () => {
+    fs.mkdirSync(path.join(home, "shared", "old"), { recursive: true });
+    fs.writeFileSync(path.join(home, "shared", "old", "x.txt"), "x");
+    const touched = spyOnDaemonFilesystem();
+
+    const removed = await call("DELETE", "/v1/files?path=shared%2Fold%2F");
+    const refused = await call("DELETE", "/v1/files?path=");
+
+    expect(removed.status).toBe(200);
+    expect(fs.existsSync(path.join(home, "shared", "old"))).toBe(false);
+    expect(refused.status).toBe(400);
+    expect(json(refused).code).toBe("malformed-path");
+    expect(fs.existsSync(path.join(home, "shared"))).toBe(true);
+    expect(touched.filter((t) => t.target.startsWith(home))).toEqual([]);
+    expect(launches).toHaveLength(2);
+  });
+
+  it("moves a file as core", async () => {
+    fs.writeFileSync(path.join(home, "a.txt"), "a");
+
+    const answer = await post("/v1/files/move", { from: "a.txt", to: "b.txt" });
+
+    expect(answer.status).toBe(200);
+    expect(fs.readFileSync(path.join(home, "b.txt"), "utf8")).toBe("a");
+    expect(launches).toHaveLength(1);
+  });
+});
