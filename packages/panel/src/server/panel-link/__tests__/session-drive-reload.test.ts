@@ -140,7 +140,9 @@ beforeEach(() => {
 function openTab(clientId?: string) {
   const tab = new FakeTab();
   const session = router.attach(tab, clientId);
-  session.receive({
+  // `receive` is `void` here and below: these frames are applied synchronously and
+  // a rejection is an unhandled rejection, which fails the vitest run.
+  void session.receive({
     t: "core",
     coreId: CORE,
     frame: { type: "subscribe", reqId: "sub", lastEventId: 0 },
@@ -150,7 +152,7 @@ function openTab(clientId?: string) {
 
 /** The gesture a pane makes when it mounts on a Session. */
 function announce(session: ReturnType<PanelLinkRouter["attach"]>, want: "watch" | "take" | "drop") {
-  session.receive({ t: "drive", coreId: CORE, sessionId: SESSION, want });
+  void session.receive({ t: "drive", coreId: CORE, sessionId: SESSION, want });
 }
 
 describe("a tab that reloads onto the Session it alone was driving", () => {
@@ -218,7 +220,7 @@ describe("a tab that reloads onto the Session it alone was driving", () => {
   it("gives the ghost's pty back, because the returning tab asks for its own", () => {
     const link = source.bring(CORE);
     const { session: before } = openTab("tab-a");
-    before.receive({
+    void before.receive({
       t: "core",
       coreId: CORE,
       frame: { type: "ptySubscribe", reqId: "p1", ptyId: "pty_1", catchUp: true },
@@ -226,7 +228,7 @@ describe("a tab that reloads onto the Session it alone was driving", () => {
     expect(link.ptyCalls).toEqual([{ call: "subscribe", ptyId: "pty_1" }]);
 
     const { session: reloaded } = openTab("tab-a");
-    reloaded.receive({
+    void reloaded.receive({
       t: "core",
       coreId: CORE,
       frame: { type: "ptySubscribe", reqId: "p2", ptyId: "pty_1", catchUp: true },

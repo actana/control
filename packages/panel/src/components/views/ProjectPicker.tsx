@@ -154,7 +154,8 @@ export function ProjectPicker({
     // Same Core, so the shell we land in has to be told which one: a Core's
     // project id means nothing to the Panel's own transport, and dropping the
     // search param would send the next shell looking in the Panel's database.
-    router.navigate({
+    // void: a failed navigation shows in the router's own error state.
+    void router.navigate({
       to: "/projects/$id",
       params: { id },
       search: coreId ? { coreId } : {},

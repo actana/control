@@ -1353,7 +1353,8 @@ export const ProjectBar = memo(function ProjectBar({
                     void filesFromDrop(e.dataTransfer).then((files) => {
                       if (files.length === 0) return;
                       stashProjectFileDrop({ projectId: project.id, coreId: targetCoreId, files });
-                      router.navigate({
+                      // void: a failed navigation shows in the router's own error state.
+                      void router.navigate({
                         to: "/projects/$id",
                         params: { id: project.id },
                         search: { coreId: targetCoreId },
@@ -1384,7 +1385,8 @@ export const ProjectBar = memo(function ProjectBar({
                 project.coreId
                   ? { coreId: project.coreId }
                   : undefined;
-              router.navigate({ to: "/projects/$id", params: { id: project.id }, search });
+              // void: a failed navigation shows in the router's own error state.
+              void router.navigate({ to: "/projects/$id", params: { id: project.id }, search });
             }}
             onContextMenu={(e) => {
               e.preventDefault();
@@ -1567,7 +1569,7 @@ export const ProjectBar = memo(function ProjectBar({
             </DropdownMenuItem>
             <DropdownMenuItem
               icon="pin-fill"
-              onClick={async () => {
+              onClick={() => void (async () => {
                 const id = menu.id;
                 const target = menuProject;
                 setMenu(null);
@@ -1621,7 +1623,7 @@ export const ProjectBar = memo(function ProjectBar({
                 // immediately, even before the event log's round-trip lands.
                 if (targetCoreId) refreshRemotePinned();
                 await Promise.all([invalidateProjects(), invalidateProject(id)]);
-              }}
+              })()}
             >
               {menuProject?.pinned === false ? "Pin project" : "Unpin project"}
             </DropdownMenuItem>

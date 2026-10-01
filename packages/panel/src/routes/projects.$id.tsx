@@ -931,7 +931,8 @@ function ProjectPage() {
     // Drop the new session beside the active one and focus it, like Clone.
     const anchor = anchorSessionId();
     if (anchor) terminals.requestCloneInsertAfter(anchor);
-    createSession(
+    // void: `createSession` reports a failed create as a toast.
+    void createSession(
       {
         agent: project.savedHarness,
         bareSession: project.savedHarness === "claude-code" ? !!project.savedBareSession : false,
@@ -954,7 +955,8 @@ function ProjectPage() {
     }
     // Start session in a fresh grid row instead of beside the active one.
     terminals.requestNewRow();
-    createSession(
+    // void: `createSession` reports a failed create as a toast.
+    void createSession(
       {
         agent: project.savedHarness,
         bareSession: project.savedHarness === "claude-code" ? !!project.savedBareSession : false,
@@ -1349,7 +1351,7 @@ function ProjectPage() {
               <Btn variant="primary" icon="refresh" onClick={() => void projectQuery.refetch()}>
                 Retry
               </Btn>
-              <Btn variant="ghost" onClick={() => router.navigate({ to: "/" })}>
+              <Btn variant="ghost" onClick={() => void router.navigate({ to: "/" })}>
                 Back to projects
               </Btn>
             </div>
@@ -1521,7 +1523,8 @@ function ProjectPage() {
       // Route to the Core that owns the row (ADR 0005) — the Panel's own
       // delete endpoint only knows Panel-owned rows.
       await removeProject(coreId, project.id);
-      router.navigate({ to: "/" });
+      // void: a failed navigation shows in the router's own error state.
+      void router.navigate({ to: "/" });
     } catch (e: unknown) {
       // Without this catch the rejection was unhandled: the dialog closed, no
       // toast appeared, and the project was still there (issue 97).
@@ -1539,7 +1542,8 @@ function ProjectPage() {
     try {
       await terminals.closeForProject(project.id);
       await removeProject(coreId, project.id);
-      router.navigate({ to: "/" });
+      // void: a failed navigation shows in the router's own error state.
+      void router.navigate({ to: "/" });
     } catch (e: unknown) {
       const message = e instanceof Error ? e.message : "Could not remove project";
       setProjectPathActionError(message);
@@ -1567,7 +1571,8 @@ function ProjectPage() {
   };
 
   const closePathIssue = () => {
-    router.navigate({ to: "/" });
+    // void: a failed navigation shows in the router's own error state.
+    void router.navigate({ to: "/" });
   };
 
   // Archive one or more active sessions: kill each tty, flip the archived flag,
@@ -1799,7 +1804,8 @@ function ProjectPage() {
       if (anchor) terminals.requestCloneInsertAfter(anchor);
     }
     setNewHarnessTarget("default");
-    createSession(
+    // void: `createSession` reports a failed create as a toast.
+    void createSession(
       {
         agent: data.agent,
         bareSession: data.bareSession,
@@ -2014,7 +2020,7 @@ function ProjectPage() {
               >
                 <DropdownMenuItem
                   icon={project.pinned ? "pin-fill" : "pin"}
-                  onClick={toggleProjectPin}
+                  onClick={() => void toggleProjectPin()}
                   disabled={pinning}
                 >
                   {pinning
@@ -2198,7 +2204,7 @@ function ProjectPage() {
             coreId={coreId}
             filter={showPinned ? "pinned" : "active"}
             pinnedSessionIds={pinnedSessionIds}
-            onTogglePinned={toggleSessionPinned}
+            onTogglePinned={(id) => void toggleSessionPinned(id)}
             pinningSessionIds={pinningSessionIds}
           />
         ) : (
@@ -2606,7 +2612,7 @@ function ProjectPage() {
       <RemoveProjectConfirmDialog
         open={confirmRemove}
         onClose={() => setConfirmRemove(false)}
-        onConfirm={confirmRemoveProject}
+        onConfirm={() => void confirmRemoveProject()}
         projectName={project.name}
         projectPath={project.path}
       />

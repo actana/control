@@ -180,7 +180,9 @@ beforeEach(() => {
 function openTab() {
   const tab = new FakeTab();
   const session = router.attach(tab);
-  session.receive({
+  // `receive` is `void` here and below: these frames are applied synchronously and
+  // a rejection is an unhandled rejection, which fails the vitest run.
+  void session.receive({
     t: "core",
     coreId: CORE,
     frame: { type: "subscribe", reqId: "sub", lastEventId: 0 },
@@ -244,7 +246,7 @@ describe("a Session another Core client holds", () => {
     // A second tab was not watching when the register learned it. It asks by
     // opening a pane, and is answered before it can render an editable one.
     const { tab: second, session } = openTab();
-    session.receive({ t: "drive", coreId: CORE, sessionId: SESSION, want: "watch" });
+    void session.receive({ t: "drive", coreId: CORE, sessionId: SESSION, want: "watch" });
 
     expect(second.lastLock(SESSION)).toEqual({
       supported: true,
@@ -282,7 +284,7 @@ describe("claiming a Session from the Panel", () => {
     const link = source.bring(CORE);
     const { session: driver } = openTab();
     const { tab: other, session: otherSession } = openTab();
-    otherSession.receive({ t: "drive", coreId: CORE, sessionId: SESSION, want: "watch" });
+    void otherSession.receive({ t: "drive", coreId: CORE, sessionId: SESSION, want: "watch" });
 
     link.answers = (frame) => ({
       type: "claimResult",
@@ -453,8 +455,8 @@ describe("two tabs of one Panel on one Session", () => {
     const { tab: first, session: firstSession } = openTab();
     const { tab: second, session: secondSession } = openTab();
 
-    firstSession.receive({ t: "drive", coreId: CORE, sessionId: SESSION, want: "watch" });
-    secondSession.receive({ t: "drive", coreId: CORE, sessionId: SESSION, want: "watch" });
+    void firstSession.receive({ t: "drive", coreId: CORE, sessionId: SESSION, want: "watch" });
+    void secondSession.receive({ t: "drive", coreId: CORE, sessionId: SESSION, want: "watch" });
 
     expect(first.lastDrive(SESSION)?.driving).toBe(true);
     expect(second.lastDrive(SESSION)?.driving).toBe(false);
@@ -468,10 +470,10 @@ describe("two tabs of one Panel on one Session", () => {
     source.bring(CORE);
     const { tab: first, session: firstSession } = openTab();
     const { tab: second, session: secondSession } = openTab();
-    firstSession.receive({ t: "drive", coreId: CORE, sessionId: SESSION, want: "watch" });
-    secondSession.receive({ t: "drive", coreId: CORE, sessionId: SESSION, want: "watch" });
+    void firstSession.receive({ t: "drive", coreId: CORE, sessionId: SESSION, want: "watch" });
+    void secondSession.receive({ t: "drive", coreId: CORE, sessionId: SESSION, want: "watch" });
 
-    secondSession.receive({ t: "drive", coreId: CORE, sessionId: SESSION, want: "take" });
+    void secondSession.receive({ t: "drive", coreId: CORE, sessionId: SESSION, want: "take" });
 
     expect(second.lastDrive(SESSION)).toEqual({ driving: true, reason: "watch" });
     // The loser's own event, with its own reason. Not a takeover: nothing left
@@ -483,11 +485,11 @@ describe("two tabs of one Panel on one Session", () => {
     source.bring(CORE);
     const { tab: first, session: firstSession } = openTab();
     const { session: secondSession } = openTab();
-    firstSession.receive({ t: "drive", coreId: CORE, sessionId: SESSION, want: "watch" });
-    secondSession.receive({ t: "drive", coreId: CORE, sessionId: SESSION, want: "watch" });
+    void firstSession.receive({ t: "drive", coreId: CORE, sessionId: SESSION, want: "watch" });
+    void secondSession.receive({ t: "drive", coreId: CORE, sessionId: SESSION, want: "watch" });
     const before = first.locks(SESSION).length;
 
-    secondSession.receive({ t: "drive", coreId: CORE, sessionId: SESSION, want: "take" });
+    void secondSession.receive({ t: "drive", coreId: CORE, sessionId: SESSION, want: "take" });
 
     // A handover is not a lock change. The Panel still holds exactly what it
     // held, and nothing went down the core-link (ADR 0024 D3).
@@ -499,8 +501,8 @@ describe("two tabs of one Panel on one Session", () => {
     source.bring(CORE);
     const { session: firstSession } = openTab();
     const { tab: second, session: secondSession } = openTab();
-    firstSession.receive({ t: "drive", coreId: CORE, sessionId: SESSION, want: "watch" });
-    secondSession.receive({ t: "drive", coreId: CORE, sessionId: SESSION, want: "watch" });
+    void firstSession.receive({ t: "drive", coreId: CORE, sessionId: SESSION, want: "watch" });
+    void secondSession.receive({ t: "drive", coreId: CORE, sessionId: SESSION, want: "watch" });
 
     firstSession.detach();
 
@@ -550,8 +552,8 @@ describe("a Core without the multiConnection capability", () => {
     const { tab: first, session: firstSession } = openTab();
     const { tab: second, session: secondSession } = openTab();
 
-    firstSession.receive({ t: "drive", coreId: CORE, sessionId: SESSION, want: "watch" });
-    secondSession.receive({ t: "drive", coreId: CORE, sessionId: SESSION, want: "watch" });
+    void firstSession.receive({ t: "drive", coreId: CORE, sessionId: SESSION, want: "watch" });
+    void secondSession.receive({ t: "drive", coreId: CORE, sessionId: SESSION, want: "watch" });
 
     expect(first.lastDrive(SESSION)?.driving).toBe(true);
     expect(second.lastDrive(SESSION)?.driving).toBe(true);
@@ -566,9 +568,9 @@ describe("a Core without the multiConnection capability", () => {
     source.bring(CORE, { multiConnection: false });
     const { tab: first, session: firstSession } = openTab();
     const { session: secondSession } = openTab();
-    firstSession.receive({ t: "drive", coreId: CORE, sessionId: SESSION, want: "watch" });
+    void firstSession.receive({ t: "drive", coreId: CORE, sessionId: SESSION, want: "watch" });
 
-    secondSession.receive({ t: "drive", coreId: CORE, sessionId: SESSION, want: "take" });
+    void secondSession.receive({ t: "drive", coreId: CORE, sessionId: SESSION, want: "take" });
 
     // Nothing arbitrated it, so nothing was lost. The first tab was told once,
     // that it drives, and never told otherwise.

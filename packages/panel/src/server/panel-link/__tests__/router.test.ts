@@ -191,7 +191,9 @@ function openTab(): { tab: FakeTab; session: ReturnType<PanelLinkRouter["attach"
 }
 
 function subscribe(session: ReturnType<PanelLinkRouter["attach"]>, coreId: string, from: number) {
-  session.receive({
+  // `receive` is `void` here and below: these frames are applied synchronously and
+  // a rejection is an unhandled rejection, which fails the vitest run.
+  void session.receive({
     t: "core",
     coreId,
     frame: { type: "subscribe", reqId: "sub1", lastEventId: from },
@@ -507,7 +509,7 @@ describe("panel-link router · replay from a tab's cursor", () => {
     const link = source.bring("core_a");
     const seed = new FakeTab();
     const seedSession = bounded.attach(seed);
-    seedSession.receive({
+    void seedSession.receive({
       t: "core",
       coreId: "core_a",
       frame: { type: "subscribe", reqId: "s", lastEventId: 0 },
@@ -516,7 +518,7 @@ describe("panel-link router · replay from a tab's cursor", () => {
 
     const tab = new FakeTab();
     const session = bounded.attach(tab);
-    session.receive({
+    void session.receive({
       t: "core",
       coreId: "core_a",
       frame: { type: "subscribe", reqId: "s", lastEventId: 1 },

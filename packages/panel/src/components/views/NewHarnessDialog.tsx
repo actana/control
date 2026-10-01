@@ -178,11 +178,14 @@ export function NewHarnessDialog({
     setError(null);
     try {
       void onPersistRemember(buildSessionSettingsPatch(rememberSettings, agent));
-      onStart({
-        agent,
-        title: TITLE_WAITING,
-        bareSession: false,
-      });
+      // `onStart` may be async; its failure belongs in the dialog's error line.
+      Promise.resolve(
+        onStart({
+          agent,
+          title: TITLE_WAITING,
+          bareSession: false,
+        }),
+      ).catch((e: any) => setError(e?.message || "Failed to start session"));
     } catch (e: any) {
       setError(e?.message || "Failed to start session");
     } finally {

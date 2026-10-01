@@ -43,7 +43,7 @@
     "build": "pnpm --filter @actana/core build && pnpm --filter @actana/panel build",
     "generate:routes": "pnpm --filter @actana/panel generate:routes",
     "typecheck": "pnpm -r typecheck",
-    "lint": "eslint packages scripts screenshot.mjs eslint.config.mjs",
+    "lint": "eslint scripts screenshot.mjs eslint.config.mjs && eslint packages/shared && eslint packages/sdk && eslint packages/cli && eslint packages/core && eslint packages/panel",
     "test": "node scripts/run-unit-tests.mjs",
     "scan:secrets": "node scripts/scan-secrets.mjs",
     "db:generate": "pnpm native:node && pnpm --filter @actana/panel db:generate",
