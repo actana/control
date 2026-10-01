@@ -16,3 +16,8 @@ export async function operatorSessionCookie(): Promise<string> {
   session = { cookie: `${PANEL_SESSION_COOKIE}=${encodeURIComponent(token)}`, token };
   return session.cookie;
 }
+
+/** Forget the cached cookie, for a test file that empties the database between tests. */
+export function resetOperatorSessionForTests(): void {
+  session = null;
+}
