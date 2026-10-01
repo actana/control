@@ -21,6 +21,12 @@ import * as path from "node:path";
 // `ws` is loaded lazily, inside dialAndRequest — see the note there.
 
 import { waitForSentinel } from "./child-sentinel.mjs";
+import {
+  CORE_DAEMON_CAP_MASK,
+  CORE_DAEMON_USER,
+  CORE_NO_CAP_MASK,
+  CORE_SESSION_USER,
+} from "./panel-image.mjs";
 
 export const LISTENING_SENTINEL = "@@AC_CORE_LISTENING@@";
 
@@ -473,4 +479,287 @@ export async function assertBootsAndDials(child, { home, port, timeoutMs, die, l
   if (observer.badTags.length > 0) {
     die(`bad log line(s) after live-event poll settled: ${observer.badTags.join(", ")}`, observer.logLines);
   }
+}
+
+// ─── The privilege model, read off /proc (#559) ──────────────────────────────
+//
+// What the kernel prints in `/proc/<pid>/status` is the only witness to the
+// privilege model that does not depend on the code that set it up, so the image
+// smoke compares those lines *exactly*. Not "no capability looks wrong": a
+// daemon with a third capability, a Session that kept one, or a bounding set that
+// grew all have to fail, and a regex that matches "some hex" would pass them.
+//
+// Each expected line is the whole line, trailing whitespace trimmed (the kernel
+// pads an empty `Groups:` with a tab). `Groups` is empty on purpose: the entrypoint
+// and `asCore` both run `setpriv --clear-groups`, so neither the daemon nor a Session
+// holds a supplementary group, and in particular not root's.
+
+/** `Name -> whole line` for every `Name:` line of a `/proc/<pid>/status`, first one wins. */
+export function statusLines(text) {
+  const lines = new Map();
+  for (const line of String(text).split("\n")) {
+    const match = line.match(/^([A-Za-z_]+):/);
+    if (match && !lines.has(match[1])) lines.set(match[1], line.replace(/\s+$/, ""));
+  }
+  return lines;
+}
+
+const ids = (field, id) => `${field}:\t${id}\t${id}\t${id}\t${id}`;
+
+/**
+ * The lines a process must carry. `daemon`: the `actana` user with exactly
+ * CAP_SETUID and CAP_SETGID as inheritable, permitted, effective, ambient and
+ * bounding, and no-new-privs. `session`: the `core` user with no capability in any
+ * set but the bounding set, which is the container's and is inert under
+ * no-new-privs with no file capabilities (decision D1 of the plan).
+ */
+export function expectedStatusLines(kind) {
+  if (kind === "daemon") {
+    return [
+      ids("Uid", CORE_DAEMON_USER.uid),
+      ids("Gid", CORE_DAEMON_USER.gid),
+      "Groups:",
+      `CapInh:\t${CORE_DAEMON_CAP_MASK}`,
+      `CapPrm:\t${CORE_DAEMON_CAP_MASK}`,
+      `CapEff:\t${CORE_DAEMON_CAP_MASK}`,
+      `CapBnd:\t${CORE_DAEMON_CAP_MASK}`,
+      `CapAmb:\t${CORE_DAEMON_CAP_MASK}`,
+      "NoNewPrivs:\t1",
+    ];
+  }
+  if (kind === "session") {
+    return [
+      ids("Uid", CORE_SESSION_USER.uid),
+      ids("Gid", CORE_SESSION_USER.gid),
+      "Groups:",
+      `CapInh:\t${CORE_NO_CAP_MASK}`,
+      `CapPrm:\t${CORE_NO_CAP_MASK}`,
+      `CapEff:\t${CORE_NO_CAP_MASK}`,
+      `CapBnd:\t${CORE_DAEMON_CAP_MASK}`,
+      `CapAmb:\t${CORE_NO_CAP_MASK}`,
+      "NoNewPrivs:\t1",
+    ];
+  }
+  throw new Error(`unknown process kind ${JSON.stringify(kind)}`);
+}
+
+/** What is wrong with a status text, one sentence per line; empty when it is exactly right. */
+export function checkProcessStatus(text, kind) {
+  const found = statusLines(text);
+  const problems = [];
+  for (const expected of expectedStatusLines(kind)) {
+    const name = expected.slice(0, expected.indexOf(":"));
+    const actual = found.get(name);
+    if (actual === undefined) problems.push(`no ${name} line`);
+    else if (actual !== expected.replace(/\s+$/, "")) {
+      problems.push(`${name}: expected ${JSON.stringify(expected)}, found ${JSON.stringify(actual)}`);
+    }
+  }
+  return problems;
+}
+
+/**
+ * Pids other than 1 that run as uid 0, from `{pid, status}` pairs. PID 1 is
+ * tini and is root by design (decision D4); after the entrypoint's `exec` nothing
+ * else may be: not a leftover entrypoint shell, not a helper.
+ */
+export function rootProcessesBesideInit(processes) {
+  return processes
+    .filter(({ pid, status }) => pid !== 1 && statusLines(status).get("Uid")?.split(/\s+/)[1] === "0")
+    .map(({ pid }) => pid);
+}
+
+/**
+ * Run in a throwaway container as root (`python3` is in the image): every file
+ * in the image's own filesystem that carries a `security.capability` xattr, one
+ * path per line. `getcap` is not in the image and a smoke may not install what
+ * it asserts about. It first plants a file with a capability and refuses to
+ * report an empty list unless it saw that one, so a scan that cannot see
+ * anything (an unsupported filesystem) fails instead of passing.
+ */
+export const FILE_CAPABILITY_SCAN = [
+  "import os, struct, sys",
+  "probe = '/tmp/fscap-probe'",
+  "open(probe, 'w').close()",
+  "try:",
+  "    os.setxattr(probe, 'security.capability', struct.pack('<IIIII', 0x02000000, 0, 0, 0, 0))",
+  "except OSError as err:",
+  "    print('PROBE-FAILED ' + str(err)); sys.exit(3)",
+  "root_dev = os.stat('/').st_dev",
+  "found = []",
+  "for dirpath, dirnames, filenames in os.walk('/', followlinks=False):",
+  "    dirnames[:] = [d for d in dirnames if not os.path.ismount(os.path.join(dirpath, d)) and os.lstat(os.path.join(dirpath, d)).st_dev == root_dev]",
+  "    for name in filenames:",
+  "        path = os.path.join(dirpath, name)",
+  "        try:",
+  "            if 'security.capability' in os.listxattr(path, follow_symlinks=False): found.append(path)",
+  "        except OSError:",
+  "            pass",
+  "if probe not in found:",
+  "    print('PROBE-NOT-SEEN'); sys.exit(4)",
+  "for path in found:",
+  "    if path != probe: print(path)",
+].join("\n");
+
+// ─── A Session, driven over the core-link ────────────────────────────────────
+
+/**
+ * Open a Session on a Core the way a client does — dial the core-link with the
+ * credential, `spawn` a shell Session — and drive it as a terminal.
+ *
+ * A real Session and not `docker exec`: it is what the daemon starts through
+ * `asCore` on a PTY, which is the process the privilege model is about. Frames
+ * are the wire's own (`auth`, `spawn`, `write`, `kill`, and the pushed `data` and
+ * `exit`), written out here for the reason `credentialFromMaterial` is: a bug in
+ * the client library must not cancel itself out against the server.
+ *
+ * Returns `{ ptyId, output(), run(script), exited, kill(), close() }`. `run`
+ * sends one script to the shell and resolves `{ output, status }`: it turns the
+ * terminal's echo off first and brackets the script in markers that are never
+ * spelt out in what is typed, so the echo of the command cannot be mistaken for
+ * its output.
+ */
+export async function openCoreSession(credential, { command, timeoutMs = 30_000 } = {}) {
+  const { WebSocket } = await import("ws");
+  const ws = new WebSocket(credential.endpoint, {
+    ca: credential.caCert,
+    cert: credential.clientCert,
+    key: credential.clientKey,
+    rejectUnauthorized: true,
+  });
+  let buffer = "";
+  let ptyId = null;
+  let exit = null;
+  const waiters = new Map();
+  const listeners = new Set();
+  const taskId = `smoke-session-${crypto.randomBytes(6).toString("hex")}`;
+
+  const answer = (reqId) =>
+    new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        waiters.delete(reqId);
+        reject(new Error(`no answer to ${reqId} within ${timeoutMs}ms`));
+      }, timeoutMs);
+      waiters.set(reqId, (frame) => {
+        clearTimeout(timer);
+        waiters.delete(reqId);
+        resolve(frame);
+      });
+    });
+  ws.on("message", (raw) => {
+    let frame;
+    try {
+      frame = JSON.parse(String(raw));
+    } catch {
+      return;
+    }
+    if (frame.type === "data" && frame.ptyId === ptyId) {
+      buffer += frame.data;
+      for (const listener of listeners) listener();
+    } else if (frame.type === "exit" && frame.ptyId === ptyId) {
+      exit = { exitCode: frame.exitCode, signal: frame.signal };
+      for (const listener of listeners) listener();
+    } else if (frame.reqId && waiters.has(frame.reqId)) {
+      waiters.get(frame.reqId)(frame);
+    }
+  });
+  await new Promise((resolve, reject) => {
+    ws.once("open", resolve);
+    ws.once("error", (err) => reject(new Error(`core-link dial failed: ${err.message}`)));
+  });
+  const rpc = async (frame) => {
+    const reqId = `${frame.type}-${crypto.randomBytes(4).toString("hex")}`;
+    const pending = answer(reqId);
+    ws.send(JSON.stringify({ ...frame, reqId }));
+    return pending;
+  };
+
+  const auth = await rpc({ type: "auth", bearer: credential.bearer });
+  if (auth.type !== "authOk") throw new Error(`core-link auth answered ${JSON.stringify(auth)}`);
+  // The pty id is only known from the answer, and the first bytes are pushed
+  // before it: the server subscribes this connection before it answers.
+  const spawned = await rpc({
+    type: "spawn",
+    opts: { shellSession: true, taskId, cols: 200, rows: 50, ...(command ? { command } : {}) },
+  });
+  if (spawned.type !== "spawned") {
+    ws.close();
+    throw new Error(`spawn answered ${JSON.stringify(spawned)}`);
+  }
+  ptyId = spawned.ptyId;
+
+  const waitUntil = (predicate, label, limitMs = timeoutMs) =>
+    new Promise((resolve, reject) => {
+      const check = () => {
+        const value = predicate();
+        if (value) {
+          cleanup();
+          resolve(value);
+        } else if (exit && label !== "exit") {
+          cleanup();
+          reject(new Error(`the Session exited (${JSON.stringify(exit)}) while waiting for ${label}:\n${plain()}`));
+        }
+      };
+      const timer = setTimeout(() => {
+        cleanup();
+        reject(new Error(`timed out after ${limitMs}ms waiting for ${label}; output so far:\n${plain()}`));
+      }, limitMs);
+      const cleanup = () => {
+        clearTimeout(timer);
+        listeners.delete(check);
+      };
+      listeners.add(check);
+      check();
+    });
+  // The terminal's own noise (bracketed-paste switches, cursor moves) goes: it
+  // lands at the start of the line a marker is on.
+  const plain = () => buffer.replace(/\r/g, "").replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "");
+
+  const session = {
+    ptyId,
+    taskId,
+    output: plain,
+    /** Resolves with the exit frame when the Session's process exits. */
+    exited: () => waitUntil(() => exit, "exit", timeoutMs),
+    waitFor: (regex, label, limitMs) =>
+      waitUntil(() => plain().match(regex), label ?? String(regex), limitMs),
+    write: async (data) => {
+      const sent = await rpc({ type: "write", ptyId, data });
+      if (sent.ok !== true) throw new Error(`write was refused: ${JSON.stringify(sent)}`);
+    },
+    kill: async () => rpc({ type: "kill", ptyId }),
+    close: () => {
+      try {
+        ws.close();
+      } catch {
+        /* already closed */
+      }
+    },
+    /** One raw request frame; resolves the answering frame (an `error` frame is an answer). */
+    request: (frame) => rpc(frame),
+    _id: 0,
+    /** Echo off, once, with a marker that proves it took effect. */
+    prepare: async () => {
+      await session.write("stty -echo; printf 'ACSMOKE_%s\\n' READY\n");
+      await session.waitFor(/^ACSMOKE_READY$/m, "the shell to be ready");
+    },
+    run: async (script, limitMs) => {
+      const n = ++session._id;
+      // The markers are assembled by printf, so the text that is typed never contains them.
+      const begin = `ACSMOKE_${n}_BEGIN`;
+      const endPattern = new RegExp(`^ACSMOKE_${n}_END_(\\d+)$`, "m");
+      await session.write(
+        `printf 'ACSMOKE_%s_%s\\n' ${n} BEGIN; { ${script}\n} 2>&1; printf 'ACSMOKE_%s_END_%s\\n' ${n} $?\n`,
+      );
+      const end = await session.waitFor(endPattern, `the end of script ${n}`, limitMs);
+      const text = plain();
+      const from = text.indexOf(`${begin}\n`);
+      if (from < 0) throw new Error(`script ${n} printed no begin marker:\n${text}`);
+      return {
+        output: text.slice(from + begin.length + 1, end.index).replace(/\n$/, ""),
+        status: Number(end[1]),
+      };
+    },
+  };
+  return session;
 }
