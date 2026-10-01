@@ -103,7 +103,7 @@ export class SessionWriteRefused extends Error {
  */
 export type SessionAttachment = {
   /** The Session this is attached to. */
-  readonly taskId: string;
+  readonly sessionId: string;
   /** The PTY the Core resolved that Session to, right now. */
   readonly ptyId: string;
   /** What the `claim` settled. See {@link AttachAuthority}. */
@@ -147,7 +147,7 @@ export type SessionAttachment = {
 export type OpenSessionAttachFn = (
   blob: CoreRegistrationBlob,
   opts: {
-    taskId: string;
+    sessionId: string;
     cols: number;
     rows: number;
     connectTimeoutMs: number;
@@ -176,7 +176,7 @@ export const openSessionAttach: OpenSessionAttachFn = async (blob, opts) => {
   let claimed = false;
   try {
     await client.connect();
-    const ptyId = await livePty(client, opts.taskId);
+    const ptyId = await livePty(client, opts.sessionId);
 
     // The claim, before anything is painted and before any input is wired. A
     // refusal is an answer — `granted: false` becomes a read-only attachment —
@@ -184,7 +184,7 @@ export const openSessionAttach: OpenSessionAttachFn = async (blob, opts) => {
     // table, which writes.
     let authority: AttachAuthority = "not-claimed";
     if (opts.claimWrite) {
-      const { supported, granted } = await client.claim(opts.taskId);
+      const { supported, granted } = await client.claim(opts.sessionId);
       claimed = supported && granted;
       authority = !supported ? "no-lock-table" : granted ? "held" : "held-by-another";
     }
@@ -196,14 +196,14 @@ export const openSessionAttach: OpenSessionAttachFn = async (blob, opts) => {
     await client.ptySubscribe(ptyId, { catchUp: true });
     const { data: backlog } = await client.replay(ptyId);
 
-    return attachment(client, opts.taskId, ptyId, authority, backlog);
+    return attachment(client, opts.sessionId, ptyId, authority, backlog);
   } catch (err) {
     // A lock this connection took and is not going to use. The release goes
     // first: `close()` would release it too, by dropping the connection (D7),
     // but only once the Core noticed — and a Session that reads as locked to the
     // next operator for as long as a socket takes to time out is the failure
     // this ticket calls the one that strands a Session.
-    if (claimed) await client.release(opts.taskId).catch(() => ({ released: false }));
+    if (claimed) await client.release(opts.sessionId).catch(() => ({ released: false }));
     client.close();
     throw err;
   }
@@ -214,28 +214,28 @@ export const openSessionAttach: OpenSessionAttachFn = async (blob, opts) => {
  *
  * Two different sentences, because they are two different mistakes: a Session
  * that finished half an hour ago is a `session logs` away from being useful, and
- * a Session id this Core has never heard of is a typo. The Task list is read
+ * a Session id this Core has never heard of is a typo. The Session list is read
  * only when there is bad news to explain, so the ordinary attach still costs one
  * round trip.
  */
-async function livePty(client: CoreClient, taskId: string): Promise<string> {
-  const { ptyId } = await client.findByTask(taskId);
+async function livePty(client: CoreClient, sessionId: string): Promise<string> {
+  const { ptyId } = await client.findBySession(sessionId);
   if (ptyId !== null) return ptyId;
 
-  const { tasks } = await client.tasksList();
-  if (!tasks.some((task) => task.taskId === taskId)) {
-    throw new SessionGatewayError("no-such-session", `this Core has no session ${taskId}`);
+  const { sessions } = await client.sessionRowsList();
+  if (!sessions.some((session) => session.sessionId === sessionId)) {
+    throw new SessionGatewayError("no-such-session", `this Core has no session ${sessionId}`);
   }
   throw new SessionGatewayError(
     "not-running",
-    `session ${taskId} has no harness running — there is no terminal to attach to`,
+    `session ${sessionId} has no harness running — there is no terminal to attach to`,
   );
 }
 
 /** Present a connected client as a {@link SessionAttachment}. */
 function attachment(
   client: CoreClient,
-  taskId: string,
+  sessionId: string,
   ptyId: string,
   authority: AttachAuthority,
   backlog: string,
@@ -266,7 +266,7 @@ function attachment(
   };
 
   return {
-    taskId,
+    sessionId,
     ptyId,
     authority,
     backlog,
@@ -322,7 +322,7 @@ function attachment(
       holdsLock = false;
       mayWrite = false;
       try {
-        const { released } = await client.release(taskId);
+        const { released } = await client.release(sessionId);
         return released;
       } catch {
         // The link went away while the frame was in flight, which released the

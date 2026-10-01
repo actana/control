@@ -11,7 +11,7 @@
 // **#160 and #161 each extracted one of these, and this is the merge of the
 // two** (review of #205). Four suites share it now: `core status` against a
 // Core that answers no request frames, the `session` verbs against one holding
-// tasks and a live PTY, `project`/`harness` against one with a disk and an
+// sessions and a live PTY, `project`/`harness` against one with a disk and an
 // installer, and `events tail` against one that is stopped and restarted under
 // a running command. What each of them varies is a port or two; the handshake,
 // the certificates and the blob an operator would be handed are the same
@@ -93,8 +93,8 @@ export function unusedPtyCore(): never[] & Record<string, unknown> {
     killAll: unreachable("killAll"),
     killLaunchProcesses: unreachable("killLaunchProcesses"),
     killPtysUnderPath: unreachable("killPtysUnderPath"),
-    findByTask: unreachable("findByTask"),
-    taskIdForPty: () => null,
+    findBySession: unreachable("findBySession"),
+    sessionIdForPty: () => null,
     replay: unreachable("replay"),
   } as unknown as never[] & Record<string, unknown>;
 }
@@ -425,7 +425,7 @@ export function arrayEventLog(): ArrayEventLog {
         ts: Date.now(),
         kind,
         ptyId: opts?.ptyId ?? null,
-        taskId: opts?.taskId ?? null,
+        sessionId: opts?.sessionId ?? null,
         payload,
       };
       events.push(event);

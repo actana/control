@@ -171,7 +171,7 @@ of it with no error and no signal, and killing the Session destroys what is
 left. A transcript is what a human reads over somebody's shoulder. **A result is
 a file**, and the contract below is how you get one.
 
-The object also carries \`taskId\` (the Session's id — this is what every other
+The object also carries \`sessionId\` (the Session's id — this is what every other
 verb takes), \`harness\`, \`project\`, \`status\`, \`exited\`, and \`reportsTurnStart\`.
 \`--wait-timeout <seconds>\` bounds the wait; without it \`start --wait\` has no
 deadline of its own (\`send --wait\` does — see the loop below). A timeout is this
@@ -464,7 +464,7 @@ The shape that works:
 
    No \`--wait\` is needed here and none is wanted: \`start\` returns as soon as the
    Core has the Session running, so three starts in a row are three Sessions
-   working side by side. Take each \`taskId\` out of its object.
+   working side by side. Take each \`sessionId\` out of its object.
 4. **Wait for the files, not for the Sessions.** One loop over every
    outstanding lane — \`bash await.sh\` is that loop — polling each lane's
    **Project-relative** report path until its last line is \`ACT-REPORT-END\`,

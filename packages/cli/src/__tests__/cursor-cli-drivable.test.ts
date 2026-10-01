@@ -59,7 +59,7 @@ function policyDeps(): SpawnPolicyDeps {
 function planFor(harness: CoreLinkPtySpawnHarness, autoMode: boolean) {
   return resolveSpawnPlan(
     {
-      taskId: "t1",
+      sessionId: "t1",
       cwd: PROJECT_ROOT,
       command: harnessLaunchCommand(harness, autoMode),
       agent: harness,
@@ -145,7 +145,7 @@ describe("finding 2 — auto mode reaches the harness, or the spawn is refused",
     try {
       resolveSpawnPlan(
         {
-          taskId: "t1",
+          sessionId: "t1",
           cwd: PROJECT_ROOT,
           command: "cursor-agent",
           agent: "cursor-cli",
@@ -164,7 +164,7 @@ describe("finding 2 — auto mode reaches the harness, or the spawn is refused",
     expect(() =>
       resolveSpawnPlan(
         {
-          taskId: "t1",
+          sessionId: "t1",
           cwd: PROJECT_ROOT,
           command: "cursor-agent --force",
           agent: "cursor-cli",

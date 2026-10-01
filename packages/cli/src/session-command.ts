@@ -42,7 +42,7 @@
 // prose out of a stream it is trying to parse.
 //
 // One more, which falls out of the last: **without `--json`, stdout carries the
-// Session id and nothing else.** `TASK=$(actana session start web "fix it")` is
+// Session id and nothing else.** `SESSION=$(actana session start web "fix it")` is
 // the shape of every script that will ever use this, and it works with `--wait`
 // as well as without it because the settled status goes to stderr too.
 
@@ -430,8 +430,8 @@ async function sessionResume(
   ]);
   if (misused) return usage(deps, "resume", misused);
 
-  const [taskId, ...promptWords] = rest;
-  if (taskId === undefined) {
+  const [sessionId, ...promptWords] = rest;
+  if (sessionId === undefined) {
     return usage(deps, "resume", "a session id is required — `actana session resume <session> [prompt]`");
   }
 
@@ -448,9 +448,9 @@ async function sessionResume(
   if (readiness) return usage(deps, "resume", readiness);
 
   return withGateway(deps, args, paths, "resume", async (gateway) => {
-    deps.verbose(`resuming session ${taskId}`);
+    deps.verbose(`resuming session ${sessionId}`);
     const session = await gateway.resume({
-      taskId,
+      sessionId,
       ...(prompt.text === null ? {} : { prompt: prompt.text }),
       dangerouslySkipPermissions: args.skipPermissions,
     });
@@ -471,7 +471,7 @@ async function reportStartedSession(
 ): Promise<number> {
   try {
     const where = session.project ?? session.projectId;
-    deps.err(`Started ${session.harness} in ${where} — session ${session.taskId}, pty ${session.ptyId}.`);
+    deps.err(`Started ${session.harness} in ${where} — session ${session.sessionId}, pty ${session.ptyId}.`);
     deps.verbose(`command: ${session.command}`);
     // Issue 177 finding 4, said out loud rather than left to be discovered.
     // Not `verbose`: an operator who has to know this is precisely one who has
@@ -510,7 +510,7 @@ async function reportStartedSession(
           }),
         );
       } else {
-        deps.out(session.taskId);
+        deps.out(session.sessionId);
       }
       return EXIT_OK;
     }
@@ -588,18 +588,18 @@ async function awaitPromptDelivered(
       }),
     );
   } else {
-    deps.out(session.taskId);
+    deps.out(session.sessionId);
     if (report.outcome === "delivered") {
       deps.err(
         `The Core delivered the starting prompt. This session can take an ` +
-          `\`actana session send ${session.taskId} …\` now.`,
+          `\`actana session send ${session.sessionId} …\` now.`,
       );
     } else if (report.outcome === "abandoned") {
-      deps.err(promptAbandonedLine(session.taskId, report.reason));
+      deps.err(promptAbandonedLine(session.sessionId, report.reason));
     } else if (report.outcome === "unverified") {
-      deps.err(promptUnverifiedLine(session.taskId, session.harness, report.reason));
+      deps.err(promptUnverifiedLine(session.sessionId, session.harness, report.reason));
     } else {
-      deps.err(promptUnknownLine(session.taskId, report.reason));
+      deps.err(promptUnknownLine(session.sessionId, report.reason));
     }
   }
   return report.outcome === "delivered" ? EXIT_OK : EXIT_FAILURE;
@@ -654,12 +654,12 @@ function promptDeliveredField(
  * So it exits non-zero and says which of the two happened, rather than letting
  * a script read the zero exit as "the harness is listening".
  */
-function promptUnverifiedLine(taskId: string, harness: string | null, reason: string): string {
+function promptUnverifiedLine(sessionId: string, harness: string | null, reason: string): string {
   return (
-    `The Core typed the starting prompt into session ${taskId}, but cannot vouch for where it ` +
+    `The Core typed the starting prompt into session ${sessionId}, but cannot vouch for where it ` +
     `landed: ${reason}. Until ${harness ?? "this harness"} has a composer the Core can ` +
     `recognise, a start cannot establish that it is ready for a send — ` +
-    `\`actana session logs ${taskId}\` shows what is on screen.`
+    `\`actana session logs ${sessionId}\` shows what is on screen.`
   );
 }
 
@@ -692,11 +692,11 @@ function promptNotYetLine(): string {
  * that as a loss would be #483's false report pointed the other way, and it
  * would send an operator to re-send text that is already in the composer.
  */
-function promptUnknownLine(taskId: string, reason: string): string {
+function promptUnknownLine(sessionId: string, reason: string): string {
   return (
-    `The Core did not report what became of the starting prompt for session ${taskId}: ` +
+    `The Core did not report what became of the starting prompt for session ${sessionId}: ` +
     `${reason}. The session is running and the prompt may still have landed — ` +
-    `\`actana session logs ${taskId}\` shows what is on screen before you send it again.`
+    `\`actana session logs ${sessionId}\` shows what is on screen before you send it again.`
   );
 }
 
@@ -834,7 +834,7 @@ async function awaitTurn(
     ) {
       deps.err(
         `actana session send: no turn end was reported after the text went in. ` +
-          `\`actana session logs ${session.taskId}\` shows what is on screen — a dialog waiting ` +
+          `\`actana session logs ${session.sessionId}\` shows what is on screen — a dialog waiting ` +
           `for an answer looks like one there, and so does a harness still working. To keep ` +
           `waiting, follow the log from the delivery: ` +
           `\`actana events tail --since ${err.afterEventId}\`. Not \`session wait\`: that verb ` +
@@ -862,7 +862,7 @@ async function awaitTurn(
             `from the status this Session is parked at and exits zero, which after a drop is as ` +
             `likely to be last turn's answer as this one's.`
           : `\`actana session ls\` says whether it is still live, and ` +
-            `\`actana session logs ${session.taskId}\` shows what is on screen.`;
+            `\`actana session logs ${session.sessionId}\` shows what is on screen.`;
       deps.err(
         `actana session: the turn's outcome is unknown — the Core never reported it ending, and ` +
           `this side stopped listening. The Session is on the Core, not in this process, so it is ` +
@@ -926,12 +926,12 @@ async function awaitTurn(
       }),
     );
   } else {
-    deps.out(session.taskId);
+    deps.out(session.sessionId);
     if (abandoned) {
-      deps.err(promptAbandonedLine(session.taskId, abandoned.reason, outcome.exited));
+      deps.err(promptAbandonedLine(session.sessionId, abandoned.reason, outcome.exited));
     }
     deps.err(settledLine(outcome));
-    deps.err(`\`actana session logs ${session.taskId}\` prints the transcript while the harness is running.`);
+    deps.err(`\`actana session logs ${session.sessionId}\` prints the transcript while the harness is running.`);
   }
   if (abandoned) return EXIT_FAILURE;
   return settledWell(outcome) ? EXIT_OK : EXIT_FAILURE;
@@ -955,17 +955,17 @@ async function awaitTurn(
  * still there and can take the text, and `undefined` — the `--await-prompt`
  * path, which is told the verdict and not the process — says neither.
  */
-function promptAbandonedLine(taskId: string, reason: string, exited?: boolean): string {
+function promptAbandonedLine(sessionId: string, reason: string, exited?: boolean): string {
   const because = reason === "" ? "" : ` (${reason})`;
   const state = exited === true
     ? `The harness has since exited — no turn was started. ` +
-      `\`actana session logs ${taskId}\` prints what it did print; the text has to go to a new session.`
+      `\`actana session logs ${sessionId}\` prints what it did print; the text has to go to a new session.`
     : exited === false
       ? `The harness is running and has not seen it — no turn was started. ` +
-        `Send the text with \`actana session send ${taskId} …\` once the harness is ready.`
+        `Send the text with \`actana session send ${sessionId} …\` once the harness is ready.`
       : `The harness has not seen it — no turn was started. ` +
-        `Send the text with \`actana session send ${taskId} …\` once the harness is ready.`;
-  return `The Core did not deliver the starting prompt to session ${taskId}${because}. ${state}`;
+        `Send the text with \`actana session send ${sessionId} …\` once the harness is ready.`;
+  return `The Core did not deliver the starting prompt to session ${sessionId}${because}. ${state}`;
 }
 
 /** {@link awaitTurn}, releasing the attachment's listeners on the way out. */
@@ -1006,8 +1006,8 @@ async function sessionWait(
   const misused = misusedFlag(args, ["--wait-timeout"]);
   if (misused) return usage(deps, "wait", misused);
 
-  const [taskId, ...extra] = rest;
-  if (taskId === undefined) {
+  const [sessionId, ...extra] = rest;
+  if (sessionId === undefined) {
     return usage(deps, "wait", "a session id is required — `actana session wait <session>`");
   }
   if (extra.length > 0) return usage(deps, "wait", `unexpected argument "${extra[0]}"`);
@@ -1019,8 +1019,8 @@ async function sessionWait(
   if (timeout.error) return usage(deps, "wait", timeout.error);
 
   return withGateway(deps, args, paths, "wait", async (gateway) => {
-    deps.verbose(`attaching to session ${taskId} to wait for it to settle`);
-    const session = await gateway.wait(taskId);
+    deps.verbose(`attaching to session ${sessionId} to wait for it to settle`);
+    const session = await gateway.wait(sessionId);
     return awaitAttachedTurn(deps, args, session, timeout.ms);
   });
 }
@@ -1063,7 +1063,7 @@ async function sessionLs(
     const table = formatTable(
       header,
       rows.map((row) => [
-        row.taskId,
+        row.sessionId,
         row.status,
         row.live ? "yes" : "",
         row.harness,
@@ -1095,20 +1095,20 @@ async function sessionLogs(
   const misused = misusedFlag(args, ["--raw"]);
   if (misused) return usage(deps, "logs", misused);
 
-  const [taskId, ...extra] = rest;
-  if (taskId === undefined) {
+  const [sessionId, ...extra] = rest;
+  if (sessionId === undefined) {
     return usage(deps, "logs", "a session id is required — `actana session logs <session>`");
   }
   if (extra.length > 0) return usage(deps, "logs", `unexpected argument "${extra[0]}"`);
 
   return withGateway(deps, args, paths, "logs", async (gateway) => {
-    const logs: SessionLogs = await gateway.logs(taskId);
+    const logs: SessionLogs = await gateway.logs(sessionId);
     deps.verbose(`read the replay ring of pty ${logs.ptyId}`);
 
     if (args.json) {
       deps.out(
         formatJson({
-          taskId: logs.taskId,
+          sessionId: logs.sessionId,
           ptyId: logs.ptyId,
           rendered: !args.raw,
           screen: args.raw ? logs.raw : logs.screen,
@@ -1136,9 +1136,9 @@ async function sessionLogs(
  * submits anything is the harness's too — so this says what *this process did*:
  * no return went out, and no turn was started by this send.
  */
-const NOT_SUBMITTED_WARNING = (taskId: string): string =>
+const NOT_SUBMITTED_WARNING = (sessionId: string): string =>
   `actana session send: --no-enter, so no carriage return followed the text — this send ` +
-  `started no turn. \`actana session send ${taskId} --enter\` sends the carriage return.`;
+  `started no turn. \`actana session send ${sessionId} --enter\` sends the carriage return.`;
 
 /**
  * `actana session send <session> <text>` — the equivalent of typing.
@@ -1214,8 +1214,8 @@ async function sessionSend(
     );
   }
 
-  const [taskId, ...words] = rest;
-  if (taskId === undefined) {
+  const [sessionId, ...words] = rest;
+  if (sessionId === undefined) {
     return usage(deps, "send", "a session id is required — `actana session send <session> <text>`");
   }
   const timeout = waitTimeoutMs(args);
@@ -1267,11 +1267,11 @@ async function sessionSend(
       const deadlineMs =
         args.waitTimeout === null ? SEND_WAIT_DEFAULT_TIMEOUT_S * 1000 : timeout.ms;
       deps.verbose(
-        `sending ${text.length} characters to session ${taskId}${andReturn}, then waiting` +
+        `sending ${text.length} characters to session ${sessionId}${andReturn}, then waiting` +
           (deadlineMs === null ? " with no deadline" : ` up to ${Math.round(deadlineMs / 1000)}s`),
       );
-      const session = await gateway.sendAndWait(taskId, text, { enter: submit });
-      deps.err(`Sent ${text.length} characters to session ${taskId}${andReturn}.`);
+      const session = await gateway.sendAndWait(sessionId, text, { enter: submit });
+      deps.err(`Sent ${text.length} characters to session ${sessionId}${andReturn}.`);
       // Stderr is the *only* signal on this path, and deliberately: the wait's
       // document is `start --wait --json`'s key set and nothing else, because
       // #289 requires one parser to read all three verbs (#289 B).
@@ -1281,7 +1281,7 @@ async function sessionSend(
     // One call, one PTY resolution, both writes (#204 review). The command has
     // decided whether there is a return; the gateway decides nothing and only
     // writes what it was handed.
-    const sent = await gateway.send(taskId, text, { enter: submit });
+    const sent = await gateway.send(sessionId, text, { enter: submit });
 
     if (args.json) {
       // Two keys for the request and two for the outcome, kept apart on purpose.
@@ -1298,7 +1298,7 @@ async function sessionSend(
       // shape is #289's and is not extended here.
       deps.out(
         formatJson({
-          taskId,
+          sessionId,
           characters: text.length,
           enter: submit,
           submitted: submit && sent.ok,
@@ -1308,13 +1308,13 @@ async function sessionSend(
       );
     } else if (sent.ok) {
       const andReturn = submit ? " and a carriage return" : "";
-      deps.err(`Sent ${text.length} characters to session ${taskId}${andReturn}.`);
+      deps.err(`Sent ${text.length} characters to session ${sessionId}${andReturn}.`);
     }
     // **On stderr even under `--json`**, and after the document rather than
     // instead of it: a send that started no turn is the failure this ticket
     // exists to stop being quiet about, and a script that only reads stdout
     // still gets the fact in the `submitted` field.
-    if (sent.ok && !submit) deps.err(NOT_SUBMITTED_WARNING(taskId));
+    if (sent.ok && !submit) deps.err(NOT_SUBMITTED_WARNING(sessionId));
     if (!sent.ok) {
       // Two failures, two messages, because the operator's next move differs.
       // The `--wait` path has drawn this line since #289 and gives its own
@@ -1322,7 +1322,7 @@ async function sessionSend(
       // plain path draws it too rather than flattening both into "refused".
       if (sent.failed === "text") {
         deps.err(
-          `actana session send: the Core did not accept the write to session ${taskId}. ` +
+          `actana session send: the Core did not accept the write to session ${sessionId}. ` +
             `Nothing was written, so sending it again is safe.`,
         );
       } else if (text.length === 0) {
@@ -1331,13 +1331,13 @@ async function sessionSend(
         // advice about text that does not exist.
         deps.err(
           `actana session send: the Core did not accept the carriage return for session ` +
-            `${taskId}. Nothing was written, so sending it again is safe.`,
+            `${sessionId}. Nothing was written, so sending it again is safe.`,
         );
       } else {
         deps.err(
-          `actana session send: session ${taskId} took the text, but the Core did not accept ` +
+          `actana session send: session ${sessionId} took the text, but the Core did not accept ` +
             `the carriage return — so no turn was started. The text was delivered: do not send ` +
-            `it again, or the harness gets it twice. \`actana session send ${taskId} --enter\` ` +
+            `it again, or the harness gets it twice. \`actana session send ${sessionId} --enter\` ` +
             `sends the return on its own.`,
         );
       }
@@ -1351,7 +1351,7 @@ async function sessionSend(
  * `actana session kill <session>`.
  *
  * **Works on a Session this CLI did not start**, which is the point of naming
- * Sessions by Task id: the PTY belongs to the Core, and a Panel, a cron job and
+ * Sessions by Session id: the PTY belongs to the Core, and a Panel, a cron job and
  * this command all name it the same way. Nothing about having started a Session
  * is remembered locally, so there is nothing here that could fail to recognise
  * one.
@@ -1365,21 +1365,21 @@ async function sessionKill(
   const misused = misusedFlag(args, []);
   if (misused) return usage(deps, "kill", misused);
 
-  const [taskId, ...extra] = rest;
-  if (taskId === undefined) {
+  const [sessionId, ...extra] = rest;
+  if (sessionId === undefined) {
     return usage(deps, "kill", "a session id is required — `actana session kill <session>`");
   }
   if (extra.length > 0) return usage(deps, "kill", `unexpected argument "${extra[0]}"`);
 
   return withGateway(deps, args, paths, "kill", async (gateway) => {
-    const { ptyId, killed } = await gateway.kill(taskId);
+    const { ptyId, killed } = await gateway.kill(sessionId);
     if (args.json) {
-      deps.out(formatJson({ taskId, ptyId, killed }));
+      deps.out(formatJson({ sessionId, ptyId, killed }));
     } else if (killed) {
-      deps.err(`Killed session ${taskId} (pty ${ptyId}).`);
+      deps.err(`Killed session ${sessionId} (pty ${ptyId}).`);
     }
     if (!killed) {
-      deps.err(`actana session kill: the Core did not kill session ${taskId}.`);
+      deps.err(`actana session kill: the Core did not kill session ${sessionId}.`);
       return EXIT_FAILURE;
     }
     return EXIT_OK;
@@ -1565,7 +1565,7 @@ function noTurnStartLine(harness: string | null): string {
 /** The identity fields `start` and `resume` report, in both output modes. */
 function startedFields(session: StartedSession): Record<string, unknown> {
   return {
-    taskId: session.taskId,
+    sessionId: session.sessionId,
     ptyId: session.ptyId,
     harness: session.harness,
     command: session.command,

@@ -157,7 +157,7 @@ const SUBSCRIBE_ANSWER_MS = 30_000;
  * A rotated write index rather than `push` + `shift`, because the walk this
  * serves runs the length of a Core's whole retained log: `shift` moves every
  * held element on every match once the ring is full, which is quadratic in the
- * log for a wide filter and a large ceiling (`--kind task:updated --limit 5000`
+ * log for a wide filter and a large ceiling (`--kind session:updated --limit 5000`
  * over a hundred thousand events is the shape). The memory is the same either
  * way — `capacity` events and no more, whatever the log's length.
  *
@@ -739,7 +739,7 @@ async function eventsTail(
  * where the whole payload lives, uncut.
  */
 function formatEventLine(event: CoreLinkEvent): string {
-  const subject = event.taskId ? `task=${event.taskId}` : event.ptyId ? `pty=${event.ptyId}` : "";
+  const subject = event.sessionId ? `session=${event.sessionId}` : event.ptyId ? `pty=${event.ptyId}` : "";
   const head = `#${event.eventId}  ${new Date(event.ts).toISOString()}  ${event.kind}`;
   const payload = event.payload.replace(/\s+/g, " ").trim();
   const tail = [subject, clip(payload, 100)].filter(Boolean).join("  ");
@@ -768,7 +768,7 @@ function formatEventJson(event: CoreLinkEvent): string {
     ts: event.ts,
     kind: event.kind,
     ptyId: event.ptyId,
-    taskId: event.taskId,
+    sessionId: event.sessionId,
     payload: event.payload,
   });
 }

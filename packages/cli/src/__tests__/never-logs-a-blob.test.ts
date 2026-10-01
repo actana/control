@@ -231,7 +231,7 @@ describe("no verb prints a blob, with --verbose on", () => {
       connect: core.connect,
     });
     await new Promise((resolve) => setTimeout(resolve, 0));
-    core.emitEvent({ eventId: 1, kind: "task:created" });
+    core.emitEvent({ eventId: 1, kind: "session:created" });
     expectNoSecrets("events tail", (await tail).all);
   });
 
@@ -271,19 +271,19 @@ describe("no verb prints a blob, with --verbose on", () => {
     const starting = fakeSessionGateway({
       start: async () => fakeStartedSession(),
       resume: async () => fakeStartedSession(),
-      logs: async () => ({ taskId: "task_1", ptyId: "pty_1", screen: "a screen", raw: "raw" }),
+      logs: async () => ({ sessionId: "session_1", ptyId: "pty_1", screen: "a screen", raw: "raw" }),
       send: async () => ({ ok: true }) as const,
     });
 
     const runs: Array<[string, string[], typeof refusing]> = [
       ["session ls", ["session", "ls", "--verbose"], refusing],
       ["session ls --json", ["session", "ls", "--json", "--verbose"], refusing],
-      ["session kill", ["session", "kill", "task_1", "--verbose"], refusing],
+      ["session kill", ["session", "kill", "session_1", "--verbose"], refusing],
       ["session start", ["session", "start", "web", "go", "--verbose"], starting],
       ["session start --json", ["session", "start", "web", "go", "--json", "--verbose"], starting],
-      ["session resume", ["session", "resume", "task_1", "--verbose"], starting],
-      ["session logs", ["session", "logs", "task_1", "--verbose"], starting],
-      ["session send", ["session", "send", "task_1", "hi", "--verbose"], starting],
+      ["session resume", ["session", "resume", "session_1", "--verbose"], starting],
+      ["session logs", ["session", "logs", "session_1", "--verbose"], starting],
+      ["session send", ["session", "send", "session_1", "hi", "--verbose"], starting],
       ["session --help", ["session", "--help", "--verbose"], refusing],
     ];
 
@@ -369,7 +369,7 @@ describe("no verb prints a blob, with --verbose on", () => {
     // chose, which never touch one.
     registerCore(cli().paths, "prod");
 
-    const refused = await cli().run(["session", "attach", "task_1", "--verbose"], {
+    const refused = await cli().run(["session", "attach", "session_1", "--verbose"], {
       terminal: fakeTerminal(),
       openAttach: async () => {
         throw new Error("connect ECONNREFUSED");
@@ -380,7 +380,7 @@ describe("no verb prints a blob, with --verbose on", () => {
 
     const readOnly = fakeAttachment({ authority: "held-by-another" });
     const terminal = fakeTerminal();
-    const attached = cli().run(["session", "attach", "task_1", "--verbose"], {
+    const attached = cli().run(["session", "attach", "session_1", "--verbose"], {
       terminal,
       openAttach: async () => readOnly,
     });
