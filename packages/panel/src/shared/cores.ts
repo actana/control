@@ -146,8 +146,27 @@ function parseMinor(version: string | null | undefined): { major: number; minor:
   return m ? { major: Number(m[1]), minor: Number(m[2]) } : null;
 }
 
+/**
+ * Where a Core's Shared folder stands (#564). `pending` is a Core whose pairing is not finished: it was
+ * redeemed but its folder is not attached. `error` is an attached folder whose key could not be pushed;
+ * `error` carries why. A Core registered before 0.5.0 has none of this (`sharedFolder` is absent).
+ */
+export type CoreSharedFolder = {
+  state: "pending" | "attached" | "error";
+  /** `<prefix>/<core id>/` once attached; null before. The text a delete asks to be typed back. */
+  prefix: string | null;
+  /** When the key the Core holds ends, epoch ms. */
+  keyExpiresAt: number | null;
+  error: string | null;
+};
+
+/** A pairing from the Panel is finished when its Shared folder is attached; a Core with no folder row never needed one. */
+export function isPairingFinished(core: { sharedFolder?: { state: string } }): boolean {
+  return core.sharedFolder?.state !== "pending";
+}
+
 /** A registry row plus its live link state — one row of the Cores list. */
-export type CoreWithDial = Core & { dial: CoreDialStatus };
+export type CoreWithDial = Core & { dial: CoreDialStatus; sharedFolder?: CoreSharedFolder };
 
 export type CoreListResponse = { cores: CoreWithDial[] };
 

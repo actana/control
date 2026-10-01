@@ -80,6 +80,12 @@ export interface CoreLinkClientLike {
    */
   canSendMultiConnectionFrames(): boolean;
   /**
+   * This connection's `shared` capability, or null on a Core that cannot mount a Shared folder
+   * (#564). The gate for `sharedAttach`, `sharedCredentials` and `sharedDetach`: null means withhold
+   * them. A fake that omits the method means "not asked", and is sent to.
+   */
+  sharedCapability?(): { version: 1 } | null;
+  /**
    * The Sessions whose locks came across on this link's `reclaim`, once per
    * connect that sent one (issue 146, ADR 0024 D9). Nothing else reports them:
    * the Core rewrites the lock table in place and appends no event, so this is
@@ -496,6 +502,7 @@ function asPanelLink(client: DurableCoreClient): CoreLinkClientLike {
     ptySubscribe: (ptyId, opts) => client.ptySubscribe(ptyId, opts),
     ptyUnsubscribe: (ptyId) => client.ptyUnsubscribe(ptyId),
     canSendMultiConnectionFrames: () => client.canSendMultiConnectionFrames(),
+    sharedCapability: () => client.sharedCapability(),
     onReclaimed: (cb) => client.onReclaimed(cb),
     close: () => client.close(),
     sdk: client,

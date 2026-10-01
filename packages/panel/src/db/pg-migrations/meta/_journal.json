@@ -43,6 +43,13 @@
       "when": 1790886044796,
       "tag": "0005_panel_api_keys",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1790890825428,
+      "tag": "0006_panel_shared_folders",
+      "breakpoints": true
     }
   ]
 }

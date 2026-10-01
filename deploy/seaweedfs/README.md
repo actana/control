@@ -147,9 +147,11 @@ This is part 1 of #566 (steps 1 and 2). Not done here, and not claimed:
   upload, a Core paused over an hour, no readable key on disk). It has not been
   run against this: the Core mount (#562) does not exist yet.
 - **The Panel's key issuer**
-  ([actana/client#5](https://github.com/actana/client/issues/5)) and the
-  Panel's token signer with a JWKS endpoint: nothing in the Panel publishes an
-  issuer or JWKS URL today, so `SEAWEEDFS_OIDC_*` has nothing to point at yet.
+  ([actana/client#5](https://github.com/actana/client/issues/5)) is wired in
+  by [#564](https://github.com/actana/control/issues/564): the Panel stores the
+  master key and issues each Core's key. The Panel's token signer with a JWKS
+  endpoint is still not published by anything: `SEAWEEDFS_OIDC_JWKS_URL` has to
+  point at wherever the public half of the master key is served.
 - **Container hardening.** The entrypoint runs as root to hand a file to the
   `seaweed` user, and the service has no `cap_drop`. Dropping all capabilities
   but CHOWN, SETUID, SETGID, DAC_OVERRIDE and FOWNER should work; it needs a live run.

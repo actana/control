@@ -144,7 +144,9 @@ export async function pairCore(input: PairCoreInput): Promise<Core> {
   // Outside the catch: a registry refusal — an endpoint already spoken for — is
   // the registry's to explain, and wrapping it as a pairing failure would tell
   // the operator to mint a code they do not need.
-  return await registerCoreFromCredential(credential, { label: input.label ?? "" });
+  // A Core paired from the Panel is not finished until its Shared folder is attached (#564, ADR 0041 D5): it
+  // is registered with the folder pending, and `finishPairing` in `shared-folders.ts` is the last step.
+  return await registerCoreFromCredential(credential, { label: input.label ?? "", pendingSharedFolder: true });
 }
 
 /**

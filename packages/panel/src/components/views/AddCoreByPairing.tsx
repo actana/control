@@ -1,5 +1,6 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Btn } from "~/components/ui/Btn";
+import { SharedFolderStep } from "~/components/views/SharedFolderStep";
 import { TextField } from "~/components/ui/TextField";
 import { api, ApiError } from "~/lib/api";
 import {
@@ -70,6 +71,28 @@ export function AddCoreByPairing({ onPaired }: { onPaired: (core: CoreWithDial) 
 
   const [refusal, setRefusal] = useState<CorePairingRefusal | null>(null);
 
+  /**
+   * The Core whose pairing is not finished (#564): redeemed, registered, and waiting for its Shared folder. Set by
+   * a pairing that just succeeded, and found again on mount, so leaving this page and coming back resumes step 4
+   * rather than leaving a Core that nothing can finish.
+   */
+  const [finishing, setFinishing] = useState<CoreWithDial | null>(null);
+  useEffect(() => {
+    let alive = true;
+    api
+      .listCores()
+      .then(({ cores }) => {
+        const pending = cores.find((c) => c.sharedFolder?.state === "pending");
+        if (alive && pending) setFinishing(pending);
+      })
+      .catch(() => {
+        /* the form still works; a pending Core shows up in the list below it */
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
   const check = fingerprintCheck(expected, identity?.fingerprint ?? null);
   const verified = check === "verified";
   const codeReady = normalizePairingCode(code) !== null && sessionId.trim() !== "";
@@ -128,7 +151,8 @@ export function AddCoreByPairing({ onPaired }: { onPaired: (core: CoreWithDial) 
         label: name.trim(),
       });
       reset();
-      await onPaired(core);
+      // Registered, not paired: step 4 attaches its Shared folder, and `onPaired` runs when it has.
+      setFinishing(core);
     } catch (err) {
       const next = refusalOf(err);
       setRefusal(next);
@@ -151,6 +175,18 @@ export function AddCoreByPairing({ onPaired }: { onPaired: (core: CoreWithDial) 
     setName("");
     setRefusal(null);
   };
+
+  if (finishing) {
+    return (
+      <SharedFolderStep
+        core={finishing}
+        onFinished={async (core) => {
+          setFinishing(null);
+          await onPaired(core);
+        }}
+      />
+    );
+  }
 
   return (
     <div

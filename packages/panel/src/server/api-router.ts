@@ -22,6 +22,7 @@ import * as aiRuntimeModelsController from "./controllers/ai-runtime-models.cont
 import * as authController from "./controllers/auth.controller";
 import * as apiKeysController from "./controllers/api-keys.controller";
 import * as coresController from "./controllers/cores.controller";
+import * as storageController from "./controllers/storage.controller";
 import * as coreFilesController from "./controllers/core-files.controller";
 import * as updateCheckController from "./controllers/update-check.controller";
 import * as tasksController from "./controllers/tasks.controller";
@@ -32,6 +33,9 @@ import * as webhooksController from "./controllers/webhooks.controller";
 
 const HARNESS_HOOK_PATH = /^\/api\/hooks\/([a-z0-9-]+)$/;
 const CORE_PATH = /^\/api\/cores\/([^/]+)$/;
+const CORE_SHARED_TEST_PATH = /^\/api\/cores\/([^/]+)\/shared\/test$/;
+const CORE_PAIRING_FINISH_PATH = /^\/api\/cores\/([^/]+)\/pairing\/finish$/;
+const CORE_DELETE_PATH = /^\/api\/cores\/([^/]+)\/delete$/;
 const API_KEY_REVOKE_PATH = /^\/api\/api-keys\/([^/]+)\/revoke$/;
 const WEBHOOK_PATH = /^\/api\/webhooks\/([^/]+)$/;
 const WEBHOOK_PING_PATH = /^\/api\/webhooks\/([^/]+)\/ping$/;
@@ -287,6 +291,11 @@ async function dispatch(
   if (m && method === "GET") return webhooksController.deliveries(decode(m[1]));
   m = pathname.match(WEBHOOK_PATH);
   if (m && method === "DELETE") return webhooksController.remove(decode(m[1]));
+  // The Shared-folder storage config (#564): the key is write-only, so there is a GET without it and a PUT.
+  if (pathname === "/api/storage") {
+    if (method === "GET") return storageController.read();
+    if (method === "PUT") return storageController.write(request);
+  }
   // Pairing (#286). Literal paths, and matched before CORE_PATH so `pairing`
   // is never read as a Core id. Both are Node-side work the browser cannot do:
   // a TLS chain is read here, a key pair is born here, and a code is spent
@@ -328,6 +337,14 @@ async function dispatch(
   if (m && method === "POST") return tasksController.comment(ownerId, decode(m[1]), request);
   m = pathname.match(CORE_AGENTS_PATH);
   if (m && method === "GET") return tasksController.listCoreAgents(ownerId, decode(m[1]));
+
+  // The Shared folder, from the pairing's last step to delete (#564).
+  m = pathname.match(CORE_SHARED_TEST_PATH);
+  if (m && method === "POST") return coresController.testSharedFolder(decode(m[1]));
+  m = pathname.match(CORE_PAIRING_FINISH_PATH);
+  if (m && method === "POST") return coresController.finishPairing(decode(m[1]), request);
+  m = pathname.match(CORE_DELETE_PATH);
+  if (m && method === "POST") return coresController.destroy(decode(m[1]), request);
 
   m = pathname.match(CORE_PATH);
   if (m) {
