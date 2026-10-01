@@ -15,6 +15,9 @@ import * as path from "node:path";
 import { build } from "esbuild";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createCoreFilesRequestHandler } from "../core-files-routes";
+import { WorkspaceWriteLocks } from "../files-transfer-locks";
+import { packDirectory } from "../files-tar";
+import { cleanupTrees, collect, makeTree } from "./files-fixture";
 import { asCore } from "../core-identity";
 import type { SpawnSpec } from "../core-identity";
 
@@ -26,6 +29,9 @@ let server: http.Server;
 let base: string;
 /** What the real `asCore` built for each helper the daemon started. */
 let launches: Array<SpawnSpec & { args: string[] }> = [];
+let locks: WorkspaceWriteLocks;
+/** The pids the daemon asked `killAsCore` to signal, and the argv it would have used to do so as core. */
+let kills: Array<{ pid: number; args: string[] }> = [];
 
 beforeAll(async () => {
   workDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "core-files-op-")));
@@ -50,6 +56,8 @@ beforeEach(async () => {
   home = fs.realpathSync(fs.mkdtempSync(path.join(workDir, "home-")));
   outside = fs.realpathSync(fs.mkdtempSync(path.join(workDir, "outside-")));
   launches = [];
+  locks = new WorkspaceWriteLocks();
+  kills = [];
   // Container mode: the daemon and `core` are different users.
   vi.stubEnv("AC_CORE_HOME", home);
   vi.stubEnv("AC_CORE_UID", String(uid));
@@ -57,9 +65,21 @@ beforeEach(async () => {
 
   const routes = createCoreFilesRequestHandler({
     filesPort: { workspaceRoot: () => home },
+    locks,
     helper: {
       helperPath: bundle,
       exists: () => true, // a `setpriv` to build the argv around; it is never run
+      // The daemon has no CAP_KILL on another uid, so it signals through `killAsCore`. Here the
+      // signal is delivered directly, and the pid it was asked for is recorded.
+      killOptions: {
+        exists: () => true,
+        run: async (spec) => {
+          const pid = Number(spec.args.at(-1));
+          kills.push({ pid, args: spec.args });
+          process.kill(pid, "SIGKILL");
+          return { status: 0 };
+        },
+      },
       wrap: (spec, options) => {
         launches.push(asCore(spec as SpawnSpec & { args: string[] }, options) as SpawnSpec & { args: string[] });
         // What `asCore` hands the child, minus the privilege switch no test can make.
@@ -80,6 +100,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  cleanupTrees();
   vi.unstubAllEnvs();
   vi.restoreAllMocks();
   syncBuiltinESMExports();
@@ -206,5 +227,97 @@ describe("the Files API as core: list and download", () => {
     expect(status.status).toBe(500);
     expect(JSON.parse(status.body).code).toBe("write-failed");
     expect(status.body).not.toContain(workDir);
+  });
+});
+
+describe("the Files API as core: upload and tar", () => {
+  it("writes a single file as core, with its mode, and reports the five fields", async () => {
+    const touched = spyOnDaemonFilesystem();
+
+    const answer = await call("PUT", "/v1/files?path=shared/run.sh", Buffer.from("#!/bin/sh\n"), {
+      "x-actana-file-mode": "493",
+    });
+
+    expect(answer.status).toBe(200);
+    expect(lines(answer)).toEqual([
+      expect.objectContaining({ type: "entry", path: "shared/run.sh", kind: "file", size: 10, mode: 0o755, result: "written" }),
+      { type: "done", entries: 1, bytes: 10 },
+    ]);
+    expect(fs.readFileSync(path.join(home, "shared", "run.sh"), "utf8")).toBe("#!/bin/sh\n");
+    expect(touched.filter((t) => t.target.startsWith(home))).toEqual([]);
+  });
+
+  it("creates files and folders owned by core, the user the helper was started as", async () => {
+    const tar = await collect(packDirectory(makeTree({ "inner/deep/leaf.txt": "leaf" })));
+
+    await call("PUT", "/v1/files?path=drop.txt", Buffer.from("x"));
+    await call("PUT", "/v1/files?path=dropped", tar, { "content-type": "application/x-tar" });
+
+    // The helper is started as `core`, and `core` is `AC_CORE_UID` (here the test's own, the
+    // only one a test can be). Every node it made carries that id, and none is root's.
+    for (const created of ["drop.txt", "dropped", "dropped/inner", "dropped/inner/deep/leaf.txt"]) {
+      expect(fs.lstatSync(path.join(home, created)).uid, created).toBe(uid);
+    }
+    expect(launches).toHaveLength(2);
+    for (const launch of launches) expect(launch.args).toContain(`--reuid=${uid}`);
+  });
+
+  it("unpacks a tar into a folder and keeps its tree", async () => {
+    const tar = await collect(
+      packDirectory(makeTree({ "a/b/c.txt": "c", "a/d.txt": "d", "e.txt": { content: "#!/bin/sh\n", mode: 0o755 }, "empty/": "" })),
+    );
+
+    const answer = await call("PUT", "/v1/files?path=shared/drop", tar, { "content-type": "application/x-tar" });
+
+    expect(answer.status).toBe(200);
+    expect(lines(answer).at(-1)).toMatchObject({ type: "done" });
+    expect(lines(answer).filter((l) => l.type === "entry").map((l) => l.path)).toEqual(
+      expect.arrayContaining(["shared/drop/a/b/c.txt", "shared/drop/a/d.txt", "shared/drop/e.txt"]),
+    );
+    expect(fs.readFileSync(path.join(home, "shared", "drop", "a", "b", "c.txt"), "utf8")).toBe("c");
+    expect(fs.statSync(path.join(home, "shared", "drop", "e.txt")).mode & 0o777).toBe(0o755);
+    expect(fs.statSync(path.join(home, "shared", "drop", "empty")).isDirectory()).toBe(true);
+  });
+
+  it("refuses a single-file write at the home itself, from the helper, and writes nothing", async () => {
+    const answer = await call("PUT", "/v1/files?path=", Buffer.from("x"));
+
+    expect(answer.status).toBe(400);
+    expect(JSON.parse(answer.body.toString("utf8")).code).toBe("malformed-path");
+    expect(fs.readdirSync(home)).toEqual([]);
+  });
+
+  it("refuses a second write while one holds the lease, without starting a helper for it", async () => {
+    locks.acquire("shared/big");
+
+    const answer = await call("PUT", "/v1/files?path=other.txt", Buffer.from("x"));
+
+    expect(answer.status).toBe(409);
+    expect(JSON.parse(answer.body.toString("utf8")).code).toBe("transfer-in-progress");
+    expect(launches).toHaveLength(0);
+    expect(fs.existsSync(path.join(home, "other.txt"))).toBe(false);
+  });
+
+  it("stops the helper and frees the lease when the client hangs up mid-upload", async () => {
+    const req = http.request(`${base}/v1/files?path=partial.bin`, { method: "PUT", agent: false });
+    req.on("error", () => undefined);
+    req.write(Buffer.alloc(64 * 1024, 1));
+    await vi.waitFor(() => expect(locks.current()?.path).toBe("partial.bin"), { timeout: 5_000 });
+
+    req.destroy();
+    await vi.waitFor(() => expect(locks.current()).toBeNull(), { timeout: 5_000 });
+
+    // The helper itself was stopped, as core, and is gone: freeing the lease alone would leave it
+    // alive on stdin for as long as the daemon runs.
+    await vi.waitFor(() => expect(kills).toHaveLength(1), { timeout: 5_000 });
+    expect(kills[0]!.args).toEqual(expect.arrayContaining(["--reuid=" + uid, "KILL", String(kills[0]!.pid)]));
+    await vi.waitFor(
+      () => expect(() => process.kill(kills[0]!.pid, 0)).toThrow(/ESRCH/),
+      { timeout: 5_000 },
+    );
+
+    const after = await call("PUT", "/v1/files?path=after.txt", Buffer.from("fine"));
+    expect(after.status).toBe(200);
+    expect(fs.readFileSync(path.join(home, "after.txt"), "utf8")).toBe("fine");
   });
 });
