@@ -1,11 +1,19 @@
 # The reference deployment: one Panel, one Core, one network (ADR 0016 D41).
 #
 #   docker compose up -d
-#   docker compose exec core actana pair new     # a code and a CA fingerprint
+#   docker compose exec -u actana core actana pair new   # a code and a CA fingerprint
 #
 # then open http://localhost:7420, create the Operator, and give "Add Core" the
 # address core:8443 and that code — checking the fingerprint the Panel shows
 # against the one pair new printed.
+#
+# `-u actana` is not optional (#559): the pairing identity belongs to the daemon's
+# own user, which a Session (running as `core`) cannot read, and `pair` reads it
+# from disk. A plain `docker compose exec core …` is root *without* any DAC
+# override, and reads neither the home nor that state. Use:
+#
+#   docker compose exec -u core core bash                 # a Session's own view
+#   docker compose exec -u actana core actana pair new    # pairing
 #
 # A Panel with no Cores opens on the first-run wizard, whose first two steps are
 # about installing a Core on another machine — which the line above has already
@@ -130,9 +138,10 @@ services:
   # replaced, and tini is PID 1 inside the image itself (ADR 0016 D14).
   #
   # Bind-mount ownership (#551 / #558): Docker creates a missing host `./repos`
-  # as root. Named volumes are image-seeded core:core, so they need no prep.
-  # `core-init` is a root one-shot on the same volumes; it exits. The main
-  # service stays USER 1000:1000 so `docker compose exec` is never root.
+  # as root. Named volumes are image-seeded (the home core:core, the state
+  # actana:actana), so they need no prep. `core-init` is a root one-shot on the
+  # same volumes; it exits. The main service starts as root for one step only
+  # (the entrypoint's switch to `actana`, below) and sets no `user:`.
   # Without compose, the equivalent is:
   #   docker run --rm -u 0 --entrypoint /usr/local/libexec/core-fs-prep.sh \
   #     -v <home>:/home/core -v <repos>:/home/core/repos <image>
@@ -141,7 +150,8 @@ services:
     user: "0:0"
     entrypoint: ["/usr/local/libexec/core-fs-prep.sh"]
     # Smallest capability set that can finish prep on a 0750 home:
-    #   CHOWN         — change mount-point owners to 1000:1000
+    #   CHOWN         — change mount-point owners to 1000:1000 (the state
+    #                   volume's to 1001:1001, the daemon's user)
     #   DAC_OVERRIDE  — noble seeds ~/ as 0750 (HOME_MODE); without this,
     #                   uid 0 with only CHOWN is checked as "other" and cannot
     #                   search or mkdir under /home/core (fresh volume or an
@@ -170,6 +180,21 @@ services:
     depends_on:
       core-init:
         condition: service_completed_successfully
+    # The privilege model (#559, ADR 0041 D10 and D11). The container starts as
+    # root for the entrypoint's one step: it checks the state volume and switches
+    # to the `actana` user (uid 1001) keeping CAP_SETUID and CAP_SETGID, and
+    # nothing else, as ambient capabilities. Those two let the daemon start every
+    # Session as `core` with no capabilities of its own. This is also the
+    # container's whole capability set (the bounding set the daemon is left with),
+    # so a root `docker exec` has no more than those two and no DAC override.
+    # `no-new-privileges` stays: it does not stop the setuid calls, and it keeps
+    # a setuid file (the image has none) or a file capability (none either) from
+    # adding to them. Do not add a `user:` here: the entrypoint refuses it.
+    cap_drop:
+      - ALL
+    cap_add:
+      - SETUID
+      - SETGID
     security_opt:
       - no-new-privileges:true
     environment:
@@ -194,9 +219,9 @@ services:
       # (~/.claude, ~/.codex, …). Restarts and image upgrades keep it.
       - core-home:/home/core
       # What only the daemon may hold (#559): the pairing identity, the SQLite
-      # database and the update caches, in /var/lib/actana. A volume of its
-      # own, so a Session working in the home volume is not working beside the
-      # Core's keys. Together with `core-home`, what `docker compose down -v`
+      # database and the update caches, in /var/lib/actana, owned by `actana`
+      # with mode 0700 (`core` cannot read it). A volume of its own, so a
+      # Session working in the home volume is not working beside the Core's keys. Together with `core-home`, what `docker compose down -v`
       # destroys; a Core whose `core-state` is gone has a new identity and every
       # client must pair it again.
       - core-state:/var/lib/actana
@@ -293,7 +318,7 @@ services:
 # state and repos, including a `core2-init` one-shot on those volumes).
 # Nothing here is a singleton. Uncomment, add `core2-home:`, `core2-state:` and
 # `core2-repos:` under `volumes:`, and pair it the same way —
-# `docker compose exec core2 actana pair new` prints its own code and CA
+# `docker compose exec -u actana core2 actana pair new` prints its own code and CA
 # fingerprint.
 #
 # Its repos are a named volume rather than a second bind mount, which is the
@@ -325,6 +350,11 @@ services:
 #     depends_on:
 #       core2-init:
 #         condition: service_completed_successfully
+#     cap_drop:
+#       - ALL
+#     cap_add:
+#       - SETUID
+#       - SETGID
 #     security_opt:
 #       - no-new-privileges:true
 #     environment:

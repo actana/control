@@ -142,35 +142,46 @@ RUN set -eux; \
     node --version; \
     [ "$(npm --version)" = "${NPM_VERSION}" ]
 
-# uid 1000 and gid 1000, by number, always (D12).
+# Two users, both by number (D12, ADR 0041 D11, #559).
 #
-# Both halves are measured, not guessed. Ubuntu 24.04 ships a stock
-# `ubuntu:x:1000:1000` account, so 1000 is already taken, and noble also ships
-# a *group* called `operator`. Let useradd pick, and it lands on 1001:100 —
-# at which point every file a Harness writes into a bind-mounted repo is owned
-# by a uid that exists nowhere on the operator's host, and the operator cannot
-# read back their own working tree. So: delete the stock user, then pin both
-# ids explicitly.
+# `core` is uid 1000 and gid 1000, always. Both halves are measured, not
+# guessed. Ubuntu 24.04 ships a stock `ubuntu:x:1000:1000` account, so 1000 is
+# already taken, and noble also ships a *group* called `operator`. Let useradd
+# pick, and it lands on 1001:100 — at which point every file a Harness writes
+# into a bind-mounted repo is owned by a uid that exists nowhere on the
+# operator's host, and the operator cannot read back their own working tree. So:
+# delete the stock user, then pin both ids explicitly. `core` is who every
+# Session runs as; `operator` is taken, because the Operator is already the
+# human who logs into the Panel.
 #
-# `core` rather than `operator` because the Operator is already the human who
-# logs into the Panel.
+# `actana` is uid 1001 and gid 1001: the daemon's own system user (D6 of the
+# #559 plan), with no login shell and `/var/lib/actana` as its home. It owns
+# the pairing identity and the database, which `core` cannot read. The number is
+# pinned so the image smoke can assert it and so a volume keeps its owner across
+# image upgrades.
 RUN userdel --remove ubuntu \
  && groupadd --gid 1000 core \
  && useradd --uid 1000 --gid 1000 --create-home --shell /bin/bash core
+RUN groupadd --system --gid 1001 actana \
+ && useradd --system --uid 1001 --gid 1001 --no-create-home --home-dir /var/lib/actana --shell /usr/sbin/nologin actana
 
 # No sudoers, and no `sudo` package (#558). ADR 0016 D12's NOPASSWD grant is
 # retired; the ADR that replaces it is #554. The image never contains a helper
-# that lets `core` become root. Bind-mount ownership repair runs in a separate
-# root one-shot (compose `core-init`, or `docker run -u 0 --entrypoint
-# /usr/local/libexec/core-fs-prep.sh`); named volumes are seeded core-owned
-# below so a plain `docker run` needs no prep.
+# that lets `core` become root, and there are no file capabilities anywhere:
+# `actana` holds CAP_SETUID and CAP_SETGID as ambient capabilities from the
+# entrypoint's switch, which is what lets it start a Session as `core`, and a
+# file capability or a setuid bit is how a Session would turn that into more.
+# Bind-mount ownership repair runs in a separate root one-shot (compose
+# `core-init`, or `docker run -u 0 --entrypoint
+# /usr/local/libexec/core-fs-prep.sh`); named volumes are seeded with their
+# owners below so a plain `docker run` needs no prep.
 #
-# There is deliberately no accommodation for overriding `user:` in compose to
-# a non-core uid. NPM_CONFIG_PREFIX points at a home that uid cannot write —
-# so `actana harnesses install` fails. A host whose login user is not uid 1000
-# has two supported answers: chown the bind-mounted directory to 1000:1000, or
-# use a named volume and let the Core own the repos. Do not set the main
-# service to `user: "0"` either — that would make `docker compose exec` root.
+# There is deliberately no accommodation for overriding `user:` in compose. The
+# container starts as root for exactly one step, the entrypoint's switch to
+# `actana`, and it cannot make that switch from any other user: `user: "1000"`
+# or `user: "1001"` stops at the entrypoint with a message. A host whose login
+# user is not uid 1000 has two supported answers: chown the bind-mounted
+# directory to 1000:1000, or use a named volume and let the Core own the repos.
 
 # The Core itself, from the release tarball built for this architecture. It
 # arrives as a named build context because artifacts/ is .dockerignore'd:
@@ -235,18 +246,15 @@ RUN mkdir -p /home/core/.local/bin \
 # /var/lib/actana, which compose mounts as the `core-state` volume (seeded from
 # this directory, so the owner and the mode below are what a new volume gets).
 # `data` and `config` are what AC_USER_DATA_DIR and AC_CORE_MATERIAL_FILE name;
-# `shared` is reserved for #561/#562. Mode 0700 from the start: what is in it is
-# meant for the daemon alone.
-#
-# The owner is core (1000) for now because the daemon still runs as core. The
-# change to a daemon user of its own changes this one line and nothing else.
+# `shared` is reserved for #561/#562. Mode 0700 and owned by `actana`: `core`,
+# whom every Session runs as, cannot read any of it.
 #
 # /run/actana is the hook miss drop box: the one place a Session may append to
 # and the daemon reads, as untrusted input. The directory must exist in the
 # image because the daemon may not be able to create it under /run; the file in
 # it is made by the daemon at boot (harness-hook-delivery.ts).
 RUN mkdir -p /var/lib/actana/data /var/lib/actana/config /var/lib/actana/shared /run/actana \
- && chown -R core:core /var/lib/actana /run/actana \
+ && chown -R actana:actana /var/lib/actana /run/actana \
  && chmod 0700 /var/lib/actana /var/lib/actana/data /var/lib/actana/config /var/lib/actana/shared \
  && chmod 0711 /run/actana
 
@@ -265,9 +273,20 @@ RUN chmod 0755 /usr/local/bin/core-entrypoint.sh
 # and on compose exec is not enough — a plain `docker exec` shell has neither.
 RUN find / -xdev -type f -perm /6000 -exec chmod a-s {} +
 
-# Numeric USER so Kubernetes runAsNonRoot / image-policy scanners accept it.
-USER 1000:1000
-WORKDIR /home/core
+# The image starts as root, on purpose and for one step only (#559). Docker gives
+# a non-root USER no capabilities, and Docker never sets ambient ones, so a
+# daemon that must keep CAP_SETUID and CAP_SETGID cannot be started as `actana`
+# directly: the entrypoint, which needs uid 0, switches to it with `setpriv` and
+# keeps exactly those two. After that `exec` no process of this container runs
+# as root except tini (PID 1), which holds nothing but the compose capability
+# set. `docker exec` without `-u` is therefore root *without* any DAC override:
+# it cannot read /home/core or /var/lib/actana. Use `docker exec -u core` for a
+# Session's view and `docker exec -u actana` for `actana pair`.
+#
+# WORKDIR is `/`, not the home: that root has no CAP_DAC_OVERRIDE, and the home
+# is 0750 core:core, so a start or an exec that tried to enter it would fail.
+USER 0:0
+WORKDIR /
 
 # The operator contract is three variables, and the minimum for a working
 # Core is one (D15):
@@ -304,8 +323,13 @@ WORKDIR /home/core
 # Setting it in the image is what leaves the collision with no outcome to decide:
 # whichever `actana` runs, it is the same program and it finds the same tree.
 #
-# HOME is pinned so os.homedir() and harness npm installs stay under /home/core
-# even if something started the process without a passwd lookup.
+# There is no `HOME` here (#559): the image no longer has one user. The runtime
+# sets it from the account of whoever runs, so `docker exec -u core` gets
+# /home/core and `-u actana` gets /var/lib/actana; the entrypoint sets the
+# daemon's. The identity of `core` (AC_CORE_HOME, AC_CORE_UID, AC_CORE_GID) is
+# not here either: only the daemon needs it, the entrypoint exports it for the
+# daemon alone, and a CLI run with `docker exec -u core` must not believe it is
+# the daemon and wrap its own children in a `setpriv` it has no capability for.
 #
 # The two AC_ paths are the state directory, not the home (#559). They are spelt
 # out here because an ENV line cannot call a function; `CORE_STATE_DIR` in
@@ -313,7 +337,6 @@ WORKDIR /home/core
 # a test compares the two.
 ARG ACTANA_PORT=8443
 ENV ACTANA_PORT=${ACTANA_PORT} \
-    HOME=/home/core \
     ACTANA_CONTAINER=1 \
     AC_CORE_REMOTE=1 \
     AC_CORE_LINK_HOST=0.0.0.0 \
@@ -327,8 +350,11 @@ ENV ACTANA_PORT=${ACTANA_PORT} \
 # The same ARG, so the exposed port cannot drift from the documented default.
 EXPOSE ${ACTANA_PORT}
 
-# tini is PID 1; the entrypoint sets no-new-privs and execs CMD as uid 1000
-# (D14 + #558). Bind-mount prep is not here — see core-fs-prep.sh / core-init.
+# tini is PID 1; the entrypoint checks the state volume, then switches to
+# `actana` (uid 1001) with CAP_SETUID and CAP_SETGID as ambient capabilities and
+# no-new-privs, and execs CMD (D14 + #558 + #559). Bind-mount prep is not here —
+# see core-fs-prep.sh / core-init.
+#
 # node-pty forks a shell and the shell forks a Harness, so when the shell
 # exits first that Harness reparents to PID 1 — and libuv only waitpid()s
 # children Node spawned itself. A Core running as PID 1 therefore accumulates

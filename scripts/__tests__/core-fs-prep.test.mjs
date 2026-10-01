@@ -32,8 +32,8 @@ function runPrepAt(home, env = {}) {
     .replaceAll("CORE_GID=1000", `CORE_GID=${process.getgid()}`)
     // The state directory's owner is the runner too: chown to a uid the runner
     // is not fails (EPERM) for anyone but root, and CI is not uid 1000.
-    .replaceAll("STATE_UID=1000", `STATE_UID=${process.getuid()}`)
-    .replaceAll("STATE_GID=1000", `STATE_GID=${process.getgid()}`);
+    .replaceAll("STATE_UID=1001", `STATE_UID=${process.getuid()}`)
+    .replaceAll("STATE_GID=1001", `STATE_GID=${process.getgid()}`);
   const tmp = path.join(home, ".prep-test.sh");
   fs.mkdirSync(home, { recursive: true });
   fs.writeFileSync(tmp, script, { mode: 0o755 });
@@ -61,6 +61,19 @@ describe("core-fs-prep.sh", () => {
     expect(text).not.toMatch(/CORE_HOME=\$\{/);
     expect(text).not.toMatch(/CORE_UID=\$\{/);
     expect(fs.existsSync(path.join(repoRoot, "deploy/core-fs-prep-wrap.c"))).toBe(false);
+  });
+
+  // #559 — the state volume belongs to `actana`, not to `core`: the one
+  // property the whole privilege model rests on. The rewritten copy the other
+  // tests run replaces these numbers with the runner's, so the shipped values
+  // are read from the shipped text here.
+  it("hands the state mount point to actana (1001:1001) and the home to core (1000:1000)", () => {
+    const text = fs.readFileSync(PREP, "utf8");
+    expect(text).toMatch(/^CORE_UID=1000$/m);
+    expect(text).toMatch(/^CORE_GID=1000$/m);
+    expect(text).toMatch(/^STATE_UID=1001$/m);
+    expect(text).toMatch(/^STATE_GID=1001$/m);
+    expect(text).toContain('fix_mount_point "$STATE" hard "$STATE_UID" "$STATE_GID" 0700');
   });
 
   it("creates shared and repos under a fresh home", () => {

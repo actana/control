@@ -4,11 +4,14 @@ import { describe, expect, it } from "vitest";
 
 import {
   CORE_APP_ROOT,
+  CORE_DAEMON_CAPS,
+  CORE_DAEMON_USER,
   CORE_HOME,
   CORE_HOOK_DROP_DIR,
   CORE_IMAGE,
   CORE_PACKAGES,
   CORE_REFUSED_VERBS,
+  CORE_SESSION_USER,
   CORE_PORT,
   CORE_STATE_DATA_DIR,
   CORE_STATE_DIR,
@@ -415,8 +418,33 @@ describe("reference compose", () => {
     expect(composeText).toMatch(/cap_drop:[\s\S]*?- ALL/);
     expect(composeText).toMatch(/cap_add:[\s\S]*?- CHOWN/);
     expect(composeText).toMatch(/cap_add:[\s\S]*?- DAC_OVERRIDE/);
-    // Main service must not be root — that would make compose exec root.
+    expect(init.cap_drop).toEqual(["ALL"]);
+    expect(init.cap_add).toEqual(["CHOWN", "DAC_OVERRIDE"]);
+  });
+
+  // #559, ADR 0041 D10 and D11. The Core starts as root for the entrypoint's one
+  // step and is then `actana` with exactly two ambient capabilities. The compose
+  // service's capability set is the container's whole set, so it is also what the
+  // daemon's bounding set is left with: nothing but SETUID and SETGID.
+  it("gives the Core exactly CAP_SETUID and CAP_SETGID, drops the rest and keeps no-new-privileges", () => {
+    expect(coreService.cap_drop).toEqual(["ALL"]);
+    expect(coreService.cap_add).toEqual([...CORE_DAEMON_CAPS]);
+    expect(coreService.cap_add).toEqual(["SETUID", "SETGID"]);
+    expect(coreService.security_opt).toEqual(["no-new-privileges:true"]);
+    // Sets no `user:`: the entrypoint needs uid 0 and refuses every other, and a
+    // `user: "0"` would be redundant with the image. Nor privileged, nor a
+    // capability that makes the pair three.
     expect(coreService.scalars.user).toBeUndefined();
+    expect(coreService.scalars.privileged).toBeUndefined();
+    for (const wider of ["KILL", "SETPCAP", "DAC_OVERRIDE", "CHOWN", "SYS_ADMIN", "SYS_PTRACE"]) {
+      expect(coreService.cap_add).not.toContain(wider);
+    }
+  });
+
+  it("tells the operator how to exec into a Core whose plain exec is root without a DAC override", () => {
+    expect(composeText).toContain("docker compose exec -u core core bash");
+    expect(composeText).toContain("docker compose exec -u actana core actana pair new");
+    expect(composeText).not.toMatch(/^#\s+docker compose exec core actana pair new/m);
   });
 
   it("documents the env knob the compose path still has", () => {
@@ -442,6 +470,11 @@ describe("reference compose", () => {
       expect(second.scalars.restart).toBe(coreService.scalars.restart);
       expect(second.ports).toEqual([]);
       expect(second.environment).toContain("ACTANA_PUBLIC_HOST=core2");
+      // The privilege model is not the first Core's alone (#559).
+      expect(second.cap_drop).toEqual(coreService.cap_drop);
+      expect(second.cap_add).toEqual(coreService.cap_add);
+      expect(second.security_opt).toEqual(coreService.security_opt);
+      expect(second.scalars.user).toBeUndefined();
       expect(second.volumes).toEqual([
         `core2-home:${CORE_HOME}`,
         `core2-state:${CORE_STATE_DIR}`,
@@ -898,7 +931,22 @@ describe("core image", () => {
     expect(account).toContain("userdel");
     expect(account).toMatch(/groupadd --gid 1000 core/);
     expect(account).toMatch(/useradd --uid 1000 --gid 1000/);
-    expect(coreImage.users.at(-1)).toBe("1000:1000");
+    expect(CORE_SESSION_USER).toEqual({ name: "core", uid: 1000, gid: 1000 });
+  });
+
+  // #559 — the daemon is its own user, by number, with no shell and its state
+  // directory as home; and the image starts as root for the entrypoint's switch.
+  it("adds actana at 1001:1001 as a system user with no login shell, and starts as root", () => {
+    const account = coreImage.runs.find((run) => run.includes("useradd --system"));
+    expect(account).toMatch(/groupadd --system --gid 1001 actana/);
+    expect(account).toMatch(/useradd --system --uid 1001 --gid 1001 --no-create-home --home-dir \/var\/lib\/actana --shell \/usr\/sbin\/nologin actana/);
+    expect(CORE_DAEMON_USER).toEqual({ name: "actana", uid: 1001, gid: 1001 });
+    // Root, and only root: not core (which would leave the daemon with no
+    // capabilities) and not actana (ditto: Docker never sets ambient ones).
+    expect(coreImage.users).toEqual(["0:0"]);
+    // Root without a DAC override cannot enter the 0750 home, so neither a start
+    // nor an exec may begin there.
+    expect(coreDockerfile).toMatch(/^WORKDIR \/$/m);
   });
 
   it("gives core no sudo and no sudoers file", () => {
@@ -919,20 +967,19 @@ describe("core image", () => {
     expect(coreDockerfile).toContain("find / -xdev -type f -perm /6000 -exec chmod a-s");
     expect(entrypoint).toContain("setpriv");
     expect(entrypoint).toContain("--no-new-privs");
-    expect(entrypoint).not.toContain("--bounding-set");
-    expect(entrypoint).toContain('/usr/bin/id -u)" -eq 0');
     const body = entrypoint
       .split("\n")
       .filter((line) => !line.trim().startsWith("#"))
       .join("\n");
-    expect(body).toContain("refusing to start as root");
-    // Prep is named only in the refuse-as-root hint, never invoked.
+    // Prep is named only in a hint, never invoked: the entrypoint is not the
+    // one-shot, and it never walks or chowns the tree.
     const withoutHints = body
       .split("\n")
       .filter((line) => !line.includes("echo "))
       .join("\n");
     expect(withoutHints).not.toContain("core-fs-prep");
     expect(body).not.toMatch(/\bsudo\b/);
+    expect(withoutHints).not.toMatch(/\bchown\b|\bchmod\b/);
     expect(prep).toContain("PATH=/usr/sbin:/usr/bin:/sbin:/bin");
     expect(prep).toContain("CORE_HOME=/home/core");
     expect(prep).toContain("chown -h");
@@ -951,6 +998,79 @@ describe("core image", () => {
     expect(seed).toContain("chown -R core:core /home/core");
   });
 
+  // #559 — the entrypoint is the one root step, and these are its exact words.
+  // The smoke proves what they do; this holds the text to the numbers the image
+  // and the smoke both use, so none of them can drift alone.
+  describe("the entrypoint's switch from root to actana", () => {
+    const entrypoint = readRepoFile("deploy/core-entrypoint.sh");
+    const code = entrypoint
+      .split("\n")
+      .filter((line) => !line.trim().startsWith("#"))
+      .join("\n");
+    // What the script does, without the sentences it prints.
+    const doing = code
+      .split("\n")
+      .filter((line) => !line.includes("echo "))
+      .join("\n");
+
+    it("requires uid 0 and says why it refuses anything else", () => {
+      expect(code).toContain('uid=$(/usr/bin/id -u)');
+      expect(code).toMatch(/if \[ "\$uid" -ne 0 \]; then/);
+      expect(code).toContain("must start as root (uid 0), not uid ${uid}");
+      expect(code).not.toContain("refusing to start as root");
+    });
+
+    it("checks the state directory is actana:actana 0700 and never repairs it", () => {
+      expect(code).toContain("STATE=/var/lib/actana");
+      expect(code).toMatch(/\[ -L "\$STATE" \]/);
+      expect(code).toContain("/usr/bin/stat -c '%u:%g %a' \"$STATE\"");
+      expect(code).toContain('"${ACTANA_UID}:${ACTANA_GID} 700"');
+      expect(code).toContain("(uid:gid mode), expected ${ACTANA_UID}:${ACTANA_GID} 700");
+      expect(doing).not.toMatch(/\bchown\b|\bchmod\b/);
+    });
+
+    it("execs setpriv to actana with exactly setuid and setgid as inh, ambient and bounding, and no-new-privs", () => {
+      const exec = code.slice(code.lastIndexOf("exec /usr/bin/setpriv"));
+      expect(exec).toContain('--reuid="$ACTANA_UID" --regid="$ACTANA_GID" --clear-groups');
+      expect(exec).toContain("--inh-caps=+setuid,+setgid");
+      expect(exec).toContain("--ambient-caps=+setuid,+setgid");
+      expect(exec).toContain("--bounding-set=+setuid,+setgid");
+      expect(exec).toContain('--no-new-privs -- "$@"');
+      // Nothing after the exec: no root process is left behind, and no third capability anywhere.
+      expect(exec.trim().split("\n").at(-1)).toContain('--no-new-privs -- "$@"');
+      for (const wider of ["kill", "setpcap", "dac_override", "chown", "sys_admin", "all"]) {
+        expect(exec).not.toMatch(new RegExp(`[+,=]${wider}\\b`));
+      }
+    });
+
+    it("runs everything as root by absolute path, because the image PATH leads with a volume the Session writes", () => {
+      for (const binary of ["id", "stat", "setpriv"]) {
+        expect(code).toContain(`/usr/bin/${binary}`);
+        expect(code).not.toMatch(new RegExp(`(^|[\\s(=])${binary}\\s`, "m"));
+      }
+    });
+
+    it("uses the numbers the image and the smoke use", () => {
+      expect(code).toContain(`ACTANA_UID=${CORE_DAEMON_USER.uid}`);
+      expect(code).toContain(`ACTANA_GID=${CORE_DAEMON_USER.gid}`);
+      expect(code).toContain(`CORE_UID=${CORE_SESSION_USER.uid}`);
+      expect(code).toContain(`CORE_GID=${CORE_SESSION_USER.gid}`);
+      expect(code).toContain(`AC_CORE_HOME=${CORE_HOME}`);
+      const account = coreImage.runs.find((run) => run.includes("useradd --system"));
+      expect(account).toContain(`--uid ${CORE_DAEMON_USER.uid} --gid ${CORE_DAEMON_USER.gid}`);
+    });
+
+    it("gives the daemon actana's HOME and the identity of core, and gives neither to the image", () => {
+      expect(code).toContain('export HOME="$STATE" USER=actana LOGNAME=actana');
+      expect(code).toMatch(/export AC_CORE_HOME=\/home\/core AC_CORE_UID="\$CORE_UID" AC_CORE_GID="\$CORE_GID"/);
+      // Not in the image: a CLI run by `docker exec -u core` would take the
+      // identity for the daemon's and wrap its children in a setpriv it cannot run.
+      for (const name of ["HOME", "AC_CORE_HOME", "AC_CORE_UID", "AC_CORE_GID"]) {
+        expect(coreImage.env[name], name).toBeUndefined();
+      }
+    });
+  });
+
   // D14 — tini is PID 1 so reparented Harnesses get reaped; baked in, because
   // `--init` is opt-in and a bare `docker run` would skip it.
   it("runs the daemon under tini as PID 1", () => {
@@ -964,7 +1084,6 @@ describe("core image", () => {
   // is a private image constant the container mode depends on.
   it("bakes the container-mode environment", () => {
     expect(coreImage.env).toMatchObject({
-      HOME: CORE_HOME,
       ACTANA_CONTAINER: "1",
       AC_CORE_REMOTE: "1",
       AC_CORE_LINK_HOST: "0.0.0.0",
@@ -997,7 +1116,8 @@ describe("core image", () => {
     const stateSeed = coreImage.runs.find((run) => run.includes("/var/lib/actana/data"));
     expect(stateSeed).toContain("/var/lib/actana/config");
     expect(stateSeed).toContain("/var/lib/actana/shared");
-    expect(stateSeed).toContain("chown -R core:core /var/lib/actana");
+    expect(stateSeed).toContain("chown -R actana:actana /var/lib/actana /run/actana");
+    expect(stateSeed).not.toContain("core:core");
     expect(stateSeed).toMatch(/chmod 0700 \/var\/lib\/actana /);
     // ... and so is the drop box a Session appends to, which is traversable
     // and is not in it.
