@@ -2,7 +2,6 @@ import { createStartHandler, defaultStreamHandler } from "@tanstack/react-start/
 import { handleApiRequest } from "~/server/api-router";
 import { documentAuthRedirect } from "~/server/panel-auth";
 import { registerEventLogRecorder } from "~/server/event-log-recorder";
-import { coreLinkManager } from "~/server/services/core-link-manager";
 
 /**
  * The panel-link endpoint, handed the process's HTTP server by whatever is
@@ -15,9 +14,10 @@ export { attachPanelLink } from "~/server/panel-link/ws-server";
 /**
  * The Panel's Postgres pool, opened, checked and migrated by `bin/panel.mjs`
  * before it listens (#567): a Panel with no reachable database, or one whose
- * migrations fail, refuses to start. Nothing reads through the pool yet.
+ * migrations fail, refuses to start. The registered Cores are dialed once it is
+ * up, because the registry is in that database.
  */
-export { bootPanelDatabase as connectPanelDatabase } from "~/db/pg-boot";
+export { bootPanel as connectPanelDatabase } from "~/server/panel-boot";
 export { closePanelDatabase } from "~/db/pg";
 
 /**
@@ -36,19 +36,13 @@ export { serveNodeRequest } from "~/server/node-http-bridge";
 // missed event/session timeline via the core-link's `subscribe` path.
 registerEventLogRecorder();
 
-// Bring up a core-link to every registered Core as the process starts — not
-// when a browser arrives. The links, and the replay cursors they advance, are
-// the service's; an operator with no tab open still has a Panel that is
-// watching their fleet.
-coreLinkManager().start();
-
 const startHandler = createStartHandler({ handler: defaultStreamHandler });
 
 export default {
   async fetch(request: Request, opts?: Parameters<typeof startHandler>[1]) {
     const apiResponse = await handleApiRequest(request);
     if (apiResponse) return apiResponse;
-    const redirect = documentAuthRedirect(request);
+    const redirect = await documentAuthRedirect(request);
     if (redirect) return redirect;
     return startHandler(request, opts);
   },

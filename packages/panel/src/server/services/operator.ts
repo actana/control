@@ -1,5 +1,5 @@
 import { randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
-import { getPanelDb } from "../panel-db";
+import { findOperator, insertOperatorIfAbsent, updateOperatorPassword, type OperatorRow } from "../repositories/operator.repo";
 import { MAX_PASSWORD_LENGTH, MIN_PASSWORD_LENGTH } from "~/shared/operator-password";
 
 /** The Operator: the single identity that owns this Panel and its Cores. */
@@ -16,7 +16,7 @@ const OPERATOR_ID = 1;
 
 // scrypt with the parameters RFC 9106-era guidance calls interactive-login
 // grade: ~32 MB of memory per attempt, which is what makes an offline attack on
-// a stolen panel.db expensive. Node ships it, so the Panel gains no native dep.
+// a stolen database dump expensive. Node ships it, so the Panel gains no native dep.
 const SCRYPT_COST = 2 ** 15;
 const SCRYPT_BLOCK_SIZE = 8;
 const SCRYPT_PARALLELIZATION = 1;
@@ -40,38 +40,22 @@ export class OperatorExistsError extends Error {
   }
 }
 
-type OperatorRow = {
-  id: number;
-  name: string;
-  password_hash: string;
-  created_at: number;
-  password_changed_at: number;
-};
-
 function rowToOperator(row: OperatorRow): Operator {
   return {
     id: row.id,
     name: row.name,
-    createdAt: row.created_at,
-    passwordChangedAt: row.password_changed_at,
+    createdAt: row.createdAt,
+    passwordChangedAt: row.passwordChangedAt,
   };
 }
 
-function readRow(): OperatorRow | null {
-  return (
-    (getPanelDb()
-      .prepare("SELECT * FROM operator WHERE id = ?")
-      .get(OPERATOR_ID) as OperatorRow | undefined) ?? null
-  );
-}
-
-export function getOperator(): Operator | null {
-  const row = readRow();
+export async function getOperator(): Promise<Operator | null> {
+  const row = await findOperator(OPERATOR_ID);
   return row ? rowToOperator(row) : null;
 }
 
-export function operatorExists(): boolean {
-  return readRow() !== null;
+export async function operatorExists(): Promise<boolean> {
+  return (await findOperator(OPERATOR_ID)) !== null;
 }
 
 export function hashPassword(password: string): string {
@@ -137,37 +121,34 @@ function normalizeName(name: unknown): string {
 }
 
 /** Create the one Operator. Throws OperatorExistsError if first boot is over. */
-export function createOperator(input: { name?: unknown; password: unknown }): Operator {
+export async function createOperator(input: { name?: unknown; password: unknown }): Promise<Operator> {
   const password = assertPasswordPolicy(input.password);
   const name = normalizeName(input.name);
   const now = Date.now();
-  const result = getPanelDb()
-    .prepare(
-      `INSERT INTO operator (id, name, password_hash, created_at, password_changed_at)
-       VALUES (?, ?, ?, ?, ?)
-       ON CONFLICT(id) DO NOTHING`,
-    )
-    .run(OPERATOR_ID, name, hashPassword(password), now, now);
-  if (result.changes === 0) throw new OperatorExistsError();
+  const created = await insertOperatorIfAbsent({
+    id: OPERATOR_ID,
+    name,
+    passwordHash: hashPassword(password),
+    createdAt: now,
+    passwordChangedAt: now,
+  });
+  if (!created) throw new OperatorExistsError();
   return { id: OPERATOR_ID, name, createdAt: now, passwordChangedAt: now };
 }
 
-export function verifyOperatorPassword(password: unknown): boolean {
-  const row = readRow();
+export async function verifyOperatorPassword(password: unknown): Promise<boolean> {
+  const row = await findOperator(OPERATOR_ID);
   if (!row || typeof password !== "string") return false;
-  return verifyPasswordHash(password, row.password_hash);
+  return verifyPasswordHash(password, row.passwordHash);
 }
 
 /**
  * Replace the Operator's password. Callers are responsible for revoking
  * sessions — see auth.controller, which revokes every one of them.
  */
-export function setOperatorPassword(password: unknown): void {
+export async function setOperatorPassword(password: unknown): Promise<void> {
   const next = assertPasswordPolicy(password);
-  const now = Date.now();
-  getPanelDb()
-    .prepare("UPDATE operator SET password_hash = ?, password_changed_at = ? WHERE id = ?")
-    .run(hashPassword(next), now, OPERATOR_ID);
+  await updateOperatorPassword(OPERATOR_ID, hashPassword(next), Date.now());
 }
 
 export { OPERATOR_ID };

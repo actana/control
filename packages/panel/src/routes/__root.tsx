@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, lazy, Suspense } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState, lazy, Suspense } from "react";
 import {
   ClientOnly,
   Outlet,
@@ -9,14 +9,8 @@ import {
   useRouterState,
 } from "@tanstack/react-router";
 import type { QueryClient } from "@tanstack/react-query";
-import {
-  getRailClusters,
-  mergeRailProjects,
-  railNavigateSearch,
-  resolveRailChordTarget,
-  usesDirectRailProjectShortcuts,
-  type RailTarget,
-} from "~/lib/rail-projects";
+import { FleetProvider, useFleet } from "~/lib/fleet-context";
+import { useCoreHotkeys } from "~/lib/use-core-hotkeys";
 import { isAuthPath } from "~/lib/auth-paths";
 import { TopBar, type Crumb } from "~/components/ui/TopBar";
 import { Btn } from "~/components/ui/Btn";
@@ -40,19 +34,12 @@ import {
 } from "~/lib/user-terminal-store";
 import { TerminalPanel } from "~/components/views/TerminalPanel";
 import { UserTerminalPanel } from "~/components/views/UserTerminalPanel";
-import { ProjectPicker } from "~/components/views/ProjectPicker";
-import { ProjectBar } from "~/components/views/ProjectBar";
-import { AddProjectProvider } from "~/lib/add-project-store";
-import { GroupsDialogProvider } from "~/lib/groups-dialog-store";
-import { ACTIVE_GROUP_ALL, ACTIVE_GROUP_UNGROUPED, useActiveGroup } from "~/lib/active-group";
-import { GroupSwitcher } from "~/components/views/GroupSwitcher";
+import { CoreRail } from "~/components/views/CoreRail";
 import { projectIdFromPath } from "~/lib/project-id-from-path";
 import {
   HeaderActionsProvider,
   HeaderActionsSlot,
 } from "~/components/ui/HeaderActionsSlot";
-import { useSettings, useProjects } from "~/queries";
-import { useRemotePinnedProjects } from "~/lib/use-fleet";
 import { ProviderUsageIndicator } from "~/components/views/ProviderUsageIndicator";
 import { UpdateBanner } from "~/components/views/UpdateBanner";
 import { FirstRunGate } from "~/components/views/FirstRunGate";
@@ -142,8 +129,6 @@ function RootComponent() {
         <KeybindingsProvider>
           <TerminalProvider>
             <UserTerminalProvider>
-              <AddProjectProvider>
-                <GroupsDialogProvider>
                   <HeaderActionsProvider>
                     {/*
                      * The entire app shell reads client-only state — react-query
@@ -170,12 +155,12 @@ function RootComponent() {
                        * form it mounts is the same one Settings mounts.
                        */}
                       <FirstRunGate>
-                        <Shell />
+                        <FleetProvider>
+                          <Shell />
+                        </FleetProvider>
                       </FirstRunGate>
                     </ClientOnly>
                   </HeaderActionsProvider>
-                </GroupsDialogProvider>
-              </AddProjectProvider>
             </UserTerminalProvider>
           </TerminalProvider>
         </KeybindingsProvider>
@@ -263,28 +248,13 @@ function Shell() {
   // rows last heard about before the gap. Mounted here, once, for the whole
   // shell — the stream is shared, and so is everything it feeds.
   useEventStreamReconcile();
-  const { data: settings } = useSettings();
-  const { data: projects } = useProjects();
-  // The rail draws its badges from the Panel's own rows PLUS every Core's pins
-  // (ProjectBar merges the same two lists). The rail chords below address that
-  // merged list, or a Core pin's badge would open whatever Panel-local project
-  // happened to sit in that slot — or nothing at all (#379).
-  const { projects: remotePinnedProjects } = useRemotePinnedProjects();
-  const railProjects = useMemo(
-    () => mergeRailProjects(projects, remotePinnedProjects),
-    [projects, remotePinnedProjects],
-  );
-  const { activeGroup, setActiveGroup, groups } = useActiveGroup();
+  const { cores } = useFleet();
   // Pure actions (stable identity) + narrow flip-only subscriptions, so a
   // background session-status tick doesn't re-render the whole shell. The active
   // session itself lives in the ProjectTerminalPanel leaf below.
   const { close, deselect, setPtyId } = useTerminalActions();
   const gridView = useGridView();
   const workspaceRef = useRef<HTMLDivElement>(null);
-  // First digit of a group→project rail chord (Cmd held, group digit pressed,
-  // awaiting the project digit or a Cmd release). Only used in "All" mode
-  // when at least one real group exists.
-  const pendingRailGroupRef = useRef<number | null>(null);
   const userTerminals = useUserTerminals();
   const {
     togglePanel,
@@ -317,14 +287,17 @@ function Shell() {
   const path = useRouterState({ select: (state) => state.location.pathname });
   const projectId = projectIdFromPath(path);
   // Which Core owns the currently-mounted shell (issue 08 — Singular UI across
-  // Cores). Only the /projects/$id route sets `coreId`; every other route
-  // implicitly means the Panel's own rows, which ProjectBar defaults to.
+  // Cores): the Core page names it in the path, the session workspace in the
+  // `coreId` search param; every other route has none.
   const routeCoreId = useRouterState({
     select: (state) => {
+      const onCorePage = /^\/cores\/([^/]+)/.exec(state.location.pathname);
+      if (onCorePage) return decodeURIComponent(onCorePage[1]!);
       const search = state.location.search as { coreId?: unknown } | undefined;
       return typeof search?.coreId === "string" ? search.coreId : undefined;
     },
   });
+
   // Flip-only: true iff this project has a materialized active session. Gates
   // the expanded-terminal layout without subscribing to the churning data slice.
   const hasActiveSession = useHasActiveSession(projectId);
@@ -359,42 +332,28 @@ function Shell() {
   // grid below the project header) spans full width and the single right-hand
   // terminal panel is hidden.
   const gridActive = !!projectId && gridView;
-  // The group is the broadest context, so it leads the breadcrumb:
-  // Group › Project › Scope. Omitted (not just null-rendered) when no groups
-  // exist so no dangling separator renders, and absent on the app-global
-  // Settings/Usage screens where a group scope is meaningless. Also omitted
-  // when hidden via Settings → Interface (right-click the pill → Hide);
-  // groups stay reachable through the dashboard chips and the cycle hotkey.
-  const groupCrumb: Crumb[] =
-    groups.length > 0 && (settings?.showGroupSwitcher ?? true)
-      ? [{ label: "Group", node: <GroupSwitcher /> }]
-      : [];
-  const crumbs: Crumb[] = settingsOpen
-    ? [{ label: "Settings" }]
-    : projectId
-    ? [
-        ...groupCrumb,
-        // The switcher is scoped to the Core that owns this shell, so it gets
-        // the same `?coreId=` the rest of the shell reads its data with.
-        {
-          label: "Project",
-          node: <ProjectPicker projectId={projectId} coreId={routeCoreId ?? null} />,
-        },
-      ]
-      : activePanel === "usage"
-        ? [{ label: "Usage" }]
-      // Outside a Project there is no Project to switch away from, so no
-      // switcher — the root path used to render an empty one (issue 231).
-      : groupCrumb;
-
-  const closePanel = () => setActivePanel(null);
-
   const goHome = () => {
     setActivePanel(null);
     if (settingsOpen) requestCloseSettings();
     // void: a failed navigation shows in the router's own error state.
     void router.navigate({ to: "/" });
   };
+
+  // Cores › <Core>. The Core's own switcher lives in its header (screen 02);
+  // the breadcrumb only says where we are.
+  const crumbCore = routeCoreId ? cores.find((c) => c.id === routeCoreId) : undefined;
+  const crumbs: Crumb[] = settingsOpen
+    ? [{ label: "Settings" }]
+    : activePanel === "usage"
+      ? [{ label: "Usage" }]
+      : crumbCore
+        ? [
+            { label: "Cores", onClick: goHome },
+            { label: crumbCore.label },
+          ]
+        : [];
+
+  const closePanel = () => setActivePanel(null);
 
   // Recompute + re-observe the workspace bounds whenever the workspace div is
   // (un)mounted.
@@ -430,21 +389,6 @@ function Shell() {
       document.documentElement.style.removeProperty("--mc-workspace-bottom");
     };
   }, []);
-
-  // Cycle the active group context: All → each group → Ungrouped → All.
-  const cycleActiveGroup = useCallback(
-    (direction: 1 | -1) => {
-      const order: string[] = [ACTIVE_GROUP_ALL, ...groups.map((g) => g.id)];
-      if ((projects ?? []).some((p) => p.groupId == null)) order.push(ACTIVE_GROUP_UNGROUPED);
-      if (order.length <= 1) return;
-      const index = order.indexOf(activeGroup);
-      const next = order[(index + direction + order.length) % order.length]!;
-      setActiveGroup(next);
-    },
-    [activeGroup, groups, projects, setActiveGroup],
-  );
-  useHotkey("group.next", () => cycleActiveGroup(1));
-  useHotkey("group.prev", () => cycleActiveGroup(-1));
 
   useHotkey("terminal.toggle", () => togglePanel());
   // `terminal.newTab` (⌘T by default) opens the same thing the panel's one
@@ -501,20 +445,14 @@ function Shell() {
     window.addEventListener("keydown", onKeyDown, true);
     return () => window.removeEventListener("keydown", onKeyDown, true);
   }, []);
-  // One place every rail chord navigates through, so a Core-owned pin can never
-  // lose its `?coreId=`: without it the project route falls back to the Panel's
-  // own DB and the page 404s or shows the wrong project (#379).
-  const navigateToRailTarget = useCallback(
-    (target: RailTarget) => {
+  const openCore = useCallback(
+    (coreId: string) => {
       // void: a failed navigation shows in the router's own error state.
-      void router.navigate({
-        to: "/projects/$id",
-        params: { id: target.id },
-        search: railNavigateSearch(target),
-      });
+      void router.navigate({ to: "/cores/$coreId", params: { coreId } });
     },
     [router],
   );
+  useCoreHotkeys(cores, openCore);
   // Cmd/Ctrl + [ / ] are non-rebindable terminal-focused shortcuts.
   // Capture phase: a focused xterm textarea swallows these on bubble.
   // ⌘T used to be in here too; it is `terminal.newTab` above now, so the
@@ -535,74 +473,10 @@ function Shell() {
         cycleNext();
         return;
       }
-      if (!e.shiftKey && !e.altKey && /^[1-9]$/.test(e.key)) {
-        if (e.repeat) {
-          // Ignore auto-repeat so a held digit doesn't re-fire the chord.
-          e.preventDefault();
-          return;
-        }
-        const digit = Number(e.key);
-        // Same clusters the rail renders — badges and hotkeys must agree.
-        const clusters = getRailClusters(railProjects, groups, activeGroup);
-        const navigateTo = (target: RailTarget) => {
-          e.preventDefault();
-          e.stopPropagation();
-          navigateToRailTarget(target);
-        };
-
-        // A single group is active, or no real groups exist: the rail is one
-        // flat project list, so the digit addresses a project directly.
-        if (usesDirectRailProjectShortcuts(groups, activeGroup)) {
-          pendingRailGroupRef.current = null;
-          const target = resolveRailChordTarget(clusters, null, digit);
-          if (target) navigateTo(target);
-          else e.preventDefault();
-          return;
-        }
-
-        // "All" mode: two-level chord. First digit picks the group cluster;
-        // the second digit (this handler, next press) picks the project. A
-        // Cmd release before the second digit jumps to the group's first
-        // project (see the keyup handler below).
-        e.preventDefault();
-        e.stopPropagation();
-        if (pendingRailGroupRef.current == null) {
-          // First digit — remember the group if it exists; otherwise ignore.
-          if (clusters[digit - 1]) pendingRailGroupRef.current = digit;
-          return;
-        }
-        const groupDigit = pendingRailGroupRef.current;
-        pendingRailGroupRef.current = null;
-        const target = resolveRailChordTarget(clusters, groupDigit, digit);
-        if (target) navigateTo(target);
-        return;
-      }
-    };
-    // Releasing Cmd/Ctrl with a group digit still pending jumps to that
-    // group's first project (a single-digit chord).
-    const onKeyUp = (e: KeyboardEvent) => {
-      if (e.key !== "Meta" && e.key !== "Control") return;
-      const pending = pendingRailGroupRef.current;
-      pendingRailGroupRef.current = null;
-      if (pending == null || usesDirectRailProjectShortcuts(groups, activeGroup)) return;
-      const clusters = getRailClusters(railProjects, groups, activeGroup);
-      const target = resolveRailChordTarget(clusters, pending, 1);
-      if (target) navigateToRailTarget(target);
-    };
-    // Losing focus mid-chord (e.g. clicking away while Cmd is held) would
-    // otherwise leave a group digit pending and misread the next chord.
-    const onBlur = () => {
-      pendingRailGroupRef.current = null;
     };
     window.addEventListener("keydown", onKeyDown, true);
-    window.addEventListener("keyup", onKeyUp, true);
-    window.addEventListener("blur", onBlur);
-    return () => {
-      window.removeEventListener("keydown", onKeyDown, true);
-      window.removeEventListener("keyup", onKeyUp, true);
-      window.removeEventListener("blur", onBlur);
-    };
-  }, [activeGroup, cycleNext, cyclePrev, groups, navigateToRailTarget, railProjects]);
+    return () => window.removeEventListener("keydown", onKeyDown, true);
+  }, [cycleNext, cyclePrev]);
 
   return (
     <>
@@ -656,7 +530,7 @@ function Shell() {
           }}
         >
           <div style={{ flex: 1, display: "flex", overflow: "hidden", minHeight: 0 }}>
-            <ProjectBar coreId={routeCoreId} />
+            <CoreRail />
             <div
               style={{
                 position: "relative",
