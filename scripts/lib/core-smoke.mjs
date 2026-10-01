@@ -559,6 +559,35 @@ export function checkProcessStatus(text, kind) {
 }
 
 /**
+ * Parse what the root-process scan printed: `@@SELF <pid>` for the scanning shell, then
+ * for each process `@@<pid>` and its status text. Every block is accounted for: a block
+ * that is neither is reported in `unparsed` (a pid whose status could not be read has
+ * the pid and an empty status, and stays in `processes` for the checker to flag), so
+ * nothing the scan printed is dropped without a word.
+ */
+export function parseStatusScan(text) {
+  const processes = [];
+  const unparsed = [];
+  let self = Number.NaN;
+  for (const raw of String(text).split("\n@@")) {
+    const block = raw.replace(/^@@/, "");
+    if (block.trim() === "") continue;
+    const selfMatch = block.match(/^SELF (\d+)\s*$/);
+    if (selfMatch) {
+      self = Number(selfMatch[1]);
+      continue;
+    }
+    const pidMatch = block.match(/^(\d+)(?:\n([\s\S]*))?$/);
+    if (!pidMatch) {
+      unparsed.push(block.slice(0, 80));
+      continue;
+    }
+    processes.push({ pid: Number(pidMatch[1]), status: pidMatch[2] ?? "" });
+  }
+  return { self, processes, unparsed };
+}
+
+/**
  * What is wrong with a process scan, as `{pid, status}` pairs read in a *root*
  * exec whose own shell is `probePid`; empty when it is right. After the entrypoint's
  * `exec` nothing in the container is root, tini (PID 1) included: it runs as the

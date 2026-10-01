@@ -326,11 +326,11 @@ WORKDIR /
 # **ACTANA_ROOT is what makes that true of `daemon` as well.** The `daemon` verb
 # has to find `app/core-entry.cjs`, and it looks in ACTANA_ROOT first and then at
 # the managed install's `current` symlink. The tarball's own `bin/actana` exports
-# ACTANA_ROOT for itself, so CMD works — but an `npm i -g @actana/cli` inside the
-# container lands its shim first on PATH with neither answer available, and the
-# next start would say "no Core is installed here" instead of booting a daemon.
-# Setting it in the image is what leaves the collision with no outcome to decide:
-# whichever `actana` runs, it is the same program and it finds the same tree.
+# ACTANA_ROOT for itself, so CMD works — and an `npm i -g @actana/cli` inside the
+# container lands its shim in the home's bin, which is on a Session's PATH but not
+# on this image's, so the two cannot collide on the daemon's own start. Setting it
+# in the image keeps it true for any `actana` that does run: it is the same program
+# and it finds the same tree.
 #
 # There is no `HOME` here (#559): the image no longer has one user. The runtime
 # sets it from the account of whoever runs, so `docker exec -u core` gets

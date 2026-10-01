@@ -10,6 +10,7 @@ import {
   expectedStatusLines,
   checkNoRootProcesses,
   checkRootOwnedDirs,
+  parseStatusScan,
   pathFromEnviron,
   statusLines,
 } from "../lib/core-smoke.mjs";
@@ -227,6 +228,31 @@ describe("no root process in the container", () => {
   });
 });
 
+describe("parsing the root-process scan", () => {
+  it("returns every process block, the scan's own pid, and drops nothing", () => {
+    const text = "@@SELF 90\n@@1\nName:\ttini\nUid:\t1001\t1001\t1001\t1001\n@@7\nName:\tnode\n@@55\n@@56";
+    const { self, processes, unparsed } = parseStatusScan(text);
+    expect(self).toBe(90);
+    expect(processes.map((p) => p.pid)).toEqual([1, 7, 55, 56]);
+    expect(processes[2]).toEqual({ pid: 55, status: "" });
+    expect(processes[3]).toEqual({ pid: 56, status: "" });
+    expect(unparsed).toEqual([]);
+  });
+
+  it("keeps a pid whose status was not read, with an empty status, so the checker flags it", () => {
+    const { processes } = parseStatusScan("@@SELF 9\n@@1\nUid:\t1\t1\t1\t1\nGid:\t1\t1\t1\t1\n@@12");
+    expect(checkNoRootProcesses(processes, 9).join("\n")).toMatch(/pid 12: no Uid\/Gid line/);
+  });
+
+  it("reports a block that is neither SELF nor a pid", () => {
+    expect(parseStatusScan("@@SELF 1\n@@garbage here\n@@2\nUid:\t1").unparsed).toEqual(["garbage here"]);
+  });
+
+  it("has no self when the scan printed none (NaN), which the checker then refuses", () => {
+    expect(parseStatusScan("@@1\nUid:\t1").self).toBeNaN();
+  });
+});
+
 describe("the directories root and the daemon execute from", () => {
   const dir = (path, owner = "0:0", mode = "755") => ({ path, owner, mode });
 
@@ -310,6 +336,15 @@ describe("the image smoke still asks every question of the privilege model", () 
     .join("\n");
 
   it.each([
+    ["R12. the daemon's environment is read with its own credentials, inheritable too", '"--inh-caps=-all,+setuid,+setgid",'],
+    ["R12. and its ambient capabilities", '"--ambient-caps=-all,+setuid,+setgid",'],
+    ["R12. from the root exec, as setpriv to 1001:1001", "`--reuid=${CORE_DAEMON_USER.uid}`,"],
+    ["R12. node is found by argv[0], among the children of PID 1", '/^PPid:\\s+1$/m.test(status)'],
+    ["a login shell of core leads with the home's bin", 'if (loginPath.split(":")[0] !== `${CORE_HOME}/.local/bin`) {'],
+    ["nothing under the root-run trees belongs to anyone but root", "if (foreign) die("],
+    ["and that scan must see a root-owned file", "if (!seenRoot) die("],
+    ["the orphan leg has a 10 s limit", "ORPHAN=$!); exit 0'\", 10_000)"],
+    ["the home's modes are restored, and checked", "if (JSON.stringify(restored) !== JSON.stringify(homeModes)) die("],
     ["R9. as core, every directory root or the daemon executes from is root-owned and closed", "checkRootOwnedDirs(seen)"],
     ["R9. read from the daemon's own environment", "pathFromEnviron(environ.stdout)"],
     ["R9. core cannot create a file beside the entrypoint", "core created a file beside the root entrypoint"],
@@ -321,6 +356,19 @@ describe("the image smoke still asks every question of the privilege model", () 
     ["the orphan is gone, not a zombie", "is still in /proc after it exited"],
   ])("%s", (_what, fragment) => {
     expect(code).toContain(fragment);
+  });
+
+  it.each([
+    ["R12. the environ read is by setpriv in the root exec", '"/usr/bin/setpriv",'],
+    ["R12. the scan's unparsed blocks fail it", "if (scanUnparsed.length > 0) die("],
+    ["both fakes and their logs are removed", "`${CORE_HOME}/.local/bin/stat`, fakeActanaLog, marker]"],
+  ])("%s", (_what, fragment) => {
+    expect(code).toContain(fragment);
+  });
+
+  it("R12. finds node by argv[0] and never by an exe link of a process that holds capabilities", () => {
+    expect(code).not.toContain("readlink");
+    expect(code).toContain(String.raw`tr "\\0" "\\n" < "$p/cmdline"`);
   });
 
   it("checks the planted actana only after the pairing leg, and removes it", () => {

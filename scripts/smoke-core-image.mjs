@@ -83,6 +83,7 @@ import {
   openCoreSession,
   pickFreePort,
   checkNoRootProcesses,
+  parseStatusScan,
   checkRootOwnedDirs,
   pathFromEnviron,
 } from "./lib/core-smoke.mjs";
@@ -515,6 +516,17 @@ for (const user of [CORE_SESSION_USER, CORE_DAEMON_USER]) {
   if (home !== wanted) die(`HOME for ${user.name} is ${JSON.stringify(home)}, expected ${wanted}`);
 }
 
+// A login shell of core's (what `docker exec -u core core bash -l` and a Session's shell
+// are) leads with the home's own bin, where Harness CLIs are installed; the image PATH
+// does not. Both halves are the point: the image PATH names no directory under the home
+// (checked on the config above), and core still finds its own tools.
+{
+  const loginPath = core.exec(["bash", "-lc", 'printf %s "$PATH"']).stdout.trim();
+  if (loginPath.split(":")[0] !== `${CORE_HOME}/.local/bin`) {
+    die(`a login shell of core has PATH ${JSON.stringify(loginPath)}: it must lead with ${CORE_HOME}/.local/bin`);
+  }
+}
+
 // D3 — a plain `docker exec` is root, and that root has no DAC override: it
 // reads neither the home nor the state. What an operator types is `-u core` or
 // `-u actana`, and the compose file says so.
@@ -775,12 +787,8 @@ const everyStatus = docker([
   "-c",
   'printf "@@SELF %s\\n" "$$"; for p in /proc/[0-9]*; do printf "@@%s\\n" "${p#/proc/}"; cat "$p/status" 2>/dev/null; done',
 ]).stdout;
-const scanSelf = Number(everyStatus.match(/^@@SELF (\d+)$/m)?.[1]);
-const statuses = everyStatus
-  .split("\n@@")
-  .filter((block) => /^\d+\n/.test(block.replace(/^@@/, "")))
-  .map((block) => block.replace(/^@@/, ""))
-  .map((block) => ({ pid: Number(block.split("\n")[0]), status: block.split("\n").slice(1).join("\n") }));
+const { self: scanSelf, processes: statuses, unparsed: scanUnparsed } = parseStatusScan(everyStatus);
+if (scanUnparsed.length > 0) die(`the root-process scan printed blocks that are neither a pid nor SELF:\n${scanUnparsed.join("\n")}`);
 const rootProblems = checkNoRootProcesses(statuses, scanSelf);
 if (rootProblems.length > 0) {
   die(`the root-process scan failed:\n  ${rootProblems.join("\n  ")}\n${formatProcesses(processTable(core))}`);
@@ -799,8 +807,26 @@ log("no process of the container runs as root; tini (PID 1) is actana with the s
 // its environment, not assumed — is root-owned and not writable. (The Node tarball once
 // left /usr/local owned by uid 1000.) Read as `core`, the user who would do the swapping.
 {
-  const environ = core.exec(["cat", `/proc/${daemon.pid}/environ`], { user: CORE_DAEMON_USER.name, allowFailure: true });
-  if (environ.status !== 0) die(`could not read the daemon's environment (pid ${daemon.pid}): ${environ.stderr}`);
+  // The daemon holds capabilities (c0), so only a process with its own credentials may
+  // read its environment under /proc (the ptrace-read check needs a superset of its
+  // permitted set): the root exec, which has CAP_SETUID and CAP_SETGID, becomes
+  // exactly the daemon's user with exactly its capabilities, and then reads.
+  const environ = docker(
+    [
+      "exec",
+      core.name,
+      "/usr/bin/setpriv",
+      `--reuid=${CORE_DAEMON_USER.uid}`,
+      `--regid=${CORE_DAEMON_USER.gid}`,
+      "--clear-groups",
+      "--inh-caps=-all,+setuid,+setgid",
+      "--ambient-caps=-all,+setuid,+setgid",
+      "cat",
+      `/proc/${daemon.pid}/environ`,
+    ],
+    { allowFailure: true },
+  );
+  if (environ.status !== 0) die(`could not read the daemon's environment (pid ${daemon.pid}) with its own credentials: ${environ.stderr}`);
   const daemonPath = pathFromEnviron(environ.stdout);
   if (!daemonPath || daemonPath.length === 0) die("the daemon's environment has no PATH");
   const dirs = [path.posix.dirname(ENTRYPOINT_PATH), ...daemonPath];
@@ -817,6 +843,17 @@ log("no process of the container runs as root; tini (PID 1) is actana with the s
   const swap = core.exec(["sh", "-c", `printf x >> ${ENTRYPOINT_PATH} 2>&1`], { allowFailure: true });
   if (swap.status === 0) die(`core wrote to the root entrypoint ${ENTRYPOINT_PATH}`);
   log(`the entrypoint's directory and the daemon's ${daemonPath.length} PATH entries are root-owned and closed to core, which cannot create or change a file there`);
+}
+
+// Nothing under the trees root and the daemon run from belongs to anyone but root.
+// The scan must also see something, or an empty answer proves nothing.
+{
+  const trees = ["/opt/actana", "/usr/local", path.posix.dirname(ENTRYPOINT_PATH)];
+  const foreign = core.exec(["find", ...trees, "!", "-uid", "0", "-print"]).stdout.trim();
+  if (foreign) die(`files under ${trees.join(", ")} are not owned by uid 0 (core could swap them):\n${foreign.split("\n").slice(0, 20).join("\n")}`);
+  const seenRoot = core.exec(["find", ...trees, "-uid", "0", "-name", "*", "-print", "-quit"]).stdout.trim();
+  if (!seenRoot) die(`the ownership scan of ${trees.join(", ")} saw no root-owned file, so finding no other proves nothing`);
+  log("everything under /opt/actana, /usr/local and /usr/libexec/actana is owned by uid 0");
 }
 
 // ─── A Session, as a client opens one ───────────────────────────────────────
@@ -1048,12 +1085,21 @@ if (/FAKE_STAT_RAN_AS_0/.test(fakeLog)) {
 }
 log("hostile PATH/CORE_HOME prep (compose caps) left /etc 0:0, the home 1000:1000 and the state 1001:1001");
 
-// A Session plants an `actana` in its own ~/.local/bin — first on the image PATH —
-// and opens the home to others (`chmod o+x ~`, which is core's to do and which a
-// bind-mounted home may have from the host anyway). The entrypoint starts the daemon
-// by absolute path and gives it a PATH without that directory, so the fake must
-// never run, as 1001 or as anyone. First prove the trap is armed: the daemon's
-// user can reach the fake, or "it never ran" would mean nothing.
+// A Session plants an `actana` in its own ~/.local/bin — first on a Session's own
+// PATH, and on no PATH of the image's or the daemon's — and opens the home to others
+// (`chmod o+x ~`, which is core's to do and which a bind-mounted home may have from the
+// host anyway). The entrypoint starts the daemon by absolute path and the image PATH
+// names no directory under the home, so the fake must never run, as 1001 or as anyone.
+// First prove the trap is armed: the daemon's user can reach the fake, or "it never
+// ran" would mean nothing. The modes it changes are recorded and restored at the end.
+const homeModePaths = [CORE_HOME, `${CORE_HOME}/.local`, `${CORE_HOME}/.local/bin`, `${CORE_HOME}/.local/share`, `${CORE_HOME}/.local/share/actana`];
+core.exec(["mkdir", "-p", `${CORE_HOME}/.local/bin`, `${CORE_HOME}/.local/share/actana`]);
+const homeModes = core
+  .exec(["stat", "-c", "%a %n", ...homeModePaths])
+  .stdout.split("\n")
+  .filter(Boolean)
+  .map((line) => line.split(" "));
+if (homeModes.length !== homeModePaths.length) die(`could not record the home's modes: ${JSON.stringify(homeModes)}`);
 const fakeActanaLog = `${CORE_HOME}/.local/share/actana/fake-actana.log`;
 core.exec([
   "sh",
@@ -1104,7 +1150,7 @@ log("the Core restarted with a planted actana in the home's .local/bin (the chec
 {
   const reaper = await openCoreSession(credentialFromMaterial(materialCopy, core.endpoint)).catch((err) => die(`could not open a Session: ${err.message}`));
   await reaper.prepare().catch((err) => die(`the Session's shell never answered: ${err.message}`));
-  const orphaned = await reaper.run("sh -c '(sleep 3 & echo ORPHAN=$!); exit 0'").catch((err) => die(`could not orphan a process: ${err.message}`));
+  const orphaned = await reaper.run("sh -c '(sleep 3 & echo ORPHAN=$!); exit 0'", 10_000).catch((err) => die(`could not orphan a process: ${err.message}`));
   const orphan = Number(orphaned.output.match(/ORPHAN=(\d+)/)?.[1]);
   if (!Number.isInteger(orphan) || orphan <= 1) die(`no orphan pid was printed:\n${orphaned.output}`);
   const parent = () =>
@@ -1383,11 +1429,17 @@ if (composeInit.status !== 0 || composeInitProblems.length > 0) {
   die(`PID 1 of a compose-started Core is not exactly actana with the two capabilities:\n  ${composeInitProblems.join("\n  ")}\n${composeInit.stdout}${composeInit.stderr}`);
 }
 const composeDaemon = composeStatus(
-  'for p in /proc/[0-9]*; do read -r _ comm rest < "$p/stat"; case "$(readlink "$p/exe")" in */node) echo "@@${p#/proc/}"; cat "$p/status";; esac; done',
+  // By argv[0], as `processTable` does (the exe link of a process holding capabilities is not
+  // readable here), and only the children of PID 1: the helper's node runs as core.
+  'for p in /proc/[0-9]*; do a=$(tr "\\0" "\\n" < "$p/cmdline" 2>/dev/null | head -n 1); case "$a" in */node) echo "@@${p#/proc/}"; cat "$p/status";; esac; done',
 );
-const composeDaemonStatus = (composeDaemon.stdout ?? "").split("@@").filter(Boolean).map((b) => b.split("\n").slice(1).join("\n"));
+const composeDaemonStatus = (composeDaemon.stdout ?? "")
+  .split("@@")
+  .filter(Boolean)
+  .map((b) => b.split("\n").slice(1).join("\n"))
+  .filter((status) => /^PPid:\s+1$/m.test(status));
 if (composeDaemon.status !== 0 || composeDaemonStatus.length === 0) {
-  die(`a compose-started Core has no node process to read:\n${composeDaemon.stdout}${composeDaemon.stderr}`);
+  die(`a compose-started Core has no node child of PID 1 to read:\n${composeDaemon.stdout}${composeDaemon.stderr}`);
 }
 for (const status of composeDaemonStatus) {
   const problems = checkProcessStatus(status, "daemon");
@@ -1619,8 +1671,13 @@ const fakeActanaRan = core.exec(["sh", "-c", `cat ${fakeActanaLog} 2>/dev/null |
 if (fakeActanaRan.trim()) {
   die(`a Session's planted ~/.local/bin/actana ran (${fakeActanaRan.trim()}): \`actana\` was found through a directory a Session writes`);
 }
-core.exec(["rm", "-f", `${CORE_HOME}/.local/bin/actana`, fakeActanaLog]);
-log("the planted actana never ran, through three starts, pairing and every `actana` the smoke typed; removed");
+// Put everything the legs above changed back: both fakes and their logs, and the modes.
+core.exec(["rm", "-f", `${CORE_HOME}/.local/bin/actana`, `${CORE_HOME}/.local/bin/stat`, fakeActanaLog, marker]);
+// Deepest first, so a directory is not closed before the ones under it are reached.
+for (const [mode, dir] of [...homeModes].reverse()) core.exec(["chmod", mode, dir]);
+const restored = core.exec(["stat", "-c", "%a %n", ...homeModePaths]).stdout.split("\n").filter(Boolean).map((line) => line.split(" "));
+if (JSON.stringify(restored) !== JSON.stringify(homeModes)) die(`the home's modes were not restored: ${JSON.stringify(homeModes)} -> ${JSON.stringify(restored)}`);
+log("the planted actana never ran, through three starts, pairing and every `actana` the smoke typed; both fakes removed and the home's modes restored");
 
 // #559 — the pairing store is written beside the material, in the state
 // directory, and not in the home.

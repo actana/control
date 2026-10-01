@@ -1098,7 +1098,7 @@ describe("core image", () => {
       expect(coreImage.cmd.startsWith('["/')).toBe(true);
     });
 
-    it("runs everything as root by absolute path, because the image PATH leads with a volume the Session writes", () => {
+    it("runs everything as root by absolute path, as well as by a root-owned PATH: a Session writes ~/.local/bin and a lookup must never find a planted binary", () => {
       for (const binary of ["id", "stat", "setpriv", "tini"]) {
         expect(code).toContain(`/usr/bin/${binary}`);
         expect(code).not.toMatch(new RegExp(`(^|[\\s(=])${binary}\\s`, "m"));

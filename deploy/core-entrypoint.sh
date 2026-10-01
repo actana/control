@@ -33,10 +33,10 @@
 #     /usr/local/libexec/core-fs-prep.sh …`), which does not touch the mode of
 #     a directory that exists.
 #
-# Absolute paths for everything run as root, and for the daemon: the image PATH
-# starts with the volume-writable ~/.local/bin, and a fake `id`, `stat`,
-# `setpriv`, `tini` or `actana` planted there would run with CAP_SETUID. The daemon
-# gets a PATH of its own below that has no directory a Session can write.
+# Absolute paths for everything run as root, and for the daemon, as well as a PATH
+# of root-owned directories: a fake `id`, `stat`, `setpriv`, `tini` or `actana`
+# planted in the volume-writable ~/.local/bin (which is on a Session's PATH, and on
+# no PATH of the image's or the daemon's) must never be found and run with CAP_SETUID.
 set -eu
 
 ACTANA_UID=1001
