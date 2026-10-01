@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import { ownedBy } from "~/db/owner";
 import { panelDb } from "~/db/panel-db-handle";
 import { taskComments, taskStatusHistory, tasks } from "~/db/pg-schema";
@@ -75,6 +75,8 @@ export async function transitionTask(
   now: number,
   historyId: string,
   comment?: Omit<NewTaskCommentRow, "taskId" | "ownerId" | "createdAt">,
+  /** Written with the move: the dispatcher records why a start failed (#570). */
+  patch: { lastError?: string | null } = {},
 ): Promise<TransitionResult> {
   return panelDb().transaction(async (tx): Promise<TransitionResult> => {
     const locked = await tx
@@ -91,12 +93,52 @@ export async function transitionTask(
     }
     const updated = await tx
       .update(tasks)
-      .set({ status: to, updatedAt: now })
+      .set({ status: to, updatedAt: now, ...patch })
       .where(ownedBy(tasks, ownerId, and(eq(tasks.id, id), eq(tasks.status, from))))
       .returning();
     await tx
       .insert(taskStatusHistory)
       .values({ id: historyId, taskId: id, ownerId, fromStatus: from, toStatus: to, changedAt: now });
     return { kind: "ok", task: updated[0]! };
+  });
+}
+
+/**
+ * Claim an `assigned` Task for dispatch (#570): ONE conditional update, so two
+ * dispatchers that read the same Task cannot both start it. Only the statement
+ * that finds the row still `assigned` changes it (to `in_progress`, attempt count
+ * plus one, dispatch time set, the last error cleared); the other gets no row
+ * back. The history row goes in the same transaction, and only for the winner.
+ * Null when the owner has no such Task, or it was no longer `assigned`.
+ */
+export async function claimAssignedTask(
+  ownerId: number,
+  id: string,
+  now: number,
+  historyId: string,
+): Promise<TaskRow | null> {
+  return panelDb().transaction(async (tx) => {
+    const claimed = await tx
+      .update(tasks)
+      .set({
+        status: "in_progress",
+        attemptCount: sql`${tasks.attemptCount} + 1`,
+        dispatchedAt: now,
+        lastError: null,
+        updatedAt: now,
+      })
+      .where(ownedBy(tasks, ownerId, and(eq(tasks.id, id), eq(tasks.status, "assigned"))))
+      .returning();
+    const row = claimed[0];
+    if (!row) return null;
+    await tx.insert(taskStatusHistory).values({
+      id: historyId,
+      taskId: id,
+      ownerId,
+      fromStatus: "assigned",
+      toStatus: "in_progress",
+      changedAt: now,
+    });
+    return row;
   });
 }
