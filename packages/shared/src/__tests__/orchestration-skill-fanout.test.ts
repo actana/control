@@ -412,13 +412,14 @@ describe("the two skills are asymmetric on purpose (#303 §3, ADR 0035 D1)", () 
 });
 
 describe("the report file contract, stated in both skills (#303 §6)", () => {
-  it("names the path shape, anchored at the Session's own cwd", () => {
+  it("names the path shape, anchored at where the Session starts", () => {
     for (const skillName of ORCHESTRATION_SKILL_NAMES) {
       const skill = skillText(skillName);
       expect(skill, `${skillName} does not name the report path shape`).toContain(
         ".actana/reports/<id>-r<turn>.md",
       );
-      expect(skill.toLowerCase(), `${skillName} does not anchor the path`).toContain("cwd");
+      // A Session starts in the Core's home and nowhere else, so the anchor is the home.
+      expect(skill.toLowerCase(), `${skillName} does not anchor the path`).toMatch(/\bhome\b/);
     }
   });
 
@@ -521,39 +522,22 @@ describe("the orchestrator collects a file, not a screen (#303 §1 and §7)", ()
   });
 
   it("reconciles the two anchors the report path is read against (#309 review)", () => {
-    // The defect this asserts against: the contract anchors the report path at
-    // the Session's own `cwd`, and everything that reads it back — `project cp`
-    // and every lane handed to `await.sh` — anchors at the **Project root**.
-    // They coincide only when the Session runs at the Project root, and this
-    // same document teaches `--cwd` as a directory inside the Project.
-    //
-    // A lane started with `--cwd apps/api` then has its report written exactly
-    // where the contract said, collected from somewhere else, and the round
-    // runs to its timeout reporting nothing — the sub-agent having done
-    // everything right, and nothing having failed loudly enough to say so.
-    // That is the failure class this whole contract exists to end, so the
-    // conversion has to be in the document rather than in a reader's head.
-    expect(skill.toLowerCase()).toContain("project-relative");
-    expect(
-      skill.includes("no `--cwd` runs at the Project root"),
-      "the skill never names the case where the two anchors coincide",
-    ).toBe(true);
-    expect(
-      skill.includes("apps/api/.actana/reports/"),
-      "the skill never shows the converted path for a lane that has a --cwd",
-    ).toBe(true);
-
-    // And the conversion is stated where the reader meets each anchor: in the
-    // contract, and again at the lane syntax `await.sh` takes.
+    // There is one anchor now. Every Session starts in the Core's home and the
+    // lane syntax `await.sh` takes is that same home-relative path, so the
+    // document must say that nothing needs converting, and must not teach a
+    // `--cwd` or a project-relative path that would split the two again.
+    expect(skill.toLowerCase()).toContain("home-relative");
+    expect(skill.includes("no Project and no `--cwd` to convert"), "the skill never says there is nothing to convert").toBe(true);
+    expect(skill.toLowerCase()).not.toContain("project-relative");
+    // And that is stated where the reader meets the anchor, in the contract.
     const contract = skill.slice(
       skill.indexOf("## Asking a Session for a report file"),
       skill.indexOf("## Collecting a report"),
     );
     expect(contract, "the contract section is gone or was renamed").not.toBe("");
-    expect(contract).toContain("Project root");
+    expect(contract).toContain("no Project and no `--cwd`");
     const watcher = skill.slice(skill.indexOf("## `await.sh`"));
     expect(watcher, "the await.sh section is gone or was renamed").not.toBe("");
-    expect(watcher).toContain("--cwd");
   });
 });
 
