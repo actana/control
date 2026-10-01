@@ -70,6 +70,18 @@ async function startServer(mode: Mode): Promise<void> {
     helper: {
       helperPath: bundle,
       exists: () => true,
+      // A hung-up client's helper is signalled directly: no test can `setpriv`.
+      killOptions: {
+        exists: () => true,
+        run: async (spec) => {
+          try {
+            process.kill(Number(spec.args.at(-1)), "SIGKILL");
+          } catch {
+            // already gone
+          }
+          return { status: 0 };
+        },
+      },
       wrap: (spec) => ({ ...spec, args: spec.args as string[], cwd: home, env: { HOME: home, PATH: process.env.PATH ?? "" } }),
     },
   });
@@ -127,7 +139,8 @@ const post = (url: string, value: unknown) => call("POST", url, JSON.stringify(v
 
 /** Every way out, on every operation: [what it tries, how it asks, the code it must be refused with]. */
 function escapes(): Array<[string, () => Promise<Answer>, string]> {
-  const tarOfOne = collect(packDirectory(makeTree({ "payload.txt": "owned" })));
+  // Built only by the cases that send it: an archive nobody awaits is read after its folder is gone.
+  const tarOfOne = (): Promise<Buffer> => collect(packDirectory(makeTree({ "payload.txt": "owned" })));
   return [
     // ── dot-dot
     ["read ..", () => call("GET", `/v1/files?path=${enc("../sibling.txt")}`), "dot-dot-segment"],
@@ -135,7 +148,7 @@ function escapes(): Array<[string, () => Promise<Answer>, string]> {
     ["read %2e%2e", () => call("GET", "/v1/files?path=%2e%2e%2fsibling.txt"), "dot-dot-segment"],
     ["list ..", () => call("GET", `/v1/files/list?path=${enc("..")}`), "dot-dot-segment"],
     ["write ..", () => call("PUT", `/v1/files?path=${enc("../pwned.txt")}`, "owned"), "dot-dot-segment"],
-    ["tar into ..", async () => call("PUT", `/v1/files?path=${enc("..")}`, await tarOfOne, { "content-type": "application/x-tar" }), "dot-dot-segment"],
+    ["tar into ..", async () => call("PUT", `/v1/files?path=${enc("..")}`, await tarOfOne(), { "content-type": "application/x-tar" }), "dot-dot-segment"],
     ["delete ..", () => call("DELETE", `/v1/files?path=${enc("../sibling.txt")}`), "dot-dot-segment"],
     ["delete ../ (a folder)", () => call("DELETE", `/v1/files?path=${enc("../outside/")}`), "dot-dot-segment"],
     ["mkdir ..", () => call("POST", `/v1/files/folder?path=${enc("../made")}`), "dot-dot-segment"],
@@ -160,8 +173,8 @@ function escapes(): Array<[string, () => Promise<Answer>, string]> {
     ["list a link to a folder", () => call("GET", "/v1/files/list?path=out"), "outside-project-root"],
     ["write through a link to a folder", () => call("PUT", "/v1/files?path=out%2Fpwned.txt", "owned"), "outside-project-root"],
     ["write through a link one level down", () => call("PUT", "/v1/files?path=shared%2Fout%2Fpwned.txt", "owned"), "outside-project-root"],
-    ["tar into a link to a folder", async () => call("PUT", "/v1/files?path=out", await tarOfOne, { "content-type": "application/x-tar" }), "outside-project-root"],
-    ["tar below a link to a folder", async () => call("PUT", "/v1/files?path=out%2Fsub", await tarOfOne, { "content-type": "application/x-tar" }), "outside-project-root"],
+    ["tar into a link to a folder", async () => call("PUT", "/v1/files?path=out", await tarOfOne(), { "content-type": "application/x-tar" }), "outside-project-root"],
+    ["tar below a link to a folder", async () => call("PUT", "/v1/files?path=out%2Fsub", await tarOfOne(), { "content-type": "application/x-tar" }), "outside-project-root"],
     ["delete through a link", () => call("DELETE", "/v1/files?path=out%2Fprecious.txt"), "outside-project-root"],
     ["delete a folder through a link", () => call("DELETE", "/v1/files?path=out%2Ffolder%2F"), "outside-project-root"],
     ["mkdir through a link", () => call("POST", "/v1/files/folder?path=out%2Fmade"), "outside-project-root"],
