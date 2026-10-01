@@ -16,10 +16,19 @@ export type CoreSharedBackend = "local" | "s3";
 export type CoreSharedCapability = { version: 1; backend: CoreSharedBackend };
 
 /**
- * What this Core announces. Always `local` until the S3 mount exists (#562):
- * nothing in this Core configures S3, so claiming it would be a lie a client
- * acts on.
+ * What this Core announces: `local` until a controller has attached it to S3
+ * (`sharedAttach`, #562), `s3` from then until it detaches. Claiming `s3` before
+ * would be a lie a client acts on.
  */
 export function sharedCapability(backend: CoreSharedBackend = "local"): CoreSharedCapability {
   return { version: 1, backend };
+}
+
+/**
+ * What `ready.shared` says right now: `s3` while a controller has the Core attached
+ * (the sync works whether or not the watcher is up), otherwise whatever the folder's
+ * watcher announces, which is `local` or nothing.
+ */
+export function announceShared(attached: boolean, watcher: CoreSharedCapability | null): CoreSharedCapability | null {
+  return attached ? sharedCapability("s3") : watcher;
 }

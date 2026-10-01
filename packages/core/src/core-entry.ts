@@ -83,7 +83,7 @@ import { corePairingStore } from "./core-pairing-store";
 import { runCoreExec } from "./core-exec";
 import { coreHome } from "./core-identity";
 import { startSharedFolder } from "./shared-folder-feed";
-import { sharedCapability } from "./shared-capability";
+import { announceShared } from "./shared-capability";
 import { createSharedHome } from "./shared-home-io";
 import { createSharedSync } from "./shared-sync";
 import {
@@ -795,7 +795,7 @@ async function startCore(): Promise<void> {
   serverOpts.httpRoutes = pairing ? composeCoreHttpRoutes(auditPairingRoutes(pairing.redeem), fileRoutes) : fileRoutes;
   serverOpts.announceFiles = shouldAnnounceFiles(fileRoutes);
   // A function, so a watcher that comes up after the server is announced to the next connection.
-  serverOpts.shared = () => (sharedSync.attached ? sharedCapability("s3") : sharedFolder.capability);
+  serverOpts.shared = () => announceShared(sharedSync.attached, sharedFolder.capability);
   serverOpts.sharedPort = sharedSync;
   // What the mTLS gate is allowed to serve without a client certificate. Absent
   // unless pairing is mounted, and absent means the handshake keeps refusing

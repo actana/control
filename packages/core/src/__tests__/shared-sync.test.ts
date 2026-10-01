@@ -4,6 +4,7 @@ import * as path from "node:path";
 import type { CoreLinkRequestFrame, CoreLinkSharedMountStatus } from "@actana/sdk/core";
 import { createS3CoreShared, CoreSharedError } from "@actana/sdk/shared";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { announceShared, sharedCapability } from "../shared-capability";
 import { createSharedHome } from "../shared-home-io";
 import { createSharedKeyStore } from "../shared-key-store";
 import { createSharedSync, SYNC_STATE_FILE, type SharedSync } from "../shared-sync";
@@ -401,6 +402,18 @@ describe("unpair", () => {
     expect(sync.attached).toBe(true);
     expect(readLocal("mine.txt")).toBe("mine");
     expect(fs.existsSync(createSharedKeyStore(stateDir).path)).toBe(true);
+  });
+});
+
+describe("what ready.shared says", () => {
+  it("is s3 from the attach to the detach, and local otherwise", async () => {
+    const local = sharedCapability("local");
+    expect(announceShared(sync.attached, local)).toEqual({ version: 1, backend: "local" });
+    await attach();
+    expect(announceShared(sync.attached, local)).toEqual({ version: 1, backend: "s3" });
+    await sync.handle({ type: "sharedDetach", reqId: "d", keepLocalCopy: true });
+    expect(announceShared(sync.attached, local)).toEqual({ version: 1, backend: "local" });
+    expect(announceShared(false, null)).toBeNull();
   });
 });
 

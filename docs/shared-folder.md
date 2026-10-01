@@ -24,7 +24,8 @@ file, is refused and never replaced: the Core logs it, boots without announcing 
 ## `ready.shared`
 
 The `ready` frame carries `shared: { version: 1, backend: "local" | "s3" }` when the Core keeps the folder and feeds its
-changes. This Core announces `local`; `s3` is announced by the mount of #562. The announcement follows the watcher: it is read each time a connection is made, so it is absent until the
+changes. This Core announces `local`, and `s3` from the moment a controller has attached it (*The S3 sync*, below) until it detaches.
+The announcement follows the watcher: it is read each time a connection is made, so it is absent until the
 watcher has its baseline, absent while the watcher is down, and present on every connection made after it is up. Boot
 waits for the watcher at most 10 s, on metal and in the container alike, and never longer. A Core that omits the field predates the
 Shared folder, and is not "needs update", on the same terms as `files` and `multiConnection`.
@@ -69,3 +70,105 @@ before it becomes an event.
 
 Each changed file is one row in the event log, so a tree copied in at once (tens of thousands of files) is that many
 rows; the log's existing replay limit applies to them like to any event.
+
+## The S3 sync
+
+Issue [#562](https://github.com/actana/control/issues/562), the second half of the Shared folder.
+[ADR 0041](adr/0041-the-0-5-0-core-model.md) D33 says who runs it: **the daemon user `actana`**, by the owner's ruling of
+2026-10-01, which amends D25 (it said `core`). So no key is ever readable by `core`. Still no FUSE, no rclone, no AWS
+SDK, and the daemon keeps exactly `CAP_SETUID` and `CAP_SETGID`.
+
+```
+controller ──sharedAttach / sharedCredentials / sharedDetach──▶ core-link (mTLS + Bearer)
+                                                                   │  answered by sharedStatus
+                                                                   ▼
+daemon (actana) ── shared-sync.ts ── key: /var/lib/actana/shared-key.json (0600, dir 0700, actana's)
+      │                │
+      │                └── @actana/sdk/shared (S3 mode)  ──▶  S3 prefix of this Core, nothing else
+      ▼
+asCore ─▶ core-files-op.cjs (as core) ──▶ ~/shared      list / read / write / delete, confined to the home
+                                                         the watcher (#561) then emits shared:changed
+```
+
+| File | What it is |
+|---|---|
+| `shared-key-store.ts` | the key and where the Core is attached; one 0600 file in the state directory, replaced atomically |
+| `shared-sync.ts` | the passes, the three frames, expiry, unpair |
+| `shared-home-io.ts` | `~/shared` through the Files helper started by `asCore` (in process on metal) |
+| `pty-core-link-server.ts` | answers `sharedAttach`, `sharedCredentials`, `sharedDetach` with `sharedStatus` |
+
+### The key
+
+The controller pushes a **1-hour** key limited to this Core's prefix, about 15 minutes before the last one ends. The
+daemon keeps one file, in `/var/lib/actana` (the state directory of D24), made 0600 and renamed into place, so a reader
+never sees half of it. There is **no long-lived key on the Core**, none in a config, an environment variable or an
+argument, and none in `core`'s home. The helper that touches `~/shared` is started with an environment `asCore` builds
+and is sent a request and file bytes, never the key.
+
+A request signs with whichever key is current when it is made. A push that lands during an upload leaves that upload
+alone, and the next request uses the new key.
+
+| Frame | Answer (`sharedStatus`) |
+|---|---|
+| `sharedAttach` | `attached` once the store accepted the key (a list of the prefix is made first), or `mount-failed` if it did not; `already-attached`; `invalid-frame` for a prefix that is empty or has a `.`, `..` or empty segment, or an `expiresAt` that is not in the future |
+| `sharedCredentials` | `attached` with the new `expiresAt`; `not-attached` before an attach |
+| `sharedDetach` | `detached` (see Unpair); `not-attached`; `mount-failed` when S3 could not be copied |
+
+An invalid frame is also answered with a `sharedStatus`, not a bare `error`. A frame is never logged, and an error
+message never carries any part of one.
+
+### What a pass does
+
+Every 15 s, and at once after an attach or a push, the sync lists `~/shared` (through the helper) and the prefix in S3 and
+compares each path with what the last pass left behind.
+
+| Changed here | Changed there | Done |
+|---|---|---|
+| yes | no | upload |
+| no | yes | download, with the object's mtime |
+| yes | yes | the newer mtime wins |
+| gone, unchanged there | | delete there |
+| unchanged here, gone there | | delete here |
+| gone here, changed there | | the change wins: it comes back |
+
+A path never seen before is "changed" on each side it exists on, so the first pass copies and never deletes. A download
+is written in place, so it is noted in the sync's state first: a crash leaves the path marked, and the next pass takes the
+object's version, never uploads half a file. A file over 128 MiB is left alone and logged once, because the SDK's S3 mode
+moves a whole file through memory. A folder marker in S3 is not mirrored, and an empty folder is not uploaded: files only.
+
+The sync **never follows a symbolic link**: the helper reports a link and the sync leaves it out, and when `~/shared`
+itself is not a directory the pass does nothing. A path it is given is checked again by the helper's confinement (an
+absolute path, a `..`, a link that leaves the home are refused).
+
+### When the key has expired
+
+No controller for more than an hour means the key stops working. The sync then sends **nothing** to S3 (it is read-only,
+and so is its read side: there is no key to read with) and logs `shared-sync.key-expired` once. What `core` writes stays
+in the folder. The next `sharedCredentials` push replaces the key and runs a pass at once, which uploads what was written
+meanwhile. A Core paused for more than an hour does the same on waking. After a restart the stored key is loaded, and if it
+has expired the sync waits for the push.
+
+### Unpair
+
+`sharedDetach` runs one pass that only **copies S3 into the folder**: a file missing here is written, a file S3 changed and
+`core` did not is updated, a file both changed is left as `core` has it, and nothing is deleted. Then the sync stops, the key
+and the sync's state are removed, and the folder keeps every file. If the key has expired, or a file could not be copied,
+the answer is `mount-failed` and the Core stays attached: push credentials and detach again. Removing the S3 prefix of a
+deleted Core is the controller's ([#564](https://github.com/actana/control/issues/564)).
+
+### Events
+
+Nothing here emits an event. What the sync writes into `~/shared` is seen by the watcher of #561, which runs as `core`, and
+becomes the same `shared:changed` event as any other write (`shared-sync-events.test.ts` runs the two together).
+
+### Proof
+
+| Claim | Test |
+|---|---|
+| no key `core` can read | `shared-key-store-uids.test.ts`: the daemon's uid stores the key, `core`'s uid is refused it by the kernel (CI step, needs root) |
+| the key file is 0600 in a 0700 directory, and is the key's only copy | `shared-key-store.test.ts`, `shared-sync-as-core.test.ts` |
+| the daemon opens nothing in `~`; the helper gets no key | `shared-sync-as-core.test.ts` |
+| machine A cannot list, read or write B's prefix | `shared-sync-seaweedfs.test.ts` (real SeaweedFS in CI); `shared-sync.test.ts` (fake S3) |
+| a refresh during an upload | `shared-sync-seaweedfs.test.ts`; `shared-sync.test.ts` |
+| an expired key, and writing again after a push | `shared-sync.test.ts` (fake clock) |
+| unpair keeps the folder's contents | `shared-sync.test.ts`, `shared-sync-seaweedfs.test.ts` |

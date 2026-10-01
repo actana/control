@@ -1,4 +1,3 @@
-import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -13,8 +12,8 @@ import {
 
 // The Shared folder's key store (#562, ADR 0041 D33). The point of the module is one
 // fact: the key is in a file only the daemon's user can open. These tests hold it to
-// the bits on disk, and, where the machine lets a test become another user, to the
-// kernel's answer.
+// the bits on disk. The kernel's answer, with two real users, is
+// `shared-key-store-uids.test.ts`.
 
 const KEY: SharedAttachment = {
   endpoint: "http://seaweedfs:8333",
@@ -77,25 +76,6 @@ describe("the key file's permissions", () => {
     };
     walk(root);
     expect(holders).toEqual([store.path]);
-  });
-
-  // The kernel's answer, where the machine can give it: a user other than the writer.
-  // CI's runners have passwordless sudo; the lane's VM does not, and this is skipped there.
-  const canBecomeOther = ((): boolean => {
-    const r = spawnSync("sudo", ["-n", "-u", "nobody", "true"], { encoding: "utf8" });
-    return r.status === 0;
-  })();
-
-  it.skipIf(!canBecomeOther)("cannot be read by another user", () => {
-    process.umask(0o022); // a umask that would make an ordinary file world-readable
-    fs.mkdirSync(stateDir, { mode: 0o755 });
-    fs.chmodSync(root, 0o755);
-    const store = createSharedKeyStore(stateDir);
-    store.save(KEY);
-    const read = spawnSync("sudo", ["-n", "-u", "nobody", "cat", store.path], { encoding: "utf8" });
-    expect(read.status).not.toBe(0);
-    expect(read.stderr).toMatch(/Permission denied/);
-    expect(read.stdout).not.toContain(KEY.secretAccessKey);
   });
 });
 
