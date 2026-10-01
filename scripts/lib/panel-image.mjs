@@ -80,6 +80,8 @@ export const PANEL_TABLES = Object.freeze([
   "webhook_deliveries",
   "api_keys",
   "api_key_cores",
+  "storage_config",
+  "core_shared_folders",
 ]);
 
 /** The Core's default core-link port — `EXPOSE` and `ACTANA_PORT` share it. */
