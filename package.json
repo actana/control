@@ -1,7 +1,7 @@
 {
   "name": "actana-control",
   "version": "0.5.0",
-  "description": "Actana Control \u2014 self-hosted Panel service for driving AI coding agents across many Cores.",
+  "description": "Actana Control — self-hosted Panel service for driving AI coding agents across many Cores.",
   "license": "MIT",
   "private": true,
   "type": "module",
@@ -77,13 +77,13 @@
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",
-    "@types/better-sqlite3": "7.6.13",
     "@types/node": "25.8.0",
     "@types/ws": "8.18.1",
     "eslint": "10.6.0",
     "eslint-plugin-react": "7.37.5",
     "eslint-plugin-react-hooks": "7.1.1",
     "globals": "17.6.0",
+    "knip": "6.38.0",
     "puppeteer": "25.3.0",
     "typescript": "6.0.3",
     "typescript-eslint": "8.63.0",
