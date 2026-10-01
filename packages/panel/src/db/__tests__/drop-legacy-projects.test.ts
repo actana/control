@@ -199,6 +199,22 @@ describe("dropLegacyProjects", () => {
     });
   });
 
+  it("folds two rollup rows of one session and day into one rather than aborting the boot", () => {
+    const db = legacyDb();
+    // Not a state any 0.4.x path wrote, but the old key allowed it: the same session and day under two projects.
+    db.exec(`
+      INSERT INTO projects (id, name, path, icon, icon_color, created_at, updated_at) VALUES ('p2', 'Api', '/home/core/api', 'AP', '#456', 1, 1);
+      INSERT INTO token_usage_rollup (project_id, session_id, day, input_tokens, output_tokens, last_ts)
+        VALUES ('p2', 's1', '2026-05-01', 5, 7, 2000);
+    `);
+
+    dropLegacyProjects(db);
+
+    expect(
+      db.prepare(`SELECT session_id AS sessionId, day, input_tokens AS i, output_tokens AS o, last_ts AS lastTs FROM token_usage_rollup`).all(),
+    ).toEqual([{ sessionId: "s1", day: "2026-05-01", i: 15, o: 27, lastTs: 2000 }]);
+  });
+
   it("is idempotent", () => {
     const db = legacyDb();
 

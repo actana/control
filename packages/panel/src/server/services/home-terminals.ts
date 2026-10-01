@@ -17,7 +17,6 @@ export function listHomeTerminals(): HomeTerminal[] {
 export function createHomeTerminal(input: {
   id?: string;
   name?: string;
-  cwd?: string | null;
 }): HomeTerminal {
   const existing = findHomeTerminals();
   const now = Date.now();
@@ -27,7 +26,7 @@ export function createHomeTerminal(input: {
   const row: HomeTerminal = {
     id: requestedId || newId("ht"),
     name: input.name?.trim() || nextTerminalName(existing.map((t) => t.name)),
-    cwd: input.cwd ?? null,
+    cwd: null,
     position: existing.length,
     createdAt: now,
     updatedAt: now,

@@ -446,8 +446,17 @@ function rebuildWithoutProjectId(sqlite: Database.Database, table: string, colum
     .map((c) => c.name)
     .filter((name) => columnExists(sqlite, table, name));
   const list = kept.map((name) => `"${name}"`).join(", ");
+  // The rollup's key shrinks from (project, session, day) to (session, day), so
+  // two old rows can land on one new key: fold them with sums rather than abort
+  // the boot on the primary key.
+  const copy =
+    table === "token_usage_rollup"
+      ? `INSERT INTO ${rebuilt} (session_id, day, input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens, last_ts)
+           SELECT session_id, day, SUM(input_tokens), SUM(output_tokens), SUM(cache_creation_tokens), SUM(cache_read_tokens), MAX(last_ts)
+             FROM ${table} GROUP BY session_id, day;`
+      : `INSERT INTO ${rebuilt} (${list}) SELECT ${list} FROM ${table};`;
   sqlite.exec(`
-    INSERT INTO ${rebuilt} (${list}) SELECT ${list} FROM ${table};
+    ${copy}
     DROP TABLE ${table};
     ALTER TABLE ${rebuilt} RENAME TO ${table};
   `);

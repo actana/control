@@ -17,6 +17,20 @@ const { getDb } = await import("~/db/client");
 const { homeTerminals } = await import("~/db/schema");
 
 describe("home-terminals service", () => {
+  it("stores no cwd: a terminal is a login shell in the Core's home, whatever the caller sends", async () => {
+    // A POST body can still carry the field a 0.4.x client sent.
+    const { create } = await import("../../controllers/home-terminals.controller");
+    const response = await create(
+      new Request("http://localhost/api/home/user-terminals", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name: "shell", cwd: "/home/core/web" }),
+      }),
+    );
+    const { terminal } = (await response.json()) as { terminal: { cwd: string | null } };
+    expect(terminal.cwd).toBeNull();
+  });
+
   beforeEach(() => {
     getDb().delete(homeTerminals).run();
   });

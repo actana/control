@@ -223,7 +223,6 @@ export const api = {
   createHomeTerminal: (body: {
     id?: string;
     name?: string;
-    cwd?: string | null;
   }) =>
     req<{ terminal: UserTerminal }>("/api/home/user-terminals", {
       method: "POST",
