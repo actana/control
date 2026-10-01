@@ -652,14 +652,19 @@ function namesItsSession(frame: CoreLinkRequestFrame): boolean {
  * streams the tail as `event` frames, sends an `eventsReplayed` marker, and a
  * per-connection poll loop pushes new events live once caught up.
  */
-/** The `reqId` of a frame the codec refused, when the text is JSON that carries one. */
-function readReqId(data: string): string | undefined {
+/** Frames of a 0.4.x client that the Core no longer handles (ADR 0041 D1, D27). */
+const RETIRED_FRAME_TYPES: ReadonlySet<string> = new Set(["projectsList", "projectsMutate"]);
+
+/** What can be read off text the codec refused: its `reqId` and `type`, when it is JSON that carries them. */
+function readRefusedFrame(data: string): { reqId?: string; type?: string } {
   try {
-    const parsed: unknown = JSON.parse(data);
-    const reqId = (parsed as { reqId?: unknown } | null)?.reqId;
-    return typeof reqId === "string" && reqId !== "" ? reqId : undefined;
+    const parsed = JSON.parse(data) as { reqId?: unknown; type?: unknown } | null;
+    return {
+      ...(typeof parsed?.reqId === "string" && parsed.reqId !== "" ? { reqId: parsed.reqId } : {}),
+      ...(typeof parsed?.type === "string" ? { type: parsed.type } : {}),
+    };
   } catch {
-    return undefined;
+    return {};
   }
 }
 
@@ -1237,12 +1242,17 @@ export class PtyCoreLinkServer {
     const data = typeof raw === "string" ? raw : String(raw);
     const frame = parseCoreLinkRequestFrame(data);
     if (!frame) {
-      // The codec refuses a frame it does not know — the project frames of a
-      // 0.4.x client among them, since the SDK dropped them (ADR 0041 D1). Answer
-      // with the caller's reqId when the frame carries one, so its request
-      // settles instead of timing out.
-      const reqId = readReqId(data);
-      this.send(ws, { type: "error", ...(reqId === undefined ? {} : { reqId }), message: "invalid frame" });
+      // The codec refuses a frame it does not know. The project frames of a 0.4.x
+      // client are among them, since the SDK dropped them, and ADR 0041 D27 says a
+      // retired frame is refused by name so that client learns why. Carry the
+      // caller's reqId when there is one, so its request settles instead of
+      // timing out.
+      const { reqId, type } = readRefusedFrame(data);
+      this.send(ws, {
+        type: "error",
+        ...(reqId === undefined ? {} : { reqId }),
+        message: type !== undefined && RETIRED_FRAME_TYPES.has(type) ? `unhandled frame type: ${type}` : "invalid frame",
+      });
       return;
     }
     // ─── Bearer auth gate (issue 04) ───
