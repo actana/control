@@ -11,6 +11,7 @@
 //                           (core, project, session, events, harness) (#288)
 //   app/core-entry.cjs   the esbuild-bundled Core daemon
 //   app/core-home-ops.cjs  the helper the daemon runs as `core` for work in core's home (#559)
+//   app/core-shared-watch.cjs  the Shared folder watcher the daemon runs as `core` in the container (#561)
 //   app/node_modules/       the runtime dependency closure, natives included
 //   core-manifest.json   version + core-link protocol version + target
 //
@@ -260,6 +261,8 @@ async function main() {
     // The helper the daemon starts as `core` to work in core's home (#559). It
     // sits beside the daemon's bundle: the daemon finds it by its own __dirname.
     { file: "core-home-ops.cjs", dist: path.join(repoRoot, "packages", "core", "dist"), pkg: "@actana/core" },
+    // The Shared folder watcher (#561), found the same way: the daemon cannot read `~/shared` in the container.
+    { file: "core-shared-watch.cjs", dist: path.join(repoRoot, "packages", "core", "dist"), pkg: "@actana/core" },
     { file: "actana-cli.cjs", dist: path.join(repoRoot, "packages", "cli", "dist-tarball"), pkg: "@actana/cli" },
   ];
   // The message names `pnpm build:core-tarball-bundles` and not the single
