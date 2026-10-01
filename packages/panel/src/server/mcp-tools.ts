@@ -37,7 +37,7 @@ export type McpTool = {
 };
 
 /** A v1 handler's `Response` as a tool outcome: 2xx is its JSON, anything else is `"<status> <error>"`. */
-export async function outcomeOf(response: Response): Promise<ToolOutcome> {
+async function outcomeOf(response: Response): Promise<ToolOutcome> {
   const body = (await response.json().catch(() => ({}))) as Record<string, unknown>;
   if (response.ok) return { ok: true, data: body };
   const reason = typeof body.error === "string" ? body.error : "failed";
