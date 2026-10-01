@@ -64,7 +64,6 @@ describe("the migrated database", { timeout: 30_000 }, () => {
     open.push(db);
     return db.pool;
   };
-  const operatorSql = "CREATE TABLE operator (id integer PRIMARY KEY CHECK (id = 1))";
 
   it("has an owner_id on every table that is not allowlisted", async () => {
     expect(await checkDatabaseTables(await migrate())).toEqual([]);
@@ -72,20 +71,18 @@ describe("the migrated database", { timeout: 30_000 }, () => {
 
   it("passes a table with a not-null owner_id that references operator.id", async () => {
     const pool = await migrate(
-      operatorSql,
       "CREATE TABLE sessions (id integer PRIMARY KEY, owner_id integer NOT NULL REFERENCES operator (id))",
     );
     expect(await checkDatabaseTables(pool)).toEqual([]);
   });
 
   it("fails a planted table that has no owner_id", async () => {
-    const pool = await migrate(operatorSql, "CREATE TABLE planted (id integer PRIMARY KEY)");
+    const pool = await migrate("CREATE TABLE planted (id integer PRIMARY KEY)");
     expect(await checkDatabaseTables(pool)).toEqual(["public.planted has no owner_id column"]);
   });
 
   it("fails a planted owner_id that is nullable, or that references nothing", async () => {
     const pool = await migrate(
-      operatorSql,
       "CREATE TABLE nullable (id integer PRIMARY KEY, owner_id integer REFERENCES operator (id))",
       "CREATE TABLE dangling (id integer PRIMARY KEY, owner_id integer NOT NULL)",
     );

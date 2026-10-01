@@ -16,6 +16,7 @@
 // and a Core with no file routes being refused **before a request goes out** is
 // what proves the F9 gate is a gate rather than a 404 handler.
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
+import { closePanelTestDb, openPanelTestDb } from "./_panel-test-db";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -31,7 +32,7 @@ process.env.AC_USER_DATA_DIR = path.join(tmpRoot, "app");
 process.env.AC_PANEL_DATA_DIR = path.join(tmpRoot, "panel");
 
 const { handleApiRequest } = await import("../api-router");
-const { closePanelDb, getPanelDb } = await import("../panel-db");
+const testDb = await openPanelTestDb();
 const { operatorSessionCookie } = await import("./_operator-session");
 const { coreLinkManager, resetCoreLinkManagerForTests } = await import(
   "../services/core-link-manager"
@@ -49,7 +50,7 @@ async function call(
 ): Promise<Response> {
   const { anonymous, ...rest } = init;
   const headers: Record<string, string> = { ...(rest.headers as Record<string, string>) };
-  if (!anonymous) headers.cookie = operatorSessionCookie();
+  if (!anonymous) headers.cookie = (await operatorSessionCookie());
   const response = await handleApiRequest(
     new Request(`${ORIGIN}${pathname}`, { ...rest, headers } as RequestInit),
   );
@@ -154,9 +155,9 @@ async function pair(opts: { withFiles?: boolean } = {}): Promise<{ id: string; p
   // There is no add route to POST a blob at any more (#287). The Operator row
   // is what the registry's foreign key points at, and an HTTP registration used
   // to create it on the way past — so ask for it before registering.
-  operatorSessionCookie();
-  const registered = registerCoreFromCredential(core.credential);
-  coreLinkManager().dial(registered.id);
+  (await operatorSessionCookie());
+  const registered = await registerCoreFromCredential(core.credential);
+  await coreLinkManager().dial(registered.id);
   await vi.waitFor(
     async () => {
       const dial = await dialOf(registered.id);
@@ -195,17 +196,16 @@ async function put(
   });
 }
 
-afterEach(() => {
+afterEach(async () => {
   resetCoreLinkManagerForTests();
   resetCoreFilesSendersForTests();
   for (const server of running.splice(0)) server.close();
-  const db = getPanelDb();
-  db.prepare("DELETE FROM core_secrets").run();
-  db.prepare("DELETE FROM cores").run();
+  await testDb.pool.query("delete from core_secrets");
+  await testDb.pool.query("delete from cores");
 });
 
-afterAll(() => {
-  closePanelDb();
+afterAll(async () => {
+  await closePanelTestDb(testDb);
   fs.rmSync(tmpRoot, { recursive: true, force: true });
 });
 
