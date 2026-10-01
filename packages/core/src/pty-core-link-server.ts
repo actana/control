@@ -80,7 +80,7 @@ import { CoreSessionWriter } from "./core-session-writer";
 import { SessionLockTable } from "./session-lock-table";
 import { sessionFrameFieldRefusal, spawnFieldRefusal } from "./request-fields";
 import type { CoreSessionMutation } from "@actana/shared/core-mutations";
-import { toWireSessionRows, type CoreSessionRow } from "@actana/shared/core-query";
+import type { CoreSessionRow } from "@actana/shared/core-query";
 import type { CoreSharedCapability } from "./shared-capability";
 
 /**
@@ -1731,7 +1731,7 @@ export class PtyCoreLinkServer {
         this.send(ws, {
           type: "sessionRowsListResult",
           reqId: frame.reqId,
-          sessions: toWireSessionRows(sessions),
+          sessions,
           archivedCount,
         });
         return;
@@ -1748,7 +1748,7 @@ export class PtyCoreLinkServer {
         this.send(ws, {
           type: "archivedSessionRowsListResult",
           reqId: frame.reqId,
-          sessions: toWireSessionRows(sessions),
+          sessions,
         });
         return;
       }
@@ -1781,7 +1781,7 @@ export class PtyCoreLinkServer {
           this.send(ws, {
             type: "sessionsMutateResult",
             reqId: frame.reqId,
-            session: stamped ? (toWireSessionRows([stamped])[0] ?? null) : null,
+            session: stamped ?? null,
           });
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
