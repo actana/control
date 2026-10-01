@@ -15,8 +15,10 @@ export const OWNERLESS_TABLES: Record<string, string> = {
   "drizzle.__drizzle_migrations": "the migrator's own bookkeeping (pg-migrate.ts); it holds no user data",
 };
 
-/** Where repositories live. Later pull requests of #567 add them here. */
-export const REPOSITORY_DIR = path.resolve(import.meta.dirname, "..", "repositories");
+/** Where the Panel's repositories live (`tasks.repo.ts` and the rest); #567 ports them in place. */
+export const REPOSITORY_DIR = path.resolve(import.meta.dirname, "..", "..", "server", "repositories");
+/** The Panel's source root: nothing outside the repository folder may import the pg schema. */
+export const SOURCE_DIR = path.resolve(import.meta.dirname, "..", "..");
 
 const OWNER_COLUMN = "owner_id";
 
@@ -40,6 +42,7 @@ export function checkSchemaTables(schema: Record<string, unknown>, allow = OWNER
         ref.columns.length === 1 &&
         ref.columns[0] === owner &&
         getTableConfig(ref.foreignTable).name === "operator" &&
+        (getTableConfig(ref.foreignTable).schema ?? "public") === "public" &&
         ref.foreignColumns[0]?.name === "id"
       );
     });
@@ -117,7 +120,7 @@ export function findUnscopedQueries(
   const faults: string[] = [];
 
   // Builder calls, grouped by the statement (up to the next `;`) they sit in.
-  const call = /\.(from|update|delete|insert|innerJoin|leftJoin|rightJoin|fullJoin)\(\s*(?:\w+\.)*(\w+)\s*[,)]/g;
+  const call = /\.(from|update|delete|insert|innerJoin|leftJoin|rightJoin|fullJoin|\$count)\(\s*(?:\w+\.)*(\w+)\s*[,)]/g;
   const statements = new Map<number, { text: string; refs: { verb: string; table: string; at: number }[] }>();
   for (const m of text.matchAll(call)) {
     const table = byExport.get(m[2]);
@@ -138,6 +141,25 @@ export function findUnscopedQueries(
     }
     for (const r of entry.refs.filter((x) => x.verb === "insert")) {
       if (!/\bownerId\b/.test(body)) faults.push(`${file}:${lineOf(text, r.at)} inserts into ${r.table} without ownerId`);
+    }
+  }
+
+  // The relational API: `db.query.tasks.findMany({ where })` needs `ownedBy(` in its call.
+  for (const m of text.matchAll(/\.query\.(\w+)\.(?:findMany|findFirst)\(/g)) {
+    const table = byExport.get(m[1]);
+    if (!table) continue;
+    const end = text.indexOf(";", m.index);
+    const body = text.slice(m.index, end === -1 ? text.length : end);
+    if (!/\bownedBy\(/.test(body)) faults.push(`${file}:${lineOf(text, m.index)} queries ${table.exportName} without ownedBy()`);
+  }
+
+  // A `sql` template that interpolates an owner-scoped table needs the owner in it.
+  for (const m of text.matchAll(/\bsql`((?:\\.|[^`\\])*)`/g)) {
+    for (const t of tables) {
+      const over = new RegExp(`\\$\\{\\s*(?:\\w+\\.)*${t.exportName}\\s*\\}`);
+      if (over.test(m[1]) && !/\bowner_id\b|\bownerId\b|\bownedBy\(/.test(m[1])) {
+        faults.push(`${file}:${lineOf(text, m.index)} sql template over ${t.exportName} without the owner`);
+      }
     }
   }
 
@@ -171,7 +193,29 @@ export function scanRepositories(
   tables: { exportName: string; sqlName: string }[],
   dir = REPOSITORY_DIR,
 ): string[] {
+  // A scan that read nothing proves nothing: with owner-scoped tables and no file, fail.
+  if (tables.length > 0 && repositoryFiles(dir).length === 0) {
+    return [`no repository file found under ${path.relative(SOURCE_DIR, dir) || dir}, but ${tables.length} owner-scoped table(s) exist`];
+  }
   return repositoryFiles(dir).flatMap((file) =>
     findUnscopedQueries(readFileSync(file, "utf8"), tables, path.relative(dir, file)),
   );
+}
+
+/** Non-test source files outside the repository folder that import the pg schema: a query written there skips the scan. */
+export function pgSchemaImportsOutsideRepositories(
+  root = SOURCE_DIR,
+  repositories = REPOSITORY_DIR,
+  schemaFile = path.join(SOURCE_DIR, "db", "pg-schema.ts"),
+): string[] {
+  const walk = (dir: string): string[] =>
+    readdirSync(dir).flatMap((name) => {
+      const full = path.join(dir, name);
+      if (statSync(full).isDirectory()) return name === "__tests__" || name === "node_modules" ? [] : walk(full);
+      return /\.tsx?$/.test(name) && !/\.test\.tsx?$/.test(name) ? [full] : [];
+    });
+  return walk(root)
+    .filter((file) => file !== schemaFile && !file.startsWith(repositories + path.sep))
+    .filter((file) => /\b(?:from|import)\s*\(?\s*["'][^"']*pg-schema["']/.test(stripComments(readFileSync(file, "utf8"))))
+    .map((file) => `${path.relative(root, file)} imports pg-schema outside the repository folder`);
 }

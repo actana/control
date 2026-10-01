@@ -7,7 +7,7 @@
 > **Amended 2026-09-30 by [#567](https://github.com/actana/control/issues/567)** with D14–D21, the Panel's Postgres
 > decisions, which further **amend** ADR 0010, ADR 0011 and ADR 0016 (D20, D25). The decisions are the owner's, in
 > their comment on #567 and their comment on [#556](https://github.com/actana/control/issues/556), both dated
-> 2026-09-30. D22 was added by [#595](https://github.com/actana/control/pull/595). Nothing in D1–D13 is changed.
+> 2026-09-30. D22 was added by [#595](https://github.com/actana/control/pull/595), and D23 by [#605](https://github.com/actana/control/pull/605). Nothing in D1–D13 is changed.
 
 > **On the number.** This record takes **0041**, the next free number after
 > [`0040-pi-project-trust-answered-by-extension.md`](0040-pi-project-trust-answered-by-extension.md).
@@ -124,7 +124,7 @@ These are not decided here. Each is the named ticket's to settle.
 Decided by the owner on 2026-09-30 ([#567](https://github.com/actana/control/issues/567), and
 [#556](https://github.com/actana/control/issues/556) for D21). D8 already says the layers above a Core live in the
 Panel (Postgres); these clauses say what that means for the Panel's own database. They are appended, so no earlier
-number moves. D14–D20 come from #567. D21 comes from #556. D22 comes from #595. This record only writes the decisions down. The code, the deploy files and the packages change in the
+number moves. D14–D20 come from #567. D21 comes from #556. D22 comes from #595. D23 comes from #605. This record only writes the decisions down. The code, the deploy files and the packages change in the
 later pull requests of #567, and until they land the Panel still runs on SQLite.
 
 **D14 — The Panel's state lives in Postgres only.** Every Panel table moves, including the Projects family, which
@@ -173,6 +173,14 @@ adds real DDL:** a `lock_timeout` on the migration transaction and a "waiting fo
 new Panel does not hang silently behind a holder. (d) The migrations table is drizzle's own
 (`drizzle.__drizzle_migrations`), so a role behind an external `AC_PANEL_DATABASE_URL` needs `CREATE` on the database.
 
+**D23 — `owner_id` is a database foreign key to `operator.id` (settled 2026-10-01 in [#605](https://github.com/actana/control/pull/605), PR 3b of #567).**
+The owner's decision on #567 ([comment of 2026-09-30](https://github.com/actana/control/issues/567#issuecomment-5918432919))
+says "`owner_id` references `operator.id`". D15 repeated those words and the "Open questions" below recorded the
+foreign key as not answered. The orchestrator's ruling, on the review of #605, is that "references" is read as a
+foreign key: every owner-scoped table has `owner_id` as a `NOT NULL` column with a `REFERENCES operator (id)` constraint,
+and the ownership guard (`packages/panel/src/db/__tests__/owner-guard.test.ts`) fails a table without one. The owner may
+change this by amending this record. Row-level security stays out (D15), and the list of user-facing tables stays open.
+
 **No backward compatibility.** A 0.5.0 Panel starts on an **empty** Postgres. **0.4.x Panel data is not migrated.**
 There is no import of the SQLite file.
 
@@ -194,7 +202,8 @@ Each older record gets a dated note pointing here. No text is rewritten.
 These are not decided here. Each is for the pull request that needs it, and is settled by amending this record.
 
 - **Row-level security.** The owner asked for ownership "enforced in Panel code". Whether Postgres row-level security
-  is also wanted, and whether `owner_id` is also a database foreign key, was asked on #567 and not answered.
+  is also wanted was asked on #567 and not answered. Whether `owner_id` is also a database foreign key is settled
+  in D23.
 - **Which tables count as user-facing**, and so carry an `owner_id`. The #567 comment proposes cores, groups,
   projects, presentation, tasks, terminal logs and token usage. The owner did not confirm the list.
 - **The exact `pg` version and the Postgres image tag and digest.** The #567 comment names `pg` 8.23.0. The pull

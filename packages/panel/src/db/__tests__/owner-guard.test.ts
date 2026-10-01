@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { eq } from "drizzle-orm";
-import { PgDialect, integer, pgTable, text } from "drizzle-orm/pg-core";
+import { PgDialect, integer, pgSchema, pgTable, text } from "drizzle-orm/pg-core";
 import { afterEach, describe, expect, it } from "vitest";
 import * as panelSchema from "../pg-schema";
 import { ownedBy } from "../owner";
@@ -13,8 +13,11 @@ import {
   OWNERLESS_TABLES,
   checkDatabaseTables,
   checkSchemaTables,
+  REPOSITORY_DIR,
   findUnscopedQueries,
   ownerScopedTables,
+  pgSchemaImportsOutsideRepositories,
+  repositoryFiles,
   scanRepositories,
 } from "./owner-guard-checks";
 
@@ -120,6 +123,20 @@ describe("checkSchemaTables on planted drizzle tables", () => {
   });
 });
 
+describe("checkSchemaTables on an operator table of another schema", () => {
+  it("fails an owner_id that references other.operator.id, not public.operator", () => {
+    const otherOperator = pgSchema("other").table("operator", { id: integer("id").primaryKey() });
+    const lookalike = pgTable("lookalike", {
+      ownerId: integer("owner_id")
+        .notNull()
+        .references(() => otherOperator.id),
+    });
+    expect(checkSchemaTables({ operator, lookalike })).toEqual([
+      "public.lookalike.owner_id does not reference operator.id",
+    ]);
+  });
+});
+
 describe("findUnscopedQueries", () => {
   const tables = ownerScopedTables({ operator, tasks: owned });
   const scan = (source: string) => findUnscopedQueries(source, tables, "tasks-repo.ts");
@@ -168,6 +185,26 @@ describe("findUnscopedQueries", () => {
     ).toEqual(["tasks-repo.ts:1 queries tasks, tasks without ownedBy()"]);
   });
 
+  it("fails the relational API, a sql template and a count over the table without the owner", () => {
+    expect(scan("await db.query.tasks.findMany({ where: eq(tasks.id, id) });")).toEqual([
+      "tasks-repo.ts:1 queries tasks without ownedBy()",
+    ]);
+    expect(scan("await db.execute(sql`select * from ${tasks} where id = ${id}`);")).toEqual([
+      "tasks-repo.ts:1 sql template over tasks without the owner",
+    ]);
+    expect(scan("const n = await db.$count(tasks);")).toEqual(["tasks-repo.ts:1 queries tasks without ownedBy()"]);
+  });
+
+  it("passes the same three forms once they carry the owner", () => {
+    expect(
+      scan(`
+        await db.query.tasks.findMany({ where: ownedBy(tasks, owner, eq(tasks.id, id)) });
+        await db.execute(sql\`select * from \${tasks} where \${tasks.ownerId} = \${owner}\`);
+        const n = await db.$count(tasks, ownedBy(tasks, owner));
+      `),
+    ).toEqual([]);
+  });
+
   it("does not take a comment's word for it", () => {
     expect(scan("await db.select().from(tasks)\n  // ownedBy(tasks, owner)\n  /* ownedBy( */;")).toEqual([
       "tasks-repo.ts:1 queries tasks without ownedBy()",
@@ -191,8 +228,40 @@ describe("scanRepositories", () => {
   };
   const tables = ownerScopedTables({ operator, tasks: owned });
 
-  it("finds nothing in the Panel's repositories today", () => {
+  it("finds nothing in the Panel's repositories today, and reads the folder they are really in", () => {
+    expect(REPOSITORY_DIR.endsWith(path.join("packages", "panel", "src", "server", "repositories"))).toBe(true);
+    expect(repositoryFiles().map((f) => path.basename(f))).toContain("tasks.repo.ts");
     expect(scanRepositories(ownerScopedTables(panelSchema))).toEqual([]);
+  });
+
+  it("fails when owner-scoped tables exist and the scan found no file, or no folder", () => {
+    expect(scanRepositories(tables, repoDir({ "__tests__/only.test.ts": "" }))).toEqual([
+      expect.stringContaining("no repository file found"),
+    ]);
+    expect(scanRepositories(tables, path.join(tmpdir(), "actana-owner-guard-missing"))).toEqual([
+      expect.stringContaining("no repository file found"),
+    ]);
+    expect(scanRepositories([], repoDir({}))).toEqual([]);
+  });
+
+  it("finds no source file outside the repository folder that imports pg-schema", () => {
+    expect(pgSchemaImportsOutsideRepositories()).toEqual([]);
+  });
+
+  it("fails a planted service that imports pg-schema, and allows the repository folder and tests", () => {
+    const root = repoDir({
+      "server/repositories/tasks.repo.ts": 'import { tasks } from "~/db/pg-schema";',
+      "server/services/taskService.ts": 'import { tasks } from "~/db/pg-schema";',
+      "server/routes/lazy.ts": 'const s = await import("../../db/pg-schema");',
+      "server/services/__tests__/taskService.test.ts": 'import { tasks } from "~/db/pg-schema";',
+      "server/services/ok.ts": 'import { x } from "~/db/schema";',
+    });
+    expect(
+      pgSchemaImportsOutsideRepositories(root, path.join(root, "server", "repositories"), path.join(root, "db", "pg-schema.ts")).sort(),
+    ).toEqual([
+      path.join("server", "routes", "lazy.ts") + " imports pg-schema outside the repository folder",
+      path.join("server", "services", "taskService.ts") + " imports pg-schema outside the repository folder",
+    ]);
   });
 
   it("fails a planted repository file, in a nested folder, and skips its tests", () => {

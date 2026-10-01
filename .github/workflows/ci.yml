@@ -825,7 +825,7 @@ jobs:
           # runner's loopback only.
           POSTGRES_PASSWORD: ci-only-not-a-secret
         ports:
-          - 5432:5432
+          - 127.0.0.1:5432:5432
         options: >-
           --health-cmd "pg_isready -h 127.0.0.1 -U panel -d panel"
           --health-interval 5s

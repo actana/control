@@ -2150,6 +2150,9 @@ describe("the real-Postgres job (#567, ADR 0041 D19)", () => {
     expect(job).not.toMatch(/^ {4}if:/m);
   });
 
+  // The change that makes this job required (adds its name to `docs/rulesets/*.json`) must remove or invert this
+  // test in the same change: it fails as soon as any ruleset file names the job. `Unit Tests` is required on main
+  // and beta, so leaving it would block every pull request.
   it("is not required by any ruleset yet: making it required is the owner's call", () => {
     const name = job.match(/^ {4}name: (.+)$/m)[1];
     const dir = path.join(repoRoot, "docs/rulesets");

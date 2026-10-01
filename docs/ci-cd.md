@@ -207,7 +207,7 @@ holds the table of names.
 | `Conventions` | runs | `if: github.event_name == 'pull_request' \|\| (github.event_name == 'push' && startsWith(github.ref, 'refs/heads/feat/'))` |
 | `Resolve PR image mode` | runs, and decides `build` with `push=false` | the same `if:` |
 | `Panel image`, `Core image` | run: the real build and smoke, amd64 only, on the pushed commit | the same `if:`, `needs: pr-image-mode` |
-| `Promotion gate`, `Typecheck`, `Unit Tests`, `Lint`, `Dependency Audit`, `Secret Scan`, `E2E — Panel service seam`, `Smoke — Core release tarball`, `E2E — installer` | run | no job-level `if:`, so they run on every event |
+| `Promotion gate`, `Typecheck`, `Unit Tests`, `Lint`, `Dependency Audit`, `Secret Scan`, `E2E — Panel service seam`, `Panel DB tests — real Postgres` (not a required check), `Smoke — Core release tarball`, `E2E — installer` | run | no job-level `if:`, so they run on every event |
 | `Train rules` | does not run | `if: github.event_name == 'pull_request'` |
 | `Train versions`, `Resolve train tags`, `Panel image (train)`, `Core image (train)` | do not run | `if: startsWith(github.ref, 'refs/heads/beta/')` |
 
