@@ -6,7 +6,7 @@
 // file added next year — or `stale.yml` quietly restored — fails here instead
 // of being noticed by whoever happens to look.
 //
-// **D34's count is now six entry points**, and every revision was deliberate:
+// **D34's count is now seven entry points**, and every revision was deliberate:
 //
 //   ci.yml           gates every pull request, and publishes the train's image
 //                    on every push to `beta/**` (ADR 0023 D41)
@@ -23,6 +23,9 @@
 //                    cut — the moving `vx.y.z-beta` tag, a prerelease GitHub
 //                    Release, three tarballs, `SHA256SUMS` and `install.sh`
 //                    (ADR 0036 D9, D10, amending 0016 D34 in its turn)
+//   codeql.yml       the seventh: CodeQL code scanning on every pull request and
+//                    on the integration branches, in a file of its own so
+//                    `ci.yml`'s jobs and required checks are untouched (#599)
 //
 // `beta-release.yml` is an entry point rather than a third mode of
 // `release.yml`, and ADR 0036 D9 records the refactor that would merge them as
@@ -82,10 +85,11 @@ const code = (block) =>
     .join("\n");
 
 describe("the workflow inventory (ADR 0016 D34)", () => {
-  it("is six entry points plus one reusable workflow — nothing else", () => {
+  it("is seven entry points plus one reusable workflow — nothing else", () => {
     expect(fs.readdirSync(workflowDir).sort()).toEqual([
       "beta-release.yml",
       "ci.yml",
+      "codeql.yml",
       "container-image.yml",
       "housekeeping.yml",
       "landing.yml",

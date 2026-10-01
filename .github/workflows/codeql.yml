@@ -1,0 +1,62 @@
+name: CodeQL
+
+# Code scanning for JavaScript and TypeScript (#599, part of #552). Agents write
+# shell, exec and file code on Cores, and ESLint does not trace data flow
+# (injection, path traversal, unsafe exec); CodeQL does. The repository is
+# public, so it is free.
+#
+# A file of its own rather than a job in `ci.yml`, so `ci.yml`'s jobs and the
+# required checks that name them are untouched. The `analyze` job below passes
+# whether or not it finds an alert; what fails on a high or critical finding is
+# the code-scanning results check `CodeQL`, or a ruleset's "Require code
+# scanning results" rule. Making that required is the owner's step, in the
+# branch rules, and is not done here.
+#
+# There is no `paths` filter, on purpose: a required check whose workflow is
+# filtered out of a run stays Pending forever (see the note on `landing.yml` in
+# `scripts/__tests__/workflows.test.mjs`).
+
+on:
+  pull_request:
+  push:
+    branches:
+      # The same two filters `ci.yml` uses since #585: the train, and a
+      # release's integration branch `feat/x.y.z`. Globs, not regexes, so this
+      # does not match a ticket branch such as `feat/553-adopt-actana-client`.
+      - "beta/**"
+      - "feat/[0-9]+.[0-9]+.[0-9]+"
+
+concurrency:
+  # A newer push to a pull request supersedes the older scan; a push to a
+  # branch never cancels the one before it, so every merged result is scanned.
+  group: codeql-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# Exactly what CodeQL needs: `security-events: write` to upload results,
+# `contents: read` to check out, `actions: read` for the workflow-run metadata
+# it reads on a private repository's runs.
+permissions:
+  actions: read
+  contents: read
+  security-events: write
+
+jobs:
+  analyze:
+    name: Analyze (javascript-typescript)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@1c5b675653bb5c22dbe9b12b556ec555138e09fd # v4.38.1
+        with:
+          languages: javascript-typescript
+          build-mode: none
+
+      - name: Analyze
+        uses: github/codeql-action/analyze@1c5b675653bb5c22dbe9b12b556ec555138e09fd # v4.38.1
+        with:
+          category: "/language:javascript-typescript"
