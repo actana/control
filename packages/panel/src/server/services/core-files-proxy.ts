@@ -194,7 +194,7 @@ function refuse(
  */
 const sendersByCore = new Map<string, { fingerprint: string; fetch: CoreFilesFetch }>();
 
-function filesFetchFor(
+export function filesFetchFor(
   coreId: string,
   secrets: { caCert: string; clientCert: string; clientKey: string },
   makeFetch: typeof createCoreFilesFetch,
