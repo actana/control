@@ -32,10 +32,27 @@ function presentedApiKey(request: Request): string | null {
  * The routes that accept an API key, as a short list: a route is closed to
  * keys until it is added here, so a key never reaches the Operator's whole
  * surface (pairing, forgetting a Core, minting more keys) by default.
+ *
+ * The public surface is `/api/v1/…` (#572 PR 2). The two unversioned Cores
+ * GETs stay so PR 1's proofs keep working; they are the same reads as the v1
+ * Cores routes.
  */
 export const API_KEY_ROUTES: ReadonlyArray<{ method: string; pattern: RegExp }> = [
   { method: "GET", pattern: /^\/api\/cores$/ },
   { method: "GET", pattern: /^\/api\/cores\/(?!pairing$)[^/]+$/ },
+  { method: "GET", pattern: /^\/api\/v1\/cores$/ },
+  { method: "GET", pattern: /^\/api\/v1\/cores\/[^/]+$/ },
+  { method: "GET", pattern: /^\/api\/v1\/cores\/[^/]+\/agents$/ },
+  { method: "GET", pattern: /^\/api\/v1\/agents$/ },
+  { method: "POST", pattern: /^\/api\/v1\/agents$/ },
+  { method: "GET", pattern: /^\/api\/v1\/agents\/[^/]+$/ },
+  { method: "DELETE", pattern: /^\/api\/v1\/agents\/[^/]+$/ },
+  { method: "GET", pattern: /^\/api\/v1\/tasks$/ },
+  { method: "POST", pattern: /^\/api\/v1\/tasks$/ },
+  { method: "GET", pattern: /^\/api\/v1\/tasks\/[^/]+$/ },
+  { method: "POST", pattern: /^\/api\/v1\/tasks\/[^/]+\/status$/ },
+  { method: "GET", pattern: /^\/api\/v1\/tasks\/[^/]+\/comments$/ },
+  { method: "POST", pattern: /^\/api\/v1\/tasks\/[^/]+\/comments$/ },
 ];
 
 export function acceptsApiKey(method: string, pathname: string): boolean {
