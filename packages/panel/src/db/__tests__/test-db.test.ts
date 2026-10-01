@@ -1,6 +1,7 @@
 import net from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
 import { TEST_DATABASE_URL_ENV, createTestDb, type TestDb } from "../test-db";
+import { bundledPanelMigrations } from "../pg-migrations-bundle";
 
 const open: TestDb[] = [];
 async function make(options?: Parameters<typeof createTestDb>[0]) {
@@ -22,13 +23,13 @@ async function closedPort(): Promise<number> {
 }
 
 describe("createTestDb on PGlite", { timeout: 30_000 }, () => {
-  it("has the baseline migration applied", async () => {
+  it("has the bundled migrations applied", async () => {
     const db = await make({ env: {} });
     expect(db.kind).toBe("pglite");
     const { rows } = await db.pool.query(
       'select count(*)::int as n from "drizzle"."__drizzle_migrations"',
     );
-    expect(rows[0].n).toBe(1);
+    expect(rows[0].n).toBe(bundledPanelMigrations().length);
   });
 
   it("gives each test a database of its own", async () => {
@@ -83,7 +84,7 @@ describe("createTestDb with AC_TEST_DATABASE_URL", () => {
       const { rows } = await a.pool.query(
         'select count(*)::int as n from "drizzle"."__drizzle_migrations"',
       );
-      expect(rows[0].n).toBe(1);
+      expect(rows[0].n).toBe(bundledPanelMigrations().length);
     },
   );
 });
