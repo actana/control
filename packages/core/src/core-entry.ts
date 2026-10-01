@@ -83,6 +83,9 @@ import { corePairingStore } from "./core-pairing-store";
 import { runCoreExec } from "./core-exec";
 import { coreHome } from "./core-identity";
 import { startSharedFolder } from "./shared-folder-feed";
+import { announceShared } from "./shared-capability";
+import { createSharedHome } from "./shared-home-io";
+import { createSharedSync } from "./shared-sync";
 import {
   configureEventLogStore,
   disposeEventLogStore,
@@ -467,6 +470,11 @@ async function startCore(): Promise<void> {
 
   // The Shared folder (#561): made here if missing, and its changes fed into the event log.
   const sharedFolder = await startSharedFolder({ home: coreHome(), appendEvent });
+  // Its sync with S3 (#562, ADR 0041 D33): run here, by the daemon, which alone holds the key in
+  // `userDataDir`; every read and write in `~/shared` is done by the Files helper as `core`.
+  // Idle until a controller attaches this Core, and again after it detaches.
+  const sharedSync = createSharedSync({ stateDir: userDataDir, home: createSharedHome({ home: coreHome() }) });
+  sharedSync.start();
 
   const serverOpts: import("./pty-core-link-server").PtyCoreLinkServerOptions = {
     port,
@@ -787,7 +795,8 @@ async function startCore(): Promise<void> {
   serverOpts.httpRoutes = pairing ? composeCoreHttpRoutes(auditPairingRoutes(pairing.redeem), fileRoutes) : fileRoutes;
   serverOpts.announceFiles = shouldAnnounceFiles(fileRoutes);
   // A function, so a watcher that comes up after the server is announced to the next connection.
-  serverOpts.shared = () => sharedFolder.capability;
+  serverOpts.shared = () => announceShared(sharedSync.attached, sharedFolder.capability, sharedSync.keyIsolated);
+  serverOpts.sharedPort = sharedSync;
   // What the mTLS gate is allowed to serve without a client certificate. Absent
   // unless pairing is mounted, and absent means the handshake keeps refusing
   // uncertificated clients outright — see `core-preauth-gate.ts`.
@@ -837,6 +846,7 @@ async function startCore(): Promise<void> {
     updateNotice?.stop();
     revocationSweep?.stop();
     sharedFolder.stop();
+    sharedSync.stop();
     disposeEventLogStore();
     disposeCoreQueryStore();
     disposeCoreMutationStore();

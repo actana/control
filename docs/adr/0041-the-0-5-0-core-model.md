@@ -19,6 +19,10 @@
 >
 > **Amended by [#557](https://github.com/actana/control/issues/557)** with D30–D32 ("Landed by #557"), which record what
 > the Files API does; D29 is superseded by D30, and nothing in D1–D28 is changed.
+>
+> **Amended 2026-10-01 by [#562](https://github.com/actana/control/issues/562)** with D33 ("Landed by #562"). It
+> **amends D25**: the Shared folder's sync runs as the daemon user `actana`, not as `core`, by the owner's ruling of
+> 2026-10-01 (option A). Nothing else in D1–D32 is changed.
 
 > **On the number.** This record takes **0041**, the next free number after
 > [`0040-pi-project-trust-answered-by-extension.md`](0040-pi-project-trust-answered-by-extension.md).
@@ -262,8 +266,8 @@ directory listing, a new folder, and the Harness CLI lookup `resolveCommand`) it
 which runs through `asCore`. The writes and listings refuse any path that leaves the home; `resolveCommand` is a
 deliberate unconfined read of PATH (the CLIs live in `~/.local/bin` and `/usr/local/bin`), so it is not confined to
 the home. The Files API is not moved by #559: it moves to run as `core` together with #557 (the owner's D5). The
-Shared folder is a userland sync run as `core`, not a FUSE mount inside the Core, so the daemon keeps exactly two
-capabilities.
+Shared folder is a userland sync, not a FUSE mount inside the Core, so the daemon keeps exactly two capabilities; who
+runs it is amended by D33 (it was first written here as `core`).
 
 **D26 — In the container, `docker exec` needs `-u`, and `actana pair` and `actana status` refuse anyone but
 `actana`.** The container starts as root only for the entrypoint's step before the drop, so `docker compose exec`
@@ -327,6 +331,29 @@ than a Session can.
 **D32 — The Files API keeps the SDK's refusal codes.** Delete, create folder and move add no code: they use
 `bad-request`, `not-found`, `malformed-path` and `transfer-in-progress`, because the code list is the published SDK's
 and is actana/client#10's to extend. The code for a path outside the home stays `outside-project-root`.
+
+## Landed by #562: the Shared folder's sync runs as `actana`
+
+[#562](https://github.com/actana/control/issues/562) puts the Shared folder in S3. The owner ruled on 2026-10-01
+(option A) who runs the sync, which D25 had said. The owner may change it by amending this record.
+
+**D33 — The Shared folder's sync runs as `actana`, so in the container no key is ever readable by `core`. This amends D25.** D25 said
+the Shared folder is a userland sync run as `core`. It is run by the daemon user `actana` instead, because the
+controller pushes the Core a short-lived S3 key (1 hour, limited to the Core's own prefix), and issue 562 requires that
+no key on the Core is readable by `core`. The daemon stores the key in `/var/lib/actana` (D24; the file mode 0600, the
+directory 0700, owned by `actana`) and replaces it on every push. There is no long-lived key on the Core and no key in
+any config, environment or argument `core` can read. Still no FUSE and no new capability: the daemon keeps exactly
+`CAP_SETUID` and `CAP_SETGID`. The sync talks S3 itself, with no AWS SDK and no rclone. Everything it reads or writes in
+`core`'s home goes through the Files helper started by `asCore` (D31), with the confinement D25 and D30 already
+enforce; the daemon never opens a path in `~`. The sync does not follow a symlink. When the key has expired (no
+controller for more than an hour) the sync stops uploading and recovers on the next push. Unpair copies what is in S3
+into the local folder and then stops syncing, so the folder keeps its contents. Deleting the S3 prefix of a deleted
+Core is the controller's (#564). **The limit:** this holds where the daemon and `core` are two users, the container. On a single-user install
+(`actana setup` on metal) they are one uid, a Session can read the key file in the daemon's data directory, and no decision
+here can change that. The Core does not paper over it: it reports the folder as key-isolated (`ready.shared.keyIsolated`) only
+when the users differ, and logs `shared-sync.key-not-isolated` when it takes a key otherwise. The owner's ruling that the sync
+runs as `actana` where there are two users is unchanged. The change feed of D5 and D6 is unchanged: what the sync writes into `~/shared` is
+seen by the watcher of #561 and becomes a `shared:changed` event like any other write.
 
 ## Consequences
 

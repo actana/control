@@ -82,6 +82,16 @@ import { sessionFrameFieldRefusal, spawnFieldRefusal } from "./request-fields";
 import type { CoreSessionMutation } from "@actana/shared/core-mutations";
 import type { CoreSessionRow } from "@actana/shared/core-query";
 import type { CoreSharedCapability } from "./shared-capability";
+import type { CoreLinkSharedMountStatus } from "@actana/sdk/core";
+
+/** What the server needs of the Shared folder's sync: one status for each frame (#562). */
+export interface CoreSharedPort {
+  handle(
+    frame: Extract<CoreLinkRequestFrame, { type: "sharedAttach" | "sharedCredentials" | "sharedDetach" }>,
+  ): Promise<CoreLinkSharedMountStatus>;
+}
+
+const SHARED_REQUEST_TYPES: ReadonlySet<string> = new Set(["sharedAttach", "sharedCredentials", "sharedDetach"]);
 
 /**
  * The slice of the event-log store the server needs. The real implementation
@@ -399,6 +409,12 @@ export type PtyCoreLinkServerOptions = {
    */
   execPort?: CoreExecPort;
   /**
+   * Answers the Shared-folder frames the controller pushes: `sharedAttach`, `sharedCredentials` and
+   * `sharedDetach` (#562). When omitted each is answered with a `sharedStatus` error. See
+   * {@link CoreSharedPort}. The frames carry the key, so they are never logged and never echoed.
+   */
+  sharedPort?: CoreSharedPort;
+  /**
    * The protocol version advertised in the `ready` frame. Defaults to this
    * build's {@link CORE_LINK_PROTOCOL_VERSION} and exists only so a test can
    * stand up a Core that has drifted — the Panel's version gate has nothing
@@ -679,6 +695,7 @@ export class PtyCoreLinkServer {
   private readonly installPort: HarnessInstallPort | null;
   private readonly directoryPort: CoreDirectoryPort | null;
   private readonly execPort: CoreExecPort | null;
+  private readonly sharedPort: CoreSharedPort | null;
   private readonly promptPort: { submitted(sessionId: string, prompt: string): void } | null;
   private readonly relaunchPort: { agentSpawned(sessionId: string): void } | null;
   private readonly protocolVersion: string;
@@ -758,6 +775,7 @@ export class PtyCoreLinkServer {
     this.installPort = opts.installPort ?? null;
     this.directoryPort = opts.directoryPort ?? null;
     this.execPort = opts.execPort ?? null;
+    this.sharedPort = opts.sharedPort ?? null;
     this.promptPort = opts.promptPort ?? null;
     this.relaunchPort = opts.relaunchPort ?? null;
     this.protocolVersion = opts.protocolVersion ?? CORE_LINK_PROTOCOL_VERSION;
@@ -1248,6 +1266,16 @@ export class PtyCoreLinkServer {
       // caller's reqId when there is one, so its request settles instead of
       // timing out.
       const { reqId, type } = readRefusedFrame(data);
+      // The answer to a Shared-folder request is always a `sharedStatus`, a refused one too.
+      // Nothing of the frame is echoed: it may carry a key.
+      if (type !== undefined && SHARED_REQUEST_TYPES.has(type) && reqId !== undefined) {
+        this.send(ws, {
+          type: "sharedStatus",
+          reqId,
+          status: { state: "error", code: "invalid-frame", message: `${type} is not a valid frame` },
+        });
+        return;
+      }
       this.send(ws, {
         type: "error",
         ...(reqId === undefined ? {} : { reqId }),
@@ -1901,6 +1929,25 @@ export class PtyCoreLinkServer {
       // `exec-output-too-large` additionally carries a code, because "your
       // command produced too much" and "your command failed" are different
       // answers and only one of them is an error frame at all.
+      // The Shared folder's key and its end (#562, ADR 0041 D33). Never logged: the frame
+      // carries the key. Always answered with `sharedStatus`, whatever happened.
+      case "sharedAttach":
+      case "sharedCredentials":
+      case "sharedDetach": {
+        let status: CoreLinkSharedMountStatus;
+        if (!this.sharedPort) {
+          status = { state: "error", code: "mount-failed", message: "this Core does not sync a Shared folder" };
+        } else {
+          try {
+            status = await this.sharedPort.handle(frame);
+          } catch {
+            // The message of whatever threw is not sent: it is not known to be free of the key.
+            status = { state: "error", code: "mount-failed", message: "the Core failed to handle this request" };
+          }
+        }
+        this.send(ws, { type: "sharedStatus", reqId: frame.reqId, status });
+        return;
+      }
       case "exec": {
         const port = this.requireExecPort(ws, frame.reqId);
         if (!port) return;
