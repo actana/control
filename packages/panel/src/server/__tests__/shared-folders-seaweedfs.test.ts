@@ -236,7 +236,9 @@ describe.skipIf(!configured)("the Panel's Shared folders against real SeaweedFS 
     const ownBefore = before.filter((k) => k.startsWith(`${env.prefix}/${a}/`));
     const foreignBefore = before.filter((k) => !k.startsWith(`${env.prefix}/${a}/`));
     expect(ownBefore.length).toBeGreaterThanOrEqual(3);
-    expect(foreignBefore.length).toBe(4);
+    // The bucket is shared with the Core's own test in the same job, so there is more than the four written here;
+    // the claim is that none of it, whoever wrote it, is touched.
+    expect(foreignBefore.length).toBeGreaterThanOrEqual(4);
 
     // Anything but the exact prefix removes nothing.
     await expect(s.deleteCore(a, `${env.prefix}/${a}`)).rejects.toMatchObject({ code: "confirmation" });
