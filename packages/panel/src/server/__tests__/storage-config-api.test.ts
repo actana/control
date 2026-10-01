@@ -155,6 +155,16 @@ describe("the master key", () => {
     expect(await read()).toBe(second);
   });
 
+  it("is accepted as one line, the way a password box delivers a pasted PEM, and sealed in its proper shape", async () => {
+    const key = pem();
+    const oneLine = key.replace(/\n/g, "");
+    expect(oneLine).not.toContain("\n");
+    expect((await call("/api/storage", { method: "PUT", json: { ...CONFIG, masterKey: oneLine } })).status).toBe(200);
+    const { openSecret } = await import("../services/secrets-at-rest");
+    const stored = (await testDb.pool.query("select master_key_sealed from storage_config")).rows[0].master_key_sealed as Uint8Array;
+    expect(openSecret(Buffer.from(stored))).toBe(key);
+  });
+
   it("is refused when it is not an RSA private key, without repeating what was sent", async () => {
     const res = await call("/api/storage", { method: "PUT", json: { ...CONFIG, masterKey: "hunter2-not-a-key" } });
     expect(res.status).toBe(400);

@@ -19,6 +19,7 @@ import { coreLinkManager, type CoreLinkClientLike } from "./core-link-manager";
 import { getCore, removeCore } from "./cores";
 import { OPERATOR_ID } from "./operator";
 import type { CoreSharedFolder } from "~/shared/cores";
+import type { SharedConnectionResult } from "~/shared/storage-wire";
 import { coreFolderPrefix, storageKeyIssuer, type StorageTarget } from "./storage";
 
 /**
@@ -72,15 +73,7 @@ export class SharedFolderError extends ConflictError {
   }
 }
 
-/** What the connection test proved. `reachOther` is expected to be false: the key must not reach another Core's folder. */
-export type SharedConnectionResult = {
-  folder: string;
-  expiresAt: number;
-  read: boolean;
-  write: boolean;
-  listOwn: boolean;
-  reachOther: boolean;
-};
+export type { SharedConnectionResult } from "~/shared/storage-wire";
 
 const RETRY_DELAYS_MS = [5_000, 15_000, 60_000, 300_000] as const;
 const REQUEST_TIMEOUT_MS = 15_000;

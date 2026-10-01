@@ -4,6 +4,7 @@ import { findSealedMasterKey, findStorageConfig, upsertStorageConfig } from "../
 import { ConflictError, ValidationError } from "../errors";
 import { OPERATOR_ID } from "./operator";
 import { openSecret, sealSecret } from "./secrets-at-rest";
+import type { StorageConfigInput, StorageConfigView } from "~/shared/storage-wire";
 
 /**
  * Where the Shared folders live, and the master key that issues each Core's 1-hour key (#564, ADR 0041
@@ -20,34 +21,7 @@ export type StorageBackend = (typeof STORAGE_BACKENDS)[number];
 export const DEFAULT_OIDC_AUDIENCE = "actana-shared";
 export const DEFAULT_REGION = "us-east-1";
 
-/** What a read of the config says. There is no field for the key, on purpose. */
-export type StorageConfigView = {
-  configured: boolean;
-  backend: StorageBackend | null;
-  endpoint: string | null;
-  bucket: string | null;
-  prefix: string | null;
-  region: string | null;
-  oidcIssuer: string | null;
-  oidcAudience: string | null;
-  keyId: string | null;
-  masterKeySet: boolean;
-  updatedAt: number | null;
-};
-
-export type StorageConfigInput = {
-  backend: string;
-  endpoint: string;
-  bucket: string;
-  /** `cores` and `cores/` are the same prefix. */
-  prefix: string;
-  region?: string;
-  oidcIssuer: string;
-  oidcAudience?: string;
-  keyId: string;
-  /** An RSA private key in PEM. Write-only: absent keeps the stored one, present replaces it. */
-  masterKey?: string;
-};
+export type { StorageConfigView, StorageConfigInput } from "~/shared/storage-wire";
 
 /** What the issuer needs to name a Core's folder: where it is, and which prefix holds the Cores. */
 export type StorageTarget = {
@@ -130,6 +104,18 @@ function requireText(raw: string, what: string): string {
   return value;
 }
 
+/**
+ * A PEM as a person pastes it: a password box is one line, so the newlines are often gone. Header, body and footer
+ * are put back in the shape the parser wants. Anything that is not a PEM block is returned as it came, for the parser
+ * to refuse without being quoted.
+ */
+function normalizePem(raw: string): string {
+  const match = /-----BEGIN ([A-Z ]+)-----([\s\S]*?)-----END \1-----/.exec(raw.trim());
+  if (!match) return raw;
+  const body = match[2]!.replace(/\s+/g, "");
+  return `-----BEGIN ${match[1]}-----\n${body.match(/.{1,64}/g)?.join("\n") ?? ""}\n-----END ${match[1]}-----\n`;
+}
+
 /** The key must be an RSA private key; what the parser says is never repeated, it can quote the input. */
 function parseMasterKey(pem: string): KeyObject {
   let key: KeyObject;
@@ -166,8 +152,9 @@ export async function saveStorageConfig(
   const existing = await findStorageConfig(ownerId);
   let sealed: Buffer | undefined;
   if (input.masterKey !== undefined) {
-    parseMasterKey(input.masterKey);
-    sealed = sealSecret(input.masterKey);
+    const pem = normalizePem(input.masterKey);
+    parseMasterKey(pem);
+    sealed = sealSecret(pem);
   } else if (!existing?.masterKeySet) {
     throw new ValidationError("The master key is required the first time storage is configured.");
   }

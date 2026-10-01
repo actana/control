@@ -2,6 +2,7 @@ import type { Session, UserTerminal } from "~/db/schema";
 import type { Harness, SessionStatus } from "@actana/shared/domain";
 import type { CoreListResponse, CoreWithDial } from "~/shared/cores";
 import type { CorePairingIdentityResponse } from "~/shared/core-pairing";
+import type { SharedConnectionResult, StorageConfigInput, StorageConfigView } from "~/shared/storage-wire";
 import { DEV_SERVER_ORIGIN } from "~/shared/dev-server";
 import { LOGIN_PATH, isAuthPath, withCarriedQuery } from "~/lib/auth-paths";
 import type { Binding, BindingMap, HotkeyAction } from "~/lib/keybindings/types";
@@ -211,7 +212,30 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body),
     }),
+  /** Unpair: the Core is told to detach (it keeps `~/shared`), then forgotten. The S3 prefix stays. */
   removeCore: (id: string) => req<void>(`/api/cores/${id}`, { method: "DELETE" }),
+  /** The Shared-folder storage config. The master key is never in the answer, only whether one is set. */
+  getStorage: () => req<{ storage: StorageConfigView }>("/api/storage"),
+  /** Write-only for the master key: send it to set or rotate it, leave it out to keep the stored one. */
+  putStorage: (body: StorageConfigInput) =>
+    req<{ storage: StorageConfigView }>("/api/storage", { method: "PUT", body: JSON.stringify(body) }),
+  /** Pairing step 4: issue a 1-hour key for this Core and prove it reaches its own folder and no other. */
+  testSharedFolder: (coreId: string) =>
+    req<{ result: SharedConnectionResult }>(`/api/cores/${encodeURIComponent(coreId)}/shared/test`, {
+      method: "POST",
+    }),
+  /** Pairing step 4: attach the Core's Shared folder. The pairing is not finished until this succeeds. */
+  finishCorePairing: (coreId: string) =>
+    req<{ core: CoreWithDial }>(`/api/cores/${encodeURIComponent(coreId)}/pairing/finish`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    }),
+  /** Delete the Core and empty its S3 prefix; `confirmPrefix` must be exactly the prefix. */
+  deleteCoreWithStorage: (coreId: string, confirmPrefix: string) =>
+    req<{ prefix: string | null; removed: number }>(`/api/cores/${encodeURIComponent(coreId)}/delete`, {
+      method: "POST",
+      body: JSON.stringify({ confirmPrefix }),
+    }),
 
   getSession: (id: string) => req<{ session: Session }>(`/api/sessions/${id}`),
   getSessionQuestion: (id: string) =>

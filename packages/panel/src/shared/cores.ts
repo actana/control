@@ -160,6 +160,11 @@ export type CoreSharedFolder = {
   error: string | null;
 };
 
+/** A pairing from the Panel is finished when its Shared folder is attached; a Core with no folder row never needed one. */
+export function isPairingFinished(core: { sharedFolder?: { state: string } }): boolean {
+  return core.sharedFolder?.state !== "pending";
+}
+
 /** A registry row plus its live link state — one row of the Cores list. */
 export type CoreWithDial = Core & { dial: CoreDialStatus; sharedFolder?: CoreSharedFolder };
 

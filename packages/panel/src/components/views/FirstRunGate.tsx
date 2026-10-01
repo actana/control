@@ -8,6 +8,7 @@ import {
   type ReactNode,
 } from "react";
 import { api } from "~/lib/api";
+import { isPairingFinished, type CoreWithDial } from "~/shared/cores";
 import { onCoreRegistryChanged } from "~/lib/core-registry-changed";
 import { readCachedCoreCount, writeCachedCoreCount } from "~/lib/shell-query-cache";
 import { CORES_POLL_MS } from "~/lib/use-fleet";
@@ -20,6 +21,14 @@ import { CORES_POLL_MS } from "~/lib/use-fleet";
 const FirstRunWizard = lazy(() =>
   import("~/components/views/FirstRunWizard").then((m) => ({ default: m.FirstRunWizard })),
 );
+
+/**
+ * Cores whose pairing is finished. A Core redeemed from the Panel whose Shared folder is not attached yet (#564) is
+ * in the registry but is not a fleet: counting it would drop the wizard in the middle of step 4.
+ */
+function pairedCount(cores: readonly CoreWithDial[]): number {
+  return cores.filter(isPairingFinished).length;
+}
 
 /**
  * The gate (#358): a Panel that knows no Cores shows the pairing wizard, and
@@ -135,7 +144,7 @@ function useCoreRegistry(): {
     issued.current += 1;
     const seq = issued.current;
     try {
-      let next = (await api.listCores()).cores.length;
+      let next = pairedCount((await api.listCores()).cores);
       /**
        * Tearing down a live session takes two answers, not one.
        *
@@ -154,7 +163,7 @@ function useCoreRegistry(): {
        * belongs in the wizard.
        */
       if (next === 0 && (known.current ?? 0) > 0) {
-        next = (await api.listCores()).cores.length;
+        next = pairedCount((await api.listCores()).cores);
       }
       if (!mounted.current || seq < settled.current) return;
       settled.current = seq;

@@ -44,9 +44,37 @@ function core(label = "prod-vm-1"): CoreWithDial {
   };
 }
 
+/** Registered by a pairing from the Panel, with its Shared folder not attached yet (#564). */
+function pendingCore(): CoreWithDial {
+  return { ...core(), sharedFolder: { state: "pending", prefix: null, keyExpiresAt: null, error: null } };
+}
+
 let CORES: CoreWithDial[] = [];
 
+const STORAGE = {
+  configured: true,
+  backend: "seaweedfs" as const,
+  endpoint: "http://seaweedfs:8333",
+  bucket: "actana-shared",
+  prefix: "cores",
+  region: "us-east-1",
+  oidcIssuer: "https://panel.example.test",
+  oidcAudience: "actana-shared",
+  keyId: "k1",
+  masterKeySet: true,
+  updatedAt: 1,
+};
+
 const api = {
+  getStorage: vi.fn(async () => ({ storage: STORAGE })),
+  putStorage: vi.fn(async () => ({ storage: STORAGE })),
+  testSharedFolder: vi.fn(async () => ({
+    result: { folder: "cores/core_new/", expiresAt: 1_790_000_000_000, read: true, write: true, listOwn: true, reachOther: false },
+  })),
+  finishCorePairing: vi.fn(async (): Promise<{ core: CoreWithDial }> => {
+    CORES = [core()];
+    return { core: core() };
+  }),
   listCores: vi.fn(async (): Promise<{ cores: CoreWithDial[] }> => ({ cores: CORES })),
   inspectCoreForPairing: vi.fn(async (_address: string) => ({
     identity: { fingerprint: PRESENTED, httpsOrigin: ORIGIN },
@@ -55,8 +83,8 @@ const api = {
     // The registry is what the gate reads, so a pairing that "succeeds" has to
     // land in it — anything else would let the gate pass on a promise rather
     // than on a Core.
-    CORES = [core()];
-    return { core: core() };
+    CORES = [pendingCore()];
+    return { core: pendingCore() };
   }),
 };
 
@@ -130,6 +158,12 @@ async function pair(): Promise<void> {
   await click("Pair Core");
 }
 
+/** Step 4, as an operator does it: test the connection, then finish. */
+async function finishSharedFolder(): Promise<void> {
+  await click("Test connection");
+  await click("Connect and finish pairing");
+}
+
 describe("the first-run gate (#358)", () => {
   beforeEach(() => {
     CORES = [];
@@ -145,6 +179,10 @@ describe("the first-run gate (#358)", () => {
       identity: { fingerprint: PRESENTED, httpsOrigin: ORIGIN },
     }));
     api.pairCore.mockImplementation(async () => {
+      CORES = [pendingCore()];
+      return { core: pendingCore() };
+    });
+    api.finishCorePairing.mockImplementation(async () => {
       CORES = [core()];
       return { core: core() };
     });
@@ -413,11 +451,18 @@ describe("the first-run gate (#358)", () => {
       });
     });
 
-    it("unlocks the dashboard on the first Core that pairs", async () => {
+    it("unlocks the dashboard on the first Core that pairs, which is when its Shared folder is attached", async () => {
       await mount();
       expect(dashboard()).toBeNull();
 
       await pair();
+
+      // Redeemed and registered is not paired: the wizard stays on step 4, which cannot be skipped.
+      expect(wizard()).toBeTruthy();
+      expect(dashboard()).toBeNull();
+      expect(document.querySelector('[data-step="shared-folder"]')).not.toBeNull();
+
+      await finishSharedFolder();
 
       expect(dashboard()).toBeTruthy();
       expect(wizard()).toBeNull();
@@ -532,6 +577,7 @@ describe("the first-run gate (#358)", () => {
       expect(dashboard()).toBeNull();
 
       await pair();
+      await finishSharedFolder();
 
       expect(dashboard()).toBeTruthy();
       expect(wizard()).toBeNull();
