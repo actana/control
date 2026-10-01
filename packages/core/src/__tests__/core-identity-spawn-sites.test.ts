@@ -60,6 +60,8 @@ import { runCoreExec } from "../core-exec";
 import { runCli } from "../harness-cli-run";
 import { daemonHarnessSystem } from "../core-harness-system";
 import log from "@actana/shared/log";
+import { configureCoreHomeOps } from "../core-home-ops-client";
+import { cannedHelper } from "./core-home-ops-kit";
 
 const SCRIPT = 'cd -- "$0" && exec "$@"';
 
@@ -81,7 +83,10 @@ beforeEach(() => {
   setprivPresent.value = true;
   hang.value = false;
 });
-afterEach(() => vi.unstubAllEnvs());
+afterEach(() => {
+  configureCoreHomeOps(null);
+  vi.unstubAllEnvs();
+});
 
 function expectWrapped(call: { command: string; args: string[]; options: Record<string, any> }, inner: string[]) {
   expect(call.command).toBe("/usr/bin/setpriv");
@@ -110,16 +115,20 @@ function expectWrapped(call: { command: string; args: string[]; options: Record<
 describe("core exec", () => {
   it("starts the command as core, in the requested directory, with core's env", async () => {
     inContainer();
-    await runCoreExec({ command: "id", args: ["-un"], cwd: "/tmp" });
+    // The cwd is checked by a `core` helper (answered by the kit here); the
+    // command itself is the only thing the daemon spawns directly.
+    configureCoreHomeOps(cannedHelper().options);
+    await runCoreExec({ command: "id", args: ["-un"], cwd: "/home/core/work" });
     expect(spawned.spawn).toHaveLength(1);
     expectWrapped(spawned.spawn[0]!, ["id", "-un"]);
-    expect(spawned.spawn[0]!.args[10]).toBe("/tmp");
+    expect(spawned.spawn[0]!.args[10]).toBe("/home/core/work");
   });
 
   it("refuses to run when setpriv is missing, and spawns nothing", async () => {
     inContainer();
+    configureCoreHomeOps(cannedHelper().options);
     setprivPresent.value = false;
-    await expect(runCoreExec({ command: "id", args: [], cwd: "/tmp" })).rejects.toThrow(
+    await expect(runCoreExec({ command: "id", args: [], cwd: "/home/core/work" })).rejects.toThrow(
       /setpriv is not in.*would run as the daemon instead of as core/,
     );
     expect(spawned.spawn).toHaveLength(0);
@@ -177,12 +186,13 @@ describe("Harness installs", () => {
 describe("a failing wrapped kill cannot strand a caller", () => {
   it("core exec still rejects with its timeout sentence, and the failure is a log line", async () => {
     inContainer();
+    configureCoreHomeOps(cannedHelper().options);
     hang.value = true;
     const warn = vi.spyOn(log, "warn").mockImplementation(() => undefined);
     const unhandled = vi.fn();
     process.on("unhandledRejection", unhandled);
     try {
-      await expect(runCoreExec({ command: "sleep", args: ["9"], cwd: "/tmp", timeoutMs: 20 })).rejects.toThrow(
+      await expect(runCoreExec({ command: "sleep", args: ["9"], cwd: "/home/core/work", timeoutMs: 20 })).rejects.toThrow(
         /did not finish within/,
       );
       await new Promise((r) => setTimeout(r, 20));

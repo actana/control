@@ -664,3 +664,19 @@ describe("the tarball's bundles are built by one named script", () => {
     expect(checked, "no workflow calls scripts/build-core-tarball.mjs any more").toBeGreaterThan(0);
   });
 });
+
+// ─── The helper the daemon runs as `core` ships in the tarball (#559) ───────
+//
+// In the container the daemon is another user than `core` and starts
+// `core-home-ops.cjs` through `asCore` for every short write in core's home. The
+// daemon finds it by its own `__dirname`, so a tarball that stages only
+// `core-entry.cjs` is a Core that can start and cannot install a hook.
+
+describe("the tarball stages the core-home helper beside the daemon", () => {
+  it("builds it in the Core package and stages it into app/", () => {
+    const build = fs.readFileSync(path.join(repoRoot, "packages", "core", "build.mjs"), "utf8");
+    expect(build).toContain('outfile: "dist/core-home-ops.cjs"');
+    const builder = fs.readFileSync(path.join(repoRoot, "scripts", "build-core-tarball.mjs"), "utf8");
+    expect(builder).toMatch(/file: "core-home-ops\.cjs", dist: path\.join\(repoRoot, "packages", "core", "dist"\)/);
+  });
+});

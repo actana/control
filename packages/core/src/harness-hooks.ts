@@ -48,8 +48,8 @@ import {
 } from "./harness-hook-env";
 import { HARNESS_HOOK_TRUST_FLAGS } from "@actana/shared/harness-cli-config";
 import type { Harness } from "@actana/shared/domain";
-import { installOpencodeHooks } from "./harness-hooks-opencode";
-import { installPiHooks } from "./harness-hooks-pi";
+import { installOpencodeHooks, OPENCODE_PLUGIN_PATH } from "./harness-hooks-opencode";
+import { installPiHooks, piExtensionPath } from "./harness-hooks-pi";
 
 /** Marks an entry this Core wrote, so the next spawn can replace just those. */
 const MANAGED_FLAG = "_acManaged";
@@ -467,6 +467,30 @@ const HOOK_FAMILIES: Record<string, HookFamily> = {
  */
 function hasHookTrustReview(harness: string): boolean {
   return (HARNESS_HOOK_TRUST_FLAGS[harness as Harness] ?? null) !== null;
+}
+
+/**
+ * Every file `installHarnessHooks` may write for `harness` in `cwd`, derived the
+ * way the writers derive them. The helper confines each of these, through
+ * `realpath`, before the install runs: confining `cwd` alone would let a linked
+ * `.claude` or `.codex` inside it carry the write out of the home. Keep it in
+ * step with the writers above; `core-home-ops.test.ts` plants a link at each.
+ */
+export function hookWritePaths(harness: string, cwd: string, env: NodeJS.ProcessEnv): string[] {
+  switch (harness) {
+    case "claude-code":
+      return [path.join(cwd, ".claude", "settings.local.json")];
+    case "codex":
+      return [path.join(cwd, ".codex", "hooks.json")];
+    case "cursor-cli":
+      return [path.join(cwd, ".cursor", "hooks.json")];
+    case "opencode":
+      return [path.join(cwd, OPENCODE_PLUGIN_PATH)];
+    case "pi":
+      return [piExtensionPath(env)];
+    default:
+      return [];
+  }
 }
 
 /** Does this Core know how to install hooks for `harness`? */

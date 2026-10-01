@@ -1,11 +1,17 @@
 import log from "@actana/shared/log";
 import * as os from "node:os";
-import * as fs from "node:fs";
 import * as path from "node:path";
 import { spawnSync } from "node:child_process";
 import { getAppTheme } from "./app-theme";
 import { asCore, coreHome, isContainerMode, killAsCore, killAsCoreQuietly } from "./core-identity";
-import { ensureStatuslineTap } from "@actana/shared/statusline-tap";
+import {
+  ensureClaudeShiftEnterBindingViaCore,
+  ensureStatuslineTapViaCore,
+  installHarnessHooksViaCore,
+  spawnPathFactsViaCore,
+  CoreHomeOpRefusedError,
+  type SpawnPathFacts,
+} from "./core-home-ops-client";
 import { PtyOutputBatcher } from "./pty-output-batch";
 import { PtyOutputActivityWatcher, type PtyOutputActivityKind } from "./pty-output-activity";
 import { sliceReplayWindow, type PtyReplayWindow } from "./pty-replay-window";
@@ -34,7 +40,6 @@ import {
   HOOK_TASK_ID_ENV,
   HOOK_TOKEN_ENV,
   HOOK_URL_ENV,
-  installHarnessHooks,
 } from "./harness-hooks";
 import { checkHarnessCliVersionCached, harnessVersionErrorMessage } from "@actana/shared/harness-cli-version";
 import {
@@ -60,22 +65,10 @@ function sanitizeEnv(): Record<string, string> {
 // Claude Code only treats ESC+CR (`\x1b\r`, what `terminal-keymap.ts` emits for
 // Shift+Enter) as "insert newline" when this flag is set. Normally `/terminal-
 // setup` writes it; do it eagerly so the user doesn't have to.
-export function ensureClaudeShiftEnterBinding(): void {
-  try {
-    const dir = path.join(coreHome(), ".claude");
-    const file = path.join(dir, "settings.json");
-    let settings: Record<string, unknown> = {};
-    if (fs.existsSync(file)) {
-      const raw = fs.readFileSync(file, "utf8");
-      if (raw.trim()) settings = JSON.parse(raw);
-    }
-    if (settings.shiftEnterKeyBindingInstalled === true) return;
-    settings.shiftEnterKeyBindingInstalled = true;
-    fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(file, JSON.stringify(settings, null, 2) + "\n", "utf8");
-  } catch {
-    // best-effort — user can still run `/terminal-setup` manually.
-  }
+export async function ensureClaudeShiftEnterBinding(): Promise<void> {
+  // In the container the file is core's and the daemon is not core: the write is
+  // done by a `core` process (issue 559). The writer lives in `core-home-ops`.
+  await ensureClaudeShiftEnterBindingViaCore();
 }
 
 type Pty = {
@@ -587,6 +580,29 @@ async function killPty(p: Pty): Promise<boolean> {
   }
 }
 
+/**
+ * The spawn policy's `cwdExists` and `realpath`, answered from what `core` said
+ * about the paths. The cwd falls back to its lexical path when core could not
+ * resolve it, which is `defaultRealpath`'s own fallback and cannot matter:
+ * `cwdOk` is what rejects a cwd core cannot reach. A project root core could not
+ * resolve (missing, or outside what it may look at) is an error, so the policy
+ * drops it, which is the safe direction; so is a path nobody asked about.
+ */
+function policyPathDeps(
+  facts: SpawnPathFacts,
+  cwd: string,
+): { cwdExists: (cwd: string) => boolean; realpath: (p: string) => string } {
+  return {
+    cwdExists: () => facts.cwdOk,
+    realpath: (p) => {
+      const real = facts.realpaths[p];
+      if (real) return real;
+      if (p === cwd && p in facts.realpaths) return path.resolve(p);
+      throw new Error("path is not one core could resolve");
+    },
+  };
+}
+
 // ─── PtyCore ─────────────────────────────────────────────────────────
 //
 // Transport-agnostic PTY manager. Owns the PTY map, the output batcher, and all
@@ -652,9 +668,29 @@ export class PtyCore {
           ? ({ ...opts, cwd: opts.cwd || coreHome() } as SpawnRequest)
           : opts;
     let plan: ReturnType<typeof resolveSpawnPlan>;
+    // The policy's two questions about the disk (is this cwd a directory, and
+    // where do these paths really lead) are answered by `core`, once, before the
+    // synchronous policy runs. In the container the daemon cannot look inside
+    // core's home (issue 559); elsewhere this is `undefined` and the policy
+    // asks `fs` itself, as it always did.
+    const projectRoots = loadProjectRoots();
+    const pathFacts = isContainerMode()
+      ? spawnReq.cwd
+        ? await spawnPathFactsViaCore(spawnReq.cwd, [coreHome(), ...projectRoots]).catch((err: unknown) => {
+            // A cwd the helper will not look at is an invalid cwd, said the way the
+            // policy says it. (A helper that hangs or crashes is still a plain error.)
+            if (err instanceof CoreHomeOpRefusedError) {
+              log.warn("pty.spawn.rejected", { code: "invalid-cwd", cwd: safeLogValue(opts.cwd), taskId: safeLogValue(opts.taskId) });
+              throw new Error("pty:spawn rejected (invalid-cwd)");
+            }
+            throw err;
+          })
+        : { cwdOk: false, realpaths: {} }
+      : undefined;
     try {
       plan = resolveSpawnPlan(spawnReq, {
-        projectRoots: loadProjectRoots,
+        ...(pathFacts ? policyPathDeps(pathFacts, spawnReq.cwd ?? "") : {}),
+        projectRoots: () => projectRoots,
         homeShellRoots: () => [coreHome()],
         resolveCommand: (name) => {
           const env = sanitizedProcessEnv();
@@ -697,7 +733,7 @@ export class PtyCore {
     // has no agent config to touch.
     let hooksReportTurnStart = false;
     if (plan.mode === "agent") {
-      if (plan.agent === "claude-code") ensureStatuslineTap(plan.cwd);
+      if (plan.agent === "claude-code") await ensureStatuslineTapViaCore(plan.cwd);
       // Lifecycle hooks, pointed at THIS Core's loopback receiver (issue 84).
       // Without them nothing ever moves the Session's status off `ready`. The
       // env carries the URL and token so the file on disk holds no secret and
@@ -712,7 +748,7 @@ export class PtyCore {
       if (hookEnv) {
         // Pass the same spawn env the PTY inherits so Pi's writer resolves
         // `$PI_CODING_AGENT_DIR` the way `pi` will (#518 part 1).
-        const hooks = installHarnessHooks(plan.agent, plan.cwd, env);
+        const hooks = await installHarnessHooksViaCore(plan.agent, plan.cwd, env);
         hooksReportTurnStart = hooks.reportsTurnStart;
         hookTrustBypassEarned = hooks.hookTrustBypassEarned;
         // The env goes in whenever a file landed, even for a family whose
