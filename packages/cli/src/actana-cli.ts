@@ -72,7 +72,9 @@ import {
   CONTAINER_LABEL_ENV,
   CONTAINER_PORT_ENV,
   CONTAINER_PUBLIC_HOST_ENV,
+  containerOperatorCommand,
   containerRefusal,
+  containerUserRefusal,
   CORE_STATE_DATA_DIR,
   CORE_STATE_MATERIAL_FILE,
   DEFAULT_CONTAINER_PORT,
@@ -276,6 +278,10 @@ const CONTAINER_USAGE = `This Core is a container, so its lifecycle belongs to D
   ${refusedContainerVerbs().join(", ")}
                         not available here — run the Docker command each one
                         names (\`docker compose up -d\`, \`docker compose logs -f\`, …)
+
+  pair, status          read what only the daemon's user, \`actana\`, may read: run them on
+                        the host with \`${containerOperatorCommand("pair new")}\`
+                        (a plain \`docker compose exec\` is root, and \`-u core\` is a Session's user)
 
 The image reads three variables:
   ${CONTAINER_PUBLIC_HOST_ENV}    required — the address your Panel dials, or a comma-separated
@@ -1042,7 +1048,14 @@ async function cmdStatus(deps: ActanaCliDeps, argv: string[]): Promise<number> {
     deps.err(parsed.error);
     return EXIT_USAGE;
   }
-  if (inContainer(deps.env)) return containerStatus(deps);
+  if (inContainer(deps.env)) {
+    const refusal = containerUserRefusal("status", deps.uid);
+    if (refusal) {
+      deps.err(refusal);
+      return 1;
+    }
+    return containerStatus(deps);
+  }
 
   const installed = findInstall(deps);
   const layout = installed?.layout ?? resolveActanaLayout(deps.env, deps.home, deps.platform);
@@ -1078,6 +1091,17 @@ async function cmdStatus(deps: ActanaCliDeps, argv: string[]): Promise<number> {
 
   deps.out(formatActanaStatus(report).trimEnd());
   return summarizeHealth(report) === "healthy" ? 0 : 1;
+}
+
+/**
+ * What an operator types to mint a code: `actana pair new` here on metal, and
+ * on the host, as the daemon's user, for the container (#559). A message that
+ * said "run it here" in the image would send them to the wrong user.
+ */
+function pairNewCommand(deps: ActanaCliDeps): string {
+  return inContainer(deps.env)
+    ? `\`${containerOperatorCommand("pair new")}\` on the host`
+    : "`actana pair new` here";
 }
 
 /**
@@ -1129,7 +1153,7 @@ async function cmdToken(deps: ActanaCliDeps, argv: string[]): Promise<number> {
   }
   deps.err(
     "There is no pairing token to print. A client enrolls with a one-time code: run " +
-      "`actana pair new` here, read the code and CA fingerprint it prints out to the " +
+      `${pairNewCommand(deps)}, read the code and CA fingerprint it prints out to the ` +
       "machine being paired, and spend them there — in your Panel's Add Core, or with " +
       "`actana core pair`.",
   );
@@ -1222,7 +1246,7 @@ async function cmdTokenRegenerate(deps: ActanaCliDeps, argv: string[]): Promise<
     deps.err(
       "New pairing credentials are written. This Core is still serving the old ones " +
         "until you restart the container — `docker compose restart`. After that, " +
-        "pair every client again: `actana pair new` here, and spend the code it prints " +
+        `pair every client again: ${pairNewCommand(deps)}, and spend the code it prints ` +
         `on the client.\n${REPAIR_NOTE}`,
     );
     return 0;

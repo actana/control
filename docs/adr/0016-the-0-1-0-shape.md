@@ -110,6 +110,8 @@ Implementation: [`.trivyignore.rego`](../../.trivyignore.rego), [`scripts/scan-c
 
 > **Amended 2026-09-30 by [ADR 0041](0041-the-0-5-0-core-model.md) D11.** The daemon runs as its own user with its state outside `~`, so the identity, the recorded config and the SQLite named here no longer live in `core-home:/home/core`. Where they live, and what the volume layout becomes, is open (#559, and #558 for the deploy files). The Harnesses' own credentials under `$HOME` are not touched by this note.
 
+> **Note 2026-10-01 ([#559](https://github.com/actana/control/issues/559), [ADR 0041](0041-the-0-5-0-core-model.md) D24).** The question is answered. The daemon's state is in `/var/lib/actana`, mode 700, on its own volume `core-state`, owned by the system user `actana` (uid and gid 1001). `core-home:/home/core` keeps the work, `~/shared` and the Harnesses' credentials, and belongs to `core` (uid 1000). The "one volume" and "one backup target" in this clause are therefore two volumes now, and a backup of a Core takes both. The reasoning about Harnesses writing all over `$HOME` is not changed. The paths landed in #596, and the image and compose switch in #611.
+
 ---
 
 ## D. The Panel image
