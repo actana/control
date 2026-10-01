@@ -1,8 +1,5 @@
 export const HOTKEY_ACTIONS = [
   "agent.new",
-  "project.add",
-  "project.edit",
-  "project.picker",
   "project.pinnedSlot",
   "nav.toggle",
   "search.focus",
@@ -24,8 +21,6 @@ export const HOTKEY_ACTIONS = [
   "project.ship",
   "project.runToggle",
   "project.openBrowser",
-  "group.next",
-  "group.prev",
 ] as const;
 
 export type HotkeyAction = (typeof HOTKEY_ACTIONS)[number];
@@ -40,13 +35,10 @@ export type Binding = {
 export type BindingMap = Record<HotkeyAction, Binding>;
 
 export const ACTION_META: Record<HotkeyAction, { label: string; description: string }> = {
-  "agent.new": { label: "New agent / project", description: "Create a new agent on a project page, or a new project on the home page." },
-  "project.add": { label: "Add project", description: "Open the Add Project dialog from anywhere in the app." },
-  "project.edit": { label: "Edit project", description: "Open the edit dialog for the current project." },
-  "project.picker": { label: "Open project picker", description: "Open the cross-project quick switcher." },
+  "agent.new": { label: "New session", description: "Create a new session on a Core's Sessions page." },
   "project.pinnedSlot": {
-    label: "Switch pinned project",
-    description: "Jump to pinned project slots 1–4 from the project bar (uses the same modifiers with keys 1–4).",
+    label: "Switch Core",
+    description: "Jump to the Nth Core in the rail (uses the same modifiers with keys 1–9).",
   },
   "nav.toggle": { label: "Toggle nav menu", description: "Show or hide the navigation menu." },
   "search.focus": { label: "Focus search", description: "Focus the project search field on the home page." },
@@ -93,13 +85,5 @@ export const ACTION_META: Record<HotkeyAction, { label: string; description: str
   "project.openBrowser": {
     label: "Open in browser",
     description: "Open the running project's launch URL in your default browser.",
-  },
-  "group.next": {
-    label: "Next group",
-    description: "Cycle the active project group forward (All → each group → Ungrouped).",
-  },
-  "group.prev": {
-    label: "Previous group",
-    description: "Cycle the active project group backward (Ungrouped → each group → All).",
   },
 };
