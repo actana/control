@@ -39,7 +39,9 @@ vi.mock("~/queries", async (importOriginal) => ({
   ...(await importOriginal<typeof import("~/queries")>()),
   useSettings: () => ({ data: undefined }),
 }));
-vi.mock("~/lib/api", () => ({ api: { getKeybindings: async () => ({ bindings: {} }) } }));
+vi.mock("~/lib/api", () => ({
+  api: { getKeybindings: async () => ({ bindings: {} }), listTasks: async () => ({ tasks: [] }) },
+}));
 const mutateSessionForCore = vi.fn();
 vi.mock("~/lib/mutate-session-for-core", () => ({
   mutateSessionForCore: (...args: unknown[]) => mutateSessionForCore(...args),
@@ -178,13 +180,15 @@ describe("CorePage", () => {
     expect(screen.queryByText("Other Core's work")).toBeNull();
   });
 
-  it("renders placeholders for Files and Tasks", async () => {
+  it("renders a placeholder for Files and this Core's Tasks board under Tasks", async () => {
     cores = [core("a", "alpha")];
     await mount("files");
     expect(screen.getByText(/#565/)).toBeTruthy();
     cleanup();
     await mount("tasks");
-    expect(screen.getByText(/#571/)).toBeTruthy();
+    // The board, without the per-Core chips: the Core page is already one Core.
+    expect(screen.getByRole("button", { name: "New Task" })).toBeTruthy();
+    expect(screen.queryByRole("group", { name: "Filter by Core" })).toBeNull();
   });
 
   it("says so when the Core is not registered", async () => {

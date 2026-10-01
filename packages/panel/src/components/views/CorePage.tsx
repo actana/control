@@ -8,6 +8,7 @@ import { EmptyState } from "~/components/ui/EmptyState";
 import { CoreHeader, type CoreTab } from "~/components/views/CoreHeader";
 import { CoreNeedsUpdateNotice } from "~/components/views/CoreNeedsUpdate";
 import { FleetSessionRow } from "~/components/views/FleetSessionRow";
+import { TasksBoard } from "~/components/views/TasksBoard";
 import { NewHarnessDialog } from "~/components/views/NewHarnessDialog";
 import { useFleet } from "~/lib/fleet-context";
 import { getPanelBridge } from "~/lib/panel-bridge";
@@ -25,8 +26,8 @@ import type { Harness } from "@actana/shared/domain";
 
 /**
  * A Core's page (screen 02): header, then one of three tabs. Sessions lists
- * this Core's harness Sessions; Files and Tasks are placeholders until #565
- * and #571 land. The Terminal is the bottom drawer the shell already owns.
+ * this Core's harness Sessions; Files is a placeholder until #565 lands; Tasks is the
+ * Tasks board filtered to this Core (#571). The Terminal is the bottom drawer the shell already owns.
  * New Session is prompt-first (issue 560, screen 03).
  */
 export function CorePage({ coreId, tab }: { coreId: string; tab: CoreTab }) {
@@ -177,11 +178,7 @@ export function CorePage({ coreId, tab }: { coreId: string; tab: CoreTab }) {
             icon="folder"
           />
         ) : (
-          <EmptyState
-            title="Tasks"
-            subtitle="The Tasks board for this Core lands with #571."
-            icon="check"
-          />
+          <TasksBoard coreId={coreId} />
         )}
       </CardFrame>
 

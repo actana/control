@@ -74,6 +74,9 @@ export function FleetView() {
             </div>
             <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
               <CorePicker cores={cores} onPick={(core) => openCore(core.id)} />
+              <Btn variant="ghost" icon="check" onClick={() => void router.navigate({ to: "/tasks" })}>
+                Tasks
+              </Btn>
               <Btn variant="ghost" icon="plus" onClick={pairCore}>
                 Pair a Core
               </Btn>
