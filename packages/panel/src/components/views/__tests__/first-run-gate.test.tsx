@@ -462,6 +462,15 @@ describe("the first-run gate (#358)", () => {
       expect(dashboard()).toBeNull();
       expect(document.querySelector('[data-step="shared-folder"]')).not.toBeNull();
 
+      // The gate reads the registry again (its poll, or another tab's change): the pending Core is in it, and it is
+      // still not a fleet. The wizard, and step 4 with it, must not be torn down under the operator.
+      await act(async () => {
+        announceCoreRegistryChanged();
+      });
+      expect(wizard()).toBeTruthy();
+      expect(dashboard()).toBeNull();
+      expect(document.querySelector('[data-step="shared-folder"]')).not.toBeNull();
+
       await finishSharedFolder();
 
       expect(dashboard()).toBeTruthy();
