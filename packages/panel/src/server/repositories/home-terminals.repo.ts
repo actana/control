@@ -1,25 +1,7 @@
 import { asc, eq } from "drizzle-orm";
 import { getDb } from "~/db/client";
 import { homeTerminals } from "~/db/schema";
-import type { HomeTerminal, UserTerminal } from "~/db/schema";
-import { HOME_TERMINAL_PROJECT_ID } from "~/shared/home-terminal";
-
-/**
- * Shape a `home_terminals` row as a `UserTerminal` so the renderer can render it
- * with the existing terminal components. `projectId` is a sentinel — no real
- * project row has this id and nothing ever looks it up as one.
- */
-export function toUserTerminal(row: HomeTerminal): UserTerminal {
-  return {
-    id: row.id,
-    projectId: HOME_TERMINAL_PROJECT_ID,
-    name: row.name,
-    cwd: row.cwd,
-    position: row.position,
-    createdAt: row.createdAt,
-    updatedAt: row.updatedAt,
-  };
-}
+import type { HomeTerminal } from "~/db/schema";
 
 export function findHomeTerminals(): HomeTerminal[] {
   return getDb()

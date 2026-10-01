@@ -7,10 +7,7 @@ import {
   HTTP_INTERNAL_SERVER_ERROR,
   HTTP_NOT_FOUND,
 } from "~/shared/http-status";
-import * as projectsController from "./controllers/projects.controller";
-import * as projectPresentationController from "./controllers/project-presentation.controller";
 import * as sessionsController from "./controllers/sessions.controller";
-import * as groupsController from "./controllers/groups.controller";
 import * as homeTerminalsController from "./controllers/home-terminals.controller";
 import * as settingsController from "./controllers/settings.controller";
 import * as keybindingsController from "./controllers/keybindings.controller";
@@ -27,24 +24,28 @@ import * as apiKeysController from "./controllers/api-keys.controller";
 import * as coresController from "./controllers/cores.controller";
 import * as coreFilesController from "./controllers/core-files.controller";
 import * as updateCheckController from "./controllers/update-check.controller";
+import * as tasksController from "./controllers/tasks.controller";
+import { OPERATOR_ID } from "./services/operator";
+import * as webhooksController from "./controllers/webhooks.controller";
 
 const HARNESS_HOOK_PATH = /^\/api\/hooks\/([a-z0-9-]+)$/;
-const PROJECT_PATH = /^\/api\/projects\/([^/]+)$/;
-const PROJECT_PATH_STATUS_PATH = /^\/api\/projects\/([^/]+)\/path-status$/;
-const PROJECT_IMAGE_PATH = /^\/api\/projects\/([^/]+)\/image$/;
-const PROJECT_PRESENTATION_PATH = /^\/api\/project-presentation\/([^/]+)$/;
-const PROJECT_SESSIONS_PATH = /^\/api\/projects\/([^/]+)\/sessions$/;
-const GROUP_PATH = /^\/api\/groups\/([^/]+)$/;
 const CORE_PATH = /^\/api\/cores\/([^/]+)$/;
 const API_KEY_REVOKE_PATH = /^\/api\/api-keys\/([^/]+)\/revoke$/;
-// A Project's files on a Core, addressed by both ids because the Panel holds no
-// row for a Core-owned Project (ADR 0005) and therefore cannot look one up from
-// the other. `files/list` is matched before `files` so the leaf is never read as
-// a path — the same order, and the same reason, as on the Core (#216).
+const WEBHOOK_PATH = /^\/api\/webhooks\/([^/]+)$/;
+const WEBHOOK_PING_PATH = /^\/api\/webhooks\/([^/]+)\/ping$/;
+const WEBHOOK_DELIVERIES_PATH = /^\/api\/webhooks\/([^/]+)\/deliveries$/;
+// A Core's files, addressed by both ids: the SDK's Files client still builds its
+// requests as `/v1/projects/:id/files`, which a Core answers as an alias of the
+// workspace's files (issue 557), so the Panel's proxy takes the same shape.
+// `files/list` is matched before `files` so the leaf is never read as a path — the same order, and the same reason, as on the Core (#216).
 const CORE_PROJECT_FILES_LIST_PATH = /^\/api\/cores\/([^/]+)\/projects\/([^/]+)\/files\/list$/;
 const CORE_PROJECT_FILES_PATH = /^\/api\/cores\/([^/]+)\/projects\/([^/]+)\/files$/;
 // Literal path — checked before SESSION_PATH so the id patterns never see it.
 const SESSION_SWEEP_DISCONNECTED_PATH = "/api/sessions/sweep-disconnected";
+const TASK_PATH = /^\/api\/tasks\/([^/]+)$/;
+const TASK_STATUS_PATH = /^\/api\/tasks\/([^/]+)\/status$/;
+const TASK_COMMENTS_PATH = /^\/api\/tasks\/([^/]+)\/comments$/;
+const CORE_AGENTS_PATH = /^\/api\/cores\/([^/]+)\/agents$/;
 const SESSION_PATH = /^\/api\/sessions\/([^/]+)$/;
 const SESSION_STATUS_PATH = /^\/api\/sessions\/([^/]+)\/status$/;
 const SESSION_QUESTION_PATH = /^\/api\/sessions\/([^/]+)\/question$/;
@@ -133,7 +134,7 @@ async function requireApiAuth(
 ): Promise<{ ok: true; principal: ApiPrincipal | null } | { ok: false; response: Response }> {
   if (isAnonymousRoute(method, pathname)) return { ok: true, principal: null };
   if (isHookRoute(pathname)) {
-    const hook = await requireHookToken(request);
+    const hook = requireHookToken(request);
     return hook.ok ? { ok: true, principal: null } : hook;
   }
   return await authenticateApiRequest(request, method, pathname);
@@ -219,6 +220,25 @@ async function dispatch(
   if (pathname === "/api/cores") {
     if (method === "GET") return coresController.list(principal!);
   }
+  // API keys (#572). The Operator's session creates, lists and revokes them; a
+  // key never does, because these routes are not in API_KEY_ROUTES.
+  if (pathname === "/api/api-keys") {
+    if (method === "GET") return apiKeysController.list(principal!);
+    if (method === "POST") return apiKeysController.create(principal!, request);
+  }
+  const revokeMatch = pathname.match(API_KEY_REVOKE_PATH);
+  if (revokeMatch && method === "POST") return apiKeysController.revoke(principal!, decode(revokeMatch[1]));
+  // Webhooks (#574): signed Task event delivery. No UI in this PR.
+  if (pathname === "/api/webhooks") {
+    if (method === "GET") return webhooksController.list();
+    if (method === "POST") return webhooksController.create(request);
+  }
+  let m = pathname.match(WEBHOOK_PING_PATH);
+  if (m && method === "POST") return webhooksController.ping(decode(m[1]));
+  m = pathname.match(WEBHOOK_DELIVERIES_PATH);
+  if (m && method === "GET") return webhooksController.deliveries(decode(m[1]));
+  m = pathname.match(WEBHOOK_PATH);
+  if (m && method === "DELETE") return webhooksController.remove(decode(m[1]));
   // Pairing (#286). Literal paths, and matched before CORE_PATH so `pairing`
   // is never read as a Core id. Both are Node-side work the browser cannot do:
   // a TLS chain is read here, a key pair is born here, and a code is spent
@@ -229,10 +249,10 @@ async function dispatch(
   if (pathname === "/api/cores/pairing" && method === "POST") {
     return coresController.pair(request);
   }
-  // A Project's files, on the Core that owns them (#129 F6/F11, #169). The
+  // A Core's files, on the Core that owns them (#129 F6/F11, #169). The
   // Panel is a dumb pipe here: these three lines resolve a Core and forward a
   // stream, and every decision about what a path means is the Core's.
-  let m = pathname.match(CORE_PROJECT_FILES_LIST_PATH);
+  m = pathname.match(CORE_PROJECT_FILES_LIST_PATH);
   if (m) {
     if (method === "GET") return coreFilesController.list(decode(m[1]), decode(m[2]), url);
   }
@@ -244,6 +264,23 @@ async function dispatch(
     if (method === "PUT") return coreFilesController.write(coreId, projectId, url, request);
   }
 
+  // Tasks (#571). Every route runs as the session's owner, and the Tasks and
+  // Agents services apply the status rules; nothing here moves a status itself.
+  // A Panel session belongs to the one Operator today (ADR 0011), so that is the owner.
+  const ownerId = OPERATOR_ID;
+  if (pathname === "/api/tasks") {
+    if (method === "GET") return tasksController.list(ownerId);
+    if (method === "POST") return tasksController.create(ownerId, request);
+  }
+  m = pathname.match(TASK_PATH);
+  if (m && method === "GET") return tasksController.read(ownerId, decode(m[1]));
+  m = pathname.match(TASK_STATUS_PATH);
+  if (m && method === "POST") return tasksController.setStatus(ownerId, decode(m[1]), request);
+  m = pathname.match(TASK_COMMENTS_PATH);
+  if (m && method === "POST") return tasksController.comment(ownerId, decode(m[1]), request);
+  m = pathname.match(CORE_AGENTS_PATH);
+  if (m && method === "GET") return tasksController.listCoreAgents(ownerId, decode(m[1]));
+
   m = pathname.match(CORE_PATH);
   if (m) {
     const id = decode(m[1]);
@@ -253,85 +290,6 @@ async function dispatch(
     // change them.
     if (method === "PATCH") return coresController.rename(id, request);
     if (method === "DELETE") return coresController.remove(id);
-  }
-
-  // API keys (#572). The Operator's session creates, lists and revokes them; a
-  // key never does, because these routes are not in API_KEY_ROUTES.
-  if (pathname === "/api/api-keys") {
-    if (method === "GET") return apiKeysController.list(principal!);
-    if (method === "POST") return apiKeysController.create(principal!, request);
-  }
-  m = pathname.match(API_KEY_REVOKE_PATH);
-  if (m && method === "POST") return apiKeysController.revoke(principal!, decode(m[1]));
-
-  // Projects
-  if (pathname === "/api/projects") {
-    if (method === "GET") return projectsController.list(request);
-    if (method === "POST") return projectsController.create(request);
-  }
-  if (pathname === "/api/projects/pinned-order" && method === "PATCH") {
-    return projectsController.reorderPinned(request);
-  }
-  m = pathname.match(PROJECT_PATH);
-  if (m) {
-    const id = decode(m[1]);
-    if (method === "GET") return projectsController.getOne(id, request);
-    if (method === "PATCH") return projectsController.update(id, request);
-    if (method === "DELETE") return projectsController.remove(id, request);
-  }
-  m = pathname.match(PROJECT_PATH_STATUS_PATH);
-  if (m) {
-    const id = decode(m[1]);
-    if (method === "GET") return projectsController.pathStatus(id);
-  }
-  m = pathname.match(PROJECT_IMAGE_PATH);
-  if (m) {
-    const id = decode(m[1]);
-    if (method === "GET") return projectsController.getImage(id);
-    if (method === "PUT") return projectsController.putImage(id, request);
-    if (method === "DELETE") return projectsController.removeImage(id, request);
-  }
-
-  // Panel-local presentation for Core-owned projects (issue 98) — group, card
-  // image and launch URL for a project whose row lives on its Core.
-  if (pathname === "/api/project-presentation" && method === "GET") {
-    return projectPresentationController.list();
-  }
-  if (pathname === "/api/project-presentation/prune" && method === "POST") {
-    return projectPresentationController.prune(request);
-  }
-  // Literal path — matched before PROJECT_PRESENTATION_PATH so "pinned-order"
-  // is never read as a project id.
-  if (pathname === "/api/project-presentation/pinned-order" && method === "PATCH") {
-    return projectPresentationController.reorderPinned(request);
-  }
-  m = pathname.match(PROJECT_PRESENTATION_PATH);
-  if (m) {
-    const id = decode(m[1]);
-    if (method === "PATCH") return projectPresentationController.upsert(id, request);
-    if (method === "DELETE") return projectPresentationController.remove(id);
-  }
-
-  m = pathname.match(PROJECT_SESSIONS_PATH);
-  if (m) {
-    const id = decode(m[1]);
-    if (method === "GET") return sessionsController.listForProject(id, request);
-    if (method === "POST") return sessionsController.create(id, request);
-  }
-  // Groups
-  if (pathname === "/api/groups") {
-    if (method === "GET") return groupsController.list(request);
-    if (method === "POST") return groupsController.create(request);
-  }
-  // Must precede GROUP_PATH — otherwise "order" is captured as a group id.
-  if (pathname === "/api/groups/order" && method === "PATCH") {
-    return groupsController.reorder(request);
-  }
-  m = pathname.match(GROUP_PATH);
-  if (m) {
-    const id = decode(m[1]);
-    if (method === "PATCH") return groupsController.update(id, request);
-    if (method === "DELETE") return groupsController.remove(id, request);
   }
 
   // Sessions

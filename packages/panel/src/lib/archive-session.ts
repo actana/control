@@ -1,7 +1,7 @@
 import type { QueryClient } from "@tanstack/react-query";
 import { mutateSessionForCore } from "~/lib/mutate-session-for-core";
 import type { OpenTerminal } from "~/lib/terminal-store";
-import { queryKeys, sessionsCacheKey } from "~/queries";
+import { sessionsCacheKey } from "~/queries";
 
 type CloseSessionFn = (
   sessionId: string,
@@ -9,19 +9,18 @@ type CloseSessionFn = (
 ) => Promise<void>;
 
 /**
- * Close + archive one open session, scoped to its own project so it works for a
- * session belonging to any project (e.g. cells in the global session grid).
- * Mirrors the close+archive core of archiveSessions in projects.$id.tsx. Throws on
+ * Close + archive one open session, scoped to its own Core so it works for a
+ * session belonging to any Core.
+ * Mirrors the close+archive core of archiveSessions in the Core workspace route. Throws on
  * failure so callers can surface a toast.
  *
  * Callers archiving many sessions at once should pass `skipInvalidate` and run
- * a single deduped `invalidateSessionQueries` afterwards — the global
- * `projects` key (and any shared per-project keys) must not be invalidated
- * once per session.
+ * a single deduped `invalidateSessionQueries` afterwards — a shared key must
+ * not be invalidated once per session.
  *
  * `activateSessionId` is handed to `close` so the caller can promote a replacement
  * session to active (e.g. the grid activating the closed cell's neighbour);
- * it defaults to null, which leaves the project with no active session.
+ * it defaults to null, which leaves the Core with no active session.
  *
  * Reversible for either owner: a Core lists its archived rows over their own
  * frame (ADR 0019), so the row leaves the grid and reappears under Archived,
@@ -37,8 +36,7 @@ export async function archiveOpenSession(
     activateSessionId: opts?.activateSessionId ?? null,
   }).catch(() => undefined);
   // The row lives in the owning Core's database (ADR 0004/0005), so the flip
-  // rides the panel link to that Core — the Panel's own HTTP API has no such
-  // row and would 404. `session.coreId` is null for a Panel-owned row.
+  // rides the panel link to that Core.
   await mutateSessionForCore(session.coreId, {
     op: "update",
     sessionId: session.sessionId,
@@ -54,13 +52,10 @@ export async function invalidateSessionQueries(
 ): Promise<void> {
   const keys = new Map<string, readonly unknown[]>();
   const add = (queryKey: readonly unknown[]) => keys.set(JSON.stringify(queryKey), queryKey);
-  for (const { project, coreId } of sessions) {
-    // The card reads from the owning Core's bucket (issue 84); invalidating
-    // the untagged key refreshes a list no Core-owned cell renders from.
-    add(sessionsCacheKey(project.id, coreId));
-    add(queryKeys.project(project.id));
+  for (const { coreId } of sessions) {
+    // The card reads from the owning Core's bucket (issue 84).
+    add(sessionsCacheKey(coreId));
   }
-  if (sessions.length > 0) add(queryKeys.projects);
   await Promise.all(
     [...keys.values()].map((queryKey) => queryClient.invalidateQueries({ queryKey })),
   );

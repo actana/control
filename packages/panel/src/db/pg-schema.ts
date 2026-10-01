@@ -220,6 +220,118 @@ export const agents = pgTable(
 );
 
 /**
+ * A signed webhook endpoint (#574): an https URL the Panel POSTs Task events to.
+ * The signing secret is sealed at rest (same envelope as Core secrets). `events`
+ * is the subset of Task events this hook wants; `all_cores` is true for every
+ * Core of the owner, false for only the Cores in `webhook_cores`.
+ */
+export const webhooks = pgTable(
+  "webhooks",
+  {
+    id: text("id").primaryKey(),
+    ownerId: integer("owner_id")
+      .notNull()
+      .references(() => operator.id, { onDelete: "cascade" }),
+    url: text("url").notNull(),
+    secretSealed: bytea("secret_sealed").notNull(),
+    events: text("events").array().notNull(),
+    allCores: boolean("all_cores").notNull().default(true),
+    createdAt: epochMs("created_at").notNull(),
+    updatedAt: epochMs("updated_at").notNull(),
+  },
+  (t) => [index("webhooks_owner_idx").on(t.ownerId)],
+);
+
+/** The Cores a restricted webhook reaches. `owner_id` repeats the webhook's owner so the guard's rule holds here too. */
+export const webhookCores = pgTable(
+  "webhook_cores",
+  {
+    webhookId: text("webhook_id")
+      .notNull()
+      .references(() => webhooks.id, { onDelete: "cascade" }),
+    coreId: text("core_id")
+      .notNull()
+      .references(() => cores.id, { onDelete: "cascade" }),
+    ownerId: integer("owner_id")
+      .notNull()
+      .references(() => operator.id, { onDelete: "cascade" }),
+  },
+  (t) => [primaryKey({ columns: [t.webhookId, t.coreId], name: "webhook_cores_webhook_id_core_id_pk" })],
+);
+
+/**
+ * One row per Task or comment change (#574), written in the same transaction as
+ * the change so a rolled-back change never emits. The delivery worker fans each
+ * row out to matching webhooks, then stamps `processed_at`.
+ */
+export const webhookOutbox = pgTable(
+  "webhook_outbox",
+  {
+    id: text("id").primaryKey(),
+    ownerId: integer("owner_id")
+      .notNull()
+      .references(() => operator.id, { onDelete: "cascade" }),
+    eventType: text("event_type").notNull(),
+    /** JSON body the receiver gets (minus transport headers). */
+    payload: text("payload").notNull(),
+    /** The Task's Core, for webhook Core-scope matching; null when the Task has none. */
+    coreId: text("core_id"),
+    createdAt: epochMs("created_at").notNull(),
+    processedAt: epochMs("processed_at"),
+  },
+  (t) => [
+    check(
+      "webhook_outbox_event_type_check",
+      sql`${t.eventType} in ('task.created', 'task.updated', 'task.status_changed', 'task.deleted', 'comment.created', 'ping')`,
+    ),
+    index("webhook_outbox_pending_idx").on(t.ownerId, t.processedAt, t.createdAt),
+  ],
+);
+
+/**
+ * One signed delivery of an outbox event to one webhook. Claimed with a lease
+ * so a crash between send and mark cannot silently double-deliver under a new
+ * id; the receiver de-duplicates on the delivery id header. Kept 14 days.
+ */
+export const webhookDeliveries = pgTable(
+  "webhook_deliveries",
+  {
+    id: text("id").primaryKey(),
+    ownerId: integer("owner_id")
+      .notNull()
+      .references(() => operator.id, { onDelete: "cascade" }),
+    webhookId: text("webhook_id")
+      .notNull()
+      .references(() => webhooks.id, { onDelete: "cascade" }),
+    outboxId: text("outbox_id")
+      .notNull()
+      .references(() => webhookOutbox.id, { onDelete: "cascade" }),
+    eventType: text("event_type").notNull(),
+    payload: text("payload").notNull(),
+    status: text("status").notNull().default("pending"),
+    attemptCount: integer("attempt_count").notNull().default(0),
+    nextAttemptAt: epochMs("next_attempt_at").notNull(),
+    /** Exclusive lease end; a worker that holds the row until this time. */
+    claimedUntil: epochMs("claimed_until"),
+    lastStatusCode: integer("last_status_code"),
+    lastError: text("last_error"),
+    createdAt: epochMs("created_at").notNull(),
+    updatedAt: epochMs("updated_at").notNull(),
+    deliveredAt: epochMs("delivered_at"),
+  },
+  (t) => [
+    check(
+      "webhook_deliveries_status_check",
+      sql`${t.status} in ('pending', 'delivered', 'failed')`,
+    ),
+    // One delivery per (outbox, webhook): a crash mid-fan-out must not mint a second id.
+    unique("webhook_deliveries_outbox_webhook_unique").on(t.outboxId, t.webhookId),
+    index("webhook_deliveries_due_idx").on(t.status, t.nextAttemptAt, t.claimedUntil),
+    index("webhook_deliveries_created_idx").on(t.createdAt),
+  ],
+);
+
+/**
  * An API key (#572): a credential a user creates for the public REST API. Only
  * the sha256 of the key and a short display `prefix` are stored; the plaintext
  * is shown once at creation and kept nowhere. `all_cores` is true for the

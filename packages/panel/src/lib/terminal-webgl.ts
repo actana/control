@@ -9,7 +9,7 @@
 // that the pane attaches while the terminal is actually mounted and detaches
 // when it parks, and a module-level counter caps how many WebGL renderers
 // exist at once. A detached lease keeps its context for a short grace period
-// (released early under cap pressure), so a project-switch round trip reuses
+// (released early under cap pressure), so a Core-switch round trip reuses
 // the contexts instead of tearing down and re-creating one per pane. Terminals
 // beyond the cap — or on machines without usable WebGL2 — simply stay on
 // xterm's DOM renderer.
@@ -27,10 +27,10 @@ import type { WebglAddon as XWebglAddon } from "@xterm/addon-webgl";
 const MAX_GPU_TERMINALS = 12;
 
 /**
- * How long a parked surface keeps its live WebGL context. Switching projects
+ * How long a parked surface keeps its live WebGL context. Switching Cores
  * parks every pane of the old scope and remounts them on the way back; without
  * a grace period that round trip pays context teardown × N on leave and
- * context creation × N on return — the bulk of the project-switch jank.
+ * context creation × N on return — the bulk of the Core-switch jank.
  * Bounded so parked-but-busy terminals don't render on the GPU indefinitely,
  * and retained contexts are evicted early whenever a visible terminal needs
  * the slot.

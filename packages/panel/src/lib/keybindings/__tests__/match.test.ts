@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { matchBinding, eventToBinding, bindingComboKey, bindingsEqual, isValidBinding, matchPinnedSlotBinding, matchAnyPinnedSlot } from "../match";
+import { matchBinding, eventToBinding, bindingComboKey, bindingsEqual, isValidBinding, matchCoreSlotBinding, matchAnyCoreSlot } from "../match";
 import { DEFAULT_BINDINGS } from "../defaults";
 import { HOTKEY_ACTIONS } from "../types";
 
@@ -41,8 +41,8 @@ describe("matchBinding", () => {
 
   it("matches pinned slots that share modifiers with the slot-1 binding", () => {
     const base = { mod: true, shift: false, alt: false, key: "1" };
-    expect(matchPinnedSlotBinding(ev({ metaKey: true, key: "3" }), base, 3)).toBe(true);
-    expect(matchAnyPinnedSlot(ev({ metaKey: true, key: "2" }), base)).toBe(2);
+    expect(matchCoreSlotBinding(ev({ metaKey: true, key: "3" }), base, 3)).toBe(true);
+    expect(matchAnyCoreSlot(ev({ metaKey: true, key: "2" }), base)).toBe(2);
   });
 
   it("is case-insensitive for letter keys", () => {

@@ -36,7 +36,6 @@ import {
 } from "./cli-harness.ts";
 import { startInProcessCore, waitFor, type InProcessCore } from "./in-process-core.ts";
 import type {
-  CoreLinkProjectSnapshot,
   CoreLinkSessionSnapshot,
   CoreLinkSessionRow,
 } from "@actana/sdk/core";
@@ -44,7 +43,29 @@ import type {
 /** `Ctrl-]`, the detach key. */
 const DETACH = "\u001D";
 
-const PROJECT: CoreLinkProjectSnapshot = {
+/**
+ * The Project row this in-repo CLI's fixtures still hand it. The published SDK
+ * dropped `CoreLinkProjectSnapshot` and the row's `projectId` in 0.6.0-next.2; the
+ * CLI here still speaks Projects until it is rewritten (actana/control#580), so the
+ * fixtures name them locally. Nothing here reaches the wire typed.
+ */
+type ProjectSnapshot = {
+  projectId: string;
+  name: string;
+  path: string;
+  icon: string;
+  iconColor: string;
+  pinned: boolean;
+  rememberHarnessSettings: boolean;
+  savedHarness: string | null;
+  savedSkipPermissions: boolean;
+  savedBareSession: boolean;
+  defaultGridView: boolean;
+  updatedAt: number;
+};
+type ProjectSessionRow = CoreLinkSessionRow & { projectId: string };
+
+const PROJECT: ProjectSnapshot = {
   projectId: "proj_web",
   name: "web",
   path: "/home/core/projects/web",
@@ -59,7 +80,7 @@ const PROJECT: CoreLinkProjectSnapshot = {
   updatedAt: 1_700_000_000_000,
 };
 
-const SESSION: CoreLinkSessionRow = {
+const SESSION: ProjectSessionRow = {
   sessionId: "session_live",
   projectId: PROJECT.projectId,
   title: "rebuild the flaky auth test",

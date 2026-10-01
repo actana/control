@@ -55,36 +55,11 @@ const PROTECTED_ROUTES: ReadonlyArray<{ method: string; pathname: string }> = [
   { method: "GET", pathname: "/api/cores" },
   { method: "POST", pathname: "/api/cores" },
   { method: "DELETE", pathname: "/api/cores/abc" },
-  // Projects
-  { method: "GET", pathname: "/api/projects" },
-  { method: "POST", pathname: "/api/projects" },
-  { method: "GET", pathname: "/api/projects/abc" },
-  { method: "PATCH", pathname: "/api/projects/abc" },
-  { method: "PATCH", pathname: "/api/projects/pinned-order" },
-  { method: "DELETE", pathname: "/api/projects/abc" },
-  { method: "DELETE", pathname: "/api/projects/abc/file?path=foo" },
-  // Project sessions
-  { method: "GET", pathname: "/api/projects/abc/sessions" },
-  { method: "POST", pathname: "/api/projects/abc/sessions" },
-  // Git
-  { method: "GET", pathname: "/api/projects/abc/git/status" },
-  { method: "GET", pathname: "/api/projects/abc/git/branches" },
-  { method: "POST", pathname: "/api/projects/abc/git/stage" },
-  { method: "POST", pathname: "/api/projects/abc/git/commit" },
-  { method: "POST", pathname: "/api/projects/abc/git/push" },
-  { method: "POST", pathname: "/api/projects/abc/git/checkout" },
-  { method: "POST", pathname: "/api/projects/abc/git/create-pr" },
-  // Terminals. Every terminal is a home-terminal row since issue 266; the
-  // project-scoped routes that used to be listed here are gone.
+  // Terminals. Every terminal is a home-terminal row since issue 266.
   { method: "GET", pathname: "/api/home/user-terminals" },
   { method: "POST", pathname: "/api/home/user-terminals" },
   { method: "PATCH", pathname: "/api/home/user-terminals/xyz" },
   { method: "DELETE", pathname: "/api/home/user-terminals/xyz" },
-  // Groups
-  { method: "GET", pathname: "/api/groups" },
-  { method: "POST", pathname: "/api/groups" },
-  { method: "PATCH", pathname: "/api/groups/g1" },
-  { method: "DELETE", pathname: "/api/groups/g1" },
   // Sessions
   { method: "GET", pathname: "/api/sessions/t1" },
   { method: "PATCH", pathname: "/api/sessions/t1" },

@@ -29,7 +29,7 @@ describe("events controller", () => {
     const response = stream();
     const { reader } = await readNextEvent(response);
 
-    events.emit("session:updated", { id: "session-1", projectId: "project-1" });
+    events.emit("session:updated", { id: "session-1" });
 
     const next = await reader.read();
     await reader.cancel();

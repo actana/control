@@ -12,26 +12,18 @@ import {
   coreLinkLabel,
   railCores,
 } from "~/lib/core-rail";
-import { getPinnedProjectStatusDots } from "./project-bar-status-dots";
+import { routeCoreIdFromLocation } from "~/lib/workspace-core-id";
+import { getCoreStatusDots } from "./core-status-dots";
 
 // The left rail: one tile per Core, in label order, ⌘1 to ⌘9 addressing the
-// first nine. It replaces the project rail; there is nothing else on it.
+// first nine. There is nothing else on it.
 
 const TILE = 44;
 
-function routeCoreId(state: {
-  location: { pathname: string; search: unknown };
-}): string | null {
-  const m = /^\/cores\/([^/]+)/.exec(state.location.pathname);
-  if (m) return decodeURIComponent(m[1]!);
-  const search = state.location.search as { coreId?: unknown } | undefined;
-  return typeof search?.coreId === "string" ? search.coreId : null;
-}
-
 export const CoreRail = memo(function CoreRail() {
   const { cores, fleet } = useFleet();
-  const activeCoreId = useRouterState({ select: routeCoreId });
-  const slotBase = useBinding("project.pinnedSlot");
+  const activeCoreId = useRouterState({ select: (state) => routeCoreIdFromLocation(state.location) });
+  const slotBase = useBinding("core.slot");
   const ordered = railCores(cores);
 
   return (
@@ -63,7 +55,7 @@ export const CoreRail = memo(function CoreRail() {
         const slot = index + 1;
         const hotkey = slot <= CORE_HOTKEY_LIMIT ? slot : null;
         const activity = coreActivity(fleet.rows, core.id);
-        const dots = getPinnedProjectStatusDots({
+        const dots = getCoreStatusDots({
           running: activity.running,
           finished: 0,
         });

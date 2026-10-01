@@ -14,7 +14,6 @@ import {
 export {
   backfillTokenUsageRollup,
   ensureColumn,
-  repairProjectIndexes,
   reconcileStaleSessionsOnBoot,
   restrictDbFilePermissions,
 } from "./schema-bootstrap";
@@ -67,7 +66,7 @@ export function getDb() {
   restrictDbFilePermissions(dbPath);
   _sqlite.pragma("foreign_keys = ON");
   _db = drizzle(_sqlite, { schema });
-  const freshBootstrap = !tableExists(_sqlite, "projects");
+  const freshBootstrap = !tableExists(_sqlite, "sessions");
   if (freshBootstrap) {
     ensureSchema(_sqlite);
     runMigrations(_sqlite, { markAllAppliedOnly: true });

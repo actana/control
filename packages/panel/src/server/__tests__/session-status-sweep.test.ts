@@ -11,10 +11,9 @@ process.env.AC_USER_DATA_DIR = tmpRoot;
 const testDb = await openPanelTestDb();
 const { handleApiRequest } = await import("../api-router");
 const { operatorSessionCookie } = await import("./_operator-session");
-const { createProject } = await import("../services/projects");
 const { createSession, getSession, sweepOrphanedActiveSessions } = await import("../services/sessions");
 const { getDb } = await import("~/db/client");
-const { projects, sessions, groups, appSettings } = await import("~/db/schema");
+const { sessions, appSettings } = await import("~/db/schema");
 
 async function authed(input: string, init: RequestInit = {}): Promise<Request> {
   return new Request(`http://127.0.0.1:5173${input}`, {
@@ -30,22 +29,17 @@ async function authed(input: string, init: RequestInit = {}): Promise<Request> {
 function resetDb() {
   const db = getDb();
   db.delete(sessions).run();
-  db.delete(projects).run();
-  db.delete(groups).run();
   db.delete(appSettings).run();
 }
 
 describe("orphaned session status sweep", () => {
-  let projectId = "";
 
   beforeEach(() => {
     resetDb();
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mc-sweep-proj-"));
-    projectId = createProject({ name: "sweep", path: dir }).id;
   });
 
   function makeSession(status: SessionStatus): string {
-    const t = createSession({ projectId, title: "t", agent: "claude-code", status });
+    const t = createSession({ title: "t", agent: "claude-code", status });
     return t.id;
   }
 

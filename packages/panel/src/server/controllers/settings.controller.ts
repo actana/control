@@ -14,13 +14,6 @@ import {
   type AiModelId,
   type Harness,
 } from "@actana/shared/ai-runtime-defaults";
-import {
-  ACTIVE_PROJECT_GROUP_MAX_LENGTH,
-  PROJECTS_DASHBOARD_VIEWS,
-  normalizeActiveProjectGroup,
-  normalizeCollapsedProjectGroups,
-  normalizeProjectsDashboardView,
-} from "~/shared/ui-preferences";
 import { safeJsonParse } from "@actana/shared/safe-json";
 import {
   DEFAULT_PROVIDER_USAGE_IDS,
@@ -54,9 +47,6 @@ const DEFAULT_MODEL_SETTING_KEY = "default_model";
 const SHIP_AGENT_SETTING_KEY = "ship_agent";
 const SHIP_MODEL_SETTING_KEY = "ship_model";
 const SHIP_PROMPT_SETTING_KEY = "ship_prompt";
-const PROJECTS_DASHBOARD_VIEW_KEY = "projects_dashboard_view";
-const ACTIVE_PROJECT_GROUP_KEY = "active_project_group";
-const COLLAPSED_PROJECT_GROUPS_KEY = "collapsed_project_groups";
 const TERMINAL_ZOOM_LEVEL_KEY = "terminal_zoom_level";
 const SESSION_HEADER_BUTTONS_KEY = "session_header_buttons";
 const HEADER_BUTTONS_KEY = "header_buttons";
@@ -66,8 +56,6 @@ const CLAUDE_USAGE_LIMITS_SHOW_WEEKLY_KEY = "claude_usage_limits_show_weekly";
 const PROVIDER_USAGE_ENABLED_KEY = "provider_usage_enabled";
 const PROVIDER_USAGE_IDS_KEY = "provider_usage_ids";
 const HARNESS_LAUNCHER_CONFIG_KEY = "agent_launcher_config";
-const SHOW_GROUP_SWITCHER_KEY = "show_group_switcher";
-const SHOW_PROJECT_HEADER_GROUP_KEY = "show_project_header_group";
 
 const aiModelBody = z.union([z.string(), z.null()]).transform((value, ctx): AiModelId | null => {
   const normalized = normalizeAiModelId(value);
@@ -95,12 +83,6 @@ const updateSettingsBody = z
     sessionFinishOsNotificationEnabled: z.boolean(),
     notificationSoundEnabled: z.boolean(),
     questionOverlayEnabled: z.boolean(),
-    projectsDashboardView: z.enum(PROJECTS_DASHBOARD_VIEWS).nullable(),
-    // "ungrouped" or a group id; null clears back to "all projects". A stale
-    // id (deleted group) is tolerated here — the client validates against the
-    // live group list and falls back to "all".
-    activeProjectGroup: z.string().trim().min(1).max(ACTIVE_PROJECT_GROUP_MAX_LENGTH).nullable(),
-    collapsedProjectGroups: z.array(z.string().trim().min(1).max(ACTIVE_PROJECT_GROUP_MAX_LENGTH)).max(500).nullable(),
     terminalZoomLevel: z.number().int().min(TERMINAL_ZOOM_MIN).max(TERMINAL_ZOOM_MAX),
     sessionHeaderButtons: z
       .record(z.string(), z.boolean())
@@ -124,8 +106,6 @@ const updateSettingsBody = z
     harnessLauncherConfig: z
       .object({ order: z.array(z.string()), hidden: z.array(z.string()) })
       .transform((value): HarnessLauncherConfig => normalizeHarnessLauncherConfig(value)),
-    showGroupSwitcher: z.boolean(),
-    showProjectHeaderGroup: z.boolean(),
   })
   .partial();
 
@@ -154,20 +134,6 @@ function getShipPromptSetting(): string {
   return value === null ? DEFAULT_SHIP_PROMPT : normalizeShipPrompt(value);
 }
 
-function getProjectsDashboardViewSetting() {
-  return normalizeProjectsDashboardView(getSetting(PROJECTS_DASHBOARD_VIEW_KEY));
-}
-
-function getActiveProjectGroupSetting() {
-  return normalizeActiveProjectGroup(getSetting(ACTIVE_PROJECT_GROUP_KEY));
-}
-
-function getCollapsedProjectGroupsSetting() {
-  return normalizeCollapsedProjectGroups(
-    safeJsonParse<unknown>(getSetting(COLLAPSED_PROJECT_GROUPS_KEY), null),
-  );
-}
-
 function getTerminalZoomLevelSetting() {
   return normalizeTerminalZoomLevel(getSetting(TERMINAL_ZOOM_LEVEL_KEY)) ?? DEFAULT_TERMINAL_ZOOM_LEVEL;
 }
@@ -190,14 +156,6 @@ function getHarnessLauncherConfigSetting(): HarnessLauncherConfig {
   );
 }
 
-function getShowGroupSwitcherSetting(): boolean {
-  return getBooleanSetting(SHOW_GROUP_SWITCHER_KEY, true);
-}
-
-function getShowProjectHeaderGroupSetting(): boolean {
-  return getBooleanSetting(SHOW_PROJECT_HEADER_GROUP_KEY, true);
-}
-
 function settingsPayload() {
   return {
     agentSystemBannerDisabled: getBooleanSetting("agent_system_banner_disabled"),
@@ -211,9 +169,6 @@ function settingsPayload() {
     // This feature graduated from experimental; retained in the payload for
     // compatibility with older renderers, but stored preferences no longer gate it.
     questionOverlayEnabled: true,
-    projectsDashboardView: getProjectsDashboardViewSetting(),
-    activeProjectGroup: getActiveProjectGroupSetting(),
-    collapsedProjectGroups: getCollapsedProjectGroupsSetting(),
     terminalZoomLevel: getTerminalZoomLevelSetting(),
     sessionHeaderButtons: getSessionHeaderButtonsSetting(),
     headerButtons: getHeaderButtonsSetting(),
@@ -231,8 +186,6 @@ function settingsPayload() {
     providerUsageEnabled: getProviderUsageEnabledSetting(),
     providerUsageIds: getProviderUsageIdsSetting(),
     harnessLauncherConfig: getHarnessLauncherConfigSetting(),
-    showGroupSwitcher: getShowGroupSwitcherSetting(),
-    showProjectHeaderGroup: getShowProjectHeaderGroupSetting(),
   };
 }
 
@@ -285,27 +238,6 @@ export async function update(request: Request): Promise<Response> {
   }
   // Native question popups are always on; their legacy field remains
   // accepted so older clients can update other settings safely.
-  if (body.projectsDashboardView !== undefined) {
-    if (body.projectsDashboardView === null) {
-      deleteSetting(PROJECTS_DASHBOARD_VIEW_KEY);
-    } else {
-      setSetting(PROJECTS_DASHBOARD_VIEW_KEY, body.projectsDashboardView);
-    }
-  }
-  if (body.activeProjectGroup !== undefined) {
-    if (body.activeProjectGroup === null) {
-      deleteSetting(ACTIVE_PROJECT_GROUP_KEY);
-    } else {
-      setSetting(ACTIVE_PROJECT_GROUP_KEY, body.activeProjectGroup);
-    }
-  }
-  if (body.collapsedProjectGroups !== undefined) {
-    if (body.collapsedProjectGroups === null || body.collapsedProjectGroups.length === 0) {
-      deleteSetting(COLLAPSED_PROJECT_GROUPS_KEY);
-    } else {
-      setSetting(COLLAPSED_PROJECT_GROUPS_KEY, JSON.stringify(body.collapsedProjectGroups));
-    }
-  }
   if (body.terminalZoomLevel !== undefined) {
     setSetting(TERMINAL_ZOOM_LEVEL_KEY, String(body.terminalZoomLevel));
   }
@@ -362,12 +294,6 @@ export async function update(request: Request): Promise<Response> {
   }
   if (body.harnessLauncherConfig !== undefined) {
     setSetting(HARNESS_LAUNCHER_CONFIG_KEY, JSON.stringify(body.harnessLauncherConfig));
-  }
-  if (body.showGroupSwitcher !== undefined) {
-    setBooleanSetting(SHOW_GROUP_SWITCHER_KEY, body.showGroupSwitcher);
-  }
-  if (body.showProjectHeaderGroup !== undefined) {
-    setBooleanSetting(SHOW_PROJECT_HEADER_GROUP_KEY, body.showProjectHeaderGroup);
   }
   return json(settingsPayload());
 }

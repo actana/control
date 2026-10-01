@@ -27,7 +27,7 @@ async function seedOperator(db: TestDb, id = 1) {
 }
 
 describe("the panel.db tables on Postgres", { timeout: 30_000 }, () => {
-  it("creates operator, panel_sessions, cores, core_secrets, the Task tables, agents and the API key tables", async () => {
+  it("creates operator, panel_sessions, cores, core_secrets, the Task tables, agents, webhooks and the API key tables", async () => {
     const db = await make();
     const { rows } = await db.pool.query(
       "select table_name from information_schema.tables where table_schema = 'public' order by 1",
@@ -43,6 +43,10 @@ describe("the panel.db tables on Postgres", { timeout: 30_000 }, () => {
       "task_comments",
       "task_status_history",
       "tasks",
+      "webhook_cores",
+      "webhook_deliveries",
+      "webhook_outbox",
+      "webhooks",
     ]);
   });
 
@@ -50,9 +54,12 @@ describe("the panel.db tables on Postgres", { timeout: 30_000 }, () => {
     const db = await make();
     const { rows } = await db.pool.query(
       `select table_name, column_name, data_type from information_schema.columns
-       where table_schema = 'public' and column_name in ('created_at','updated_at','last_seen_at','expires_at','last_event_id','password_changed_at','changed_at','dispatched_at')`,
+       where table_schema = 'public' and column_name in (
+         'created_at','updated_at','last_seen_at','expires_at','last_event_id','password_changed_at',
+         'changed_at','dispatched_at','processed_at','next_attempt_at','claimed_until','delivered_at'
+       )`,
     );
-    expect(rows.length).toBe(17);
+    expect(rows.length).toBe(26);
     for (const r of rows) expect(r.data_type, `${r.table_name}.${r.column_name}`).toBe("bigint");
     await seedOperator(db);
     // An int4 column would reject this outright.

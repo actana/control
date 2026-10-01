@@ -6,10 +6,10 @@ import {
 } from "../active-session-memory";
 import type { Session } from "~/db/schema";
 
-const SCOPE = "p1";
+const SCOPE = "core-a";
 
 function session(id: string, over: Partial<Session> = {}): Session {
-  return { id, projectId: "p1", status: "ready", archived: false, ...over } as Session;
+  return { id, status: "ready", archived: false, ...over } as Session;
 }
 
 describe("rememberActiveSession", () => {
@@ -20,10 +20,10 @@ describe("rememberActiveSession", () => {
       previous: null,
     });
 
-    expect(remembered).toEqual({ projectId: SCOPE, sessionId: "t-archived", archived: true });
+    expect(remembered).toEqual({ coreId: SCOPE, sessionId: "t-archived", archived: true });
   });
 
-  it("flags a Panel-owned archived row, which carries the flag in the session list", () => {
+  it("flags an archived row that still carries the flag in the session list", () => {
     const remembered = rememberActiveSession("t-archived", SCOPE, {
       sessions: [session("t-live"), session("t-archived", { archived: true })],
       archivedSessions: [],
@@ -40,11 +40,11 @@ describe("rememberActiveSession", () => {
       previous: null,
     });
 
-    expect(remembered).toEqual({ projectId: SCOPE, sessionId: "t-live", archived: false });
+    expect(remembered).toEqual({ coreId: SCOPE, sessionId: "t-live", archived: false });
   });
 
   it("keeps the archived verdict when a refetch drops the row from both lists", () => {
-    const previous: LastActiveSession = { projectId: SCOPE, sessionId: "t-archived", archived: true };
+    const previous: LastActiveSession = { coreId: SCOPE, sessionId: "t-archived", archived: true };
 
     const remembered = rememberActiveSession("t-archived", SCOPE, {
       sessions: [session("t-live")],
@@ -56,13 +56,13 @@ describe("rememberActiveSession", () => {
   });
 
   it("does not carry an archived verdict across a different id or scope", () => {
-    const previous: LastActiveSession = { projectId: SCOPE, sessionId: "t-archived", archived: true };
+    const previous: LastActiveSession = { coreId: SCOPE, sessionId: "t-archived", archived: true };
 
     expect(
       rememberActiveSession("t-live", SCOPE, { sessions: [], archivedSessions: [], previous }).archived,
     ).toBe(false);
     expect(
-      rememberActiveSession("t-archived", "p2", { sessions: [], archivedSessions: [], previous }).archived,
+      rememberActiveSession("t-archived", "core-b", { sessions: [], archivedSessions: [], previous }).archived,
     ).toBe(false);
   });
 });
@@ -71,25 +71,25 @@ describe("activeSessionWentAway", () => {
   it("reads a deselected archived row as a deselect, not a deletion", () => {
     // Closing the panel on an archived Core session used to force-open an
     // unrelated live one, with no coreId, onto a pane that never spawns.
-    const previous: LastActiveSession = { projectId: SCOPE, sessionId: "t-archived", archived: true };
+    const previous: LastActiveSession = { coreId: SCOPE, sessionId: "t-archived", archived: true };
 
     expect(activeSessionWentAway(previous, SCOPE, [session("t-live")])).toBe(false);
   });
 
   it("still reads a live row that left the visible list as a deletion", () => {
-    const previous: LastActiveSession = { projectId: SCOPE, sessionId: "t-gone", archived: false };
+    const previous: LastActiveSession = { coreId: SCOPE, sessionId: "t-gone", archived: false };
 
     expect(activeSessionWentAway(previous, SCOPE, [session("t-live")])).toBe(true);
   });
 
   it("reads a live row still on screen as a deselect", () => {
-    const previous: LastActiveSession = { projectId: SCOPE, sessionId: "t-live", archived: false };
+    const previous: LastActiveSession = { coreId: SCOPE, sessionId: "t-live", archived: false };
 
     expect(activeSessionWentAway(previous, SCOPE, [session("t-live")])).toBe(false);
   });
 
   it("says nothing about a memory belonging to another scope", () => {
-    const previous: LastActiveSession = { projectId: "p2", sessionId: "t-gone", archived: false };
+    const previous: LastActiveSession = { coreId: "core-b", sessionId: "t-gone", archived: false };
 
     expect(activeSessionWentAway(previous, SCOPE, [session("t-live")])).toBe(false);
   });

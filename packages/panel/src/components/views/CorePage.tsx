@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useRouter } from "@tanstack/react-router";
 import { toast } from "sonner";
@@ -8,6 +8,7 @@ import { EmptyState } from "~/components/ui/EmptyState";
 import { CoreHeader, type CoreTab } from "~/components/views/CoreHeader";
 import { CoreNeedsUpdateNotice } from "~/components/views/CoreNeedsUpdate";
 import { FleetSessionRow } from "~/components/views/FleetSessionRow";
+import { TasksBoard } from "~/components/views/TasksBoard";
 import { NewHarnessDialog } from "~/components/views/NewHarnessDialog";
 import { useFleet } from "~/lib/fleet-context";
 import { getPanelBridge } from "~/lib/panel-bridge";
@@ -25,8 +26,8 @@ import type { Harness } from "@actana/shared/domain";
 
 /**
  * A Core's page (screen 02): header, then one of three tabs. Sessions lists
- * this Core's harness Sessions; Files and Tasks are placeholders until #565
- * and #571 land. The Terminal is the bottom drawer the shell already owns.
+ * this Core's harness Sessions; Files is a placeholder until #565 lands; Tasks is the
+ * Tasks board filtered to this Core (#571). The Terminal is the bottom drawer the shell already owns.
  * New Session is prompt-first (issue 560, screen 03).
  */
 export function CorePage({ coreId, tab }: { coreId: string; tab: CoreTab }) {
@@ -34,13 +35,9 @@ export function CorePage({ coreId, tab }: { coreId: string; tab: CoreTab }) {
   const queryClient = useQueryClient();
   const cliAvailability = useCliAvailability(coreId);
   const { cores, fleet, loading } = useFleet();
-  const { togglePanel, panelOpen, setHomeActive } = useUserTerminals();
+  const { togglePanel, panelOpen } = useUserTerminals();
   const [showNew, setShowNew] = useState(false);
   const [rememberTick, setRememberTick] = useState(0);
-  useEffect(() => {
-    setHomeActive(true);
-    return () => setHomeActive(false);
-  }, [setHomeActive]);
   const core = cores.find((c) => c.id === coreId);
   const rows = useMemo(() => fleet.rows.filter((r) => r.coreId === coreId), [fleet.rows, coreId]);
   const remembered = useMemo(() => {
@@ -83,16 +80,11 @@ export function CorePage({ coreId, tab }: { coreId: string; tab: CoreTab }) {
           sessionId,
           title: TITLE_WAITING,
           agent,
-        } as Parameters<typeof mutateSessionForCore>[1]);
+        });
         if (!snapshot) throw new Error("Core did not return a session snapshot");
         // The workspace finds the Session in its list, so put it there first.
-        appendOptimisticSession(
-          queryClient,
-          coreId,
-          { ...remoteSessionFromSnapshot(snapshot), projectId: coreId },
-          coreId,
-        );
-        void queryClient.invalidateQueries({ queryKey: sessionsCacheKey(coreId, coreId) });
+        appendOptimisticSession(queryClient, coreId, remoteSessionFromSnapshot(snapshot));
+        void queryClient.invalidateQueries({ queryKey: sessionsCacheKey(coreId) });
         // The pane consumes the prompt once, at the Session's first spawn.
         if (prompt.trim()) setPendingInitialInput(snapshot.sessionId, prompt.trim());
         setShowNew(false);
@@ -156,10 +148,7 @@ export function CorePage({ coreId, tab }: { coreId: string; tab: CoreTab }) {
               {rows.map((row) => (
                 <FleetSessionRow
                   key={row.sessionId}
-                  row={{
-                    ...row,
-                    projectId: "projectId" in row && row.projectId ? String(row.projectId) : coreId,
-                  }}
+                  row={row}
                   onOpen={() => openWorkspace(row.sessionId)}
                 />
               ))}
@@ -189,11 +178,7 @@ export function CorePage({ coreId, tab }: { coreId: string; tab: CoreTab }) {
             icon="folder"
           />
         ) : (
-          <EmptyState
-            title="Tasks"
-            subtitle="The Tasks board for this Core lands with #571."
-            icon="check"
-          />
+          <TasksBoard coreId={coreId} />
         )}
       </CardFrame>
 

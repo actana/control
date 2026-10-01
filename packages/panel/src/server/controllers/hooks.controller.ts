@@ -79,7 +79,6 @@ export async function receive(url: URL, request: Request): Promise<Response> {
           if (!session) return;
           setPendingQuestion({
             sessionId: id,
-            projectId: session.projectId,
             questions: questions as HarnessQuestion[],
             id: toolUseId,
           });

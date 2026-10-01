@@ -1,22 +1,15 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import type { Session } from "~/db/schema";
 import {
   archivedSessionsEligibleForReap,
   commandForSession,
-  nextActiveByProject,
-  resolveActiveSessionIdForProject,
+  nextActiveByCore,
+  resolveActiveSessionIdForCore,
   type OpenTerminal,
 } from "../terminal-store";
 
-vi.mock("../api", () => ({
-  api: {
-    updateSession: vi.fn().mockResolvedValue(undefined),
-  },
-}));
-
 const baseSession = {
   id: "session-1",
-  projectId: "project-1",
   title: "Session",
   titleManuallySet: false,
   icon: null,
@@ -130,15 +123,15 @@ describe("commandForSession", () => {
   });
 });
 
-describe("nextActiveByProject", () => {
-  const scope = "project-1";
+describe("nextActiveByCore", () => {
+  const scope = "core-1:main";
 
   it("selects a session in a scope that had none", () => {
-    expect(nextActiveByProject({}, scope, "session-1")).toEqual({ [scope]: "session-1" });
+    expect(nextActiveByCore({}, scope, "session-1")).toEqual({ [scope]: "session-1" });
   });
 
   it("switches active sessions", () => {
-    expect(nextActiveByProject({ [scope]: "session-1" }, scope, "session-2")).toEqual({
+    expect(nextActiveByCore({ [scope]: "session-1" }, scope, "session-2")).toEqual({
       [scope]: "session-2",
     });
   });
@@ -148,14 +141,14 @@ describe("nextActiveByProject", () => {
   // null here whenever a session was materialized, and a null scope is the panel
   // close. Materialization is no longer an input to the decision at all.
   it("keeps the session active when it is requested again", () => {
-    expect(nextActiveByProject({ [scope]: "session-1" }, scope, "session-1")).toEqual({
+    expect(nextActiveByCore({ [scope]: "session-1" }, scope, "session-1")).toEqual({
       [scope]: "session-1",
     });
   });
 
   it("returns the same map object for a repeat request so no re-render is forced", () => {
     const prev = { [scope]: "session-1" };
-    expect(nextActiveByProject(prev, scope, "session-1")).toBe(prev);
+    expect(nextActiveByCore(prev, scope, "session-1")).toBe(prev);
   });
 
   // A rapid burst follows the last request and never passes through a null
@@ -165,7 +158,7 @@ describe("nextActiveByProject", () => {
     const seen: (string | null)[] = [];
     let state: Record<string, string | null> = { [scope]: "session-a" };
     for (const requested of ["session-a", "session-b", "session-a"]) {
-      state = nextActiveByProject(state, scope, requested);
+      state = nextActiveByCore(state, scope, requested);
       seen.push(state[scope] ?? null);
     }
     expect(seen).toEqual(["session-a", "session-b", "session-a"]);
@@ -175,89 +168,65 @@ describe("nextActiveByProject", () => {
 
   it("leaves other scopes untouched", () => {
     expect(
-      nextActiveByProject({ "project-2": "session-9" }, scope, "session-1"),
-    ).toEqual({ "project-2": "session-9", [scope]: "session-1" });
+      nextActiveByCore({ "core-2:main": "session-9" }, scope, "session-1"),
+    ).toEqual({ "core-2:main": "session-9", [scope]: "session-1" });
   });
 });
 
-describe("resolveActiveSessionIdForProject", () => {
-  it("prefers the currently visible scope for root panel lookups", () => {
+describe("resolveActiveSessionIdForCore", () => {
+  it("reads the active session out of the Core's scope key", () => {
     expect(
-      resolveActiveSessionIdForProject(
-        {
-          "project-1:main": "main-session",
-          "project-1:scope-a": "scoped-session",
-        },
-        "project-1",
-        { "project-1": "project-1:scope-a" },
+      resolveActiveSessionIdForCore(
+        { "core-1:main": "main-session", "core-2:main": "other-session" },
+        "core-1",
       ),
-    ).toEqual({ scopeKey: "project-1:scope-a", sessionId: "scoped-session" });
+    ).toEqual({ scopeKey: "core-1:main", sessionId: "main-session" });
   });
 
-  it("does not fall back to another scope when the visible scope has no active session", () => {
-    expect(
-      resolveActiveSessionIdForProject(
-        {
-          "project-1:main": "main-session",
-          "project-1:scope-a": "scoped-session",
-        },
-        "project-1",
-        { "project-1": "project-1:scope-b" },
-      ),
-    ).toEqual({ scopeKey: "project-1:scope-b", sessionId: null });
+  it("answers null, under the Core's own scope key, when it has no active session", () => {
+    expect(resolveActiveSessionIdForCore({ "core-2:main": "other-session" }, "core-1")).toEqual({
+      scopeKey: "core-1:main",
+      sessionId: null,
+    });
   });
 
-  it("uses exact scoped ids without cross-scope fallback", () => {
-    expect(
-      resolveActiveSessionIdForProject(
-        {
-          "project-1:main": "main-session",
-          "project-1:scope-a": "scoped-session",
-        },
-        "project-1:scope-b",
-      ),
-    ).toEqual({ scopeKey: "project-1:scope-b", sessionId: null });
-  });
-
-  it("maps legacy plain project active ids to the main scope key", () => {
-    expect(
-      resolveActiveSessionIdForProject({ "project-1": "legacy-session" }, "project-1"),
-    ).toEqual({ scopeKey: "project-1:main", sessionId: "legacy-session" });
+  it("reads an explicitly closed Core as null", () => {
+    expect(resolveActiveSessionIdForCore({ "core-1:main": null }, "core-1")).toEqual({
+      scopeKey: "core-1:main",
+      sessionId: null,
+    });
   });
 });
 
 describe("archivedSessionsEligibleForReap", () => {
   const openTerminal = (opts: {
     sessionId: string;
-    projectId?: string;
+    coreId?: string;
     archived: boolean;
   }): OpenTerminal => ({
     sessionId: opts.sessionId,
     ptyId: null,
     startCommand: "",
     dangerouslySkipPermissions: false,
-    cwd: "/tmp",
-    project: {
-      id: opts.projectId ?? "project-1",
-    } as unknown as OpenTerminal["project"],
+    coreId: opts.coreId ?? "core-1",
     session: { id: opts.sessionId, archived: opts.archived } as OpenTerminal["session"],
   });
 
   it("reaps an archived session that is not the active selection", () => {
     const sessions = [openTerminal({ sessionId: "a", archived: true })];
-    expect(archivedSessionsEligibleForReap(sessions, { "project-1:main": null })).toEqual([
+    expect(archivedSessionsEligibleForReap(sessions, { "core-1:main": null })).toEqual([
       "a",
     ]);
   });
 
   it("keeps an archived session alive while it is the active selection", () => {
     const sessions = [openTerminal({ sessionId: "a", archived: true })];
-    expect(archivedSessionsEligibleForReap(sessions, { "project-1:main": "a" })).toEqual([]);
+    expect(archivedSessionsEligibleForReap(sessions, { "core-1:main": "a" })).toEqual([]);
   });
 
   it("never reaps a non-archived session even when it is unselected", () => {
     const sessions = [openTerminal({ sessionId: "a", archived: false })];
-    expect(archivedSessionsEligibleForReap(sessions, { "project-1:main": null })).toEqual([]);
+    expect(archivedSessionsEligibleForReap(sessions, { "core-1:main": null })).toEqual([]);
   });
 
   it("returns only the unselected archived sessions", () => {
@@ -266,7 +235,7 @@ describe("archivedSessionsEligibleForReap", () => {
       openTerminal({ sessionId: "b", archived: true }),
       openTerminal({ sessionId: "c", archived: false }),
     ];
-    expect(archivedSessionsEligibleForReap(sessions, { "project-1:main": "b" })).toEqual([
+    expect(archivedSessionsEligibleForReap(sessions, { "core-1:main": "b" })).toEqual([
       "a",
     ]);
   });

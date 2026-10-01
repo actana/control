@@ -82,7 +82,7 @@ describe("corePtyBridgeFor", () => {
     fake.answers({ type: "spawned", ptyId: "pty-9" });
     const bridge = corePtyBridgeFor(fake.link, "core_spawn");
     await expect(
-      bridge.spawn({ sessionId: "t1", cwd: "/srv/app", command: "claude", agent: "claude-code" }),
+      bridge.spawn({ sessionId: "t1", command: "claude", agent: "claude-code" }),
       // A Core that predates issue 84 answers without
       // `hooksReportTurnStart`; the bridge reads that as "no", which keeps the
       // Panel's terminal-input fallback armed rather than suppressed on a

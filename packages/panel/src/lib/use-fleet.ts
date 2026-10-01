@@ -8,9 +8,7 @@ import {
   createCoalescingRunner,
   sameSnapshot,
 } from "~/lib/fleet-refresh";
-import type { CoreLinkProjectSnapshot, CoreLinkSessionRow } from "@actana/shared/sdk-link-frames";
 import { coreOrder, type CoreWithDial } from "~/shared/cores";
-import { subscribeCoreProjectEvents } from "~/lib/subscribe-core-project-events";
 
 // The fleet, as the browser sees it.
 //
@@ -203,104 +201,4 @@ export function useFleetSessions(): {
   }, [run, coreSignature]);
 
   return { fleet, cores, loading, error: error ?? coresError, refresh: () => void run() };
-}
-
-/**
- * One Core's projects, live. Refetches when that Core reports a project-list-
- * affecting event, so a project created on the Core — by another Panel, or
- * by a hand at the VM's own keyboard — appears here without a reload.
- */
-export function useCoreProjects(coreId: string | null): {
-  projects: CoreLinkProjectSnapshot[];
-  loading: boolean;
-  error: string | null;
-  refresh: () => void;
-} {
-  const bridge = getPanelBridge();
-  const [projects, setProjects] = useState<CoreLinkProjectSnapshot[]>([]);
-  // A Core we are about to ask is loading, not empty. Seeding `false` made the
-  // first paint of every caller indistinguishable from "this Core has no
-  // projects" — a blank list that then filled in.
-  const [loading, setLoading] = useState(coreId !== null);
-  const [error, setError] = useState<string | null>(null);
-
-  const run = useCallback(async () => {
-    if (!coreId || !bridge) {
-      setProjects([]);
-      return;
-    }
-    setLoading(true);
-    try {
-      setProjects(await bridge.listProjects(coreId));
-      setError(null);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-      setProjects([]);
-    } finally {
-      setLoading(false);
-    }
-  }, [coreId, bridge]);
-
-  useEffect(() => {
-    void run();
-  }, [run]);
-
-  useEffect(() => {
-    if (!bridge || !coreId) return;
-    const release = bridge.watchCore(coreId);
-    const off = subscribeCoreProjectEvents(bridge, coreId, () => void run());
-    return () => {
-      off();
-      release();
-    };
-  }, [bridge, coreId, run]);
-
-  return { projects, loading, error, refresh: () => void run() };
-}
-
-/** One Core's sessions for one project — the per-Core navigation's second level. */
-export function useCoreSessions(
-  coreId: string | null,
-  projectId: string | null,
-): {
-  sessions: CoreLinkSessionRow[];
-  loading: boolean;
-  error: string | null;
-  refresh: () => void;
-} {
-  const bridge = getPanelBridge();
-  const [sessions, setSessions] = useState<CoreLinkSessionRow[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [nonce, setNonce] = useState(0);
-
-  useEffect(() => {
-    if (!coreId || !projectId || !bridge) {
-      setSessions([]);
-      return;
-    }
-    let cancelled = false;
-    setLoading(true);
-    void (async () => {
-      try {
-        const result = await bridge.listSessionRows(coreId, projectId);
-        if (!cancelled) {
-          setSessions(result.sessions);
-          setError(null);
-        }
-      } catch (err) {
-        if (!cancelled) {
-          setError(err instanceof Error ? err.message : String(err));
-          setSessions([]);
-        }
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [coreId, projectId, bridge, nonce]);
-
-  return { sessions, loading, error, refresh: () => setNonce((n) => n + 1) };
 }

@@ -17,7 +17,6 @@ export function newOptimisticSessionId(): string {
 
 export function buildOptimisticSession(input: {
   id?: string;
-  projectId: string;
   agent: Harness;
   claudeSessionId?: string | null;
   claudeSkipPermissions?: boolean;
@@ -26,7 +25,6 @@ export function buildOptimisticSession(input: {
   const now = Date.now();
   return {
     id: input.id ?? newOptimisticSessionId(),
-    projectId: input.projectId,
     title: TITLE_WAITING,
     titleManuallySet: false,
     icon: null,
@@ -45,76 +43,69 @@ export function buildOptimisticSession(input: {
   };
 }
 
-// All helpers accept an optional trailing `coreId` so writes land in the same
-// cache bucket the query reads from. A missing `coreId` reads as the Panel's
-// own rows via `sessionsCacheKey`.
+// Every helper takes the `coreId` first, so writes land in the same cache
+// bucket the query reads from (`sessionsCacheKey`).
 export function removeSessionFromCache(
   queryClient: QueryClient,
-  projectId: string,
+  coreId: string,
   sessionId: string,
-  coreId?: string | null,
 ) {
   queryClient.setQueryData<Session[]>(
-    sessionsCacheKey(projectId, coreId),
+    sessionsCacheKey(coreId),
     (current) => (current ?? []).filter((t) => t.id !== sessionId),
   );
 }
 
 export function removeSessionsFromCache(
   queryClient: QueryClient,
-  projectId: string,
+  coreId: string,
   sessionIds: Iterable<string>,
-  coreId?: string | null,
 ) {
   const ids = sessionIds instanceof Set ? sessionIds : new Set(sessionIds);
   queryClient.setQueryData<Session[]>(
-    sessionsCacheKey(projectId, coreId),
+    sessionsCacheKey(coreId),
     (current) => (current ?? []).filter((t) => !ids.has(t.id)),
   );
 }
 
 export function restoreSessionsCache(
   queryClient: QueryClient,
-  projectId: string,
+  coreId: string,
   sessions: Session[],
-  coreId?: string | null,
 ) {
-  queryClient.setQueryData<Session[]>(sessionsCacheKey(projectId, coreId), sessions);
+  queryClient.setQueryData<Session[]>(sessionsCacheKey(coreId), sessions);
 }
 
 export function setSessionArchivedInCache(
   queryClient: QueryClient,
-  projectId: string,
+  coreId: string,
   sessionId: string,
   archived: boolean,
-  coreId?: string | null,
 ) {
-  setSessionsArchivedInCache(queryClient, projectId, [sessionId], archived, coreId);
+  setSessionsArchivedInCache(queryClient, coreId, [sessionId], archived);
 }
 
 export function setSessionsArchivedInCache(
   queryClient: QueryClient,
-  projectId: string,
+  coreId: string,
   sessionIds: Iterable<string>,
   archived: boolean,
-  coreId?: string | null,
 ) {
   const ids = sessionIds instanceof Set ? sessionIds : new Set(sessionIds);
   queryClient.setQueryData<Session[]>(
-    sessionsCacheKey(projectId, coreId),
+    sessionsCacheKey(coreId),
     (current) => (current ?? []).map((t) => (ids.has(t.id) ? { ...t, archived } : t)),
   );
 }
 
 export function setSessionPinnedInCache(
   queryClient: QueryClient,
-  projectId: string,
+  coreId: string,
   sessionId: string,
   pinned: boolean,
-  coreId?: string | null,
 ) {
   queryClient.setQueryData<Session[]>(
-    sessionsCacheKey(projectId, coreId),
+    sessionsCacheKey(coreId),
     (current) =>
       (current ?? []).map((t) => (t.id === sessionId ? { ...t, pinned, updatedAt: Date.now() } : t)),
   );
@@ -122,25 +113,23 @@ export function setSessionPinnedInCache(
 
 export function appendOptimisticSession(
   queryClient: QueryClient,
-  projectId: string,
+  coreId: string,
   session: Session,
-  coreId?: string | null,
 ) {
   queryClient.setQueryData<Session[]>(
-    sessionsCacheKey(projectId, coreId),
+    sessionsCacheKey(coreId),
     (current) => [session, ...(current ?? [])],
   );
 }
 
 export function replaceOptimisticSession(
   queryClient: QueryClient,
-  projectId: string,
+  coreId: string,
   optimisticId: string,
   session: Session,
-  coreId?: string | null,
 ) {
   queryClient.setQueryData<Session[]>(
-    sessionsCacheKey(projectId, coreId),
+    sessionsCacheKey(coreId),
     (current) => {
       const withoutOptimistic = (current ?? []).filter((t) => t.id !== optimisticId);
       if (withoutOptimistic.some((t) => t.id === session.id)) return withoutOptimistic;
@@ -151,9 +140,8 @@ export function replaceOptimisticSession(
 
 export function removeOptimisticSession(
   queryClient: QueryClient,
-  projectId: string,
+  coreId: string,
   optimisticId: string,
-  coreId?: string | null,
 ) {
-  removeSessionFromCache(queryClient, projectId, optimisticId, coreId);
+  removeSessionFromCache(queryClient, coreId, optimisticId);
 }

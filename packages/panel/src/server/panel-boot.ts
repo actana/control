@@ -1,5 +1,8 @@
 import { bootPanelDatabase } from "~/db/pg-boot";
+import { closePanelDatabase } from "~/db/pg";
 import { coreLinkManager } from "./services/core-link-manager";
+import { startWebhookDeliveryWorker } from "./services/webhook-delivery-worker";
+import { startTaskDispatch, stopTaskDispatch } from "./task-dispatch";
 
 /**
  * Bring the Panel's database up, then the core links that read it.
@@ -9,6 +12,10 @@ import { coreLinkManager } from "./services/core-link-manager";
  * (`bootPanelDatabase`, which throws when the Panel must not start), and only
  * then are the registered Cores dialed. `bin/panel.mjs` and the Vite dev server
  * both enter here.
+ *
+ * Then the Task dispatcher starts (#570): it claims `assigned` Tasks and watches
+ * their result files for as long as the Panel is up, and `closePanel` stops it.
+ * The webhook delivery worker (#574) runs alongside it.
  */
 export async function bootPanel(
   ...args: Parameters<typeof bootPanelDatabase>
@@ -23,5 +30,13 @@ export async function bootPanel(
         `[panel] could not dial the registered Cores: ${err instanceof Error ? err.message : String(err)}`,
       );
     });
+  startTaskDispatch();
+  startWebhookDeliveryWorker();
   return pool;
+}
+
+/** Shutdown: stop dispatching and watching first, then close the database they read. */
+export async function closePanel(): Promise<void> {
+  await stopTaskDispatch();
+  await closePanelDatabase();
 }

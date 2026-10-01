@@ -57,12 +57,13 @@ export const PANEL_NODE_BIN = "/nodejs/bin/node";
 /**
  * Every table the Panel's Postgres migrations create (#567, ADR 0041 D14): the
  * four `panel.db` tables, which are Postgres tables now, the three Task
- * tables (#568), the Agents table (#569) and the two API key tables (#572). The smoke script asks
- * the Postgres beside the Panel for them after the Panel has booted and been
- * set up. A booted Panel that answers `/api/healthz` does not prove its
- * migrations ran against the database it was given; the tables, and the rows
- * setup wrote into them, are what prove it. The list is held to the migration
- * SQL by `__tests__/panel-image.test.mjs`.
+ * tables (#568), the Agents table (#569), the webhook tables (#574) and the two API
+ * key tables (#572). The
+ * smoke script asks the Postgres beside the Panel for them after the Panel has
+ * booted and been set up. A booted Panel that answers `/api/healthz` does not
+ * prove its migrations ran against the database it was given; the tables, and
+ * the rows setup wrote into them, are what prove it. The list is held to the
+ * migration SQL by `__tests__/panel-image.test.mjs`.
  */
 export const PANEL_TABLES = Object.freeze([
   "operator",
@@ -73,6 +74,10 @@ export const PANEL_TABLES = Object.freeze([
   "task_comments",
   "task_status_history",
   "agents",
+  "webhooks",
+  "webhook_cores",
+  "webhook_outbox",
+  "webhook_deliveries",
   "api_keys",
   "api_key_cores",
 ]);

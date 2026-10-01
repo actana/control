@@ -11,7 +11,6 @@ import type { CoreWithDial } from "~/shared/cores";
 let cores: CoreWithDial[] = [];
 let rows: Record<string, unknown>[] = [];
 const togglePanel = vi.fn();
-const setHomeActive = vi.fn();
 
 vi.mock("~/lib/fleet-context", () => ({
   useFleet: () => ({
@@ -23,7 +22,7 @@ vi.mock("~/lib/fleet-context", () => ({
   }),
 }));
 vi.mock("~/lib/user-terminal-store", () => ({
-  useUserTerminals: () => ({ togglePanel, panelOpen: false, setHomeActive }),
+  useUserTerminals: () => ({ togglePanel, panelOpen: false }),
 }));
 const bridge = {
   isConnected: () => true,
@@ -40,7 +39,9 @@ vi.mock("~/queries", async (importOriginal) => ({
   ...(await importOriginal<typeof import("~/queries")>()),
   useSettings: () => ({ data: undefined }),
 }));
-vi.mock("~/lib/api", () => ({ api: { getKeybindings: async () => ({ bindings: {} }) } }));
+vi.mock("~/lib/api", () => ({
+  api: { getKeybindings: async () => ({ bindings: {} }), listTasks: async () => ({ tasks: [] }) },
+}));
 const mutateSessionForCore = vi.fn();
 vi.mock("~/lib/mutate-session-for-core", () => ({
   mutateSessionForCore: (...args: unknown[]) => mutateSessionForCore(...args),
@@ -72,7 +73,6 @@ function row(over: Record<string, unknown>) {
     coreId: "a",
     coreLabel: "alpha",
     sessionId: "s1",
-    projectId: "p1",
     title: "Refactor executor",
     agent: "claude-code",
     status: "running",
@@ -118,7 +118,6 @@ afterEach(() => {
   __resetCliAvailabilityStoresForTests();
   __resetCoreRememberForTests();
   togglePanel.mockReset();
-  setHomeActive.mockReset();
   rows = [];
 });
 
@@ -136,14 +135,6 @@ describe("CorePage", () => {
     await mount("sessions");
     fireEvent.click(screen.getByRole("button", { name: "Toggle terminal" }));
     expect(togglePanel).toHaveBeenCalledTimes(1);
-  });
-
-  it("claims the terminal drawer's home scope while mounted and releases it on leave", async () => {
-    cores = [core("a", "alpha")];
-    await mount("sessions");
-    expect(setHomeActive).toHaveBeenLastCalledWith(true);
-    cleanup();
-    expect(setHomeActive).toHaveBeenLastCalledWith(false);
   });
 
   it("shows one status pill with online, and a switcher listing every Core", async () => {
@@ -189,13 +180,15 @@ describe("CorePage", () => {
     expect(screen.queryByText("Other Core's work")).toBeNull();
   });
 
-  it("renders placeholders for Files and Tasks", async () => {
+  it("renders a placeholder for Files and this Core's Tasks board under Tasks", async () => {
     cores = [core("a", "alpha")];
     await mount("files");
     expect(screen.getByText(/#565/)).toBeTruthy();
     cleanup();
     await mount("tasks");
-    expect(screen.getByText(/#571/)).toBeTruthy();
+    // The board, without the per-Core chips: the Core page is already one Core.
+    expect(screen.getByRole("button", { name: "New Task" })).toBeTruthy();
+    expect(screen.queryByRole("group", { name: "Filter by Core" })).toBeNull();
   });
 
   it("says so when the Core is not registered", async () => {
@@ -246,15 +239,14 @@ describe("CorePage", () => {
     // this Core, or the pane has no transport and never spawns the Session.
     const request = readPendingSessionOpen("a")!;
     const session = { id: request.sessionId, agent: "claude-code" } as never;
-    const project = { id: "a", path: "" } as never;
     const terminals = {
       activeFor: vi.fn(() => null),
       activeSessionIdFor: vi.fn(() => null),
       rehydrate: vi.fn(),
       toggle: vi.fn(),
     };
-    showRequestedSession({ terminals, scopeKey: "a", project, session, coreId: request.coreId });
-    expect(terminals.toggle).toHaveBeenCalledWith(project, session, { coreId: "a" });
+    showRequestedSession({ terminals, session, coreId: request.coreId });
+    expect(terminals.toggle).toHaveBeenCalledWith("a", session);
     // The prompt is still staged for that spawn.
     expect(takePendingInitialInput(frame.sessionId)).toBe("fix the build");
   });

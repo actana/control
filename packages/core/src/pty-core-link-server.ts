@@ -80,7 +80,7 @@ import { CoreSessionWriter } from "./core-session-writer";
 import { SessionLockTable } from "./session-lock-table";
 import { sessionFrameFieldRefusal, spawnFieldRefusal } from "./request-fields";
 import type { CoreSessionMutation } from "@actana/shared/core-mutations";
-import { toWireSessionRows, type CoreSessionRow } from "@actana/shared/core-query";
+import type { CoreSessionRow } from "@actana/shared/core-query";
 import type { CoreSharedCapability } from "./shared-capability";
 
 /**
@@ -652,6 +652,22 @@ function namesItsSession(frame: CoreLinkRequestFrame): boolean {
  * streams the tail as `event` frames, sends an `eventsReplayed` marker, and a
  * per-connection poll loop pushes new events live once caught up.
  */
+/** Frames of a 0.4.x client that the Core no longer handles (ADR 0041 D1, D27). */
+const RETIRED_FRAME_TYPES: ReadonlySet<string> = new Set(["projectsList", "projectsMutate"]);
+
+/** What can be read off text the codec refused: its `reqId` and `type`, when it is JSON that carries them. */
+function readRefusedFrame(data: string): { reqId?: string; type?: string } {
+  try {
+    const parsed = JSON.parse(data) as { reqId?: unknown; type?: unknown } | null;
+    return {
+      ...(typeof parsed?.reqId === "string" && parsed.reqId !== "" ? { reqId: parsed.reqId } : {}),
+      ...(typeof parsed?.type === "string" ? { type: parsed.type } : {}),
+    };
+  } catch {
+    return {};
+  }
+}
+
 export class PtyCoreLinkServer {
   private readonly server: WebSocketServerLike;
   private readonly eventLog: EventLogPort | null;
@@ -1226,7 +1242,17 @@ export class PtyCoreLinkServer {
     const data = typeof raw === "string" ? raw : String(raw);
     const frame = parseCoreLinkRequestFrame(data);
     if (!frame) {
-      this.send(ws, { type: "error", message: "invalid frame" });
+      // The codec refuses a frame it does not know. The project frames of a 0.4.x
+      // client are among them, since the SDK dropped them, and ADR 0041 D27 says a
+      // retired frame is refused by name so that client learns why. Carry the
+      // caller's reqId when there is one, so its request settles instead of
+      // timing out.
+      const { reqId, type } = readRefusedFrame(data);
+      this.send(ws, {
+        type: "error",
+        ...(reqId === undefined ? {} : { reqId }),
+        message: type !== undefined && RETIRED_FRAME_TYPES.has(type) ? `unhandled frame type: ${type}` : "invalid frame",
+      });
       return;
     }
     // ─── Bearer auth gate (issue 04) ───
@@ -1731,7 +1757,7 @@ export class PtyCoreLinkServer {
         this.send(ws, {
           type: "sessionRowsListResult",
           reqId: frame.reqId,
-          sessions: toWireSessionRows(sessions),
+          sessions,
           archivedCount,
         });
         return;
@@ -1748,7 +1774,7 @@ export class PtyCoreLinkServer {
         this.send(ws, {
           type: "archivedSessionRowsListResult",
           reqId: frame.reqId,
-          sessions: toWireSessionRows(sessions),
+          sessions,
         });
         return;
       }
@@ -1781,7 +1807,7 @@ export class PtyCoreLinkServer {
           this.send(ws, {
             type: "sessionsMutateResult",
             reqId: frame.reqId,
-            session: stamped ? (toWireSessionRows([stamped])[0] ?? null) : null,
+            session: stamped ?? null,
           });
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);

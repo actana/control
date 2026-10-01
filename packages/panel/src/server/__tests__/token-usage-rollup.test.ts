@@ -40,17 +40,6 @@ function rawTotals(): Totals {
   return r;
 }
 
-function rawPerProject() {
-  return sqlite
-    .prepare(
-      `SELECT project_id AS projectId,
-         SUM(input_tokens) AS inputTokens, SUM(output_tokens) AS outputTokens,
-         SUM(cache_creation_tokens) AS cacheCreationTokens, SUM(cache_read_tokens) AS cacheReadTokens
-       FROM token_usage GROUP BY project_id ORDER BY project_id`,
-    )
-    .all() as (Totals & { projectId: string })[];
-}
-
 function rawPerSession() {
   return sqlite
     .prepare(
@@ -78,7 +67,6 @@ function rawPerDaySince(sinceMs: number) {
 function insertRawRow(row: {
   uuid: string;
   sessionId: string;
-  projectId: string;
   claudeSessionId: string;
   ts: number;
   i: number;
@@ -89,14 +77,13 @@ function insertRawRow(row: {
   sqlite
     .prepare(
       `INSERT INTO token_usage
-         (id, session_id, project_id, claude_session_id, message_uuid, model,
+         (id, session_id, claude_session_id, message_uuid, model,
           input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens, ts)
-       VALUES (?, ?, ?, ?, ?, 'm', ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, 'm', ?, ?, ?, ?, ?)`,
     )
     .run(
       `tu-${row.uuid}`,
       row.sessionId,
-      row.projectId,
       row.claudeSessionId,
       row.uuid,
       row.i,
@@ -110,25 +97,6 @@ function insertRawRow(row: {
 function assertRollupMatchesRaw() {
   // Totals.
   expect(repo.selectTotals()).toEqual(rawTotals());
-
-  // Per project (compare token sums keyed by projectId).
-  const gotProj = new Map(
-    repo.selectTotalsPerProject().map((p) => [p.projectId, {
-      inputTokens: p.inputTokens,
-      outputTokens: p.outputTokens,
-      cacheCreationTokens: p.cacheCreationTokens,
-      cacheReadTokens: p.cacheReadTokens,
-    }]),
-  );
-  for (const raw of rawPerProject()) {
-    expect(gotProj.get(raw.projectId)).toEqual({
-      inputTokens: raw.inputTokens,
-      outputTokens: raw.outputTokens,
-      cacheCreationTokens: raw.cacheCreationTokens,
-      cacheReadTokens: raw.cacheReadTokens,
-    });
-  }
-  expect(gotProj.size).toBe(rawPerProject().length);
 
   // Per session (seeded well under the 200 cap, so all sessions appear).
   const gotSess = new Map(
@@ -172,19 +140,13 @@ describe("token usage rollup", () => {
     sqlite = client.getSqlite();
 
     const now = Date.now();
-    sqlite
-      .prepare(
-        `INSERT INTO projects (id, name, path, icon, icon_color, pinned, remember_agent_settings, saved_skip_permissions, saved_bare_session, created_at, updated_at)
-         VALUES ('p1','P1','/tmp/p1','f','#111',0,0,0,0,?,?), ('p2','P2','/tmp/p2','f','#222',0,0,0,0,?,?)`,
-      )
-      .run(now, now, now, now);
-    for (const [tid, pid] of [["t1", "p1"], ["t2", "p1"], ["t3", "p2"]] as const) {
+    for (const tid of ["t1", "t2", "t3"]) {
       sqlite
         .prepare(
-          `INSERT INTO sessions (id, project_id, title, agent, status, branch, preview, lines, archived, claude_session_id, claude_skip_permissions, claude_bare_session, created_at, updated_at)
-           VALUES (?, ?, ?, 'claude-code','ready','main','',0,0,?,0,0,?,?)`,
+          `INSERT INTO sessions (id, title, agent, status, branch, preview, lines, archived, claude_session_id, claude_skip_permissions, claude_bare_session, created_at, updated_at)
+           VALUES (?, ?, 'claude-code','ready','main','',0,0,?,0,0,?,?)`,
         )
-        .run(tid, pid, `Session ${tid}`, `sess-${tid}`, now, now);
+        .run(tid, `Session ${tid}`, `sess-${tid}`, now, now);
     }
   });
 
@@ -198,12 +160,12 @@ describe("token usage rollup", () => {
     }
   });
 
-  it("backfill reproduces the raw aggregate across days, projects, and sessions", () => {
+  it("backfill reproduces the raw aggregate across days and sessions", () => {
     // Seed raw rows directly (pre-rollup state) spanning three local days.
-    insertRawRow({ uuid: "a1", sessionId: "t1", projectId: "p1", claudeSessionId: "sess-t1", ts: DAY0, i: 100, o: 200, cc: 10, cr: 20 });
-    insertRawRow({ uuid: "a2", sessionId: "t1", projectId: "p1", claudeSessionId: "sess-t1", ts: DAY0 + MS_PER_DAY, i: 5, o: 6, cc: 7, cr: 8 });
-    insertRawRow({ uuid: "a3", sessionId: "t2", projectId: "p1", claudeSessionId: "sess-t2", ts: DAY0, i: 1, o: 2, cc: 3, cr: 4 });
-    insertRawRow({ uuid: "a4", sessionId: "t3", projectId: "p2", claudeSessionId: "sess-t3", ts: DAY0 + 2 * MS_PER_DAY, i: 9, o: 8, cc: 7, cr: 6 });
+    insertRawRow({ uuid: "a1", sessionId: "t1", claudeSessionId: "sess-t1", ts: DAY0, i: 100, o: 200, cc: 10, cr: 20 });
+    insertRawRow({ uuid: "a2", sessionId: "t1", claudeSessionId: "sess-t1", ts: DAY0 + MS_PER_DAY, i: 5, o: 6, cc: 7, cr: 8 });
+    insertRawRow({ uuid: "a3", sessionId: "t2", claudeSessionId: "sess-t2", ts: DAY0, i: 1, o: 2, cc: 3, cr: 4 });
+    insertRawRow({ uuid: "a4", sessionId: "t3", claudeSessionId: "sess-t3", ts: DAY0 + 2 * MS_PER_DAY, i: 9, o: 8, cc: 7, cr: 6 });
 
     // Rollup is empty; backfill from raw.
     client.backfillTokenUsageRollup(sqlite);
@@ -220,10 +182,10 @@ describe("token usage rollup", () => {
     const inserted = repo.ingestTokenUsageTx((commit) => {
       commit({
         rows: [
-          { id: "tu-b1", sessionId: "t1", projectId: "p1", claudeSessionId: "sess-t1", messageUuid: "b1", model: "m", inputTokens: 50, outputTokens: 60, cacheCreationTokens: 70, cacheReadTokens: 80, ts: DAY0 },
-          { id: "tu-b2", sessionId: "t3", projectId: "p2", claudeSessionId: "sess-t3", messageUuid: "b2", model: "m", inputTokens: 11, outputTokens: 12, cacheCreationTokens: 13, cacheReadTokens: 14, ts: DAY0 + 5 * MS_PER_DAY },
+          { id: "tu-b1", sessionId: "t1", claudeSessionId: "sess-t1", messageUuid: "b1", model: "m", inputTokens: 50, outputTokens: 60, cacheCreationTokens: 70, cacheReadTokens: 80, ts: DAY0 },
+          { id: "tu-b2", sessionId: "t3", claudeSessionId: "sess-t3", messageUuid: "b2", model: "m", inputTokens: 11, outputTokens: 12, cacheCreationTokens: 13, cacheReadTokens: 14, ts: DAY0 + 5 * MS_PER_DAY },
         ],
-        sessionOffset: { claudeSessionId: "sess-t1", sessionId: "t1", projectId: "p1", byteOffset: 10 },
+        sessionOffset: { claudeSessionId: "sess-t1", sessionId: "t1", byteOffset: 10 },
       });
     }, Date.now());
     expect(inserted).toBe(2);
@@ -233,9 +195,9 @@ describe("token usage rollup", () => {
     const insertedAgain = repo.ingestTokenUsageTx((commit) => {
       commit({
         rows: [
-          { id: "tu-b1", sessionId: "t1", projectId: "p1", claudeSessionId: "sess-t1", messageUuid: "b1", model: "m", inputTokens: 50, outputTokens: 60, cacheCreationTokens: 70, cacheReadTokens: 80, ts: DAY0 },
+          { id: "tu-b1", sessionId: "t1", claudeSessionId: "sess-t1", messageUuid: "b1", model: "m", inputTokens: 50, outputTokens: 60, cacheCreationTokens: 70, cacheReadTokens: 80, ts: DAY0 },
         ],
-        sessionOffset: { claudeSessionId: "sess-t1", sessionId: "t1", projectId: "p1", byteOffset: 20 },
+        sessionOffset: { claudeSessionId: "sess-t1", sessionId: "t1", byteOffset: 20 },
       });
     }, Date.now());
     expect(insertedAgain).toBe(0);
@@ -253,7 +215,7 @@ describe("token usage rollup", () => {
   });
 
   it("folds out-of-order ingests into the same day bucket with last_ts = max(ts)", () => {
-    // Two ingests into the SAME (project, session, local-day) bucket, the newer ts
+    // Two ingests into the SAME (session, local-day) bucket, the newer ts
     // committed first and the older ts second, must accumulate tokens and keep
     // last_ts at the maximum — exercising the `last_ts = MAX(...)` upsert branch.
     const day = DAY0 + 10 * MS_PER_DAY;
@@ -262,38 +224,27 @@ describe("token usage rollup", () => {
     repo.ingestTokenUsageTx((commit) => {
       commit({
         rows: [
-          { id: "tu-o1", sessionId: "t2", projectId: "p1", claudeSessionId: "sess-t2", messageUuid: "o1", model: "m", inputTokens: 3, outputTokens: 4, cacheCreationTokens: 5, cacheReadTokens: 6, ts: laterTs },
+          { id: "tu-o1", sessionId: "t2", claudeSessionId: "sess-t2", messageUuid: "o1", model: "m", inputTokens: 3, outputTokens: 4, cacheCreationTokens: 5, cacheReadTokens: 6, ts: laterTs },
         ],
-        sessionOffset: { claudeSessionId: "sess-t2", sessionId: "t2", projectId: "p1", byteOffset: 30 },
+        sessionOffset: { claudeSessionId: "sess-t2", sessionId: "t2", byteOffset: 30 },
       });
     }, Date.now());
     repo.ingestTokenUsageTx((commit) => {
       commit({
         rows: [
-          { id: "tu-o2", sessionId: "t2", projectId: "p1", claudeSessionId: "sess-t2", messageUuid: "o2", model: "m", inputTokens: 1, outputTokens: 1, cacheCreationTokens: 1, cacheReadTokens: 1, ts: earlierTs },
+          { id: "tu-o2", sessionId: "t2", claudeSessionId: "sess-t2", messageUuid: "o2", model: "m", inputTokens: 1, outputTokens: 1, cacheCreationTokens: 1, cacheReadTokens: 1, ts: earlierTs },
         ],
-        sessionOffset: { claudeSessionId: "sess-t2", sessionId: "t2", projectId: "p1", byteOffset: 40 },
+        sessionOffset: { claudeSessionId: "sess-t2", sessionId: "t2", byteOffset: 40 },
       });
     }, Date.now());
 
     const bucket = sqlite
       .prepare(
-        "SELECT input_tokens AS i, last_ts AS lastTs FROM token_usage_rollup WHERE project_id = 'p1' AND session_id = 't2' AND day = strftime('%Y-%m-%d', ? / 1000, 'unixepoch', 'localtime')",
+        "SELECT input_tokens AS i, last_ts AS lastTs FROM token_usage_rollup WHERE session_id = 't2' AND day = strftime('%Y-%m-%d', ? / 1000, 'unixepoch', 'localtime')",
       )
       .get(laterTs) as { i: number; lastTs: number };
     expect(bucket.i).toBe(4); // 3 + 1 accumulated regardless of ingest order
     expect(bucket.lastTs).toBe(laterTs); // max, not the last-committed (earlier) ts
-    assertRollupMatchesRaw();
-  });
-
-  it("keeps the rollup equal to raw after a whole-project cascade delete", () => {
-    // Deleting a project cascades to its sessions, their token_usage rows, and their
-    // rollup rows (the rollup's project_id/session_id FKs are both ON DELETE CASCADE).
-    sqlite.prepare("DELETE FROM projects WHERE id = 'p2'").run();
-    const rollupForP2 = sqlite
-      .prepare("SELECT COUNT(*) AS n FROM token_usage_rollup WHERE project_id = 'p2'")
-      .get() as { n: number };
-    expect(rollupForP2.n).toBe(0);
     assertRollupMatchesRaw();
   });
 });

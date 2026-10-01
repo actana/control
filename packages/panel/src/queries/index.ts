@@ -1,36 +1,32 @@
 import { useEffect } from "react";
 import { hashKey, queryOptions, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "~/lib/api";
-import { retainProjectScope, watchProjectScope } from "~/lib/visible-project-scope";
+import { retainCoreScope, watchCoreScope } from "~/lib/visible-core-scope";
 import { setHookToken } from "~/lib/hook-token";
 import { syncDefaultRuntimeDefaults } from "~/lib/default-model-store";
 import { getPanelBridge } from "~/lib/panel-bridge";
-import {
-  readCachedGroups,
-  readCachedProjects,
-  readCachedSettings,
-} from "~/lib/shell-query-cache";
+import { readCachedSettings } from "~/lib/shell-query-cache";
 import type { CoreLinkSessionRow } from "@actana/shared/sdk-link-frames";
 import type { Session } from "~/db/schema";
 import type { Harness } from "@actana/shared/domain";
-import { projectRowFromSnapshot } from "~/shared/projects";
 
 export const queryKeys = {
-  projects: ["projects"] as const,
-  project: (id: string) => ["projects", id] as const,
-  groups: ["groups"] as const,
-  sessions: (projectId: string) => ["projects", projectId, "sessions"] as const,
-  // Deliberately outside the `["projects", projectId, …]` tree: these two
-  // buckets belong to the Archived view, and folding them under the project
-  // key would sweep them into every `invalidateProject()` — including the
-  // count, which has no fetcher of its own to answer with (see
-  // `useCoreArchivedSessionCount`).
-  coreArchivedSessions: (projectId: string, coreId: string) =>
-    ["core-archived-sessions", coreId, projectId] as const,
+  /** Prefix over everything cached per Core, for a blanket invalidation. */
+  coresAll: ["cores"] as const,
+  /** A Core's active Sessions. A Session belongs to a Core and nothing narrower (ADR 0041 D1). */
+  sessions: (coreId: string) => ["cores", coreId, "sessions"] as const,
+  // Deliberately outside the `["cores", coreId, …]` tree: these two buckets
+  // belong to the Archived view, and folding them under the sessions key would
+  // sweep them into every sessions invalidation — including the count, which
+  // has no fetcher of its own to answer with (see `useCoreArchivedSessionCount`).
+  coreArchivedSessions: (coreId: string) => ["core-archived-sessions", coreId] as const,
   /** Prefix over every Core's archived bucket, for a blanket invalidation. */
   coreArchivedSessionsAll: ["core-archived-sessions"] as const,
-  coreArchivedSessionCount: (projectId: string, coreId: string) =>
-    ["core-archived-session-count", coreId, projectId] as const,
+  coreArchivedSessionCount: (coreId: string) => ["core-archived-session-count", coreId] as const,
+  /** The Tasks board: every Task the owner has, across Cores. */
+  tasks: ["tasks"] as const,
+  task: (id: string) => ["tasks", id] as const,
+  coreAgents: (coreId: string) => ["core-agents", coreId] as const,
   settings: ["settings"] as const,
   hookToken: ["hook-token"] as const,
   keybindings: ["keybindings"] as const,
@@ -43,7 +39,7 @@ export const queryKeys = {
 };
 
 /**
- * What every project-scoped read asks of react-query, on top of the client
+ * What every Core-scoped read asks of react-query, on top of the client
  * defaults in `router.tsx`.
  *
  * The defaults are `staleTime: 30_000` with `refetchOnWindowFocus: false`
@@ -66,67 +62,16 @@ export const queryKeys = {
  * asked for this same list on every `pty:` event while a Session runs (see
  * `useCoreLiveQueries`).
  */
-const PROJECT_SCOPED_FRESHNESS = {
+const CORE_SCOPED_FRESHNESS = {
   refetchOnMount: "always",
   refetchOnWindowFocus: "always",
 } as const;
 
-export const projectsQueryOptions = () =>
-  queryOptions({
-    queryKey: queryKeys.projects,
-    queryFn: async () => (await api.listProjects()).projects,
-    placeholderData: readCachedProjects,
-  });
-
-export const projectQueryOptions = (id: string, opts?: { coreId?: string | null }) => {
-  const coreId = opts?.coreId ?? null;
-  return queryOptions({
-    ...PROJECT_SCOPED_FRESHNESS,
-    // A Core's rows get their own cache bucket; the Panel's own rows keep the
-    // untagged key so existing invalidations don't need to thread coreId
-    // through.
-    queryKey: coreId
-      ? ([...queryKeys.project(id), "core", coreId] as const)
-      : queryKeys.project(id),
-    queryFn: async () => {
-      if (coreId) {
-        // A Core-owned project id doesn't exist in the Panel's DB, so
-        // `api.getProject` would 404 and error the header. Ask the Core:
-        // `listProjects` gives us every project on it and we pick the one
-        // whose id matches. There is no `getProject` on the panel link — a
-        // small list is cheap and stays consistent with list-based
-        // invalidation.
-        const bridge = getPanelBridge();
-        if (!bridge) throw new Error("panel link unavailable");
-        const projects = await bridge.listProjects(coreId);
-        const snapshot = projects.find((p) => p.projectId === id);
-        if (!snapshot) throw new Error(`project ${id} not found on core ${coreId}`);
-        return projectRowFromSnapshot(snapshot);
-      }
-      return (await api.getProject(id)).project;
-    },
-  });
-};
-
-export const groupsQueryOptions = () =>
-  queryOptions({
-    queryKey: queryKeys.groups,
-    queryFn: async () => (await api.listGroups()).groups,
-    placeholderData: readCachedGroups,
-  });
-
-// Cache key for a session list bucket, coreId-aware. The Panel's own rows stay
-// untagged so existing invalidations still match; a Core's rows live in a
-// distinct `[..., "core", coreId]` bucket. Used by both the query (see
-// `sessionsQueryOptions`) and the optimistic-session helpers so writes land in the
-// same bucket the query reads from.
-export function sessionsCacheKey(
-  projectId: string,
-  coreId?: string | null,
-) {
-  const base = queryKeys.sessions(projectId);
-  if (!coreId) return base;
-  return [...base, "core", coreId] as const;
+// Cache key for a Core's session list bucket. Used by both the query (see
+// `sessionsQueryOptions`) and the optimistic-session helpers so writes land in
+// the same bucket the query reads from.
+export function sessionsCacheKey(coreId: string) {
+  return queryKeys.sessions(coreId);
 }
 
 // Flattened core-link snapshot → the UI's `Session` row. A Core's session only
@@ -134,13 +79,8 @@ export function sessionsCacheKey(
 // typed on its own DB shape. Fields the snapshot doesn't carry
 // get safe defaults; the Core stays authoritative for the ones it does.
 export function remoteSessionFromSnapshot(snapshot: CoreLinkSessionRow): Session {
-  const projectId =
-    "projectId" in snapshot && typeof (snapshot as { projectId?: unknown }).projectId === "string"
-      ? (snapshot as { projectId: string }).projectId
-      : "";
   return {
     id: snapshot.sessionId,
-    projectId,
     title: snapshot.title,
     // The Core owns this flag (issue 84). Synthesizing `false` told the card
     // that every Core-owned Session was un-renamed, so an operator's rename
@@ -162,75 +102,61 @@ export function remoteSessionFromSnapshot(snapshot: CoreLinkSessionRow): Session
   };
 }
 
-export const sessionsQueryOptions = (
-  projectId: string,
-  opts?: { coreId?: string | null },
-) => {
-  const coreId = opts?.coreId ?? null;
-  return queryOptions({
-    ...PROJECT_SCOPED_FRESHNESS,
-    // See `sessionsCacheKey` — same rule, shared with the optimistic-session
-    // helpers so writes land in the same bucket the query reads from.
-    queryKey: sessionsCacheKey(projectId, coreId),
+export const sessionsQueryOptions = (coreId: string) =>
+  queryOptions({
+    ...CORE_SCOPED_FRESHNESS,
+    // See `sessionsCacheKey` — shared with the optimistic-session helpers so
+    // writes land in the same bucket the query reads from.
+    queryKey: sessionsCacheKey(coreId),
+    // `useSessions("")` is how a caller asks before it has a Core at all.
+    enabled: !!coreId,
     queryFn: async ({ client }) => {
-      // Stamped before the read, asked after it: an uncached pin can answer
+      // Stamped before the read, asked after it: an uncached Core can answer
       // long after the operator clicked away from it (issue 381). A visit
       // stamp, not a visibility check — during A → B → A → B this read may be
       // the one that was cancelled on the way out, landing while B is on
       // screen again and looking current.
-      const readIsStale = watchProjectScope(projectId, coreId);
-      if (coreId) {
-        // Core session loading over the panel link (ADR-0005): the
-        // Core on `coreId` owns the rows, so the query goes down that
-        // Core's core-link and its flattened snapshots map back into the UI's
-        // `Session` shape. An unreachable Core surfaces the router's error as a
-        // normal query error — the panel already knows how to render that.
-        const bridge = getPanelBridge();
-        if (!bridge) return [];
-        const { sessions, archivedCount } = await bridge.listSessionRows(coreId, projectId);
-        // The archived count rides this answer (ADR 0019) but belongs to a
-        // different consumer — the Archived tab, which needs it while the
-        // active view is showing. Park it in its own bucket rather than
-        // widening this list's shape for every reader of it.
-        //
-        // Not parked by a read whose visit is over. The list itself is safe
-        // without this — react-query drops a cancelled fetch's result — but
-        // this write is the fetcher's own, so nothing else stops it, and the
-        // bucket it writes to has no fetcher to correct it
-        // (`useCoreArchivedSessionCount` is `enabled: false`). Left ungated, an
-        // abandoned read landing after the read that replaced it would leave
-        // the Archived tab labelled from rows the list no longer holds.
-        if (!readIsStale()) {
-          client.setQueryData(queryKeys.coreArchivedSessionCount(projectId, coreId), archivedCount);
-        }
-        return sessions.map(remoteSessionFromSnapshot);
+      const readIsStale = watchCoreScope(coreId);
+      // Core session loading over the panel link (ADR-0005): the Core on
+      // `coreId` owns the rows, so the query goes down that Core's core-link and
+      // its flattened snapshots map back into the UI's `Session` shape. An
+      // unreachable Core surfaces the router's error as a normal query error —
+      // the panel already knows how to render that.
+      const bridge = getPanelBridge();
+      if (!bridge) return [];
+      const { sessions, archivedCount } = await bridge.listSessionRows(coreId);
+      // The archived count rides this answer (ADR 0019) but belongs to a
+      // different consumer — the Archived tab, which needs it while the active
+      // view is showing. Park it in its own bucket rather than widening this
+      // list's shape for every reader of it.
+      //
+      // Not parked by a read whose visit is over. The list itself is safe
+      // without this — react-query drops a cancelled fetch's result — but this
+      // write is the fetcher's own, so nothing else stops it, and the bucket it
+      // writes to has no fetcher to correct it (`useCoreArchivedSessionCount` is
+      // `enabled: false`). Left ungated, an abandoned read landing after the
+      // read that replaced it would leave the Archived tab labelled from rows
+      // the list no longer holds.
+      if (!readIsStale()) {
+        client.setQueryData(queryKeys.coreArchivedSessionCount(coreId), archivedCount);
       }
-      // A Panel-owned project's list carries its archived rows already, so
-      // the Archived view derives both count and rows from it — no second
-      // read path, and nothing to park.
-      return (await api.listSessionRows(projectId)).sessions;
+      return sessions.map(remoteSessionFromSnapshot);
     },
   });
-};
 
 /**
- * A Core project's archived Sessions — the Archived view's own read path
- * (ADR 0019). Fetched over the dedicated `archivedSessionRowsList` frame, and only
- * while `enabled` (the view being open), so opening a project pulls no
- * archived rows. Panel-owned projects never use this: their archived rows are
- * already in the session list.
+ * A Core's archived Sessions — the Archived view's own read path (ADR 0019).
+ * Fetched over the dedicated `archivedSessionRowsList` frame, and only while
+ * `enabled` (the view being open), so opening a Core pulls no archived rows.
  */
-export const archivedSessionsQueryOptions = (
-  projectId: string,
-  opts: { coreId: string; enabled: boolean },
-) =>
+export const archivedSessionsQueryOptions = (coreId: string, opts: { enabled: boolean }) =>
   queryOptions({
-    ...PROJECT_SCOPED_FRESHNESS,
-    queryKey: queryKeys.coreArchivedSessions(projectId, opts.coreId),
+    ...CORE_SCOPED_FRESHNESS,
+    queryKey: queryKeys.coreArchivedSessions(coreId),
     queryFn: async () => {
       const bridge = getPanelBridge();
       if (!bridge) return [];
-      const sessions = await bridge.listArchivedSessions(opts.coreId, projectId);
+      const sessions = await bridge.listArchivedSessions(coreId);
       return sessions.map(remoteSessionFromSnapshot);
     },
     enabled: opts.enabled,
@@ -361,43 +287,39 @@ export const updateCheckQueryOptions = () =>
   });
 
 /**
- * Tie one project-scoped query to the project+core that is actually on screen.
+ * Tie one Core-scoped query to the Core that is actually on screen.
  *
- * Reading an uncached pin is slower than clicking away from it. During
- * A then B then A, B's project and session reads are still in flight when the URL
- * is already back on A, and what they were going to materialize — B's
- * sessions, B's archived count, the focus that follows them — would land on
- * A's URL (issue 381).
+ * Reading an uncached Core is slower than clicking away from it. During
+ * A then B then A, B's session reads are still in flight when the URL is
+ * already back on A, and what they were going to materialize — B's sessions,
+ * B's archived count, the focus that follows them — would land on A's URL
+ * (issue 381).
  *
  * While the query is being read by something on screen the scope is retained,
- * so a cold pin the operator stays on loads exactly as before — the 30s
+ * so a cold Core the operator stays on loads exactly as before — the 30s
  * `staleTime` is untouched, and nothing here makes a read start any later.
  * When the last reader of a scope goes away, an *in-flight* fetch for it is
  * cancelled: react-query reverts the query to the state it had before the
  * fetch, and the answer, whenever it turns up, is discarded rather than
- * written. Coming back to that pin later simply reads it again.
+ * written. Coming back to that Core later simply reads it again.
  *
  * Only a fetch in flight is cancelled. A settled query keeps its data, so
- * leaving a project never throws away rows the operator would see on return.
+ * leaving a Core never throws away rows the operator would see on return.
  *
  * Cancelling is not the whole guard, because a cancelled fetch's promise still
  * resolves — the panel link has nothing to abort — and its fetcher runs to the
  * end. Anything a fetcher writes for itself is guarded by
- * {@link watchProjectScope} instead; see `sessionsQueryOptions`.
+ * {@link watchCoreScope} instead; see `sessionsQueryOptions`.
  */
-function useScopedToVisibleProject(
-  queryKey: readonly unknown[],
-  projectId: string,
-  coreId: string | null,
-): void {
+function useScopedToVisibleCore(queryKey: readonly unknown[], coreId: string): void {
   const queryClient = useQueryClient();
   // The key is rebuilt every render; its hash is what actually changes.
   const keyHash = hashKey(queryKey);
   useEffect(() => {
     // `useSessions("")` is how the grid's hidden-session bar asks before it has a
-    // scope at all — no project, nothing to keep on screen.
-    if (!projectId) return;
-    return retainProjectScope(projectId, coreId, {
+    // scope at all — no Core, nothing to keep on screen.
+    if (!coreId) return;
+    return retainCoreScope(coreId, {
       // Two readers of one key (the board's list and a pane's row) are one
       // thing to cancel, and a pane remounting through a visit must not leave
       // another copy of this closure behind.
@@ -413,42 +335,51 @@ function useScopedToVisibleProject(
     });
     // `keyHash` stands in for `queryKey` in the deps: the key is rebuilt every
     // render, its hash only changes when the key really does.
-  }, [queryClient, projectId, coreId, keyHash]);
+  }, [queryClient, coreId, keyHash]);
 }
 
-export const useProjects = () => useQuery(projectsQueryOptions());
-export const useProject = (id: string, opts?: { coreId?: string | null }) => {
-  const options = projectQueryOptions(id, opts);
-  useScopedToVisibleProject(options.queryKey, id, opts?.coreId ?? null);
+// Tasks move on the server (the dispatcher claims, a result file finishes), and
+// nothing pushes that to the browser, so the board and an open Task poll.
+const TASKS_POLL_MS = 5_000;
+
+export const tasksQueryOptions = () =>
+  queryOptions({
+    queryKey: queryKeys.tasks,
+    queryFn: async () => (await api.listTasks()).tasks,
+    refetchInterval: TASKS_POLL_MS,
+    refetchOnMount: "always",
+  });
+
+export const taskQueryOptions = (id: string) =>
+  queryOptions({
+    queryKey: queryKeys.task(id),
+    queryFn: () => api.getTask(id),
+    refetchInterval: TASKS_POLL_MS,
+    refetchOnMount: "always",
+  });
+
+export const coreAgentsQueryOptions = (coreId: string) =>
+  queryOptions({
+    queryKey: queryKeys.coreAgents(coreId),
+    queryFn: async () => (await api.listCoreAgents(coreId)).agents,
+    enabled: !!coreId,
+  });
+
+export const useTasks = () => useQuery(tasksQueryOptions());
+export const useTask = (id: string) => useQuery(taskQueryOptions(id));
+export const useCoreAgents = (coreId: string) => useQuery(coreAgentsQueryOptions(coreId));
+
+export const useSessions = (coreId: string) => {
+  const options = sessionsQueryOptions(coreId);
+  useScopedToVisibleCore(options.queryKey, coreId);
   return useQuery(options);
 };
-export const useGroups = () => useQuery(groupsQueryOptions());
-export const useSessions = (
-  projectId: string,
-  opts?: { coreId?: string | null },
-) => {
-  const options = sessionsQueryOptions(projectId, opts);
-  useScopedToVisibleProject(options.queryKey, projectId, opts?.coreId ?? null);
-  return useQuery(options);
-};
-/**
- * A Core project's archived Sessions. A null `coreId` is a Panel-owned
- * project, which sources them from its own session list — the query stays
- * disabled and never reaches the panel link.
- */
-export const useArchivedSessions = (
-  projectId: string,
-  opts: { coreId: string | null; enabled: boolean },
-) =>
-  useQuery(
-    archivedSessionsQueryOptions(projectId, {
-      coreId: opts.coreId ?? "",
-      enabled: !!opts.coreId && opts.enabled,
-    }),
-  );
+/** A Core's archived Sessions, read only while `enabled` (the Archived view is open). */
+export const useArchivedSessions = (coreId: string, opts: { enabled: boolean }) =>
+  useQuery(archivedSessionsQueryOptions(coreId, { enabled: !!coreId && opts.enabled }));
 
 /**
- * How many archived Sessions a Core project holds.
+ * How many archived Sessions a Core holds.
  *
  * The number arrives on the `sessionRowsList` answer (ADR 0019) and is parked in
  * this bucket by {@link sessionsQueryOptions}' fetcher, because its consumers —
@@ -456,12 +387,11 @@ export const useArchivedSessions = (
  * auto-exit effect, the delete-confirm dialog — all read it while the *active*
  * view is showing. So this query never fetches: `enabled: false` leaves the
  * bucket to its writer, and the subscription is what re-renders the tab when
- * the number moves. Zero until the first session list lands, and for a
- * Panel-owned project (which counts its own rows instead).
+ * the number moves. Zero until the first session list lands.
  */
-export const useCoreArchivedSessionCount = (projectId: string, coreId: string | null): number =>
+export const useCoreArchivedSessionCount = (coreId: string): number =>
   useQuery({
-    queryKey: queryKeys.coreArchivedSessionCount(projectId, coreId ?? ""),
+    queryKey: queryKeys.coreArchivedSessionCount(coreId),
     queryFn: () => 0,
     enabled: false,
     initialData: 0,
@@ -472,21 +402,15 @@ export const useCoreArchivedSessionCount = (projectId: string, coreId: string | 
  * identity stable across list refetches, so a consumer (e.g. a terminal pane
  * header) re-renders only when ITS session changes — not on every session:* event.
  *
- * `coreId` names the bucket, exactly as it does for {@link useSessions}: a Core's
- * rows live in the tagged bucket and the Panel's own in the untagged one, and
- * a pane that asked the wrong one read a list that was never going to arrive.
+ * It reads the same bucket {@link useSessions} does; a pane that asked another
+ * one read a list that was never going to arrive.
  */
-export const useSession = (
-  projectId: string,
-  sessionId: string,
-  opts?: { coreId?: string | null },
-) => {
-  const coreId = opts?.coreId ?? null;
-  const options = sessionsQueryOptions(projectId, { coreId });
+export const useSession = (coreId: string, sessionId: string) => {
+  const options = sessionsQueryOptions(coreId);
   // A pane reading one row is a live reader of the same bucket the board
   // reads, so it holds the scope open too — otherwise the board unmounting
   // would cancel a fetch this pane is still waiting on.
-  useScopedToVisibleProject(options.queryKey, projectId, coreId);
+  useScopedToVisibleCore(options.queryKey, coreId);
   return useQuery({
     ...options,
     select: (sessions) => sessions.find((t) => t.id === sessionId),

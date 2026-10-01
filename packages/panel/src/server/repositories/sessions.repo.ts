@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
+import { eq, inArray, sql } from "drizzle-orm";
 import { getDb } from "~/db/client";
 import { sessions } from "~/db/schema";
 import type { Session } from "~/db/schema";
@@ -15,15 +15,6 @@ export function findActiveLocalSessions(): Session[] {
     .select()
     .from(sessions)
     .where(inArray(sessions.status, ["running", "needs-input"]))
-    .all();
-}
-
-export function findSessionsByProjectId(projectId: string): Session[] {
-  return getDb()
-    .select()
-    .from(sessions)
-    .where(eq(sessions.projectId, projectId))
-    .orderBy(desc(sessions.createdAt))
     .all();
 }
 
@@ -60,7 +51,6 @@ export function deleteSessionRow(id: string): number {
 
 export type SessionSessionRef = {
   sessionId: string;
-  projectId: string;
   claudeSessionId: string;
 };
 
@@ -68,7 +58,6 @@ export function findSessionsWithClaudeSessionId(): SessionSessionRef[] {
   const rows = getDb()
     .select({
       sessionId: sessions.id,
-      projectId: sessions.projectId,
       claudeSessionId: sessions.claudeSessionId,
     })
     .from(sessions)
@@ -76,7 +65,6 @@ export function findSessionsWithClaudeSessionId(): SessionSessionRef[] {
     .all();
   return rows.map((r) => ({
     sessionId: r.sessionId,
-    projectId: r.projectId,
     claudeSessionId: r.claudeSessionId!,
   }));
 }

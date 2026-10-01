@@ -14,9 +14,8 @@ import { Z_INDEX } from "~/lib/z-index";
 /**
  * A miniature chip that renders the current session icon and, on click, opens
  * a portal-anchored popover for picking a new one. The mutation is routed
- * through the coreId-parameterized {@link mutateSessionForCore} dispatcher so
- * every Core shares one code path (ADR-0005) — the
- * picker itself never conditions on `coreId`.
+ * through {@link mutateSessionForCore}, the one code path every Core shares
+ * (ADR-0005).
  *
  * `currentIcon` is the value from the Session snapshot the Core emits. `onPicked`
  * is invoked after the Core confirms the write so the caller can refresh
@@ -34,7 +33,7 @@ export function SessionIconPicker({
   wrapperStyle,
   onPicked,
 }: {
-  coreId: string | null;
+  coreId: string;
   sessionId: string;
   currentIcon: string | null | undefined;
   size?: number;

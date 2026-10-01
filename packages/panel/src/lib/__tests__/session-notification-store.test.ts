@@ -19,69 +19,50 @@ const notifications: SessionFinishNotification[] = [
   {
     kind: "session-finished",
     id: "session-1",
-    projectId: "project-1",
-    projectName: "Core",
     sessionTitle: "Answer name question",
     finishedAt: 3,
-    coreId: null,
-    coreAlias: null,
+    coreId: "core-a",
+    coreAlias: "Core A",
   },
   {
     kind: "session-finished",
     id: "session-2",
-    projectId: "project-1",
-    projectName: "Core",
     sessionTitle: "Investigate router error",
     finishedAt: 2,
-    coreId: null,
-    coreAlias: null,
+    coreId: "core-a",
+    coreAlias: "Core A",
   },
   {
     kind: "session-finished",
     id: "session-1",
-    projectId: "project-2",
-    projectName: "Academy",
     sessionTitle: "Generate title",
     finishedAt: 1,
-    coreId: null,
-    coreAlias: null,
+    coreId: "core-b",
+    coreAlias: "Core B",
   },
 ];
 
 describe("pruneSessionFinishNotifications", () => {
-  it("removes the notification for a deleted session in the matching project", () => {
+  it("removes the notification for a deleted session on the matching Core", () => {
     const next = pruneSessionFinishNotifications(notifications, {
       type: "session",
       sessionId: "session-1",
-      projectId: "project-1",
+      coreId: "core-a",
     });
 
-    expect(next.map((n) => `${n.projectId}:${n.id}`)).toEqual([
-      "project-1:session-2",
-      "project-2:session-1",
+    expect(next.map((n) => `${n.coreId}:${n.id}`)).toEqual([
+      "core-a:session-2",
+      "core-b:session-1",
     ]);
   });
 
-  it("removes session notifications by id when the project is unknown", () => {
+  it("removes session notifications by id when the Core is unknown", () => {
     const next = pruneSessionFinishNotifications(notifications, {
       type: "session",
       sessionId: "session-1",
     });
 
-    expect(next.map((n) => `${n.projectId}:${n.id}`)).toEqual([
-      "project-1:session-2",
-    ]);
-  });
-
-  it("removes every notification for a deleted project", () => {
-    const next = pruneSessionFinishNotifications(notifications, {
-      type: "project",
-      projectId: "project-1",
-    });
-
-    expect(next.map((n) => `${n.projectId}:${n.id}`)).toEqual([
-      "project-2:session-1",
-    ]);
+    expect(next.map((n) => `${n.coreId}:${n.id}`)).toEqual(["core-a:session-2"]);
   });
 
   it("keeps the same array when nothing matches", () => {
@@ -140,11 +121,9 @@ describe("notification cap", () => {
       current = mergeSessionFinishNotification(current, {
         kind: "session-finished",
         id: `session-${i}`,
-        projectId: "project-1",
-        projectName: "Core",
         sessionTitle: `Session ${i}`,
         finishedAt: i,
-        coreId: null,
+        coreId: "core-a",
         coreAlias: null,
       });
     }
@@ -188,15 +167,15 @@ describe("requestSessionNotificationOpen", () => {
 
       requestSessionNotificationOpen(notification);
 
-      expect(loadSessionFinishNotifications().map((n) => `${n.projectId}:${n.id}`))
-        .toEqual(["project-1:session-2", "project-2:session-1"]);
+      expect(loadSessionFinishNotifications().map((n) => `${n.coreId}:${n.id}`))
+        .toEqual(["core-a:session-2", "core-b:session-1"]);
       expect(dispatchedEvents.map((event) => event.type)).toEqual([
         "mc:session-notification-open",
         "mc:session-notifications-changed",
       ]);
       expect((dispatchedEvents[0] as CustomEvent).detail).toMatchObject({
         kind: "session-finished",
-        projectId: "project-1",
+        coreId: "core-a",
         sessionId: "session-1",
       });
     } finally {
@@ -205,7 +184,7 @@ describe("requestSessionNotificationOpen", () => {
   });
 });
 
-describe("opening a 0.5.0 Core's finish (no project id)", () => {
+describe("opening a Core's finish", () => {
   it("scopes the open request by Core id, which is what the workspace matches on", () => {
     const store = new Map<string, string>();
     const previousWindow = globalThis.window;
@@ -220,7 +199,6 @@ describe("opening a 0.5.0 Core's finish (no project id)", () => {
     try {
       requestSessionNotificationOpen({
         ...notifications[0]!,
-        projectId: "",
         coreId: "core-x",
         coreAlias: null,
       });
@@ -228,6 +206,7 @@ describe("opening a 0.5.0 Core's finish (no project id)", () => {
         sessionId: "session-1",
         coreId: "core-x",
       });
+      expect(readPendingSessionOpen("core-a")).toBeNull();
     } finally {
       globalThis.window = previousWindow;
     }
@@ -239,11 +218,9 @@ describe("coreId dedup + prune", () => {
     const base: SessionFinishNotification = {
       kind: "session-finished",
       id: "session-shared",
-      projectId: "project-1",
-      projectName: "Core",
       sessionTitle: "Session",
       finishedAt: 1,
-      coreId: null,
+      coreId: "core-b",
       coreAlias: null,
     };
     let current: AppNotification[] = [];
@@ -258,44 +235,40 @@ describe("coreId dedup + prune", () => {
     const coreIds = current
       .filter((n): n is SessionFinishNotification => n.kind === "session-finished")
       .map((n) => n.coreId);
-    expect(new Set(coreIds)).toEqual(new Set(["core-a", null]));
+    expect(new Set(coreIds)).toEqual(new Set(["core-a", "core-b"]));
   });
 
   it("prune scoped by coreId does not cross-delete other Cores", () => {
-    const panelLocal: SessionFinishNotification = {
+    const other: SessionFinishNotification = {
       kind: "session-finished",
       id: "session-1",
-      projectId: "project-1",
-      projectName: "Core",
-      sessionTitle: "Panel-local session",
+      sessionTitle: "Other Core's session",
       finishedAt: 1,
-      coreId: null,
+      coreId: "core-b",
       coreAlias: null,
     };
     const remote: SessionFinishNotification = {
-      ...panelLocal,
+      ...other,
       finishedAt: 2,
       coreId: "core-a",
       coreAlias: "Core A",
     };
-    const current: AppNotification[] = [panelLocal, remote];
+    const current: AppNotification[] = [other, remote];
     const next = pruneSessionFinishNotifications(current, {
       type: "session",
       sessionId: "session-1",
-      projectId: "project-1",
       coreId: "core-a",
     });
     expect(next).toHaveLength(1);
     const survivor = next[0]!;
-    expect(survivor.kind === "session-finished" && survivor.coreId).toBeNull();
+    expect(survivor.kind === "session-finished" && survivor.coreId).toBe("core-b");
   });
 });
 
-describe("legacy record backfill", () => {
-  it("defaults a missing coreId and coreAlias to null", () => {
+describe("stored records", () => {
+  function withFakeStorage(run: (store: Map<string, string>) => void) {
     const store = new Map<string, string>();
     const previousWindow = globalThis.window;
-
     globalThis.window = {
       localStorage: {
         getItem: (key: string) => store.get(key) ?? null,
@@ -308,28 +281,75 @@ describe("legacy record backfill", () => {
       },
       dispatchEvent: () => true,
     } as unknown as Window & typeof globalThis;
-
     try {
+      run(store);
+    } finally {
+      globalThis.window = previousWindow;
+    }
+  }
+
+  it("defaults a missing coreAlias to null", () => {
+    withFakeStorage((store) => {
       store.set(
         "mc:sessionFinishNotifications",
         JSON.stringify([
           {
             kind: "session-finished",
             id: "session-legacy",
-            projectId: "project-1",
-            projectName: "Core",
             sessionTitle: "Legacy session",
             finishedAt: 1,
+            coreId: "core-a",
           },
         ]),
       );
 
       const [loaded] = loadSessionFinishNotifications();
-      expect(loaded?.coreId).toBeNull();
+      expect(loaded?.coreId).toBe("core-a");
       expect(loaded?.coreAlias).toBeNull();
-    } finally {
-      globalThis.window = previousWindow;
-    }
+    });
+  });
+
+  it("drops a record stored with no Core: a Panel-local finish nothing can open", () => {
+    withFakeStorage((store) => {
+      store.set(
+        "mc:sessionFinishNotifications",
+        JSON.stringify([
+          {
+            kind: "session-finished",
+            id: "session-local",
+            projectId: "project-1",
+            projectName: "Core",
+            sessionTitle: "Panel-local session",
+            finishedAt: 1,
+          },
+        ]),
+      );
+
+      expect(loadSessionFinishNotifications()).toEqual([]);
+    });
+  });
+
+  it("does not carry a project onto a loaded record", () => {
+    withFakeStorage((store) => {
+      store.set(
+        "mc:sessionFinishNotifications",
+        JSON.stringify([
+          {
+            kind: "session-finished",
+            id: "session-1",
+            projectId: "project-1",
+            projectName: "Core",
+            sessionTitle: "Old shape",
+            finishedAt: 1,
+            coreId: "core-a",
+          },
+        ]),
+      );
+
+      const [loaded] = loadSessionFinishNotifications();
+      expect(loaded).not.toHaveProperty("projectId");
+      expect(loaded).not.toHaveProperty("projectName");
+    });
   });
 });
 

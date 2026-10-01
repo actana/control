@@ -11,7 +11,7 @@ import { api, type AppSettings } from "~/lib/api";
 import { useCliAvailability, type CliAvailability } from "~/lib/cli-availability";
 import { HARNESS_META } from "~/lib/design-meta";
 import { useSelectedCoreId } from "~/lib/selected-core-store";
-import { reorderPinnedIds } from "~/lib/pinned-project-order";
+import { reorderIds } from "~/lib/reorder-ids";
 import { queryKeys, useHarnessAccounts, useHarnessLatestVersions, useSettings } from "~/queries";
 import { HARNESS_REGISTRY } from "@actana/shared/harnesses";
 import { HARNESS_CLI_CONFIG, allHarnessCliUpdateCommands } from "@actana/shared/harness-cli-config";
@@ -91,7 +91,7 @@ export function ProvidersSettingsPage() {
     [queryClient],
   );
 
-  // --- drag to reorder (pointer capture, no dnd library — same approach as ProjectBar) ---
+  // --- drag to reorder (pointer capture, no dnd library — same approach as the Core rail) ---
   const [dragOrder, setDragOrder] = useState<Harness[] | null>(null);
   const [draggingHarness, setDraggingHarness] = useState<Harness | null>(null);
   const dragOrderRef = useRef<Harness[] | null>(null);
@@ -130,7 +130,7 @@ export function ProvidersSettingsPage() {
         const fromIndex = currentOrder.indexOf(agent);
         const toIndex = resolveDropIndex(moveEvent.clientY);
         if (fromIndex >= 0 && fromIndex !== toIndex) {
-          const nextOrder = reorderPinnedIds(currentOrder, fromIndex, toIndex) as Harness[];
+          const nextOrder = reorderIds(currentOrder, fromIndex, toIndex) as Harness[];
           dragOrderRef.current = nextOrder;
           setDragOrder(nextOrder);
         }

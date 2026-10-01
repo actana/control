@@ -1,7 +1,7 @@
 import type { Harness } from "@actana/shared/domain";
 
 // Per-scope "sessions per row" lock for the session grid. Stored beside the
-// grid's layout blobs (same per-scope keying) so each project/runtime
+// grid's layout blobs (same per-scope keying) so each Core
 // scope keeps its own row width. `null` means auto — the grid keeps its
 // historical behavior (near-square seeding, rows grow as sessions land in
 // them). A number caps how many cells a *new* session may join a row with:

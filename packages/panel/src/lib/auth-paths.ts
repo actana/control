@@ -24,11 +24,8 @@ export function isAuthPath(pathname: string): boolean {
  * did not navigate to.
  *
  * A stray Core scope on a route that should have none is a shape this codebase
- * has already been burned by: the former project rail carried a comment saying its
- * fallback to the bar's `coreId` prop "is gone rather than merely unused",
- * because it made an operator's own project look Core-owned (#382 review round
- * 2). Carrying `coreId` home from an expiry would be the same mistake by
- * another route.
+ * has already been burned by (#382 review round 2). Carrying `coreId` home from
+ * an expiry would be the same mistake by another route.
  *
  * The pairing query is untouched by this: `step` belongs to no route — the
  * wizard is rendered by `FirstRunGate` over whatever route the operator landed
