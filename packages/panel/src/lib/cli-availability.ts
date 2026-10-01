@@ -23,7 +23,7 @@ import {
 } from "@actana/shared/sdk-link-frames";
 import { createListenerSet } from "./listener-set";
 
-export type CliAvailabilityStatus = "unknown" | "checking" | "available" | "missing" | "outdated";
+type CliAvailabilityStatus = "unknown" | "checking" | "available" | "missing" | "outdated";
 
 export type CliAvailability = {
   status: CliAvailabilityStatus;
@@ -89,11 +89,6 @@ export function availabilityFor(
   return availability[agent] ?? UNKNOWN;
 }
 
-export function isCliUnavailable(availability: CliAvailabilityMap, agent: Harness): boolean {
-  const status = availabilityFor(availability, agent).status;
-  return status === "missing" || status === "outdated";
-}
-
 export function harnessCanLaunch(availability: CliAvailabilityMap, agent: Harness): boolean {
   if (HARNESS_REGISTRY[agent].disabled) return false;
   const status = availabilityFor(availability, agent).status;
@@ -129,10 +124,6 @@ function fromCoreLinkMap(map: CoreLinkHarnessAvailabilityMap): CliAvailabilityMa
     out[agent as Harness] = fromCoreLinkAvailability(entry);
   }
   return out;
-}
-
-export function firstAvailableHarness(availability: CliAvailabilityMap): Harness | null {
-  return UI_HARNESSES.find((agent) => harnessCanLaunch(availability, agent)) ?? null;
 }
 
 /**
@@ -361,7 +352,7 @@ function receiveInstallFailure(coreId: string, agent: Harness, message?: string)
  * the attempt right there; anything else hands the row over to the event
  * stream, which is what survives a reload, a reconnect, and a second tab.
  */
-export function requestHarnessInstall(coreId: string, agent: Harness): void {
+function requestHarnessInstall(coreId: string, agent: Harness): void {
   const bridge = getPanelBridge();
   if (!bridge) return;
   if (getInstallStore(coreId).snapshot[agent]?.installing) return;
@@ -467,11 +458,3 @@ export function __resetCliAvailabilityStoresForTests(): void {
   subscriptions.clear();
 }
 
-/**
- * Force-load a Core's availability snapshot outside a React render — used by
- * imperative flows (e.g. a menu action that wants to inspect current
- * availability before opening a picker). No-op without a live panel link.
- */
-export function ensureCliAvailability(coreId: string): void {
-  hydrateOnce(coreId);
-}

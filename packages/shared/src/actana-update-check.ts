@@ -42,7 +42,7 @@ import {
 } from "./actana-release-channel";
 
 /** The opt-out. `0`, `false` or `off` disables the check on both surfaces. */
-export const UPDATE_CHECK_ENV = "ACTANA_UPDATE_CHECK";
+const UPDATE_CHECK_ENV = "ACTANA_UPDATE_CHECK";
 
 /** How long an answer — including "the channel had nothing" — stays good. */
 export const UPDATE_CHECK_TTL_MS = 24 * 60 * 60 * 1000;
@@ -54,7 +54,7 @@ export const UPDATE_CHECK_TTL_MS = 24 * 60 * 60 * 1000;
  * check that hangs on a release server is worse than one that never mentions
  * updates at all.
  */
-export const UPDATE_CHECK_TIMEOUT_MS = 2_000;
+const UPDATE_CHECK_TIMEOUT_MS = 2_000;
 
 /** What both surfaces render, and what the Panel's endpoint answers with. */
 export type UpdateCheck = {

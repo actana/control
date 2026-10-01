@@ -87,7 +87,7 @@ export type LocalTarEntry = {
 };
 
 /** How a written entry landed. `overwritten` is what F5 requires be named. */
-export type LocalWriteOutcome = "written" | "overwritten";
+type LocalWriteOutcome = "written" | "overwritten";
 
 export type UnpackedEntry = LocalTarEntry & { result: LocalWriteOutcome };
 

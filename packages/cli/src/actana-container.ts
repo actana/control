@@ -47,7 +47,6 @@ import {
 // (#288 D2); what is left here is the refusal table, which is only ever about
 // a verb somebody typed.
 export {
-  CONTAINER_ENV,
   CORE_STATE_DATA_DIR,
   CORE_STATE_MATERIAL_FILE,
   CONTAINER_LABEL_ENV,
@@ -57,8 +56,6 @@ export {
   coreUpdateCommand,
   inContainer,
   readContainerContract,
-  type ContainerContract,
-  type ContractError,
 } from "@actana/shared/actana-container-contract";
 
 /**

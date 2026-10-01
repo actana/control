@@ -23,14 +23,14 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
-export const CORE_HOME_ENV = "AC_CORE_HOME";
-export const CORE_UID_ENV = "AC_CORE_UID";
-export const CORE_GID_ENV = "AC_CORE_GID";
+const CORE_HOME_ENV = "AC_CORE_HOME";
+const CORE_UID_ENV = "AC_CORE_UID";
+const CORE_GID_ENV = "AC_CORE_GID";
 
 /** The Session user's name. A constant: the image creates it, nothing renames it. */
-export const CORE_USER = "core";
+const CORE_USER = "core";
 /** The Session user's login shell in the container image (`useradd --shell`). */
-export const CORE_CONTAINER_SHELL = "/bin/bash";
+const CORE_CONTAINER_SHELL = "/bin/bash";
 
 export type CoreIdentity = {
   user: string;
@@ -140,7 +140,7 @@ const REBUILT_ENV = ["HOME", "USER", "LOGNAME", "SHELL", "PATH", "NPM_CONFIG_PRE
 const DEFAULT_CHILD_PATH = ["/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin"];
 
 /** The daemon's state directory in the image (issue 559). A value that mentions it never reaches a child. */
-export const DAEMON_STATE_DIR = "/var/lib/actana";
+const DAEMON_STATE_DIR = "/var/lib/actana";
 
 /**
  * Paths that are the daemon's: its state directory, its own HOME and the

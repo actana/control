@@ -536,10 +536,3 @@ function refuse(
   }
   return refusal.exit;
 }
-
-// The failure table moved to `core-pair-results.ts` with the rest of the
-// result surface (#360): it is what an operator is told, and it now carries
-// the concrete remedy per class as well as the one-line `next`. Re-exported
-// here because this is the module the verb lives in and the table is part of
-// what the verb promises.
-export { corePairingOutcome, type CorePairingOutcome } from "./core-pair-results.ts";

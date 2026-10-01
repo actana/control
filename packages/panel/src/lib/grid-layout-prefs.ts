@@ -12,7 +12,7 @@ const GRID_COLUMNS_PREFIX = "mc.gridColumns";
 
 /** Row widths offered by the layout dropdown (and accepted from storage). */
 export const GRID_COLUMN_OPTIONS = [1, 2, 3, 4, 5, 6] as const;
-export const MAX_GRID_COLUMNS = 6;
+const MAX_GRID_COLUMNS = 6;
 
 /** Fired (on window) after a scope's column limit changes, so the grid and the
  *  header dropdown — which don't share React state — both re-read storage. */

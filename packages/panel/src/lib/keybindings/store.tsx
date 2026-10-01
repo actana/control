@@ -4,7 +4,6 @@ import { DEFAULT_BINDINGS } from "./defaults";
 function mergeWithDefaults(b: BindingMap | undefined): BindingMap {
   return { ...DEFAULT_BINDINGS, ...(b ?? {}) };
 }
-import { formatBinding } from "./format";
 import type { Binding, BindingMap, HotkeyAction } from "./types";
 
 type Ctx = {
@@ -65,6 +64,3 @@ export function useBinding(action: HotkeyAction): Binding {
   return useKeybindings().bindings[action] ?? DEFAULT_BINDINGS[action];
 }
 
-export function useFormattedBinding(action: HotkeyAction): string {
-  return formatBinding(useBinding(action));
-}

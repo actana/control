@@ -1741,4 +1741,4 @@ export async function runActanaCli(deps: ActanaCliDeps): Promise<number> {
   }
 }
 
-export { USAGE, CONTAINER_USAGE, CLIENT_NOUNS, EXIT_USAGE };
+export { USAGE, CLIENT_NOUNS, EXIT_USAGE };

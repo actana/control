@@ -105,7 +105,7 @@ export type SkillInstallTarget = {
  * is `failed`, not `current` — nothing was checked, and reporting "up to date"
  * for a folder nobody looked in is the failure this ordering exists to rule out.
  */
-export type SkillInstallOutcome = "written" | "current" | "absent" | "skipped" | "failed";
+type SkillInstallOutcome = "written" | "current" | "absent" | "skipped" | "failed";
 
 export type SkillInstallEntry = {
   harness: string;

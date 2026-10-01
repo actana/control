@@ -4,7 +4,6 @@ import {
   getAppSetting,
   setAppSetting,
 } from "../repositories/app-settings.repo";
-import { safeJsonParse } from "@actana/shared/safe-json";
 
 export function getSetting(key: string): string | null {
   return getAppSetting(key);
@@ -28,12 +27,7 @@ export function setBooleanSetting(key: string, value: boolean): void {
   setAppSetting(key, value ? "true" : "false");
 }
 
-export function readJsonSetting<T>(key: string): T | null {
-  return safeJsonParse<T | null>(getAppSetting(key), null);
-}
-
 const API_TOKEN_KEY = "api_token";
-const AUTH_SECRET_KEY = "auth_secret";
 
 export function getOrCreateApiToken(): string {
   let token = getAppSetting(API_TOKEN_KEY);
@@ -44,21 +38,3 @@ export function getOrCreateApiToken(): string {
   return token;
 }
 
-export function getOrCreateAuthSecret(): string {
-  let secret = getAppSetting(AUTH_SECRET_KEY);
-  if (!secret) {
-    secret = randomBytes(32).toString("hex");
-    setAppSetting(AUTH_SECRET_KEY, secret);
-  }
-  return secret;
-}
-
-const SKILLS_INITIALIZED_AT_KEY = "skills_initialized_at";
-
-export function getSkillsInitializedAt(): string | null {
-  return getAppSetting(SKILLS_INITIALIZED_AT_KEY);
-}
-
-export function setSkillsInitializedAt(iso: string): void {
-  setAppSetting(SKILLS_INITIALIZED_AT_KEY, iso);
-}

@@ -48,7 +48,7 @@ export function useColor(deps: ActanaCliDeps): boolean {
 export const FRAME_WIDTH = 74;
 
 /** How far in from the left border the content starts. */
-export const FRAME_GUTTER = 3;
+const FRAME_GUTTER = 3;
 
 /**
  * How many columns a framed row's content may occupy.

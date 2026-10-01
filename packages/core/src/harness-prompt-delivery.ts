@@ -798,7 +798,7 @@ function squeeze(text: string): string {
   return text.replace(ECHO_NOISE, "");
 }
 
-export function promptEchoProbe(prompt: string): string {
+function promptEchoProbe(prompt: string): string {
   return squeeze(prompt).slice(0, ECHO_PROBE_CHARS);
 }
 
@@ -912,7 +912,7 @@ export const DEFAULT_PROMPT_DELIVERY_PROFILE: PromptDeliveryProfile = {
  * 15 s they have, and a harness with no composer marker never reaches this
  * number at all.
  */
-export const HARNESS_PROMPT_DELIVERY_PROFILES: Partial<
+const HARNESS_PROMPT_DELIVERY_PROFILES: Partial<
   Record<Harness, Partial<PromptDeliveryProfile>>
 > = {
   opencode: { composerWaitMs: 90_000 },

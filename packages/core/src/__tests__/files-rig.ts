@@ -131,7 +131,7 @@ export async function connectedClient(
 }
 
 /** Seed a directory. A `dir/` key makes an empty directory. */
-export function writeTree(
+function writeTree(
   root: string,
   entries: Record<string, string | { content?: string; mode?: number }>,
 ): void {
@@ -146,13 +146,6 @@ export function writeTree(
     fs.writeFileSync(target, spec.content ?? "");
     if (spec.mode !== undefined) fs.chmodSync(target, spec.mode);
   }
-}
-
-/** Every byte of an async iterable, for the assertions that are about content. */
-export async function collect(stream: ReadableStream<Uint8Array>): Promise<Buffer> {
-  const chunks: Uint8Array[] = [];
-  for await (const chunk of stream as unknown as AsyncIterable<Uint8Array>) chunks.push(chunk);
-  return Buffer.concat(chunks);
 }
 
 /** Drop every temp root this module made. Call from a suite's `afterAll`. */

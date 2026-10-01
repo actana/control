@@ -59,7 +59,7 @@ function resolveWindowsCmdShimInvocation(
   return null;
 }
 
-export function buildCliSpawnInvocation(
+function buildCliSpawnInvocation(
   cmd: string,
   args: string[],
   env: Record<string, string> = sanitizedProcessEnv(),

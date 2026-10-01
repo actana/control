@@ -30,44 +30,6 @@ import {
 } from "@actana/shared/orchestration-skill-payload";
 
 /**
- * Write or repair every copy on this machine, and log what happened.
- *
- * Never throws, and deliberately so: this runs on the boot path, and a Core
- * that refused to start because it could not write a skill folder into a
- * directory it does not own would be trading a documented capability for the
- * whole product.
- *
- * Only the interesting outcomes are logged. `absent` is the ordinary state of a
- * Core with two of the four Harnesses installed and would be three lines of
- * noise on every boot; `current` is the ordinary state of every boot after the
- * first. What gets a line is a write, a refusal and a failure — the three
- * things a "why has my Harness not got the skill?" report is answered from.
- *
- * `entry.path` is the skill **folder**, not a file in it, and `entry.detail`
- * names the file when one of several went wrong — so a log line still says
- * enough to act on without this file learning what the payload contains.
- *
- * **Two skills since #303, so one entry per harness per skill.** The loop is
- * the whole of that: the installer is called once per folder name and the
- * results are concatenated, because the two folders differ in the prose inside
- * them and in nothing a writer can see (ADR 0035 D1). `entry.path` is what tells
- * two rows for one harness apart, and it already named the folder.
- */
-export function ensureOrchestrationSkill(homeDir: string): SkillInstallEntry[] {
-  let entries: SkillInstallEntry[];
-  try {
-    entries = installOrchestrationSkills(homeDir);
-  } catch (err) {
-    log.warn("core-skill.install-failed", {
-      error: err instanceof Error ? err.message : String(err),
-    });
-    return [];
-  }
-  reportSkillEntries(entries);
-  return entries;
-}
-
-/**
  * Every Harness skill folder `installOrchestrationSkills` may write under
  * `homeDir`, resolved the way it resolves them. The helper confines each through
  * `realpath` first, so a linked `~/.claude/skills` cannot carry the write out of

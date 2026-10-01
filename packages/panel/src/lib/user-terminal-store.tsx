@@ -655,10 +655,3 @@ export function useUserTerminals() {
   return ctx;
 }
 
-/**
- * Like {@link useUserTerminals} but returns null instead of throwing when
- * there's no provider — for surfaces that render outside the main shell.
- */
-export function useUserTerminalsOptional() {
-  return useContext(UserTerminalContext);
-}

@@ -4,7 +4,5 @@
 // both processes map the same event names to the same statuses. Re-exported
 // here to preserve existing import paths.
 export {
-  HARNESS_HOOK_EVENTS,
-  type HarnessHookPayload,
   mapHookEventToStatus,
 } from "@actana/shared/harness-hook-events";

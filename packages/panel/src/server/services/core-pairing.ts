@@ -47,7 +47,7 @@ import type { Core } from "~/shared/cores";
  * Not the Core's alias in this Panel's registry: that names the machine being
  * added and is the operator's to type. {@link pairCore} keeps the two apart.
  */
-export const PANEL_PAIRING_CLIENT_LABEL = `actana-panel ${hostname()}`;
+const PANEL_PAIRING_CLIENT_LABEL = `actana-panel ${hostname()}`;
 
 /**
  * Compile-time proof that the browser-facing union is exactly the SDK's.

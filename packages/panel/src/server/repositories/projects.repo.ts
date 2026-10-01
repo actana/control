@@ -11,10 +11,6 @@ export function findProjectById(id: string): Project | null {
   return getDb().select().from(projects).where(eq(projects.id, id)).get() ?? null;
 }
 
-export function findProjectIds(): { id: string }[] {
-  return getDb().select({ id: projects.id }).from(projects).all();
-}
-
 export function findProjectNameById(id: string): string | null {
   const row = getDb()
     .select({ name: projects.name })
@@ -22,10 +18,6 @@ export function findProjectNameById(id: string): string | null {
     .where(eq(projects.id, id))
     .get();
   return row?.name ?? null;
-}
-
-export function projectExists(id: string): boolean {
-  return !!getDb().select({ id: projects.id }).from(projects).where(eq(projects.id, id)).get();
 }
 
 export function insertProject(row: Project): void {

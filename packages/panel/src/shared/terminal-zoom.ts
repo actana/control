@@ -6,7 +6,7 @@ export type TerminalZoomLevel = (typeof TERMINAL_ZOOM_LEVELS)[number];
 export const DEFAULT_TERMINAL_ZOOM_LEVEL: TerminalZoomLevel = 0;
 export const TERMINAL_ZOOM_MIN = TERMINAL_ZOOM_LEVELS[0];
 export const TERMINAL_ZOOM_MAX = TERMINAL_ZOOM_LEVELS[TERMINAL_ZOOM_LEVELS.length - 1];
-export const TERMINAL_ZOOM_STEP_PX = 2;
+const TERMINAL_ZOOM_STEP_PX = 2;
 
 export const TERMINAL_ZOOM_LABELS: Record<TerminalZoomLevel, string> = {
   [-2]: "Smallest (-2)",

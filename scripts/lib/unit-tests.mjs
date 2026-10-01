@@ -243,7 +243,7 @@ export function renderJobSummary(results, { leftovers = null, disk = null, diskA
 }
 
 /** A `|` inside a markdown table cell is a column break unless it is escaped. */
-export function escapeCell(text) {
+function escapeCell(text) {
   return String(text).replace(/\|/g, "\\|");
 }
 
@@ -269,7 +269,7 @@ export const MIN_FREE_BYTES = 1024 * 1024 * 1024;
 /** Below this many free inodes, likewise — `mkdtemp` fails long before bytes run out. */
 export const MIN_FREE_INODES = 50_000;
 /** Above the floor but below this, the run proceeds and says it is tight. */
-export const TIGHT_FREE_BYTES = 4 * 1024 * 1024 * 1024;
+const TIGHT_FREE_BYTES = 4 * 1024 * 1024 * 1024;
 
 /**
  * Read one filesystem's headroom and decide whether it can carry a test run.
@@ -311,7 +311,7 @@ export function diskHeadroom(target, { statfs = fs.statfsSync } = {}) {
  * filesystem never quite reached the floor.
  */
 export const SUSPICIOUS_DROP_BYTES = 8 * 1024 * 1024 * 1024;
-export const SUSPICIOUS_DROP_INODES = 200_000;
+const SUSPICIOUS_DROP_INODES = 200_000;
 
 /**
  * The disk verdict for a whole run, from the reading before and the one after.
@@ -365,7 +365,7 @@ export function diskVerdict(before, after = null) {
   };
 }
 
-export function formatBytes(bytes) {
+function formatBytes(bytes) {
   const units = ["B", "KiB", "MiB", "GiB", "TiB"];
   let value = bytes;
   let unit = 0;
@@ -376,7 +376,7 @@ export function formatBytes(bytes) {
   return `${value.toFixed(unit === 0 ? 0 : 1)} ${units[unit]}`;
 }
 
-export function formatCount(count) {
+function formatCount(count) {
   return Number.isFinite(count) ? count.toLocaleString("en-US") : "many";
 }
 
@@ -398,7 +398,7 @@ export function formatCount(count) {
 // The sandbox is deliberately *not* named `actana-*` or `mc-*`: it must not
 // match the very glob the leak check greps for.
 
-export const SANDBOX_PREFIX = "act-testrun-";
+const SANDBOX_PREFIX = "act-testrun-";
 /** The globs #257 names. A directory matching one of these in the real temp root escaped. */
 export const LEAK_PREFIXES = ["mc-", "actana-"];
 

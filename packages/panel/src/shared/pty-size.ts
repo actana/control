@@ -1,7 +1,7 @@
-export const MIN_PTY_COLS = 10;
-export const MIN_PTY_ROWS = 10;
-export const MAX_PTY_COLS = 500;
-export const MAX_PTY_ROWS = 500;
+const MIN_PTY_COLS = 10;
+const MIN_PTY_ROWS = 10;
+const MAX_PTY_COLS = 500;
+const MAX_PTY_ROWS = 500;
 export const DEFAULT_PTY_COLS = 100;
 export const DEFAULT_PTY_ROWS = 30;
 

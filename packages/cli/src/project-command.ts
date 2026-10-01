@@ -49,7 +49,7 @@ import type { ActanaCliDeps } from "./cli-deps.ts";
 import type { ParsedArgs } from "./cli-args.ts";
 import type { CoreLinkDirListing, CoreLinkProjectSnapshot } from "@actana/sdk/core";
 
-export const PROJECT_HELP = `actana project — the Projects a Core owns
+const PROJECT_HELP = `actana project — the Projects a Core owns
 
 Usage
   actana project ls                    list the Projects on the selected Core

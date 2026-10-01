@@ -26,7 +26,7 @@ export type ProjectWriteTransfer = {
   startedAt: number;
 };
 
-export type ProjectWriteLease = {
+type ProjectWriteLease = {
   /** Release the lease. Idempotent — a double release is not an error. */
   release(): void;
 };

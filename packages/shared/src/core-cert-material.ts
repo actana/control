@@ -25,7 +25,7 @@ export type CertPem = {
 };
 
 /** A signing CA — the pair {@link issueServerCert} signs against. */
-export type CertAuthority = {
+type CertAuthority = {
   /** PEM-encoded CA certificate. */
   cert: string;
   /** PEM-encoded CA private key. */
@@ -314,14 +314,14 @@ const MIN_RSA_MODULUS_BITS = 2048;
 const CLIENT_LEAF_DAYS = LEAF_DAYS;
 
 /** Why a CSR was refused. The endpoint maps every one of these to one refusal. */
-export type CsrRejection =
+type CsrRejection =
   | "unparseable"
   | "bad-signature"
   | "weak-key"
   | "unsupported-key";
 
 /** A CSR the Core would not sign, with the reason for the audit log. */
-export class CsrRejectedError extends Error {
+class CsrRejectedError extends Error {
   constructor(readonly rejection: CsrRejection, message: string) {
     super(message);
     this.name = "CsrRejectedError";

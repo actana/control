@@ -9,7 +9,7 @@ export const MAX_PROJECT_IMAGE_BYTES = 5 * 1024 * 1024;
  * answer both "is this type allowed" and "what do I name the file", and two
  * structures that must agree would eventually not.
  */
-export const PROJECT_IMAGE_TYPES = {
+const PROJECT_IMAGE_TYPES = {
   png: "image/png",
   jpg: "image/jpeg",
   webp: "image/webp",
@@ -22,8 +22,6 @@ export type ProjectImageExtension = keyof typeof PROJECT_IMAGE_TYPES;
 export const PROJECT_IMAGE_EXTENSIONS = Object.keys(
   PROJECT_IMAGE_TYPES,
 ) as readonly ProjectImageExtension[];
-
-export const PROJECT_IMAGE_EXTENSION_SET = new Set<string>(PROJECT_IMAGE_EXTENSIONS);
 
 /**
  * The extension to store a given upload under, or null when we don't accept it.

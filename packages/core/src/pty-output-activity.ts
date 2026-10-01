@@ -194,7 +194,7 @@ const ELAPSED_PATTERN = /\d+(?:[.,]\d+)?\s*[hms]\b/g;
 /** An erase of the whole display (or its scrollback), which leaves it blank. */
 const ERASE_DISPLAY_PATTERN = /\x1b\[[0-3]?J/;
 
-export function repaintsInPlace(text: string): boolean {
+function repaintsInPlace(text: string): boolean {
   return (
     /\r(?!\n)/.test(text) ||
     /\x1b\[[0-9;?]*[JKABCDEFGHfd]/.test(text) ||

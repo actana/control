@@ -121,7 +121,7 @@ const UNHAPPY_STATUSES: ReadonlySet<string> = new Set(["terminated", "disconnect
  */
 const SEND_WAIT_DEFAULT_TIMEOUT_S = 1020;
 
-export const SESSION_HELP = `actana session — the Sessions running on a Core
+const SESSION_HELP = `actana session — the Sessions running on a Core
 
 Usage
   actana session start <project> [prompt]   start a Session; prints its id

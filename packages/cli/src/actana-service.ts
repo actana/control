@@ -51,7 +51,7 @@ export type ActanaServiceState = {
 };
 
 /** What the daemon needs to be started as — the platform-neutral half of a unit. */
-export type ServiceDefinition = {
+type ServiceDefinition = {
   /** Human description. systemd shows it; launchd has nowhere to put it. */
   description: string;
   /** The command to run. `argv[0]` must be an absolute path. */
@@ -63,7 +63,7 @@ export type ServiceDefinition = {
 };
 
 /** The one row `actana status` prints about surviving logout. */
-export type PersistenceRow = {
+type PersistenceRow = {
   /** `Linger` on systemd, `At login` on launchd. */
   label: string;
   value: string;
@@ -78,7 +78,7 @@ export type PersistenceRow = {
  * print `com.actana.core` on a machine whose only agent was the pre-rename
  * `com.actana.harness`.
  */
-export type ServiceObservation = {
+type ServiceObservation = {
   /** The unit / label this machine actually has, or null when it has none. */
   name: string | null;
   /**
@@ -92,7 +92,7 @@ export type ServiceObservation = {
 };
 
 /** What making the service persist achieved. */
-export type PersistenceOutcome = {
+type PersistenceOutcome = {
   /** Whether the daemon keeps running after the operator logs out. */
   survivesLogout: boolean;
   /** The parenthetical `actana setup` prints after the service's name. */
@@ -100,7 +100,7 @@ export type PersistenceOutcome = {
 };
 
 /** What `actana setup` needs to know before it can prompt about persistence. */
-export type PersistenceContext = {
+type PersistenceContext = {
   /** Whether there is a terminal to prompt on. */
   interactive: boolean;
   /** Skip prompts and take the recommended answer. */
@@ -110,7 +110,7 @@ export type PersistenceContext = {
 };
 
 /** The command `actana logs` hands the operator's terminal to. */
-export type LogsCommand = { command: string; args: string[] };
+type LogsCommand = { command: string; args: string[] };
 
 /** The verbs an operator drives the daemon with. */
 export type ServiceVerb = "start" | "stop" | "restart";

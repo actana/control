@@ -181,7 +181,7 @@ export const MENU_READY_MS = 1500;
 export const INTER_QUESTION_DELAY_MS = 500;
 
 /** Let the TUI process each key before the next arrives (150ms verified good). */
-export const ANSWER_KEY_DELAY_MS = 120;
+const ANSWER_KEY_DELAY_MS = 120;
 
 /** Let the review screen mount before the confirming Enter. */
 export const SUBMIT_CONFIRM_DELAY_MS = 450;

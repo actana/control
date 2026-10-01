@@ -50,7 +50,7 @@ export { CoreHomeOpFailedError, CoreHomeOpRefusedError } from "./core-home-ops";
 export type { SpawnPathFacts } from "./core-home-ops";
 
 /** The helper's bundle, beside `core-entry.cjs` (`build.mjs` emits both into `dist`). */
-export const CORE_HOME_OPS_BUNDLE = "core-home-ops.cjs";
+const CORE_HOME_OPS_BUNDLE = "core-home-ops.cjs";
 /** A helper that has not answered by now is stuck; nothing it does is this slow. */
 export const HELPER_TIMEOUT_MS = 15_000;
 /** A directory listing is the largest answer; this is far above it. */

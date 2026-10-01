@@ -22,10 +22,10 @@
  */
 
 /** Quiet time on the output stream that separates two repaint frames. */
-export const QUESTION_FRAME_GAP_MS = 50;
+const QUESTION_FRAME_GAP_MS = 50;
 
 /** Fail-open cap: a hold this large means the release signal was lost. */
-export const QUESTION_HOLD_MAX_CHARS = 2_000_000;
+const QUESTION_HOLD_MAX_CHARS = 2_000_000;
 
 // CSI / OSC / DCS / lone escapes — stripped before signature matching.
 const ANSI_RE =

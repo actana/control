@@ -120,7 +120,7 @@ export function signBearer(
   return `${payloadB64}${SEP}${encodeBase64Url(sig)}`;
 }
 
-export type BearerVerifyOk = {
+type BearerVerifyOk = {
   ok: true;
   coreId: string;
   exp: number;
@@ -130,7 +130,7 @@ export type BearerVerifyOk = {
   aud?: string;
   jti?: string;
 };
-export type BearerVerifyErr =
+type BearerVerifyErr =
   | { ok: false; reason: "malformed" }
   | { ok: false; reason: "bad-signature" }
   | { ok: false; reason: "expired" };

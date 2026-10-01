@@ -24,10 +24,10 @@ export { pickFreePort } from "./core-smoke.mjs";
 export const PANEL_LISTENING_SENTINEL = "@@AC_CORE_LISTENING@@";
 
 /** Where the Panel accepts panel-link upgrades (packages/panel/src/shared/panel-link.ts). */
-export const PANEL_LINK_PATH = "/panel-link";
+const PANEL_LINK_PATH = "/panel-link";
 
 /** The panel-link protocol version this test speaks — a browser sends it as `?v=`. */
-export const PANEL_LINK_PROTOCOL_VERSION = 1;
+const PANEL_LINK_PROTOCOL_VERSION = 1;
 
 /** The Operator's session cookie (packages/panel/src/server/panel-auth.ts). */
 export const PANEL_SESSION_COOKIE = "ac_panel_session";
@@ -162,7 +162,7 @@ export class PanelHttpClient {
 let reqCounter = 0;
 
 /** A reqId in the browser's own namespace — correlation is the caller's job. */
-export function nextReqId(prefix = "e2e") {
+function nextReqId(prefix = "e2e") {
   reqCounter += 1;
   return `${prefix}-${reqCounter}`;
 }

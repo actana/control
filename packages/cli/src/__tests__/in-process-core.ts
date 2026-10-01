@@ -64,10 +64,10 @@ import { generateCertMaterial } from "@actana/shared/core-cert-material";
 import { signBearer, verifyBearer } from "@actana/shared/core-link-bearer";
 import type { CoreLinkEvent } from "@actana/sdk/core";
 
-export const CORE_SECRET = "cli-in-process-core-secret-at-least-32-bytes";
+const CORE_SECRET = "cli-in-process-core-secret-at-least-32-bytes";
 export const CORE_ID = "core_in_process";
 
-export type CertMaterial = Awaited<ReturnType<typeof generateCertMaterial>>;
+type CertMaterial = Awaited<ReturnType<typeof generateCertMaterial>>;
 
 /**
  * A PTY manager that is never asked for anything — the default when a suite
@@ -80,7 +80,7 @@ export type CertMaterial = Awaited<ReturnType<typeof generateCertMaterial>>;
  * `in-process-core-session.test.ts` drives `logs`, `send` and `kill` against a
  * live PTY — passes {@link InProcessCoreOptions.ptyCore} and gets its own.
  */
-export function unusedPtyCore(): never[] & Record<string, unknown> {
+function unusedPtyCore(): never[] & Record<string, unknown> {
   const unreachable = (name: string) => () => {
     throw new Error(`a client verb reached the PTY manager (${name}) — these suites spawn nothing`);
   };
@@ -325,7 +325,7 @@ function portFree(port: number): Promise<boolean> {
 }
 
 /** Wait until a port a Core has just released can be bound again. */
-export async function waitForPortFree(port: number, timeoutMs = 10_000): Promise<void> {
+async function waitForPortFree(port: number, timeoutMs = 10_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (!(await portFree(port))) {
     if (Date.now() > deadline) throw new Error(`port ${port} never came free`);

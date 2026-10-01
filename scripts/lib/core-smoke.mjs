@@ -29,7 +29,7 @@ export const LISTENING_SENTINEL = "@@AC_CORE_LISTENING@@";
  * (even a single throttled first-occurrence line) is a failure, because a
  * clean-boot Core with the schema migrated must never hit either path.
  */
-export const BAD_LOG_TAGS = [
+const BAD_LOG_TAGS = [
   "event-log.open-failed",
   "core-query.open-failed",
   "project-roots.open-failed",
@@ -155,7 +155,7 @@ export function materialFileFor(home) {
  * a Core from outside, and importing the signer would let one bug in it cancel
  * itself out against the verifier on the other end.
  */
-export function credentialFromMaterial(materialFile, endpoint, { bearerDays = 365 } = {}) {
+function credentialFromMaterial(materialFile, endpoint, { bearerDays = 365 } = {}) {
   const material = JSON.parse(fs.readFileSync(materialFile, "utf8"));
   for (const field of ["caCert", "clientCert", "clientKey", "bearerSecret", "coreId"]) {
     if (typeof material[field] !== "string" || material[field] === "") {
@@ -188,7 +188,7 @@ export function credentialFromMaterial(materialFile, endpoint, { bearerDays = 36
  * listening sentinel lands the file is there — but the write and the sentinel
  * are two syscalls apart, and a poll is cheaper than a race.
  */
-export async function credentialAfterBoot(home, endpoint, timeoutMs = 10_000) {
+async function credentialAfterBoot(home, endpoint, timeoutMs = 10_000) {
   const file = materialFileFor(home);
   const deadline = Date.now() + timeoutMs;
   for (;;) {
@@ -220,7 +220,7 @@ export async function credentialAfterBoot(home, endpoint, timeoutMs = 10_000) {
  * against a checkout with no `node_modules` — a top-level `import { WebSocket }
  * from "ws"` made that fail before the image was ever pushed.
  */
-export async function dialAndRequest(blob, request, resultType, resultField, timeoutMs = DIAL_TIMEOUT_MS) {
+async function dialAndRequest(blob, request, resultType, resultField, timeoutMs = DIAL_TIMEOUT_MS) {
   const { WebSocket } = await import("ws");
   const ws = new WebSocket(blob.endpoint, {
     ca: blob.caCert,

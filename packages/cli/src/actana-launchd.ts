@@ -38,7 +38,7 @@ export const LAUNCH_AGENT_FILENAME = `${LAUNCH_AGENT_LABEL}.plist`;
 export const LEGACY_LAUNCH_AGENT_LABEL = "com.actana.harness";
 
 /** The pre-rename plist's filename inside `~/Library/LaunchAgents`. */
-export const LEGACY_LAUNCH_AGENT_FILENAME = `${LEGACY_LAUNCH_AGENT_LABEL}.plist`;
+const LEGACY_LAUNCH_AGENT_FILENAME = `${LEGACY_LAUNCH_AGENT_LABEL}.plist`;
 
 /** Everything that varies between one machine's LaunchAgent and another's. */
 export type ActanaPlistConfig = {
@@ -53,11 +53,6 @@ export type ActanaPlistConfig = {
   /** Where both of the daemon's streams go — what `actana logs` tails. */
   logPath: string;
 };
-
-/** Where the LaunchAgent's plist lives for a given home directory. */
-export function launchAgentPath(home: string): string {
-  return path.join(home, "Library", "LaunchAgents", LAUNCH_AGENT_FILENAME);
-}
 
 /**
  * Where a pre-rename install left its plist.

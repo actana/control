@@ -23,7 +23,7 @@ import { readJsonSettingsFile, writeJsonSettingsFile } from "./json-settings-fil
 // once, from whoever the process happens to be, before anything has said who
 // the Core's Sessions are (issue 559). In the container the daemon's own home
 // is not the home these files live in.
-export function sharedLimitsDir(home: string = coreHome()): string {
+function sharedLimitsDir(home: string = coreHome()): string {
   return path.join(home, ".cache", "claude-limits");
 }
 export function sharedLimitsFile(home: string = coreHome()): string {

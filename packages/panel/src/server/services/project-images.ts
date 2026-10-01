@@ -20,11 +20,9 @@ import {
 
 export {
   MAX_PROJECT_IMAGE_BYTES as MAX_IMAGE_BYTES,
-  PROJECT_IMAGE_EXTENSIONS as ALLOWED_IMAGE_EXTENSIONS,
 } from "~/shared/project-image-limits";
 export {
   deleteAllProjectImagesFor,
-  deleteProjectImageFile,
   projectImageAbsolutePath,
   projectImagesDir,
 } from "./project-image-files";

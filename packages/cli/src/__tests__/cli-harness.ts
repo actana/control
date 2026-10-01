@@ -57,7 +57,7 @@ import type {
 } from "@actana/sdk/core";
 
 /** One run's captured output, plus the exit code. */
-export type CliRun = {
+type CliRun = {
   code: number;
   /** stdout, one entry per line. */
   out: string[];
@@ -78,7 +78,7 @@ export type CliFixture = {
   cleanup: () => void;
 };
 
-export type RunOptions = {
+type RunOptions = {
   /** Extra environment on top of `XDG_CONFIG_HOME`. */
   env?: NodeJS.ProcessEnv;
   /** What `readStdin` resolves to. Setting it also makes stdin not a TTY. */
@@ -725,10 +725,10 @@ function emptyListing(): CoreLinkDirListing {
  * anything the CLI legitimately prints, which is what lets
  * `never-logs-a-blob.test.ts` assert absence rather than assert a format.
  */
-export const SENTINEL_CA = "-----BEGIN CERTIFICATE-----CA-SENTINEL-QQQ-----END CERTIFICATE-----";
-export const SENTINEL_CERT = "-----BEGIN CERTIFICATE-----CLIENT-SENTINEL-ZZZ-----END CERTIFICATE-----";
-export const SENTINEL_KEY = "-----BEGIN PRIVATE KEY-----KEY-SENTINEL-WWW-----END PRIVATE KEY-----";
-export const SENTINEL_BEARER = "bearer-SENTINEL-YYY.signature-SENTINEL-XXX";
+const SENTINEL_CA = "-----BEGIN CERTIFICATE-----CA-SENTINEL-QQQ-----END CERTIFICATE-----";
+const SENTINEL_CERT = "-----BEGIN CERTIFICATE-----CLIENT-SENTINEL-ZZZ-----END CERTIFICATE-----";
+const SENTINEL_KEY = "-----BEGIN PRIVATE KEY-----KEY-SENTINEL-WWW-----END PRIVATE KEY-----";
+const SENTINEL_BEARER = "bearer-SENTINEL-YYY.signature-SENTINEL-XXX";
 
 /** Every secret the sentinel blob carries, for an absence sweep. */
 export const SENTINELS = [SENTINEL_CA, SENTINEL_CERT, SENTINEL_KEY, SENTINEL_BEARER];

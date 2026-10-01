@@ -31,7 +31,7 @@
 import log from "./log";
 
 /** What happened to one attempt. */
-export type PairingOutcome =
+type PairingOutcome =
   /** A certificate was issued. The only outcome that changes anything. */
   | "issued"
   /** The code, or the session's state, refused it. Indistinguishable on the wire. */
@@ -141,7 +141,7 @@ export function redactPairingAuditEvent(event: PairingAuditEvent): Record<string
 }
 
 /** The default sink: one structured line per attempt, at info. */
-export const logPairingAudit: PairingAuditSink = (record) => {
+const logPairingAudit: PairingAuditSink = (record) => {
   log.info("pairing.attempt", record);
 };
 

@@ -80,7 +80,7 @@ export type PersistedMaterial = {
 };
 
 /** The filename inside the config dir. */
-export const MATERIAL_FILENAME = "material.json";
+const MATERIAL_FILENAME = "material.json";
 
 /** The full path to the material file for a given config dir. */
 export function materialFilePath(configDir: string): string {

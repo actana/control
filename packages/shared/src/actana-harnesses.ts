@@ -36,7 +36,7 @@ import { withNpmUserPrefixIfNeeded, resolveNpmGlobalPrefixViaRun } from "./npm-i
 import { ensureOperatorLoginPathOnDisk } from "./operator-login-path";
 
 /** What became of one agent during an offer round. */
-export type HarnessInstallStatus =
+type HarnessInstallStatus =
   /** The vendor's installer ran and exited 0. */
   | "installed"
   /** The vendor's installer ran and failed. The Core install is unaffected. */

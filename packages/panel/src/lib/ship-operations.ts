@@ -11,7 +11,7 @@ const activeShipOperations = new Map<string, ActiveShipOperation>();
 const shipOperationStore = createListenerSet();
 const notifyShipOperationListeners = shipOperationStore.notify;
 
-export function shipKey(projectId: string) {
+function shipKey(projectId: string) {
   return projectId;
 }
 
@@ -54,10 +54,6 @@ export function endShipOperation(projectId: string) {
   if (next === 0) activeShipOperations.delete(key);
   else if (prev) activeShipOperations.set(key, { ...prev, count: next });
   notifyShipOperationListeners();
-}
-
-export function subscribeShipOperations(listener: () => void) {
-  return shipOperationStore.subscribe(listener);
 }
 
 /** Test-only: reset global ship state between cases. */

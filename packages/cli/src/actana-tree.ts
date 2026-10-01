@@ -15,7 +15,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 
 /** Files that must exist for a directory to be an extracted Core tarball. */
-export const REQUIRED_TREE_FILES = [
+const REQUIRED_TREE_FILES = [
   path.join("app", "core-entry.cjs"),
   path.join("bin", "actana"),
   path.join("node", "bin", "node"),

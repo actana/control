@@ -58,7 +58,7 @@ export const EXEC_MAX_OUTPUT_BYTES = 8 * 1024 * 1024;
  * exits, and an unbounded one would sit here holding a process until the daemon
  * restarted.
  */
-export const EXEC_TIMEOUT_MS = 15 * 60_000;
+const EXEC_TIMEOUT_MS = 15 * 60_000;
 
 /** How long a timed-out child gets to die politely before SIGKILL. */
 const SIGTERM_GRACE_MS = 5_000;
@@ -79,7 +79,7 @@ export type CoreExecInput = {
 export type CoreExecOutcome = CoreExecPortResult;
 
 /** The refusal an over-budget command comes back as, written for the operator. */
-export function outputTooLargeMessage(limitBytes: number): string {
+function outputTooLargeMessage(limitBytes: number): string {
   return (
     `The command produced more than ${Math.floor(limitBytes / 1024 / 1024)} MiB of output. ` +
     "Nothing was returned rather than half of it — redirect to a file on the Core and fetch that instead."

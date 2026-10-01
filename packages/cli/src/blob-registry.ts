@@ -32,7 +32,6 @@ import {
 
 export {
   BLOB_FILE_MODE,
-  REGISTRY_DIR_MODE,
   clearCurrentCore,
   coreBlobPath,
   coreExists,
@@ -74,7 +73,7 @@ export type RegisteredCore = {
 };
 
 /** Read one registry entry, without dialling anything. */
-export function readRegisteredCore(paths: RegistryPaths, name: string, current: string | null): RegisteredCore {
+function readRegisteredCore(paths: RegistryPaths, name: string, current: string | null): RegisteredCore {
   const text = readCoreBlobText(paths, name);
   const row: RegisteredCore = {
     name,

@@ -41,6 +41,3 @@ export function formatPinnedSlotBindingParts(base: Binding): string[] {
   return [...modParts, `1–${PINNED_SLOT_COUNT}`];
 }
 
-export function formatPinnedSlotBinding(base: Binding): string {
-  return formatPinnedSlotBindingParts(base).join(" + ");
-}

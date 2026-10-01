@@ -2,7 +2,7 @@
 // Higher scores rank earlier. 0 means "no match".
 
 /** Upper bound for basename-substring scores; used to normalize into 0–1 elsewhere. */
-export const FUZZY_SCORE_MAX = 1000;
+const FUZZY_SCORE_MAX = 1000;
 
 const BASENAME_PREFIX_BONUS = 50;
 const BASENAME_EXACT_MATCH_BONUS = 200;

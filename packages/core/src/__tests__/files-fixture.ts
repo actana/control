@@ -29,7 +29,7 @@ export function makeTree(entries: Record<string, string | { content?: string; mo
 }
 
 /** Seed an existing directory. Same shape as {@link makeTree}. */
-export function writeTree(
+function writeTree(
   root: string,
   entries: Record<string, string | { content?: string; mode?: number }>,
 ): void {

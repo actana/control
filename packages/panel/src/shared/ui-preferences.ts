@@ -1,8 +1,6 @@
 export const PROJECTS_DASHBOARD_VIEWS = ["cards", "table"] as const;
 export type ProjectsDashboardView = (typeof PROJECTS_DASHBOARD_VIEWS)[number];
 
-export const DEFAULT_PROJECTS_DASHBOARD_VIEW: ProjectsDashboardView = "cards";
-
 /**
  * The globally active project group — a workspace-like context that scopes
  * the dashboard, the left project rail, and the project picker.
@@ -11,7 +9,6 @@ export const DEFAULT_PROJECTS_DASHBOARD_VIEW: ProjectsDashboardView = "cards";
 export const ACTIVE_GROUP_ALL = "all" as const;
 export const ACTIVE_GROUP_UNGROUPED = "ungrouped" as const;
 export type ActiveProjectGroup = string;
-export const DEFAULT_ACTIVE_PROJECT_GROUP: ActiveProjectGroup = ACTIVE_GROUP_ALL;
 export const ACTIVE_PROJECT_GROUP_MAX_LENGTH = 200;
 
 function normalizeEnumValue<T extends string>(

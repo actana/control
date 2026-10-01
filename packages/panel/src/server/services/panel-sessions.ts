@@ -82,6 +82,6 @@ export function revokeAllPanelSessions(): void {
   getPanelDb().prepare("DELETE FROM panel_sessions").run();
 }
 
-export function pruneExpiredSessions(now = Date.now()): void {
+function pruneExpiredSessions(now = Date.now()): void {
   getPanelDb().prepare("DELETE FROM panel_sessions WHERE expires_at <= ?").run(now);
 }

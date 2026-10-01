@@ -5,7 +5,7 @@
 import type { ProviderUsageId, ProviderUsageSnapshot, ProviderUsageWindow } from "~/shared/provider-usage";
 import { emptyProviderSnapshot, providerDisplayName } from "~/shared/provider-usage";
 
-export const REQUEST_TIMEOUT_MS = 8_000;
+const REQUEST_TIMEOUT_MS = 8_000;
 
 export type HttpResult =
   | { ok: true; status: number; json: unknown; text: string; headers: Record<string, string> }

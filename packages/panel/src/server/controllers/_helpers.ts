@@ -10,7 +10,7 @@ import {
 import {
   HTTP_BAD_REQUEST,
   HTTP_CONFLICT,
-  HTTP_FORBIDDEN,
+  
   HTTP_NO_CONTENT,
   HTTP_NOT_FOUND,
   HTTP_UNAUTHORIZED,
@@ -28,10 +28,6 @@ export function noContent(): Response {
 
 export function notFound(message = "not found"): Response {
   return jsonError(HTTP_NOT_FOUND, message);
-}
-
-export function forbidden(message = "forbidden"): Response {
-  return jsonError(HTTP_FORBIDDEN, message);
 }
 
 async function readBodyText(request: Request): Promise<string> {
@@ -77,18 +73,6 @@ export function parseSearchParams<S extends z.ZodType>(
   return { ok: true, data: result.data };
 }
 
-/** Parse + validate route params extracted by the router (e.g., decoded :id). */
-export function parsePathParams<S extends z.ZodType>(
-  raw: Record<string, string>,
-  schema: S,
-): { ok: true; data: z.infer<S> } | { ok: false; response: Response } {
-  const result = schema.safeParse(raw);
-  if (!result.success) {
-    return { ok: false, response: jsonError(HTTP_BAD_REQUEST, zodMessage(result.error)) };
-  }
-  return { ok: true, data: result.data };
-}
-
 function zodMessage(error: z.ZodError): string {
   const first = error.issues[0];
   if (!first) return "invalid request";
@@ -100,7 +84,7 @@ function zodMessage(error: z.ZodError): string {
  * Map a thrown domain error to its HTTP response. Re-throws unknown errors so
  * the outer handler still surfaces a 400/500 with the original message.
  */
-export function handleDomainError(e: unknown): Response | null {
+function handleDomainError(e: unknown): Response | null {
   if (e instanceof NotFoundError) return jsonError(HTTP_NOT_FOUND, e.message);
   if (e instanceof ValidationError) return jsonError(HTTP_BAD_REQUEST, e.message);
   if (e instanceof UnauthorizedError) return jsonError(HTTP_UNAUTHORIZED, e.message);

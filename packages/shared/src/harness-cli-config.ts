@@ -46,7 +46,7 @@ export type HarnessCliInstallCommand =
  * their current documentation in August 2026, recorded in {@link source} per
  * entry, and not a shape this type assumes.
  */
-export type HarnessSkillTarget = {
+type HarnessSkillTarget = {
   /**
    * The only kind that exists today: a directory holding one directory per
    * skill, each with a `SKILL.md` inside it.
@@ -83,7 +83,7 @@ export type HarnessSkillTarget = {
   verifiedOn: string;
 };
 
-export type HarnessCliPathSuffixes =
+type HarnessCliPathSuffixes =
   | readonly string[]
   | {
       default?: readonly string[];
@@ -354,7 +354,6 @@ export const HARNESS_CLI_CONFIG = {
   }),
 } as const satisfies Record<Harness, HarnessCliConfig>;
 
-export type ManagedHarness = Harness;
 export type HarnessCliVersionRequirement = HarnessCliConfig;
 
 export const HARNESS_CLI_CONFIG_BY_COMMAND = Object.fromEntries(
@@ -399,16 +398,8 @@ function pathSuffixesForPlatform(
   return pickForPlatform(suffixes, platform) ?? [];
 }
 
-export function harnessCliConfigForHarness(agent: Harness): HarnessCliConfig {
-  return HARNESS_CLI_CONFIG[agent];
-}
-
-export function harnessCliConfigForCommand(command: string): HarnessCliConfig | undefined {
+function harnessCliConfigForCommand(command: string): HarnessCliConfig | undefined {
   return HARNESS_CLI_CONFIG_BY_COMMAND[command];
-}
-
-export function spawnCommandForHarness(agent: Harness): string {
-  return HARNESS_CLI_CONFIG[agent].command;
 }
 
 export function pathLookupCandidates(command: string): readonly string[] {
@@ -589,14 +580,3 @@ export function assertHarnessCliRegistrySync(registry: Record<Harness, { command
   }
 }
 
-export function assertSpawnCommandsSync(spawnCommands: Record<Harness, string>): void {
-  for (const agent of MANAGED_HARNESSES) {
-    const expected = HARNESS_SPAWN_COMMANDS[agent];
-    const actual = spawnCommands[agent];
-    if (actual !== expected) {
-      throw new Error(
-        `Spawn command drift for ${agent}: spawn=${actual}, config=${expected}`,
-      );
-    }
-  }
-}
