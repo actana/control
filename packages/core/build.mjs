@@ -37,6 +37,15 @@ await build({
   outfile: "dist/core-home-ops.cjs",
 });
 
+// The Files API helper (issue 557, ADR 0041 D25). One short-lived process per request,
+// started through `asCore`, does the reading and writing in `core`'s home so the
+// daemon never touches it. Same externals and target.
+await build({
+  ...shared,
+  entryPoints: ["src/core-files-op-entry.ts"],
+  outfile: "dist/core-files-op.cjs",
+});
+
 // The Shared folder watcher (#561). In the container `~/shared` is `core`'s, so the
 // daemon starts this, through `asCore`, to watch it and report changes on stdout.
 await build({

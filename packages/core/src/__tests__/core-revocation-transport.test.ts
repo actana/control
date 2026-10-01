@@ -267,12 +267,12 @@ describe("a revoked certificate, over the real transport", () => {
 
     // The control: the credential works before it is revoked, so the refusal
     // below is the revocation and not a broken handshake.
-    const before = await request(rig, "/v1/projects/p1/files", { client });
+    const before = await request(rig, "/v1/files", { client });
     expect(before.status).not.toBe(403);
 
     await revoke(rig, client.serial);
 
-    const after = await request(rig, "/v1/projects/p1/files", { client });
+    const after = await request(rig, "/v1/files", { client });
     expect(after.status).toBe(403);
     expect(after.body).toContain("client-certificate-required");
   }, 30_000);
@@ -297,8 +297,8 @@ describe("a revoked certificate, over the real transport", () => {
 
     await revoke(rig, doomed.serial);
 
-    expect((await request(rig, "/v1/projects/p1/files", { client: doomed })).status).toBe(403);
-    expect((await request(rig, "/v1/projects/p1/files", { client: spared })).status).not.toBe(403);
+    expect((await request(rig, "/v1/files", { client: doomed })).status).toBe(403);
+    expect((await request(rig, "/v1/files", { client: spared })).status).not.toBe(403);
     expect((await dial(rig, spared, spared.bearer)).frames).toContain("authOk");
   }, 30_000);
 
@@ -322,12 +322,12 @@ describe("an unreadable pairing store, over the real transport", () => {
     // looks exactly like this — and the daemon re-reads it.
     const rig = await startCore();
     const client = await rig.pair();
-    expect((await request(rig, "/v1/projects/p1/files", { client })).status).not.toBe(403);
+    expect((await request(rig, "/v1/files", { client })).status).not.toBe(403);
 
     fs.writeFileSync(rig.storeFile, '{"version":1,"sessions":[],"clients":[{"certSerial"');
     expect((await rig.revocations.refresh()).ok).toBe(false);
 
-    expect((await request(rig, "/v1/projects/p1/files", { client })).status).toBe(403);
+    expect((await request(rig, "/v1/files", { client })).status).toBe(403);
     expect((await dial(rig, client, client.bearer)).frames).not.toContain("authOk");
   }, 30_000);
 
@@ -338,10 +338,10 @@ describe("an unreadable pairing store, over the real transport", () => {
 
     fs.writeFileSync(rig.storeFile, "{ not json");
     await rig.revocations.refresh();
-    expect((await request(rig, "/v1/projects/p1/files", { client })).status).toBe(403);
+    expect((await request(rig, "/v1/files", { client })).status).toBe(403);
 
     fs.writeFileSync(rig.storeFile, good);
     await rig.revocations.refresh();
-    expect((await request(rig, "/v1/projects/p1/files", { client })).status).not.toBe(403);
+    expect((await request(rig, "/v1/files", { client })).status).not.toBe(403);
   }, 30_000);
 });

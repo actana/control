@@ -57,10 +57,10 @@ afterEach(async () => {
 
 type Listing = { status: number; body: Buffer };
 
-function list(query: string, projectId = "p1"): Promise<Listing> {
+function list(query: string): Promise<Listing> {
   return new Promise((resolve, reject) => {
     const req = http.request(
-      `${base}/v1/projects/${projectId}/files/list${query}`,
+      `${base}/v1/files/list${query}`,
       { method: "GET", agent: false },
       (res) => {
         const chunks: Buffer[] = [];

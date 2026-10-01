@@ -80,7 +80,7 @@ describe("the loopback Core — no bearer verifier", () => {
     const routes = buildCoreFileRoutes({ filesPort: oneProject() });
     const base = await serve(routes);
 
-    const answered = await get(base, "/v1/projects/p1/files?path=notes.txt");
+    const answered = await get(base, "/v1/files?path=notes.txt");
 
     expect(answered.status).toBe(200);
     expect(answered.body).toBe("hello from a Project");
@@ -95,7 +95,7 @@ describe("the loopback Core — no bearer verifier", () => {
     const routes = buildCoreFileRoutes({ filesPort: oneProject() });
     const base = await serve(routes);
 
-    const withNonsense = await get(base, "/v1/projects/p1/files?path=notes.txt", {
+    const withNonsense = await get(base, "/v1/files?path=notes.txt", {
       authorization: "Bearer not-a-real-bearer",
     });
 
@@ -115,9 +115,9 @@ describe("the remote Core — a real bearer verifier", () => {
     const routes = buildCoreFileRoutes({ filesPort: oneProject(), authVerifier: acceptsOnly("good-bearer") });
     const base = await serve(routes);
 
-    const none = await get(base, "/v1/projects/p1/files?path=notes.txt");
-    const wrong = await get(base, "/v1/projects/p1/files?path=notes.txt", { authorization: "Bearer wrong" });
-    const right = await get(base, "/v1/projects/p1/files?path=notes.txt", { authorization: "Bearer good-bearer" });
+    const none = await get(base, "/v1/files?path=notes.txt");
+    const wrong = await get(base, "/v1/files?path=notes.txt", { authorization: "Bearer wrong" });
+    const right = await get(base, "/v1/files?path=notes.txt", { authorization: "Bearer good-bearer" });
 
     expect(none.status).toBe(401);
     expect(JSON.parse(none.body).code).toBe("unauthorized");
@@ -149,7 +149,7 @@ describe("ADR 0028 D4, as an executable sentence", () => {
     expect(shouldAnnounceFiles(routes)).toBe(true);
 
     const base = await serve(routes);
-    const answered = await get(base, "/v1/projects/p1/files?path=notes.txt", { ...headers });
+    const answered = await get(base, "/v1/files?path=notes.txt", { ...headers });
 
     expect(answered.status).toBe(200);
     expect(answered.status).not.toBe(401);

@@ -107,7 +107,7 @@ async function startCore(entries: Parameters<typeof makeTree>[0] = {}): Promise<
   const deadline = Date.now() + 10_000;
   for (;;) {
     try {
-      await request(rig, "GET", "/v1/projects/p1/files?path=");
+      await request(rig, "GET", "/v1/files?path=");
       return rig;
     } catch (err) {
       if (Date.now() > deadline) throw err;
@@ -185,7 +185,7 @@ describe("the file routes and the core link share one mTLS server", () => {
     const rig = await startCore({ "a.txt": "hello" });
 
     const ready = await readyFrame(rig);
-    const read = await request(rig, "GET", "/v1/projects/p1/files?path=a.txt");
+    const read = await request(rig, "GET", "/v1/files?path=a.txt");
 
     expect(ready.type).toBe("ready");
     expect(ready.files).toEqual({ version: 1 });
@@ -196,7 +196,7 @@ describe("the file routes and the core link share one mTLS server", () => {
   it("refuses a /v1 request that presents no client certificate — the handshake fails first", async () => {
     const rig = await startCore({ "a.txt": "hello" });
 
-    await expect(request(rig, "GET", "/v1/projects/p1/files?path=a.txt", { omitClientCert: true })).rejects.toThrow(
+    await expect(request(rig, "GET", "/v1/files?path=a.txt", { omitClientCert: true })).rejects.toThrow(
       /ECONNRESET|EPIPE|socket hang up|ERR_SSL|SSL routines|alert|handshake/i,
     );
   }, 30_000);
@@ -206,7 +206,7 @@ describe("the file routes and the core link share one mTLS server", () => {
     // Core once; the bearer says the pairing is still current.
     const rig = await startCore({ "a.txt": "hello" });
 
-    const res = await request(rig, "GET", "/v1/projects/p1/files?path=a.txt", { omitBearer: true });
+    const res = await request(rig, "GET", "/v1/files?path=a.txt", { omitBearer: true });
 
     expect(res.status).toBe(401);
     expect(JSON.parse(res.body.toString("utf8")).code).toBe("unauthorized");
@@ -223,10 +223,10 @@ describe("a file and a folder both round-trip over the real transport", () => {
   it("uploads a file and reads the same bytes back", async () => {
     const rig = await startCore();
 
-    const put = await request(rig, "PUT", "/v1/projects/p1/files?path=notes%2Fhello.txt", {
+    const put = await request(rig, "PUT", "/v1/files?path=notes%2Fhello.txt", {
       body: Buffer.from("round trip"),
     });
-    const get = await request(rig, "GET", "/v1/projects/p1/files?path=notes%2Fhello.txt");
+    const get = await request(rig, "GET", "/v1/files?path=notes%2Fhello.txt");
 
     expect(put.status).toBe(200);
     expect(ndjson(put.body)[0]).toMatchObject({ type: "entry", path: "notes/hello.txt", result: "written" });
@@ -243,7 +243,7 @@ describe("a file and a folder both round-trip over the real transport", () => {
     fs.chmodSync(path.join(source, "bin"), 0o750);
     const archive = await collect(packDirectory(source));
 
-    const put = await request(rig, "PUT", "/v1/projects/p1/files?path=dropped", {
+    const put = await request(rig, "PUT", "/v1/files?path=dropped", {
       body: archive,
       headers: { "content-type": "application/x-tar" },
     });
@@ -254,7 +254,7 @@ describe("a file and a folder both round-trip over the real transport", () => {
     expect(fs.statSync(path.join(rig.projectRoot, "dropped/bin")).mode & 0o777).toBe(0o750);
 
     // And back out again, through the download half of the same surface.
-    const get = await request(rig, "GET", "/v1/projects/p1/files?path=dropped");
+    const get = await request(rig, "GET", "/v1/files?path=dropped");
     expect(get.headers["content-type"]).toBe("application/x-tar");
 
     const returned = makeTree();
@@ -277,7 +277,7 @@ describe("a file and a folder both round-trip over the real transport", () => {
     const source = makeTree({ "kept.txt": "new", "fresh.txt": "new" });
     const archive = await collect(packDirectory(source));
 
-    const put = await request(rig, "PUT", "/v1/projects/p1/files?path=", {
+    const put = await request(rig, "PUT", "/v1/files?path=", {
       body: archive,
       headers: { "content-type": "application/x-tar" },
     });
@@ -297,20 +297,20 @@ describe("a file and a folder both round-trip over the real transport", () => {
     );
     const archive = await collect(packDirectory(source));
 
-    const first = request(rig, "PUT", "/v1/projects/p1/files?path=bulk", {
+    const first = request(rig, "PUT", "/v1/files?path=bulk", {
       body: archive,
       headers: { "content-type": "application/x-tar" },
     });
     // Give the first request time to be accepted and take the lease.
     await new Promise((resolve) => setTimeout(resolve, 30));
-    const second = await request(rig, "PUT", "/v1/projects/p1/files?path=other.txt", { body: Buffer.from("x") });
+    const second = await request(rig, "PUT", "/v1/files?path=other.txt", { body: Buffer.from("x") });
 
     expect(second.status).toBe(409);
     expect(JSON.parse(second.body.toString("utf8")).code).toBe("transfer-in-progress");
     expect((await first).status).toBe(200);
 
     // And once it is done, the next write is served.
-    const third = await request(rig, "PUT", "/v1/projects/p1/files?path=other.txt", { body: Buffer.from("x") });
+    const third = await request(rig, "PUT", "/v1/files?path=other.txt", { body: Buffer.from("x") });
     expect(third.status).toBe(200);
   }, 30_000);
 
@@ -324,7 +324,7 @@ describe("a file and a folder both round-trip over the real transport", () => {
       ["..%2F..%2Fpwned.txt", "dot-dot-segment"],
       ["escape%2Fpwned.txt", "outside-project-root"],
     ] as const) {
-      const res = await request(rig, "PUT", `/v1/projects/p1/files?path=${requested}`, { body: Buffer.from("owned") });
+      const res = await request(rig, "PUT", `/v1/files?path=${requested}`, { body: Buffer.from("owned") });
       expect(res.status).toBe(400);
       expect(JSON.parse(res.body.toString("utf8")).code).toBe(code);
     }

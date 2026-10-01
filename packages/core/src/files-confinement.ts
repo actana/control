@@ -193,7 +193,7 @@ export function confineWriteTarget(root: string, requested: string): ConfinedPat
 }
 
 /** The checks that need no disk: NUL, backslash, absolute, `..`. */
-function stringRefusal(requested: string): { ok: false; reason: FileConfinementRefusal; message: string } | null {
+export function stringRefusal(requested: string): { ok: false; reason: FileConfinementRefusal; message: string } | null {
   if (requested.includes("\0")) {
     return { ok: false, reason: "malformed-path", message: "path contains a NUL byte" };
   }
