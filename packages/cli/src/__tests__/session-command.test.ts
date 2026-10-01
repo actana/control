@@ -50,8 +50,6 @@ function row(overrides: Partial<SessionRow> = {}): SessionRow {
     title: "fix the flaky test",
     harness: "claude-code",
     status: "running",
-    projectId: "proj_1",
-    project: "web",
     ptyId: "pty_1",
     live: true,
     writable: null,
@@ -65,7 +63,7 @@ describe("actana session — the command tree", () => {
   it("prints its help, and a bare `session` is a usage error", async () => {
     const help = await cli().run(["session", "--help"]);
     expect(help.code).toBe(EXIT_OK);
-    expect(help.out.join("\n")).toContain("actana session start <project> [prompt]");
+    expect(help.out.join("\n")).toContain("actana session start [prompt]");
 
     const bare = await cli().run(["session"]);
     expect(bare.code).toBe(EXIT_USAGE);
@@ -147,27 +145,21 @@ describe("actana session ls", () => {
     expect(JSON.parse(json.out.join("\n"))).toEqual([]);
   });
 
-  it("passes a project filter through as typed", async () => {
-    await withRegisteredCore();
-    let asked: string | null | undefined;
+  it("refuses a leftover project argument on ls", async () => {
+    registerCore(cli().paths, "prod");
     const run = await cli().run(["session", "ls", "web"], {
-      sessions: fakeSessionGateway({
-        list: async (project) => {
-          asked = project;
-          return [];
-        },
-      }),
+      sessions: fakeSessionGateway({ list: async () => [] }),
     });
-    expect(run.code).toBe(EXIT_OK);
-    expect(asked).toBe("web");
+    expect(run.code).toBe(EXIT_USAGE);
+    expect(run.err.join("\n")).toMatch(/unexpected argument/i);
+    expect(run.out.join("\n")).toBe("");
   });
-});
 
-describe("actana session start", () => {
+
   it("exits without waiting, printing the id and nothing else on stdout", async () => {
     await withRegisteredCore();
     let waited = false;
-    const run = await cli().run(["session", "start", "web", "fix", "the", "tests"], {
+    const run = await cli().run(["session", "start", "fix", "the", "tests"], {
       sessions: fakeSessionGateway({
         start: async () =>
           fakeStartedSession({
@@ -184,7 +176,7 @@ describe("actana session start", () => {
     // `SESSION=$(actana session start …)` is the shape of every script that will
     // use this, so stdout is the id and the progress line went to stderr.
     expect(run.out).toEqual(["session_1"]);
-    expect(run.err.join("\n")).toContain("Started claude-code in web");
+    expect(run.err.join("\n")).toContain("Started claude-code — session session_1");
   });
 
   // ─── The turn-start asymmetry (issue 177 finding 4) ────────────────────
@@ -199,7 +191,7 @@ describe("actana session start", () => {
 
   it("says plainly when nothing will report the start of a turn", async () => {
     await withRegisteredCore();
-    const run = await cli().run(["session", "start", "web", "go", "--harness", "cursor-cli"], {
+    const run = await cli().run(["session", "start", "go", "--harness", "cursor-cli"], {
       sessions: fakeSessionGateway({
         start: async () =>
           fakeStartedSession({ harness: "cursor-cli", reportsTurnStart: false }),
@@ -220,7 +212,7 @@ describe("actana session start", () => {
 
   it("says nothing about turn starts for a harness that reports them", async () => {
     await withRegisteredCore();
-    const run = await cli().run(["session", "start", "web", "go"], {
+    const run = await cli().run(["session", "start", "go"], {
       sessions: fakeSessionGateway({
         start: async () => fakeStartedSession({ reportsTurnStart: true }),
       }),
@@ -232,7 +224,7 @@ describe("actana session start", () => {
     // A script deciding whether a quiet status means "still working" or "never
     // started" cannot parse a sentence off stderr.
     await withRegisteredCore();
-    const run = await cli().run(["session", "start", "web", "go", "--json"], {
+    const run = await cli().run(["session", "start", "go", "--json"], {
       sessions: fakeSessionGateway({
         start: async () =>
           fakeStartedSession({ harness: "cursor-cli", reportsTurnStart: false }),
@@ -244,7 +236,7 @@ describe("actana session start", () => {
   it("hands the prompt over as typed, and never a carriage return with it", async () => {
     await withRegisteredCore();
     let seen: Record<string, unknown> | null = null;
-    await cli().run(["session", "start", "web", "fix the tests"], {
+    await cli().run(["session", "start", "fix the tests"], {
       sessions: fakeSessionGateway({
         start: async (request) => {
           seen = request as unknown as Record<string, unknown>;
@@ -260,7 +252,7 @@ describe("actana session start", () => {
   it("reads a prompt from stdin when it is `-`", async () => {
     await withRegisteredCore();
     let seen = "";
-    await cli().run(["session", "start", "web", "-"], {
+    await cli().run(["session", "start", "-"], {
       stdin: "a prompt too long for a command line\n",
       sessions: fakeSessionGateway({
         start: async (request) => {
@@ -274,7 +266,7 @@ describe("actana session start", () => {
 
   it("emits one object under --json, with no prose beside it", async () => {
     await withRegisteredCore();
-    const run = await cli().run(["session", "start", "web", "go", "--json", "--verbose"], {
+    const run = await cli().run(["session", "start", "go", "--json", "--verbose"], {
       sessions: fakeSessionGateway({ start: async () => fakeStartedSession() }),
     });
     expect(run.code).toBe(EXIT_OK);
@@ -286,7 +278,7 @@ describe("actana session start", () => {
 
   it("blocks with --wait and reports the state the Core settled on", async () => {
     await withRegisteredCore();
-    const run = await cli().run(["session", "start", "web", "go", "--wait", "--json"], {
+    const run = await cli().run(["session", "start", "go", "--wait", "--json"], {
       sessions: fakeSessionGateway({
         start: async () =>
           fakeStartedSession({
@@ -305,7 +297,7 @@ describe("actana session start", () => {
 
   it("exits non-zero when the harness died, and zero when it stopped to ask", async () => {
     await withRegisteredCore();
-    const died = await cli().run(["session", "start", "web", "go", "--wait"], {
+    const died = await cli().run(["session", "start", "go", "--wait"], {
       sessions: fakeSessionGateway({
         start: async () =>
           fakeStartedSession({ wait: async () => ({ status: "terminated", exited: true, exitCode: 137 }) }),
@@ -315,7 +307,7 @@ describe("actana session start", () => {
 
     // A question is not a failure — a script that treated it as one could not
     // then answer it with `session send`.
-    const asked = await cli().run(["session", "start", "web", "go", "--wait"], {
+    const asked = await cli().run(["session", "start", "go", "--wait"], {
       sessions: fakeSessionGateway({
         start: async () => fakeStartedSession({ wait: async () => ({ status: "needs-input", exited: false }) }),
       }),
@@ -332,7 +324,7 @@ describe("actana session start", () => {
     // about: after #387 settles a stranded `ready` Session, this presents as a
     // settled Session that produced no report and nothing else.
     await withRegisteredCore();
-    const run = await cli().run(["session", "start", "web", "go", "--wait"], {
+    const run = await cli().run(["session", "start", "go", "--wait"], {
       sessions: fakeSessionGateway({
         start: async () =>
           fakeStartedSession({
@@ -353,7 +345,7 @@ describe("actana session start", () => {
 
   it("puts the delivery on the --json object as a field, not only in prose", async () => {
     await withRegisteredCore();
-    const lost = await cli().run(["session", "start", "web", "go", "--wait", "--json"], {
+    const lost = await cli().run(["session", "start", "go", "--wait", "--json"], {
       sessions: fakeSessionGateway({
         start: async () =>
           fakeStartedSession({
@@ -371,7 +363,7 @@ describe("actana session start", () => {
 
     // The ordinary case says so too, so a script reads one field either way
     // rather than testing for a key's absence.
-    const landed = await cli().run(["session", "start", "web", "go", "--wait", "--json"], {
+    const landed = await cli().run(["session", "start", "go", "--wait", "--json"], {
       sessions: fakeSessionGateway({ start: async () => fakeStartedSession() }),
     });
     const payload = JSON.parse(landed.out.join("\n"));
@@ -392,7 +384,7 @@ describe("actana session start", () => {
     await withRegisteredCore();
     let waitedForTurn = false;
     let askedForDelivery = false;
-    const run = await cli().run(["session", "start", "web", "go", "--await-prompt"], {
+    const run = await cli().run(["session", "start", "go", "--await-prompt"], {
       sessions: fakeSessionGateway({
         start: async () =>
           fakeStartedSession({
@@ -422,7 +414,7 @@ describe("actana session start", () => {
     // the answer can be "it did not land", and a zero exit there would be the
     // false success this train exists to remove.
     await withRegisteredCore();
-    const run = await cli().run(["session", "start", "web", "go", "--await-prompt"], {
+    const run = await cli().run(["session", "start", "go", "--await-prompt"], {
       sessions: fakeSessionGateway({
         start: async () =>
           fakeStartedSession({
@@ -445,7 +437,7 @@ describe("actana session start", () => {
     // second later, and telling an operator to send it again would put the text
     // in twice. Non-zero all the same — nothing was established.
     await withRegisteredCore();
-    const run = await cli().run(["session", "start", "web", "go", "--await-prompt", "--json"], {
+    const run = await cli().run(["session", "start", "go", "--await-prompt", "--json"], {
       sessions: fakeSessionGateway({
         start: async () =>
           fakeStartedSession({
@@ -465,7 +457,7 @@ describe("actana session start", () => {
 
   it("puts the delivery on the --await-prompt --json object without a turn's fields", async () => {
     await withRegisteredCore();
-    const run = await cli().run(["session", "start", "web", "go", "--await-prompt", "--json"], {
+    const run = await cli().run(["session", "start", "go", "--await-prompt", "--json"], {
       sessions: fakeSessionGateway({ start: async () => fakeStartedSession() }),
     });
     expect(run.code).toBe(EXIT_OK);
@@ -485,7 +477,7 @@ describe("actana session start", () => {
     // bare start hangs up before the Core decides (#129 D6) — which is fine —
     // so it reports that it does not know, in prose and as a field.
     await withRegisteredCore();
-    const run = await cli().run(["session", "start", "web", "go", "--json"], {
+    const run = await cli().run(["session", "start", "go", "--json"], {
       sessions: fakeSessionGateway({ start: async () => fakeStartedSession() }),
     });
     expect(run.code).toBe(EXIT_OK);
@@ -500,7 +492,7 @@ describe("actana session start", () => {
 
   it("says nothing about a prompt on a start that has none", async () => {
     await withRegisteredCore();
-    const run = await cli().run(["session", "start", "web"], {
+    const run = await cli().run(["session", "start"], {
       sessions: fakeSessionGateway({ start: async () => fakeStartedSession() }),
     });
     expect(run.code).toBe(EXIT_OK);
@@ -512,7 +504,7 @@ describe("actana session start", () => {
     // Core typed without seeing a composer, and the exit code has to say the
     // same. `null` and not `false` — nothing was lost, nothing was established.
     await withRegisteredCore();
-    const run = await cli().run(["session", "start", "web", "go", "--await-prompt", "--json"], {
+    const run = await cli().run(["session", "start", "go", "--await-prompt", "--json"], {
       sessions: fakeSessionGateway({
         start: async () =>
           fakeStartedSession({
@@ -531,7 +523,7 @@ describe("actana session start", () => {
     expect(payload.promptAbandonedReason).toBeUndefined();
 
     // And the sentence, on the run that has room for one.
-    const prose = await cli().run(["session", "start", "web", "go", "--await-prompt"], {
+    const prose = await cli().run(["session", "start", "go", "--await-prompt"], {
       sessions: fakeSessionGateway({
         start: async () =>
           fakeStartedSession({
@@ -551,7 +543,7 @@ describe("actana session start", () => {
 
   it("says a composer was seen on the delivery it does call one", async () => {
     await withRegisteredCore();
-    const run = await cli().run(["session", "start", "web", "go", "--await-prompt", "--json"], {
+    const run = await cli().run(["session", "start", "go", "--await-prompt", "--json"], {
       sessions: fakeSessionGateway({ start: async () => fakeStartedSession() }),
     });
     expect(run.code).toBe(EXIT_OK);
@@ -568,7 +560,7 @@ describe("actana session start", () => {
     // until the operator kills it. Refused on the same test the Core applies.
     await withRegisteredCore();
     for (const prompt of ["", "   ", "\t\n"]) {
-      const run = await cli().run(["session", "start", "web", prompt, "--await-prompt"], {
+      const run = await cli().run(["session", "start", prompt, "--await-prompt"], {
         sessions: fakeSessionGateway({ start: async () => fakeStartedSession() }),
       });
       expect(run.code, `"${prompt}" was accepted`).toBe(EXIT_USAGE);
@@ -576,7 +568,7 @@ describe("actana session start", () => {
     }
 
     // And a prompt with something in it is still a prompt, spaces and all.
-    const ok = await cli().run(["session", "start", "web", " go ", "--await-prompt"], {
+    const ok = await cli().run(["session", "start", " go ", "--await-prompt"], {
       sessions: fakeSessionGateway({ start: async () => fakeStartedSession() }),
     });
     expect(ok.code, ok.err.join("\n")).toBe(EXIT_OK);
@@ -585,14 +577,14 @@ describe("actana session start", () => {
   it("refuses --await-prompt where there is no report for it to wait for", async () => {
     await withRegisteredCore();
     // No prompt: nothing is delivered, so nothing can be reported delivered.
-    const bare = await cli().run(["session", "start", "web", "--await-prompt"], {
+    const bare = await cli().run(["session", "start", "--await-prompt"], {
       sessions: fakeSessionGateway({ start: async () => fakeStartedSession() }),
     });
     expect(bare.code).toBe(EXIT_USAGE);
     expect(bare.err.join("\n")).toContain("delivers none");
 
     // With `--wait`, which already reports the delivery and waits longer.
-    const both = await cli().run(["session", "start", "web", "go", "--await-prompt", "--wait"], {
+    const both = await cli().run(["session", "start", "go", "--await-prompt", "--wait"], {
       sessions: fakeSessionGateway({ start: async () => fakeStartedSession() }),
     });
     expect(both.code).toBe(EXIT_USAGE);
@@ -601,7 +593,7 @@ describe("actana session start", () => {
     // And no deadline of its own: the Core's per-harness ceiling is the bound,
     // and a second one here could only cut the wait short with nothing to say.
     const timed = await cli().run(
-      ["session", "start", "web", "go", "--await-prompt", "--wait-timeout", "5"],
+      ["session", "start", "go", "--await-prompt", "--wait-timeout", "5"],
       { sessions: fakeSessionGateway({ start: async () => fakeStartedSession() }) },
     );
     expect(timed.code).toBe(EXIT_USAGE);
@@ -611,7 +603,7 @@ describe("actana session start", () => {
   it("passes --wait-timeout through as the SDK's deadline, and refuses it alone", async () => {
     await withRegisteredCore();
     let timeoutMs: number | undefined;
-    const run = await cli().run(["session", "start", "web", "go", "--wait", "--wait-timeout", "90"], {
+    const run = await cli().run(["session", "start", "go", "--wait", "--wait-timeout", "90"], {
       sessions: fakeSessionGateway({
         start: async () =>
           fakeStartedSession({
@@ -625,7 +617,7 @@ describe("actana session start", () => {
     expect(run.code).toBe(EXIT_OK);
     expect(timeoutMs).toBe(90_000);
 
-    const alone = await cli().run(["session", "start", "web", "go", "--wait-timeout", "90"], {
+    const alone = await cli().run(["session", "start", "go", "--wait-timeout", "90"], {
       sessions: fakeSessionGateway(),
     });
     expect(alone.code).toBe(EXIT_USAGE);
@@ -634,7 +626,7 @@ describe("actana session start", () => {
 
   it("reports a wait that ran out as this side giving up, not as a status", async () => {
     await withRegisteredCore();
-    const run = await cli().run(["session", "start", "web", "go", "--wait", "--wait-timeout", "1", "--json"], {
+    const run = await cli().run(["session", "start", "go", "--wait", "--wait-timeout", "1", "--json"], {
       sessions: fakeSessionGateway({
         start: async () =>
           fakeStartedSession({
@@ -652,21 +644,27 @@ describe("actana session start", () => {
 
   it("checks the harness name before dialling", async () => {
     await withRegisteredCore();
-    const run = await cli().run(["session", "start", "web", "--harness", "emacs"], {
+    const run = await cli().run(["session", "start", "--harness", "emacs"], {
       sessions: fakeSessionGateway(),
     });
     expect(run.code).toBe(EXIT_USAGE);
     expect(run.err.join("\n")).toContain("claude-code");
   });
 
-  it("needs a project", async () => {
-    await withRegisteredCore();
-    const run = await cli().run(["session", "start"], { sessions: fakeSessionGateway() });
+  it("refuses --cwd on start", async () => {
+    registerCore(cli().paths, "prod");
+    const run = await cli().run(["session", "start", "--cwd", "/tmp", "hi"], {
+      sessions: fakeSessionGateway({
+        start: async () => {
+          throw new Error("start must not run");
+        },
+      }),
+    });
     expect(run.code).toBe(EXIT_USAGE);
+    expect(run.err.join("\n")).toMatch(/--cwd/i);
   });
-});
 
-describe("actana session resume", () => {
+
   it("starts a Session on an existing conversation and reports it like `start`", async () => {
     await withRegisteredCore();
     let asked = "";
@@ -837,7 +835,7 @@ describe("actana session wait, and send --wait (#289)", () => {
     await withRegisteredCore();
     const outcome = { status: "finished", exited: true, exitCode: 0 };
 
-    const started = await cli().run(["session", "start", "web", "go", "--wait", "--json"], {
+    const started = await cli().run(["session", "start", "go", "--wait", "--json"], {
       sessions: fakeSessionGateway({
         start: async () => fakeStartedSession({ wait: async () => outcome }),
       }),
@@ -1097,7 +1095,7 @@ describe("actana session send", () => {
         },
       });
 
-    const started = await cli().run(["session", "start", "web", "go", "--wait", "--wait-timeout", "0"], {
+    const started = await cli().run(["session", "start", "go", "--wait", "--wait-timeout", "0"], {
       sessions: fakeSessionGateway({ start: async () => settle() }),
     });
     expect(started.code, started.err.join("\n")).toBe(EXIT_OK);
@@ -1223,7 +1221,7 @@ describe("actana session send", () => {
     // `start --wait` and `session wait` carry no delivery stamp, so there is no
     // `--since` to follow and the advice that names one would be a fiction.
     await withRegisteredCore();
-    const run = await cli().run(["session", "start", "web", "go", "--wait"], {
+    const run = await cli().run(["session", "start", "go", "--wait"], {
       sessions: fakeSessionGateway({
         start: async () =>
           fakeStartedSession({
@@ -1254,7 +1252,7 @@ describe("actana session send", () => {
     // timeout carries `afterEventId: 0` and the generic wording — the
     // write-specific advice must not be appended under it, and the `session
     // wait` warning has nothing to warn about there.
-    const started = await cli().run(["session", "start", "web", "go", "--wait", "--wait-timeout", "1"], {
+    const started = await cli().run(["session", "start", "go", "--wait", "--wait-timeout", "1"], {
       sessions: fakeSessionGateway({
         start: async () =>
           fakeStartedSession({
@@ -1507,7 +1505,7 @@ describe("--json means only JSON on stdout", () => {
 
     for (const argv of [
       ["session", "ls", "--json", "--verbose"],
-      ["session", "start", "web", "go", "--json", "--verbose"],
+      ["session", "start", "go", "--json", "--verbose"],
       ["session", "resume", "session_1", "--json", "--verbose"],
       ["session", "logs", "session_1", "--json", "--verbose"],
       ["session", "send", "session_1", "hi", "--json", "--verbose"],

@@ -226,13 +226,13 @@ function currentSentence(result: CorePairSuccess, isCurrent: boolean): string {
 }
 
 /**
- * The four verbs a freshly paired Core exists for, in the order they are useful.
+ * The verbs a freshly paired Core exists for, in the order they are useful.
  *
  * Verify, then look around, then do something: `core status` is the one that
- * says the link works at all, `project ls` and `harness ls` are the two things
- * a Session needs to name, and `session start` is the first real action. An
- * operator who has just carried a code across a room has earned a screen that
- * does not make them go and read the help.
+ * says the link works at all, `harness ls` is what a Session needs to name,
+ * and `session start` is the first real action. Projects are gone (ADR 0041).
+ * An operator who has just carried a code across a room has earned a screen
+ * that does not make them go and read the help.
  */
 function nextSteps(result: CorePairSuccess, isCurrent: boolean): CorePairStep[] {
   const steps: CorePairStep[] = [];
@@ -249,15 +249,11 @@ function nextSteps(result: CorePairSuccess, isCurrent: boolean): CorePairStep[] 
     note: "Reach the Core and report what it says. The check that the link works end to end.",
   });
   steps.push({
-    command: "actana project ls",
-    note: "The Projects on this Core. A Session needs one to run in.",
-  });
-  steps.push({
     command: "actana harness ls",
     note: "Which agents this Core can actually run right now, and which it is missing.",
   });
   steps.push({
-    command: 'actana session start <project> "<prompt>"',
+    command: 'actana session start "<prompt>"',
     note: "The first real thing to run on it. Prints the Session id and exits.",
   });
   // Named in #360 beside `session start` as the other first real action, and

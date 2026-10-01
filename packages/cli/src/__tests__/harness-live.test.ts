@@ -1,19 +1,11 @@
-// `project browse` and `harness` against a Core that is actually running (#161).
-// A Core has no Projects now (ADR 0041), so the Project verbs that read or wrote
-// them are not tested against one; the folder picker's `dirList` is still served.
+// `harness` against a Core that is actually running (#161).
 //
-// `project-command.test.ts` and `harness-command.test.ts` inject a client, which
+// `harness-command.test.ts` injects a client, which
 // is what makes the flags, the columns and the exit codes testable — and is
 // exactly why they cannot say whether the frames are the right frames. This
 // suite closes that: a real `PtyCoreLinkServer` over mTLS, and ports behind it
 // that answer the way a Core's own ports do.
 //
-// The Core's "disk" here is fabricated on purpose. `/srv/core-disk` does not
-// exist on the machine running this test, and the folders under it exist
-// nowhere at all — so a `browse` that printed them can only have got them from
-// the Core, over `dirList`. A listing of the operator's own filesystem is the
-// one bug this criterion is about, and it is the one bug a directory port
-// pointed at a real temp directory could not detect.
 
 import { describe, it, expect, afterEach } from "vitest";
 import { connectCore } from "../core-connection.ts";
@@ -30,7 +22,6 @@ import {
   type CoreLinkHarnessAvailabilityMap,
 } from "@actana/sdk/core";
 import type {
-  CoreDirectoryPort,
   HarnessInstallPort,
 } from "@actana/core/pty-core-link-server";
 
@@ -42,64 +33,6 @@ afterEach(() => {
   core = null;
   fixture?.cleanup();
   fixture = null;
-});
-
-/** A disk that exists on no machine, which is what makes the browse assertion mean something. */
-const coreDisk: CoreDirectoryPort = {
-  list: async (requested) => {
-    const at = requested ?? "/srv/core-disk";
-    return {
-      path: at,
-      parent: at === "/srv/core-disk" ? "/srv" : "/srv/core-disk",
-      home: "/home/actana",
-      roots: [{ label: "Home", path: "/home/actana" }],
-      entries:
-        at === "/srv/core-disk"
-          ? [
-              { name: "zzz-only-on-the-core", childCount: 2 },
-              { name: "second-folder", childCount: 0 },
-            ]
-          : [],
-      truncated: false,
-    };
-  },
-  create: async (parent, name) => `${parent}/${name}`,
-};
-
-describe("actana project browse, against a Core in this process", () => {
-
-  it("browses the Core's disk, not the operator's", async () => {
-    core = await startInProcessCore({ directoryPort: coreDisk });
-    fixture = makeCliFixture();
-    registerCore(fixture.paths, "inproc", core.blobText);
-
-    const run = await fixture.run(["project", "browse", "/srv/core-disk", "--json"], {
-      connect: connectCore,
-    });
-
-    expect(run.code, run.err.join("\n")).toBe(EXIT_OK);
-    const payload = JSON.parse(run.out.join("\n"));
-    expect(payload.path).toBe("/srv/core-disk");
-    // Folders that exist on no filesystem anywhere. Only the Core could have
-    // named them.
-    expect(payload.entries.map((e: { name: string }) => e.name)).toEqual([
-      "zzz-only-on-the-core",
-      "second-folder",
-    ]);
-    expect(payload.home).toBe("/home/actana");
-  }, 30_000);
-
-  it("passes a Core with no directory port through as a refusal", async () => {
-    core = await startInProcessCore();
-    fixture = makeCliFixture();
-    registerCore(fixture.paths, "inproc", core.blobText);
-
-    const run = await fixture.run(["project", "browse"], { connect: connectCore });
-
-    expect(run.code).toBe(EXIT_FAILURE);
-    expect(run.out).toEqual([]);
-    expect(run.err.length).toBeGreaterThan(0);
-  }, 30_000);
 });
 
 describe("actana harness, against a Core in this process", () => {
