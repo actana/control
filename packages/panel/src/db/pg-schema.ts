@@ -92,3 +92,91 @@ export const coreSecrets = pgTable("core_secrets", {
   sealed: bytea("sealed").notNull(),
   updatedAt: epochMs("updated_at").notNull(),
 });
+
+/**
+ * A Task (#568): work for an agent on a Core. `status` is one of six values and
+ * moves only along the edges in `shared/tasks.ts`, which the Task service
+ * enforces. `agent` is a plain reference with no foreign key, because the
+ * Agents tables (#569) are built in parallel. `core_id` is a Core of the same
+ * owner; deleting the Core leaves the Task and clears the link.
+ */
+export const tasks = pgTable(
+  "tasks",
+  {
+    id: text("id").primaryKey(),
+    ownerId: integer("owner_id")
+      .notNull()
+      .references(() => operator.id, { onDelete: "cascade" }),
+    title: text("title").notNull(),
+    description: text("description").notNull().default(""),
+    status: text("status").notNull().default("draft"),
+    coreId: text("core_id").references(() => cores.id, { onDelete: "set null" }),
+    agent: text("agent"),
+    attemptCount: integer("attempt_count").notNull().default(0),
+    dispatchedAt: epochMs("dispatched_at"),
+    lastError: text("last_error"),
+    createdAt: epochMs("created_at").notNull(),
+    updatedAt: epochMs("updated_at").notNull(),
+  },
+  (t) => [
+    check(
+      "tasks_status_check",
+      sql`${t.status} in ('draft', 'assigned', 'in_progress', 'done', 'failed', 'partial')`,
+    ),
+    index("tasks_owner_status_idx").on(t.ownerId, t.status),
+  ],
+);
+
+/**
+ * A comment on a Task, by a user, an agent or the system. An agent comment
+ * names the file it came from, unique per Task; the others have none.
+ * `owner_id` repeats the Task's owner so the guard's rule holds here too.
+ */
+export const taskComments = pgTable(
+  "task_comments",
+  {
+    id: text("id").primaryKey(),
+    /** Insert order, which the clock cannot give: two comments can share a millisecond. */
+    seq: bigint("seq", { mode: "number" }).generatedAlwaysAsIdentity().notNull(),
+    taskId: text("task_id")
+      .notNull()
+      .references(() => tasks.id, { onDelete: "cascade" }),
+    ownerId: integer("owner_id")
+      .notNull()
+      .references(() => operator.id, { onDelete: "cascade" }),
+    authorKind: text("author_kind").notNull(),
+    authorName: text("author_name").notNull(),
+    sourceFile: text("source_file"),
+    body: text("body").notNull(),
+    createdAt: epochMs("created_at").notNull(),
+  },
+  (t) => [
+    check("task_comments_author_kind_check", sql`${t.authorKind} in ('user', 'agent', 'system')`),
+    check(
+      "task_comments_source_file_check",
+      sql`${t.sourceFile} is null or ${t.authorKind} = 'agent'`,
+    ),
+    unique("task_comments_task_source_file_unique").on(t.taskId, t.sourceFile),
+    index("task_comments_task_idx").on(t.taskId, t.seq),
+  ],
+);
+
+/** Every status a Task has had, oldest first. `from_status` is null for the row that creates the Task. */
+export const taskStatusHistory = pgTable(
+  "task_status_history",
+  {
+    id: text("id").primaryKey(),
+    /** Insert order, which the clock cannot give: two moves can share a millisecond. */
+    seq: bigint("seq", { mode: "number" }).generatedAlwaysAsIdentity().notNull(),
+    taskId: text("task_id")
+      .notNull()
+      .references(() => tasks.id, { onDelete: "cascade" }),
+    ownerId: integer("owner_id")
+      .notNull()
+      .references(() => operator.id, { onDelete: "cascade" }),
+    fromStatus: text("from_status"),
+    toStatus: text("to_status").notNull(),
+    changedAt: epochMs("changed_at").notNull(),
+  },
+  (t) => [index("task_status_history_task_idx").on(t.taskId, t.seq)],
+);
