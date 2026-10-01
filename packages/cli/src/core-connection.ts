@@ -2,7 +2,7 @@
 //
 // `core-probe.ts` is this seam narrowed to a single round trip — connect, read
 // the handshake, hang up — and it stays as it is because `core status` needs
-// nothing else. `project`, `harness` and `events` do: they send request frames,
+// nothing else. `harness`, `events` and `session` do: they send request frames,
 // they read the event log, and one of them stays up for hours. So the same
 // trade is made once more at the right width: **one injected function that
 // hands back a connected client**, and a narrow structural type describing the
@@ -28,8 +28,6 @@ import type { CoreConnectionInfo } from "@actana/sdk/core";
 import type {
   CoreLinkEvent,
   CoreLinkHarnessAvailabilityMap,
-  CoreLinkProjectMutation,
-  CoreLinkProjectSnapshot,
   CoreLinkRequestFrame,
   CoreLinkResponseFrame,
 } from "@actana/sdk/core";
@@ -53,8 +51,6 @@ export const DEFAULT_CORE_TIMEOUT_MS = 30_000;
  */
 export type CoreLinkClient = {
   request(frame: CoreLinkRequestFrame, timeoutMs?: number): Promise<CoreLinkResponseFrame>;
-  projectsList(): Promise<CoreLinkProjectSnapshot[]>;
-  projectsMutate(mutation: CoreLinkProjectMutation): Promise<CoreLinkProjectSnapshot | null>;
   agentsAvailabilityList(): Promise<CoreLinkHarnessAvailabilityMap>;
   onEvent(cb: (msg: { event: CoreLinkEvent }) => void): () => void;
   onEventsReplayed(cb: (msg: { lastEventId: number }) => void): () => void;
