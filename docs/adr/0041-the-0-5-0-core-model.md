@@ -16,6 +16,9 @@
 >
 > **Amended by [#555](https://github.com/actana/control/issues/555)** with D27–D29 ("Landed by #555"), which only
 > record what the Core's code does; nothing in D1–D26 is changed.
+>
+> **Amended by [#557](https://github.com/actana/control/issues/557)** with D30–D32 ("Landed by #557"), which record what
+> the Files API does; D29 is superseded by D30, and nothing in D1–D28 is changed.
 
 > **On the number.** This record takes **0041**, the next free number after
 > [`0040-pi-project-trust-answered-by-extension.md`](0040-pi-project-trust-answered-by-extension.md).
@@ -116,7 +119,7 @@ These are not decided here. Each is the named ticket's to settle.
   fields (actana/client#8).
 - **The wire form of the rename** in D3, and what happens to core-link frames
   and the protocol version (#556). *Decided on 2026-09-30: a hard cut, D21.*
-- **The new Files API address and its delete and create-folder routes** (#557).
+- **The new Files API address and its delete and create-folder routes** (#557). *Decided by #557: D30–D32.*
 - **The Shared folder's change feed** and the mount mechanism (#561, #562).
 - **How the Panel's Files tab reaches Shared-folder bytes**, and so whether the
   Panel remains a "dumb pipe" (ADR 0030) for them (#565).
@@ -291,9 +294,37 @@ actana/client#10 ships no SDK client can start a Session on a 0.5.0 Core.
 and nothing else. A boot that finds any other table, or a column of `sessions` it does not define, throws and says to
 install fresh, before any DDL runs, and leaves the file as it found it. There is no migration (#552).
 
-**D29 — The Files API serves the workspace under any id until #557.** Its URL and the `outside-project-root` code are
-the published SDK's. The Core keeps answering them and no longer looks an id up: every id reaches `~`, with one write
-lease for the Core. `project-not-found` is no longer sent. #557 re-addresses the surface.
+**D29 — The Files API serves the workspace under any id until #557.** *Superseded by D30: #557 re-addressed it.*
+Its URL and the `outside-project-root` code are the published SDK's. The Core keeps answering them and no longer looks
+an id up: every id reaches `~`, with one write lease for the Core. `project-not-found` is no longer sent. #557 re-addresses the surface.
+
+## Landed by #557: the Files API at the home
+
+[#557](https://github.com/actana/control/issues/557) re-addresses the Files API. D25 and the owner's D5 already said
+it runs as `core`; these are the rules it chose where they did not say. The owner may change them by amending this
+record.
+
+**D30 — The Files API is `/v1/files?path=`, relative to `~` and confined to it.** Read, list, write (a single file, or
+a tar unpacked with its tree), **delete** (a path ending in `/` deletes a folder and everything in it; a folder
+without the slash, a slash on a file and the home itself are refused), **create folder** and **move** (a rename is a
+move in the same folder; nothing is overwritten) all take a path relative to the home. An absolute path, a `..`
+segment and a symlink that leaves the home are refused, on every operation, with the codes the published SDK lists
+(`absolute-path`, `dot-dot-segment`, `outside-project-root`). mTLS and the Bearer check are unchanged. A link is read
+through, but deleted, replaced and moved **as a link**: what it points at is never touched. All writes take the
+Core's one write lease. `/v1/projects/:id/files` and `/v1/projects/:id/files/list` remain as an alias onto the same
+handlers for the published SDK (read, write and list only, the id read by nothing), and go with actana/client#10 part 4.
+
+**D31 — Every Files operation runs as `core`, in a short-lived helper.** The daemon checks the Bearer, the route, the
+method and the write lease, then starts `core-files-op.cjs` through `asCore` (D25) with one request line and the HTTP
+body on its stdin; its stdout is the answer, a head line and then the body, relayed as it arrives. The daemon opens no
+path in `~` for the Files API, so in the container it needs nothing it does not already hold, and the files a
+transfer creates are `core`'s. A client that hangs up has the helper killed through `killAsCore`. Without a second
+user (metal) the same code runs in the daemon. Confinement lives in the helper and runs as `core`, so it can do no more
+than a Session can.
+
+**D32 — The Files API keeps the SDK's refusal codes.** Delete, create folder and move add no code: they use
+`bad-request`, `not-found`, `malformed-path` and `transfer-in-progress`, because the code list is the published SDK's
+and is actana/client#10's to extend. The code for a path outside the home stays `outside-project-root`.
 
 ## Consequences
 

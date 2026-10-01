@@ -13,12 +13,10 @@ import { cleanupTrees, makeTree } from "./files-fixture";
 let server: http.Server;
 let base: string;
 let home: string;
-let outside: string;
 let locks: WorkspaceWriteLocks;
 
 beforeEach(async () => {
   home = makeTree();
-  outside = makeTree({ "precious.txt": "keep me", "folder/inner.txt": "keep me too" });
   locks = new WorkspaceWriteLocks();
   const routes = createCoreFilesRequestHandler({ filesPort: { workspaceRoot: () => home }, locks });
   server = http.createServer();

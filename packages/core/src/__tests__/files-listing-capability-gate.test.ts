@@ -166,7 +166,6 @@ function readyFrameFrom(opts: Partial<PtyCoreLinkServerOptions>): Record<string,
  */
 async function listIfOffered(
   ready: Record<string, unknown>,
-  projectId: string,
 ): Promise<{ asked: boolean; reason?: string; status?: number; body?: string }> {
   if (readFilesCapability(ready.files) === null) {
     return { asked: false, reason: "this Core announces no file surface on `ready`" };
@@ -184,7 +183,7 @@ describe("a Core that serves the listing route", () => {
   });
 
   it("is asked, and answers the listing", async () => {
-    const result = await listIfOffered(readyFrameFrom({ httpRoutes: fileRoutes() }), "p1");
+    const result = await listIfOffered(readyFrameFrom({ httpRoutes: fileRoutes() }));
 
     expect(result.asked).toBe(true);
     expect(result.status).toBe(200);
@@ -210,7 +209,7 @@ describe("a Core with no file surface — every Core that shipped before this", 
   });
 
   it("is not asked: the client withholds the affordance and issues no request at all", async () => {
-    const result = await listIfOffered(readyFrameFrom({}), "p1");
+    const result = await listIfOffered(readyFrameFrom({}));
 
     expect(result.asked).toBe(false);
     // The assertion the clause is actually about. Not "the request was refused"
@@ -220,7 +219,7 @@ describe("a Core with no file surface — every Core that shipped before this", 
   });
 
   it("gives a reason, so the affordance is missing rather than mysteriously broken", async () => {
-    const result = await listIfOffered(readyFrameFrom({}), "p1");
+    const result = await listIfOffered(readyFrameFrom({}));
 
     expect(result.reason).toContain("no file surface");
   });
@@ -230,7 +229,7 @@ describe("a Core with no file surface — every Core that shipped before this", 
     // request would have succeeded. It is still not made: the client believes
     // `ready`, which is the contract, and a client that probes anyway is one
     // that has stopped feature-detecting.
-    const result = await listIfOffered(readyFrameFrom({}), "p1");
+    const result = await listIfOffered(readyFrameFrom({}));
 
     expect(result.asked).toBe(false);
     expect(arrived).toEqual([]);
@@ -242,7 +241,7 @@ describe("a Core with no file surface — every Core that shipped before this", 
 
 describe("a capability version this build has never seen", () => {
   it("is read as no file surface, so a client stays off the routes rather than guessing at a superset", async () => {
-    const result = await listIfOffered({ type: "ready", files: { version: 7 } }, "p1");
+    const result = await listIfOffered({ type: "ready", files: { version: 7 } });
 
     expect(result.asked).toBe(false);
     expect(arrived).toEqual([]);

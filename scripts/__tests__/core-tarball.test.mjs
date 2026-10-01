@@ -680,3 +680,18 @@ describe("the tarball stages the core-home helper beside the daemon", () => {
     expect(builder).toMatch(/file: "core-home-ops\.cjs", dist: path\.join\(repoRoot, "packages", "core", "dist"\)/);
   });
 });
+
+// ─── The Files API's helper ships in the tarball too (#557) ─────────────────
+//
+// The daemon runs every Files operation as `core` by starting `core-files-op.cjs`
+// through `asCore`, and finds it by its own `__dirname`. A tarball without it is a Core
+// whose Files API answers 500 on every request.
+
+describe("the tarball stages the Files API helper beside the daemon", () => {
+  it("builds it in the Core package and stages it into app/", () => {
+    const build = fs.readFileSync(path.join(repoRoot, "packages", "core", "build.mjs"), "utf8");
+    expect(build).toContain('outfile: "dist/core-files-op.cjs"');
+    const builder = fs.readFileSync(path.join(repoRoot, "scripts", "build-core-tarball.mjs"), "utf8");
+    expect(builder).toMatch(/file: "core-files-op\.cjs", dist: path\.join\(repoRoot, "packages", "core", "dist"\)/);
+  });
+});

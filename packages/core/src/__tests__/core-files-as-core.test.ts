@@ -24,7 +24,6 @@ import type { SpawnSpec } from "../core-identity";
 let workDir: string;
 let bundle: string;
 let home: string;
-let outside: string;
 let server: http.Server;
 let base: string;
 /** What the real `asCore` built for each helper the daemon started. */
@@ -54,7 +53,6 @@ const gid = process.getgid?.() ?? 1000;
 
 beforeEach(async () => {
   home = fs.realpathSync(fs.mkdtempSync(path.join(workDir, "home-")));
-  outside = fs.realpathSync(fs.mkdtempSync(path.join(workDir, "outside-")));
   launches = [];
   locks = new WorkspaceWriteLocks();
   kills = [];

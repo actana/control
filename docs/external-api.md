@@ -74,19 +74,37 @@ Core that does not announce `files` is **not asked** — the affordance is
 withheld rather than tried, because a 404 from a route that was never there
 reads like an outage.
 
-**A Core has no Projects (ADR 0041 D1, #555).** The `:projectId` in these routes
-is the published SDK's address, which still says Project; the Core reads no
-table and looks nothing up. Every id reaches the one workspace, the home of the
-Core's user, so the id names nothing and "Project root" below means that
-workspace. The one write at a time is per Core, not per id. Re-addressing the
-surface, and its error codes (`project-not-found` is no longer sent), is #557's.
+**A Core has no Projects (ADR 0041 D1, #555), and the Files API is addressed at its home (#557).** Every path
+below is relative to `~`, the home of the Core's user, and confined to it: an absolute path, a `..` segment and a
+symlink that leads out of the home are refused (the codes are in the table below). There is no id in the address.
+The **Shared folder** is `~/shared` (ADR 0041 D5), an ordinary folder of that home. One write at a time is per Core.
+
+**The Files API runs as `core`, not as the daemon** (ADR 0041 D25, the owner's D5). In the container the daemon is
+its own user and cannot read `~`, so each request is carried out by a short-lived helper the daemon starts through
+`asCore`: everything it reads or writes is read or written by `core`, and the files it creates are `core`'s. On a metal
+install the daemon and `core` are one user and the same code runs in the daemon. mTLS and the Bearer check are the
+daemon's and are unchanged.
 
 | Route | Does |
 | --- | --- |
-| `GET /v1/projects/:projectId/files?path=<relative>` | a file's raw bytes, or a directory as one streamed `application/x-tar` |
-| `HEAD /v1/projects/:projectId/files?path=<relative>` | the same headers, no body |
-| `PUT /v1/projects/:projectId/files?path=<relative>` | write — `Content-Type: application/x-tar` unpacks an archive into that path, anything else writes one file at it |
-| `GET /v1/projects/:projectId/files/list?path=<relative>` | the tree under that path, as a chunked `application/x-ndjson` stream — one line per entry, to arbitrary depth |
+| `GET /v1/files?path=<relative>` | a file's raw bytes, or a directory as one streamed `application/x-tar` |
+| `HEAD /v1/files?path=<relative>` | the same headers, no body |
+| `PUT /v1/files?path=<relative>` | write — `Content-Type: application/x-tar` unpacks an archive into that path and keeps its tree, anything else writes one file at it |
+| `DELETE /v1/files?path=<relative>` | delete a file or a symlink. **A path ending in `/` deletes a folder and everything in it**; a folder named without the slash, and a slash on a file, are `400 bad-request`. The home itself is `400 malformed-path`, however it is spelt. A symlink is removed as a link: what it points at is never touched |
+| `POST /v1/files/folder?path=<relative>` | create a folder and its parents. `201`, or `200` with `"created": false` when it is already there; a name that is a file is `400` |
+| `POST /v1/files/move` with `{"from": …, "to": …}` | rename or move inside the home. Nothing is overwritten (`409` when the destination exists), the destination's folder must exist (`404`), and a folder cannot go into itself. A link is moved as a link |
+| `GET /v1/files/list?path=<relative>&depth=<n>&sha256=1` | the tree under that path, as a chunked `application/x-ndjson` stream — one line per entry, to arbitrary depth |
+
+Delete, create folder and move answer a small JSON document (`{"path", "kind", "deleted"}`, `{"path", "created"}`,
+`{"from", "to", "moved"}`) and, like `PUT`, take the Core's one write lease, so they are refused with
+`409 transfer-in-progress` while an upload runs. Any request that names a path outside the home, or reaches it
+through a symlink, is a `400` and changes nothing.
+
+**The old address is an alias, for now.** `GET`, `HEAD` and `PUT` on `/v1/projects/:projectId/files` and `GET` on
+`/v1/projects/:projectId/files/list` are the published SDK's, which still builds that URL, and the Panel reaches the Core
+through it. They are the same handlers as the routes above, the id names nothing and is not read, and they carry no
+delete, folder or move. The alias goes with actana/client#10 part 4, when the SDK's Files client is re-addressed at
+`/v1/files`.
 
 `PUT` answers `200` with a chunked `application/x-ndjson` progress stream, one
 line per entry carrying `{path, size, mtime, mode, sha256}` and a `result` of
@@ -96,15 +114,15 @@ the first entry.
 
 ### Listing
 
-`GET …/files/list` streams the same five fields per entry, plus a `kind` of
-`file`, `directory` or `symlink`. Paths are relative to the **Project root**,
+`GET /v1/files/list` streams the same five fields per entry, plus a `kind` of
+`file`, `directory` or `symlink`. Paths are relative to the **home**,
 not to the subtree that was listed, so what comes back is what goes into a
 later `?path=`. Nothing is buffered at either end: entries go out as the walk
 produces them and a large tree costs the Core the same memory as a small one.
 
 | Parameter | Default | Means |
 | --- | --- | --- |
-| `path` | the Project root | which subtree to list. Naming a file lists that one file |
+| `path` | the home | which subtree to list. Naming a file lists that one file |
 | `depth` | `all` | how many levels down to walk. `1` is the immediate children. A value that is neither `all` nor a whole number ≥ 1 is a `400`, never a silent "everything" |
 | `sha256` | `0` | compute the digest of every file and symlink. Off by default — see below |
 
@@ -116,7 +134,7 @@ produces them and a large tree costs the Core the same memory as a small one.
 
 A symlink is an entry and is **never followed**: its `size` is the length of
 its target and, with `sha256=1`, the digest is of the target string. So a link
-pointing out of the Project is reported as a fact about the Project without
+pointing out of the home is reported as a fact about the home without
 anything on the other end of it appearing in the listing. A directory that
 cannot be read, or a file that cannot be read to digest it, is a `skipped` line
 and the rest of the tree still lists.
@@ -127,7 +145,7 @@ away underneath it — arrives as a fourth line type and the stream stops there:
 
 ```jsonc
 {"type":"entry","path":"src/index.ts","kind":"file","size":184,"mtime":1755000000000,"mode":420,"sha256":null}
-{"type":"error","code":"read-failed","message":"EIO: i/o error, scandir '/srv/project/vendor'"}
+{"type":"error","code":"read-failed","message":"EIO: i/o error, scandir '/home/core/vendor'"}
 ```
 
 The status line was spent on the first entry, so this is the only place left to
@@ -156,15 +174,15 @@ Refusals carry a machine-readable `code` beside the prose:
 
 | Status | Code | Means |
 | --- | --- | --- |
-| 400 | `absolute-path`, `dot-dot-segment`, `outside-project-root`, `malformed-path` | the path does not name anything inside that Project a write can land on. A 400 and not a 403: this is an accident guard, not a permission model ([ADR 0027](adr/0027-the-filesystem-is-the-model.md) D5). `malformed-path` also answers a single-file `PUT` whose path resolves to the Project root itself — see below |
+| 400 | `absolute-path`, `dot-dot-segment`, `outside-project-root`, `malformed-path` | the path does not name anything inside the home a request can act on. A 400 and not a 403: this is an accident guard, not a permission model ([ADR 0027](adr/0027-the-filesystem-is-the-model.md) D5). `malformed-path` also answers a single-file `PUT` whose path resolves to the home itself, as does a `DELETE`, a `POST …/folder` and a `POST …/move` of it — see below |
 | 401 | `unauthorized` | no bearer, or one this Core refuses |
-| 400 | `bad-request` | a query parameter the surface does not understand — a `depth` that is not a number, a `sha256` that is not a yes or a no |
-| 404 | `project-not-found`, `not-found` | no such Project on this Core, or no such path in it |
-| 405 | `method-not-allowed` | `…/files/list` is a read: `GET` and `HEAD` only |
-| 409 | `transfer-in-progress` | another write is already running on this Project. One write at a time per Project; reads are unrestricted and concurrent |
+| 400 | `bad-request` | a query parameter the surface does not understand — a `depth` that is not a number, a `sha256` that is not a yes or a no — or a delete, folder or move the surface will not do: a folder without its trailing `/`, a slash on a file, a folder made where a file is, a folder moved into itself, a body that is not `{from, to}` |
+| 404 | `project-not-found`, `not-found` | no such path in the home, or a move whose destination folder does not exist. `project-not-found` is the published SDK's code and is **no longer sent**: a Core has no Projects |
+| 405 | `method-not-allowed` | `…/files/list` is a read: `GET` and `HEAD` only. `/v1/files/folder` and `/v1/files/move` are `POST` only |
+| 409 | `transfer-in-progress` | another write is already running in the home — an upload, a delete, a new folder or a move. One write at a time per Core; reads are unrestricted and concurrent |
 | 409 | `directory-in-the-way` | a **file** write landed on a path holding a non-empty directory. Overwrite-by-default replaces files; it does not delete trees |
 | — | `root-entry-path` | a tar entry that is not a directory resolved to the unpack root itself. Reported as an NDJSON `error` line, since a tar `PUT` has already answered `200` by the time an entry is read — see below |
-| 507 | `insufficient-storage` | the declared body length does not fit on the Project's filesystem. There is no size cap — only a fit check |
+| 507 | `insufficient-storage` | the declared body length does not fit on the home's filesystem. There is no size cap — only a fit check |
 
 **The rest of the vocabulary has no status line to arrive on.** A tar `PUT` and
 a listing both spend their `200` on the first entry, long before either is
@@ -177,12 +195,12 @@ will look for it beside the others.
 | Code | Means |
 | --- | --- |
 | `corrupt-archive` | the bytes stopped being a tar: a header checksum that does not match, a stream that ended mid-record, a numeric field that is negative |
-| `absolute-entry-path` | an entry named `/etc/passwd`. An unpack is always relative to the Project, and an absolute name is refused rather than reinterpreted |
+| `absolute-entry-path` | an entry named `/etc/passwd`. An unpack is always relative to the home, and an absolute name is refused rather than reinterpreted |
 | `dot-dot-entry-path` | an entry whose name carries a `..` segment |
-| `entry-outside-root` | an entry whose destination resolved outside the Project — including through a symlink an **earlier entry of the same archive** created. Every entry is resolved through the symlinks that exist at the moment it is written, which is why this is checked after resolution and not on the string |
+| `entry-outside-root` | an entry whose destination resolved outside the home — including through a symlink an **earlier entry of the same archive** created. Every entry is resolved through the symlinks that exist at the moment it is written, which is why this is checked after resolution and not on the string |
 | `unsupported-entry-type` | a device node, a fifo, or any ustar type this surface does not create. A file transfer moves files, directories and links |
-| `hardlink-outside-root` | a hard link whose target resolves outside the Project |
-| `symlink-outside-root` | a symlink whose target resolves outside the Project. The link is refused; a symlink *pointing* out of a Project is still listed and still transferred as a link, since it is a fact about the Project rather than a way out of it |
+| `hardlink-outside-root` | a hard link whose target resolves outside the home |
+| `symlink-outside-root` | a symlink whose target resolves outside the home. The link is refused; a symlink *pointing* out of the home is still listed and still transferred as a link, since it is a fact about the home rather than a way out of it |
 | `directory-in-the-way` | the same refusal as the 409 above, met mid-archive instead of on a single-file `PUT` |
 | `read-failed` | a **listing** stopped part-way for a reason no single path can be blamed for — the directory read itself failing, a mount going away underneath the walk. Distinct from a `skipped` line, which costs one path and lets the walk continue |
 | `write-failed` | the write failed for a reason no entry can be blamed for — the disk filled mid-transfer, the filesystem returned an error. It is also the `500` this surface answers when a request fails in a way it cannot name |
@@ -207,14 +225,14 @@ deleting `src` and reporting an ordinary `overwritten` line would make the
 damage silent. An **empty** directory is still replaced — there is nothing to
 lose, and a stray `mkdir` should not wedge a path forever.
 
-**The Project root is never the target of a single-file write.** A `PUT` of one
-file whose `path` resolves to the root — omitted entirely, `?path=`, or
+**The home is never the target of a single-file write.** A `PUT` of one
+file whose `path` resolves to the home — omitted entirely, `?path=`, or
 `?path=.` — is refused `400 malformed-path`: a single-file write needs a name,
 and "nothing to lose" is true of an empty subfolder and false of the root, which
-has its shape to lose even when it holds no bytes. A Project whose root is a
+has its shape to lose even when it holds no bytes. A home that is a
 regular file has no listing, no transfers and no working directory for a
 harness. A `PUT` of a **tar** with an empty path is unaffected: that is the
-legitimate "unpack into the Project root", a write of the root's contents rather
+legitimate "unpack into the home", a write of the root's contents rather
 than of the root.
 
 **Nor is it the target of a tar entry.** An archive carries the root's
@@ -222,23 +240,25 @@ contents, so an entry that resolves to the root itself — `.`, `./`, `./.`, a
 nameless entry, a name that is nothing but slashes, or any of those arriving
 through a pax `path` or GNU long-name override — is refused mid-archive with
 `root-entry-path`. A *regular file*
-entry named `.` reproduces the single-file case exactly: on an empty Project it
+entry named `.` reproduces the single-file case exactly: on an empty home it
 would delete the root and put a file at its path, and because a tar `PUT`
 answers `200` before it reads a byte, the client would have been told the
 transfer succeeded. The one exception is a **directory** entry naming the root,
 which is the `./` header every `tar -cf - .` archive opens with: it is skipped,
 not refused, and its mode bits are not applied — a dropped archive does not
-restyle the Project root's permissions.
+restyle the home's permissions.
 
-A write transfer holds its Project's lease only for as long as the request
+A write holds the Core's lease only for as long as the request
 lives. A client that aborts mid-upload — including one whose progress stream has
-backpressured — releases it, so the 409 above is never permanent.
+backpressured — releases it, and the helper that was doing the write is stopped, so the 409 above is never permanent.
 
 ### `project.files.*` — the surface to type against
 
 The routes above are the wire. What a third party writes against is
 `@actana/sdk`, where the same three operations are `list`, `upload` and
-`download` on a Project handle:
+`download` on a Project handle. The published SDK still addresses the old
+`/v1/projects/:projectId/files` alias (above), and has no delete, folder or move
+yet; both come with actana/client#10:
 
 ```js
 const project = client.project(projectId);
