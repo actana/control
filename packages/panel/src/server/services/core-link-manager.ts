@@ -1,4 +1,4 @@
-import { DurableCoreClient } from "@actana/sdk/core";
+import { DurableCoreClient, type CoreClient } from "@actana/sdk/core";
 import {
   advanceCoreCursor,
   getCore,
@@ -87,6 +87,12 @@ export interface CoreLinkClientLike {
    */
   onReclaimed(cb: (msg: { replaced: boolean; sessionIds: string[] }) => void): () => void;
   close(): void;
+  /**
+   * The SDK client behind this link, on the real one. The dispatcher (#570) starts a
+   * Session through `CoreSession.start`, which takes the SDK's client and not this
+   * port. A fake link has none, and the dispatcher says so instead of guessing.
+   */
+  readonly sdk?: CoreClient;
 }
 
 /**
@@ -492,6 +498,7 @@ function asPanelLink(client: DurableCoreClient): CoreLinkClientLike {
     canSendMultiConnectionFrames: () => client.canSendMultiConnectionFrames(),
     onReclaimed: (cb) => client.onReclaimed(cb),
     close: () => client.close(),
+    sdk: client,
   };
 }
 

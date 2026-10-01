@@ -2,6 +2,7 @@ import { ConflictError, NotFoundError, ValidationError } from "../errors";
 import { findCoreById } from "../repositories/cores.repo";
 import { findCommentsForTask, insertComment } from "../repositories/task-comments.repo";
 import {
+  claimAssignedTask,
   deleteTaskRow,
   findTaskById,
   findTaskHistory,
@@ -267,10 +268,11 @@ async function move(
   comment?: CommentFields,
   /** Narrower than the rules when a call is only for some of the moves into `to`. */
   legalFrom: readonly TaskStatus[] = statusesBefore(to),
+  patch?: { lastError?: string | null },
 ): Promise<Task> {
   if (!isTaskStatus(to)) throw new ValidationError(`unknown status: ${String(to)}`);
   const result = await writeComment(comment?.sourceFile ?? null, () =>
-    transitionTask(ownerId, id, legalFrom, to, now, newId("tsh"), comment, ({ from, task }) => {
+    transitionTask(ownerId, id, legalFrom, to, now, newId("tsh"), comment, patch ?? {}, ({ from, task }) => {
       const events: NewOutboxRow[] = [];
       if (comment) {
         events.push(
@@ -332,6 +334,75 @@ export async function commentAndReassign(
   now = Date.now(),
 ): Promise<Task> {
   return move(ownerId, id, "assigned", now, cleanComment(input), FINISHED_TASK_STATUSES);
+}
+
+/**
+ * Claim an `assigned` Task for dispatch (#570): one conditional update, so of two
+ * dispatchers only one gets the Task back and the other gets null. The Task is
+ * `in_progress` afterwards, with its attempt count plus one and its dispatch time
+ * set. A Task of another owner is null too.
+ */
+export async function claimTask(ownerId: number, id: string, now = Date.now()): Promise<Task | null> {
+  return claimAssignedTask(ownerId, id, now, newId("tsh"));
+}
+
+/**
+ * Dispatch could not start the Task's Session: `in_progress` to `failed` (a legal
+ * move), with the reason as the Task's last error and as a system comment, in one
+ * transaction. The Task is not left `in_progress` with nothing running, and not
+ * put back to `assigned` to be claimed again in a loop.
+ */
+export async function failTaskDispatch(ownerId: number, id: string, reason: string, now = Date.now()): Promise<Task> {
+  const comment = cleanComment({
+    authorKind: "system",
+    authorName: "Panel",
+    body: `Dispatch failed: ${reason}`,
+  });
+  return move(ownerId, id, "failed", now, comment, ["in_progress"], { lastError: reason });
+}
+
+export type TaskResultInput = {
+  /** The status the result file stands for. */
+  to: "done" | "failed" | "partial";
+  authorName: string;
+  /** The report. */
+  body: string;
+  /** The file the report came from, unique per Task: the Task's comments are keyed on it. */
+  sourceFile: string;
+};
+
+/**
+ * A result file's one agent comment and its one status move, in one transaction
+ * and through the same rules as every other move (#570). `in_progress` is the
+ * only status a result can move a Task out of, so a Task that already finished
+ * (an earlier result file of the same attempt won) keeps its status and the
+ * report is still kept, as a comment with no move: `moved` says which happened.
+ * A file that already has its comment throws {@link DuplicateTaskCommentSourceError}.
+ */
+export async function applyTaskResult(
+  ownerId: number,
+  id: string,
+  input: TaskResultInput,
+  now = Date.now(),
+): Promise<{ task: Task; moved: boolean }> {
+  const comment = cleanComment({
+    authorKind: "agent",
+    authorName: input.authorName,
+    body: input.body,
+    sourceFile: input.sourceFile,
+  });
+  try {
+    return { task: await move(ownerId, id, input.to, now, comment), moved: true };
+  } catch (err) {
+    if (!(err instanceof IllegalTaskTransitionError)) throw err;
+  }
+  await addTaskComment(
+    ownerId,
+    id,
+    { authorKind: "agent", authorName: input.authorName, body: input.body, sourceFile: input.sourceFile },
+    now,
+  );
+  return { task: await getTask(ownerId, id), moved: false };
 }
 
 export { canMoveTask };

@@ -12,6 +12,10 @@ import { stopWebhookDeliveryWorkerForTests } from "../services/webhook-delivery-
  * this the manager started at import time, from a SQLite file.
  */
 
+// `bootPanel` also starts the Task dispatcher (#570). These tests are about when the Cores are dialed, over a bare
+// one-connection database, so the dispatcher is stubbed out here; `task-dispatch/__tests__/wiring.test.ts` covers it.
+vi.mock("../task-dispatch", () => ({ startTaskDispatch: vi.fn(), stopTaskDispatch: vi.fn() }));
+
 const env = { [DATABASE_URL_ENV]: "postgres://panel:pw@db.internal:5432/panel" };
 const open: TestDb[] = [];
 

@@ -19,6 +19,7 @@ export { attachPanelLink } from "~/server/panel-link/ws-server";
  */
 export { bootPanel as connectPanelDatabase } from "~/server/panel-boot";
 export { closePanelDatabase } from "~/db/pg";
+export { closePanel } from "~/server/panel-boot";
 
 /**
  * The Node ↔ Web translation `bin/panel.mjs` serves every request through
