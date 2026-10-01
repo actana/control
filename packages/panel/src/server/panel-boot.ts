@@ -1,5 +1,6 @@
 import { bootPanelDatabase } from "~/db/pg-boot";
 import { coreLinkManager } from "./services/core-link-manager";
+import { startWebhookDeliveryWorker } from "./services/webhook-delivery-worker";
 
 /**
  * Bring the Panel's database up, then the core links that read it.
@@ -23,5 +24,6 @@ export async function bootPanel(
         `[panel] could not dial the registered Cores: ${err instanceof Error ? err.message : String(err)}`,
       );
     });
+  startWebhookDeliveryWorker();
   return pool;
 }
