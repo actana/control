@@ -80,7 +80,10 @@ export function nodeActanaSystem(): ActanaSystem {
       } catch {
         // ESRCH (gone) and EPERM (someone else's) are both "cannot nudge it",
         // and the caller's fallback — waiting for the next probe tick — is the
-        // same answer to either.
+        // same answer to either. In the container the daemon is `actana` and
+        // this CLI is usually `core`, so EPERM is the ordinary answer there
+        // (#559); `runningDaemonPid` does not even look for the pid in a
+        // container, and the fallback is the same one-minute wait.
         return false;
       }
     },
