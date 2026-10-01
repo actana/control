@@ -62,7 +62,7 @@ import type { ParsedArgs } from "./cli-args.ts";
 /** How long `core status` waits for a Core to answer. */
 const STATUS_TIMEOUT_MS = 15_000;
 
-export const CORE_HELP = `actana core — the Cores this machine can reach
+const CORE_HELP = `actana core — the Cores this machine can reach
 
 Usage
   actana core pair <name> <address> <code> --session <id> --fingerprint <sha256>

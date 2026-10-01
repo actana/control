@@ -6,7 +6,7 @@ import * as path from "node:path";
  * operator names none. Also the legacy app database's home (see db/client.ts),
  * which is why it lives here rather than inside either database module.
  */
-export function defaultAppDataDir(): string {
+function defaultAppDataDir(): string {
   const home = os.homedir();
   if (process.platform === "darwin") {
     return path.join(home, "Library/Application Support/Actana Control");

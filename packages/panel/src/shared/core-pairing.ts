@@ -109,7 +109,7 @@ export function fingerprintCheck(expected: string, presented: string | null): Fi
  * a leading `sha256:` are all things a human copying off a terminal brings
  * along, and none of them is a mismatch.
  */
-export function normalizeFingerprint(input: string): string | null {
+function normalizeFingerprint(input: string): string | null {
   const hex = input.trim().replace(/^sha-?256[:=]/i, "").replace(/[\s:]/g, "").toUpperCase();
   if (!/^[0-9A-F]{64}$/.test(hex)) return null;
   return (hex.match(/../g) ?? []).join(":");

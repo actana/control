@@ -3,7 +3,7 @@ import { Btn } from "~/components/ui/Btn";
 import { HotkeyTooltip } from "~/components/ui/Tooltip";
 import { useHotkey } from "~/lib/use-hotkey";
 
-export const CODEX_HOOKS_NOTICE_STORAGE_KEY = "mc.codexHooksNoticeSeen";
+const CODEX_HOOKS_NOTICE_STORAGE_KEY = "mc.codexHooksNoticeSeen";
 
 export function hasSeenCodexHooksNotice(): boolean {
   try {

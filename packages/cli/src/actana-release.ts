@@ -30,19 +30,12 @@ import type { ReleaseFetcher } from "@actana/shared/actana-release-fetch";
 export { nodeReleaseFetcher, type ReleaseFetcher } from "@actana/shared/actana-release-fetch";
 
 export {
-  BETA_SUFFIX,
-  betaVersionForLine,
   DEFAULT_API_BASE,
   DEFAULT_DOWNLOAD_BASE,
   DEFAULT_REPO,
-  isBetaVersion,
-  latestReleaseUrl,
   lineOf,
   parseLatestTag,
   releaseChannel,
-  releaseTagUrl,
-  resolveLine,
-  type LineResolution,
   type ReleaseChannel,
 } from "@actana/shared/actana-release-channel";
 

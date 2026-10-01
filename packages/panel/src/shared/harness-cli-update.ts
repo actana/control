@@ -1,39 +1,5 @@
-/**
- * One-click CLI updates for the managed agents.
- *
- * The per-platform update commands in HARNESS_CLI_CONFIG are alternatives, not
- * steps — which one is safe to run depends on how the CLI was installed
- * (`npm install -g` over a brew install leaves two binaries shadowing each
- * other). The install method is sniffed from the resolved binary's real path
- * and the matching command is picked; unknown installs prefer the CLI's own
- * self-updater, which updates in place regardless of origin.
- *
- * The renderer only ever sends an agent id over IPC — the command is chosen
- * in the main process from this compiled-in config, so no shell string
- * crosses the IPC boundary.
- */
-
-import type { Harness } from "../../../shared/src/domain";
 
 export type HarnessCliInstallMethod = "npm" | "homebrew" | "other";
-
-export type HarnessCliUpdateRun =
-  | { ok: true; agent: Harness; command: string; version: string | null }
-  | {
-      ok: false;
-      agent: Harness;
-      command?: string;
-      reason:
-        | "unsupported-agent"
-        | "not-installed"
-        | "no-update-command"
-        | "already-running"
-        | "spawn-failed"
-        | "timeout"
-        | "failed";
-      exitCode?: number | null;
-      output?: string;
-    };
 
 /**
  * Classify an installed binary by its real (symlink-resolved) path. npm is

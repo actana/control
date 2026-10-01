@@ -75,19 +75,19 @@ export const INSTALLER_STAMP_FILE = "install.sh";
 export const INSTALLER_STAMP_PATTERN = /^LINE="([^"]*)"$/m;
 
 /** A line: three numeric components and nothing else. */
-export const LINE_PATTERN = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
+const LINE_PATTERN = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 
 /** The one beta suffix there is (ADR 0036 C1). */
 export const BETA_SUFFIX = "-beta";
 
 /** A beta: a line and the bare word, with nothing after it. */
-export const BETA_PATTERN = new RegExp(`^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)${BETA_SUFFIX}$`);
+const BETA_PATTERN = new RegExp(`^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)${BETA_SUFFIX}$`);
 
 /**
  * Any prerelease of a line. The character class is `release.yml`'s own tag
  * regex, so a string this module accepts is a string that workflow accepts.
  */
-export const PRERELEASE_PATTERN = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)-([0-9A-Za-z.-]+)$/;
+const PRERELEASE_PATTERN = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)-([0-9A-Za-z.-]+)$/;
 
 /** `true` for `x.y.z`. */
 export const isLine = (version) => LINE_PATTERN.test(String(version ?? ""));

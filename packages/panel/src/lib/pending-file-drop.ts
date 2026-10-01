@@ -42,7 +42,3 @@ export function takeProjectFileDrop(projectId: string): PendingDrop | null {
   return taken;
 }
 
-/** @internal — suites that must not inherit a previous test's parked drop. */
-export function clearProjectFileDropForTests(): void {
-  pending = null;
-}

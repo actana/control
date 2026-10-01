@@ -2,7 +2,6 @@ import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { Btn } from "~/components/ui/Btn";
-import { Icon } from "~/components/ui/Icon";
 import { Field, SettingsSection } from "~/components/views/SettingsParts";
 import { ApiError, api, type AppSettings } from "~/lib/api";
 import { syncDefaultRuntimeDefaults } from "~/lib/default-model-store";
@@ -217,7 +216,7 @@ export function DefaultsSettingsPage() {
   );
 }
 
-export function modelForSelectedHarness(
+function modelForSelectedHarness(
   agent: Harness,
   model: AiModelId | null,
 ): AiModelId | null {
@@ -326,7 +325,7 @@ function featureHeadingId(featureId: DefaultsFeatureId): string {
   return `defaults-feature-heading-${featureId}`;
 }
 
-export function RuntimeDefaultControl({
+function RuntimeDefaultControl({
   agent,
   model,
   disabled,

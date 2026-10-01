@@ -9,7 +9,7 @@
 // controls) is intentionally NOT listed here: those have no hotkey-only path,
 // so hiding them would strand the action.
 
-export const HEADER_BUTTON_KEYS = [
+const HEADER_BUTTON_KEYS = [
   "notifications",
   "gridView",
 ] as const;

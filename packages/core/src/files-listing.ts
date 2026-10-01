@@ -29,7 +29,7 @@ import * as path from "node:path";
  * an upload's progress stream are reading the same manifest shape, which is
  * the shape F10's future diff endpoint compares.
  */
-export type FileListingEntry = {
+type FileListingEntry = {
   /** Project-relative, `/`-separated. Never absolute, never `..`. */
   path: string;
   kind: "file" | "directory" | "symlink";
@@ -50,7 +50,7 @@ export type FileListingEntry = {
 };
 
 /** Why one path of the tree is not in the listing, while the rest of it is. */
-export type FileListingSkipCode =
+type FileListingSkipCode =
   /** `opendir` refused — permissions, most often. Its parent is still listed. */
   | "unreadable-directory"
   /** A digest was asked for and the file's bytes could not be read. */

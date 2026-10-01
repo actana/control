@@ -196,7 +196,7 @@ function matchRing(capacity: number): MatchRing {
   };
 }
 
-export const EVENTS_HELP = `actana events tail — follow a Core's event log
+const EVENTS_HELP = `actana events tail — follow a Core's event log
 
 Usage
   actana events tail [flags]

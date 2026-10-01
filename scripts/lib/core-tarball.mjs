@@ -136,7 +136,7 @@ exec "$ACTANA_ROOT/node/bin/node" "$ACTANA_ROOT/app/actana-cli.cjs" "$@"
  * packages the Core never `require()`s. The tarball ships the already-built
  * binding, so nothing in it can reach this code.
  */
-export const DEPENDENCY_EXCLUSIONS = Object.freeze(["prebuild-install"]);
+const DEPENDENCY_EXCLUSIONS = Object.freeze(["prebuild-install"]);
 
 /**
  * Paths dropped from a copied dependency, relative to its package root.

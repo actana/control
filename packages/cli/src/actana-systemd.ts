@@ -20,7 +20,7 @@ import type { ActanaServiceState } from "./actana-service.ts";
 export const UNIT_NAME = "actana-core.service";
 
 /** Journal identifier the unit tags its output with — what `actana logs` filters on. */
-export const SYSLOG_IDENTIFIER = "actana-core";
+const SYSLOG_IDENTIFIER = "actana-core";
 
 /**
  * The unit setup wrote when the machine was called a Harness.

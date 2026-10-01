@@ -50,7 +50,7 @@ import * as path from "node:path";
 import { parsePublicHosts, primaryPublicHost } from "./public-hosts";
 
 /** The marker the image bakes. Set by us, so it means *our* container. */
-export const CONTAINER_ENV = "ACTANA_CONTAINER";
+const CONTAINER_ENV = "ACTANA_CONTAINER";
 
 /**
  * Required in container mode: the address a Panel dials this Core on, or the

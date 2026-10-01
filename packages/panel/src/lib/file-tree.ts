@@ -25,7 +25,7 @@
 import type { CoreFileEntry } from "~/lib/core-files";
 
 /** A directory is a directory; everything else is judged by its mode bits. */
-export function isDirectoryEntry(entry: CoreFileEntry): boolean {
+function isDirectoryEntry(entry: CoreFileEntry): boolean {
   if (entry.kind) return entry.kind === "directory";
   // S_IFDIR. A listing that predates the `kind` field still says so in `mode`.
   return (entry.mode & 0o170000) === 0o040000;

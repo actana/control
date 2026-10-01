@@ -1,7 +1,6 @@
 import { Fragment, type CSSProperties, type ReactNode } from "react";
 import { formatBindingParts } from "~/lib/keybindings/format";
-import { useBinding } from "~/lib/keybindings/store";
-import type { Binding, HotkeyAction } from "~/lib/keybindings/types";
+import type { Binding,  } from "~/lib/keybindings/types";
 
 export type KbdVariant = "onPrimary" | "ghost" | "inline";
 
@@ -130,16 +129,3 @@ export function KbdCombo({
   );
 }
 
-/** Render the user's current binding for an action. */
-export function KbdAction({
-  action,
-  variant = "ghost",
-  style,
-}: {
-  action: HotkeyAction;
-  variant?: KbdVariant;
-  style?: CSSProperties;
-}) {
-  const binding = useBinding(action);
-  return <KbdCombo binding={binding} variant={variant} style={style} />;
-}

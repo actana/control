@@ -263,7 +263,7 @@ const COMMAND_ENTRIES = [
  * a package that is neither is unreachable and refused by
  * {@link assertPackedManifest}.
  */
-export function packageKind(packed) {
+function packageKind(packed) {
   return {
     library: packed.exports !== undefined,
     command: packed.bin !== undefined,

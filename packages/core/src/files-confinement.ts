@@ -23,7 +23,7 @@ import * as path from "node:path";
  * symlink resolving outside — are three different operator mistakes and read
  * back as three different sentences.
  */
-export type FileConfinementRefusal =
+type FileConfinementRefusal =
   | "absolute-path"
   | "dot-dot-segment"
   | "outside-project-root"

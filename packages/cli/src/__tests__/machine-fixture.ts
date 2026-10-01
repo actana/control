@@ -104,7 +104,7 @@ export function realTar(command: string, args: string[]): CommandResult {
 }
 
 /** A release fetcher no test asked for. Reaching it is the failure. */
-export function refusingFetcher(): ReleaseFetcher {
+function refusingFetcher(): ReleaseFetcher {
   return {
     async fetchText(url) {
       throw new Error(`this test did not expect to fetch ${url}`);

@@ -82,13 +82,3 @@ export function loadProjectRoots(): string[] {
   }
 }
 
-export function disposeProjectRootsDb(): void {
-  if (db) {
-    try {
-      db.close();
-    } catch {
-      /* already closed */
-    }
-    db = null;
-  }
-}

@@ -12,7 +12,7 @@
 // the refusals without starting a daemon or binding a port.
 
 /** The prefix every variable a pre-rename install set carries. */
-export const LEGACY_ENV_PREFIX = "AC_HARNESS_";
+const LEGACY_ENV_PREFIX = "AC_HARNESS_";
 
 /**
  * Hosts that mean "this machine only" — the addresses loopback mode assumes.

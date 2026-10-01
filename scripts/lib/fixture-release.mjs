@@ -121,7 +121,7 @@ export function indexReleases(fileNames) {
  * rather than a loose search, so a stamp that stopped being rewritable by that
  * command fails here rather than in a train's first pull request.
  */
-export const INSTALLER_STAMP_PATTERN = /^LINE="([^"]*)"$/m;
+const INSTALLER_STAMP_PATTERN = /^LINE="([^"]*)"$/m;
 
 /** The line a copy of `install.sh` is stamped with, given its text. */
 export function installerStamp(text) {

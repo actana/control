@@ -64,7 +64,7 @@ export const SWEEPABLE_REPOSITORIES = ["panel-dev", "core-dev"];
 export const DEFAULT_MAX_AGE_DAYS = 30;
 
 /** The architectures container-image.yml builds, and so the scaffolding suffixes. */
-export const ARCHITECTURES = ["amd64", "arm64"];
+const ARCHITECTURES = ["amd64", "arm64"];
 
 const PR_IMAGE_TAG = /^pr-([1-9]\d*)(20\d{2})(0[1-9]|1[0-2])$/;
 const PR_SCAFFOLD_TAG = new RegExp(`^pr-([1-9]\\d*)-(${ARCHITECTURES.join("|")})$`);

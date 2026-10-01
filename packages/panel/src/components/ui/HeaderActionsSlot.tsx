@@ -1,5 +1,4 @@
 import { createContext, useContext, useState, type ReactNode } from "react";
-import { createPortal } from "react-dom";
 
 type Ctx = {
   target: HTMLElement | null;
@@ -36,8 +35,3 @@ export function HeaderActionsSlot({ style }: { style?: React.CSSProperties }) {
   );
 }
 
-export function HeaderActions({ children }: { children: ReactNode }) {
-  const { target } = useContext(HeaderActionsCtx);
-  if (!target) return null;
-  return createPortal(children, target);
-}

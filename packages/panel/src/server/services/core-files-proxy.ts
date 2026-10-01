@@ -58,7 +58,7 @@ export type CoreFilesTarget = {
 };
 
 /** Why a Core cannot be piped to right now, in words an operator can act on. */
-export type CoreFilesRefusal = {
+type CoreFilesRefusal = {
   status: number;
   code: "no-such-core" | "core-unreachable" | "files-unsupported" | "core-credentials";
   message: string;
@@ -264,7 +264,7 @@ export function forwardedRequestHeaders(from: Headers): Record<string, string> {
   return headers;
 }
 
-export function forwardedResponseHeaders(from: Headers): Headers {
+function forwardedResponseHeaders(from: Headers): Headers {
   const headers = new Headers();
   for (const name of FORWARDED_RESPONSE_HEADERS) {
     const value = from.get(name);

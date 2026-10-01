@@ -74,7 +74,7 @@ export function operatorExists(): boolean {
   return readRow() !== null;
 }
 
-export function hashPassword(password: string): string {
+function hashPassword(password: string): string {
   const salt = randomBytes(SALT_BYTES);
   const derived = scryptSync(password.normalize("NFKC"), salt, SCRYPT_KEY_LENGTH, {
     N: SCRYPT_COST,
@@ -96,7 +96,7 @@ export function hashPassword(password: string): string {
  * Verify a password against a stored hash. Reads the KDF parameters back out of
  * the hash so raising them later leaves existing Operators able to log in.
  */
-export function verifyPasswordHash(password: string, stored: string): boolean {
+function verifyPasswordHash(password: string, stored: string): boolean {
   const [scheme, cost, blockSize, parallelization, salt, expected] = stored.split("$");
   if (scheme !== "scrypt" || !salt || !expected) return false;
   const N = Number(cost);

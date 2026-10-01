@@ -9,7 +9,7 @@ import { resolveShell, shellBasename } from "./login-shell";
 // Re-exported so this stays the one module the Core's spawn path reads a shell
 // name off; the definitions live in `@actana/shared/login-shell` because
 // `operator-login-path.ts` reads the same two on the CLI's side of #288 D1.
-export { resolveShell, shellBasename };
+export { resolveShell };
 
 const SHELL_ENV_START = "__MISSION_CONTROL_ENV_START__";
 const SHELL_ENV_END = "__MISSION_CONTROL_ENV_END__";
@@ -244,17 +244,6 @@ export function buildUserPath(
     seen.add(key);
     return true;
   }).join(delimiter);
-}
-
-export function augmentProcessEnv(): void {
-  const shellEnv = userShellEnv();
-  const mergedEnv = { ...process.env, ...shellEnv };
-  setCanonicalPathEnv(
-    process.env as Record<string, string>,
-    buildUserPath(envPathValue(mergedEnv), { env: mergedEnv }),
-    os.platform()
-  );
-  process.env.SHELL = resolveShell();
 }
 
 export function sanitizedProcessEnv(): Record<string, string> {

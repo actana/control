@@ -53,7 +53,7 @@ const LOOPBACK_HOST_FALLBACK = "127.0.0.1";
  * pump unwinds — cancelling the upstream body on its way out, which is what
  * releases whatever the far end was holding open for a reader.
  */
-export class ClientGoneError extends Error {
+class ClientGoneError extends Error {
   constructor() {
     super("the client closed the connection before this answer finished");
     this.name = "ClientGoneError";
@@ -160,7 +160,7 @@ export async function serveNodeRequest(
  *   that Project's write lease (F8). Without it the Core keeps writing for a
  *   reader that no longer exists.
  */
-export async function writeResponseToNode(
+async function writeResponseToNode(
   response: Response,
   res: ServerResponse,
 ): Promise<void> {
@@ -260,7 +260,7 @@ function sendUpstreamFailure(res: ServerResponse, err: unknown): void {
   res.end(body);
 }
 
-export function getSetCookieHeaders(headers: Headers): string[] {
+function getSetCookieHeaders(headers: Headers): string[] {
   const withGetSetCookie = headers as Headers & { getSetCookie?: () => string[] };
   const values = withGetSetCookie.getSetCookie?.();
   if (values?.length) return values;

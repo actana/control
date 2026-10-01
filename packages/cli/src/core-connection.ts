@@ -40,7 +40,7 @@ import type { ActanaCliDeps } from "./cli-deps.ts";
 import type { ParsedArgs } from "./cli-args.ts";
 
 /** How long a command waits for a Core to answer, unless it says otherwise. */
-export const DEFAULT_CORE_TIMEOUT_MS = 30_000;
+const DEFAULT_CORE_TIMEOUT_MS = 30_000;
 
 /**
  * The slice of a Core client the client nouns use.
@@ -141,7 +141,7 @@ export const connectCore: CoreConnectFn = async (blob, opts = {}) => {
 };
 
 /** A Core this command may now talk to, and the two facts output is allowed to name. */
-export type OpenedCore = {
+type OpenedCore = {
   client: CoreLinkClient;
   /** The registry name, or null for a blob out of the environment. */
   name: string | null;

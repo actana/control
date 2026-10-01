@@ -5,7 +5,7 @@ import {
   readCachedActiveProjectGroup,
   writeCachedActiveProjectGroup,
 } from "~/lib/ui-preference-cache";
-import { queryKeys, useGroups, useProjects, useSettings } from "~/queries";
+import { queryKeys, useGroups,  useSettings } from "~/queries";
 import {
   ACTIVE_GROUP_ALL,
   ACTIVE_GROUP_UNGROUPED,
@@ -18,16 +18,6 @@ export type { ActiveProjectGroup } from "~/shared/ui-preferences";
 
 export function isGroupIdActive(active: ActiveProjectGroup): boolean {
   return active !== ACTIVE_GROUP_ALL && active !== ACTIVE_GROUP_UNGROUPED;
-}
-
-/** Projects visible under an active group ("all" passes everything through). */
-export function filterProjectsByActiveGroup<T extends { groupId: string | null }>(
-  projects: T[],
-  active: ActiveProjectGroup,
-): T[] {
-  if (active === ACTIVE_GROUP_ALL) return projects;
-  if (active === ACTIVE_GROUP_UNGROUPED) return projects.filter((p) => p.groupId == null);
-  return projects.filter((p) => p.groupId === active);
 }
 
 /** Display label for the active group ("All projects" / "Ungrouped" / group name). */
@@ -57,7 +47,7 @@ function activeGroupOf(settings: Pick<AppSettings, "activeProjectGroup">): Activ
  * the memo that renders it, and the failure path, which must never put a group
  * back that this function would refuse.
  */
-export function displayedActiveGroup(
+function displayedActiveGroup(
   stored: ActiveProjectGroup,
   groups: Group[] | undefined,
 ): ActiveProjectGroup {
@@ -175,8 +165,6 @@ export function createActiveGroupWriteLedger(initial: ActiveProjectGroup = ACTIV
     },
   };
 }
-
-export type ActiveGroupWriteLedger = ReturnType<typeof createActiveGroupWriteLedger>;
 
 /** One ledger per tab: every `useActiveGroup` caller writes the same setting,
  *  so the generations have to be drawn from a single counter. */
@@ -329,16 +317,3 @@ export function useActiveGroup(): {
   return { activeGroup, setActiveGroup, groups: groups ?? [] };
 }
 
-/**
- * Projects visible in the active group — the list the dashboard, left
- * rail, and project picker should render.
- */
-export function useGroupScopedProjects() {
-  const query = useProjects();
-  const { activeGroup, setActiveGroup, groups } = useActiveGroup();
-  const data = useMemo(() => {
-    if (query.data === undefined) return undefined;
-    return filterProjectsByActiveGroup(query.data, activeGroup);
-  }, [query.data, activeGroup]);
-  return { ...query, data, unscopedData: query.data, activeGroup, setActiveGroup, groups };
-}

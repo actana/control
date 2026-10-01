@@ -103,10 +103,8 @@ export async function getProviderUsage(
   return { providers, fetchedAt: Date.now() };
 }
 
-export { fetchProviderUsage } from "./all-adapters";
-export { getCodexUsage, _resetCodexUsageCache, _setCodexCredsReaderForTests } from "./codex-usage";
+export { _resetCodexUsageCache, _setCodexCredsReaderForTests } from "./codex-usage";
 export {
-  getCursorUsage,
   _resetCursorUsageCache,
   _setCursorSessionReaderForTests,
 } from "./cursor-usage";

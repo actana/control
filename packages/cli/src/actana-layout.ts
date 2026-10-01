@@ -18,7 +18,6 @@ import { UNIT_NAME } from "./actana-systemd.ts";
 // `@actana/shared` because the daemon writes both of them (#288 D2).
 export {
   updateCheckCachePath,
-  updateNoticeStatePath,
 } from "@actana/shared/actana-state-paths";
 
 /** Everywhere `actana` reads or writes on the operator's machine. */

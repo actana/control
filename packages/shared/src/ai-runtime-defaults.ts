@@ -9,7 +9,7 @@ export type AiModelOption = {
   label: string;
   description?: string;
 };
-export type AiRuntimeModelSource = "catalog" | "cli";
+type AiRuntimeModelSource = "catalog" | "cli";
 export type AiRuntimeModelsResponse = {
   harness: Harness;
   source: AiRuntimeModelSource;
@@ -19,11 +19,11 @@ export type AiRuntimeModelsResponse = {
 
 // Model ids are passed as single CLI argv tokens. Keep the grammar broad enough
 // for provider/model ids while rejecting whitespace and shell metacharacters.
-export const AI_MODEL_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,127}$/;
+const AI_MODEL_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,127}$/;
 export const AI_MODEL_ID_HELP =
   "Use a model id without spaces or shell characters, e.g. sonnet, gpt-5.3-codex, or anthropic/claude-sonnet-4-5.";
 
-export const AI_RUNTIME_MODEL_OPTIONS: Record<
+const AI_RUNTIME_MODEL_OPTIONS: Record<
   Harness,
   readonly AiModelOption[]
 > = {
@@ -133,40 +133,3 @@ export function modelBelongsToHarnessCatalog(
   return getAiRuntimeModelOptions(harness).some((option) => option.id === model);
 }
 
-export function buildAiPrintInvocation(
-  harness: Harness,
-  prompt: string,
-  model: AiModelId | null,
-): { cmd: string; args: string[] } {
-  switch (harness) {
-    case "claude-code":
-      return {
-        cmd: "claude",
-        args: model ? ["-p", prompt, "--model", model] : ["-p", prompt],
-      };
-    case "codex":
-      return {
-        cmd: "codex",
-        args: model ? ["exec", "--model", model, prompt] : ["exec", prompt],
-      };
-    case "cursor-cli":
-      return {
-        cmd: "cursor-agent",
-        args: model
-          ? ["-p", "--trust", "--mode", "ask", "--model", model, prompt]
-          : ["-p", "--trust", "--mode", "ask", prompt],
-      };
-    case "opencode":
-      return {
-        cmd: "opencode",
-        args: model ? ["run", "--model", model, prompt] : ["run", prompt],
-      };
-    case "pi":
-      return {
-        cmd: "pi",
-        args: model
-          ? ["-p", "--no-tools", "-nc", "--no-session", "--model", model, prompt]
-          : ["-p", "--no-tools", "-nc", "--no-session", prompt],
-      };
-  }
-}

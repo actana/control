@@ -20,15 +20,9 @@ import {
 
 export {
   asCore,
-  coreChildEnv,
   coreHome,
   coreIdentity,
-  coreShell,
-  coreUsername,
-  CoreIdentityError,
-  CoreSpawnRefusedError,
   isContainerMode,
-  type CoreIdentity,
   type SpawnSpec,
 } from "@actana/shared/core-home";
 

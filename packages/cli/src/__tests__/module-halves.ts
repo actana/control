@@ -39,7 +39,7 @@
 // the real process; if either could shell out or schedule, the narrowing would
 // have bought the machine half a door into the client's path. They stay swept.
 
-import { readdirSync, readFileSync } from "node:fs";
+import { readdirSync,  } from "node:fs";
 import path from "node:path";
 
 /** This package's `src`, from any test file under `src/__tests__`. */
@@ -138,7 +138,3 @@ export function importSpecifiers(source: string): string[] {
   ].map((m) => m[2]!);
 }
 
-/** Read a shipped module and hand back its path-relative name and body. */
-export function named(file: string): { name: string; source: string } {
-  return { name: path.relative(SRC, file), source: readFileSync(file, "utf8") };
-}

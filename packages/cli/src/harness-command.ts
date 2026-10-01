@@ -87,7 +87,7 @@ const KNOWN_INSTALL_FAILURES: Record<string, string> = {
   opencode: "https://github.com/actana/control/issues/31",
 };
 
-export const HARNESS_HELP = `actana harness — the coding agents a Core can run
+const HARNESS_HELP = `actana harness — the coding agents a Core can run
 
 Usage
   actana harness ls               what the selected Core has, and what it lacks

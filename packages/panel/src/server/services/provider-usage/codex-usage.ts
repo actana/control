@@ -32,7 +32,7 @@ function codexHome(): string {
  * `chatgpt_base_url` from ~/.codex/config.toml; bases that already point at
  * `/backend-api` use `/wham/usage`, other bases use `/api/codex/usage`.
  */
-export function resolveCodexUsageUrl(): string {
+function resolveCodexUsageUrl(): string {
   let base = DEFAULT_BASE_URL;
   try {
     const toml = fs.readFileSync(path.join(codexHome(), "config.toml"), "utf8");

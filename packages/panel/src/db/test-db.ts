@@ -17,7 +17,7 @@ import { runMigrations, type MigrateClient, type MigrateSource, type Migration }
 /** The environment variable that switches {@link createTestDb} to a real server. */
 export const TEST_DATABASE_URL_ENV = "AC_TEST_DATABASE_URL";
 
-export interface TestPool extends MigrateSource {
+interface TestPool extends MigrateSource {
   query(text: string, params?: unknown[]): Promise<{ rows: Record<string, unknown>[] }>;
   end(): Promise<void>;
 }

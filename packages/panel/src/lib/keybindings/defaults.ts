@@ -1,6 +1,6 @@
 import type { Binding, BindingMap } from "./types";
 
-export function makeBinding(partial: Partial<Binding> & { key: string }): Binding {
+function makeBinding(partial: Partial<Binding> & { key: string }): Binding {
   return { mod: false, shift: false, alt: false, ...partial };
 }
 

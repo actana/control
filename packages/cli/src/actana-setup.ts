@@ -194,7 +194,7 @@ export type PlacementResult = {
  * has drawn this distinction since #347's own review; this is the other
  * resolver, and on metal it is the one an operator actually reads.
  */
-export type MaterialOutcome = "minted" | "reused" | "reissued" | "widened" | "re-minted";
+type MaterialOutcome = "minted" | "reused" | "reissued" | "widened" | "re-minted";
 
 export type SetupResult = {
   /** The version that is now installed — the tree's, not this CLI's (#288 D10). */

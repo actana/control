@@ -27,10 +27,10 @@ import type { CoreRegistrationBlob } from "@actana/sdk/pairing";
 export const CORE_BLOB_ENV = "ACTANA_CORE_BLOB";
 
 /** Which of the three sources answered. */
-export type CoreSource = "flag" | "env" | "current";
+type CoreSource = "flag" | "env" | "current";
 
 /** A Core to talk to, and the provenance of the credential that reaches it. */
-export type ResolvedCore = {
+type ResolvedCore = {
   /**
    * The registry name, or null when the blob came from the environment — a
    * blob in `ACTANA_CORE_BLOB` has no name, because naming is what the registry
@@ -126,9 +126,3 @@ export function resolveCore(opts: {
   };
 }
 
-/** How a resolved Core is named in output. Never the blob, ever. */
-export function describeResolvedCore(core: ResolvedCore): string {
-  const where =
-    core.source === "flag" ? "--core" : core.source === "env" ? CORE_BLOB_ENV : "current";
-  return `${core.name ?? "(unnamed)"} [${where}] ${core.blob.endpoint}`;
-}

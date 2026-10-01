@@ -101,16 +101,16 @@ export function writeCachedCoreCount(count: number): void {
   writeCache(SHELL_QUERY_CACHE_KEYS.coreCount, count);
 }
 
-export function writeCachedProjects(projects: ProjectWithCounts[]): void {
+function writeCachedProjects(projects: ProjectWithCounts[]): void {
   writeCache(SHELL_QUERY_CACHE_KEYS.projects, projects);
   syncPinnedProjectDocumentState(projects);
 }
 
-export function writeCachedGroups(groups: Group[]): void {
+function writeCachedGroups(groups: Group[]): void {
   writeCache(SHELL_QUERY_CACHE_KEYS.groups, groups);
 }
 
-export function writeCachedSettings(settings: AppSettings): void {
+function writeCachedSettings(settings: AppSettings): void {
   writeCache(SHELL_QUERY_CACHE_KEYS.settings, settings);
 }
 

@@ -36,7 +36,7 @@ import type { PairingRefusal, PairingSession } from "./pairing-session";
 import { canRedeem, isConsumed, isRevoked, recordWrongAttempt } from "./pairing-session";
 
 /** The filename, beside `material.json` in the same directory. */
-export const PAIRING_STORE_FILENAME = "pairing.json";
+const PAIRING_STORE_FILENAME = "pairing.json";
 
 /**
  * The pairing file for a Core whose material file is `materialFile`.
@@ -90,7 +90,7 @@ export type PairingRecords = {
 };
 
 /** An empty store — what a missing or unreadable file reads as. */
-export function emptyPairingRecords(): PairingRecords {
+function emptyPairingRecords(): PairingRecords {
   return { version: 1, sessions: [], clients: [] };
 }
 

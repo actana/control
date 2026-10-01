@@ -6,7 +6,7 @@ export function extractCliVersion(text: string): string | null {
   return match?.[1] ?? null;
 }
 
-export function comparableVersionParts(version: string): number[] {
+function comparableVersionParts(version: string): number[] {
   return versionCore(version).split(".").map((part) => Number(part));
 }
 

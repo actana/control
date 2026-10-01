@@ -26,7 +26,7 @@ import type { ActanaServiceState } from "./actana-service.ts";
  * connecting to the core-link port, and "does it come back" is the container's
  * restart policy — a fact of the host that nothing inside can read.
  */
-export type ContainerStatus = {
+type ContainerStatus = {
   /** Whether something accepted a connection on the core-link port. */
   listening: boolean;
   /** The port that was probed — named in the row, so a miss is actionable. */

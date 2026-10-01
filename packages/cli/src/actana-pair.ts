@@ -110,7 +110,7 @@ import type { ActanaCliDeps } from "./cli-deps.ts";
 // its own (#360) — there is one border width in this program, not two.
 export { displayWidth, FRAME_WIDTH } from "./cli-frame.ts";
 
-export const PAIR_HELP = `actana pair — enroll a client on THIS machine's Core
+const PAIR_HELP = `actana pair — enroll a client on THIS machine's Core
 
 **You are on the Core.** These verbs mint and take back the pairing codes this
 Core hands out. The client end of the same exchange is \`actana core pair\`, and
@@ -491,7 +491,7 @@ function chooseEndpointHost(
  * not: `now` is passed in, because this file reads the clock in exactly one
  * place and it is not here.
  */
-export type PairingHandout = {
+type PairingHandout = {
   code: string;
   /** The full colon-separated hex. Wrapped below, and never shortened. */
   fingerprint: string;
@@ -526,7 +526,7 @@ export type PairingHandout = {
  * how long have I got, what do I compare the certificate against, which session
  * is it — and then, under the frame, what do I actually do with it.
  */
-export function pairingHandout(handout: PairingHandout): string[] {
+function pairingHandout(handout: PairingHandout): string[] {
   const { code, fingerprint, sessionId, label, color } = handout;
   const lines: string[] = [];
 
@@ -1228,12 +1228,12 @@ function countOf(count: number, unit: string): string {
  * being read a time down a phone line. A local time is only unambiguous to
  * whoever is standing at the terminal that printed it.
  */
-export function absoluteTime(ms: number): string {
+function absoluteTime(ms: number): string {
   return new Date(ms).toISOString().replace(/\.\d{3}Z$/, "Z");
 }
 
 /** The relative half: `in 5 minutes`, `in 30 seconds`, `expired 2 minutes ago`. */
-export function relativeTime(at: number, now: number): string {
+function relativeTime(at: number, now: number): string {
   const delta = at - now;
   const magnitude = describeDuration(Math.abs(delta));
   return delta >= 0 ? `in ${magnitude}` : `expired ${magnitude} ago`;

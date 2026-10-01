@@ -22,7 +22,7 @@ export type CoreManifest = {
 };
 
 /** Full path to the manifest inside an extracted tarball. */
-export function manifestPath(installRoot: string): string {
+function manifestPath(installRoot: string): string {
   return path.join(installRoot, "core-manifest.json");
 }
 

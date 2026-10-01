@@ -66,7 +66,7 @@ export type OpenCoreShellFn = (
  * 0024 D6) — each holds its own, which is the whole of this command's
  * interaction with #140's connection model.
  */
-export function shellTaskId(): string {
+function shellTaskId(): string {
   return `cli_shell_${randomUUID()}`;
 }
 

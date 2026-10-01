@@ -98,7 +98,7 @@ export async function pickHostPort() {
 }
 
 /** Poll `check` until it is true, or end the test through `die`. */
-export async function until(label, timeoutMs, check, die) {
+async function until(label, timeoutMs, check, die) {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
     if (await check()) return;

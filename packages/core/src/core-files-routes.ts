@@ -80,7 +80,7 @@ export type CoreFilesRoutesOptions = {
 };
 
 /** Every route this module answers lives under here. */
-export const CORE_FILES_ROUTE_PREFIX = "/v1/";
+const CORE_FILES_ROUTE_PREFIX = "/v1/";
 
 /**
  * The Core's HTTP surface, as the server factory mounts it.
@@ -107,11 +107,6 @@ export type CoreHttpRoutes = {
 //
 // `import type` erases, so the Core's esbuild bundle gains no runtime edge into
 // the SDK from this line.
-//
-// Re-exported because this module already exported the type and a consumer may
-// be naming it from here. A re-export is not a second copy: it cannot disagree
-// with what it aliases.
-export type { CoreFilesErrorCode } from "@actana/sdk/core";
 
 type Refusal = { status: number; code: CoreFilesErrorCode; message: string };
 

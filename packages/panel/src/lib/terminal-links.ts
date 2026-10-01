@@ -32,7 +32,7 @@ function createLinkActivateHandler(
   };
 }
 
-export function createTerminalLinkHandler(
+function createTerminalLinkHandler(
   openLink: (uri: string) => void = openTerminalLink,
 ): ILinkHandler {
   const activate = createLinkActivateHandler(openLink);

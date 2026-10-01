@@ -60,7 +60,7 @@ export const KNOWN_HARNESSES: readonly CoreLinkPtySpawnHarness[] = Object.keys(
 ) as CoreLinkPtySpawnHarness[];
 
 /** The harness a `session start` gets when neither the flag nor the Project names one. */
-export const DEFAULT_HARNESS: CoreLinkPtySpawnHarness = "claude-code";
+const DEFAULT_HARNESS: CoreLinkPtySpawnHarness = "claude-code";
 
 /** Is this string one of the harnesses the Core can be asked for? */
 export function isKnownHarness(value: string): value is CoreLinkPtySpawnHarness {
@@ -121,7 +121,7 @@ export type SessionRow = {
   updatedAt: number;
 };
 
-export type SessionStartRequest = {
+type SessionStartRequest = {
   /** A Project id, or a Project name, exactly as it was typed. */
   project: string;
   /** The starting prompt. Handed to the Core to deliver; never timed here. */
@@ -134,7 +134,7 @@ export type SessionStartRequest = {
   dangerouslySkipPermissions: boolean;
 };
 
-export type SessionResumeRequest = {
+type SessionResumeRequest = {
   taskId: string;
   prompt?: string;
   dangerouslySkipPermissions: boolean;
@@ -331,7 +331,7 @@ export type SessionLogs = {
  * carries a return of its own and submits the text twice. `failed` is what lets
  * the caller say which half went missing, and therefore whether a resend is safe.
  */
-export type SendResult =
+type SendResult =
   /** Everything the caller asked for is on the PTY. */
   | { ok: true }
   /**

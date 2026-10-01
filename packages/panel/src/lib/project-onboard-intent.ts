@@ -14,10 +14,6 @@ export type ProjectOnboardIntent = {
 
 const pending = new Map<string, ProjectOnboardIntent>();
 
-export function markProjectOnboardIntent(id: string, intent: ProjectOnboardIntent): void {
-  pending.set(id, intent);
-}
-
 export function consumeProjectOnboardIntent(id: string): ProjectOnboardIntent | null {
   const intent = pending.get(id) ?? null;
   if (intent) pending.delete(id);

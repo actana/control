@@ -36,10 +36,3 @@ export type ClaudeUsageLimits = {
   error?: string;
 };
 
-export const EMPTY_CLAUDE_USAGE_LIMITS: ClaudeUsageLimits = {
-  session: null,
-  weekly: null,
-  weeklyOpus: null,
-  status: "error",
-  fetchedAt: 0,
-};

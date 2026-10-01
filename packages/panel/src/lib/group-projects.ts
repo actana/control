@@ -5,7 +5,7 @@ export type GroupableProject = PinnedOrderable & {
   groupId: string | null;
 };
 
-export type ProjectGroupSection<TProject extends GroupableProject> = {
+type ProjectGroupSection<TProject extends GroupableProject> = {
   group: Group;
   projects: TProject[];
 };
@@ -17,7 +17,7 @@ export type ProjectPickerSection<TProject extends GroupableProject> = {
   projects: TProject[];
 };
 
-export function groupProjects<TProject extends GroupableProject>(
+function groupProjects<TProject extends GroupableProject>(
   projects: readonly TProject[],
   groups: readonly Group[]
 ) {

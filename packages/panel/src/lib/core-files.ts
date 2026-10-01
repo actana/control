@@ -27,13 +27,6 @@ import type { CoreFileEntry, CoreFileProgress } from "@actana/sdk/core";
 
 export type { CoreFileEntry, CoreFileProgress };
 
-/** The Panel's refusals, which are about the Core rather than about the files. */
-export type CoreFilesApiCode =
-  | "no-such-core"
-  | "core-unreachable"
-  | "files-unsupported"
-  | "core-credentials";
-
 export class CoreFilesApiError extends Error {
   readonly status: number;
   /** The Core's code where the Core answered, the Panel's where it refused first. */

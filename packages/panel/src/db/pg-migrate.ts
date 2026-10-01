@@ -88,7 +88,7 @@ function isCommentOnly(sql: string): boolean {
   return sql.split("\n").every((line) => line.trim() === "" || line.trim().startsWith("--"));
 }
 
-export interface AppliedMigration {
+interface AppliedMigration {
   hash: string;
   createdAt: number;
 }
@@ -106,7 +106,7 @@ const short = (hash: string) => hash.slice(0, 12);
  *    earlier, merged later), which a max-timestamp rule would skip forever.
  * Migrations are matched by hash, never by the newest timestamp alone.
  */
-export function selectPending(recorded: AppliedMigration[], migrations: Migration[]): Migration[] {
+function selectPending(recorded: AppliedMigration[], migrations: Migration[]): Migration[] {
   const shippedHashes = new Set(migrations.map((m) => m.hash));
   for (const row of recorded) {
     if (shippedHashes.has(row.hash)) continue;

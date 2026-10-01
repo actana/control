@@ -36,7 +36,7 @@ import * as path from "node:path";
 export const BLOB_FILE_MODE = 0o600;
 
 /** Mode for the directory holding them: owner only, so a listing is private too. */
-export const REGISTRY_DIR_MODE = 0o700;
+const REGISTRY_DIR_MODE = 0o700;
 
 /** The three paths the registry is made of, resolved once. */
 export type RegistryPaths = {

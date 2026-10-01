@@ -13,11 +13,6 @@ import {
   updateTaskRow,
 } from "../repositories/tasks.repo";
 import { findProjectNameById } from "../repositories/projects.repo";
-import {
-  deleteTerminalLogById,
-  findTerminalLogsByTaskId,
-  insertTerminalLog,
-} from "../repositories/terminal-logs.repo";
 import { newId } from "./_ids";
 import { isClientDomainId } from "@actana/shared/client-id";
 
@@ -186,25 +181,4 @@ export function deleteTask(id: string): boolean {
     return true;
   }
   return false;
-}
-
-const RING_LIMIT_BYTES = 1_000_000;
-
-export function appendTerminalLog(taskId: string, chunk: string) {
-  const id = newId("tl");
-  insertTerminalLog({ id, taskId, chunk, createdAt: Date.now() });
-  // rough FIFO eviction by total length per task
-  const all = findTerminalLogsByTaskId(taskId);
-  let total = all.reduce((a, r) => a + r.chunk.length, 0);
-  for (const r of all) {
-    if (total <= RING_LIMIT_BYTES) break;
-    deleteTerminalLogById(r.id);
-    total -= r.chunk.length;
-  }
-}
-
-export function readTerminalLog(taskId: string): string {
-  return findTerminalLogsByTaskId(taskId)
-    .map((r) => r.chunk)
-    .join("");
 }
