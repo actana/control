@@ -75,7 +75,7 @@ afterAll(async () => {
 });
 
 describe("creating, listing and revoking keys", () => {
-  it("needs the Operator's session", async () => {
+  it("regression guard: key management needs the Operator's session, as every /api route already did", async () => {
     expect((await call("/api/api-keys")).status).toBe(401);
     expect((await call("/api/api-keys", { method: "POST", json: { name: "k" } })).status).toBe(401);
     expect((await call("/api/api-keys/key-x/revoke", { method: "POST" })).status).toBe(401);
@@ -179,7 +179,7 @@ describe("what a key presents is judged by the key alone", () => {
     }
   });
 
-  it("leaves a Bearer token that is not key-shaped to the session gate, as before", async () => {
+  it("regression guard: leaves a Bearer token that is not key-shaped to the session gate, as before", async () => {
     for (const bearer of ["garbage", ""]) {
       expect((await call("/api/cores", { bearer })).status, bearer).toBe(401);
       expect((await call("/api/cores", { bearer, cookie: true })).status, bearer).toBe(200);
