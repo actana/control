@@ -794,6 +794,79 @@ jobs:
       - name: E2E — the Panel service, driven as a browser
         run: pnpm panel:e2e
 
+  # The Panel's database tests, against a real Postgres (#567, ADR 0041 D19).
+  # `Unit Tests` runs the same files on PGlite, Postgres compiled to
+  # WebAssembly in the test's own process, which has one connection and one
+  # backend: it cannot show a pool, a second session or the migration's advisory
+  # lock behaving. This job points `AC_TEST_DATABASE_URL` at a server and the
+  # tests that skip without it (the lock, `createTestDb`) run, each on a fresh
+  # database that `createTestDb` drops again.
+  #
+  # The image is the one `deploy/docker-compose.yml` pins, by the same digest;
+  # `scripts/__tests__/workflows.test.mjs` fails if the two drift. Nothing is
+  # built, one package runs, and `--maxWorkers=1` keeps it to one process.
+  #
+  # NOT a required check by itself: a new job is a new context that no ruleset
+  # names, so it reports beside a mergeable pull request until the owner adds
+  # `Panel DB tests — real Postgres` to `docs/rulesets/*.json` and the live
+  # rulesets. The step after the tests fails the job if any of them was skipped,
+  # so a green run cannot mean "the real-Postgres tests were not selected".
+  panel-postgres:
+    name: Panel DB tests — real Postgres
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:18.6-bookworm@sha256:3725f4e2499eef5134592b3b4ab79a543ed7f8e533b05b5b637af926630f6650
+        env:
+          POSTGRES_USER: panel
+          POSTGRES_DB: panel
+          # A throwaway server that lives for this job and listens on the
+          # runner's loopback only.
+          POSTGRES_PASSWORD: ci-only-not-a-secret
+        ports:
+          - 127.0.0.1:5432:5432
+        options: >-
+          --health-cmd "pg_isready -h 127.0.0.1 -U panel -d panel"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      AC_TEST_DATABASE_URL: postgres://panel:ci-only-not-a-secret@127.0.0.1:5432/postgres
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 24.15.0
+          package-manager-cache: false
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          version: 11.1.2
+          cache: true
+      - run: pnpm install --frozen-lockfile
+      - name: Panel DB tests against Postgres
+        working-directory: packages/panel
+        run: >-
+          pnpm exec vitest run --maxWorkers=1
+          --reporter=default --reporter=json --outputFile=${{ runner.temp }}/panel-pg.json
+          src/db/__tests__/pg-migrate.test.ts
+          src/db/__tests__/pg-boot.test.ts
+          src/db/__tests__/pg.test.ts
+          src/db/__tests__/test-db.test.ts
+      # Most of these files pin `env: {}` and stay on PGlite on purpose, so the
+      # total says little. What this job is for are the tests that name a real
+      # server ("real server" in their title); at least two must have passed.
+      - name: The real-server tests ran, and none was skipped
+        run: |
+          node -e '
+            const r = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+            const all = r.testResults.flatMap((f) => f.assertionResults);
+            const real = all.filter((t) => /real server/.test(t.fullName) && t.status === "passed");
+            console.log(`${r.numPassedTests} passed, ${r.numFailedTests} failed, ${r.numPendingTests} skipped of ${r.numTotalTests}; ${real.length} ran against the real server:`);
+            for (const t of real) console.log(`  - ${t.fullName}`);
+            if (r.numFailedTests > 0 || r.numPendingTests > 0 || real.length < 2) process.exit(1);
+          ' "$RUNNER_TEMP/panel-pg.json"
+
   # The release-tarball seam (core-installer issue 01): the artifact
   # operators actually download must extract and boot on its own — bundled Node,
   # bundled natives, no system Node, no network. Built here on every PR for the
