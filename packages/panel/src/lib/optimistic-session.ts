@@ -1,6 +1,7 @@
 import type { QueryClient } from "@tanstack/react-query";
 import type { Session } from "~/db/schema";
 import { DEFAULT_BRANCH, DEFAULT_SESSION_STATUS, type Harness } from "@actana/shared/domain";
+import { randomHex } from "@actana/shared/random-hex";
 import { sessionsCacheKey } from "~/queries";
 import { TITLE_WAITING } from "~/lib/session-sentinels";
 
@@ -11,11 +12,7 @@ export function isOptimisticSessionId(id: string): boolean {
 }
 
 export function newOptimisticSessionId(): string {
-  const suffix =
-    typeof crypto !== "undefined" && "randomUUID" in crypto
-      ? crypto.randomUUID()
-      : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-  return `${OPTIMISTIC_SESSION_ID_PREFIX}${suffix}`;
+  return `${OPTIMISTIC_SESSION_ID_PREFIX}${randomHex(16)}`;
 }
 
 export function buildOptimisticSession(input: {
