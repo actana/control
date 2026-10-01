@@ -62,7 +62,6 @@
 // pasted into the Panel's "Add Core", and #287 removed the hand-carry it
 // belonged to. A client enrolls with a code from `actana pair new`.
 
-import * as os from "node:os";
 import * as path from "node:path";
 import {
   PtyCore,
@@ -81,8 +80,9 @@ import {
 import { createPairing } from "@actana/sdk/pairing/server";
 import { pairingStorePath } from "@actana/sdk/pairing/stores/json-file";
 import { corePairingStore } from "./core-pairing-store";
-import { createDirectory, listDirectory } from "./directory-browse";
+import { createDirectory } from "./directory-browse";
 import { runCoreExec } from "./core-exec";
+import { coreHome } from "./core-identity";
 import { configureProjectRootsDb } from "./project-roots";
 import {
   configureEventLogStore,
@@ -116,7 +116,11 @@ import { CoreSessionWriter } from "./core-session-writer";
 import { CoreHarnessStatus } from "./core-harness-status";
 import { CoreTitleGenerator } from "./core-title-generator";
 import { startHarnessHookReceiver, type HarnessHookReceiver } from "./harness-hook-receiver";
-import { HookDeliveryMonitor, hookMissLogPath } from "./harness-hook-delivery";
+import {
+  HookDeliveryMonitor,
+  ensureHookMissDropBox,
+  hookMissLogPath,
+} from "./harness-hook-delivery";
 import { sweepStrandedSessions } from "./core-session-sweep";
 import { readySessionOnAgentSpawn } from "./core-session-relaunch";
 import { CoreSessionBackstop } from "./core-session-backstop";
@@ -140,7 +144,7 @@ import log from "@actana/shared/log";
 import { bootstrapCoreDb } from "./core-db-bootstrap";
 import { HarnessAvailabilityStore } from "@actana/shared/harness-availability-store";
 import { HarnessSkillWatcher } from "./harness-skill-watcher";
-import { ensureOrchestrationSkill } from "./orchestration-skill";
+import { ensureOrchestrationSkillViaCore, listDirectoryViaCore } from "./core-home-ops-client";
 import { HarnessInstallService } from "./harness-install-service";
 import { daemonHarnessSystem } from "./core-harness-system";
 import { legacyEnvRefusal, plaintextExposureRefusal } from "./core-boot-refusals";
@@ -296,7 +300,12 @@ async function startCore(): Promise<void> {
   // Core's log with a running total, starting with whatever was recorded while
   // this process was not running — a restart is exactly when hooks are
   // refused, and those are the drops nobody could otherwise hear about.
-  const hookDelivery = new HookDeliveryMonitor({ missLogPath: hookMissLogPath(userDataDir) });
+  // In the container the file is a drop box outside the state directory, which
+  // Sessions can append to (#559): the daemon makes it, then reads it as
+  // untrusted input.
+  const hookMissLog = hookMissLogPath(userDataDir, containerMode);
+  if (containerMode) ensureHookMissDropBox(hookMissLog);
+  const hookDelivery = new HookDeliveryMonitor({ missLogPath: hookMissLog });
   hookDelivery.start();
 
   const deps: PtyCoreDeps = {
@@ -307,7 +316,7 @@ async function startCore(): Promise<void> {
         ? {
             apiUrl: hookReceiver.url,
             token: hookReceiver.token,
-            missLogPath: hookMissLogPath(userDataDir),
+            missLogPath: hookMissLog,
           }
         : null,
     // Protect the core-link WS port so killLaunchProcesses never touches it —
@@ -369,7 +378,7 @@ async function startCore(): Promise<void> {
 
   // Eagerly install Claude Code's Shift+Enter keybinding flag for terminals
   // spawned by this Core (best-effort; see ensureClaudeShiftEnterBinding).
-  ensureClaudeShiftEnterBinding();
+  await ensureClaudeShiftEnterBinding();
 
   const core = new PtyCore(deps);
 
@@ -409,9 +418,10 @@ async function startCore(): Promise<void> {
   // hold: it sees each event once, in order, as it is produced. The guard is
   // there anyway, because "this is only ever fed live events" is a property of
   // this one call site and not of the class.
-  ensureOrchestrationSkill(os.homedir());
+  await ensureOrchestrationSkillViaCore();
   const skillWatcher = new HarnessSkillWatcher({
-    ensure: () => ensureOrchestrationSkill(os.homedir()),
+    // Fire and forget: the helper has its own deadline and the wrapper never rejects.
+    ensure: () => void ensureOrchestrationSkillViaCore(),
   });
   const availabilityStore = new HarnessAvailabilityStore({
     appendEvent: (kind, payload, opts) => {
@@ -431,14 +441,15 @@ async function startCore(): Promise<void> {
   // Issue 83 (ADR 0021): the Panel can now ask this Core to install a Harness
   // it found missing. Same non-interactive path `actana harnesses install <id>`
   // takes, and the same re-probe afterwards — the difference is only who asked.
-  // `os.homedir()` is the daemon's own operator, whose login PATH the install
-  // writes; the daemon runs as that operator on metal and in the container.
+  // `coreHome()` is the home the Sessions (and the Harness CLIs) live in: the
+  // operator's on metal, `core`'s in the container, where the daemon is another
+  // user and the daemon's own home would be the wrong place to install into.
   const harnessInstalls = new HarnessInstallService({
     availability: () => availabilityStore.snapshot(),
     reprobe: () => availabilityStore.runProbe(),
     system: daemonHarnessSystem(),
     platform: process.platform,
-    homeDir: os.homedir(),
+    homeDir: coreHome(),
   });
 
   // ─── mTLS + bearer auth (issue 04) ───
@@ -506,7 +517,7 @@ async function startCore(): Promise<void> {
     // wrong one — a Project's path is a VM path, so the Core serves and
     // validates every listing.
     directoryPort: {
-      list: (requestedPath) => listDirectory(requestedPath),
+      list: (requestedPath) => listDirectoryViaCore(requestedPath),
       create: (parent, name) => createDirectory(parent, name),
     },
     // Issue 266: `actana core exec` runs one command here, non-interactively.
@@ -705,14 +716,14 @@ async function startCore(): Promise<void> {
       // volume that predates this has material but no registry entry, and this
       // is the boot that fixes it. See `core-self-register.ts`.
       if (containerMode) {
-        const registered = registerSelfWithLocalCli({
+        const registered = await registerSelfWithLocalCli({
           material,
           bindHost: host,
           port,
           label,
           bearerDays,
           env: process.env,
-          home: os.homedir(),
+          home: coreHome(),
         });
         if (!registered.ok) {
           // Serving Panels does not depend on this, so a registry that cannot

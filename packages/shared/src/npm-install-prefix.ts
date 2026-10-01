@@ -18,6 +18,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { spawnSync } from "node:child_process";
+import { asCore } from "./core-home";
 
 /** Home-relative npm prefix used when the global one is not writable. */
 export const NPM_USER_PREFIX_SUFFIX = ".local";
@@ -55,9 +56,11 @@ export function resolveNpmGlobalPrefix(env: NodeJS.ProcessEnv = process.env): st
   if (fromEnv) return fromEnv;
 
   try {
-    const result = spawnSync("npm", ["prefix", "-g"], {
+    const launch = asCore({ command: "npm", args: ["prefix", "-g"], env });
+    const result = spawnSync(launch.command, launch.args, {
       encoding: "utf8",
-      env,
+      cwd: launch.cwd,
+      env: launch.env,
       timeout: 5_000,
     });
     if (result.error || result.status !== 0) return null;

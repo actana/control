@@ -73,6 +73,8 @@ import {
   CONTAINER_PORT_ENV,
   CONTAINER_PUBLIC_HOST_ENV,
   containerRefusal,
+  CORE_STATE_DATA_DIR,
+  CORE_STATE_MATERIAL_FILE,
   DEFAULT_CONTAINER_PORT,
   inContainer,
   readContainerContract,
@@ -430,7 +432,7 @@ function containerInstall(deps: ActanaCliDeps): InstalledCore | null {
       publicHosts: contract.publicHosts,
       label: contract.label,
       installDir: deps.installRoot,
-      dataDir: deps.env.AC_USER_DATA_DIR ?? layout.dataDir,
+      dataDir: deps.env.AC_USER_DATA_DIR ?? CORE_STATE_DATA_DIR,
     },
   };
 }
@@ -447,13 +449,14 @@ function requireInstall(deps: ActanaCliDeps): InstalledCore | null {
 /**
  * Where this Core's material lives.
  *
- * In the image it is in the mounted volume, named by the same
+ * In the image it is in the state volume (`/var/lib/actana`), named by the same
  * `AC_CORE_MATERIAL_FILE` the daemon loads from — so the CLI and the daemon
- * cannot end up disagreeing about which identity this Core has.
+ * cannot end up disagreeing about which identity this Core has. If the variable
+ * is missing the answer is still the state volume, never a path under `~`.
  */
 function materialPathFor(deps: ActanaCliDeps, layout: ActanaLayout): string {
-  const fromImage = inContainer(deps.env) ? deps.env.AC_CORE_MATERIAL_FILE : undefined;
-  return fromImage || materialFilePath(layout.configDir);
+  if (inContainer(deps.env)) return deps.env.AC_CORE_MATERIAL_FILE || CORE_STATE_MATERIAL_FILE;
+  return materialFilePath(layout.configDir);
 }
 
 /** Read the manifest of the installed tree, falling back to the running tree. */

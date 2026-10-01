@@ -5,10 +5,14 @@ import { describe, expect, it } from "vitest";
 import {
   CORE_APP_ROOT,
   CORE_HOME,
+  CORE_HOOK_DROP_DIR,
   CORE_IMAGE,
   CORE_PACKAGES,
   CORE_REFUSED_VERBS,
   CORE_PORT,
+  CORE_STATE_DATA_DIR,
+  CORE_STATE_DIR,
+  CORE_STATE_MATERIAL_FILE,
   PANEL_DATA_DIR,
   PANEL_DOCKERFILE,
   PANEL_IMAGE,
@@ -24,6 +28,12 @@ import {
   secondCoreBlock,
 } from "../lib/panel-image.mjs";
 import { POSTGRES_IMAGE } from "../lib/postgres-image.mjs";
+import {
+  CORE_HOOK_DROP_DIR as CONTRACT_HOOK_DROP_DIR,
+  CORE_STATE_DATA_DIR as CONTRACT_STATE_DATA_DIR,
+  CORE_STATE_DIR as CONTRACT_STATE_DIR,
+  CORE_STATE_MATERIAL_FILE as CONTRACT_STATE_MATERIAL_FILE,
+} from "../../packages/shared/src/actana-container-contract";
 
 // The one-deployable contract (web-panel-extraction issue 09): the two
 // Dockerfiles, the one reference compose, and the release workflow are
@@ -369,16 +379,23 @@ describe("reference compose", () => {
     expect(coreService.volumes.some((v) => v.includes("/sys/fs/cgroup"))).toBe(false);
   });
 
-  // D19 — the home is the state, because Harnesses write all over $HOME. The
-  // repos bind mount is the one other mount, and it is the one an operator is
-  // expected to change. core-init is the root one-shot that chowns that mount
-  // point when Docker created the host dir as root (#551 / #558).
-  it("gives the Core one named volume — its home — plus a swappable repos mount", () => {
-    expect(coreService.volumes).toEqual([`core-home:${CORE_HOME}`, `./repos:${CORE_HOME}/repos`]);
+  // D19 — the home is where Harnesses write, because they write all over $HOME.
+  // The daemon's own state is the other named volume (#559), so a Session
+  // working in the home is not working beside the Core's keys. The repos bind
+  // mount is the one mount an operator is expected to change. core-init is the
+  // root one-shot that chowns those mount points when Docker created the host
+  // dir as root (#551 / #558).
+  it("gives the Core two named volumes — home and state — plus a swappable repos mount", () => {
+    expect(coreService.volumes).toEqual([
+      `core-home:${CORE_HOME}`,
+      `core-state:${CORE_STATE_DIR}`,
+      `./repos:${CORE_HOME}/repos`,
+    ]);
     expect(compose.volumes).toEqual([
       "panel-data",
       "postgres-data",
       "core-home",
+      "core-state",
       "seaweedfs-data",
     ]);
     expect(composeText).toMatch(/Swappable for a named volume/);
@@ -425,10 +442,14 @@ describe("reference compose", () => {
       expect(second.scalars.restart).toBe(coreService.scalars.restart);
       expect(second.ports).toEqual([]);
       expect(second.environment).toContain("ACTANA_PUBLIC_HOST=core2");
-      expect(second.volumes[0]).toBe(`core2-home:${CORE_HOME}`);
-      // Its own volume, not a second mount of the first Core's — which would
+      expect(second.volumes).toEqual([
+        `core2-home:${CORE_HOME}`,
+        `core2-state:${CORE_STATE_DIR}`,
+        "core2-repos:/home/core/repos",
+      ]);
+      // Its own volumes, not a second mount of the first Core's — which would
       // put two Cores' identities and databases in one directory.
-      expect(second.volumes).not.toContain(coreService.volumes[0]);
+      for (const first of coreService.volumes) expect(second.volumes).not.toContain(first);
       // And named volumes throughout, not a bind mount: a pasted-in service
       // has no host directory, so a `./repos2` would be created root-owned by
       // Docker and uid 1000 could not write to its own checkouts.
@@ -917,6 +938,8 @@ describe("core image", () => {
     expect(prep).toContain("chown -h");
     expect(prep).toContain('fix_mount_point "$WORKSPACE" warn');
     expect(prep).toContain('fix_mount_point "$SHARED" hard');
+    expect(prep).toContain('fix_mount_point "$STATE" hard "$STATE_UID" "$STATE_GID" 0700');
+    expect(prep).toContain("STATE=/var/lib/actana");
     expect(prep).not.toMatch(/CORE_HOME=\$\{/);
     expect(prep).not.toMatch(/CORE_USER=\$\{/);
     expect(coreImage.entrypoint).toBe(
@@ -946,12 +969,41 @@ describe("core image", () => {
       AC_CORE_REMOTE: "1",
       AC_CORE_LINK_HOST: "0.0.0.0",
       AC_APP_PATH: `${CORE_APP_ROOT}/app`,
-      AC_USER_DATA_DIR: `${CORE_HOME}/.local/share/actana/data`,
-      AC_CORE_MATERIAL_FILE: `${CORE_HOME}/.config/actana/material.json`,
+      AC_USER_DATA_DIR: CORE_STATE_DATA_DIR,
+      AC_CORE_MATERIAL_FILE: CORE_STATE_MATERIAL_FILE,
       NPM_CONFIG_PREFIX: `${CORE_HOME}/.local`,
     });
     expect(coreImage.env.PATH).toContain(`${CORE_APP_ROOT}/bin`);
     expect(coreImage.env.PATH).toContain(`${CORE_HOME}/.local/bin`);
+  });
+
+  // #559 — the daemon's state is not under the core home. The image bakes the
+  // paths as text, the code names them through `actana-container-contract.ts`,
+  // and the smoke keeps a copy; all three must be the same directory.
+  it("keeps the daemon's state in /var/lib/actana, not under the core home", () => {
+    expect(CORE_STATE_DIR).toBe(CONTRACT_STATE_DIR);
+    expect(CORE_STATE_DATA_DIR).toBe(CONTRACT_STATE_DATA_DIR);
+    expect(CORE_STATE_MATERIAL_FILE).toBe(CONTRACT_STATE_MATERIAL_FILE);
+    expect(CORE_HOOK_DROP_DIR).toBe(CONTRACT_HOOK_DROP_DIR);
+    expect(coreImage.env.AC_USER_DATA_DIR).toBe(CONTRACT_STATE_DATA_DIR);
+    expect(coreImage.env.AC_CORE_MATERIAL_FILE).toBe(CONTRACT_STATE_MATERIAL_FILE);
+    for (const value of [coreImage.env.AC_USER_DATA_DIR, coreImage.env.AC_CORE_MATERIAL_FILE]) {
+      expect(value.startsWith(`${CORE_HOME}/`)).toBe(false);
+    }
+    // The home no longer seeds the daemon's directories ...
+    const homeSeed = coreImage.runs.find((run) => run.includes("/home/core/shared"));
+    expect(homeSeed).not.toMatch(/actana\/data|\.config\/actana/);
+    // ... the state directory is seeded 0700 and owned by the daemon's user ...
+    const stateSeed = coreImage.runs.find((run) => run.includes("/var/lib/actana/data"));
+    expect(stateSeed).toContain("/var/lib/actana/config");
+    expect(stateSeed).toContain("/var/lib/actana/shared");
+    expect(stateSeed).toContain("chown -R core:core /var/lib/actana");
+    expect(stateSeed).toMatch(/chmod 0700 \/var\/lib\/actana /);
+    // ... and so is the drop box a Session appends to, which is traversable
+    // and is not in it.
+    expect(stateSeed).toContain("/run/actana");
+    expect(stateSeed).toContain("chmod 0711 /run/actana");
+    expect(CORE_HOOK_DROP_DIR.startsWith(CORE_STATE_DIR)).toBe(false);
   });
 
   it("exposes the port from the same ARG as ACTANA_PORT", () => {

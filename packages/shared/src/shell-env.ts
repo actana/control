@@ -2,6 +2,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { spawnSync } from "node:child_process";
+import { asCore, coreChildEnv, coreHome, coreIdentity } from "./core-home";
 import { harnessHomePathSuffixes } from "./harness-cli-config";
 import { resolveShell, shellBasename } from "./login-shell";
 
@@ -218,7 +219,7 @@ export function buildUserPath(
 ): string {
   const platform = options.platform ?? os.platform();
   const env = options.env ?? process.env;
-  const home = options.homeDir ?? os.homedir();
+  const home = options.homeDir ?? coreHome();
   const pathExists = options.pathExists ?? fs.existsSync;
   const delimiter = platform === "win32" ? ";" : path.delimiter;
   const candidates = existingPathEntries(
@@ -266,7 +267,11 @@ export function sanitizedProcessEnv(): Record<string, string> {
   }
   setCanonicalPathEnv(out, buildUserPath(envPathValue(out), { env: out }), os.platform());
   out.SHELL = resolveShell();
-  return out;
+  // In the container the env above started as the daemon's. What Sessions and
+  // their probes get is rebuilt for core: its HOME, USER, LOGNAME, SHELL and a
+  // PATH that leads with its local bin, and none of the daemon's state paths.
+  const identity = coreIdentity();
+  return identity ? coreChildEnv(identity, out) : out;
 }
 
 function commandNames(command: string, env: NodeJS.ProcessEnv, platform: NodeJS.Platform): string[] {
@@ -396,9 +401,11 @@ function captureUserShellEnv(
   if (!args) return null;
 
   try {
-    const result = spawnSync(shell, args, {
+    const launch = asCore({ command: shell, args, env: process.env });
+    const result = spawnSync(launch.command, launch.args, {
       encoding: "utf8",
-      env: process.env,
+      cwd: launch.cwd,
+      env: launch.env,
       input: "",
       maxBuffer: 1024 * 1024,
       timeout: SHELL_ENV_CAPTURE_TIMEOUT_MS,

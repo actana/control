@@ -1,10 +1,17 @@
 import log from "@actana/shared/log";
 import * as os from "node:os";
-import * as fs from "node:fs";
 import * as path from "node:path";
 import { spawnSync } from "node:child_process";
 import { getAppTheme } from "./app-theme";
-import { ensureStatuslineTap } from "@actana/shared/statusline-tap";
+import { asCore, coreHome, isContainerMode, killAsCore, killAsCoreQuietly } from "./core-identity";
+import {
+  ensureClaudeShiftEnterBindingViaCore,
+  ensureStatuslineTapViaCore,
+  installHarnessHooksViaCore,
+  spawnPathFactsViaCore,
+  CoreHomeOpRefusedError,
+  type SpawnPathFacts,
+} from "./core-home-ops-client";
 import { PtyOutputBatcher } from "./pty-output-batch";
 import { PtyOutputActivityWatcher, type PtyOutputActivityKind } from "./pty-output-activity";
 import { sliceReplayWindow, type PtyReplayWindow } from "./pty-replay-window";
@@ -33,7 +40,6 @@ import {
   HOOK_SESSION_ID_ENV,
   HOOK_TOKEN_ENV,
   HOOK_URL_ENV,
-  installHarnessHooks,
 } from "./harness-hooks";
 import { checkHarnessCliVersionCached, harnessVersionErrorMessage } from "@actana/shared/harness-cli-version";
 import {
@@ -59,22 +65,10 @@ function sanitizeEnv(): Record<string, string> {
 // Claude Code only treats ESC+CR (`\x1b\r`, what `terminal-keymap.ts` emits for
 // Shift+Enter) as "insert newline" when this flag is set. Normally `/terminal-
 // setup` writes it; do it eagerly so the user doesn't have to.
-export function ensureClaudeShiftEnterBinding(): void {
-  try {
-    const dir = path.join(os.homedir(), ".claude");
-    const file = path.join(dir, "settings.json");
-    let settings: Record<string, unknown> = {};
-    if (fs.existsSync(file)) {
-      const raw = fs.readFileSync(file, "utf8");
-      if (raw.trim()) settings = JSON.parse(raw);
-    }
-    if (settings.shiftEnterKeyBindingInstalled === true) return;
-    settings.shiftEnterKeyBindingInstalled = true;
-    fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(file, JSON.stringify(settings, null, 2) + "\n", "utf8");
-  } catch {
-    // best-effort — user can still run `/terminal-setup` manually.
-  }
+export async function ensureClaudeShiftEnterBinding(): Promise<void> {
+  // In the container the file is core's and the daemon is not core: the write is
+  // done by a `core` process (issue 559). The writer lives in `core-home-ops`.
+  await ensureClaudeShiftEnterBindingViaCore();
 }
 
 type Pty = {
@@ -396,7 +390,10 @@ function sleep(ms: number): Promise<void> {
 function killProcessTreeWindows(pid: number | undefined): void {
   if (os.platform() !== "win32" || !pid || pid <= 0) return;
   try {
-    spawnSync("taskkill", ["/pid", String(pid), "/t", "/f"], {
+    const spec = asCore({ command: "taskkill", args: ["/pid", String(pid), "/t", "/f"] });
+    spawnSync(spec.command, spec.args, {
+      cwd: spec.cwd,
+      env: spec.env,
       timeout: TASKKILL_TIMEOUT_MS,
     });
   } catch {
@@ -444,11 +441,13 @@ export function disposePty(proc: import("node-pty").IPty | null | undefined): vo
   // dispose never fired and one conhost.exe (~8.5 MB, parented to our main
   // process) leaked on every create→delete of a terminal.
   const closable = proc as unknown as { destroy?: () => void };
+  armCoreKillEscalation(proc, pid);
   try {
     if (typeof closable.destroy === "function") {
       closable.destroy();
     } else {
-      proc.kill();
+      // No signal: node-pty's own default, as `proc.kill()` was.
+      killAsCoreQuietly(proc, undefined, "pty.kill");
     }
   } catch {
     /* already exited or fd already closed */
@@ -460,11 +459,39 @@ export function disposePty(proc: import("node-pty").IPty | null | undefined): vo
   killProcessTreeWindows(pid);
 }
 
+/**
+ * In the container, a Session that ignores SIGHUP survives `destroy()`, and the
+ * daemon cannot signal it itself (another uid, no CAP_KILL). So when the master
+ * is closed, give it {@link SIGTERM_GRACE_MS} and then SIGKILL its process group
+ * through {@link killAsCore}. Outside the container nothing is armed: the
+ * teardown is what it always was.
+ */
+function armCoreKillEscalation(
+  proc: import("node-pty").IPty,
+  pid: number | undefined,
+): void {
+  if (!isContainerMode() || typeof pid !== "number" || pid <= 1) return;
+  let exited = false;
+  (proc as { onExit?: (cb: () => void) => unknown }).onExit?.(() => {
+    exited = true;
+  });
+  const timer = setTimeout(() => {
+    if (exited) return;
+    killAsCoreQuietly(-pid, "SIGKILL", "pty.kill.escalation");
+  }, SIGTERM_GRACE_MS);
+  timer.unref?.();
+}
+
 function pidsListeningOnPort(port: number): number[] {
   if (!Number.isInteger(port) || port <= 0 || port > MAX_TCP_PORT) return [];
   if (os.platform() === "win32") return [];
 
-  const result = spawnSync("lsof", ["-nP", `-tiTCP:${port}`, "-sTCP:LISTEN"], {
+  // As core: listeners are Session processes, and another uid's sockets are
+  // not visible to the daemon's `lsof`.
+  const spec = asCore({ command: "lsof", args: ["-nP", `-tiTCP:${port}`, "-sTCP:LISTEN"] });
+  const result = spawnSync(spec.command, spec.args, {
+    cwd: spec.cwd,
+    env: spec.env,
     encoding: "utf8",
     timeout: LSOF_PROBE_TIMEOUT_MS,
   });
@@ -484,7 +511,7 @@ async function killPidsListeningOnPort(port: number): Promise<PortKillResult> {
 
   for (const pid of pids) {
     try {
-      process.kill(pid, "SIGTERM");
+      await killAsCore(pid, "SIGTERM");
       killed.push(pid);
     } catch (err: any) {
       errors.push(`pid ${pid}: ${err?.message ?? String(err)}`);
@@ -498,7 +525,7 @@ async function killPidsListeningOnPort(port: number): Promise<PortKillResult> {
     }
     for (const pid of pidsListeningOnPort(port).filter((pid) => killed.includes(pid))) {
       try {
-        process.kill(pid, "SIGKILL");
+        await killAsCore(pid, "SIGKILL");
       } catch {
         /* already exited or not permitted */
       }
@@ -553,6 +580,29 @@ async function killPty(p: Pty): Promise<boolean> {
   }
 }
 
+/**
+ * The spawn policy's `cwdExists` and `realpath`, answered from what `core` said
+ * about the paths. The cwd falls back to its lexical path when core could not
+ * resolve it, which is `defaultRealpath`'s own fallback and cannot matter:
+ * `cwdOk` is what rejects a cwd core cannot reach. A project root core could not
+ * resolve (missing, or outside what it may look at) is an error, so the policy
+ * drops it, which is the safe direction; so is a path nobody asked about.
+ */
+function policyPathDeps(
+  facts: SpawnPathFacts,
+  cwd: string,
+): { cwdExists: (cwd: string) => boolean; realpath: (p: string) => string } {
+  return {
+    cwdExists: () => facts.cwdOk,
+    realpath: (p) => {
+      const real = facts.realpaths[p];
+      if (real) return real;
+      if (p === cwd && p in facts.realpaths) return path.resolve(p);
+      throw new Error("path is not one core could resolve");
+    },
+  };
+}
+
 // ─── PtyCore ─────────────────────────────────────────────────────────
 //
 // Transport-agnostic PTY manager. Owns the PTY map, the output batcher, and all
@@ -605,7 +655,7 @@ export class PtyCore {
     const { userDataDir, appPath, getHookEnv } = this.deps;
 
     // Home shell terminals: the renderer never learns the host's home path, so
-    // the handler replaces cwd with its own os.homedir() before the policy's
+    // the handler replaces cwd with the Core's home before the policy's
     // project-root check. VM Shell Sessions (issue 06) use the same trick — a
     // VM shell has no project folder, and the Core's own home is the only
     // sensible place to drop the operator. The policy's `shellSession` branch
@@ -613,15 +663,35 @@ export class PtyCore {
     // the real home here means node-pty gets a valid cwd to chdir into.
     const spawnReq: SpawnRequest =
       opts.shell === true && opts.home
-        ? ({ ...opts, cwd: os.homedir() } as SpawnRequest)
+        ? ({ ...opts, cwd: coreHome() } as SpawnRequest)
         : opts.shellSession === true
-          ? ({ ...opts, cwd: opts.cwd || os.homedir() } as SpawnRequest)
+          ? ({ ...opts, cwd: opts.cwd || coreHome() } as SpawnRequest)
           : opts;
     let plan: ReturnType<typeof resolveSpawnPlan>;
+    // The policy's two questions about the disk (is this cwd a directory, and
+    // where do these paths really lead) are answered by `core`, once, before the
+    // synchronous policy runs. In the container the daemon cannot look inside
+    // core's home (issue 559); elsewhere this is `undefined` and the policy
+    // asks `fs` itself, as it always did.
+    const projectRoots = loadProjectRoots();
+    const pathFacts = isContainerMode()
+      ? spawnReq.cwd
+        ? await spawnPathFactsViaCore(spawnReq.cwd, [coreHome(), ...projectRoots]).catch((err: unknown) => {
+            // A cwd the helper will not look at is an invalid cwd, said the way the
+            // policy says it. (A helper that hangs or crashes is still a plain error.)
+            if (err instanceof CoreHomeOpRefusedError) {
+              log.warn("pty.spawn.rejected", { code: "invalid-cwd", cwd: safeLogValue(opts.cwd), taskId: safeLogValue(opts.taskId) });
+              throw new Error("pty:spawn rejected (invalid-cwd)");
+            }
+            throw err;
+          })
+        : { cwdOk: false, realpaths: {} }
+      : undefined;
     try {
       plan = resolveSpawnPlan(spawnReq, {
-        projectRoots: loadProjectRoots,
-        homeShellRoots: () => [os.homedir()],
+        ...(pathFacts ? policyPathDeps(pathFacts, spawnReq.cwd ?? "") : {}),
+        projectRoots: () => projectRoots,
+        homeShellRoots: () => [coreHome()],
         resolveCommand: (name) => {
           const env = sanitizedProcessEnv();
           const requirement = HARNESS_CLI_CONFIG_BY_COMMAND[name];
@@ -663,7 +733,7 @@ export class PtyCore {
     // has no agent config to touch.
     let hooksReportTurnStart = false;
     if (plan.mode === "agent") {
-      if (plan.agent === "claude-code") ensureStatuslineTap(plan.cwd);
+      if (plan.agent === "claude-code") await ensureStatuslineTapViaCore(plan.cwd);
       // Lifecycle hooks, pointed at THIS Core's loopback receiver (issue 84).
       // Without them nothing ever moves the Session's status off `ready`. The
       // env carries the URL and token so the file on disk holds no secret and
@@ -678,7 +748,7 @@ export class PtyCore {
       if (hookEnv) {
         // Pass the same spawn env the PTY inherits so Pi's writer resolves
         // `$PI_CODING_AGENT_DIR` the way `pi` will (#518 part 1).
-        const hooks = installHarnessHooks(plan.agent, plan.cwd, env);
+        const hooks = await installHarnessHooksViaCore(plan.agent, plan.cwd, env);
         hooksReportTurnStart = hooks.reportsTurnStart;
         hookTrustBypassEarned = hooks.hookTrustBypassEarned;
         // The env goes in whenever a file landed, even for a family whose
@@ -737,12 +807,17 @@ export class PtyCore {
 
     let proc: import("node-pty").IPty;
     try {
-      proc = pty.spawn(spawnTarget, spawnArgs, {
+      // The only way a Session process starts. In the container it is
+      // `setpriv` -> `core` with no capabilities (node-pty's own uid/gid
+      // options keep them, so they are never passed); elsewhere it is the
+      // spec unchanged.
+      const launch = asCore({ command: spawnTarget, args: spawnArgs, cwd: plan.cwd, env });
+      proc = pty.spawn(launch.command, launch.args, {
         name: "xterm-256color",
         cols: opts.cols ?? DEFAULT_PTY_COLS,
         rows: opts.rows ?? DEFAULT_PTY_ROWS,
-        cwd: plan.cwd,
-        env,
+        cwd: launch.cwd,
+        env: launch.env as Record<string, string>,
       });
     } catch (err: any) {
       const msg = err?.message ?? String(err);

@@ -29,9 +29,13 @@
 //     link reports the Core connected;
 //   • `docker restart` is a no-op for pairing: same identity, still no
 //     credential in the log, and the same Panel reconnects untouched (D17);
-//   • and destroying the volume — the `docker compose down -v` motion — is the
-//     one thing that unpairs: the replacement Core mints a different identity
-//     and the Panel's stored credentials stop opening it.
+//   • the daemon's state (material, pairings, database) is in /var/lib/actana on
+//     a volume of its own, and the home volume holds none of it (#559); a hook
+//     miss a Session appends to the drop box is read back by the daemon;
+//   • destroying the home volume alone does not unpair, and destroying the state
+//     volume — the `docker compose down -v` motion — is the one thing that does:
+//     the replacement Core mints a different identity and the Panel's stored
+//     credentials stop opening it.
 //
 // Needs a Docker daemon and a built Panel (`pnpm build`). Everything it
 // creates carries a unique suffix and is removed on exit; the image is left
@@ -66,6 +70,10 @@ import {
 import {
   CORE_APP_ROOT,
   CORE_HOME,
+  CORE_HOOK_DROP_DIR,
+  CORE_STATE_DATA_DIR,
+  CORE_STATE_DIR,
+  CORE_STATE_MATERIAL_FILE,
   CORE_REFUSED_VERBS,
   repoRoot,
 } from "./lib/panel-image.mjs";
@@ -85,8 +93,8 @@ if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) die(`--timeout must be a posi
 const suffix = `${process.pid}-${Date.now().toString(36)}`;
 const OPERATOR = { name: "Smoke Operator", password: "smoke-operator-passphrase" };
 
-/** The identity the daemon mints into its volume on first boot. */
-const MATERIAL_FILE = `${CORE_HOME}/.config/actana/material.json`;
+/** The identity the daemon mints into its state volume on first boot (#559). */
+const MATERIAL_FILE = CORE_STATE_MATERIAL_FILE;
 
 const DIAL_TIMEOUT_MS = 60_000;
 
@@ -114,7 +122,7 @@ function docker(dockerArgs, { allowFailure = false } = {}) {
 
 /**
  * A Core container on a fresh named volume, booted the way the reference
- * compose boots one: no privileges, no host paths, one volume, and the public
+ * compose boots one: no privileges, no host paths, two volumes (home and state, #559), and the public
  * host and port as environment.
  *
  * `ACTANA_PORT` is set rather than left at 8443 so the published port and the
@@ -126,15 +134,19 @@ async function bootCore(name, { port } = {}) {
   const id = `actana-core-smoke-${name}-${suffix}`;
   const containerName = id;
   const volumeName = id;
+  const stateVolumeName = `${id}-state`;
   port ??= await pickFreePort();
 
   docker(["volume", "create", volumeName]);
   teardown.push(() => docker(["volume", "rm", "-f", volumeName], { allowFailure: true }));
+  docker(["volume", "create", stateVolumeName]);
+  teardown.push(() => docker(["volume", "rm", "-f", stateVolumeName], { allowFailure: true }));
   teardown.push(() => docker(["rm", "-f", containerName], { allowFailure: true }));
 
   const container = {
     name: containerName,
     volume: volumeName,
+    stateVolume: stateVolumeName,
     port,
     endpoint: `wss://127.0.0.1:${port}`,
     /** Boots this container has announced and `waitForCoreLink` has consumed. */
@@ -168,6 +180,8 @@ async function bootCore(name, { port } = {}) {
         `ACTANA_LABEL=${name}`,
         "--volume",
         `${volumeName}:${CORE_HOME}`,
+        "--volume",
+        `${stateVolumeName}:${CORE_STATE_DIR}`,
         image,
       ]);
     },
@@ -463,11 +477,69 @@ if (!`${rootBoot.stderr}${rootBoot.stdout}`.includes("refusing to start as root"
 }
 log("entrypoint refuses to start as uid 0");
 
-for (const owned of [CORE_HOME, `${CORE_HOME}/shared`, `${CORE_HOME}/.local/share/actana/data`]) {
+for (const owned of [CORE_HOME, `${CORE_HOME}/shared`, CORE_STATE_DIR, CORE_STATE_DATA_DIR]) {
   const owner = core.exec(["stat", "-c", "%u:%g", owned]).stdout.trim();
   if (owner !== "1000:1000") die(`${owned} is owned by ${owner}, expected 1000:1000`);
 }
 log("home, shared and daemon state are owned by core");
+
+// #559 — the daemon's state is in its own directory on its own volume, and the
+// home volume holds none of it. A directory that is a mount point of its own is
+// what makes "the core-home volume has no identity" true of a copy of the volume.
+const stateMode = core.exec(["stat", "-c", "%a", CORE_STATE_DIR]).stdout.trim();
+if (stateMode !== "700") die(`${CORE_STATE_DIR} is mode ${stateMode}, expected 700`);
+const mounts = core.exec(["cat", "/proc/self/mountinfo"]).stdout;
+if (!mounts.split("\n").some((line) => line.split(" ")[4] === CORE_STATE_DIR)) {
+  die(`${CORE_STATE_DIR} is not a mount point of its own:\n${mounts}`);
+}
+for (const kept of [MATERIAL_FILE, `${CORE_STATE_DATA_DIR}/missioncontrol.db`]) {
+  if (core.exec(["test", "-f", kept], { allowFailure: true }).status !== 0) {
+    die(`${kept} is missing — the daemon's state is not under ${CORE_STATE_DIR}\n${core.logs()}`);
+  }
+}
+/** Daemon state found under the core home, which must be nothing. */
+function stateInHome(container) {
+  return container
+    .exec([
+      "find",
+      CORE_HOME,
+      "(",
+      "-name",
+      "material.json",
+      "-o",
+      "-name",
+      "pairing.json*",
+      "-o",
+      "-name",
+      "missioncontrol.db*",
+      "-o",
+      "-name",
+      "update-check.json",
+      "-o",
+      "-name",
+      "update-notice.json",
+      ")",
+    ])
+    .stdout.trim();
+}
+const strayState = stateInHome(core);
+if (strayState) die(`daemon state is under the core home:\n${strayState}`);
+log(`material and database are in ${CORE_STATE_DIR}, a mount of its own; the home holds none`);
+
+// The hook miss drop box: a Session (core) appends, the daemon reads it as
+// untrusted input. The record below is read by the boot drain of the next
+// restart, the only drain that does not wait a minute.
+const dropDirMode = core.exec(["stat", "-c", "%a", CORE_HOOK_DROP_DIR]).stdout.trim();
+const dropFileMode = core.exec(["stat", "-c", "%a", `${CORE_HOOK_DROP_DIR}/hook-misses.log`]).stdout.trim();
+if (dropDirMode !== "711" || dropFileMode !== "622") {
+  die(`hook drop box modes are ${dropDirMode}/${dropFileMode}, expected 711/622`);
+}
+const dropMarker = `smoke-${suffix}`;
+core.exec([
+  "sh",
+  "-c",
+  `printf '%s\\t%s\\t%s\\t%s\\n' 2026-01-01T00:00:00Z ${dropMarker} PostToolUse 28 >> ${CORE_HOOK_DROP_DIR}/hook-misses.log`,
+]);
 
 // D14 — node-pty forks a shell and the shell forks a Harness, so a Harness
 // whose shell exited first reparents to PID 1. libuv only reaps children Node
@@ -577,7 +649,7 @@ const hostileScript = [
   // `stat` here would run the volume fake as root and trip the marker check,
   // even when prep correctly pinned PATH (CI run 36730945627).
   // Hard-code paths so a hostile CORE_HOME cannot redirect the assertion.
-  "/usr/bin/stat -c '%u:%g %n' /etc /home/core /home/core/shared",
+  "/usr/bin/stat -c '%u:%g %n' /etc /home/core /home/core/shared /var/lib/actana",
   'exit "$prep_rc"',
 ].join("; ");
 const prepHostile = docker(
@@ -607,7 +679,12 @@ const hostileLines = new Set(
     .map((line) => line.trim())
     .filter(Boolean),
 );
-for (const expected of ["0:0 /etc", `1000:1000 ${CORE_HOME}`, `1000:1000 ${CORE_HOME}/shared`]) {
+for (const expected of [
+  "0:0 /etc",
+  `1000:1000 ${CORE_HOME}`,
+  `1000:1000 ${CORE_HOME}/shared`,
+  `1000:1000 ${CORE_STATE_DIR}`,
+]) {
   if (!hostileLines.has(expected)) {
     die(`hostile prep missing exact ownership line ${JSON.stringify(expected)}:\n${hostileOut}`);
   }
@@ -1027,6 +1104,15 @@ if (typeof coreId !== "string" || !coreId) {
 await assertConnects("the first pairing");
 log(`the Panel is paired with ${coreId} over the core-link`);
 
+// #559 — the pairing store is written beside the material, in the state
+// directory, and not in the home.
+if (core.exec(["test", "-f", `${CORE_STATE_DIR}/config/pairing.json`], { allowFailure: true }).status !== 0) {
+  die(`a pairing left no ${CORE_STATE_DIR}/config/pairing.json\n${core.logs()}`);
+}
+const strayAfterPairing = stateInHome(core);
+if (strayAfterPairing) die(`pairing put state under the core home:\n${strayAfterPairing}`);
+log("pairing.json is in the state directory; the home still holds no daemon state");
+
 /** Open a link and wait for the dial-status frame only the Panel can report. */
 async function assertConnects(what) {
   const link = await PanelLink.open(panel.origin, panel.client.jar).catch((err) =>
@@ -1061,20 +1147,44 @@ if (afterRestart.caCert !== first.caCert) {
   die("restart replaced the CA, so every paired client would be locked out");
 }
 assertNoCredentialInLogs("a restart");
+// The miss a Session appended to the drop box was read by the daemon's boot
+// drain, and cleared.
+const restartLogs = core.logs("all");
+if (!restartLogs.includes("hook-delivery.missed") || !restartLogs.includes(dropMarker)) {
+  die(`the daemon did not drain the Session's hook miss (${dropMarker}):\n${restartLogs}`);
+}
+const dropLeft = core.exec(["stat", "-c", "%s", `${CORE_HOOK_DROP_DIR}/hook-misses.log`]).stdout.trim();
+if (dropLeft !== "0") die(`the drop box was not cleared after the drain: ${dropLeft} bytes left`);
 
 await assertConnects("after a restart");
 log("restart is a no-op for pairing — same identity, nothing emitted, still connected");
 
 // ─── `down -v` is the only thing that unpairs ────────────────────────────────
 
-// The volume is the pairing. Taking it away is what `docker compose down -v`
-// does, and the replacement Core is a different Core — which is the honest
-// answer, not a bug: the CA, the bearer secret and the Panel's client
-// certificate all lived in that volume.
-log("destroying the volume — the `down -v` motion …");
+// The state volume is the pairing. Taking it away, with the home, is what
+// `docker compose down -v` does, and the replacement Core is a different Core —
+// which is the honest answer, not a bug: the CA, the bearer secret and the
+// Panel's client certificate all lived in that volume.
+log("destroying the volumes — the `down -v` motion …");
 const staleEndpointPort = core.port;
 docker(["rm", "-f", core.name]);
+
+// The home alone is not the pairing (#559): a Core re-created on a new home
+// volume and the old state volume is the same Core. Only when the state
+// volume goes too — `down -v` removes both — is it a different one.
 docker(["volume", "rm", "-f", core.volume]);
+docker(["volume", "create", core.volume]);
+// A new container has a new log: the sentinel count starts again.
+core.boots = 0;
+core.start();
+await waitForCoreLink(core);
+if (readIdentity(core).coreId !== first.coreId) {
+  die("a Core on a new home volume and the old state volume lost its identity");
+}
+await assertConnects("on a new home volume");
+log("a destroyed home volume did not unpair: the identity is in the state volume");
+docker(["rm", "-f", core.name]);
+docker(["volume", "rm", "-f", core.volume, core.stateVolume]);
 
 // On the *same* published port the destroyed Core had, so the Panel's stored
 // endpoint still reaches something. Boot it anywhere else and the dial fails

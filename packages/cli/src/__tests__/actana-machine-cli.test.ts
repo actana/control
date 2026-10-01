@@ -2025,6 +2025,19 @@ describe("in a container", () => {
     expect(text).not.toContain("run: actana update");
   });
 
+  // #559 — the image bakes AC_CORE_MATERIAL_FILE, and this is what a CLI does
+  // when it is missing: the state directory, never a path under the home, which
+  // is where the identity lived before and where a Session can read it.
+  it("looks for the material in the state directory, never under the home, when the variable is missing", async () => {
+    const env = containerEnv();
+    delete env.AC_CORE_MATERIAL_FILE;
+    const underHome = path.join(layoutForHome().configDir, "material.json");
+    writeContainerMaterial({ AC_CORE_MATERIAL_FILE: underHome });
+
+    expect(await runActanaCli(deps(["status"], fakeSystem(), { env }))).toBe(1);
+    expect(out.join("\n")).toMatch(/Pairing\s+no material/);
+  });
+
   it("is stopped, not degraded, when the daemon's port does not answer", async () => {
     const env = containerEnv();
     writeContainerMaterial(env);

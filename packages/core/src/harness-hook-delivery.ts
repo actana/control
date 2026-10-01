@@ -30,6 +30,7 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { CORE_HOOK_MISS_LOG } from "@actana/shared/actana-container-contract";
 import log from "@actana/shared/log";
 
 /** How often the Core folds new misses into its log. */
@@ -43,6 +44,14 @@ const DRAIN_INTERVAL_MS = 60_000;
  */
 const MAX_MISS_LOG_BYTES = 1_000_000;
 
+/**
+ * The longest line, and the longest field, that is believed. A hook writes
+ * ~80 bytes; anything larger is not one of ours. The file is writable by every
+ * Session, so it is input from a process we do not trust.
+ */
+const MAX_LINE_CHARS = 512;
+const MAX_FIELD_CHARS = 128;
+
 /** How many individual misses one drain names before it summarizes. */
 const MAX_LOGGED_PER_DRAIN = 10;
 
@@ -55,9 +64,51 @@ export type HookMiss = {
   code: string;
 };
 
-/** Where a Core's hook commands record what they could not deliver. */
-export function hookMissLogPath(userDataDir: string): string {
-  return path.join(userDataDir, "hook-misses.log");
+/**
+ * Where a Core's hook commands record what they could not deliver.
+ *
+ * In the container this is the drop box, outside the state directory: the
+ * writer is a Session and the daemon's state is not somewhere a Session may
+ * write (#559). On metal the operator runs both, and the file stays beside the
+ * database.
+ */
+export function hookMissLogPath(userDataDir: string, containerMode = false): string {
+  return containerMode ? CORE_HOOK_MISS_LOG : path.join(userDataDir, "hook-misses.log");
+}
+
+/**
+ * Make the drop box a Session can append to: the directory traversable, the
+ * file world-writable (0622: a Session can append, and also truncate it).
+ * Created here, by the daemon, because a Session's `>>`
+ * can create nothing in a directory it may not write to, and the mode is set
+ * with `chmod` because the daemon's umask would otherwise decide it.
+ *
+ * Never throws: a hook that cannot be recorded is already fail-soft, and a
+ * daemon that will not boot over a diagnostic file is the wrong trade.
+ */
+export function ensureHookMissDropBox(missLogPath: string): boolean {
+  try {
+    const dir = path.dirname(missLogPath);
+    fs.mkdirSync(dir, { recursive: true, mode: 0o711 });
+    fs.chmodSync(dir, 0o711);
+    // O_NOFOLLOW and a regular-file check: the drain refuses a symlink, and
+    // the creator must not chmod whatever one points at.
+    const fd = fs.openSync(
+      missLogPath,
+      fs.constants.O_WRONLY | fs.constants.O_APPEND | fs.constants.O_CREAT | fs.constants.O_NOFOLLOW,
+      0o622,
+    );
+    try {
+      if (!fs.fstatSync(fd).isFile()) throw new Error("not a regular file");
+      fs.fchmodSync(fd, 0o622);
+    } finally {
+      fs.closeSync(fd);
+    }
+    return true;
+  } catch (err) {
+    log.warn("hook-delivery.drop-box-failed", { path: missLogPath, error: String(err) });
+    return false;
+  }
 }
 
 /**
@@ -72,44 +123,73 @@ export function hookMissLogPath(userDataDir: string): string {
  * are all arriving.
  */
 export function drainHookMisses(missLogPath: string): HookMiss[] {
-  let raw: string;
+  let fd: number;
   try {
-    const stat = fs.statSync(missLogPath);
-    if (stat.size === 0) return [];
-    if (stat.size > MAX_MISS_LOG_BYTES) {
-      raw = fs.readFileSync(missLogPath, "utf8").slice(0, MAX_MISS_LOG_BYTES);
-    } else {
-      raw = fs.readFileSync(missLogPath, "utf8");
-    }
+    fd = fs.openSync(missLogPath, fs.constants.O_RDWR | fs.constants.O_NOFOLLOW);
   } catch {
     return [];
   }
   try {
-    fs.truncateSync(missLogPath, 0);
-  } catch (err) {
-    // Could not clear it, so every line would be re-reported on the next
-    // drain. Say so once and report nothing rather than loop on the same set.
-    log.warn("hook-delivery.miss-log-truncate-failed", { error: String(err) });
+    const raw = readRegularFile(fd);
+    if (raw === null) return [];
+    try {
+      fs.ftruncateSync(fd, 0);
+    } catch (err) {
+      // Could not clear it, so every line would be re-reported on the next
+      // drain. Say so once and report nothing rather than loop on the same set.
+      log.warn("hook-delivery.miss-log-truncate-failed", { error: String(err) });
+      return [];
+    }
+    return raw
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map(parseMiss)
+      .filter((miss): miss is HookMiss => miss !== null);
+  } catch {
     return [];
+  } finally {
+    fs.closeSync(fd);
   }
-  return raw
-    .split("\n")
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .map(parseMiss)
-    .filter((miss): miss is HookMiss => miss !== null);
+}
+
+/**
+ * At most {@link MAX_MISS_LOG_BYTES} of an open file, or null when there is
+ * nothing to drain.
+ *
+ * Everything is done on the descriptor that was opened (`O_NOFOLLOW`): a
+ * symlink to somewhere else is refused rather than followed, and only a regular
+ * file is read. Only the cap is ever read into memory, however large a Session
+ * made the file, and when the cap cut a line in two the torn half is dropped.
+ */
+function readRegularFile(fd: number): string | null {
+  const stat = fs.fstatSync(fd);
+  if (!stat.isFile() || stat.size === 0) return null;
+  const buffer = Buffer.alloc(Math.min(stat.size, MAX_MISS_LOG_BYTES));
+  const read = fs.readSync(fd, buffer, 0, buffer.length, 0);
+  const text = buffer.subarray(0, read).toString("utf8");
+  if (stat.size <= MAX_MISS_LOG_BYTES) return text;
+  return text.slice(0, text.lastIndexOf("\n") + 1);
+}
+
+/** A field with every control character gone and a length cap: it is about to be logged. */
+function cleanField(value: string): string {
+  return value.replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, "").slice(0, MAX_FIELD_CHARS);
 }
 
 /**
  * One recorded line, as `hookCommand` writes it:
  * `<iso8601>\t<sessionId>\t<event>\t<curl exit>`. A line this cannot read is
- * dropped rather than guessed at — the file is written by a shell on a machine
- * we do not control, and a mangled line is not worth a log entry of its own.
+ * dropped rather than guessed at — the file is written by a shell in a Session,
+ * and anything a Session can write to is input, not a record: too long a line
+ * is not ours, extra fields are ignored, and the fields are stripped of control
+ * characters and capped before they reach a log line.
  */
 function parseMiss(line: string): HookMiss | null {
+  if (line.length > MAX_LINE_CHARS) return null;
   const parts = line.split("\t");
   if (parts.length < 4) return null;
-  const [at, sessionId, event, code] = parts;
+  const [at, sessionId, event, code] = parts.map(cleanField);
   if (!sessionId) return null;
   return { at, sessionId, event, code };
 }

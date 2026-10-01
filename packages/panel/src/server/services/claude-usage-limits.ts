@@ -7,7 +7,7 @@ import type {
   ClaudeUsageLimitsStatus,
   ClaudeUsageWindow,
 } from "~/shared/claude-usage-limits";
-import { SHARED_LIMITS_FILE } from "@actana/shared/statusline-tap";
+import { sharedLimitsFile as defaultSharedLimitsFile } from "@actana/shared/statusline-tap";
 
 // Anthropic's OAuth usage endpoint — the same source Claude Code's own /usage
 // screen reads. It is aggressively rate limited PER ACCOUNT, and this machine
@@ -50,7 +50,8 @@ let consecutiveRateLimits = 0;
 // Last time we stat()'d the shared file. Used to throttle the fs check to at
 // most once per FILE_SERVE_TTL_MS while a fresh (non-rate-limited) cache serves.
 let lastFileStatAt = 0;
-let sharedLimitsFile = SHARED_LIMITS_FILE;
+let sharedLimitsFileOverride: string | null = null;
+const sharedLimitsFile = (): string => sharedLimitsFileOverride ?? defaultSharedLimitsFile();
 
 // Indirection so tests can inject a token without touching the Keychain / fs.
 let tokenReader: () => string | null = readClaudeOAuthToken;
@@ -136,13 +137,13 @@ function snapshot(
  */
 function readSharedLimitsSnapshot(now: number): ClaudeUsageLimits | null {
   try {
-    const st = fs.statSync(sharedLimitsFile);
+    const st = fs.statSync(sharedLimitsFile());
     if (!st.isFile()) return null;
     const age = now - st.mtimeMs;
     // Tolerate slight clock skew (a just-written file's mtime can land a hair
     // ahead of Date.now()); reject only genuinely-future or stale files.
     if (age > SHARED_FILE_FRESH_MS || age < -60_000) return null;
-    const b = JSON.parse(fs.readFileSync(sharedLimitsFile, "utf8")) as Record<string, unknown>;
+    const b = JSON.parse(fs.readFileSync(sharedLimitsFile(), "utf8")) as Record<string, unknown>;
     const session = parseWindow(b?.five_hour);
     const weekly = parseWindow(b?.seven_day);
     if (!session && !weekly) return null;
@@ -165,7 +166,7 @@ function toApiWindow(w: ClaudeUsageWindow | null): { utilization: number; resets
 /** Publish an endpoint success to the shared file so other consumers skip it. */
 function writeSharedLimitsSnapshot(value: ClaudeUsageLimits): void {
   try {
-    fs.mkdirSync(path.dirname(sharedLimitsFile), { recursive: true });
+    fs.mkdirSync(path.dirname(sharedLimitsFile()), { recursive: true });
     const body = JSON.stringify({
       five_hour: toApiWindow(value.session),
       seven_day: toApiWindow(value.weekly),
@@ -173,9 +174,9 @@ function writeSharedLimitsSnapshot(value: ClaudeUsageLimits): void {
       source: "endpoint",
       written_at: new Date(value.fetchedAt).toISOString(),
     });
-    const tmp = `${sharedLimitsFile}.${process.pid}.tmp`;
+    const tmp = `${sharedLimitsFile()}.${process.pid}.tmp`;
     fs.writeFileSync(tmp, body, "utf8");
-    fs.renameSync(tmp, sharedLimitsFile);
+    fs.renameSync(tmp, sharedLimitsFile());
   } catch {
     // best-effort — the in-memory cache still serves this instance.
   }
@@ -367,5 +368,5 @@ export function _setTokenReaderForTests(fn: (() => string | null) | null): void 
 
 /** Test seam: point the shared cache file elsewhere (pass null to restore). */
 export function _setSharedLimitsFileForTests(p: string | null): void {
-  sharedLimitsFile = p ?? SHARED_LIMITS_FILE;
+  sharedLimitsFileOverride = p;
 }

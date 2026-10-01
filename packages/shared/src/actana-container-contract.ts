@@ -45,6 +45,8 @@
 // Pure: env in, values or a sentence out. Nothing here touches the filesystem,
 // the network or the process.
 
+import * as path from "node:path";
+
 import { parsePublicHosts, primaryPublicHost } from "./public-hosts";
 
 /** The marker the image bakes. Set by us, so it means *our* container. */
@@ -64,6 +66,47 @@ export const CONTAINER_LABEL_ENV = "ACTANA_LABEL";
 
 /** The core-link port when `ACTANA_PORT` is unset. */
 export const DEFAULT_CONTAINER_PORT = 8443;
+
+/**
+ * Where a containerised Core keeps what only the daemon may hold (#559): the
+ * pairing identity, the database, the update caches and, later, the
+ * Shared-folder key. A volume of its own (`core-state`), never under the
+ * `core` home, which is the volume Sessions work in.
+ *
+ * Every path in the state directory is built by {@link coreStatePath}. A
+ * feature that needs a new file there adds a name to this block; it does not
+ * join a string onto `os.homedir()`, which is how state got under the
+ * workspace in the first place.
+ */
+export const CORE_STATE_DIR = "/var/lib/actana";
+
+/** A path inside {@link CORE_STATE_DIR}. */
+export function coreStatePath(...segments: string[]): string {
+  return path.posix.join(CORE_STATE_DIR, ...segments);
+}
+
+/** `AC_USER_DATA_DIR` in the image: the SQLite database and the update caches. */
+export const CORE_STATE_DATA_DIR = coreStatePath("data");
+
+/** `AC_CORE_MATERIAL_FILE` in the image. `pairing.json` and its lock sit beside it. */
+export const CORE_STATE_MATERIAL_FILE = coreStatePath("config", "material.json");
+
+/**
+ * Reserved for the Shared-folder key (#561, #562). Nothing writes here yet;
+ * the name is fixed now so those changes cannot put the key under `~`.
+ */
+export const CORE_STATE_SHARED_DIR = coreStatePath("shared");
+
+/**
+ * Where a Session tells the daemon a hook never reached it. Not in the state
+ * directory on purpose: a Session must be able to append to it, and nothing a
+ * Session can write to belongs in the place only the daemon may read. The
+ * daemon treats its content as untrusted input (`harness-hook-delivery.ts`).
+ */
+export const CORE_HOOK_DROP_DIR = "/run/actana";
+
+/** The one file in {@link CORE_HOOK_DROP_DIR}. */
+export const CORE_HOOK_MISS_LOG = path.posix.join(CORE_HOOK_DROP_DIR, "hook-misses.log");
 
 /** What the operator's three variables resolve to. */
 export type ContainerContract = {

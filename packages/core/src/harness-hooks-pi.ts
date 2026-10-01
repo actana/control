@@ -45,7 +45,7 @@
 
 import { randomBytes } from "node:crypto";
 import * as fs from "node:fs";
-import * as os from "node:os";
+import { coreHome } from "./core-identity";
 import * as path from "node:path";
 import { piAgentDir } from "@actana/shared/pi-agent-dir";
 import {
@@ -79,7 +79,7 @@ export const piExtensionFs = {
 /** Absolute path of the managed extension file. */
 export function piExtensionPath(
   env: NodeJS.ProcessEnv = process.env,
-  home: string = os.homedir(),
+  home: string = coreHome(),
 ): string {
   return path.join(piAgentDir(env, home), "extensions", PI_EXTENSION_FILENAME);
 }
