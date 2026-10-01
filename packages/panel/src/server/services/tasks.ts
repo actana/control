@@ -340,10 +340,19 @@ export async function commentAndReassign(
  * Claim an `assigned` Task for dispatch (#570): one conditional update, so of two
  * dispatchers only one gets the Task back and the other gets null. The Task is
  * `in_progress` afterwards, with its attempt count plus one and its dispatch time
- * set. A Task of another owner is null too.
+ * set. A Task of another owner is null too. The winning claim writes
+ * `task.status_changed` in the same transaction (#574).
  */
 export async function claimTask(ownerId: number, id: string, now = Date.now()): Promise<Task | null> {
-  return claimAssignedTask(ownerId, id, now, newId("tsh"));
+  return claimAssignedTask(ownerId, id, now, newId("tsh"), (task) => [
+    outboxEvent(
+      ownerId,
+      "task.status_changed",
+      { task: taskPayload(task), from: "assigned", to: "in_progress" },
+      task.coreId,
+      now,
+    ),
+  ]);
 }
 
 /**

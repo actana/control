@@ -163,14 +163,16 @@ export async function deleteTaskRow(
  * dispatchers that read the same Task cannot both start it. Only the statement
  * that finds the row still `assigned` changes it (to `in_progress`, attempt count
  * plus one, dispatch time set, the last error cleared); the other gets no row
- * back. The history row goes in the same transaction, and only for the winner.
- * Null when the owner has no such Task, or it was no longer `assigned`.
+ * back. The history row and any webhook outbox events (#574) go in the same
+ * transaction, and only for the winner. Null when the owner has no such Task,
+ * or it was no longer `assigned`.
  */
 export async function claimAssignedTask(
   ownerId: number,
   id: string,
   now: number,
   historyId: string,
+  outboxFor?: (task: TaskRow) => NewOutboxRow[],
 ): Promise<TaskRow | null> {
   return panelDb().transaction(async (tx) => {
     const claimed = await tx
@@ -194,6 +196,7 @@ export async function claimAssignedTask(
       toStatus: "in_progress",
       changedAt: now,
     });
+    await writeOutbox(tx, outboxFor?.(row));
     return row;
   });
 }
