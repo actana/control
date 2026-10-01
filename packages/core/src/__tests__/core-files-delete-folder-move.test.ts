@@ -122,8 +122,11 @@ describe("DELETE /v1/files", () => {
     expect(fs.existsSync(home)).toBe(true);
   });
 
-  it("404s a path that is not there", async () => {
-    const answer = await call("DELETE", "/v1/files?path=missing.txt");
+  it("404s a path that is not there, and so a second delete of the same path", async () => {
+    fs.writeFileSync(path.join(home, "once.txt"), "x");
+    expect((await call("DELETE", "/v1/files?path=once.txt")).status).toBe(200);
+
+    const answer = await call("DELETE", "/v1/files?path=once.txt");
 
     expect(answer.status).toBe(404);
     expect(answer.body.code).toBe("not-found");
@@ -142,7 +145,7 @@ describe("DELETE /v1/files", () => {
 
   it("releases the lease when it is done", async () => {
     fs.writeFileSync(path.join(home, "a.txt"), "a");
-    await call("DELETE", "/v1/files?path=a.txt");
+    expect((await call("DELETE", "/v1/files?path=a.txt")).status).toBe(200);
     expect(locks.current()).toBeNull();
   });
 });

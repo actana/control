@@ -203,6 +203,8 @@ describe("the Files API as core: list and download", () => {
     const missing = await call("GET", "/v1/files?path=missing.txt");
     expect(missing.status).toBe(404);
     expect(JSON.parse(missing.body.toString("utf8"))).toMatchObject({ code: "not-found" });
+    // The helper made it: the daemon has no path of its own to say "not found" about.
+    expect(launches).toHaveLength(1);
   });
 
   it("answers 500 and names no path when the helper cannot be started", async () => {
