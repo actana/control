@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { createRequire } from "node:module";
 import * as crypto from "node:crypto";
 
 import { POSTGRES_DB, POSTGRES_IMAGE, POSTGRES_USER } from "./postgres-image.mjs";
@@ -14,6 +15,18 @@ import { POSTGRES_DB, POSTGRES_IMAGE, POSTGRES_USER } from "./postgres-image.mjs
  */
 
 const READY_TIMEOUT_MS = 60_000;
+
+/** `pg` is a Panel dependency; resolve it from there so scripts need no root copy. */
+function loadPg() {
+  return createRequire(new URL("../../packages/panel/package.json", import.meta.url))("pg");
+}
+
+/** Point a connection URL at a different database name on the same server. */
+export function urlForDatabase(baseUrl, database) {
+  const url = new URL(baseUrl);
+  url.pathname = `/${encodeURIComponent(database)}`;
+  return url.toString();
+}
 
 /**
  * `args` for a message: the value of every `--env` / `-e` is replaced, because
@@ -120,4 +133,47 @@ export async function ensurePanelDatabase({ name, log }) {
   const { url, stop } = await startPostgres({ name });
   process.env.AC_PANEL_DATABASE_URL = url;
   return stop;
+}
+
+/**
+ * A fresh database on the server `ensurePanelDatabase` left in
+ * `AC_PANEL_DATABASE_URL`. Each e2e phase needs its own: setup expects 200, and
+ * a shared database already has an Operator from the phase before.
+ *
+ * The throwaway server's `stop()` drops every database with the container; on
+ * an external URL the database is left behind for a later sweep.
+ */
+export async function allocatePanelDatabase({ label, log }) {
+  const baseUrl = process.env.AC_PANEL_DATABASE_URL?.trim();
+  if (!baseUrl) {
+    throw new Error("AC_PANEL_DATABASE_URL is not set — call ensurePanelDatabase first");
+  }
+  const pg = loadPg();
+  const name = `ac_e2e_${label}_${crypto.randomBytes(4).toString("hex")}`;
+  const admin = new pg.Client({ connectionString: baseUrl });
+  await admin.connect();
+  try {
+    await admin.query(`CREATE DATABASE "${name}"`);
+  } finally {
+    await admin.end();
+  }
+  const url = urlForDatabase(baseUrl, name);
+  log(`allocated Postgres database ${name} for ${label}`);
+  return { url, name };
+}
+
+/**
+ * Run a query against a Panel database URL and return the rows. Used by the
+ * e2e seam to assert secrets at rest without reading a SQLite file.
+ */
+export async function queryPanelDatabase(databaseUrl, text, params = []) {
+  const pg = loadPg();
+  const client = new pg.Client({ connectionString: databaseUrl });
+  await client.connect();
+  try {
+    const result = await client.query(text, params);
+    return result.rows;
+  } finally {
+    await client.end();
+  }
 }

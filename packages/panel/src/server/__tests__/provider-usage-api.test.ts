@@ -1,4 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { closePanelTestDb, openPanelTestDb } from "./_panel-test-db";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -6,6 +7,7 @@ import * as path from "node:path";
 const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mc-provider-usage-api-"));
 process.env.AC_USER_DATA_DIR = tmpRoot;
 
+const testDb = await openPanelTestDb();
 const { handleApiRequest } = await import("../api-router");
 const { operatorSessionCookie } = await import("./_operator-session");
 const {
@@ -20,9 +22,9 @@ const {
   _setCursorSessionReaderForTests,
 } = await import("../services/provider-usage");
 
-function authedRequest(input: string): Request {
+async function authedRequest(input: string): Promise<Request> {
   return new Request(input, {
-    headers: { cookie: operatorSessionCookie() },
+    headers: { cookie: await operatorSessionCookie() },
   });
 }
 
@@ -53,7 +55,7 @@ describe("GET /api/provider-usage", () => {
     vi.stubGlobal("fetch", vi.fn());
 
     const response = await handleApiRequest(
-      authedRequest("http://localhost/api/provider-usage?providers=claude,codex,cursor"),
+      (await authedRequest("http://localhost/api/provider-usage?providers=claude,codex,cursor")),
     );
     expect(response?.status).toBe(200);
     const body = await response!.json();
@@ -111,7 +113,7 @@ describe("GET /api/provider-usage", () => {
     );
 
     const response = await handleApiRequest(
-      authedRequest("http://localhost/api/provider-usage?providers=claude,codex"),
+      (await authedRequest("http://localhost/api/provider-usage?providers=claude,codex")),
     );
     expect(response?.status).toBe(200);
     const body = await response!.json();
@@ -122,4 +124,8 @@ describe("GET /api/provider-usage", () => {
     expect(codex.status).toBe("ok");
     expect(codex.windows.some((w: { utilization: number }) => w.utilization === 33)).toBe(true);
   });
+});
+
+afterAll(async () => {
+  await closePanelTestDb(testDb);
 });

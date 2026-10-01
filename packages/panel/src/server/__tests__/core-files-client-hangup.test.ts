@@ -21,6 +21,7 @@
 // `node-http-bridge.test.ts`, where a body that fails half-written no longer
 // ends the Panel process with an unhandled `'error'` event.
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
+import { closePanelTestDb, openPanelTestDb } from "./_panel-test-db";
 import * as fs from "node:fs";
 import * as http from "node:http";
 import * as net from "node:net";
@@ -40,7 +41,7 @@ process.env.AC_PANEL_DATA_DIR = path.join(tmpRoot, "panel");
 
 const { handleApiRequest } = await import("../api-router");
 const { serveNodeRequest } = await import("../node-http-bridge");
-const { closePanelDb, getPanelDb } = await import("../panel-db");
+const testDb = await openPanelTestDb();
 const { operatorSessionCookie } = await import("./_operator-session");
 const { coreLinkManager, resetCoreLinkManagerForTests } = await import(
   "../services/core-link-manager"
@@ -115,22 +116,22 @@ async function rig(): Promise<Rig> {
   // /api/cores` — the blob paste — is gone (#287). The Operator row is what the
   // registry's foreign key points at, and an HTTP registration used to create
   // it on the way past — so ask for it before registering.
-  operatorSessionCookie();
-  const registered = registerCoreFromCredential({
+  (await operatorSessionCookie());
+  const registered = (await registerCoreFromCredential({
     endpoint: `wss://127.0.0.1:${corePort}`,
     label: "hangup-vm",
     caCert: material.ca.cert,
     clientCert: material.client.cert,
     clientKey: material.client.key,
     bearer: signBearer({ coreId: "core_hangup", exp: Date.now() + 600_000 }, BEARER_SECRET),
-  });
-  coreLinkManager().dial(registered.id);
+  }));
+  await coreLinkManager().dial(registered.id);
   await vi.waitFor(
     async () => {
       const listed = (await (
         await handleApiRequest(
           new Request("http://panel.test/api/cores", {
-            headers: { cookie: operatorSessionCookie() },
+            headers: { cookie: (await operatorSessionCookie()) },
           }),
         )
       )!.json()) as { cores: { id: string; dial: { state: string; files?: unknown } }[] };
@@ -168,7 +169,12 @@ function base(r: Rig): string {
  * `Content-Length` and a `File`-shaped body, which is what a browser sends —
  * the e2e's own helper uses chunked encoding and would not have found this.
  */
-function startDrop(r: Rig, relative: string, size: number): { socket: net.Socket; sent: Promise<void> } {
+async function startDrop(
+  r: Rig,
+  relative: string,
+  size: number,
+): Promise<{ socket: net.Socket; sent: Promise<void> }> {
+  const cookie = await operatorSessionCookie();
   const socket = net.connect(r.port, "127.0.0.1");
   const sent = new Promise<void>((resolve, reject) => {
     socket.on("error", reject);
@@ -184,7 +190,7 @@ function startDrop(r: Rig, relative: string, size: number): { socket: net.Socket
           `Content-Type: application/octet-stream\r\n` +
           `Accept: application/x-ndjson\r\n` +
           `Content-Length: ${size}\r\n` +
-          `Cookie: ${operatorSessionCookie()}\r\n\r\n`,
+          `Cookie: ${cookie}\r\n\r\n`,
       );
       const slice = Buffer.alloc(256 * 1024, 0xab);
       let written = 0;
@@ -209,7 +215,7 @@ function startDrop(r: Rig, relative: string, size: number): { socket: net.Socket
 async function call(r: Rig, pathname: string, init: RequestInit = {}): Promise<Response> {
   return fetch(`http://127.0.0.1:${r.port}${pathname}`, {
     ...init,
-    headers: { cookie: operatorSessionCookie(), ...(init.headers as Record<string, string>) },
+    headers: { cookie: (await operatorSessionCookie()), ...(init.headers as Record<string, string>) },
   } as RequestInit);
 }
 
@@ -220,13 +226,12 @@ afterEach(async () => {
   for (const server of listening.splice(0)) {
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }
-  const db = getPanelDb();
-  db.prepare("DELETE FROM core_secrets").run();
-  db.prepare("DELETE FROM cores").run();
+  await testDb.pool.query("delete from core_secrets");
+  await testDb.pool.query("delete from cores");
 });
 
-afterAll(() => {
-  closePanelDb();
+afterAll(async () => {
+  await closePanelTestDb(testDb);
   fs.rmSync(tmpRoot, { recursive: true, force: true });
 });
 
@@ -234,7 +239,7 @@ describe("a drop whose browser hangs up", () => {
   it("does not leave the Project's write lease held behind it", async () => {
     const r = await rig();
 
-    const drop = startDrop(r, "assets/model.blend", 48 * 1024 * 1024);
+    const drop = await startDrop(r, "assets/model.blend", 48 * 1024 * 1024);
     // The Core has the transfer: this is the state #225's retry ran into.
     await vi.waitFor(() => expect(r.locks.current(PROJECT_ID)).not.toBeNull(), { timeout: 15_000 });
 
@@ -267,7 +272,7 @@ describe("a drop whose browser hangs up", () => {
       body: "here first",
     }).then((res) => res.text());
 
-    const drop = startDrop(r, "assets/big.bin", 48 * 1024 * 1024);
+    const drop = await startDrop(r, "assets/big.bin", 48 * 1024 * 1024);
     await vi.waitFor(() => expect(r.locks.current(PROJECT_ID)).not.toBeNull(), { timeout: 15_000 });
 
     // F8's other half, and the one an operator notices when it breaks: one

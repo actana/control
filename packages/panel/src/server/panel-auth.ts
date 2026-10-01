@@ -70,9 +70,9 @@ export type PanelAuthState = {
   session: PanelSession | null;
 };
 
-export function readPanelAuthState(request: Request): PanelAuthState {
-  if (!operatorExists()) return { needsSetup: true, session: null };
-  return { needsSetup: false, session: resolvePanelSession(readSessionCookie(request)) };
+export async function readPanelAuthState(request: Request): Promise<PanelAuthState> {
+  if (!(await operatorExists())) return { needsSetup: true, session: null };
+  return { needsSetup: false, session: await resolvePanelSession(readSessionCookie(request)) };
 }
 
 /**
@@ -100,7 +100,7 @@ function redirectTo(pathname: string, search: string): Response {
  * alone (a login page has to be able to load its own JavaScript); nothing
  * behind them is Operator data, which all arrives through the gated `/api/*`.
  */
-export function documentAuthRedirect(request: Request): Response | null {
+export async function documentAuthRedirect(request: Request): Promise<Response | null> {
   if (!request.headers.get("accept")?.includes("text/html")) return null;
   let pathname: string;
   let search: string;
@@ -116,7 +116,7 @@ export function documentAuthRedirect(request: Request): Response | null {
   }
   if (pathname.startsWith("/api/")) return null;
 
-  const { needsSetup, session } = readPanelAuthState(request);
+  const { needsSetup, session } = await readPanelAuthState(request);
   if (pathname === SETUP_PATH) {
     if (needsSetup) return null;
     return redirectTo(session ? "/" : LOGIN_PATH, search);
@@ -130,10 +130,10 @@ export function documentAuthRedirect(request: Request): Response | null {
 }
 
 /** The gate every authenticated surface goes through. */
-export function requireOperatorSession(
+export async function requireOperatorSession(
   request: Request,
-): { ok: true; session: PanelSession } | { ok: false; response: Response } {
-  const { session } = readPanelAuthState(request);
+): Promise<{ ok: true; session: PanelSession } | { ok: false; response: Response }> {
+  const { session } = await readPanelAuthState(request);
   if (session) return { ok: true, session };
   return { ok: false, response: jsonError(HTTP_UNAUTHORIZED, "unauthorized") };
 }

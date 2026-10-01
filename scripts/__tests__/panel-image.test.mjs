@@ -187,15 +187,27 @@ describe("Dockerfile", () => {
     expect(imageWorkflowCode).not.toContain("{{json .Image}}");
   });
 
-  // The native module compiled in the build stage has to dlopen under a
-  // different Node and a different glibc in the runtime stage. The smoke
-  // script proves it by reading the migrated schema back out of a running
-  // container; this keeps the tables it looks for honest, so dropping one
-  // from panel-db.ts cannot quietly weaken that proof.
-  it("names every table the Panel migrates, so the smoke can prove better-sqlite3 loaded", () => {
-    const schema = readRepoFile("packages/panel/src/server/panel-db.ts");
-    const migrated = [...schema.matchAll(/CREATE TABLE IF NOT EXISTS (\w+)/g)].map((m) => m[1]);
+  // The smoke script asks the Postgres beside the Panel for these tables once the
+  // Panel has booted. Holding the list to the migration SQL means dropping or
+  // adding a table in a migration cannot quietly weaken that proof.
+  it("names every table the Panel's migrations create, so the smoke can find them in Postgres", () => {
+    const dir = path.join(repoRoot, "packages/panel/src/db/pg-migrations");
+    const migrated = fs
+      .readdirSync(dir)
+      .filter((file) => file.endsWith(".sql"))
+      .flatMap((file) =>
+        [...fs.readFileSync(path.join(dir, file), "utf8").matchAll(/CREATE TABLE "(\w+)"/g)].map((m) => m[1]),
+      );
     expect([...PANEL_TABLES].sort()).toEqual(migrated.sort());
+  });
+
+  it("has the smoke read the tables, the Operator row and the volume from Postgres, not from a panel.db", () => {
+    const smoke = readRepoFile("scripts/smoke-panel-image.mjs");
+    expect(smoke).toContain("information_schema.tables");
+    expect(smoke).toContain("select count(*) from operator");
+    expect(smoke).toContain("select count(*) from panel_sessions where owner_id = 1");
+    expect(smoke).not.toContain('"/panel.db"');
+    expect(smoke).not.toContain("sqlite_master");
   });
 
   it("installs the pinned pnpm from package.json's packageManager field", () => {
