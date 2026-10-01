@@ -1,6 +1,5 @@
-import type { Group, Project, ProjectPresentation, Session, UserTerminal } from "~/db/schema";
+import type { Session, UserTerminal } from "~/db/schema";
 import type { Harness, SessionStatus } from "@actana/shared/domain";
-import type { ProjectPathStatus, ProjectWithCounts } from "~/shared/projects";
 import type { CoreListResponse, CoreWithDial } from "~/shared/cores";
 import type { CorePairingIdentityResponse } from "~/shared/core-pairing";
 import { DEV_SERVER_ORIGIN } from "~/shared/dev-server";
@@ -14,7 +13,6 @@ import type { HarnessAccountStatus, HarnessLatestVersion } from "~/shared/harnes
 import type { PendingQuestion } from "~/shared/harness-questions";
 import type { AiModelId, AiRuntimeModelsResponse } from "@actana/shared/ai-runtime-defaults";
 import type { UpdateCheck } from "@actana/shared/actana-update-check";
-import type { ProjectsDashboardView } from "~/shared/ui-preferences";
 import type { TerminalZoomLevel } from "~/shared/terminal-zoom";
 import type { SessionHeaderButtonVisibility } from "~/shared/session-header-buttons";
 import type { HeaderButtonVisibility } from "~/shared/header-buttons";
@@ -24,25 +22,12 @@ import { HTTP_NO_CONTENT } from "~/shared/http-status";
 export type AppSettings = {
   agentSystemBannerDisabled: boolean;
   mouseGradientDisabled: boolean;
-  /** Show the active-group switcher pill in the top bar breadcrumb. */
-  showGroupSwitcher: boolean;
-  /** Show the group tag (colored dot + group name) in an open project's header. */
-  showProjectHeaderGroup: boolean;
   sessionFinishToastEnabled: boolean;
   sessionFinishOsNotificationEnabled: boolean;
   /** Ding when a session-finish notification arrives. */
   notificationSoundEnabled: boolean;
   /** Legacy compatibility field; native Claude Code question popups are always enabled. */
   questionOverlayEnabled: boolean;
-  /** Projects dashboard layout — cards (default) or table. */
-  projectsDashboardView: ProjectsDashboardView | null;
-  /**
-   * Globally active project group scoping the dashboard, left rail, and
-   * project picker: "ungrouped", a group id, or null for "all projects".
-   */
-  activeProjectGroup: string | null;
-  /** Collapsed dashboard section keys — group ids plus "pinned"/"ungrouped". */
-  collapsedProjectGroups: string[] | null;
   /** Default terminal text zoom (-2 … +2). Per-pane overrides live in localStorage. */
   terminalZoomLevel: TerminalZoomLevel;
   /**
@@ -51,7 +36,7 @@ export type AppSettings = {
    */
   sessionHeaderButtons: SessionHeaderButtonVisibility;
   /**
-   * Which discretionary top-bar / project-header buttons are shown. All default
+   * Which discretionary top-bar / Core-header buttons are shown. All default
    * on; each action keeps its keyboard shortcut while hidden.
    */
   headerButtons: HeaderButtonVisibility;
@@ -151,11 +136,6 @@ async function req<T>(url: string, init?: RequestInit): Promise<T> {
   return (await res.json()) as T;
 }
 
-/** `?coreId=…` for the routes that address a Core-owned project, or nothing. */
-function coreIdQuery(coreId?: string | null): string {
-  return coreId ? `?coreId=${encodeURIComponent(coreId)}` : "";
-}
-
 export const api = {
   /** The fleet: every registered Core with the service's live view of its link. */
   listCores: () => req<CoreListResponse>("/api/cores"),
@@ -204,154 +184,6 @@ export const api = {
     }),
   removeCore: (id: string) => req<void>(`/api/cores/${id}`, { method: "DELETE" }),
 
-  listProjects: () => req<{ projects: ProjectWithCounts[] }>("/api/projects"),
-  getProject: (id: string) => req<{ project: ProjectWithCounts }>(`/api/projects/${id}`),
-  getProjectPathStatus: (id: string) =>
-    req<{ status: ProjectPathStatus }>(`/api/projects/${id}/path-status`),
-  createProject: (body: {
-    name?: string;
-    path: string;
-    githubUrl?: string;
-    icon?: string;
-    iconColor?: string;
-    groupId?: string | null;
-    savedHarness?: Project["savedHarness"] | null;
-    rememberHarnessSettings?: boolean;
-    defaultGridView?: boolean;
-    pinned?: boolean;
-  }) =>
-    req<{ project: Project }>("/api/projects", {
-      method: "POST",
-      body: JSON.stringify(body),
-    }),
-  updateProject: (id: string, body: Record<string, unknown>) =>
-    req<{ project: Project }>(`/api/projects/${id}`, {
-      method: "PATCH",
-      body: JSON.stringify(body),
-    }),
-  /**
-   * Upload a project's card image. The Panel service stores the bytes and
-   * answers with where the image now lives. `coreId` is required the first time
-   * a Core-owned project gets one — the Panel has no row for it, so the image
-   * needs a presentation row keyed to its Core (issue 98).
-   */
-  uploadProjectImage: async (id: string, file: File, coreId?: string | null) => {
-    const { imagePath } = await req<{ imagePath: string | null }>(
-      `/api/projects/${id}/image${coreIdQuery(coreId)}`,
-      {
-        method: "PUT",
-        headers: { "content-type": file.type },
-        body: file,
-      },
-    );
-    return imagePath;
-  },
-  deleteProjectImage: (id: string, coreId?: string | null) =>
-    req<{ imagePath: string | null }>(
-      `/api/projects/${id}/image${coreIdQuery(coreId)}`,
-      { method: "DELETE" },
-    ),
-  updateProjectLaunchUrl: (id: string, launchUrl: string | null, coreId?: string | null) =>
-    coreId
-      ? req<{ presentation: ProjectPresentation }>(`/api/project-presentation/${id}`, {
-          method: "PATCH",
-          body: JSON.stringify({ coreId, launchUrl }),
-        })
-      : req<{ project: Project }>(`/api/projects/${id}`, {
-          method: "PATCH",
-          body: JSON.stringify({ launchUrl }),
-        }),
-
-  /**
-   * Panel-local presentation for Core-owned projects (issue 98) — the group,
-   * card image, launch URL and rail slot (#382) the Panel keeps for a project
-   * whose row lives on its Core. Read as one list and joined onto Core
-   * snapshots client-side; the Panel server has no transport of its own to a
-   * Core to join them for us.
-   */
-  listProjectPresentation: () =>
-    req<{ presentation: ProjectPresentation[] }>("/api/project-presentation"),
-  updateProjectPresentation: (
-    id: string,
-    coreId: string,
-    patch: {
-      groupId?: string | null;
-      imagePath?: string | null;
-      launchUrl?: string | null;
-      pinnedOrder?: number | null;
-    },
-  ) =>
-    req<{ presentation: ProjectPresentation }>(`/api/project-presentation/${id}`, {
-      method: "PATCH",
-      body: JSON.stringify({ coreId, ...patch }),
-    }),
-  /**
-   * Where every Core-owned pin sits on the rail (issue 382). `pinnedOrder` is
-   * the row's index in the WHOLE rail — the same sequence
-   * {@link api.reorderPinnedProjects} numbers the Panel's own rows from — so
-   * the merged list sorts back into the operator's order after a reload.
-   *
-   * A Core's pin has no `projects` row on this Panel, so its slot cannot go to
-   * the Panel-only reorder API; and the rail spans Cores, so no single Core
-   * could hold the number either. It is Panel-local presentation, like the
-   * group the same row is filed under (issue 98).
-   */
-  reorderCorePinnedProjects: (
-    order: readonly { projectId: string; coreId: string; pinnedOrder: number }[],
-  ) =>
-    req<{ presentation: ProjectPresentation[] }>("/api/project-presentation/pinned-order", {
-      method: "PATCH",
-      body: JSON.stringify({ order }),
-    }),
-  deleteProjectPresentation: (id: string) =>
-    req<void>(`/api/project-presentation/${id}`, { method: "DELETE" }),
-  /**
-   * Forget the filing for every project on `coreId` outside `projectIds`. The
-   * client posts the list it just read from the Core because the Panel server
-   * has no way to ask — projects deleted on a Core, including deletes this
-   * Panel never witnessed, would otherwise leave rows nothing collects.
-   */
-  pruneProjectPresentation: (coreId: string, projectIds: string[]) =>
-    req<{ removed: number }>("/api/project-presentation/prune", {
-      method: "POST",
-      body: JSON.stringify({ coreId, projectIds }),
-    }),
-  togglePin: (id: string) =>
-    req<{ project: Project }>(`/api/projects/${id}`, {
-      method: "PATCH",
-      body: JSON.stringify({ togglePin: true }),
-    }),
-  reorderPinnedProjects: (order: string[]) =>
-    req<{ projects: ProjectWithCounts[] }>("/api/projects/pinned-order", {
-      method: "PATCH",
-      body: JSON.stringify({ order }),
-    }),
-  deleteProject: async (id: string) => {
-    await req<void>(`/api/projects/${id}`, { method: "DELETE" });
-    pruneStoredSessionFinishNotifications({ type: "project", projectId: id });
-  },
-
-  listGroups: () => req<{ groups: Group[] }>("/api/groups"),
-  createGroup: (body: { name: string; color?: string }) =>
-    req<{ group: Group }>("/api/groups", {
-      method: "POST",
-      body: JSON.stringify(body),
-    }),
-  updateGroup: (id: string, body: { name?: string; color?: string }) =>
-    req<{ group: Group }>(`/api/groups/${id}`, {
-      method: "PATCH",
-      body: JSON.stringify(body),
-    }),
-  reorderGroups: (order: string[]) =>
-    req<{ groups: Group[] }>("/api/groups/order", {
-      method: "PATCH",
-      body: JSON.stringify({ order }),
-    }),
-  deleteGroup: (id: string) =>
-    req<void>(`/api/groups/${id}`, { method: "DELETE" }),
-
-  listSessionRows: (projectId: string) =>
-    req<{ sessions: Session[] }>(`/api/projects/${projectId}/sessions`),
   getSession: (id: string) => req<{ session: Session }>(`/api/sessions/${id}`),
   getSessionQuestion: (id: string) =>
     req<{ question: PendingQuestion | null }>(`/api/sessions/${id}/question`),
@@ -361,21 +193,6 @@ export const api = {
     req<{ session: Session }>(`/api/sessions/${id}/restore`, { method: "POST" }),
   updateSessionStatus: (id: string, body: { status?: SessionStatus; preview?: string; lines?: number; prompt?: string }) =>
     req<{ session: Session }>(`/api/sessions/${id}/status`, {
-      method: "POST",
-      body: JSON.stringify(body),
-    }),
-  createSessionInternal: (
-    projectId: string,
-    body: {
-      id?: string;
-      title: string;
-      agent: Harness;
-      claudeSessionId?: string | null;
-      claudeSkipPermissions?: boolean;
-      claudeBareSession?: boolean;
-    },
-  ) =>
-    req<{ session: Session }>(`/api/projects/${projectId}/sessions`, {
       method: "POST",
       body: JSON.stringify(body),
     }),
@@ -400,16 +217,12 @@ export const api = {
 
   // The Panel's only terminal rows (issue 266). Every terminal the Panel opens
   // is a VM Shell Session on a Core and persists here, whichever route opened
-  // it; the four `/api/projects/:id/user-terminals` + `/api/user-terminals/:id`
-  // calls that used to sit above went with the project-root path. Returned
-  // shaped as UserTerminal (sentinel projectId) so the same terminal
-  // store/panel render them.
+  // it.
   listHomeTerminals: () =>
     req<{ terminals: UserTerminal[] }>("/api/home/user-terminals"),
   createHomeTerminal: (body: {
     id?: string;
     name?: string;
-    cwd?: string | null;
   }) =>
     req<{ terminal: UserTerminal }>("/api/home/user-terminals", {
       method: "POST",
@@ -444,15 +257,10 @@ export const api = {
         AppSettings,
         | "agentSystemBannerDisabled"
         | "mouseGradientDisabled"
-        | "showGroupSwitcher"
-        | "showProjectHeaderGroup"
         | "sessionFinishToastEnabled"
         | "sessionFinishOsNotificationEnabled"
         | "notificationSoundEnabled"
         | "questionOverlayEnabled"
-        | "projectsDashboardView"
-        | "activeProjectGroup"
-        | "collapsedProjectGroups"
         | "terminalZoomLevel"
         | "sessionHeaderButtons"
         | "headerButtons"

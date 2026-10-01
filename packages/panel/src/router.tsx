@@ -100,7 +100,7 @@ function AppErrorFallback({ error, info, reset }: ErrorComponentProps) {
       >
         <h1 style={{ margin: "0 0 8px", fontSize: 18 }}>Something went wrong</h1>
         <p style={{ margin: "0 0 14px", color: "var(--text-dim, #a1a1aa)", lineHeight: 1.5 }}>
-          Actana Control hit a rendering issue. Reload the app and your projects and sessions should recover.
+          Actana Control hit a rendering issue. Reload the app and your Cores and sessions should recover.
         </p>
         <div
           style={{
@@ -159,7 +159,7 @@ function AppErrorFallback({ error, info, reset }: ErrorComponentProps) {
             {copied ? "Copied!" : "Copy report"}
           </button>
           <button type="button" onClick={goHome} style={fallbackButtonStyle}>
-            Back to projects
+            Back to Fleet
           </button>
           <button
             type="button"

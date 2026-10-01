@@ -1,13 +1,13 @@
 import type { SessionStatus } from "@actana/shared/domain";
 import { coreOrder, type CoreWithDial } from "~/shared/cores";
-import { PINNED_SLOT_COUNT } from "~/lib/keybindings/match";
+import { CORE_SLOT_COUNT } from "~/lib/keybindings/match";
 
 // The rail lists Cores, nothing else (0.5.0 proposal, screen 01/02). These are
 // its pure parts: order, initials, hotkey slots and the per-Core activity
 // counts, kept out of the component so each can be tested without a DOM.
 
 /** How many Cores the rail gives a digit to (⌘1 to ⌘9). */
-export const CORE_HOTKEY_LIMIT = PINNED_SLOT_COUNT;
+export const CORE_HOTKEY_LIMIT = CORE_SLOT_COUNT;
 
 /** The Cores in rail order: by label, so a refresh never reshuffles the digits. */
 export function railCores<T extends CoreWithDial>(cores: readonly T[]): T[] {

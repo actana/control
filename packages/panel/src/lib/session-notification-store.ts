@@ -2,29 +2,27 @@
 export type SessionFinishNotification = {
   kind: "session-finished";
   id: string;
-  projectId: string;
-  projectName: string;
   sessionTitle: string;
   finishedAt: number;
-  /** The Core the session ran on; null for a Panel-local row. */
-  coreId: string | null;
+  /** The Core the session ran on. */
+  coreId: string;
   coreAlias: string | null;
 };
 
 export type AppNotification = SessionFinishNotification;
 
-/** `coreId` omitted prunes across every Core; `coreId: null` prunes only the
- *  Panel's own rows. */
-export type SessionNotificationPruneTarget =
-  | { type: "session"; sessionId: string; projectId?: string; coreId?: string | null }
-  | { type: "project"; projectId: string; coreId?: string | null };
+/** `coreId` omitted prunes across every Core. */
+export type SessionNotificationPruneTarget = {
+  type: "session";
+  sessionId: string;
+  coreId?: string;
+};
 
 export type PendingNotificationOpen = {
   kind: "session-finished";
-  projectId: string;
   sessionId: string;
   requestedAt: number;
-  coreId: string | null;
+  coreId: string;
   coreAlias?: string | null;
 };
 
@@ -62,21 +60,16 @@ function toSessionFinishNotification(
   value: Record<string, unknown>,
 ): SessionFinishNotification | null {
   const id = typeof value.id === "string" ? value.id : "";
-  const projectId = typeof value.projectId === "string" ? value.projectId : "";
-  const projectName = typeof value.projectName === "string" ? value.projectName : "";
   const sessionTitle = typeof value.sessionTitle === "string" ? value.sessionTitle : "Session";
   const finishedAt = typeof value.finishedAt === "number" ? value.finishedAt : 0;
-  // `projectId` may be empty: a Core's finish event names no Project (ADR 0041 D1).
-  if (!id || !Number.isFinite(finishedAt)) return null;
-  const coreId =
-    typeof value.coreId === "string" && value.coreId ? value.coreId : null;
+  const coreId = typeof value.coreId === "string" ? value.coreId : "";
+  // A row stored without a Core is a Panel-local one; nothing can open it any more.
+  if (!id || !coreId || !Number.isFinite(finishedAt)) return null;
   const coreAlias =
     typeof value.coreAlias === "string" && value.coreAlias ? value.coreAlias : null;
   return {
     kind: "session-finished",
     id,
-    projectId,
-    projectName,
     sessionTitle,
     finishedAt,
     coreId,
@@ -91,17 +84,14 @@ function toNotification(value: unknown): AppNotification | null {
 
 function toPendingOpen(value: unknown): PendingNotificationOpen | null {
   if (!isRecord(value)) return null;
-  const projectId = typeof value.projectId === "string" ? value.projectId : "";
   const sessionId = typeof value.sessionId === "string" ? value.sessionId : "";
   const requestedAt = typeof value.requestedAt === "number" ? value.requestedAt : 0;
-  if (!projectId || !sessionId || !Number.isFinite(requestedAt)) return null;
-  const coreId =
-    typeof value.coreId === "string" && value.coreId ? value.coreId : null;
+  const coreId = typeof value.coreId === "string" ? value.coreId : "";
+  if (!coreId || !sessionId || !Number.isFinite(requestedAt)) return null;
   const coreAlias =
     typeof value.coreAlias === "string" && value.coreAlias ? value.coreAlias : null;
   return {
     kind: "session-finished",
-    projectId,
     sessionId,
     requestedAt,
     coreId,
@@ -268,8 +258,7 @@ export function mergeSessionFinishNotification(
         !(
           n.kind === "session-finished" &&
           n.coreId === next.coreId &&
-          n.id === next.id &&
-          n.projectId === next.projectId
+          n.id === next.id
         ),
     ),
   ]);
@@ -279,16 +268,9 @@ function notificationMatchesPruneTarget(
   notification: AppNotification,
   target: SessionNotificationPruneTarget,
 ): boolean {
-  if (target.type === "session") {
-    return (
-      notification.kind === "session-finished" &&
-      notification.id === target.sessionId &&
-      (!target.projectId || notification.projectId === target.projectId) &&
-      (target.coreId === undefined || notification.coreId === target.coreId)
-    );
-  }
   return (
-    notification.projectId === target.projectId &&
+    notification.kind === "session-finished" &&
+    notification.id === target.sessionId &&
     (target.coreId === undefined || notification.coreId === target.coreId)
   );
 }
@@ -317,7 +299,7 @@ function notificationPruneTarget(
   return {
     type: "session",
     sessionId: notification.id,
-    projectId: notification.projectId,
+    coreId: notification.coreId,
   };
 }
 
@@ -402,16 +384,11 @@ function dispatchPendingOpen(request: PendingNotificationOpen) {
   );
 }
 
-/**
- * Ask the Core's workspace to open one Session. The workspace scopes its
- * Sessions by Core id, so that is the scope id a request carries; a 0.5.0
- * Core's finish names no project at all.
- */
+/** Ask the Core's workspace to open one Session. */
 export function requestSessionOpen(coreId: string, sessionId: string) {
   if (typeof window === "undefined" || !coreId || !sessionId) return;
   const request: PendingNotificationOpen = {
     kind: "session-finished",
-    projectId: coreId,
     sessionId,
     requestedAt: Date.now(),
     coreId,
@@ -426,7 +403,6 @@ export function requestSessionNotificationOpen(
   if (typeof window === "undefined") return;
   const request: PendingNotificationOpen = {
     kind: "session-finished",
-    projectId: notification.coreId || notification.projectId,
     sessionId: notification.id,
     requestedAt: Date.now(),
     coreId: notification.coreId,
@@ -457,11 +433,11 @@ function readPendingOpenFromKey(
 }
 
 export function readPendingSessionOpen(
-  projectId: string,
+  coreId: string,
 ): PendingNotificationOpen | null {
   const request = readPendingOpenFromKey(PENDING_OPEN_KEY);
   if (!request) return null;
-  return request.projectId === projectId ? request : null;
+  return request.coreId === coreId ? request : null;
 }
 
 export function clearPendingNotificationOpen(request: PendingNotificationOpen) {
@@ -471,7 +447,7 @@ export function clearPendingNotificationOpen(request: PendingNotificationOpen) {
     const current = raw ? toPendingOpen(JSON.parse(raw)) : null;
     if (
       current &&
-      current.projectId === request.projectId &&
+      current.coreId === request.coreId &&
       current.sessionId === request.sessionId &&
       current.requestedAt === request.requestedAt
     ) {

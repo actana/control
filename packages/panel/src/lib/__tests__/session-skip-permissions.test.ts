@@ -48,7 +48,6 @@ function policyDeps(): SpawnPolicyDeps {
 function sessionFor(agent: Harness): Session {
   return {
     id: "session-1",
-    projectId: "project-1",
     title: "Session",
     titleManuallySet: false,
     icon: null,
@@ -133,10 +132,7 @@ describe("skip permissions on a newly created session", () => {
   // the session column (which a Core never writes, so it is permanently false)
   // rejects that spawn at the policy and starts no session — the failure
   // Refinement 2 asked to be pinned, and the one the equality test misses.
-  it.each([
-    "src/lib/terminal-store.tsx",
-    "src/lib/session-warm-pool.ts",
-  ])("%s builds every spawn descriptor from the shared helper", (file) => {
+  it.each(["src/lib/terminal-store.tsx"])("%s builds every spawn descriptor from the shared helper", (file) => {
     const source = readFileSync(resolve(import.meta.dirname, "../../..", file), "utf8");
     const assignments = [...source.matchAll(/dangerouslySkipPermissions:\s*([^,\n]+)/g)].map(
       (m) => m[1]!.trim(),

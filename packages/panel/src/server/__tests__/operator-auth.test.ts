@@ -183,13 +183,13 @@ describe("login", () => {
 describe("the gate", () => {
   it("rejects an anonymous request to a protected route", async () => {
     await setup();
-    const res = await call("/api/projects");
+    const res = await call("/api/cores");
     expect(res.status).toBe(401);
   });
 
   it("rejects a forged session token", async () => {
     await setup();
-    const res = await call("/api/projects", {
+    const res = await call("/api/cores", {
       cookie: `${PANEL_SESSION_COOKIE}=not-a-real-session-token`,
     });
     expect(res.status).toBe(401);
@@ -197,7 +197,7 @@ describe("the gate", () => {
 
   it("lets a logged-in Operator through", async () => {
     const cookie = sessionCookieFrom(await setup());
-    const res = await call("/api/projects", { cookie });
+    const res = await call("/api/cores", { cookie });
     expect(res.status).toBe(200);
   });
 });
@@ -210,7 +210,7 @@ describe("revocation", () => {
     // The response clears the browser's cookie…
     expect(setCookieHeader(out)).toMatch(/Max-Age=0/i);
     // …and the token is dead server-side even if the browser keeps sending it.
-    expect((await call("/api/projects", { cookie })).status).toBe(401);
+    expect((await call("/api/cores", { cookie })).status).toBe(401);
   });
 
   it("a password change invalidates every existing session", async () => {
@@ -224,12 +224,12 @@ describe("revocation", () => {
     });
     expect(changed.status).toBe(200);
 
-    expect((await call("/api/projects", { cookie: first })).status).toBe(401);
-    expect((await call("/api/projects", { cookie: second })).status).toBe(401);
+    expect((await call("/api/cores", { cookie: first })).status).toBe(401);
+    expect((await call("/api/cores", { cookie: second })).status).toBe(401);
 
     // The caller is handed a fresh session so they aren't logged out of the tab
     // they changed the password in.
-    expect((await call("/api/projects", { cookie: sessionCookieFrom(changed) })).status).toBe(200);
+    expect((await call("/api/cores", { cookie: sessionCookieFrom(changed) })).status).toBe(200);
 
     expect((await login(PASSWORD)).status).toBe(401);
     expect((await login("a-brand-new-password")).status).toBe(200);
@@ -244,7 +244,7 @@ describe("revocation", () => {
     });
     expect(res.status).toBe(401);
     // The session that made the failed attempt still works.
-    expect((await call("/api/projects", { cookie })).status).toBe(200);
+    expect((await call("/api/cores", { cookie })).status).toBe(200);
   });
 
   it("requires a session to change the password", async () => {
@@ -271,7 +271,7 @@ describe("the served UI", () => {
   it("sends an anonymous browser to login once setup is done", async () => {
     await setup();
     expect((await documentAuthRedirect(navigate("/")))?.headers.get("location")).toBe("/login");
-    expect((await documentAuthRedirect(navigate("/projects/abc")))?.headers.get("location")).toBe(
+    expect((await documentAuthRedirect(navigate("/cores/abc")))?.headers.get("location")).toBe(
       "/login",
     );
     // Setup is closed now — it must not be reachable a second time.
@@ -342,7 +342,7 @@ describe("the served UI", () => {
     /**
      * The gate drops the path and keeps the query, so a deep route's parameters
      * would otherwise arrive on a shallower one (#490 review B1). `coreId`
-     * belongs to `/projects/$id` alone, and `__root.tsx` reads it off every
+     * belongs to `/cores/$coreId` alone, and `__root.tsx` reads it off every
      * route — on `/` it scopes the whole shell to a Core the operator did not
      * navigate to. A plain reload of an expired session is the path in, so the
      * gate has to be the place it is stopped, not only the two pages.
@@ -350,11 +350,11 @@ describe("the served UI", () => {
     it("leaves a deep route's own parameters behind", async () => {
       await setup();
       expect(
-        (await documentAuthRedirect(navigate("/projects/p1?coreId=core-b")))?.headers.get("location"),
+        (await documentAuthRedirect(navigate("/cores/core-b/workspace?coreId=core-b")))?.headers.get("location"),
       ).toBe("/login");
       // …and the pairing query still rides, from the same URL.
       expect(
-        (await documentAuthRedirect(navigate("/projects/p1?coreId=core-b&step=redeem")))?.headers.get(
+        (await documentAuthRedirect(navigate("/cores/core-b/workspace?coreId=core-b&step=redeem")))?.headers.get(
           "location",
         ),
       ).toBe("/login?step=redeem");
@@ -390,6 +390,6 @@ describe("restart", () => {
     expect(await call("/api/auth/state").then((r) => r.json())).toMatchObject({
       needsSetup: false,
     });
-    expect((await call("/api/projects", { cookie })).status).toBe(200);
+    expect((await call("/api/cores", { cookie })).status).toBe(200);
   });
 });

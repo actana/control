@@ -264,35 +264,6 @@ describe("settings API", () => {
     expect(persisted.headerButtons).not.toHaveProperty("bogus");
   });
 
-  it("shows the group switcher and the project header group tag by default", async () => {
-    const response = await handleApiRequest((await authedRequest("http://localhost/api/settings")));
-    expect(await jsonBody(response!)).toMatchObject({
-      showGroupSwitcher: true,
-      showProjectHeaderGroup: true,
-    });
-  });
-
-  it("persists hiding the group switcher and the project header group tag", async () => {
-    const update = await handleApiRequest(
-      (await authedRequest("http://localhost/api/settings", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ showGroupSwitcher: false, showProjectHeaderGroup: false }),
-      })),
-    );
-    const read = await handleApiRequest((await authedRequest("http://localhost/api/settings")));
-
-    expect(update?.status).toBe(200);
-    expect(await jsonBody(update!)).toMatchObject({
-      showGroupSwitcher: false,
-      showProjectHeaderGroup: false,
-    });
-    expect(await jsonBody(read!)).toMatchObject({
-      showGroupSwitcher: false,
-      showProjectHeaderGroup: false,
-    });
-  });
-
   it("rejects an unsafe default model value", async () => {
     const update = await handleApiRequest(
       (await authedRequest("http://localhost/api/settings", {
@@ -378,17 +349,6 @@ describe("settings API", () => {
     });
   });
 
-  it("leaves durable UI preferences unset by default", async () => {
-    const response = await handleApiRequest(
-      (await authedRequest("http://localhost/api/settings")),
-    );
-
-    expect(response?.status).toBe(200);
-    expect(await jsonBody(response!)).toMatchObject({
-      projectsDashboardView: null,
-    });
-  });
-
   it("keeps the question overlay enabled", async () => {
     const response = await handleApiRequest((await authedRequest("http://localhost/api/settings")));
     expect(await jsonBody(response!)).toMatchObject({ questionOverlayEnabled: true });
@@ -409,27 +369,37 @@ describe("settings API", () => {
     expect(await jsonBody(read!)).toMatchObject({ questionOverlayEnabled: true });
   });
 
-  it("persists durable UI preferences", async () => {
+  // Issue 560: Projects are gone, so are the settings that described how to
+  // show them. A stale renderer writing one must fail loudly, not no-op.
+  it.each([
+    ["projectsDashboardView", "table"],
+    ["activeProjectGroup", "ungrouped"],
+    ["collapsedProjectGroups", ["pinned"]],
+    ["showGroupSwitcher", false],
+    ["showProjectHeaderGroup", false],
+  ] as const)("rejects the removed project key %s with 400", async (key, value) => {
     const update = await handleApiRequest(
       (await authedRequest("http://localhost/api/settings", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          projectsDashboardView: "table",
-        }),
+        body: JSON.stringify({ [key]: value }),
       })),
     );
-    const read = await handleApiRequest(
-      (await authedRequest("http://localhost/api/settings")),
-    );
+    expect(update?.status).toBe(400);
+  });
 
-    expect(update?.status).toBe(200);
-    expect(await jsonBody(update!)).toMatchObject({
-      projectsDashboardView: "table",
-    });
-    expect(await jsonBody(read!)).toMatchObject({
-      projectsDashboardView: "table",
-    });
+  it("omits the removed project keys from the GET payload", async () => {
+    const response = await handleApiRequest((await authedRequest("http://localhost/api/settings")));
+    const body = await jsonBody(response!);
+    for (const key of [
+      "projectsDashboardView",
+      "activeProjectGroup",
+      "collapsedProjectGroups",
+      "showGroupSwitcher",
+      "showProjectHeaderGroup",
+    ]) {
+      expect(body).not.toHaveProperty(key);
+    }
   });
 
   // Spec 12: the theming keys are gone from the settings surface. A stale

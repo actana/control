@@ -33,7 +33,6 @@ import {
   attachTerminalKeyHandler,
   setTerminalReadOnly,
   terminalExitSessionStatus,
-  wireTerminalFileDrop,
 } from "~/lib/terminal-pane-helpers";
 import {
   applyTerminalFontSize,
@@ -50,7 +49,6 @@ import {
 } from "~/lib/use-terminal-zoom";
 import { useHotkey } from "~/lib/use-hotkey";
 import { TerminalZoomControls } from "~/components/views/TerminalZoomControls";
-import { api } from "~/lib/api";
 import { errMsg } from "~/shared/err-msg";
 import {
   harnessUsesPersistedSession,
@@ -118,7 +116,7 @@ import {
 } from "~/lib/terminal-replay";
 import { getPtyStreamRouter, type PtyStreamHandlers } from "~/lib/pty-stream-router";
 import { createTerminalInputWiring } from "~/lib/terminal-input-wiring";
-import { queryKeys, sessionsCacheKey, useSettings, useSession } from "~/queries";
+import { sessionsCacheKey, useSettings, useSession } from "~/queries";
 import {
   DEFAULT_SESSION_HEADER_BUTTON_VISIBILITY,
   type SessionHeaderButtonVisibility,
@@ -140,7 +138,7 @@ import {
   readOnlyLabel,
 } from "~/shared/session-write-access";
 import type { CoreLinkSessionLockState } from "@actana/shared/sdk-link-frames";
-import type { Project, Session } from "~/db/schema";
+import type { Session } from "~/db/schema";
 import { normalizePtySize } from "~/shared/pty-size";
 import { HARNESS_REGISTRY } from "@actana/shared/harnesses";
 import { toast } from "sonner";
@@ -150,7 +148,6 @@ export type TerminalDescriptor = {
   ptyId: string | null;
   startCommand: string;
   dangerouslySkipPermissions: boolean;
-  cwd: string;
   awaitingCreate?: boolean;
   /** Restored from localStorage; spawn waits until the session is revalidated. */
   pendingValidation?: boolean;
@@ -158,10 +155,10 @@ export type TerminalDescriptor = {
    * The Core this pane's PTY runs on. Spawn/write/resize/kill/replay/onData/
    * onExit are all frames on that Core's link; the Panel persists no
    * session-shaped state (CONTEXT.md — reads come from the Core's
-   * `projectsList` / `sessionRowsList` / `sessionsList`). Null means the pane has no
-   * machine to run on and never spawns.
+   * `sessionRowsList` / `sessionsList`). A Core starts every Session in its home
+   * folder, so there is no cwd.
    */
-  coreId?: string | null;
+  coreId: string;
 };
 
 type SessionTerminalSurface = PaneTerminalSurface;
@@ -302,7 +299,7 @@ function HeaderMoreMenu({
             role="menu"
             aria-label={`Session actions for ${title}`}
             solid
-            className="mc-project-actions-menu"
+            className="mc-actions-menu"
             style={{
               position: "fixed",
               top: menuRect.top,
@@ -396,7 +393,6 @@ function HeaderMoreMenu({
 }
 
 export function TerminalPane({
-  project,
   session,
   onHide,
   expanded = false,
@@ -410,7 +406,6 @@ export function TerminalPane({
   onTogglePin,
   pinBusy = false,
 }: {
-  project: Project;
   session: Session;
   onHide?: () => void;
   expanded?: boolean;
@@ -524,12 +519,9 @@ export function TerminalPane({
 
   // Per-row subscription: with N panes mounted, a whole-array subscription
   // re-rendered every pane's header on any session change.
-  // Core-tagged, like `sessionsKey` below: a Core-owned Session's row lives in
-  // that bucket, and asking the untagged one left this header subscribed to a
-  // list nothing fills.
-  const { data: selectedLiveSession } = useSession(project.id, session.id, {
-    coreId: descriptor.coreId,
-  });
+  // The same bucket as `sessionsKey` below: the Session's row lives in its
+  // Core's list.
+  const { data: selectedLiveSession } = useSession(descriptor.coreId, session.id);
   const liveSession = selectedLiveSession ?? session;
   liveSessionStatusRef.current = liveSession.status;
   // The Session's name as the operator last saw it, for copy written from
@@ -539,13 +531,12 @@ export function TerminalPane({
   const meta = HARNESS_META[liveSession.agent];
   const statusMeta = STATUS_META[liveSession.status];
   const sessionRunning = liveSession.status === "running";
-  // The card reads from the Core-tagged bucket (issue 84) — invalidating the
-  // untagged key left a Core-owned row on screen exactly as stale as before.
-  const sessionsKey = sessionsCacheKey(project.id, descriptor.coreId);
+  // The card reads from its Core's bucket (issue 84).
+  const sessionsKey = sessionsCacheKey(descriptor.coreId);
 
   // Native AskUserQuestion overlay: pending question data arrives over SSE
   // (see harness-question-store); hydrate covers panes that mount after the
-  // event fired (e.g. reopening a project mid-question).
+  // event fired (e.g. reopening a Core mid-question).
   const pendingQuestion = useSessionQuestion(session.id);
   const questionDismissed = useQuestionDismissed(pendingQuestion?.id);
   const questionDesynced = useQuestionDesynced(pendingQuestion?.id);
@@ -1027,7 +1018,7 @@ export function TerminalPane({
         const ptyId = activePtyId;
         if (!ptyId || !ptyApi || !mayWriteRef.current) return false;
         // Every byte on this path skips xterm's keyboard, so `onData` never
-        // sees it: the dropped project path, the key map's Cmd+Backspace. Fold
+        // sees it: the key map's Cmd+Backspace. Fold
         // it into the same turn the fallback watches, or a dropped path
         // followed by Enter starts a real turn against a card still reading
         // `finished` (issue 386). It composes only — the Enter that submits it
@@ -1035,12 +1026,6 @@ export function TerminalPane({
         runningFallback = noteTerminalWrite(runningFallback, data);
         return ptyApi.write(ptyId, data);
       };
-
-      const detachFileDrop = wireTerminalFileDrop({
-        host,
-        write: writeToPty,
-        onFocus: () => term.focus(),
-      });
 
       attachTerminalKeyHandler({ term, write: writeToPty });
 
@@ -1138,35 +1123,11 @@ export function TerminalPane({
           // A Core settles its own Session's exit (issue 84): the Core watches
           // the PTY it spawned, so it sees the exit whether or not this tab is
           // open, and it settles *conditionally* — a Session already
-          // `interrupted` keeps that status. This unconditional patch would
-          // overwrite it with `finished` and raise a spurious
-          // `session:finished` besides, so it stays on the arm that still
-          // needs it: the Panel's own rows, whose PTYs no Core watches.
-          if (!descriptor.coreId) {
-            try {
-              const patched = await mutateSessionForCore(null, {
-                op: "update",
-                sessionId: descriptor.sessionId,
-                status,
-              });
-              // A null snapshot is the mutation finding no such row — the card
-              // would go on claiming the Session is running, so say so.
-              if (!patched) {
-                toast.error("This session is gone — its exit status was not recorded");
-              }
-            } catch (e: unknown) {
-              toast.error(
-                e instanceof Error ? e.message : "Could not record the session's exit status",
-              );
-            }
-          }
-          await Promise.all([
-            queryClient.invalidateQueries({
-              queryKey: sessionsCacheKey(project.id, descriptor.coreId),
-            }),
-            queryClient.invalidateQueries({ queryKey: queryKeys.project(project.id) }),
-            queryClient.invalidateQueries({ queryKey: queryKeys.projects }),
-          ]);
+          // `interrupted` keeps that status. A patch from here would overwrite
+          // it with `finished`, so the Panel only refreshes what it shows.
+          await queryClient.invalidateQueries({
+            queryKey: sessionsCacheKey(descriptor.coreId),
+          });
           // A clean shell exit (the user typed `exit`) should dismiss the pane
           // just like clicking the header's close button — otherwise a dead
           // "Session finished" cell lingers in the grid. Fire after the status
@@ -1303,8 +1264,8 @@ export function TerminalPane({
             if (fallbackStep.postRunning) {
               void (async () => {
                 try {
-                  // Same routing as the exit patch above: a turn-start status is
-                  // Core-owned state like any other column on the row.
+                  // A turn-start status is Core-owned state like any other column
+                  // on the row.
                   await mutateSessionForCore(descriptor.coreId, {
                     op: "update",
                     sessionId: descriptor.sessionId,
@@ -1322,28 +1283,19 @@ export function TerminalPane({
                 }
                 try {
                   // The prompt patches no column of its own: it only asks a
-                  // title generator to name the session. Which generator depends
-                  // on who owns the row — the Core's, for a Core-owned Session
-                  // (issue 84), reached by the frame that exists because Cursor
-                  // never fires `beforeSubmitPrompt` for the Core's own hook
-                  // receiver to catch.
+                  // title generator to name the session: the Core's (issue 84),
+                  // reached by the frame that exists because Cursor never fires
+                  // `beforeSubmitPrompt` for the Core's own hook receiver to
+                  // catch.
                   if (submittedPrompt) {
-                    if (descriptor.coreId && corePtyBridge) {
+                    if (corePtyBridge) {
                       await corePtyBridge.submitPrompt(descriptor.sessionId, submittedPrompt);
-                    } else if (!descriptor.coreId) {
-                      await api.updateSessionStatus(descriptor.sessionId, {
-                        prompt: submittedPrompt,
-                      });
                     }
                     promptTitlePosted = true;
                   }
-                  await Promise.all([
-                    queryClient.invalidateQueries({
-                      queryKey: sessionsCacheKey(project.id, descriptor.coreId),
-                    }),
-                    queryClient.invalidateQueries({ queryKey: queryKeys.project(project.id) }),
-                    queryClient.invalidateQueries({ queryKey: queryKeys.projects }),
-                  ]);
+                  await queryClient.invalidateQueries({
+                    queryKey: sessionsCacheKey(descriptor.coreId),
+                  });
                 } catch {
                   // The row is already `running`; a missed title or a stale cache
                   // is not worth un-latching a turn that did start.
@@ -1436,9 +1388,6 @@ export function TerminalPane({
         // pane's "failed to start pty" catch surfaces it — no silent no-op.
         const spawnResult = await ptyApi.spawn({
           sessionId: descriptor.sessionId,
-          // A 0.5.0 Core starts every Session in ~ and refuses cwd (ADR 0041 D2,
-          // D27). Published SDK types still require it until actana/client#10 —
-          // cast away.
           command,
           cols: ptySize.cols,
           rows: ptySize.rows,
@@ -1446,7 +1395,7 @@ export function TerminalPane({
           dangerouslySkipPermissions: descriptor.dangerouslySkipPermissions,
           missionControlTheme: getTerminalColorScheme(),
           initialInput,
-        } as Parameters<typeof ptyApi.spawn>[0]);
+        });
         const { ptyId } = spawnResult;
         hooksReportTurnStart = spawnResult.hooksReportTurnStart;
         spawnAt = Date.now();
@@ -1519,7 +1468,6 @@ export function TerminalPane({
         for (const off of subscriptions) off();
         stopWatchingColorScheme();
         detachLinks();
-        detachFileDrop();
         fitRef.current = null;
         gpu.dispose();
         term.dispose();
@@ -1710,10 +1658,8 @@ export function TerminalPane({
             marker (the title moves to its tooltip); below micro it yields the
             last few pixels to the "…" menu.
             Issue 09: the chip doubles as an icon picker. The mutation routes
-            through `mutateSessionForCore(coreId, …)` so every Core
-            share the same write path (ADR-0005). `descriptor.coreId` is
-            null means a row the Panel still owns, so this stays a picker for
-            call sites that don't thread a Core through. */}
+            through `mutateSessionForCore(coreId, …)`, the one write path
+            every Core shares (ADR-0005). */}
         {!microHeader && (
           <div
             title={tinyHeader ? liveSession.title : undefined}
@@ -1729,7 +1675,7 @@ export function TerminalPane({
             }}
           >
             <SessionIconPicker
-              coreId={descriptor.coreId ?? null}
+              coreId={descriptor.coreId}
               sessionId={liveSession.id}
               currentIcon={liveSession.icon}
               size={24}

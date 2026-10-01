@@ -150,7 +150,7 @@ describe("a spawn that names a start directory or a project is refused", () => {
 // The same refusal for the frames that used to carry a project: the list frames'
 // filter, the `create` of `sessionsMutate`, and the two frames that read and wrote
 // the project rows, which the Core no longer handles at all.
-describe("a frame that names a project reaches no port, and is answered by name", () => {
+describe("a frame that names a project reaches no port, and is refused", () => {
   let wss: FakeWebSocketServer;
   let server: PtyCoreLinkServer;
   let portCalls: string[];
@@ -227,12 +227,31 @@ describe("a frame that names a project reaches no port, and is answered by name"
   });
 
   it.each([
-    [{ type: "projectsList", reqId: "r1" }, "projectsList"],
-    [{ type: "projectsMutate", reqId: "r2", mutation: { op: "create", name: "x", path: "/x" } }, "projectsMutate"],
-  ])("answers the project frame %j as unhandled, with its reqId, and emits no Result frame", (frame, type) => {
+    [{ type: "projectsList", reqId: "r1" }],
+    [{ type: "projectsMutate", reqId: "r2", mutation: { op: "create", name: "x", path: "/x" } }],
+  ])("answers the project frame %j as unhandled by name, with its reqId, and emits no Result frame", (frame) => {
+    // ADR 0041 D27: a refusal that says why, not a silent ignore, so a 0.4.x
+    // client learns the frame is retired. The SDK codec no longer parses these
+    // frames, so the server names them from the refused text.
     const ws = ask(frame);
     expect(ws.answers).toHaveLength(1);
-    expect(JSON.parse(ws.answers[0]!)).toEqual({ type: "error", reqId: frame.reqId, message: `unhandled frame type: ${type}` });
+    expect(JSON.parse(ws.answers[0]!)).toEqual({
+      type: "error",
+      reqId: frame.reqId,
+      message: `unhandled frame type: ${frame.type}`,
+    });
     expect(portCalls).toEqual([]);
+  });
+
+  it("still names the retired frame when it carried no reqId, and names no request", () => {
+    const ws = ask({ type: "projectsList" });
+    expect(ws.answers).toHaveLength(1);
+    expect(JSON.parse(ws.answers[0]!)).toEqual({ type: "error", message: "unhandled frame type: projectsList" });
+  });
+
+  it("answers a frame that was never a frame as invalid, naming only its reqId", () => {
+    const ws = ask({ type: "noSuchFrame", reqId: "r9" });
+    expect(ws.answers).toHaveLength(1);
+    expect(JSON.parse(ws.answers[0]!)).toEqual({ type: "error", reqId: "r9", message: "invalid frame" });
   });
 });

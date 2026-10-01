@@ -430,8 +430,8 @@ describe("core-link-frames", () => {
     // the `exec` frame (issue 266) and 0.17.0 is the stamped write (issue
     // 289), both frames rather than ready capabilities and so neither the
     // additive case D11 carves out.
-    it("is 0.18.0 — moved for the `exec` frame (#266) and the stamped write (#289), never for multiConnection, which is a ready capability no Core is marked needs-update for (ADR 0024 D11, issue 143)", () => {
-      expect(CORE_LINK_PROTOCOL_VERSION).toBe("0.18.0");
+    it("is 0.19.0 — moved for the `exec` frame (#266), the stamped write (#289), the rename (#556) and the Core Projects removal (#555), never for multiConnection, which is a ready capability no Core is marked needs-update for (ADR 0024 D11, issue 143)", () => {
+      expect(CORE_LINK_PROTOCOL_VERSION).toBe("0.19.0");
     });
 
     it("leaves a Core that announces no multiConnection capability fully compatible — absence is a supported state, not drift", () => {

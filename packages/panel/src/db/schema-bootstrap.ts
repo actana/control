@@ -6,8 +6,8 @@
 // longer has Projects (ADR 0041 D1), so it has its own, project-free schema in
 // `@actana/shared/core-schema`; this file is the Panel's alone and moved here
 // unchanged so the Panel's tables, including its Project family, stay as they
-// were until the Panel's own issues remove them (#560, and #567 for the move to
-// Postgres, which deletes this file with SQLite).
+// were until #560 removed them (see dropLegacyProjects below); #567's move to
+// Postgres deletes this file with SQLite.
 //
 // Kept self-contained (relative imports only, no `~/*` alias, no drizzle, no
 // native binding resolution, no Vite globs).
@@ -57,163 +57,79 @@ export function ensureColumn(
   sqlite.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${ddl}`);
 }
 
-function quoteIdent(name: string): string {
-  return `"${name.replace(/"/g, '""')}"`;
-}
+// The Panel's local session family. A Session belongs to a Core and nothing
+// narrower (ADR 0041 D1), so none of these tables names a Project: they are
+// declared once here and used both by ensureSchema (fresh DBs) and by
+// dropLegacyProjects (which rebuilds the 0.4.x shape without `project_id`).
+const SESSIONS_COLUMNS = `
+      id TEXT PRIMARY KEY,
+      title TEXT NOT NULL,
+      title_manually_set INTEGER NOT NULL DEFAULT 0,
+      icon TEXT,
+      agent TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT '${DEFAULT_SESSION_STATUS}',
+      branch TEXT NOT NULL DEFAULT '${DEFAULT_BRANCH}',
+      preview TEXT NOT NULL DEFAULT '',
+      lines INTEGER NOT NULL DEFAULT 0,
+      archived INTEGER NOT NULL DEFAULT 0,
+      pinned INTEGER NOT NULL DEFAULT 0,
+      claude_session_id TEXT,
+      claude_skip_permissions INTEGER NOT NULL DEFAULT 0,
+      claude_bare_session INTEGER NOT NULL DEFAULT 0,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    `;
 
-function indexColumns(sqlite: Database.Database, indexName: string): string[] {
-  return (
-    sqlite.prepare(`PRAGMA index_info(${quoteIdent(indexName)})`).all() as {
-      name: string;
-    }[]
-  ).map((c) => c.name);
-}
+const TOKEN_USAGE_COLUMNS = `
+      id TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+      claude_session_id TEXT NOT NULL,
+      message_uuid TEXT NOT NULL UNIQUE,
+      model TEXT,
+      input_tokens INTEGER NOT NULL DEFAULT 0,
+      output_tokens INTEGER NOT NULL DEFAULT 0,
+      cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
+      cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+      ts INTEGER NOT NULL
+    `;
 
-const STALE_PROJECT_UNIQUE_COLUMNS = new Set(["path", "sandbox_id"]);
+const TOKEN_USAGE_ROLLUP_COLUMNS = `
+      session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+      day TEXT NOT NULL,
+      input_tokens INTEGER NOT NULL DEFAULT 0,
+      output_tokens INTEGER NOT NULL DEFAULT 0,
+      cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
+      cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+      last_ts INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (session_id, day)
+    `;
 
-function uniqueProjectIndexesToRepair(sqlite: Database.Database): { name: string }[] {
-  return (
-    sqlite.prepare("PRAGMA index_list(projects)").all() as {
-      name: string;
-      unique: number;
-    }[]
-  ).filter((idx) => {
-    const columns = indexColumns(sqlite, idx.name);
-    return idx.unique === 1 && columns.length === 1 && STALE_PROJECT_UNIQUE_COLUMNS.has(columns[0]);
-  });
-}
+const TOKEN_USAGE_OFFSETS_COLUMNS = `
+      claude_session_id TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+      byte_offset INTEGER NOT NULL DEFAULT 0,
+      updated_at INTEGER NOT NULL
+    `;
 
-type TableColumn = {
-  name: string;
-};
+function createSessionIndexes(sqlite: Database.Database): void {
+  sqlite.exec(`
+    CREATE INDEX IF NOT EXISTS sessions_status_idx ON sessions(status);
+    CREATE INDEX IF NOT EXISTS sessions_archived_idx ON sessions(archived);
+    CREATE INDEX IF NOT EXISTS sessions_pinned_idx ON sessions(pinned);
 
-function splitSqlList(input: string): string[] {
-  const out: string[] = [];
-  let start = 0;
-  let depth = 0;
-  let quote: string | null = null;
-  for (let i = 0; i < input.length; i++) {
-    const ch = input[i];
-    if (quote) {
-      if (ch === quote) quote = null;
-      continue;
-    }
-    if (ch === "'" || ch === '"' || ch === "`") {
-      quote = ch;
-      continue;
-    }
-    if (ch === "(") depth++;
-    if (ch === ")") depth--;
-    if (ch === "," && depth === 0) {
-      out.push(input.slice(start, i));
-      start = i + 1;
-    }
-  }
-  out.push(input.slice(start));
-  return out;
-}
+    CREATE INDEX IF NOT EXISTS token_usage_session_idx ON token_usage(session_id);
+    CREATE INDEX IF NOT EXISTS token_usage_ts_idx ON token_usage(ts);
+    -- Covering indexes so a raw-table aggregate (backfill, or any fallback read)
+    -- can sum straight from the index without touching the heap. The rollup is
+    -- the primary read path; these keep the raw path from cliffing.
+    CREATE INDEX IF NOT EXISTS token_usage_ts_cover_idx
+      ON token_usage(ts, input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens);
+    CREATE INDEX IF NOT EXISTS token_usage_session_ts_cover_idx
+      ON token_usage(session_id, ts, input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens);
 
-function staleProjectUniqueColumnPattern(): string {
-  return [...STALE_PROJECT_UNIQUE_COLUMNS]
-    .map((column) => `(?:"${column}"|\`${column}\`|\\[${column}\\]|${column})`)
-    .join("|");
-}
-
-function isStaleUniqueColumnDef(definition: string): boolean {
-  return new RegExp(`^(?:${staleProjectUniqueColumnPattern()})(?:\\s|$)`, "i").test(definition.trimStart());
-}
-
-function isStaleUniqueConstraint(definition: string): boolean {
-  const withoutName = definition
-    .trimStart()
-    .replace(/^CONSTRAINT\s+(?:"[^"]+"|`[^`]+`|\[[^\]]+\]|\w+)\s+/i, "");
-  return new RegExp(`^UNIQUE\\s*\\(\\s*(?:${staleProjectUniqueColumnPattern()})\\s*\\)`, "i").test(withoutName);
-}
-
-function projectTableSqlWithoutStaleUniques(sqlite: Database.Database): string {
-  const row = sqlite
-    .prepare("SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = 'projects'")
-    .get() as { sql: string } | undefined;
-  if (!row?.sql) throw new Error("Cannot repair projects schema: missing CREATE TABLE SQL");
-
-  const open = row.sql.indexOf("(");
-  const close = row.sql.lastIndexOf(")");
-  if (open < 0 || close < open) throw new Error("Cannot repair projects schema: invalid CREATE TABLE SQL");
-
-  const body = row.sql.slice(open + 1, close);
-  const suffix = row.sql.slice(close + 1);
-  const definitions = splitSqlList(body)
-    .map((definition) =>
-      isStaleUniqueColumnDef(definition)
-        ? definition.replace(
-            /\bUNIQUE\b(?:\s+ON\s+CONFLICT\s+(?:ROLLBACK|ABORT|FAIL|IGNORE|REPLACE))?/i,
-            "",
-          )
-        : definition,
-    )
-    .filter((definition) => !isStaleUniqueConstraint(definition));
-
-  return `CREATE TABLE projects_without_stale_uniques (${definitions.join(",")})${suffix}`;
-}
-
-function rebuildProjectsWithoutStaleUniques(
-  sqlite: Database.Database,
-  uniqueIndexNames: Set<string>,
-): void {
-  const existingColumns = sqlite.prepare("PRAGMA table_info(projects)").all() as TableColumn[];
-  const copyColumns = existingColumns.map((column) => quoteIdent(column.name)).join(", ");
-  const createReplacementTable = projectTableSqlWithoutStaleUniques(sqlite);
-  const schemaEntries = (
-    sqlite
-      .prepare(
-        "SELECT type, name, sql FROM sqlite_schema WHERE tbl_name = 'projects' AND sql IS NOT NULL AND type IN ('index', 'trigger')",
-      )
-      .all() as { type: string; name: string; sql: string }[]
-  ).filter((entry) => !uniqueIndexNames.has(entry.name));
-  const replaySchemaSql = schemaEntries.map((entry) => entry.sql).join(";\n");
-
-  const foreignKeys = sqlite.pragma("foreign_keys", { simple: true }) as number;
-  let inTransaction = false;
-  sqlite.pragma("foreign_keys = OFF");
-  try {
-    sqlite.exec("BEGIN IMMEDIATE");
-    inTransaction = true;
-    sqlite.exec(`
-      DROP TABLE IF EXISTS projects_without_stale_uniques;
-      ${createReplacementTable};
-      INSERT INTO projects_without_stale_uniques (${copyColumns})
-        SELECT ${copyColumns} FROM projects;
-      DROP TABLE projects;
-      ALTER TABLE projects_without_stale_uniques RENAME TO projects;
-      ${replaySchemaSql ? `${replaySchemaSql};` : ""}
-    `);
-    const violations = sqlite.prepare("PRAGMA foreign_key_check").all();
-    if (violations.length) {
-      throw new Error("Project schema repair failed foreign key validation");
-    }
-    sqlite.exec("COMMIT");
-    inTransaction = false;
-  } catch (error) {
-    if (inTransaction) sqlite.exec("ROLLBACK");
-    throw error;
-  } finally {
-    sqlite.pragma(`foreign_keys = ${foreignKeys ? "ON" : "OFF"}`);
-  }
-}
-
-export function repairProjectIndexes(sqlite: Database.Database): void {
-  const uniqueIndexes = uniqueProjectIndexesToRepair(sqlite);
-  const uniqueIndexNames = new Set(uniqueIndexes.map((idx) => idx.name));
-  if (uniqueIndexes.some((idx) => idx.name.startsWith("sqlite_autoindex_"))) {
-    rebuildProjectsWithoutStaleUniques(sqlite, uniqueIndexNames);
-  } else {
-    for (const idx of uniqueIndexes) {
-      sqlite.exec(`DROP INDEX IF EXISTS ${quoteIdent(idx.name)}`);
-    }
-  }
-
-  sqlite.exec(`CREATE INDEX IF NOT EXISTS projects_group_idx ON projects(group_id);`);
-  sqlite.exec(`CREATE INDEX IF NOT EXISTS projects_pinned_idx ON projects(pinned);`);
+    CREATE INDEX IF NOT EXISTS token_usage_rollup_session_idx ON token_usage_rollup(session_id);
+    CREATE INDEX IF NOT EXISTS token_usage_rollup_day_idx ON token_usage_rollup(day);
+  `);
 }
 
 /**
@@ -243,88 +159,7 @@ export function reconcileStaleSessionsOnBoot(sqlite: Database.Database): void {
  */
 export function ensureSchema(sqlite: Database.Database): void {
   sqlite.exec(`
-    CREATE TABLE IF NOT EXISTS groups (
-      id TEXT PRIMARY KEY,
-      name TEXT NOT NULL,
-      color TEXT NOT NULL,
-      sort_order INTEGER,
-      created_at INTEGER NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS projects (
-      id TEXT PRIMARY KEY,
-      name TEXT NOT NULL,
-      path TEXT NOT NULL,
-      icon TEXT NOT NULL,
-      icon_color TEXT NOT NULL,
-      image_path TEXT,
-      group_id TEXT REFERENCES groups(id) ON DELETE SET NULL,
-      pinned INTEGER NOT NULL DEFAULT 0,
-      pinned_order INTEGER,
-      launch_url TEXT,
-      remember_agent_settings INTEGER NOT NULL DEFAULT 0,
-      saved_agent TEXT,
-      saved_skip_permissions INTEGER NOT NULL DEFAULT 0,
-      saved_bare_session INTEGER NOT NULL DEFAULT 0,
-      default_grid_view INTEGER NOT NULL DEFAULT 0,
-      created_at INTEGER NOT NULL,
-      updated_at INTEGER NOT NULL
-    );
-    CREATE INDEX IF NOT EXISTS projects_group_idx ON projects(group_id);
-    CREATE INDEX IF NOT EXISTS projects_pinned_idx ON projects(pinned);
-
-    -- Panel-local presentation for a project the Panel does not own (issue 98):
-    -- group membership, card image and launch URL for a Core-owned Project,
-    -- keyed to the Core's project id and joined onto the Core's snapshot on
-    -- read. Deliberately no foreign key to projects — the point of the row is
-    -- that no project row exists here. Unused on a Core, which owns its rows
-    -- outright; the bootstrap is shared, so the table is created either way.
-    CREATE TABLE IF NOT EXISTS project_presentation (
-      project_id TEXT PRIMARY KEY,
-      core_id TEXT NOT NULL,
-      image_path TEXT,
-      group_id TEXT REFERENCES groups(id) ON DELETE SET NULL,
-      launch_url TEXT,
-      -- Where this pin sits on the Panel's rail (issue 382). The rail is one
-      -- sequence of slots holding the Panel's own pins and every Core's, so
-      -- no single Core can hold the number: it is Panel-local presentation,
-      -- in the same numbering space as projects.pinned_order.
-      pinned_order INTEGER,
-      updated_at INTEGER NOT NULL
-    );
-    CREATE INDEX IF NOT EXISTS project_presentation_core_idx ON project_presentation(core_id);
-    CREATE INDEX IF NOT EXISTS project_presentation_group_idx ON project_presentation(group_id);
-
-    CREATE TABLE IF NOT EXISTS sessions (
-      id TEXT PRIMARY KEY,
-      project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-      title TEXT NOT NULL,
-      title_manually_set INTEGER NOT NULL DEFAULT 0,
-      icon TEXT,
-      agent TEXT NOT NULL,
-      status TEXT NOT NULL DEFAULT '${DEFAULT_SESSION_STATUS}',
-      branch TEXT NOT NULL DEFAULT '${DEFAULT_BRANCH}',
-      preview TEXT NOT NULL DEFAULT '',
-      lines INTEGER NOT NULL DEFAULT 0,
-      archived INTEGER NOT NULL DEFAULT 0,
-      pinned INTEGER NOT NULL DEFAULT 0,
-      claude_session_id TEXT,
-      claude_skip_permissions INTEGER NOT NULL DEFAULT 0,
-      claude_bare_session INTEGER NOT NULL DEFAULT 0,
-      created_at INTEGER NOT NULL,
-      updated_at INTEGER NOT NULL
-    );
-    CREATE INDEX IF NOT EXISTS sessions_project_idx ON sessions(project_id);
-    CREATE INDEX IF NOT EXISTS sessions_status_idx ON sessions(status);
-    CREATE INDEX IF NOT EXISTS sessions_archived_idx ON sessions(archived);
-    CREATE INDEX IF NOT EXISTS sessions_pinned_idx ON sessions(pinned);
-    -- listProjects() aggregates non-archived session counts with
-    -- WHERE archived = 0 GROUP BY project_id, status. This partial covering
-    -- index lets SQLite satisfy that GROUP BY by scanning the index in
-    -- (project_id, status) order, avoiding a temp B-tree that spilled the 2MB
-    -- page cache to disk at extreme scale (~2.6s -> ~25ms at 750k sessions). It's
-    -- scoped to archived = 0 to stay small and match the query's predicate.
-    CREATE INDEX IF NOT EXISTS sessions_active_project_status_idx ON sessions(project_id, status) WHERE archived = 0;
+    CREATE TABLE IF NOT EXISTS sessions (${SESSIONS_COLUMNS});
 
     CREATE TABLE IF NOT EXISTS terminal_logs (
       id TEXT PRIMARY KEY,
@@ -361,61 +196,18 @@ export function ensureSchema(sqlite: Database.Database): void {
       updatedAt TEXT NOT NULL
     );
 
-    CREATE TABLE IF NOT EXISTS token_usage (
-      id TEXT PRIMARY KEY,
-      session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
-      project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-      claude_session_id TEXT NOT NULL,
-      message_uuid TEXT NOT NULL UNIQUE,
-      model TEXT,
-      input_tokens INTEGER NOT NULL DEFAULT 0,
-      output_tokens INTEGER NOT NULL DEFAULT 0,
-      cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
-      cache_read_tokens INTEGER NOT NULL DEFAULT 0,
-      ts INTEGER NOT NULL
-    );
-    CREATE INDEX IF NOT EXISTS token_usage_session_idx ON token_usage(session_id);
-    CREATE INDEX IF NOT EXISTS token_usage_project_idx ON token_usage(project_id);
-    CREATE INDEX IF NOT EXISTS token_usage_ts_idx ON token_usage(ts);
-    -- Covering indexes so a raw-table aggregate (backfill, or any fallback read)
-    -- can sum straight from the index without touching the heap. The rollup
-    -- below is the primary read path; these keep the raw path from cliffing.
-    CREATE INDEX IF NOT EXISTS token_usage_project_cover_idx
-      ON token_usage(project_id, input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens);
-    CREATE INDEX IF NOT EXISTS token_usage_ts_cover_idx
-      ON token_usage(ts, input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens);
-    CREATE INDEX IF NOT EXISTS token_usage_session_ts_cover_idx
-      ON token_usage(session_id, ts, input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens);
+    CREATE TABLE IF NOT EXISTS token_usage (${TOKEN_USAGE_COLUMNS});
 
-    -- Pre-aggregated token usage per (project, session, local day). Every summary
-    -- read (totals, per-project, per-session, per-day) sums this instead of
-    -- scanning all of token_usage, turning multi-second aggregates at ~1M rows
-    -- into sub-millisecond ones. Kept in lockstep with token_usage by the ingest
+    -- Pre-aggregated token usage per (session, local day). Every summary read
+    -- (totals, per-session, per-day) sums this instead of scanning all of
+    -- token_usage, turning multi-second aggregates at ~1M rows into
+    -- sub-millisecond ones. Kept in lockstep with token_usage by the ingest
     -- transaction (only newly-inserted rows are folded in) and by ON DELETE
-    -- CASCADE, which drops rollup rows when a session/project is removed just as it
+    -- CASCADE, which drops rollup rows when a session is removed just as it
     -- drops the raw rows — so the rollup always equals the raw aggregate.
-    CREATE TABLE IF NOT EXISTS token_usage_rollup (
-      project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-      session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
-      day TEXT NOT NULL,
-      input_tokens INTEGER NOT NULL DEFAULT 0,
-      output_tokens INTEGER NOT NULL DEFAULT 0,
-      cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
-      cache_read_tokens INTEGER NOT NULL DEFAULT 0,
-      last_ts INTEGER NOT NULL DEFAULT 0,
-      PRIMARY KEY (project_id, session_id, day)
-    );
-    CREATE INDEX IF NOT EXISTS token_usage_rollup_project_idx ON token_usage_rollup(project_id);
-    CREATE INDEX IF NOT EXISTS token_usage_rollup_session_idx ON token_usage_rollup(session_id);
-    CREATE INDEX IF NOT EXISTS token_usage_rollup_day_idx ON token_usage_rollup(day);
+    CREATE TABLE IF NOT EXISTS token_usage_rollup (${TOKEN_USAGE_ROLLUP_COLUMNS});
 
-    CREATE TABLE IF NOT EXISTS token_usage_session_offsets (
-      claude_session_id TEXT PRIMARY KEY,
-      session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
-      project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-      byte_offset INTEGER NOT NULL DEFAULT 0,
-      updated_at INTEGER NOT NULL
-    );
+    CREATE TABLE IF NOT EXISTS token_usage_session_offsets (${TOKEN_USAGE_OFFSETS_COLUMNS});
 
     -- Monotonic per-Core event log. See src/shared/event-log.ts for the
     -- read/append helpers; the table is created here (idempotently) so both the
@@ -432,40 +224,18 @@ export function ensureSchema(sqlite: Database.Database): void {
     CREATE INDEX IF NOT EXISTS event_log_session_idx ON event_log(session_id);
     CREATE INDEX IF NOT EXISTS event_log_pty_idx ON event_log(pty_id);
   `);
-
-  // Repair legacy unique indexes on projects (a schema-divergent build once
-  // shipped single-column uniques on path / sandbox_id).
-  repairProjectIndexes(sqlite);
-
-  // Manual group ordering. Legacy rows keep NULL until the user reorders (they
-  // sort last by created_at meanwhile) — see groups.repo findAllGroups.
-  ensureColumn(sqlite, "groups", "sort_order", "INTEGER");
+  createSessionIndexes(sqlite);
 
   // Columns added after their table first shipped; tolerate pre-existing
   // tables created without them.
-  // The rail slot of a Core-owned pin (issue 382); NULL until the operator
-  // first reorders a rail that has one on it.
-  ensureColumn(sqlite, "project_presentation", "pinned_order", "INTEGER");
   ensureColumn(sqlite, "sessions", "title_manually_set", "INTEGER NOT NULL DEFAULT 0");
   ensureColumn(sqlite, "sessions", "pinned", "INTEGER NOT NULL DEFAULT 0");
   sqlite.exec("CREATE INDEX IF NOT EXISTS sessions_pinned_idx ON sessions(pinned);");
-  // findSessionsByProjectId filters project_id and orders by created_at DESC.
-  // Without a composite covering that shape SQLite picks a single-column index
-  // and sorts separately; this lets it satisfy the filter + order in one scan.
-  sqlite.exec("CREATE INDEX IF NOT EXISTS sessions_project_created_idx ON sessions(project_id, created_at);");
 
   // Legacy builds briefly modeled "shell" as a session agent even though shell
   // terminals are not persisted sessions. Normalize stale rows before the narrowed
   // Harness union reaches UI code that indexes HARNESS_REGISTRY.
-  sqlite.exec(`
-    UPDATE sessions SET agent = 'claude-code' WHERE agent = 'shell';
-    UPDATE projects SET saved_agent = NULL WHERE saved_agent = 'shell';
-  `);
-
-  // One-time upgrade-path fill of the token-usage rollup from existing raw rows.
-  // Fresh DBs have no token_usage yet (no-op); the ingest transaction keeps it
-  // current from here on.
-  backfillTokenUsageRollup(sqlite);
+  sqlite.exec(`UPDATE sessions SET agent = 'claude-code' WHERE agent = 'shell';`);
 
   // Actana Control removed the Mission Pet subsystem. Every boot idempotently
   // drops the six pet_* rows from app_settings so a DB carried over from a
@@ -547,6 +317,149 @@ export function ensureSchema(sqlite: Database.Database): void {
   // convenience sweeps above still find the columns they expect on a DB old
   // enough to have them. Stays in the tree for one release, then removed.
   dropLegacyUserTerminals(sqlite);
+
+  // Actana Control removed Projects (ADR 0041 D1, issue 560). Every boot
+  // idempotently drops the projects, project_presentation and groups tables and
+  // rebuilds the session family without `project_id`, keeping every row. Runs
+  // after every sweep above, which may still look for project-era columns, and
+  // before the rollup backfill, which reads the rebuilt shape. Stays in the tree
+  // until #567 deletes this file with SQLite.
+  dropLegacyProjects(sqlite);
+
+  // One-time upgrade-path fill of the token-usage rollup from existing raw rows.
+  // Fresh DBs have no token_usage yet (no-op); the ingest transaction keeps it
+  // current from here on.
+  backfillTokenUsageRollup(sqlite);
+}
+
+const LEGACY_PROJECT_SETTING_KEYS = [
+  "projects_dashboard_view",
+  "active_project_group",
+  "collapsed_project_groups",
+  "show_group_switcher",
+  "show_project_header_group",
+];
+
+/**
+ * Remove the Panel's Project model from its database (issue 560, ADR 0041 D1).
+ *
+ * - `projects`, `project_presentation` (and its indexes) and `groups` are dropped.
+ * - `sessions`, `token_usage`, `token_usage_rollup` and `token_usage_session_offsets`
+ *   named a project (a foreign key with `ON DELETE CASCADE` for the first), so they
+ *   are rebuilt without the column and **every row is kept**: a Session belongs
+ *   to a Core and nothing narrower. SQLite cannot drop a column that a foreign key
+ *   and an index cover, hence the rebuild; the rollup's key becomes (session, day),
+ *   which loses nothing because a session belonged to exactly one project.
+ * - The project-era `app_settings` rows are deleted.
+ *
+ * Foreign keys are switched off for the rebuild (a `DROP TABLE` with them on
+ * would cascade away the rows being moved) and checked before the commit.
+ * Idempotent, and a no-op on a fresh DB, which never had any of it.
+ */
+export function dropLegacyProjects(sqlite: Database.Database): void {
+  const hadProjectFamily =
+    tableExists(sqlite, "projects") ||
+    tableExists(sqlite, "project_presentation") ||
+    tableExists(sqlite, "groups") ||
+    columnExists(sqlite, "sessions", "project_id");
+
+  if (hadProjectFamily) {
+    const foreignKeys = sqlite.pragma("foreign_keys", { simple: true }) as number;
+    let inTransaction = false;
+    sqlite.pragma("foreign_keys = OFF");
+    try {
+      sqlite.exec("BEGIN IMMEDIATE");
+      inTransaction = true;
+      for (const [table, columns] of [
+        ["sessions", SESSIONS_COLUMNS],
+        ["token_usage", TOKEN_USAGE_COLUMNS],
+        ["token_usage_rollup", TOKEN_USAGE_ROLLUP_COLUMNS],
+        ["token_usage_session_offsets", TOKEN_USAGE_OFFSETS_COLUMNS],
+      ] as const) {
+        if (columnExists(sqlite, table, "project_id")) rebuildWithoutProjectId(sqlite, table, columns);
+      }
+      sqlite.exec(`
+        DROP INDEX IF EXISTS project_presentation_core_idx;
+        DROP INDEX IF EXISTS project_presentation_group_idx;
+        DROP TABLE IF EXISTS project_presentation;
+        DROP INDEX IF EXISTS projects_group_idx;
+        DROP INDEX IF EXISTS projects_pinned_idx;
+        DROP TABLE IF EXISTS projects;
+        DROP TABLE IF EXISTS groups;
+      `);
+      const violations = sqlite.prepare("PRAGMA foreign_key_check").all();
+      if (violations.length) throw new Error("Dropping the project family failed foreign key validation");
+      sqlite.exec("COMMIT");
+      inTransaction = false;
+    } catch (error) {
+      if (inTransaction) sqlite.exec("ROLLBACK");
+      throw error;
+    } finally {
+      sqlite.pragma(`foreign_keys = ${foreignKeys ? "ON" : "OFF"}`);
+    }
+    // The rebuilt tables lost their indexes with the old ones.
+    createSessionIndexes(sqlite);
+  }
+
+  const placeholders = LEGACY_PROJECT_SETTING_KEYS.map(() => "?").join(", ");
+  sqlite
+    .prepare(`DELETE FROM app_settings WHERE key IN (${placeholders})`)
+    .run(...LEGACY_PROJECT_SETTING_KEYS);
+  migrateProjectKeybindings(sqlite);
+}
+
+/**
+ * The hotkeys that named a Project: the two that moved keep an operator's
+ * override under their new id, the two that drove a Project's launch commands
+ * are dropped. `json_type` is NULL when the key is absent, so this is a no-op on
+ * a blob without them (and on a fresh DB).
+ */
+function migrateProjectKeybindings(sqlite: Database.Database): void {
+  for (const [from, to] of [
+    ["project.pinnedSlot", "core.slot"],
+    ["project.ship", "session.ship"],
+  ] as const) {
+    sqlite
+      .prepare(
+        `UPDATE app_settings
+            SET value = json_set(json_remove(value, '$."${from}"'), '$."${to}"', json(json_extract(value, '$."${from}"')))
+          WHERE key LIKE 'keybindings:%' AND json_valid(value) AND json_type(value, '$."${from}"') IS NOT NULL`,
+      )
+      .run();
+  }
+  sqlite
+    .prepare(
+      `UPDATE app_settings
+          SET value = json_remove(value, '$."project.runToggle"', '$."project.openBrowser"')
+        WHERE key LIKE 'keybindings:%' AND json_valid(value)`,
+    )
+    .run();
+}
+
+/** Copy `table` into the project-free shape, keeping the columns both shapes have. */
+function rebuildWithoutProjectId(sqlite: Database.Database, table: string, columns: string): void {
+  const rebuilt = `${table}_rebuilt`;
+  sqlite.exec(`DROP TABLE IF EXISTS ${rebuilt}; CREATE TABLE ${rebuilt} (${columns});`);
+  const kept = (
+    sqlite.prepare(`SELECT name FROM pragma_table_info('${rebuilt}')`).all() as { name: string }[]
+  )
+    .map((c) => c.name)
+    .filter((name) => columnExists(sqlite, table, name));
+  const list = kept.map((name) => `"${name}"`).join(", ");
+  // The rollup's key shrinks from (project, session, day) to (session, day), so
+  // two old rows can land on one new key: fold them with sums rather than abort
+  // the boot on the primary key.
+  const copy =
+    table === "token_usage_rollup"
+      ? `INSERT INTO ${rebuilt} (session_id, day, input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens, last_ts)
+           SELECT session_id, day, SUM(input_tokens), SUM(output_tokens), SUM(cache_creation_tokens), SUM(cache_read_tokens), MAX(last_ts)
+             FROM ${table} GROUP BY session_id, day;`
+      : `INSERT INTO ${rebuilt} (${list}) SELECT ${list} FROM ${table};`;
+  sqlite.exec(`
+    ${copy}
+    DROP TABLE ${table};
+    ALTER TABLE ${rebuilt} RENAME TO ${table};
+  `);
 }
 
 /**
@@ -756,11 +669,10 @@ export function backfillTokenUsageRollup(sqlite: Database.Database): void {
     .transaction(() => {
       sqlite.exec(`
         INSERT INTO token_usage_rollup (
-          project_id, session_id, day,
+          session_id, day,
           input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens, last_ts
         )
         SELECT
-          project_id,
           session_id,
           strftime('%Y-%m-%d', ts / 1000, 'unixepoch', 'localtime') AS day,
           SUM(input_tokens),
@@ -769,7 +681,7 @@ export function backfillTokenUsageRollup(sqlite: Database.Database): void {
           SUM(cache_read_tokens),
           MAX(ts)
         FROM token_usage
-        GROUP BY project_id, session_id, day;
+        GROUP BY session_id, day;
       `);
     })();
 }

@@ -15,12 +15,7 @@ import {
   type UserTerminalIdentityMap,
 } from "../user-terminal-identity";
 
-const VM_SHELL = {
-  scopeKey: "p1:main",
-  coreId: "core_a",
-  kind: "vm-shell" as const,
-  cwd: "",
-};
+const VM_SHELL = { coreId: "core_a" };
 
 describe("parseIdentityMap", () => {
   it("keeps well-formed entries", () => {
@@ -30,12 +25,20 @@ describe("parseIdentityMap", () => {
   it("drops entries that could only be restored by guessing", () => {
     const parsed = parseIdentityMap({
       good: VM_SHELL,
-      noScope: { ...VM_SHELL, scopeKey: "" },
+      noCore: { ...VM_SHELL, coreId: "" },
       badKind: { ...VM_SHELL, kind: "login-shell" },
-      noCwd: { scopeKey: "p1:main", coreId: "core_a", kind: "vm-shell" },
+      projectShell: { ...VM_SHELL, kind: "project", cwd: "/home/core/web" },
       notAnObject: "vm-shell",
     });
     expect(Object.keys(parsed)).toEqual(["good"]);
+  });
+
+  it("reads an entry written while shells had a scope, a kind and a cwd", () => {
+    expect(
+      parseIdentityMap({
+        t1: { scopeKey: "p1:main", coreId: "core_a", kind: "vm-shell", cwd: "" },
+      }),
+    ).toEqual({ t1: { coreId: "core_a" } });
   });
 
   it("survives a bucket that is not an object at all", () => {
@@ -45,23 +48,21 @@ describe("parseIdentityMap", () => {
 });
 
 describe("restoreUserTerminals", () => {
+  const scopeKeyFor = (coreId: string) => `${coreId}:main`;
   const identities: UserTerminalIdentityMap = {
     t1: VM_SHELL,
-    t2: { ...VM_SHELL, scopeKey: "__home__:local" },
+    t2: { coreId: "core_b" },
   };
 
-  it("returns every row to the bucket its identity names", () => {
-    const restored = restoreUserTerminals(
-      [{ id: "t1" }, { id: "t2" }],
-      identities,
-    );
-    expect(Object.keys(restored).sort()).toEqual(["__home__:local", "p1:main"]);
-    expect(restored["p1:main"]!.map((e) => e.terminal.id)).toEqual(["t1"]);
-    expect(restored["p1:main"]![0]!.identity.kind).toBe("vm-shell");
+  it("returns every row to the bucket of the Core its identity names", () => {
+    const restored = restoreUserTerminals([{ id: "t1" }, { id: "t2" }], identities, scopeKeyFor);
+    expect(Object.keys(restored).sort()).toEqual(["core_a:main", "core_b:main"]);
+    expect(restored["core_a:main"]!.map((e) => e.terminal.id)).toEqual(["t1"]);
+    expect(restored["core_a:main"]![0]!.identity.coreId).toBe("core_a");
   });
 
   it("restores nothing for a row with no identity — never a default bucket", () => {
-    const restored = restoreUserTerminals([{ id: "orphan" }], identities);
+    const restored = restoreUserTerminals([{ id: "orphan" }], identities, scopeKeyFor);
     expect(restored).toEqual({});
   });
 });

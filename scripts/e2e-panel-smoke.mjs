@@ -356,7 +356,7 @@ async function assertUnauthenticatedIsRefused(panel, fail) {
 
   for (const probe of [
     { method: "GET", pathname: "/api/cores" },
-    { method: "GET", pathname: "/api/projects" },
+    { method: "GET", pathname: "/api/home/user-terminals" },
     { method: "GET", pathname: "/api/settings" },
     // A write, too: the reads and the writes go through the same gate, and a
     // regression that opened only one of them would be missed by either alone.

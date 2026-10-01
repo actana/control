@@ -1,4 +1,4 @@
-/** Session ids whose PTY is being torn down on purpose (archive, delete, project close). */
+/** Session ids whose PTY is being torn down on purpose (archive, delete, Core close). */
 const intentional = new Set<string>();
 
 export function markIntentionalSessionClose(sessionId: string): void {

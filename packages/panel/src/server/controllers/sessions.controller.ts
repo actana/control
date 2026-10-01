@@ -1,11 +1,9 @@
 import { z } from "zod";
-import { HARNESSES, SESSION_STATUSES } from "@actana/shared/domain";
+import { SESSION_STATUSES } from "@actana/shared/domain";
 import {
   archiveSession,
-  createSession,
   deleteSession,
   getSession,
-  listSessionsForProject,
   restoreSession,
   sweepOrphanedActiveSessions,
   updateStatus,
@@ -20,19 +18,7 @@ import {
   notFound,
   parseJsonBody,
 } from "./_helpers";
-import { HTTP_CREATED } from "~/shared/http-status";
 import { generateTitleForSession } from "../services/title-generator";
-
-const createSessionBody = z.object({
-  id: z.string().min(1).optional(),
-  title: z.string().min(1, "title required"),
-  agent: z.enum(HARNESSES),
-  status: z.enum(SESSION_STATUSES).optional(),
-  preview: z.string().optional(),
-  claudeSessionId: z.string().nullable().optional(),
-  claudeSkipPermissions: z.boolean().optional(),
-  claudeBareSession: z.boolean().optional(),
-});
 
 const updateSessionBody = z
   .object({
@@ -56,32 +42,6 @@ const updateStatusBody = z.object({
   lines: z.number().optional(),
   prompt: z.string().optional(),
 });
-
-export async function listForProject(rawProjectId: string, request: Request): Promise<Response> {
-  const parsed = idParam.safeParse(rawProjectId);
-  if (!parsed.success) return json({ sessions: [] });
-  try {
-    return json({ sessions: listSessionsForProject(parsed.data) });
-  } catch (e) {
-    return rethrowUnlessDomain(e);
-  }
-}
-
-export async function create(rawProjectId: string, request: Request): Promise<Response> {
-  const projectIdParsed = idParam.safeParse(rawProjectId);
-  if (!projectIdParsed.success) return notFound();
-  const parsed = await parseJsonBody(request, createSessionBody);
-  if (!parsed.ok) return parsed.response;
-  try {
-    const t = createSession({
-      ...parsed.data,
-      projectId: projectIdParsed.data,
-    });
-    return json({ session: t }, { status: HTTP_CREATED });
-  } catch (e) {
-    return rethrowUnlessDomain(e);
-  }
-}
 
 export async function getOne(rawId: string, request: Request): Promise<Response> {
   const parsed = idParam.safeParse(rawId);

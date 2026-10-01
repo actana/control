@@ -1,9 +1,4 @@
 import {
-  formatPathForTerminalPaste,
-  isProjectPathDrag,
-  readProjectPathFromDragEvent,
-} from "./project-path-drag";
-import {
   mapTerminalKey,
   shouldSuppressTerminalKey,
   terminalClipboardAction,
@@ -89,44 +84,6 @@ export function terminalZoomIntentFromKeyboard(e: KeyboardEvent): TerminalZoomIn
   if (e.key === "-" || e.code === "Minus") return "out";
   if (e.key === "0" || e.code === "Digit0") return "reset";
   return null;
-}
-
-/**
- * Wire drag-and-drop on `host` so a project path dragged from the Panel's own
- * UI pastes into the active PTY. Returns a cleanup function.
- *
- * Files dragged in from the operator's desktop are deliberately not handled:
- * the browser hands over bytes, not a path, and the path that would matter is
- * one on the *Core's* machine, which the operator's laptop cannot name
- * (ADR 0010). Attach an image through the session's own attach flow instead.
- */
-export function wireTerminalFileDrop(opts: {
-  host: HTMLElement;
-  write: PtyWrite;
-  onFocus: () => void;
-}): () => void {
-  const { host, write, onFocus } = opts;
-  const onDragOver = (e: DragEvent) => {
-    if (isProjectPathDrag(e)) {
-      e.preventDefault();
-      e.dataTransfer!.dropEffect = "copy";
-    }
-  };
-  const onDrop = (e: DragEvent) => {
-    const projectPath = readProjectPathFromDragEvent(e);
-    if (!projectPath) return;
-    const pasted = formatPathForTerminalPaste(projectPath);
-    if (!pasted) return;
-    e.preventDefault();
-    void write(pasted + " ");
-    onFocus();
-  };
-  host.addEventListener("dragover", onDragOver);
-  host.addEventListener("drop", onDrop);
-  return () => {
-    host.removeEventListener("dragover", onDragOver);
-    host.removeEventListener("drop", onDrop);
-  };
 }
 
 /**

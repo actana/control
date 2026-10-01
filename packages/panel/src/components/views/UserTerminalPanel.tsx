@@ -35,7 +35,7 @@ function readStoredWeights(): PaneWeights {
  * The terminal panel, and the one control that fills it (issue 266).
  *
  * There used to be two: a `+ New` in the toolbar and a `New terminal` in the
- * empty state, both opening a shell confined to the project root, plus a third
+ * empty state, both opening a shell confined to one folder, plus a third
  * `New VM shell` beside the second. Two of those three answered a question
  * nobody asks — *you are in a Core, so a terminal means a shell in that Core;
  * there is nothing else it could sensibly mean.* So each location keeps exactly
@@ -44,17 +44,15 @@ function readStoredWeights(): PaneWeights {
  * That does not make a VM shell automatic. CONTEXT.md requires an explicit open
  * gesture and forbids auto-spawning; a button click is that gesture, and making
  * it the only button does not change which gesture it is. The warm pool that
- * *did* pre-spawn a PTY on project navigation went with the removed path and is
+ * *did* pre-spawn a PTY on navigation went with the removed path and is
  * deliberately not reintroduced under a new name.
  *
- * @param coreId The Core the current route is on. The shell opens there;
- * without one there is no machine to open a shell on and the control is
- * disabled.
+ * The shell opens on the Core the current route is on (see `setCore` in the store);
+ * without one there is no machine to open a shell on and the control is disabled.
  */
-export function UserTerminalPanel({ coreId }: { coreId?: string }) {
+export function UserTerminalPanel() {
   const {
-    project,
-    homeActive,
+    coreId,
     panelOpen,
     setPanelOpen,
     sessions,
@@ -65,13 +63,11 @@ export function UserTerminalPanel({ coreId }: { coreId?: string }) {
     hiddenIds,
     toggleHidden,
     renameTerminal,
-    updateLaunchUrl,
     setPtyId,
   } = useUserTerminals();
 
-  // The panel is shared by project terminals and project-less "home" (dashboard)
-  // terminals; `active` is true whenever either scope is current.
-  const active = !!project || homeActive;
+  // The panel shows a Core's terminals; `active` is true whenever a Core is in scope.
+  const active = !!coreId;
 
   const visibleSessions = sessions.filter((s) => !hiddenIds.has(s.terminal.id));
 
@@ -237,7 +233,7 @@ export function UserTerminalPanel({ coreId }: { coreId?: string }) {
               flex: "0 0 auto",
             }}
           >
-            {homeActive ? "Terminals" : "Core Terminals"}
+            Core Terminals
           </span>
           {sessions.length > 0 && (
             <span
@@ -422,7 +418,7 @@ export function UserTerminalPanel({ coreId }: { coreId?: string }) {
                 }
               />
             ) : (
-              "Open a project to use terminals."
+              "Open a Core to use terminals."
             )}
           </div>
         ) : (
@@ -432,9 +428,8 @@ export function UserTerminalPanel({ coreId }: { coreId?: string }) {
             const prev = visibleSessions[i - 1];
             // A session's own Core wins: a restored one carries the Core its
             // identity recorded (issue 394), and a freshly opened one the Core
-            // it was opened on. The route's Core is the fallback for a session
-            // that somehow has none, not the usual answer.
-            const sessionCoreId = s.coreId ?? coreId;
+            // it was opened on.
+            const sessionCoreId = s.coreId;
             return (
               <Fragment key={s.terminal.id}>
                 {prev && (
@@ -457,22 +452,11 @@ export function UserTerminalPanel({ coreId }: { coreId?: string }) {
                   <UserTerminalPane
                     terminal={s.terminal}
                     ptyId={s.ptyId}
-                    // Kind and cwd come from the session, never from whichever
-                    // scope happens to be current: reading them off the ambient
-                    // scope is what let a reload spawn a home shell where the
-                    // operator had opened a VM shell (issue 394). The session's
-                    // cwd is authoritative even when empty — a VM shell opens at
-                    // the Core's own home, and substituting the project in scope
-                    // for that would rebuild the pane on every scope change.
-                    cwd={s.cwd}
                     coreId={sessionCoreId}
-                    isHome={s.kind === "home"}
-                    shellSession={s.kind === "vm-shell"}
                     focused={focusedId === s.terminal.id}
                     onFocus={() => focusTerminal(s.terminal.id)}
                     onPtyReady={(ptyId) => setPtyId(s.terminal.id, ptyId, sessionCoreId)}
                     onPtyExit={() => setPtyId(s.terminal.id, null)}
-                    onLaunchUrlDetected={(url) => void updateLaunchUrl(url)}
                     onHide={() => toggleHidden(s.terminal.id)}
                     onDelete={() => void killTerminal(s.terminal.id)}
                     onRename={(name) => void renameTerminal(s.terminal.id, name)}

@@ -1619,10 +1619,19 @@ export type CoreLinkServerFrame =
  * alias, no dual-read, and no capability flag, because no state exists in which a
  * 0.17 Core and this build understand each other.
  *
+ * **The Core's Projects removal moves it to 0.19.0 (actana/control#555).** This copy
+ * follows the Core that its tests run against, which announces the version the
+ * published `@actana/sdk` 0.6.0-next.2 carries: a 0.18 Core and this build refuse
+ * each other at the version gate. Only the number moves here. The number is not
+ * dead: `scripts/build-core-tarball.mjs` reads it out of this file for the tarball's
+ * `core-manifest.json`, which `actana status` and the Panel's needs-update gate
+ * compare against, so it has to match what the Core announces. actana/control#580
+ * has to move that read before it deletes this copy.
+ *
  * Patch stays 0 — see {@link coreLinkProtocolCompatible}, which compares
  * major.minor only.
  */
-export const CORE_LINK_PROTOCOL_VERSION = "0.18.0";
+export const CORE_LINK_PROTOCOL_VERSION = "0.19.0";
 
 /**
  * Does a Core advertising `reported` speak this build's core-link?

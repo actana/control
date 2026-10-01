@@ -1,30 +1,29 @@
 import { describe, expect, it } from "vitest";
-import { terminalScopeKeysForProject } from "../user-terminal-store";
+import { terminalScopeKeysForCore } from "../user-terminal-store";
 
-describe("terminalScopeKeysForProject", () => {
-  it("includes every scope bucket for a project", () => {
+describe("terminalScopeKeysForCore", () => {
+  it("includes the scope bucket of a Core and no other Core's", () => {
     expect(
-      terminalScopeKeysForProject(
+      terminalScopeKeysForCore(
         {
-          "project-1:main": [],
-          "project-1:scope-a": [],
-          "project-2:main": [],
-          "__home__:sb-1": [],
+          "core-1:main": [],
+          "core-2:main": [],
+          "core-10:main": [],
         },
-        "project-1",
+        "core-1",
       ),
-    ).toEqual(["project-1:main", "project-1:scope-a"]);
+    ).toEqual(["core-1:main"]);
   });
 
-  it("keeps the legacy plain project bucket covered", () => {
+  it("covers a bucket keyed by the bare Core id as well", () => {
     expect(
-      terminalScopeKeysForProject(
+      terminalScopeKeysForCore(
         {
-          "project-1": [],
-          "project-1:main": [],
+          "core-1": [],
+          "core-1:main": [],
         },
-        "project-1",
+        "core-1",
       ),
-    ).toEqual(["project-1", "project-1:main"]);
+    ).toEqual(["core-1", "core-1:main"]);
   });
 });

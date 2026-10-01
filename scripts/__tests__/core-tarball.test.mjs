@@ -445,6 +445,19 @@ describe("parseCoreLinkProtocolVersion", () => {
     );
     expect(parseCoreLinkProtocolVersion(source)).toMatch(/^\d+\.\d+\.\d+$/);
   });
+
+  it("names the protocol the Core announces, which is the pinned published SDK's", async () => {
+    // The tarball's core-manifest.json carries this number, and `actana status` and the
+    // Panel's needs-update gate compare against it. The Core announces the version of the
+    // `@actana/sdk` it is built against, so a copy of the constant that lags it would ship a
+    // manifest that disagrees with the Core it describes.
+    const { CORE_LINK_PROTOCOL_VERSION } = await import("@actana/sdk/core");
+    const source = fs.readFileSync(
+      path.join(repoRoot, "packages", "sdk", "src", "core-link-frames.ts"),
+      "utf8",
+    );
+    expect(parseCoreLinkProtocolVersion(source)).toBe(CORE_LINK_PROTOCOL_VERSION);
+  });
 });
 
 describe("buildManifest", () => {

@@ -25,7 +25,7 @@ export function ContextMenuPopover({
       role="menu"
       aria-label={label}
       solid
-      className="mc-project-actions-menu"
+      className="mc-actions-menu"
       onClick={(e) => e.stopPropagation()}
       style={{
         position: "fixed",

@@ -1,6 +1,6 @@
 import { useEffect } from "react";
 import { coreForHotkey } from "~/lib/core-rail";
-import { matchAnyPinnedSlot } from "~/lib/keybindings/match";
+import { matchAnyCoreSlot } from "~/lib/keybindings/match";
 import { useBinding } from "~/lib/keybindings/store";
 import type { CoreWithDial } from "~/shared/cores";
 
@@ -13,10 +13,10 @@ export function useCoreHotkeys(
   cores: readonly CoreWithDial[],
   openCore: (coreId: string) => void,
 ): void {
-  const base = useBinding("project.pinnedSlot");
+  const base = useBinding("core.slot");
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      const slot = matchAnyPinnedSlot(e, base);
+      const slot = matchAnyCoreSlot(e, base);
       if (slot == null) return;
       e.preventDefault();
       e.stopPropagation();

@@ -230,7 +230,6 @@ describe("a Session finishing on a Core notifies the Panel (issue 20)", () => {
     expect(stored).toHaveLength(1);
     expect(stored[0]).toMatchObject({
       id: "t1",
-      projectId: "",
       sessionTitle: "Rebuild the picker",
       coreId: "core-a",
       coreAlias: "Warehouse VM",

@@ -71,7 +71,7 @@
     "@actana/cli": "workspace:*",
     "@actana/core": "workspace:*",
     "@actana/panel": "workspace:*",
-    "@actana/sdk": "0.6.0-next.0",
+    "@actana/sdk": "0.6.0-next.2",
     "@actana/shared": "workspace:*",
     "better-sqlite3": "12.10.0",
     "ws": "8.21.0"

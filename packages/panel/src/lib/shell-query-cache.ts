@@ -1,20 +1,16 @@
 import type { QueryClient, QueryKey } from "@tanstack/react-query";
-import type { Group } from "~/db/schema";
 import type { AppSettings } from "~/lib/api";
-import type { ProjectWithCounts } from "~/shared/projects";
 
 export const SHELL_QUERY_CACHE_VERSION = 1;
 
 export const SHELL_QUERY_CACHE_KEYS = {
-  projects: "mc:shell-cache:projects:v1",
-  groups: "mc:shell-cache:groups:v1",
   settings: "mc:shell-cache:settings:v1",
   /**
    * How many Cores this Panel was paired with, last time anyone asked.
    *
    * Read by the first-run gate (#358) so a Panel with a fleet paints its shell
    * on the first client render instead of blanking for a round trip — the same
-   * bargain the three keys above make, for the one number that decides whether
+   * bargain the settings key above makes, for the one number that decides whether
    * there is a shell to paint at all. It is a seed and never an answer: the
    * live `listCores()` corrects it on the same tick it lands.
    */
@@ -64,28 +60,6 @@ function isExactQueryKey(queryKey: QueryKey, key: string): boolean {
   return queryKey.length === 1 && queryKey[0] === key;
 }
 
-function hasPinnedProjects(projects: ProjectWithCounts[]): boolean {
-  return projects.some((project) => project.pinned);
-}
-
-function syncPinnedProjectDocumentState(projects: ProjectWithCounts[]): void {
-  if (typeof document === "undefined") return;
-  document.documentElement.toggleAttribute(
-    "data-has-pinned-projects",
-    hasPinnedProjects(projects),
-  );
-}
-
-export function readCachedProjects(): ProjectWithCounts[] | undefined {
-  const data = readCache<unknown>(SHELL_QUERY_CACHE_KEYS.projects);
-  return Array.isArray(data) ? (data as ProjectWithCounts[]) : undefined;
-}
-
-export function readCachedGroups(): Group[] | undefined {
-  const data = readCache<unknown>(SHELL_QUERY_CACHE_KEYS.groups);
-  return Array.isArray(data) ? (data as Group[]) : undefined;
-}
-
 export function readCachedSettings(): AppSettings | undefined {
   const data = readCache<unknown>(SHELL_QUERY_CACHE_KEYS.settings);
   return isObject(data) ? (data as AppSettings) : undefined;
@@ -99,15 +73,6 @@ export function readCachedCoreCount(): number | undefined {
 
 export function writeCachedCoreCount(count: number): void {
   writeCache(SHELL_QUERY_CACHE_KEYS.coreCount, count);
-}
-
-export function writeCachedProjects(projects: ProjectWithCounts[]): void {
-  writeCache(SHELL_QUERY_CACHE_KEYS.projects, projects);
-  syncPinnedProjectDocumentState(projects);
-}
-
-export function writeCachedGroups(groups: Group[]): void {
-  writeCache(SHELL_QUERY_CACHE_KEYS.groups, groups);
 }
 
 export function writeCachedSettings(settings: AppSettings): void {
@@ -124,16 +89,6 @@ export function installShellQueryCache(queryClient: QueryClient): void {
 
     const { queryKey } = query;
     const { data } = query.state;
-
-    if (isExactQueryKey(queryKey, "projects") && Array.isArray(data)) {
-      writeCachedProjects(data as ProjectWithCounts[]);
-      return;
-    }
-
-    if (isExactQueryKey(queryKey, "groups") && Array.isArray(data)) {
-      writeCachedGroups(data as Group[]);
-      return;
-    }
 
     if (isExactQueryKey(queryKey, "settings") && isObject(data)) {
       writeCachedSettings(data as AppSettings);

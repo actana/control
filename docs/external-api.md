@@ -321,7 +321,7 @@ authenticated by the Operator's session cookie, which the browser attaches on
 its own ([ADR 0011](adr/0011-operator-identity-and-panel-auth.md)) — there is no
 bearer-token mode and no versioning promise. Harnesses never call it.
 
-Session, project and session **reads and writes do not appear here**: they travel
+Session **reads and writes do not appear here**: they travel
 over the panel link as core-link frames, because each Core owns that state
 (ADR 0004). What is left is the Panel's own concerns:
 
@@ -330,7 +330,6 @@ over the panel link as core-link frames, because each Core owns that state
 | Liveness | `GET /api/healthz` |
 | Operator auth | `/api/auth/state`, `/api/auth/setup`, `/api/auth/login`, `/api/auth/logout`, `/api/auth/password` |
 | Core registry | `/api/cores` |
-| Panel-side project presentation | `/api/projects`, `/api/projects/pinned-order`, `/api/project-presentation`, `/api/project-presentation/prune`, `/api/groups`, `/api/groups/order` |
 | Preferences | `/api/settings`, `/api/keybindings`, `/api/home/user-terminals` |
 | Usage and providers | `/api/usage`, `/api/provider-usage`, `/api/claude-usage-limits`, `/api/ai-runtime/models`, `/api/harness-launchers/accounts`, `/api/harness-launchers/latest-versions` |
 | Live updates | `GET /api/events` (SSE) |

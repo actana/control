@@ -69,8 +69,8 @@ describe("the protocol version does not move for it", () => {
   // not move it and does not: it is a ready capability whose absence yields
   // today's behaviour exactly. What moved it to 0.16.0 is the `exec` frame
   // (#266), which is a frame and therefore not that case.
-  it("is 0.18.0 for the `exec` frame (#266) and the stamped write (#289), and not for `files`, a ready capability no Core becomes needs-update for (#165 F9, ADR 0024 D11)", () => {
-    expect(CORE_LINK_PROTOCOL_VERSION).toBe("0.18.0");
+  it("is 0.19.0 for the `exec` frame (#266), the stamped write (#289), the rename (#556) and the Core Projects removal (#555), and not for `files`, a ready capability no Core becomes needs-update for (#165 F9, ADR 0024 D11)", () => {
+    expect(CORE_LINK_PROTOCOL_VERSION).toBe("0.19.0");
   });
 
   it("serializes the ready frame with the capability when a Core announces it", () => {
@@ -123,7 +123,7 @@ describe("a newer client against an older Core that omits it", () => {
     // adds no frame to this socket (ADR 0028), so a client that cannot use it
     // loses nothing here.
     const connected = await connectTo();
-    const result = await connected.request({ type: "projectsList", reqId: "r1" });
+    const result = await connected.request({ type: "sessionRowsList", reqId: "r1" });
     expect(result).toBeTruthy();
   });
 });
@@ -137,7 +137,7 @@ describe("an older client against a newer Core that announces it", () => {
     expect(info.compatible).toBe(true);
     expect(info.protocolVersion).toBe(CORE_LINK_PROTOCOL_VERSION);
 
-    const result = await connected.request({ type: "projectsList", reqId: "r1" });
+    const result = await connected.request({ type: "sessionRowsList", reqId: "r1" });
     expect(result).toBeTruthy();
   });
 

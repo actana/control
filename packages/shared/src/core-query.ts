@@ -15,40 +15,11 @@
 import type { CoreLinkSessionRow as WireSessionRow } from "./sdk-link-frames";
 
 /**
- * A Session row as this Core knows it. It is the wire's row less the one field
- * the published SDK still types and a 0.5.0 Core no longer has: a Session
- * belongs to the Core, to nothing narrower (ADR 0041 D1). Spelled as a pick so
- * that field is never named here; {@link toWireSessionRows} is the one place the
- * two meet.
+ * A Session row as this Core knows it, which is the wire's row: a Session belongs
+ * to the Core, to nothing narrower (ADR 0041 D1), and the SDK no longer types
+ * anything else.
  */
-export type CoreSessionRow = Pick<
-  WireSessionRow,
-  | "sessionId"
-  | "title"
-  | "titleManuallySet"
-  | "claudeSessionId"
-  | "agent"
-  | "status"
-  | "pinned"
-  | "archived"
-  | "icon"
-  | "updatedAt"
-  | "lock"
->;
-
-/**
- * Hand rows to the published SDK's frame types.
- *
- * `@actana/sdk` 0.6.0-next.0 still declares a required grouping field on its row
- * type, which this Core neither stores nor sends. Removing it from the SDK is
- * actana/client issue 10, part 3; until that ships this cast is the whole of
- * the mismatch, and it widens nothing: a client reads a row with one field
- * fewer than its type promises. Delete this function, and the cast, when the
- * SDK drops the field.
- */
-export function toWireSessionRows(rows: CoreSessionRow[]): WireSessionRow[] {
-  return rows as unknown as WireSessionRow[];
-}
+export type CoreSessionRow = WireSessionRow;
 
 /**
  * Minimal slice of `better-sqlite3.Database` that the query helpers need.

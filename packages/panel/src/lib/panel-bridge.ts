@@ -3,9 +3,6 @@ import { corePtyBridgeFor, type CorePtyBridge } from "./core-pty-bridge";
 import type {
   CoreLinkHarnessAvailabilityMap,
   CoreLinkHarnessInstallAck,
-  CoreLinkDirListing,
-  CoreLinkProjectMutation,
-  CoreLinkProjectSnapshot,
   CoreLinkSessionSnapshot,
   CoreLinkSessionMutation,
   CoreLinkSessionRow,
@@ -31,28 +28,24 @@ export type PanelBridge = {
   /** True while the tab's link is up. False during a reconnect. */
   isConnected(): boolean;
 
-  /** List a Core's projects. Live query — the Panel persists none of this. */
-  listProjects(coreId: string): Promise<CoreLinkProjectSnapshot[]>;
   /**
-   * List a Core's active sessions, optionally scoped to one project.
+   * List a Core's active sessions. Live query — the Panel persists none of this.
    *
-   * `archivedCount` is how many archived rows the same scope holds — a scalar,
+   * `archivedCount` is how many archived rows the Core holds — a scalar,
    * never the rows, which is what lets the Archived tab be gated and labelled
    * without an archived row crossing this answer (ADR 0019). Use
    * {@link listArchivedSessions} for the rows.
    */
   listSessionRows(
     coreId: string,
-    projectId?: string,
   ): Promise<{ sessions: CoreLinkSessionRow[]; archivedCount: number }>;
   /**
-   * List a Core's archived sessions, optionally scoped to one project — the
-   * Archived view's own read path (ADR 0019). Called when that view opens,
-   * not on project open.
+   * List a Core's archived sessions — the Archived view's own read path
+   * (ADR 0019). Called when that view opens, not on Core open.
    */
-  listArchivedSessions(coreId: string, projectId?: string): Promise<CoreLinkSessionRow[]>;
-  /** List a Core's active sessions, optionally scoped to one project. */
-  listSessions(coreId: string, projectId?: string): Promise<CoreLinkSessionSnapshot[]>;
+  listArchivedSessions(coreId: string): Promise<CoreLinkSessionRow[]>;
+  /** List a Core's live sessions, with the PTY each one is attached to. */
+  listSessions(coreId: string): Promise<CoreLinkSessionSnapshot[]>;
   /** A Core's CLI availability snapshot; live changes arrive on {@link onEvent}. */
   listHarnessAvailability(coreId: string): Promise<CoreLinkHarnessAvailabilityMap>;
   /**
@@ -67,27 +60,8 @@ export type PanelBridge = {
    */
   installHarness(coreId: string, harness: string): Promise<CoreLinkHarnessInstallAck>;
 
-  /**
-   * Create / rename / archive / pin a project on the Core that owns it.
-   * Rejects with the Core's message when the write fails — an unreachable
-   * Core, or a path that machine says is not a folder. Resolves to `null` when
-   * the mutation named a row that isn't there.
-   */
-  mutateProject(
-    coreId: string,
-    mutation: CoreLinkProjectMutation,
-  ): Promise<CoreLinkProjectSnapshot | null>;
-  /** Create / update a session (session) on the Core that owns it. */
+  /** Create / update a session on the Core that owns it. */
   mutateSession(coreId: string, mutation: CoreLinkSessionMutation): Promise<CoreLinkSessionRow | null>;
-
-  /**
-   * List folders on the Core's machine. `path` null means "start at that
-   * machine's home" — the browser has no filesystem to offer and the operator's
-   * own laptop is the wrong one.
-   */
-  listFolders(coreId: string, path: string | null): Promise<CoreLinkDirListing>;
-  /** Create one folder on the Core's machine; resolves to its absolute path. */
-  createFolder(coreId: string, parent: string, name: string): Promise<string>;
 
   /**
    * Watch a Core's live stream for as long as the returned function is unused.
@@ -178,24 +152,19 @@ export type PanelBridge = {
 function makeBridge(link: PanelLinkClient): PanelBridge {
   return {
     isConnected: () => link.isConnected(),
-    listProjects: async (coreId) =>
-      (await link.request<Answer<"projectsListResult">>(coreId, { type: "projectsList" })).projects,
-    // A 0.5.0 Core refuses projectId on these frames (ADR 0041 D27). The
-    // projectId argument is kept so callers compile against the pre-#555
-    // signature and is ignored on the wire.
-    listSessionRows: async (coreId, _projectId) => {
+    listSessionRows: async (coreId) => {
       const result = await link.request<Answer<"sessionRowsListResult">>(coreId, {
         type: "sessionRowsList",
       });
       return { sessions: result.sessions, archivedCount: result.archivedCount };
     },
-    listArchivedSessions: async (coreId, _projectId) =>
+    listArchivedSessions: async (coreId) =>
       (
         await link.request<Answer<"archivedSessionRowsListResult">>(coreId, {
           type: "archivedSessionRowsList",
         })
       ).sessions,
-    listSessions: async (coreId, _projectId) =>
+    listSessions: async (coreId) =>
       (await link.request<Answer<"sessionsListResult">>(coreId, { type: "sessionsList" })).sessions,
     listHarnessAvailability: async (coreId) =>
       (
@@ -210,21 +179,9 @@ function makeBridge(link: PanelLinkClient): PanelBridge {
       });
       return { accepted: ack.accepted, message: ack.message };
     },
-    mutateProject: async (coreId, mutation) =>
-      (
-        await link.request<Answer<"projectsMutateResult">>(coreId, {
-          type: "projectsMutate",
-          mutation,
-        })
-      ).project,
     mutateSession: async (coreId, mutation) =>
       (await link.request<Answer<"sessionsMutateResult">>(coreId, { type: "sessionsMutate", mutation }))
         .session,
-    listFolders: async (coreId, path) =>
-      (await link.request<Answer<"dirListResult">>(coreId, { type: "dirList", path })).listing,
-    createFolder: async (coreId, parent, name) =>
-      (await link.request<Answer<"dirCreateResult">>(coreId, { type: "dirCreate", parent, name }))
-        .path,
     watchCore: (coreId) => link.watch(coreId),
     onEvent: (cb) => link.onEvent(cb),
     onDialStatus: (cb) => link.onDialStatus(cb),
