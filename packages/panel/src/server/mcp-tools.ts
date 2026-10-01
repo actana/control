@@ -1,7 +1,17 @@
 import { z } from "zod";
 import type { ApiPrincipal } from "./api-key-auth";
 import { forbidden } from "./controllers/_helpers";
-import { getTaskV1, listAgentsV1, listCoreAgentsV1, listCoresV1, listTasksV1 } from "./controllers/v1.controller";
+import {
+  addTaskCommentV1,
+  createTaskV1,
+  getTaskV1,
+  listAgentsV1,
+  listCoreAgentsV1,
+  listCoresV1,
+  listTasksV1,
+  setTaskStatusV1,
+} from "./controllers/v1.controller";
+import { OPERATOR_TASK_STATUSES } from "./controllers/tasks.controller";
 import { scopeReaches } from "./services/api-keys";
 import { TASK_STATUSES } from "~/shared/tasks";
 
@@ -31,6 +41,15 @@ export async function outcomeOf(response: Response): Promise<ToolOutcome> {
   if (response.ok) return { ok: true, data: body };
   const reason = typeof body.error === "string" ? body.error : "failed";
   return { ok: false, message: `${response.status} ${reason}` };
+}
+
+/** The JSON body a v1 write handler reads, as the `Request` it takes: the tool's arguments are its body, validated by the same schema. */
+function asJsonRequest(body: Record<string, unknown>): Request {
+  return new Request("http://mcp.invalid/", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
 }
 
 function tool<S extends z.ZodObject>(def: {
@@ -85,5 +104,37 @@ export const MCP_TOOLS: readonly McpTool[] = [
     readOnly: true,
     input: z.object({ taskId: taskIdArg }),
     run: async (principal, { taskId }) => outcomeOf(await getTaskV1(principal, taskId)),
+  }),
+  tool({
+    name: "create_task",
+    description:
+      "Create a Task. It is a draft unless startNow is true, which creates it assigned so its Agent starts on it (needs coreId and agent).",
+    readOnly: false,
+    input: z.object({
+      title: z.string().min(1).describe("A short title."),
+      description: z.string().optional().describe("What to do, in Markdown."),
+      coreId: coreIdArg.nullable().optional(),
+      agent: z.string().min(1).nullable().optional().describe("An Agent's id on that Core, from list_agents."),
+      startNow: z.boolean().optional(),
+    }),
+    run: async (principal, args) => outcomeOf(await createTaskV1(principal, asJsonRequest(args))),
+  }),
+  tool({
+    name: "assign_task",
+    description:
+      "Move a Task to assigned (its Agent starts on it) or back to draft. These are the only moves an operator makes; " +
+      "in_progress, done, failed and partial belong to the dispatcher and the Agent's report.",
+    readOnly: false,
+    input: z.object({ taskId: taskIdArg, status: z.enum(OPERATOR_TASK_STATUSES).default("assigned") }),
+    run: async (principal, { taskId, status }) =>
+      outcomeOf(await setTaskStatusV1(principal, taskId, asJsonRequest({ status }))),
+  }),
+  tool({
+    name: "comment_task",
+    description: "Add a comment to a Task's thread. With reassign true, also send a finished Task back to its Agent (Comment & re-assign).",
+    readOnly: false,
+    input: z.object({ taskId: taskIdArg, body: z.string().min(1), reassign: z.boolean().optional() }),
+    run: async (principal, { taskId, body, reassign }) =>
+      outcomeOf(await addTaskCommentV1(principal, taskId, asJsonRequest({ body, ...(reassign === undefined ? {} : { reassign }) }))),
   }),
 ];

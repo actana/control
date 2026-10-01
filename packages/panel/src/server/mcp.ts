@@ -74,7 +74,7 @@ function rpcHttp(body: RpcResponse | RpcResponse[], status = 200): Response {
 
 /** The key's `tools/list` entry for one tool. */
 function describeTool(t: (typeof MCP_TOOLS)[number]) {
-  const { $schema: _unused, ...inputSchema } = z.toJSONSchema(t.input) as Record<string, unknown>;
+  const { $schema: _unused, ...inputSchema } = z.toJSONSchema(t.input, { io: "input" }) as Record<string, unknown>;
   return {
     name: t.name,
     description: t.description,
