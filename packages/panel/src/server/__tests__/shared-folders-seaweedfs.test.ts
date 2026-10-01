@@ -256,7 +256,9 @@ describe.skipIf(!configured)("the Panel's Shared folders against real SeaweedFS 
     expect(after).toEqual(foreignBefore);
     expect(await mods.getCore(b)).not.toBeNull();
     expect((await mods.findSharedFolder(1, b))?.state).toBe("attached");
-    // B's own key still reads B's own files.
-    expect((await (await folderOf(b)).list("")).map((e) => e.path).sort()).toEqual(["dir/keep2.txt", "keep.txt"]);
+    // B's own key still reads B's own files: a listing is the direct children, so the nested file shows as its folder.
+    const bOwn = await folderOf(b);
+    expect((await bOwn.list("")).map((e) => e.path).sort()).toEqual(["dir", "keep.txt"]);
+    expect(new TextDecoder().decode((await bOwn.get("dir/keep2.txt")).body)).toBe(b);
   }, 120_000);
 });
