@@ -371,6 +371,32 @@ describe("a Core still attached with a key that has run out", () => {
   });
 });
 
+describe("the key expiry the row records", () => {
+  it("covers a key the Core accepted although the answer was lost, so delete does not run early", async () => {
+    const r = await rig();
+    const coreId = await pairedCore();
+    await r.service.finishPairing(coreId);
+    r.s3.seed(`${PREFIX}/${coreId}/a.txt`, "a");
+    const first = (await findSharedFolder(1, coreId))!.keyExpiresAt!;
+
+    r.link.loseAnswers = 1;
+    await r.clock.advance(45 * MINUTE);
+    await settle();
+    // The Core took the new key; the Panel never heard. The row already names the later expiry.
+    const recorded = (await findSharedFolder(1, coreId))!.keyExpiresAt!;
+    expect(new Date(r.link.key!.expiresAt).getTime()).toBeGreaterThan(first);
+    expect(recorded).toBe(new Date(r.link.key!.expiresAt).getTime());
+    expect((await findSharedFolder(1, coreId))?.state).toBe("error");
+
+    // Unreachable now, and past the key the Panel had confirmed but before the one the Core holds: not "run out".
+    r.online.value = false;
+    await r.clock.advance(20 * MINUTE);
+    expect(r.clock.now()).toBeGreaterThan(first);
+    await expect(r.service.deleteCore(coreId, `${PREFIX}/${coreId}/`)).rejects.toMatchObject({ code: "still-attached" });
+    expect(r.s3.text(`${PREFIX}/${coreId}/a.txt`)).toBe("a");
+  });
+});
+
 describe("the stored prefix is where the Core is attached", () => {
   it("is not rewritten by a key refresh after the configured prefix was edited", async () => {
     const r = await rig();

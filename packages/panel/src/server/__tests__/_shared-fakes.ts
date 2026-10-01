@@ -89,6 +89,8 @@ export class FakeCoreLink implements SharedLink {
   capability: { version: 1 } | null = { version: 1 };
   /** The key it holds has run out: a detach is refused until a new key is pushed, as the Core's sync does. */
   expired = false;
+  /** Process this many requests, then throw instead of answering: the push landed, the answer was lost. */
+  loseAnswers = 0;
   /** Throw this many requests before answering. */
   failures = 0;
   /** Answer the next request with this status instead. */
@@ -104,7 +106,13 @@ export class FakeCoreLink implements SharedLink {
       throw new Error("core-link request timed out");
     }
     const reqId = (frame as { reqId: string }).reqId;
-    const reply = (status: CoreLinkSharedMountStatus): CoreLinkResponseFrame => ({ type: "sharedStatus", reqId, status });
+    const reply = (status: CoreLinkSharedMountStatus): CoreLinkResponseFrame => {
+      if (this.loseAnswers > 0) {
+        this.loseAnswers -= 1;
+        throw new Error("core-link request timed out");
+      }
+      return { type: "sharedStatus", reqId, status };
+    };
     if (this.answer) {
       const status = this.answer;
       this.answer = null;

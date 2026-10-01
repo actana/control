@@ -219,6 +219,13 @@ export class SharedFolders {
     const folder = coreFolderPrefix(target.prefix, coreId);
     const credentials = { accessKeyId: key.accessKeyId, secretAccessKey: key.secretAccessKey, sessionToken: key.sessionToken };
     const expiresAt = key.expiresAt.toISOString();
+    // Record the end of this key before it is sent: a push the Core accepts but whose answer is lost leaves the Core
+    // holding a later key than the row would say, and delete trusts the row to know when the Core can no longer sync.
+    // If the Core refuses the key the row only over-states, which delays a delete and never allows one early.
+    const known = (await findSharedFolder(ownerId, coreId))?.keyExpiresAt ?? 0;
+    if (key.expiresAt.getTime() > known) {
+      await updateSharedFolder(ownerId, coreId, { keyExpiresAt: key.expiresAt.getTime() }, this.deps.now());
+    }
     const reqId = () => `panel-shared-${randomBytes(6).toString("hex")}`;
     const send = async (frame: CoreLinkRequestFrame) =>
       statusOf(await link.request(frame, this.deps.requestTimeoutMs));
