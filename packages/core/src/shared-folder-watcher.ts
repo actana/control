@@ -110,6 +110,8 @@ export type SharedFolderWatcherOptions = {
   safetyScanMs?: number;
   /** Tests inject `fs.watch`. */
   watch?: typeof fs.watch;
+  /** Tests inject the scan, to hold a baseline open. */
+  scan?: typeof scanSharedFolder;
   now?: () => number;
 };
 
@@ -129,6 +131,7 @@ export async function watchSharedFolder(opts: SharedFolderWatcherOptions): Promi
   const fallbackScanMs = opts.fallbackScanMs ?? DEFAULT_FALLBACK_SCAN_MS;
   const safetyScanMs = opts.safetyScanMs ?? DEFAULT_SAFETY_SCAN_MS;
   const watchFn = opts.watch ?? fs.watch;
+  const scanTree = opts.scan ?? scanSharedFolder;
   const now = opts.now ?? Date.now;
   const report = (what: string, error: unknown) => opts.onError?.(what, error);
 
@@ -194,7 +197,7 @@ export async function watchSharedFolder(opts: SharedFolderWatcherOptions): Promi
     try {
       do {
         dirty = false;
-        const { snapshot, rootMissing } = await scanSharedFolder(opts.root);
+        const { snapshot, rootMissing } = await scanTree(opts.root);
         if (stopped) return;
         const changes = diffSharedSnapshots(current, snapshot, now());
         current = snapshot;
@@ -223,7 +226,7 @@ export async function watchSharedFolder(opts: SharedFolderWatcherOptions): Promi
     }
   }
 
-  const baseline = await scanSharedFolder(opts.root);
+  const baseline = await scanTree(opts.root);
   current = baseline.snapshot;
   if (baseline.rootMissing) {
     try {

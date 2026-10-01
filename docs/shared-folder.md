@@ -24,7 +24,9 @@ file, is refused and never replaced: the Core logs it, boots without announcing 
 ## `ready.shared`
 
 The `ready` frame carries `shared: { version: 1, backend: "local" | "s3" }` when the Core keeps the folder and feeds its
-changes. This Core announces `local`; `s3` is announced by the mount of #562. A Core that omits the field predates the
+changes. This Core announces `local`; `s3` is announced by the mount of #562. The announcement follows the watcher: it is read each time a connection is made, so it is absent until the
+watcher has its baseline, absent while the watcher is down, and present on every connection made after it is up. Boot
+waits for the watcher at most 10 s, on metal and in the container alike, and never longer. A Core that omits the field predates the
 Shared folder, and is not "needs update", on the same terms as `files` and `multiConnection`.
 
 The type is declared in the Core (`packages/core/src/shared-capability.ts`) until actana/client#4 (client PR 33)

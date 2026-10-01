@@ -94,6 +94,22 @@ describe("the ready frame announces the Shared folder (#561)", () => {
     expect(sharedCapability()).toEqual({ version: 1, backend: "local" });
   });
 
+  it("reads a capability given as a function when each ready frame is built, not once", () => {
+    let current: ReturnType<typeof sharedCapability> | null = null;
+    const first = start({ shared: () => current });
+    expect("shared" in first.ready()).toBe(false);
+    current = sharedCapability();
+    // A second connection to the same server.
+    const second = new FakeWebSocket();
+    wss.connect(second);
+    expect(second.ready().shared).toEqual({ version: 1, backend: "local" });
+    expect("shared" in first.ready()).toBe(false);
+    current = null;
+    const third = new FakeWebSocket();
+    wss.connect(third);
+    expect("shared" in third.ready()).toBe(false);
+  });
+
   it("omits the field on a Core that keeps no Shared folder, rather than sending null", () => {
     const frame = start().ready();
     expect("shared" in frame).toBe(false);

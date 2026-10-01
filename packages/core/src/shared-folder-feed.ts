@@ -26,7 +26,12 @@ import { ensureSharedFolder } from "@actana/shared/shared-folder";
 import { asCore, coreIdentity, killAsCoreQuietly, type KillAsCoreOptions, type SpawnSpec } from "./core-identity";
 import type { AsCoreOptions } from "@actana/shared/core-home";
 import { sharedCapability, type CoreSharedCapability } from "./shared-capability";
-import { watchSharedFolder, type SharedChange, type SharedFolderWatcherOptions } from "./shared-folder-watcher";
+import {
+  watchSharedFolder,
+  type SharedChange,
+  type SharedFolderWatcher,
+  type SharedFolderWatcherOptions,
+} from "./shared-folder-watcher";
 
 /** The event's kind on the log. */
 export const SHARED_CHANGED_EVENT_KIND = "shared:changed";
@@ -64,12 +69,17 @@ export type SharedFolderFeedOptions = AsCoreOptions & {
   readyTimeoutMs?: number;
   restartMinMs?: number;
   /** In-process watching (metal): the timings, for a test. */
-  watchOptions?: Partial<Pick<SharedFolderWatcherOptions, "debounceMs" | "maxWaitMs" | "fallbackScanMs" | "safetyScanMs" | "watch">>;
+  watchOptions?: Partial<Pick<SharedFolderWatcherOptions, "debounceMs" | "maxWaitMs" | "fallbackScanMs" | "safetyScanMs" | "watch" | "scan">>;
 };
 
 export type SharedFolder = {
-  /** What to announce on `ready`; null when the folder could not be set up, so nothing is promised. */
-  capability: CoreSharedCapability | null;
+  /**
+   * What to announce on `ready`, read at the moment a connection is made: null
+   * until the watcher has its baseline, null again while it is down, and the
+   * capability whenever it is up. It follows the watcher, so a watcher that was
+   * slow to start is announced to the next connection, not never.
+   */
+  readonly capability: CoreSharedCapability | null;
   stop: () => void;
 };
 
@@ -120,22 +130,52 @@ async function startInProcess(opts: SharedFolderFeedOptions): Promise<SharedFold
     log.error("shared.folder-unusable", { home: opts.home, error: String(err) });
     return { capability: null, stop: () => undefined };
   }
-  try {
-    const watcher = await watchSharedFolder({
-      ...opts.watchOptions,
-      root,
-      ensureRoot: () => void ensureSharedFolder(opts.home),
-      onChanges: (changes) => {
-        for (const change of changes) appendSharedChange(opts.appendEvent, change);
-      },
-      onError: (what, error) => log.warn(what, { error: String(error) }),
-    });
-    log.info("shared.watching", { root, mode: watcher.mode });
-    return { capability: sharedCapability("local"), stop: watcher.stop };
-  } catch (err) {
-    log.error("shared.watch-failed", { root, error: String(err) });
-    return { capability: null, stop: () => undefined };
-  }
+  const readyTimeoutMs = opts.readyTimeoutMs ?? READY_TIMEOUT_MS;
+  let up = false;
+  let stopped = false;
+  let watcher: SharedFolderWatcher | null = null;
+  // The baseline scan walks the whole tree, so it can take as long as the tree is
+  // big. Boot waits for it as long as the container path waits for its watcher and
+  // no longer; a baseline that finishes later still turns the capability on.
+  const started = watchSharedFolder({
+    ...opts.watchOptions,
+    root,
+    ensureRoot: () => void ensureSharedFolder(opts.home),
+    onChanges: (changes) => {
+      for (const change of changes) appendSharedChange(opts.appendEvent, change);
+    },
+    onError: (what, error) => log.warn(what, { error: String(error) }),
+  }).then(
+    (w) => {
+      if (stopped) {
+        w.stop();
+        return;
+      }
+      watcher = w;
+      up = true;
+      log.info("shared.watching", { root, mode: w.mode });
+    },
+    (err) => log.error("shared.watch-failed", { root, error: String(err) }),
+  );
+  let timer: NodeJS.Timeout | undefined;
+  const timedOut = new Promise<void>((resolve) => {
+    timer = setTimeout(() => {
+      log.error("shared.watcher-not-ready", { timeoutMs: readyTimeoutMs, inProcess: true });
+      resolve();
+    }, readyTimeoutMs);
+  });
+  await Promise.race([started, timedOut]);
+  clearTimeout(timer);
+  return {
+    get capability() {
+      return up ? sharedCapability("local") : null;
+    },
+    stop: () => {
+      stopped = true;
+      up = false;
+      watcher?.stop();
+    },
+  };
 }
 
 function startAsCore(opts: SharedFolderFeedOptions): Promise<SharedFolder> {
@@ -146,21 +186,30 @@ function startAsCore(opts: SharedFolderFeedOptions): Promise<SharedFolder> {
   let restartTimer: NodeJS.Timeout | null = null;
   let delay = opts.restartMinMs ?? RESTART_MIN_MS;
   let announced = false;
+  // Whether a watcher is up right now. The capability follows it, per connection.
+  let up = false;
 
   return new Promise<SharedFolder>((resolve) => {
-    const settle = (ok: boolean) => {
+    // Boot waits for the first answer, bounded; what is announced is `up`, read later.
+    const settle = () => {
       if (announced) return;
       announced = true;
       clearTimeout(timeout);
-      resolve({ capability: ok ? sharedCapability("local") : null, stop });
+      resolve({
+        get capability() {
+          return up ? sharedCapability("local") : null;
+        },
+        stop,
+      });
     };
     const timeout = setTimeout(() => {
       log.error("shared.watcher-not-ready", { timeoutMs: readyTimeoutMs });
-      settle(false);
+      settle();
     }, readyTimeoutMs);
 
     function stop(): void {
       stopped = true;
+      up = false;
       if (restartTimer) clearTimeout(restartTimer);
       const c = child;
       child = null;
@@ -182,7 +231,8 @@ function startAsCore(opts: SharedFolderFeedOptions): Promise<SharedFolder> {
         spec = (opts.wrap ? opts.wrap(base, opts) : asCore(base, opts)) as SpawnSpec & { args: string[] };
       } catch (err) {
         log.error("shared.watcher-spawn-refused", { error: String(err) });
-        settle(false);
+        up = false;
+        settle();
         return;
       }
       const c = (opts.spawnChild ?? defaultSpawn)(spec);
@@ -214,9 +264,10 @@ function startAsCore(opts: SharedFolderFeedOptions): Promise<SharedFolder> {
       c.on("error", (err) => log.error("shared.watcher-error", { error: String(err) }));
       c.on("close", (status) => {
         if (child === c) child = null;
+        up = false;
         if (stopped) return;
         log.warn("shared.watcher-exited", { status, stderr: stderr.trim().slice(0, 500), retryInMs: delay });
-        settle(false);
+        settle();
         restartTimer = setTimeout(launch, delay);
         delay = Math.min(delay * 2, RESTART_MAX_MS);
       });
@@ -235,7 +286,8 @@ function startAsCore(opts: SharedFolderFeedOptions): Promise<SharedFolder> {
       if (m.type === "ready") {
         delay = opts.restartMinMs ?? RESTART_MIN_MS;
         log.info("shared.watching", { mode: m.mode === "scan" ? "scan" : "recursive", asCore: true });
-        settle(true);
+        up = true;
+        settle();
       } else if (m.type === "changes" && Array.isArray(m.changes)) {
         for (const raw of m.changes) {
           const change = parseSharedChange(raw);

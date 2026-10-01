@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { CoreLinkEvent } from "@actana/sdk/core";
 import { bootstrapCoreDb } from "../core-db-bootstrap";
 import type { asCore } from "../core-identity";
+import { scanSharedFolder } from "../shared-folder-watcher";
 import { appendEvent, configureEventLogStore, disposeEventLogStore, getLastEventId, readEventTail } from "../event-log-store";
 import {
   PtyCoreLinkServer,
@@ -115,14 +116,26 @@ afterEach(() => {
   fs.rmSync(tmp, { recursive: true, force: true });
 });
 
+let lastWss: FakeWebSocketServer | null = null;
+
+/** Another connection to the server `connectClient` last built. */
+function connectAnother(lastEventId: number): { ws: FakeWebSocket } {
+  const ws = new FakeWebSocket();
+  lastWss!.connect(ws);
+  ws.receive({ type: "subscribe", reqId: "s2", lastEventId });
+  return { ws };
+}
+
 function connectClient(lastEventId: number): { ws: FakeWebSocket } {
   const wss = new FakeWebSocketServer();
+  lastWss = wss;
   server = new PtyCoreLinkServer({ setEmitTarget: () => {}, killAll: () => {} } as unknown as PtyCore, {
     port: 0,
     createServer: () => wss as unknown as WebSocketServerLike,
     eventLog: { appendEvent, readEventTail, getLastEventId },
     liveEventPollMs: 5,
-    shared: feed?.capability ?? undefined,
+    // Read per connection, as the Core's boot passes it.
+    shared: () => feed?.capability ?? null,
   });
   const ws = new FakeWebSocket();
   wss.connect(ws);
@@ -170,6 +183,46 @@ describe("boot: the Shared folder is never missing", () => {
     fs.symlinkSync(elsewhere, shared);
     feed = await startSharedFolder({ home, appendEvent, watchOptions: fast });
     expect(feed.capability).toBeNull();
+  });
+});
+
+describe("boot on metal is bounded the way the container's is", () => {
+  it("does not wait past the bound for a baseline scan that is still running, and announces when it ends", async () => {
+    let finish: () => void = () => undefined;
+    const release = new Promise<void>((resolve) => (finish = resolve));
+    const slowScan: typeof scanSharedFolder = async (root) => {
+      await release;
+      return scanSharedFolder(root);
+    };
+    const started = Date.now();
+    feed = await startSharedFolder({ home, appendEvent, readyTimeoutMs: 80, watchOptions: { ...fast, scan: slowScan } });
+    expect(Date.now() - started).toBeLessThan(2_000);
+    expect(feed.capability).toBeNull();
+
+    finish();
+    await until(() => feed!.capability !== null, 5_000, "the capability once the baseline ends");
+    expect(feed.capability).toEqual({ version: 1, backend: "local" });
+    // And it works from then on.
+    const { ws } = connectClient(0);
+    fs.writeFileSync(path.join(shared, "late.md"), "x");
+    await until(() => ws.sharedEvents().some((e) => e.payload.path === "late.md"), 5_000, "the event");
+  });
+
+  it("stop() before a late baseline ends leaves no watcher behind", async () => {
+    let finish: () => void = () => undefined;
+    const release = new Promise<void>((resolve) => (finish = resolve));
+    const slowScan: typeof scanSharedFolder = async (root) => {
+      await release;
+      return scanSharedFolder(root);
+    };
+    feed = await startSharedFolder({ home, appendEvent, readyTimeoutMs: 40, watchOptions: { ...fast, scan: slowScan } });
+    feed.stop();
+    finish();
+    await new Promise((r) => setTimeout(r, 100));
+    fs.writeFileSync(path.join(shared, "after-stop.md"), "x");
+    await new Promise((r) => setTimeout(r, 300));
+    expect(feed.capability).toBeNull();
+    expect(readEventTail(0).filter((e) => e.kind === SHARED_CHANGED_EVENT_KIND)).toEqual([]);
   });
 });
 
@@ -367,20 +420,54 @@ describe("in the container the daemon cannot read ~/shared, so a child that is c
     expect(paths).toEqual(["ok.md"]);
   });
 
-  it("announces nothing when the child dies before it is ready, and starts it again", async () => {
+  it("announces nothing while the child is down, and announces again when the restarted child is ready", async () => {
     const children: FakeChild[] = [];
     const { promise } = containerFeed(children);
     children[0]!.exit(1);
     feed = await promise;
     expect(feed.capability).toBeNull();
     await until(() => children.length === 2, 2_000, "the restart");
+    children[1]!.say({ type: "ready", mode: "recursive" });
+    await until(() => feed!.capability !== null, 2_000, "the capability after the restart");
+    expect(feed.capability).toEqual({ version: 1, backend: "local" });
   });
 
-  it("announces nothing when the child never says ready, rather than hanging the boot", async () => {
+  it("stops announcing when a ready child exits, until its replacement is ready", async () => {
+    const children: FakeChild[] = [];
+    const { promise } = containerFeed(children);
+    children[0]!.say({ type: "ready", mode: "recursive" });
+    feed = await promise;
+    expect(feed.capability).not.toBeNull();
+    children[0]!.exit(1);
+    expect(feed.capability).toBeNull();
+    await until(() => children.length === 2, 2_000, "the restart");
+    children[1]!.say({ type: "ready", mode: "recursive" });
+    await until(() => feed!.capability !== null, 2_000, "the capability after the restart");
+  });
+
+  it("does not hang the boot when the child never says ready, and announces once it does", async () => {
     const children: FakeChild[] = [];
     const { promise } = containerFeed(children, { readyTimeoutMs: 80 });
     feed = await promise;
     expect(feed.capability).toBeNull();
+    children[0]!.say({ type: "ready", mode: "scan" });
+    await until(() => feed!.capability !== null, 2_000, "the late ready");
+    expect(feed.capability).toEqual({ version: 1, backend: "local" });
+  });
+
+  it("announces a late ready to the next connection, and not to one made before it", async () => {
+    const children: FakeChild[] = [];
+    const { promise } = containerFeed(children, { readyTimeoutMs: 80 });
+    feed = await promise;
+    const early = connectClient(0).ws;
+    expect("shared" in early.frames("ready")[0]!).toBe(false);
+
+    children[0]!.say({ type: "ready", mode: "recursive" });
+    await until(() => feed!.capability !== null, 2_000, "the late ready");
+    // The same server: the frame is built per connection, not once.
+    const next = connectAnother(0).ws;
+    expect(next.frames("ready")[0]!.shared).toEqual({ version: 1, backend: "local" });
+    expect("shared" in early.frames("ready")[0]!).toBe(false);
   });
 
   it("stops the child, and does not start it again, on stop()", async () => {

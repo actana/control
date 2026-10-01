@@ -793,7 +793,8 @@ async function startCore(): Promise<void> {
   // pairing endpoint — the exact confusion ADR 0028 D4 warns about.
   serverOpts.httpRoutes = pairing ? composeCoreHttpRoutes(auditPairingRoutes(pairing.redeem), fileRoutes) : fileRoutes;
   serverOpts.announceFiles = shouldAnnounceFiles(fileRoutes);
-  if (sharedFolder.capability) serverOpts.shared = sharedFolder.capability;
+  // A function, so a watcher that comes up after the server is announced to the next connection.
+  serverOpts.shared = () => sharedFolder.capability;
   // What the mTLS gate is allowed to serve without a client certificate. Absent
   // unless pairing is mounted, and absent means the handshake keeps refusing
   // uncertificated clients outright — see `core-preauth-gate.ts`.
