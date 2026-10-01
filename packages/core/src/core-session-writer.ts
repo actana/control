@@ -13,10 +13,8 @@
 // connected — an event appended while the link is down is replayed off the
 // cursor when it comes back.
 
-import type {
-  CoreLinkSessionMutation,
-  CoreLinkSessionRow,
-} from "@actana/sdk/core";
+import type { CoreSessionMutation } from "@actana/shared/core-mutations";
+import type { CoreSessionRow } from "@actana/shared/core-query";
 import type { SessionStatus } from "@actana/shared/domain";
 import type { CoreMutationPort, CoreQueryPort, EventLogPort } from "./pty-core-link-server";
 
@@ -42,7 +40,7 @@ export type CoreSessionWriterPorts = {
 export class CoreSessionWriter {
   constructor(private readonly ports: CoreSessionWriterPorts) {}
 
-  mutate(mutation: CoreLinkSessionMutation): CoreLinkSessionRow | null {
+  mutate(mutation: CoreSessionMutation): CoreSessionRow | null {
     const { mutationPort } = this.ports;
     if (!mutationPort) return null;
     const previousStatus = this.priorSessionStatus(mutation);
@@ -52,7 +50,7 @@ export class CoreSessionWriter {
   }
 
   /** This Core's current row for `sessionId`, or `null` when it has none. */
-  readSession(sessionId: string): CoreLinkSessionRow | null {
+  readSession(sessionId: string): CoreSessionRow | null {
     return this.ports.queryPort?.getSession(sessionId) ?? null;
   }
 
@@ -86,8 +84,8 @@ export class CoreSessionWriter {
    * still needs the `session:updated` event for the same mutation.
    */
   private recordSessionMutation(
-    mutation: CoreLinkSessionMutation,
-    session: CoreLinkSessionRow,
+    mutation: CoreSessionMutation,
+    session: CoreSessionRow,
     previousStatus: string | null,
   ): void {
     const { eventLog } = this.ports;
@@ -113,7 +111,6 @@ export class CoreSessionWriter {
     const status = mutation.op === "update" ? mutation.status : undefined;
     const payload = JSON.stringify({
       sessionId: session.sessionId,
-      projectId: session.projectId,
       ...(status === undefined ? {} : { status }),
     });
     eventLog.appendEvent(kind, payload, { sessionId: session.sessionId });
@@ -134,30 +131,22 @@ export class CoreSessionWriter {
    * is what the prior status is for; the snapshot cannot tell the two apart.
    *
    * The payload carries what the Panel's finish normalizer reads: the session id
-   * (as `id`, its preferred key), the project id, the project name, and the
-   * session title. Without the last two the toast reads "Project" / "Session",
-   * which is the degraded output this event exists to avoid. The project name
-   * is the one field not on the session snapshot; it is read through the query
-   * port, and omitted when no query port is wired (a PTY-only Core).
+   * (as `id`, its preferred key) and the session title; nothing else about the
+   * Session's whereabouts, because it has none (ADR 0041 D1).
    */
   private recordSessionFinish(
-    mutation: CoreLinkSessionMutation,
-    session: CoreLinkSessionRow,
+    mutation: CoreSessionMutation,
+    session: CoreSessionRow,
     previousStatus: string | null,
   ): void {
-    const { eventLog, queryPort } = this.ports;
+    const { eventLog } = this.ports;
     if (!eventLog) return;
     if (!patchesFinishedStatus(mutation)) return;
     if (session.status !== FINISHED_SESSION_STATUS) return;
     if (previousStatus === FINISHED_SESSION_STATUS) return;
-    const projectName = queryPort
-      ?.listProjects()
-      .find((p) => p.projectId === session.projectId)?.name;
     const payload = JSON.stringify({
       id: session.sessionId,
       sessionId: session.sessionId,
-      projectId: session.projectId,
-      ...(projectName ? { projectName } : {}),
       sessionTitle: session.title,
     });
     eventLog.appendEvent("session:finished", payload, { sessionId: session.sessionId });
@@ -169,7 +158,7 @@ export class CoreSessionWriter {
    * a mutation that could not produce a finish. Only a patch that could pays
    * for the read; nothing else consults the prior status.
    */
-  private priorSessionStatus(mutation: CoreLinkSessionMutation): string | null {
+  private priorSessionStatus(mutation: CoreSessionMutation): string | null {
     if (!patchesFinishedStatus(mutation)) return null;
     return this.ports.queryPort?.getSession(mutation.sessionId)?.status ?? null;
   }
@@ -180,8 +169,8 @@ export class CoreSessionWriter {
  * is not enough — every later write to a finished row says the same.
  */
 function patchesFinishedStatus(
-  mutation: CoreLinkSessionMutation,
-): mutation is Extract<CoreLinkSessionMutation, { op: "update" }> {
+  mutation: CoreSessionMutation,
+): mutation is Extract<CoreSessionMutation, { op: "update" }> {
   return mutation.op === "update" && mutation.status === FINISHED_SESSION_STATUS;
 }
 
@@ -191,7 +180,7 @@ function patchesFinishedStatus(
  * that changed?" checks below — which is exactly how an icon-plus-something
  * patch would otherwise keep announcing itself as an icon-only change.
  */
-function patchedFields(mutation: CoreLinkSessionMutation): string[] {
+function patchedFields(mutation: CoreSessionMutation): string[] {
   if (mutation.op !== "update") return [];
   const { op: _op, sessionId: _sessionId, ...patch } = mutation;
   return Object.entries(patch)
@@ -210,7 +199,7 @@ function patchedFields(mutation: CoreLinkSessionMutation): string[] {
  * only cares about icon subscribes to the dedicated kind, and a mixed edit
  * already invalidates the whole row through the generic one.
  */
-function isOnlyPatchedField(mutation: CoreLinkSessionMutation, field: string): boolean {
+function isOnlyPatchedField(mutation: CoreSessionMutation, field: string): boolean {
   const patched = patchedFields(mutation);
   return patched.length === 1 && patched[0] === field;
 }

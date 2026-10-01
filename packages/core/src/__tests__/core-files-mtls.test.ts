@@ -89,7 +89,7 @@ async function startCore(entries: Parameters<typeof makeTree>[0] = {}): Promise<
     tls: { caCert: material.ca.cert, serverCert: material.server.cert, serverKey: material.server.key },
     authVerifier: (bearer) => verifyBearer(bearer, SECRET),
     httpRoutes: createCoreFilesRequestHandler({
-      filesPort: { projectRoot: (id: string) => (id === "p1" ? projectRoot : null) },
+      filesPort: { workspaceRoot: () => projectRoot },
       authVerifier: (bearer) => verifyBearer(bearer, SECRET),
     }),
   });

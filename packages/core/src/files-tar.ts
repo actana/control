@@ -13,7 +13,7 @@
 // half; the half that matters is that every entry's destination is resolved
 // through the symlinks that exist *at the moment it is written* — including
 // symlinks written by an earlier entry of the same tar — and re-checked
-// against the Project root. See `confineWriteTarget`.
+// against the workspace root. See `confineWriteTarget`.
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -513,10 +513,10 @@ export type TarWriteOutcome = "written" | "overwritten";
  * Unpack a tar into `destRoot`, one entry at a time, refusing anything that
  * would land outside `confineRoot`.
  *
- * `destRoot` is where the archive is written; `confineRoot` is the Project root
+ * `destRoot` is where the archive is written; `confineRoot` is the workspace root
  * every entry must stay under. They differ when an upload targets a subfolder —
- * the archive unpacks into `<project>/vendor` and is still confined to
- * `<project>`, so a tar that walks up out of `vendor` is refused even though
+ * the archive unpacks into `<workspace>/vendor` and is still confined to
+ * `<workspace>`, so a tar that walks up out of `vendor` is refused even though
  * `vendor` is not the boundary.
  *
  * `onEntry` is awaited before the next entry is read. That is what keeps the
@@ -634,7 +634,7 @@ export async function unpackTarInto(
     // The entry's path, resolved and *then* checked — including through any
     // symlink an earlier entry of this same archive just created.
     const entryRelative = rawName.replace(/\/+$/, "");
-    // `confineWriteTarget`, not `confineToProjectRoot`: the entry's parents are
+    // `confineWriteTarget`, not `confineToWorkspace`: the entry's parents are
     // resolved — that is where an escape hides — and its last component is
     // left literal, so an entry called `notes.txt` creates `notes.txt` rather
     // than writing through a `notes.txt` symlink that is already there.
@@ -649,7 +649,7 @@ export async function unpackTarInto(
         `tar entry ${JSON.stringify(rawName)}: ${confined.message}`,
       );
     }
-    // `confineToProjectRoot` measured against `destRoot`; the Project root is
+    // `confineToWorkspace` measured against `destRoot`; the workspace root is
     // the boundary that actually matters, so it is asserted separately. When
     // the two are the same path this is a second reading of the same answer,
     // which is cheap, and when they differ it is the only check of the two that
@@ -657,7 +657,7 @@ export async function unpackTarInto(
     if (!withinRoot(confined.absolute, realConfineRoot)) {
       throw new TarError(
         "entry-outside-root",
-        `tar entry ${JSON.stringify(rawName)} resolves to ${confined.absolute}, outside the Project root`,
+        `tar entry ${JSON.stringify(rawName)} resolves to ${confined.absolute}, outside the workspace root`,
       );
     }
     // ── An entry that names the unpack root itself ──
@@ -683,14 +683,14 @@ export async function unpackTarInto(
     // the root already exists as a directory and the archive's *contents*
     // unpack into it. Skipped rather than applied, note: the entry carries mode
     // bits, and an archive somebody dropped has no business restyling the
-    // permissions of the Project root it was dropped on.
+    // permissions of the workspace root it was dropped on.
     //
     // Anything else is refused, and this is the same defect the single-file
     // `PUT` guard refuses one branch over. A regular file named `.` asks this
     // Core to replace the root with a node of another type, and the write below
     // would have done it: `lstat` finds a directory, an *empty* root passes
     // `refuseNonEmptyDirectory` with nothing to lose, `rm -r` then takes the
-    // Project root away, and `open(…, "w")` puts a file at its path — no
+    // workspace root away, and `open(…, "w")` puts a file at its path — no
     // listing, no transfers, no working directory for a harness, and a fix by
     // hand on the Core machine. It is worse here than on the `PUT` branch,
     // because the 200 is already spent and the stream would otherwise have
@@ -743,7 +743,7 @@ export async function unpackTarInto(
       // Where does the link point, once resolved? For a symlink the target is
       // interpreted relative to the link's own directory; for a hardlink it is
       // relative to the archive root. Both are checked the same way and for the
-      // same reason: an accident that reaches out of the Project is refused
+      // same reason: an accident that reaches out of the workspace is refused
       // here rather than discovered later by whatever follows the link.
       const base = header.typeflag === TYPE_SYMLINK ? path.dirname(target) : destRoot;
       const resolved = path.isAbsolute(rawLink)
@@ -752,7 +752,7 @@ export async function unpackTarInto(
       if (!withinRoot(resolved, realConfineRoot)) {
         throw new TarError(
           header.typeflag === TYPE_SYMLINK ? "symlink-outside-root" : "hardlink-outside-root",
-          `tar entry ${JSON.stringify(rawName)} links to ${resolved}, which is outside the Project root ${realConfineRoot}`,
+          `tar entry ${JSON.stringify(rawName)} links to ${resolved}, which is outside the workspace root ${realConfineRoot}`,
         );
       }
       if (existing) {

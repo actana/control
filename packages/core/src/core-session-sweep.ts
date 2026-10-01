@@ -37,7 +37,7 @@
 // the honest position. Nobody knows.
 
 import log from "@actana/shared/log";
-import type { CoreLinkSessionRow } from "@actana/sdk/core";
+import type { CoreSessionRow } from "@actana/shared/core-query";
 import type { CoreSessionWriter } from "./core-session-writer";
 
 /** The status a stranded Session settles on. See the note above. */
@@ -55,7 +55,7 @@ export type CoreSessionSweepDeps = {
    * row with no `pty:spawn` behind it is not in the list and must not be: that
    * is a Session the operator has simply not started yet.
    */
-  listBootSweepSessions: () => CoreLinkSessionRow[];
+  listBootSweepSessions: () => CoreSessionRow[];
   /** The one seam a session row changes through, events included. */
   writer: CoreSessionWriter;
 };

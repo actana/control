@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { confineToProjectRoot, freeSpaceBytes, resolveDeepestExisting, withinRoot } from "../files-confinement";
+import { confineToWorkspace, freeSpaceBytes, resolveDeepestExisting, withinRoot } from "../files-confinement";
 import { cleanupTrees, makeTree } from "./files-fixture";
 
 // Confinement (#165 F3): the three cases the ticket names, plus the ones that
@@ -18,7 +18,7 @@ afterEach(() => cleanupTrees());
 describe("an absolute path is refused", () => {
   it("refuses a POSIX absolute path, naming what it got", () => {
     const root = makeTree({ "a.txt": "a" });
-    const result = confineToProjectRoot(root, "/etc/passwd");
+    const result = confineToWorkspace(root, "/etc/passwd");
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.reason).toBe("absolute-path");
@@ -27,7 +27,7 @@ describe("an absolute path is refused", () => {
 
   it("refuses a bare `/`", () => {
     const root = makeTree();
-    const result = confineToProjectRoot(root, "/");
+    const result = confineToWorkspace(root, "/");
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.reason).toBe("absolute-path");
   });
@@ -38,7 +38,7 @@ describe("an absolute path is refused", () => {
     // absolute one that resolves inside would make the address space two
     // things at once.
     const root = makeTree({ "a.txt": "a" });
-    const result = confineToProjectRoot(root, path.join(root, "a.txt"));
+    const result = confineToWorkspace(root, path.join(root, "a.txt"));
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.reason).toBe("absolute-path");
   });
@@ -47,14 +47,14 @@ describe("an absolute path is refused", () => {
 describe("a `..` escape is refused", () => {
   it("refuses a leading `..`", () => {
     const root = makeTree();
-    const result = confineToProjectRoot(root, "../../etc/passwd");
+    const result = confineToWorkspace(root, "../../etc/passwd");
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.reason).toBe("dot-dot-segment");
   });
 
   it("refuses a `..` buried in the middle, which is the one that reads as harmless", () => {
     const root = makeTree({ "src/": "" });
-    const result = confineToProjectRoot(root, "src/../../outside/x.txt");
+    const result = confineToWorkspace(root, "src/../../outside/x.txt");
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.reason).toBe("dot-dot-segment");
   });
@@ -64,22 +64,22 @@ describe("a `..` escape is refused", () => {
     // a path that needs to walk up to say where it is going is a path built by
     // string concatenation somewhere, and that is the bug worth surfacing.
     const root = makeTree({ "a.txt": "a" });
-    const result = confineToProjectRoot(root, "src/../a.txt");
+    const result = confineToWorkspace(root, "src/../a.txt");
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.reason).toBe("dot-dot-segment");
   });
 
   it("accepts a `.` segment, which means nothing and escapes nothing", () => {
     const root = makeTree({ "a.txt": "a" });
-    const result = confineToProjectRoot(root, "./a.txt");
+    const result = confineToWorkspace(root, "./a.txt");
     expect(result.ok).toBe(true);
     if (result.ok) expect(result.absolute).toBe(path.join(root, "a.txt"));
   });
 
   it("accepts a file whose name merely starts with dots", () => {
     const root = makeTree({ "..hidden": "x", "...odd": "y" });
-    expect(confineToProjectRoot(root, "..hidden").ok).toBe(true);
-    expect(confineToProjectRoot(root, "...odd").ok).toBe(true);
+    expect(confineToWorkspace(root, "..hidden").ok).toBe(true);
+    expect(confineToWorkspace(root, "...odd").ok).toBe(true);
   });
 });
 
@@ -89,7 +89,7 @@ describe("a symlink resolving outside the Project root is refused", () => {
     const root = makeTree();
     fs.symlinkSync(outside, path.join(root, "escape"));
 
-    const result = confineToProjectRoot(root, "escape/secret.txt");
+    const result = confineToWorkspace(root, "escape/secret.txt");
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.reason).toBe("outside-project-root");
@@ -104,7 +104,7 @@ describe("a symlink resolving outside the Project root is refused", () => {
     const root = makeTree();
     fs.symlinkSync(path.join(outside, "secret.txt"), path.join(root, "escape.txt"));
 
-    const result = confineToProjectRoot(root, "escape.txt");
+    const result = confineToWorkspace(root, "escape.txt");
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.reason).toBe("outside-project-root");
   });
@@ -113,7 +113,7 @@ describe("a symlink resolving outside the Project root is refused", () => {
     const root = makeTree({ "real/a.txt": "a" });
     fs.symlinkSync(path.join(root, "real"), path.join(root, "link"));
 
-    const result = confineToProjectRoot(root, "link/a.txt");
+    const result = confineToWorkspace(root, "link/a.txt");
     expect(result.ok).toBe(true);
     // Resolved, not merely permitted: the absolute path handed back is where
     // the bytes will land, so everything downstream works on the real location.
@@ -128,7 +128,7 @@ describe("a symlink resolving outside the Project root is refused", () => {
     const aliasRoot = path.join(alias, "project");
     fs.symlinkSync(real, aliasRoot);
 
-    const result = confineToProjectRoot(aliasRoot, "a.txt");
+    const result = confineToWorkspace(aliasRoot, "a.txt");
     expect(result.ok).toBe(true);
     if (result.ok) expect(result.absolute).toBe(path.join(real, "a.txt"));
   });
@@ -141,7 +141,7 @@ describe("a symlink resolving outside the Project root is refused", () => {
     const root = makeTree({ "pkg/": "" });
     fs.symlinkSync(outside, path.join(root, "pkg/vendor"));
 
-    const result = confineToProjectRoot(root, "pkg/vendor/lib.js");
+    const result = confineToWorkspace(root, "pkg/vendor/lib.js");
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.reason).toBe("outside-project-root");
   });
@@ -150,7 +150,7 @@ describe("a symlink resolving outside the Project root is refused", () => {
 describe("a path that does not exist yet", () => {
   it("resolves against the deepest ancestor that does, so an upload can name it", () => {
     const root = makeTree({ "src/": "" });
-    const result = confineToProjectRoot(root, "src/new/deeper/file.txt");
+    const result = confineToWorkspace(root, "src/new/deeper/file.txt");
     expect(result.ok).toBe(true);
     if (result.ok) expect(result.absolute).toBe(path.join(root, "src/new/deeper/file.txt"));
   });
@@ -160,7 +160,7 @@ describe("a path that does not exist yet", () => {
     const root = makeTree();
     fs.symlinkSync(outside, path.join(root, "out"));
 
-    const result = confineToProjectRoot(root, "out/brand/new/file.txt");
+    const result = confineToWorkspace(root, "out/brand/new/file.txt");
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.reason).toBe("outside-project-root");
   });
@@ -170,7 +170,7 @@ describe("the empty path is the Project root itself", () => {
   it("accepts `` and `.` and hands back the root", () => {
     const root = makeTree();
     for (const requested of ["", ".", "./"]) {
-      const result = confineToProjectRoot(root, requested);
+      const result = confineToWorkspace(root, requested);
       expect(result.ok).toBe(true);
       if (result.ok) {
         expect(result.absolute).toBe(root);
@@ -183,20 +183,20 @@ describe("the empty path is the Project root itself", () => {
 describe("malformed input", () => {
   it("refuses a NUL byte rather than letting the syscall layer see it", () => {
     const root = makeTree();
-    const result = confineToProjectRoot(root, "a\0b");
+    const result = confineToWorkspace(root, "a\0b");
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.reason).toBe("malformed-path");
   });
 
   it("refuses a backslash, which is not a separator here and is never meant", () => {
     const root = makeTree();
-    const result = confineToProjectRoot(root, "..\\..\\etc\\passwd");
+    const result = confineToWorkspace(root, "..\\..\\etc\\passwd");
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.reason).toBe("malformed-path");
   });
 
   it("refuses when the Project root itself does not resolve", () => {
-    const result = confineToProjectRoot("/nowhere/that/exists", "a.txt");
+    const result = confineToWorkspace("/nowhere/that/exists", "a.txt");
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.reason).toBe("outside-project-root");
   });

@@ -35,8 +35,7 @@ vi.mock("node:fs", async (importOriginal) => {
   return { ...actual, default: { ...actual, existsSync }, existsSync };
 });
 
-const workspace = vi.hoisted(() => ({ dir: "", roots: null as string[] | null, lookups: [] as string[], checks: {} as Record<string, { ok: boolean; reason?: string; version?: string }> }));
-vi.mock("../project-roots", () => ({ loadProjectRoots: () => workspace.roots ?? [workspace.dir] }));
+const workspace = vi.hoisted(() => ({ dir: "", lookups: [] as string[], checks: {} as Record<string, { ok: boolean; reason?: string; version?: string }> }));
 vi.mock("@actana/shared/harness-cli-resolution", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@actana/shared/harness-cli-resolution")>();
   return {
@@ -67,15 +66,15 @@ function core(hookEnv: boolean) {
     getProtectedPorts: () => [],
   } as never);
 }
-function inContainer() {
-  vi.stubEnv("AC_CORE_HOME", path.dirname(workspace.dir));
+// The workspace is core's home: a Session starts nowhere else (ADR 0041 D2).
+function inContainer(home: string = workspace.dir) {
+  vi.stubEnv("AC_CORE_HOME", home);
   vi.stubEnv("AC_CORE_UID", "1000");
   vi.stubEnv("AC_CORE_GID", "1000");
   vi.stubEnv("HOME", "/var/lib/actana");
 }
 
 beforeEach(() => {
-  workspace.roots = null;
   workspace.lookups = [];
   workspace.checks = {};
   workspace.dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "spawn-site-")));
@@ -96,7 +95,6 @@ describe("spawning a Claude Code Session in container mode", () => {
 
     const result = await core(true).spawn({
       sessionId: "t1",
-      cwd: workspace.dir,
       agent: "claude-code",
       command: "claude",
     } as never);
@@ -118,11 +116,11 @@ describe("spawning a Claude Code Session in container mode", () => {
     const helper = cannedHelper();
     configureCoreHomeOps(helper.options);
     vi.spyOn(nodePty, "spawn").mockReturnValue(fakePty() as never);
-    await core(false).spawn({ sessionId: "t2", cwd: workspace.dir, agent: "claude-code", command: "claude" } as never);
+    await core(false).spawn({ sessionId: "t2", agent: "claude-code", command: "claude" } as never);
     expect(helper.requests.map((r) => r.request.op)).toEqual(["spawnPathFacts", "resolveCommand", "ensureStatuslineTap"]);
   });
 
-  it("refuses a cwd core cannot see, through the policy's own rejection", async () => {
+  it("refuses a home core cannot see, through the policy's own rejection", async () => {
     inContainer();
     configureCoreHomeOps({
       run: async () => ({
@@ -133,31 +131,8 @@ describe("spawning a Claude Code Session in container mode", () => {
     });
     const spawn = vi.spyOn(nodePty, "spawn").mockReturnValue(fakePty() as never);
     await expect(
-      core(true).spawn({ sessionId: "t3", cwd: workspace.dir, agent: "claude-code", command: "claude" } as never),
+      core(true).spawn({ sessionId: "t3", agent: "claude-code", command: "claude" } as never),
     ).rejects.toThrow("pty:spawn rejected (invalid-cwd)");
-    expect(spawn).not.toHaveBeenCalled();
-  });
-
-  it("drops a project root that core reports as unreachable, so a cwd under it is rejected", async () => {
-    inContainer();
-    const other = path.join(workspace.dir, "sub");
-    fs.mkdirSync(other);
-    configureCoreHomeOps({
-      run: async (_spec, input) => {
-        const { op, cwd, roots } = JSON.parse(input) as { op: string; cwd: string; roots: string[] };
-        if (op === "resolveCommand") {
-          return { status: 0, stdout: JSON.stringify({ ok: true, result: { candidates: ["/home/core/.local/bin/claude"] } }), stderr: "" };
-        }
-        // core can see the cwd, but the registered root is one it cannot resolve.
-        const realpaths: Record<string, string | null> = Object.fromEntries(roots.map((r) => [r, null]));
-        realpaths[cwd] = cwd;
-        return { status: 0, stdout: JSON.stringify({ ok: true, result: { cwdOk: true, realpaths } }), stderr: "" };
-      },
-    });
-    const spawn = vi.spyOn(nodePty, "spawn").mockReturnValue(fakePty() as never);
-    await expect(core(false).spawn({ sessionId: "t4", cwd: other, agent: "claude-code", command: "claude" } as never)).rejects.toThrow(
-      "pty:spawn rejected (cwd-outside-project-roots)",
-    );
     expect(spawn).not.toHaveBeenCalled();
   });
 });
@@ -181,7 +156,7 @@ describe("resolving the Harness CLI in container mode", () => {
       },
     });
     const spawn = vi.spyOn(nodePty, "spawn").mockReturnValue(fakePty() as never);
-    return { seen, spawn, run: () => core(false).spawn({ sessionId: "tr", cwd: workspace.dir, agent, command } as never) };
+    return { seen, spawn, run: () => core(false).spawn({ sessionId: "tr", agent, command } as never) };
   }
 
   it("takes the CLI core found, and never looks the command up itself", async () => {
@@ -192,7 +167,7 @@ describe("resolving the Harness CLI in container mode", () => {
     const request = seen.find((r) => r.op === "resolveCommand")!;
     // core's own `~/.local/bin` leads the PATH it is asked to search: its home is whatever
     // this test made it (the runner's HOME is not core's, and CI's is a temp dir).
-    const coreBin = `${path.dirname(workspace.dir)}/.local/bin`;
+    const coreBin = `${workspace.dir}/.local/bin`;
     expect(request).toEqual({ op: "resolveCommand", command: "claude", path: expect.stringMatching(/.+/) });
     expect((request as { path: string }).path.split(":")[0]).toBe(coreBin);
     expect(JSON.stringify(spawn.mock.calls[0])).toContain("/home/core/.local/bin/claude");
@@ -228,7 +203,7 @@ describe("resolving the Harness CLI in container mode", () => {
       },
     });
     const spawn = vi.spyOn(nodePty, "spawn").mockReturnValue(fakePty() as never);
-    await expect(core(false).spawn({ sessionId: "tp", cwd: workspace.dir, agent: "claude-code", command: "claude" } as never)).rejects.toThrow(
+    await expect(core(false).spawn({ sessionId: "tp", agent: "claude-code", command: "claude" } as never)).rejects.toThrow(
       "pty:spawn rejected (binary-not-found)",
     );
     expect(spawn).not.toHaveBeenCalled();
@@ -252,43 +227,42 @@ describe("resolving the Harness CLI in container mode", () => {
 });
 
 describe("a path the helper will not look at does not fail the spawn with a raw error", () => {
-  it("sends only roots the helper accepts, so one bad or surplus root cannot fail every spawn", async () => {
+  it("asks about the home and nothing else: a spawn names no other path for core to look at", async () => {
     inContainer();
     const helper = cannedHelper();
     configureCoreHomeOps(helper.options);
     vi.spyOn(nodePty, "spawn").mockReturnValue(fakePty() as never);
-    workspace.roots = [
-      workspace.dir,
-      "",
-      "x".repeat(5000),
-      "a\0b",
-      ...Array.from({ length: 300 }, (_, i) => `/srv/root-${i}`),
-    ];
-    await core(false).spawn({ sessionId: "t6", cwd: workspace.dir, agent: "claude-code", command: "claude" } as never);
-    const roots = (helper.requests[0]!.request as { roots: string[] }).roots;
-    expect(roots).toContain(workspace.dir);
-    expect(roots[0]).toBe(path.dirname(workspace.dir)); // core home first: it is what a home shell needs
-    expect(roots.length).toBe(256);
-    expect(roots.every((r) => r.length > 0 && r.length <= 4096 && !r.includes("\0"))).toBe(true);
+    await core(false).spawn({ sessionId: "t6", agent: "claude-code", command: "claude" } as never);
+    expect(helper.requests[0]!.request).toMatchObject({ op: "spawnPathFacts", cwd: workspace.dir, roots: [workspace.dir] });
   });
 
-  it("turns the helper's refusal of the cwd into the policy's invalid-cwd rejection", async () => {
-    inContainer();
+  it("turns the helper's refusal of the home into the policy's invalid-cwd rejection", async () => {
+    // A home too long for the helper to look at (an env var cannot carry a NUL).
+    inContainer(`/${"x".repeat(5000)}`);
     configureCoreHomeOps(cannedHelper().options);
     const spawn = vi.spyOn(nodePty, "spawn").mockReturnValue(fakePty() as never);
     await expect(
-      core(false).spawn({ sessionId: "t7", cwd: `${workspace.dir}/a\0b`, agent: "claude-code", command: "claude" } as never),
+      core(false).spawn({ sessionId: "t7", agent: "claude-code", command: "claude" } as never),
     ).rejects.toThrow("pty:spawn rejected (invalid-cwd)");
     expect(spawn).not.toHaveBeenCalled();
   });
 });
 
 describe("spawning outside container mode", () => {
+  it("starts a Session in the home directory when the spawn names no project and no cwd", async () => {
+    vi.stubEnv("HOME", workspace.dir);
+    const pty = vi.spyOn(nodePty, "spawn").mockReturnValue(fakePty() as never);
+    await core(false).spawn({ sessionId: "t8", agent: "claude-code", command: "claude" } as never);
+    expect(pty).toHaveBeenCalledTimes(1);
+    expect((pty.mock.calls[0]![2] as { cwd: string }).cwd).toBe(workspace.dir);
+  });
+
   it("asks no helper for anything: the policy and the writers run in this process as before", async () => {
+    vi.stubEnv("HOME", workspace.dir);
     const helperRequests: string[] = [];
     configureCoreHomeOps({ run: async (_s, input) => (helperRequests.push(input), { status: 0, stdout: "{}", stderr: "" }) });
     vi.spyOn(nodePty, "spawn").mockReturnValue(fakePty() as never);
-    await core(true).spawn({ sessionId: "t5", cwd: workspace.dir, agent: "claude-code", command: "claude" } as never);
+    await core(true).spawn({ sessionId: "t5", agent: "claude-code", command: "claude" } as never);
     expect(helperRequests).toEqual([]);
     // In process, the hook file is written by the daemon, exactly as before.
     expect(fs.existsSync(path.join(workspace.dir, ".claude", "settings.local.json"))).toBe(true);

@@ -1,6 +1,6 @@
 import Database from "better-sqlite3";
 import { describe, it, expect } from "vitest";
-import { dropLegacyThemeSettings, ensureSchema } from "@actana/shared/schema-bootstrap";
+import { dropLegacyThemeSettings, ensureSchema } from "../schema-bootstrap";
 
 const LEGACY_THEME_KEYS = [
   "accent_color",

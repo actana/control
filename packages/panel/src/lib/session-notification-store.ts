@@ -66,7 +66,8 @@ function toSessionFinishNotification(
   const projectName = typeof value.projectName === "string" ? value.projectName : "Project";
   const sessionTitle = typeof value.sessionTitle === "string" ? value.sessionTitle : "Session";
   const finishedAt = typeof value.finishedAt === "number" ? value.finishedAt : 0;
-  if (!id || !projectId || !Number.isFinite(finishedAt)) return null;
+  // `projectId` may be empty: a Core's finish event names no Project (ADR 0041 D1).
+  if (!id || !Number.isFinite(finishedAt)) return null;
   const coreId =
     typeof value.coreId === "string" && value.coreId ? value.coreId : null;
   const coreAlias =

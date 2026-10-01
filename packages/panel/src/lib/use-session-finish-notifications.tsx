@@ -132,8 +132,11 @@ export function normalizeSessionFinishedEvent(
       : typeof event.sessionId === "string"
         ? event.sessionId
         : "";
+  // A Core has no Projects (ADR 0041 D1) and its finish event carries none, so a
+  // missing id is the normal case here, not a malformed event. The notification
+  // still fires; #560 takes the id out of it.
   const projectId = typeof payload.projectId === "string" ? payload.projectId : "";
-  if (!sessionId || !projectId) return null;
+  if (!sessionId) return null;
   const projectName =
     typeof payload.projectName === "string" ? payload.projectName : "Project";
   const sessionTitle =

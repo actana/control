@@ -40,7 +40,7 @@ function policyDeps(): SpawnPolicyDeps {
   return {
     cwdExists: () => true,
     realpath: (p) => p,
-    projectRoots: () => [PROJECT_ROOT],
+    home: () => PROJECT_ROOT,
     resolveCommand: (name) => `/usr/local/bin/${name}`,
     resolveShell: () => ({ shell: "/bin/zsh", shellArgs: (cmd) => (cmd ? ["-l", "-c", cmd] : ["-l"]) }),
   };
@@ -50,7 +50,6 @@ function planFor(harness: CoreLinkPtySpawnHarness, command: string, skip: boolea
   return resolveSpawnPlan(
     {
       sessionId: "t1",
-      cwd: PROJECT_ROOT,
       command,
       agent: harness,
       ...(skip ? { dangerouslySkipPermissions: true } : {}),

@@ -83,8 +83,7 @@ describe("a fresh Core database has no Task vocabulary", () => {
         getLastEventId: () => kinds.length,
       },
     });
-    coreMutationStore.mutateProject({ op: "create", projectId: "p1", name: "p", path: userDataDir });
-    writer.mutate({ op: "create", sessionId: "s1", projectId: "p1", title: "work", agent: "claude-code" });
+    writer.mutate({ op: "create", sessionId: "s1", title: "work", agent: "claude-code" });
     writer.mutate({ op: "update", sessionId: "s1", status: "running" });
     writer.mutate({ op: "update", sessionId: "s1", pinned: true });
     writer.mutate({ op: "update", sessionId: "s1", icon: "bug" });
@@ -152,10 +151,6 @@ describe("a Core refuses the Task frames of a 0.17 client", () => {
     (_name, frame) => {
       const calls: string[] = [];
       const mutationPort: CoreMutationPort = {
-        mutateProject: () => {
-          calls.push("mutateProject");
-          return null;
-        },
         mutateSession: () => {
           calls.push("mutateSession");
           return null;

@@ -9,7 +9,7 @@
 // `busy_timeout` absorbs the brief contention, so the two writers never
 // corrupt each other's rows.
 //
-// This mirrors the connection pattern in project-roots.ts but opens
+// This mirrors the connection pattern in core-query-store.ts but opens
 // read-write (the Core owns PTY events) instead of read-only. Runs only in
 // the plain-Node Core process, so better-sqlite3 uses its standard binding.
 
@@ -35,7 +35,7 @@ let tableEnsured = false;
 // Throttle the db-missing log so a permanently-absent DB (e.g. a core-only
 // VM where the server process never bootstrapped) doesn't fill the log on every
 // event-log call. Logs the first occurrence verbatim then one summary line per
-// 60s — mirrors project-roots.ts.
+// 60s — mirrors core-query-store.ts.
 let lastDbMissingAt = 0;
 const DB_MISSING_THROTTLE_MS = 60_000;
 // A persistently-broken binding (missing native prebuild, WAL corruption)

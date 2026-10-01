@@ -137,7 +137,7 @@ async function startCore(opts: { publicHosts?: string[] } = {}): Promise<Rig> {
   // so "every other route keeps its mTLS requirement" is asserted against a
   // route that really is there.
   const fileRoutes = createCoreFilesRequestHandler({
-    filesPort: { projectRoot: () => null },
+    filesPort: { workspaceRoot: () => null },
     authVerifier: (bearer) => verifyBearer(bearer, SECRET),
   });
 

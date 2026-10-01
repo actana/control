@@ -195,8 +195,7 @@ async function keyFilePhase({ panelBin, panelEntry, core }) {
   // From the fixture, not from `tempDir`: the fixture interface exists so
   // that a Core which cannot see this machine's filesystem still works here
   // (see scripts/lib/core-fixture.mjs).
-  const projectPath = core.makeProjectDir("ac-e2e-project-");
-  await assertProjectAndSessionLists(link, coreId, projectPath, fail);
+  await assertSessionLists(link, coreId, fail);
   await assertPtyStreams(link, coreId, fail);
   await assertReconnectReplaysMissedEvents(panel, link, coreId, fail);
 
@@ -325,8 +324,10 @@ async function fileDropPhase({ panelBin, panelEntry, core }) {
     fail("the Core never announced `files` on `ready` — the Panel would withhold the file view");
   }
 
-  const projectPath = core.makeProjectDir("ac-e2e-files-");
-  const projectId = await assertProjectCreated(link, coreId, projectPath, "e2e-files", fail);
+  // The Core serves its workspace, its home, whatever id the URL carries (#557
+  // re-addresses the surface); the id here is a placeholder and names nothing.
+  const projectPath = core.workspaceDir;
+  const projectId = "workspace";
   link.close();
 
   await assertDropIsOnTheCoresDisk(panel, coreId, projectId, projectPath, fail);
@@ -546,51 +547,34 @@ function dialFrames(link) {
 }
 
 /**
- * Read and write across the router: list projects, create one over the panel
- * link (mutation frames are the only write path — ADR 0004), list again, and
- * list that project's sessions.
+ * Read and write across the router: list Sessions, create one over the panel
+ * link (mutation frames are the only write path — ADR 0004), and list again.
+ * A Core has no Projects (ADR 0041 D1), so a Session is created with no parent.
  */
-async function assertProjectAndSessionLists(link, coreId, projectPath, fail) {
-  const before = await link.request(coreId, { type: "projectsList" });
-  if (before.type !== "projectsListResult") fail(`projectsList answered ${before.type}`);
-  if (!Array.isArray(before.projects) || before.projects.length !== 0) {
-    fail(`a fresh Core should have no projects, got ${JSON.stringify(before.projects)}`);
+async function assertSessionLists(link, coreId, fail) {
+  const before = await link.request(coreId, { type: "sessionRowsList" });
+  if (before.type !== "sessionRowsListResult") fail(`sessionRowsList answered ${before.type}`);
+  if (!Array.isArray(before.sessions) || before.sessions.length !== 0) {
+    fail(`a fresh Core should have no Sessions, got ${JSON.stringify(before.sessions)}`);
   }
 
   const created = await link.request(coreId, {
-    type: "projectsMutate",
-    mutation: { op: "create", name: "e2e", path: projectPath },
+    type: "sessionsMutate",
+    mutation: { op: "create", title: "e2e", agent: "claude-code" },
   });
-  if (created.type !== "projectsMutateResult" || !created.project?.projectId) {
-    fail(`creating a project over the panel link answered ${JSON.stringify(created).slice(0, 300)}`);
+  if (created.type !== "sessionsMutateResult" || !created.session?.sessionId) {
+    fail(`creating a Session over the panel link answered ${JSON.stringify(created).slice(0, 300)}`);
   }
-  const { projectId } = created.project;
+  const { sessionId } = created.session;
 
-  const after = await link.request(coreId, { type: "projectsList" });
-  if (!after.projects?.some((project) => project.projectId === projectId)) {
-    fail(`the created project is missing from projectsList: ${JSON.stringify(after.projects)}`);
+  const after = await link.request(coreId, { type: "sessionRowsList" });
+  if (!after.sessions?.some((session) => session.sessionId === sessionId)) {
+    fail(`the created Session is missing from sessionRowsList: ${JSON.stringify(after.sessions)}`);
   }
-
-  const sessions = await link.request(coreId, { type: "sessionRowsList", projectId });
-  if (sessions.type !== "sessionRowsListResult" || !Array.isArray(sessions.sessions)) {
-    fail(`sessionRowsList answered ${JSON.stringify(sessions).slice(0, 300)}`);
-  }
-  log(`projects and sessions list over the panel link (project ${projectId})`);
+  log(`sessions list over the panel link (Session ${sessionId})`);
 }
 
 // ─── Project files (#129 F6/F11, #169) ───────────────────────────────────────
-
-/** Create one Project on the Core over the panel link, and hand back its id. */
-async function assertProjectCreated(link, coreId, projectPath, name, fail) {
-  const created = await link.request(coreId, {
-    type: "projectsMutate",
-    mutation: { op: "create", name, path: projectPath },
-  });
-  if (created.type !== "projectsMutateResult" || !created.project?.projectId) {
-    fail(`creating ${name} answered ${JSON.stringify(created).slice(0, 300)}`);
-  }
-  return created.project.projectId;
-}
 
 function filesPath(coreId, projectId, relative) {
   return (

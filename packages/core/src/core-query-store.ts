@@ -1,9 +1,9 @@
 // Core-side query store — a read-only handle to the shared SQLite's
-// projects + sessions tables, owned by the Core (PTY-manager) process.
+// sessions table, owned by the Core (PTY-manager) process.
 //
 // Backs the `CoreQueryPort` consumed by `PtyCoreLinkServer` for the
-// `projectsList` / `sessionRowsList` core-link frames (issue 07). The Core is the
-// single source of truth for projects and sessions; the Panel holds none. This
+// `sessionRowsList` core-link frame (issue 07). The Core is the
+// single source of truth for its Sessions; the Panel holds none. This
 // store reads the same `missioncontrol.db` the stateful server process writes
 // (WAL mode lets a reader coexist with the writer without contention).
 //
@@ -22,28 +22,24 @@ import {
   queryArchivedSessions,
   queryStrandedReadySessions,
   querySessionProvenNeverWorked,
-  queryProjects,
   querySession,
   querySessionRows,
   type CoreQuerySqlite,
 } from "@actana/shared/core-query";
-import type {
-  CoreLinkProjectSnapshot,
-  CoreLinkSessionRow,
-} from "@actana/sdk/core";
+import type { CoreSessionRow } from "@actana/shared/core-query";
 import type { CoreQueryPort } from "./pty-core-link-server";
 
-export type { CoreLinkProjectSnapshot, CoreLinkSessionRow, CoreQueryPort };
+export type { CoreSessionRow, CoreQueryPort };
 
 let db: Database.Database | null = null;
 let dbPath: string | null = null;
 // Throttle the db-missing log so a permanently-absent DB (e.g. a core-only
 // VM where the server process never bootstrapped) doesn't fill the log on every
-// query call. Mirrors project-roots.ts.
+// query call.
 let lastDbMissingAt = 0;
 const DB_MISSING_THROTTLE_MS = 60_000;
 // See event-log-store.ts — the same poll-driven spam happens here whenever
-// projectsList/sessionRowsList repeatedly hit a broken binding.
+// sessionRowsList repeatedly hit a broken binding.
 const logOpenFailed = makeOpenFailedThrottle("core-query.open-failed");
 
 /**
@@ -67,7 +63,7 @@ function ensureConnection(): Database.Database | null {
   if (!fs.existsSync(dbPath)) {
     // The server process owns DB creation; if it hasn't bootstrapped yet the
     // query port answers with empty results — the Fleet view shows no
-    // projects/sessions for this Core rather than crashing.
+    // Sessions for this Core rather than crashing.
     if (Date.now() - lastDbMissingAt > DB_MISSING_THROTTLE_MS) {
       log.info("core-query.db-missing", { dbPath });
       lastDbMissingAt = Date.now();
@@ -97,51 +93,41 @@ function ensureConnection(): Database.Database | null {
  * The read-only `CoreQueryPort` backed by the shared SQLite. Returns empty
  * results when the DB is unavailable — the Fleet view shows a blank Core
  * rather than erroring. The Core passes this to `PtyCoreLinkServer` so the
- * Panel's `projectsList` / `sessionRowsList` frames resolve against live data with
+ * Panel's `sessionRowsList` frames resolve against live data with
  * no Panel-side persistence.
  */
 export const coreQueryStore: CoreQueryPort = {
-  listProjects(): CoreLinkProjectSnapshot[] {
+  listSessionRows(): CoreSessionRow[] {
     const conn = ensureConnection();
     if (!conn) return [];
     try {
-      return queryProjects(conn as unknown as CoreQuerySqlite);
-    } catch (err) {
-      log.warn("core-query.list-projects-failed", { error: String(err) });
-      return [];
-    }
-  },
-  listSessionRows(projectId?: string): CoreLinkSessionRow[] {
-    const conn = ensureConnection();
-    if (!conn) return [];
-    try {
-      return querySessionRows(conn as unknown as CoreQuerySqlite, projectId);
+      return querySessionRows(conn as unknown as CoreQuerySqlite);
     } catch (err) {
       log.warn("core-query.list-sessions-failed", { error: String(err) });
       return [];
     }
   },
-  listArchivedSessions(projectId?: string): CoreLinkSessionRow[] {
+  listArchivedSessions(): CoreSessionRow[] {
     const conn = ensureConnection();
     if (!conn) return [];
     try {
-      return queryArchivedSessions(conn as unknown as CoreQuerySqlite, projectId);
+      return queryArchivedSessions(conn as unknown as CoreQuerySqlite);
     } catch (err) {
       log.warn("core-query.list-archived-sessions-failed", { error: String(err) });
       return [];
     }
   },
-  countArchivedSessions(projectId?: string): number {
+  countArchivedSessions(): number {
     const conn = ensureConnection();
     if (!conn) return 0;
     try {
-      return countArchivedSessions(conn as unknown as CoreQuerySqlite, projectId);
+      return countArchivedSessions(conn as unknown as CoreQuerySqlite);
     } catch (err) {
       log.warn("core-query.count-archived-sessions-failed", { error: String(err) });
       return 0;
     }
   },
-  getSession(sessionId: string): CoreLinkSessionRow | null {
+  getSession(sessionId: string): CoreSessionRow | null {
     const conn = ensureConnection();
     if (!conn) return null;
     try {
@@ -166,7 +152,7 @@ export const coreQueryStore: CoreQueryPort = {
  * Degrades to `[]` on an unavailable DB, like every read here — a Core that
  * cannot read its rows sweeps nothing rather than crashing its own boot.
  */
-export function listActiveSessions(): CoreLinkSessionRow[] {
+export function listActiveSessions(): CoreSessionRow[] {
   const conn = ensureConnection();
   if (!conn) return [];
   try {
@@ -185,7 +171,7 @@ export function listActiveSessions(): CoreLinkSessionRow[] {
  * process ever existed, and a Core whose event log is unreadable must still
  * sweep the rows that need no such evidence. Degrades to `[]` on its own.
  */
-export function listStrandedReadySessions(): CoreLinkSessionRow[] {
+export function listStrandedReadySessions(): CoreSessionRow[] {
   const conn = ensureConnection();
   if (!conn) return [];
   try {
@@ -206,7 +192,7 @@ export function listStrandedReadySessions(): CoreLinkSessionRow[] {
  * waiting on its first prompt is allowed to sit silent for as long as the
  * operator likes, and settling it for being quiet would be a bug.
  */
-export function listBootSweepSessions(): CoreLinkSessionRow[] {
+export function listBootSweepSessions(): CoreSessionRow[] {
   return [...listActiveSessions(), ...listStrandedReadySessions()];
 }
 

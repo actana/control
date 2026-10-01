@@ -1,8 +1,7 @@
 // Browsing the Core's own filesystem, for the Panel's folder picker.
 //
-// A Project's path is a VM path: only the Core can say whether it exists,
-// what is under it, or whether a new folder can be made there (CONTEXT.md,
-// "Project"). With the Panel in a browser there is no machine-local dialog to
+// A path is a path on the Core's machine: only the Core can say whether it
+// exists, what is under it, or whether a new folder can be made there. With the Panel in a browser there is no machine-local dialog to
 // fall back on, so this module is the whole of the picker's back end — the
 // `dirList` / `dirCreate` core-link frames delegate straight to it.
 //

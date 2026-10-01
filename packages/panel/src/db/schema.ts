@@ -158,7 +158,7 @@ export const terminalLogs = sqliteTable(
 //
 // `user_terminals` itself is **dropped**, not orphaned: `ensureSchema` no
 // longer creates it and `dropLegacyUserTerminals` removes it from a DB that
-// already has one (packages/shared/src/schema-bootstrap.ts). A terminal is
+// already has one (packages/panel/src/db/schema-bootstrap.ts). A terminal is
 // ephemeral, so there was nothing in those rows to migrate.
 export const homeTerminals = sqliteTable(
   "home_terminals",

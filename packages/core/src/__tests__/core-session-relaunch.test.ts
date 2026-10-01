@@ -50,7 +50,6 @@ describe("putting a relaunched Session back on ready", () => {
     coreMutationStore.mutateSession({
       op: "create",
       sessionId,
-      projectId: "p1",
       title: sessionId,
       agent: "claude-code",
       status: "ready",
@@ -62,11 +61,11 @@ describe("putting a relaunched Session back on ready", () => {
   const statusOf = (sessionId: string) => coreQueryStore.getSession(sessionId)?.status;
   /**
    * A `session:updated` in the shape `CoreSessionWriter` wrote it BEFORE v0.4.0 —
-   * `{sessionId, projectId}` and no status (2dd34a8 added the status field). The
+   * `{sessionId}` plus a grouping id and no status (2dd34a8 added the status field). The
    * only way to reproduce the history a Core upgraded from 0.3.x still holds.
    */
   const legacyUpdate = (sessionId: string) =>
-    appendEvent("session:updated", JSON.stringify({ sessionId, projectId: "p1" }), { sessionId });
+    appendEvent("session:updated", JSON.stringify({ sessionId, groupId: "g1" }), { sessionId });
   const relaunch = (sessionId: string) =>
     readySessionOnAgentSpawn({ writer, provenNeverWorked: sessionProvenNeverWorked }, sessionId);
 
@@ -80,12 +79,6 @@ describe("putting a relaunched Session back on ready", () => {
       mutationPort: coreMutationStore,
       queryPort: coreQueryStore,
       eventLog: { appendEvent, getLastEventId, readEventTail },
-    });
-    coreMutationStore.mutateProject({
-      op: "create",
-      projectId: "p1",
-      name: "Warehouse",
-      path: userDataDir,
     });
   });
 
@@ -134,7 +127,6 @@ describe("putting a relaunched Session back on ready", () => {
     coreMutationStore.mutateSession({
       op: "create",
       sessionId: "t-legacy",
-      projectId: "p1",
       title: "t-legacy",
       agent: "claude-code",
       status: "finished",
@@ -153,7 +145,6 @@ describe("putting a relaunched Session back on ready", () => {
     coreMutationStore.mutateSession({
       op: "create",
       sessionId: "t-legacy-gone",
-      projectId: "p1",
       title: "t-legacy-gone",
       agent: "claude-code",
       status: "disconnected",
@@ -221,7 +212,6 @@ describe("putting a relaunched Session back on ready", () => {
     insert("t-bare", "disconnected");
     const failing = new CoreSessionWriter({
       mutationPort: {
-        mutateProject: coreMutationStore.mutateProject,
         mutateSession: (mutation) => {
           if (mutation.op === "update") throw new Error("row vanished");
           return coreMutationStore.mutateSession(mutation);

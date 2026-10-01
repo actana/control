@@ -83,7 +83,7 @@ import {
   startFixtureServerProcess,
   writeRestampedInstaller,
 } from "./lib/fixture-release.mjs";
-import { dialAndListProjects, makeDie } from "./lib/core-smoke.mjs";
+import { dialAndListSessions, makeDie } from "./lib/core-smoke.mjs";
 import { tarballName as releaseAssetName } from "./lib/core-tarball.mjs";
 import { nextSetupCommand } from "./lib/setup-e2e.mjs";
 import {
@@ -359,14 +359,14 @@ async function main() {
 
   // ─── the credential setup wired in actually works ───
   await waitForPort(hostPort, die);
-  let projects;
+  let sessions;
   try {
-    projects = await dialAndListProjects({ ...blob, endpoint: `wss://127.0.0.1:${hostPort}` });
+    sessions = await dialAndListSessions({ ...blob, endpoint: `wss://127.0.0.1:${hostPort}` });
   } catch (err) {
     die(`core-link dial with the wired credential failed: ${err.message}`, install.stdout.split("\n"));
   }
-  if (!Array.isArray(projects) || projects.length !== 0) {
-    die(`projectsList did not return []: got ${JSON.stringify(projects)}`);
+  if (!Array.isArray(sessions) || sessions.length !== 0) {
+    die(`sessionRowsList did not return []: got ${JSON.stringify(sessions)}`);
   }
   log("a test client dialled the core-link with the credential setup registered");
 
@@ -711,7 +711,7 @@ async function main() {
   if (afterUpdate.caCert !== blob.caCert) {
     die("updating replaced the pairing credentials — a paired Panel would break");
   }
-  await dialAndListProjects({ ...afterUpdate, endpoint: `wss://127.0.0.1:${hostPort}` });
+  await dialAndListSessions({ ...afterUpdate, endpoint: `wss://127.0.0.1:${hostPort}` });
   log("`actana update` landed the latest release, restarted, and stayed paired");
 
   // ─── token regenerate ───
@@ -730,7 +730,7 @@ async function main() {
   // checked against the running daemon rather than against the file on disk.
   let oldStillWorks = false;
   try {
-    await dialAndListProjects(
+    await dialAndListSessions(
       { ...afterUpdate, endpoint: `wss://127.0.0.1:${hostPort}` },
       10_000,
     );

@@ -17,11 +17,8 @@ import { generateCertMaterial } from "@actana/shared/core-cert-material";
 import { signBearer, verifyBearer } from "@actana/shared/core-link-bearer";
 import type { PtyCore } from "@actana/core/pty-manager";
 import { CORE_LINK_PROTOCOL_VERSION } from "@actana/sdk/core";
-import type {
-  CoreLinkEvent,
-  CoreLinkProjectSnapshot,
-  CoreLinkSessionRow,
-} from "@actana/sdk/core";
+import type { CoreLinkEvent } from "@actana/sdk/core";
+import type { CoreSessionRow } from "@actana/shared/core-query";
 import type { PanelLinkClientFrame, PanelLinkServerFrame } from "~/shared/panel-link";
 
 /**
@@ -234,24 +231,8 @@ function growableEventLog(): EventLogPort & { push(kind: string): number } {
   };
 }
 
-const PROJECT: CoreLinkProjectSnapshot = {
-  projectId: "proj_1",
-  name: "warehouse",
-  path: "/srv/warehouse",
-  icon: "folder",
-  iconColor: "#3b6ea5",
-  pinned: false,
-  rememberHarnessSettings: false,
-  savedHarness: null,
-  savedSkipPermissions: false,
-  savedBareSession: false,
-  defaultGridView: false,
-  updatedAt: 1,
-};
-
-const SESSION: CoreLinkSessionRow = {
+const SESSION: CoreSessionRow = {
   sessionId: "session_1",
-  projectId: "proj_1",
   title: "restock the shelves",
   titleManuallySet: false,
   claudeSessionId: null,
@@ -263,9 +244,8 @@ const SESSION: CoreLinkSessionRow = {
   updatedAt: 2,
 };
 
-const ARCHIVED_SESSION: CoreLinkSessionRow = {
+const ARCHIVED_SESSION: CoreSessionRow = {
   sessionId: "session_old",
-  projectId: "proj_1",
   title: "last winter's stocktake",
   titleManuallySet: false,
   claudeSessionId: null,
@@ -278,13 +258,10 @@ const ARCHIVED_SESSION: CoreLinkSessionRow = {
 };
 
 function queryPort(): CoreQueryPort {
-  const scoped = (projectId: string | undefined) =>
-    projectId && projectId !== PROJECT.projectId;
   return {
-    listProjects: () => [PROJECT],
-    listSessionRows: (projectId) => (scoped(projectId) ? [] : [SESSION]),
-    listArchivedSessions: (projectId) => (scoped(projectId) ? [] : [ARCHIVED_SESSION]),
-    countArchivedSessions: (projectId) => (scoped(projectId) ? 0 : 1),
+    listSessionRows: () => [SESSION],
+    listArchivedSessions: () => [ARCHIVED_SESSION],
+    countArchivedSessions: () => 1,
     getSession: (sessionId) => (sessionId === SESSION.sessionId ? SESSION : null),
   };
 }
@@ -385,37 +362,24 @@ afterAll(async () => {
 });
 
 describe("the live read path, browser to Core", () => {
-  it("answers a project query from the Core itself", async () => {
+
+  it("answers a session query", async () => {
     const { coreId } = await pair();
     const tab = await openTab();
 
-    const answer = await tab.ask(coreId, { type: "projectsList" });
+    const answer = await tab.ask(coreId, { type: "sessionRowsList" });
 
-    expect(answer).toMatchObject({
-      type: "projectsListResult",
-      projects: [expect.objectContaining({ projectId: "proj_1", name: "warehouse" })],
-    });
+    expect(answer.sessions).toEqual([expect.objectContaining({ sessionId: "session_1" })]);
   });
 
-  it("answers a session query, scoped to a project", async () => {
-    const { coreId } = await pair();
-    const tab = await openTab();
-
-    const mine = await tab.ask(coreId, { type: "sessionRowsList", projectId: "proj_1" });
-    const theirs = await tab.ask(coreId, { type: "sessionRowsList", projectId: "proj_other" });
-
-    expect(mine.sessions).toEqual([expect.objectContaining({ sessionId: "session_1" })]);
-    expect(theirs.sessions).toEqual([]);
-  });
-
-  // ADR 0019: the tab learns how many archived Sessions a project holds
+  // ADR 0019: the tab learns how many archived Sessions a Core holds
   // without a single archived row travelling the active answer. The rows come
   // back only when it asks for them, over their own frame.
   it("answers a session query with the archived count but never an archived row", { timeout: 20_000 }, async () => {
     const { coreId } = await pair();
     const tab = await openTab();
 
-    const answer = await tab.ask(coreId, { type: "sessionRowsList", projectId: "proj_1" });
+    const answer = await tab.ask(coreId, { type: "sessionRowsList" });
 
     const rows = answer.sessions as Array<{ archived: boolean }>;
     expect(rows).toEqual([expect.objectContaining({ sessionId: "session_1" })]);
@@ -423,16 +387,14 @@ describe("the live read path, browser to Core", () => {
     expect(answer.archivedCount).toBe(1);
   });
 
-  it("answers an archived session query, scoped to a project", { timeout: 20_000 }, async () => {
+  it("answers an archived session query", { timeout: 20_000 }, async () => {
     const { coreId } = await pair();
     const tab = await openTab();
 
-    const mine = await tab.ask(coreId, { type: "archivedSessionRowsList", projectId: "proj_1" });
-    const theirs = await tab.ask(coreId, { type: "archivedSessionRowsList", projectId: "proj_other" });
+    const answer = await tab.ask(coreId, { type: "archivedSessionRowsList" });
 
-    expect(mine).toMatchObject({ type: "archivedSessionRowsListResult" });
-    expect(mine.sessions).toEqual([expect.objectContaining({ sessionId: "session_old", archived: true })]);
-    expect(theirs.sessions).toEqual([]);
+    expect(answer).toMatchObject({ type: "archivedSessionRowsListResult" });
+    expect(answer.sessions).toEqual([expect.objectContaining({ sessionId: "session_old", archived: true })]);
   });
 
   it("carries one tab's queries to several Cores over the one link", async () => {
@@ -440,17 +402,17 @@ describe("the live read path, browser to Core", () => {
     const second = await pair("vm-b");
     const tab = await openTab();
 
-    const a = await tab.ask(first.coreId, { type: "projectsList" });
-    const b = await tab.ask(second.coreId, { type: "projectsList" });
+    const a = await tab.ask(first.coreId, { type: "sessionRowsList" });
+    const b = await tab.ask(second.coreId, { type: "sessionRowsList" });
 
-    expect(a.type).toBe("projectsListResult");
-    expect(b.type).toBe("projectsListResult");
+    expect(a.type).toBe("sessionRowsListResult");
+    expect(b.type).toBe("sessionRowsListResult");
   });
 
   it("answers for a Core it cannot reach rather than leaving the tab waiting", async () => {
     const tab = await openTab();
 
-    const answer = await tab.ask("core_nonexistent", { type: "projectsList" });
+    const answer = await tab.ask("core_nonexistent", { type: "sessionRowsList" });
 
     expect(answer).toMatchObject({ type: "error", message: expect.stringContaining("connected") });
   });
@@ -569,10 +531,10 @@ describe("a Core speaking a protocol this Panel does not", () => {
     });
     const tab = await openTab();
 
-    const projects = await tab.ask(coreId, { type: "projectsList" });
+    const archived = await tab.ask(coreId, { type: "archivedSessionRowsList" });
     const sessions = await tab.ask(coreId, { type: "sessionRowsList" });
 
-    expect(projects).toMatchObject({ type: "error", message: expect.stringMatching(/update/i) });
+    expect(archived).toMatchObject({ type: "error", message: expect.stringMatching(/update/i) });
     expect(sessions).toMatchObject({ type: "error", message: expect.stringMatching(/update/i) });
   });
 
@@ -599,10 +561,10 @@ describe("a Core speaking a protocol this Panel does not", () => {
     const current = await pair("current-vm");
     const tab = await openTab();
 
-    const refused = await tab.ask(stale.coreId, { type: "projectsList" });
-    const answered = await tab.ask(current.coreId, { type: "projectsList" });
+    const refused = await tab.ask(stale.coreId, { type: "sessionRowsList" });
+    const answered = await tab.ask(current.coreId, { type: "sessionRowsList" });
 
     expect(refused.type).toBe("error");
-    expect(answered.type).toBe("projectsListResult");
+    expect(answered.type).toBe("sessionRowsListResult");
   });
 });

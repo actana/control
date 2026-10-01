@@ -148,7 +148,7 @@ async function startCore(): Promise<Rig> {
   });
   const pairingRoutes = pairing.redeem;
   const fileRoutes = createCoreFilesRequestHandler({
-    filesPort: { projectRoot: () => null },
+    filesPort: { workspaceRoot: () => null },
     authVerifier: (bearer) => verifyBearer(bearer, SECRET),
   });
 

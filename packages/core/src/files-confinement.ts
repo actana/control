@@ -1,21 +1,22 @@
-// Confining a client-supplied path to a Project root (#165 F3).
+// Confining a client-supplied path to the workspace root (#165 F3).
 //
 // **This is an accident guard, not a security boundary.** It exists so that a
-// `project cp` with a fat-fingered `../../etc` writes nothing, and so that a
+// `cp` into the workspace with a fat-fingered `../../etc` writes nothing, and so that a
 // Panel drag-drop cannot land bytes outside the folder the operator was looking
 // at. It is not a sandbox and must not be read as one: whoever holds a
 // registration blob already has `core shell`, which is the sanctioned way off
-// the Project root and runs as the same user with the same disk. A guard that
+// the workspace root and runs as the same user with the same disk. A guard that
 // stops a mistake is worth having; a guard advertised as containment when the
 // sanctioned escape hatch sits next to it is worse than none, because someone
 // will build on the claim. See ADR 0027.
 //
 // **One machine validates paths: this one** (#129 F11). The Panel is a dumb
-// pipe and validates nothing, because it cannot — a Project's path is a VM path
-// and only the Core's OS can resolve it. If it ever looks convenient to do a
+// pipe and validates nothing, because it cannot — a path is a path on the Core's
+// machine and only the Core's OS can resolve it. If it ever looks convenient to do a
 // bit of this in the Panel, that is the bug.
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { OUTSIDE_ROOT_CODE } from "./files-wire";
 
 /**
  * Why a path was refused. Distinct constants rather than one "bad path",
@@ -26,7 +27,7 @@ import * as path from "node:path";
 export type FileConfinementRefusal =
   | "absolute-path"
   | "dot-dot-segment"
-  | "outside-project-root"
+  | typeof OUTSIDE_ROOT_CODE
   | "malformed-path";
 
 export type ConfinedPath =
@@ -76,11 +77,11 @@ export function resolveDeepestExisting(target: string): string {
 }
 
 /**
- * Resolve a client-supplied relative path against a Project root, or say why
+ * Resolve a client-supplied relative path against the workspace root, or say why
  * not.
  *
- * `requested` is relative, POSIX-shaped and rooted at the Project — `""` and
- * `"."` both mean the Project root itself. Everything about it is treated as
+ * `requested` is relative, POSIX-shaped and rooted at the workspace — `""` and
+ * `"."` both mean the workspace root itself. Everything about it is treated as
  * hostile input, because the Panel forwarded it unexamined and that is the
  * Panel's job (#129 F11).
  *
@@ -89,11 +90,11 @@ export function resolveDeepestExisting(target: string): string {
  * is the last one, against the resolved path.
  *
  * **Every symlink is followed, the last component included.** That is what a
- * read wants: `GET path=link.txt` on a link into the Project should hand back
+ * read wants: `GET path=link.txt` on a link into the workspace should hand back
  * the file it names. A *write* wants the other answer — see
  * {@link confineWriteTarget}.
  */
-export function confineToProjectRoot(root: string, requested: string): ConfinedPath {
+export function confineToWorkspace(root: string, requested: string): ConfinedPath {
   // Backslashes are not separators on the platforms a Core runs on (Linux and
   // macOS), so a `..\..` is a legal file name here rather than an escape. It is
   // still refused inside `stringRefusal`: nothing legitimate names a file that
@@ -107,7 +108,7 @@ export function confineToProjectRoot(root: string, requested: string): ConfinedP
     .split("/")
     .filter((s) => s.length > 0 && s !== ".");
 
-  // The root is realpath'd too. A Project registered at a path that runs
+  // The root is realpath'd too. A workspace at a path that runs
   // through a symlink — `/home/op/work` → `/mnt/data/work` — would otherwise
   // fail every containment check, because the candidate resolves to the real
   // location and the root does not.
@@ -117,8 +118,8 @@ export function confineToProjectRoot(root: string, requested: string): ConfinedP
   } catch {
     return {
       ok: false,
-      reason: "outside-project-root",
-      message: `the Project root ${root} does not resolve on this machine`,
+      reason: OUTSIDE_ROOT_CODE,
+      message: `the workspace root ${root} does not resolve on this machine`,
     };
   }
 
@@ -126,9 +127,9 @@ export function confineToProjectRoot(root: string, requested: string): ConfinedP
   if (!withinRoot(absolute, realRoot)) {
     return {
       ok: false,
-      reason: "outside-project-root",
+      reason: OUTSIDE_ROOT_CODE,
       message:
-        `path resolves to ${absolute}, which is outside the Project root ${realRoot} — ` +
+        `path resolves to ${absolute}, which is outside the workspace root ${realRoot} — ` +
         "a symlink or mount along the way points out of it",
     };
   }
@@ -140,7 +141,7 @@ export function confineToProjectRoot(root: string, requested: string): ConfinedP
  * Where a *write* to `requested` must land: parents resolved, last component
  * left alone.
  *
- * The difference from {@link confineToProjectRoot} is one component and it is
+ * The difference from {@link confineToWorkspace} is one component and it is
  * the whole reason both exist. An archive entry named `notes.txt` says "there
  * is a file called `notes.txt`". If `notes.txt` is already a symlink and the
  * write follows it, the bytes land in whatever it names and `notes.txt` is
@@ -149,7 +150,7 @@ export function confineToProjectRoot(root: string, requested: string): ConfinedP
  * the caller removes whatever is sitting there before creating the real thing.
  *
  * The parents *are* resolved, because that is where the accident guard lives:
- * `vendor/lib.js` under a `vendor` that points out of the Project is refused
+ * `vendor/lib.js` under a `vendor` that points out of the workspace is refused
  * here, including when the symlink was planted by an earlier entry of the same
  * archive. Refusing the last component too would be the wrong trade — it would
  * make a perfectly ordinary "overwrite this file that happens to be a link"
@@ -164,10 +165,10 @@ export function confineWriteTarget(root: string, requested: string): ConfinedPat
     .trim()
     .split("/")
     .filter((s) => s.length > 0 && s !== ".");
-  if (segments.length === 0) return confineToProjectRoot(root, "");
+  if (segments.length === 0) return confineToWorkspace(root, "");
 
   const base = segments[segments.length - 1]!;
-  const parent = confineToProjectRoot(root, segments.slice(0, -1).join("/"));
+  const parent = confineToWorkspace(root, segments.slice(0, -1).join("/"));
   if (!parent.ok) return parent;
 
   const absolute = path.join(parent.absolute, base);
@@ -179,13 +180,13 @@ export function confineWriteTarget(root: string, requested: string): ConfinedPat
   try {
     realRoot = fs.realpathSync(path.resolve(root));
   } catch {
-    return { ok: false, reason: "outside-project-root", message: `the Project root ${root} does not resolve on this machine` };
+    return { ok: false, reason: OUTSIDE_ROOT_CODE, message: `the workspace root ${root} does not resolve on this machine` };
   }
   if (!withinRoot(absolute, realRoot)) {
     return {
       ok: false,
-      reason: "outside-project-root",
-      message: `path resolves to ${absolute}, which is outside the Project root ${realRoot}`,
+      reason: OUTSIDE_ROOT_CODE,
+      message: `path resolves to ${absolute}, which is outside the workspace root ${realRoot}`,
     };
   }
   return { ok: true, absolute, relative: segments.join("/") };
@@ -204,7 +205,7 @@ function stringRefusal(requested: string): { ok: false; reason: FileConfinementR
     return {
       ok: false,
       reason: "absolute-path",
-      message: `path must be relative to the Project root, got ${JSON.stringify(requested)}`,
+      message: `path must be relative to the workspace root, got ${JSON.stringify(requested)}`,
     };
   }
   if (trimmed.split("/").some((s) => s === "..")) {

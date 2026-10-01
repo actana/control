@@ -74,6 +74,13 @@ Core that does not announce `files` is **not asked** — the affordance is
 withheld rather than tried, because a 404 from a route that was never there
 reads like an outage.
 
+**A Core has no Projects (ADR 0041 D1, #555).** The `:projectId` in these routes
+is the published SDK's address, which still says Project; the Core reads no
+table and looks nothing up. Every id reaches the one workspace, the home of the
+Core's user, so the id names nothing and "Project root" below means that
+workspace. The one write at a time is per Core, not per id. Re-addressing the
+surface, and its error codes (`project-not-found` is no longer sent), is #557's.
+
 | Route | Does |
 | --- | --- |
 | `GET /v1/projects/:projectId/files?path=<relative>` | a file's raw bytes, or a directory as one streamed `application/x-tar` |

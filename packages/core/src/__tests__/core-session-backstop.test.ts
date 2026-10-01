@@ -75,7 +75,6 @@ describe("settling a turn whose end nobody reported", () => {
     coreMutationStore.mutateSession({
       op: "create",
       sessionId,
-      projectId: "p1",
       title: sessionId,
       agent: "claude-code",
       status,
@@ -95,12 +94,6 @@ describe("settling a turn whose end nobody reported", () => {
       mutationPort: coreMutationStore,
       queryPort: coreQueryStore,
       eventLog: { appendEvent, getLastEventId, readEventTail },
-    });
-    coreMutationStore.mutateProject({
-      op: "create",
-      projectId: "p1",
-      name: "Warehouse",
-      path: userDataDir,
     });
     nowMs = Date.now();
     // One clock for the store and the backstop. The store stamps a row's

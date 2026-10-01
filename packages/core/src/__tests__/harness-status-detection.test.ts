@@ -77,16 +77,9 @@ describe("harness status detection on the Core (issue 84)", () => {
       status.receiveHook(sessionId, payload, eventFallback),
     );
 
-    coreMutationStore.mutateProject({
-      op: "create",
-      projectId: "p1",
-      name: "Warehouse",
-      path: userDataDir,
-    });
     coreMutationStore.mutateSession({
       op: "create",
       sessionId: SESSION_ID,
-      projectId: "p1",
       title: TITLE_WAITING,
       agent: "claude-code",
       status: "ready",

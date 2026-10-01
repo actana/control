@@ -1,6 +1,6 @@
 import Database from "better-sqlite3";
 import { describe, it, expect } from "vitest";
-import { dropLegacyUserTerminals, ensureSchema } from "@actana/shared/schema-bootstrap";
+import { dropLegacyUserTerminals, ensureSchema } from "../schema-bootstrap";
 
 // Issue 266 removed the project-root terminal, and with it the last writer,
 // reader and route for `user_terminals`. The decision recorded here is

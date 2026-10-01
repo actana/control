@@ -16,7 +16,7 @@
 //
 // The last two are asserted here, against the Core's own lock table rather than
 // against a status the Panel invented: `buildCoreFileRoutes` hands back the
-// `ProjectWriteLocks` precisely so a test can see what is in flight. The first
+// `WorkspaceWriteLocks` precisely so a test can see what is in flight. The first
 // — the connection that produced no response at all — is pinned next door in
 // `node-http-bridge.test.ts`, where a body that fails half-written no longer
 // ends the Panel process with an unhandled `'error'` event.
@@ -32,7 +32,7 @@ import { PtyCoreLinkServer } from "@actana/core/pty-core-link-server";
 import { buildCoreFileRoutes } from "@actana/core/core-files-wiring";
 import { generateCertMaterial } from "@actana/shared/core-cert-material";
 import { signBearer, verifyBearer } from "@actana/shared/core-link-bearer";
-import type { ProjectWriteLocks } from "@actana/core/files-transfer-locks";
+import type { WorkspaceWriteLocks } from "@actana/core/files-transfer-locks";
 import type { PtyCore } from "@actana/core/pty-manager";
 
 const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ac-core-files-hangup-"));
@@ -86,7 +86,7 @@ function mockCore(): PtyCore {
 const running: PtyCoreLinkServer[] = [];
 const listening: http.Server[] = [];
 
-type Rig = { coreId: string; projectRoot: string; locks: ProjectWriteLocks; port: number };
+type Rig = { coreId: string; projectRoot: string; locks: WorkspaceWriteLocks; port: number };
 
 /** A real Core, paired through the Panel, behind a real Panel HTTP server. */
 async function rig(): Promise<Rig> {
@@ -95,7 +95,7 @@ async function rig(): Promise<Rig> {
   const projectRoot = fs.mkdtempSync(path.join(tmpRoot, "project-"));
   const authVerifier = (bearer: string) => verifyBearer(bearer, BEARER_SECRET);
   const routes = buildCoreFileRoutes({
-    filesPort: { projectRoot: (id) => (id === PROJECT_ID ? projectRoot : null) },
+    filesPort: { workspaceRoot: () => projectRoot },
     authVerifier,
   });
   const core = new PtyCoreLinkServer(mockCore(), {
@@ -241,7 +241,7 @@ describe("a drop whose browser hangs up", () => {
 
     const drop = await startDrop(r, "assets/model.blend", 48 * 1024 * 1024);
     // The Core has the transfer: this is the state #225's retry ran into.
-    await vi.waitFor(() => expect(r.locks.current(PROJECT_ID)).not.toBeNull(), { timeout: 15_000 });
+    await vi.waitFor(() => expect(r.locks.current()).not.toBeNull(), { timeout: 15_000 });
 
     drop.socket.destroy();
     await drop.sent;
@@ -251,7 +251,7 @@ describe("a drop whose browser hangs up", () => {
     // Without the abort the Panel now wires from the operator's socket into
     // `pipeToCore`, this lease is held for the rest of a transfer nobody is
     // receiving, and the operator's next drop is refused.
-    await vi.waitFor(() => expect(r.locks.current(PROJECT_ID)).toBeNull(), { timeout: 15_000 });
+    await vi.waitFor(() => expect(r.locks.current()).toBeNull(), { timeout: 15_000 });
 
     // …and the next drop is answered rather than refused `transfer-in-progress`,
     // on its first attempt, which is what the operator actually does next.
@@ -273,7 +273,7 @@ describe("a drop whose browser hangs up", () => {
     }).then((res) => res.text());
 
     const drop = await startDrop(r, "assets/big.bin", 48 * 1024 * 1024);
-    await vi.waitFor(() => expect(r.locks.current(PROJECT_ID)).not.toBeNull(), { timeout: 15_000 });
+    await vi.waitFor(() => expect(r.locks.current()).not.toBeNull(), { timeout: 15_000 });
 
     // F8's other half, and the one an operator notices when it breaks: one
     // write at a time, and reads unrestricted and concurrent with it. Nothing

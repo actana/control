@@ -117,7 +117,7 @@ let base: string;
 let projects: Record<string, string> = {};
 let linkServer: PtyCoreLinkServer | null = null;
 
-const filesPort: CoreFilesPort = { projectRoot: (id) => projects[id] ?? null };
+const filesPort: CoreFilesPort = { workspaceRoot: () => Object.values(projects)[0] ?? null };
 
 beforeEach(async () => {
   arrived = [];

@@ -13,6 +13,9 @@
 > users. They settle the two Open items on the state directory and on how Sessions start, and say what D10 and D11
 > mean in the container. The owner's decisions are on #559, dated 2026-09-30 and 2026-10-01. Nothing in D1–D23 is
 > changed; D10 and D11 each gain a pointer.
+>
+> **Amended by [#555](https://github.com/actana/control/issues/555)** with D27–D29 ("Landed by #555"), which only
+> record what the Core's code does; nothing in D1–D26 is changed.
 
 > **On the number.** This record takes **0041**, the next free number after
 > [`0040-pi-project-trust-answered-by-extension.md`](0040-pi-project-trust-answered-by-extension.md).
@@ -271,11 +274,31 @@ pairing codes. So in container mode they check the effective uid and, as anyone 
 naming the exact command, exit non-zero and change nothing. Outside the container nothing is checked. The inside of
 the container has no way to ask the daemon over a socket on purpose (the owner's D7).
 
+## Landed by #555: what the Core does now
+
+[#555](https://github.com/actana/control/issues/555) removes Projects from the Core. These are the rules it chose where
+D1 and D2 did not say. The owner may change them by amending this record.
+
+**D27 — A Core refuses what it no longer takes.** A `spawn` that carries a `cwd`, a `projectId` or any field outside a
+fixed list is answered `spawnError` naming the field, and nothing is spawned. A list frame (`sessionRowsList`,
+`archivedSessionRowsList`, `sessionsList`) or a `sessionsMutate` `create` that carries a field it no longer takes is
+answered `error`, naming it. A frame the Core no longer handles (`projectsList`, `projectsMutate`) is answered
+`error` with `unhandled frame type`. It is a refusal and not a silent ignore, so a 0.4.x client learns why, instead of
+starting a Session somewhere other than where it asked. The published `@actana/sdk` still sends these fields, so until
+actana/client#10 ships no SDK client can start a Session on a 0.5.0 Core.
+
+**D28 — A database from before 0.5.0 is refused, not adopted.** The Core's database holds `sessions` and `event_log`
+and nothing else. A boot that finds any other table, or a column of `sessions` it does not define, throws and says to
+install fresh, before any DDL runs, and leaves the file as it found it. There is no migration (#552).
+
+**D29 — The Files API serves the workspace under any id until #557.** Its URL and the `outside-project-root` code are
+the published SDK's. The Core keeps answering them and no longer looks an id up: every id reaches `~`, with one write
+lease for the Core. `project-not-found` is no longer sent. #557 re-addresses the surface.
+
 ## Consequences
 
-- **#555 and #556 change the code to match** and #560 the Panel. Until they land,
-  the code, the DB and the wire still say Project and Task, and `CONTEXT.md`
-  says what they will say.
+- **#555 and #556 change the code to match** and #560 the Panel. #555 and the first part of #556 have landed on the
+  Core; the Panel, the CLI and the SDK still say Project, and `CONTEXT.md` says what they will say.
 - **Every later ticket in #552 cites this record** for the model.
 - **A ticket that needs a decision changed amends this record rather than settling it in a comment.** This rule is
   from `docs/adr/README.md` and ADR 0024. It is new to this record and was not decided in #552 or #554.

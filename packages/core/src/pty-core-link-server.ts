@@ -67,22 +67,20 @@ import {
   type CoreLinkHarnessInstallFailedPayload,
   type CoreLinkDirListing,
   type CoreLinkEvent,
-  type CoreLinkProjectMutation,
   type CoreLinkRequestFrame,
   type CoreLinkServerFrame,
-  type CoreLinkProjectSnapshot,
   type CoreLinkSessionSnapshot,
-  type CoreLinkSessionMutation,
-  type CoreLinkSessionRow,
   type CoreLinkLaunchProcessKillResult,
 } from "@actana/sdk/core";
-// Re-export the snapshot types so tests / callers can import them from the
-// server module alongside {@link CoreQueryPort} (the per-Core navigation
-// query port, issue 07).
-export type { CoreLinkProjectSnapshot, CoreLinkSessionRow };
+// Re-export the row type so tests / callers can import it from the server
+// module alongside {@link CoreQueryPort} (the Fleet view's query port, issue 07).
+export type { CoreSessionRow };
 import type { PtyCore, PtyCoreEvent } from "./pty-manager";
 import { CoreSessionWriter } from "./core-session-writer";
 import { SessionLockTable } from "./session-lock-table";
+import { sessionFrameFieldRefusal, spawnFieldRefusal } from "./request-fields";
+import type { CoreSessionMutation } from "@actana/shared/core-mutations";
+import { toWireSessionRows, type CoreSessionRow } from "@actana/shared/core-query";
 import type { CoreSharedCapability } from "./shared-capability";
 
 /**
@@ -113,42 +111,38 @@ export interface EventLogPort {
 }
 
 /**
- * Read-only access to the Core's project + session tables for the per-Core
- * navigation + Fleet view (issue 07, ADR 0001). The Core is the single
- * source of truth for projects and sessions; the Panel holds none. The
- * `projectsList` / `sessionRowsList` core-link frames delegate to this port so the
- * Panel can render a Core's projects/sessions as live snapshots without a
- * separate HTTP round-trip per item — and without the Panel ever persisting
- * them.
+ * Read-only access to the Core's session table for the Fleet view (issue 07,
+ * ADR 0001). The Core is the single source of truth for its Sessions; the Panel
+ * holds none. The `sessionRowsList` core-link frame delegates to this port so
+ * the Panel can render a Core's Sessions as live snapshots without a separate
+ * HTTP round-trip per item — and without the Panel ever persisting them.
  *
  * The real implementation (core-query-store.ts) reads the shared
  * SQLite read-only; tests inject an in-memory fake. When omitted, the server
- * answers both frames with empty results (backward compat — a Core with no
+ * answers the frame with empty results (backward compat — a Core with no
  * query port wired is still a valid PTY-only Core).
  */
 export interface CoreQueryPort {
-  /** Every project on this Core, as a flattened snapshot. */
-  listProjects(): CoreLinkProjectSnapshot[];
   /**
-   * Every active session on this Core (optionally filtered to one project). The
-   * Core omits archived sessions — the Fleet view is for active work, and the
-   * Panel caches nothing, so archived rows never cross the active path. There
-   * is no argument that changes this; the Archived view has its own frame.
+   * Every active session on this Core. The Core omits archived sessions — the
+   * Fleet view is for active work, and the Panel caches nothing, so archived
+   * rows never cross the active path. There is no argument that changes this;
+   * the Archived view has its own frame.
    */
-  listSessionRows(projectId?: string): CoreLinkSessionRow[];
+  listSessionRows(): CoreSessionRow[];
   /**
-   * Every archived session on this Core (optionally filtered to one project) —
-   * the exact mirror of `listSessionRows`, answering the `archivedSessionRowsList` frame.
+   * Every archived session on this Core — the exact mirror of
+   * `listSessionRows`, answering the `archivedSessionRowsList` frame.
    * A separate method rather than a flag on `listSessionRows`, so no argument to the
    * active path can make it return an archived row (issue 62, ADR 0019).
    */
-  listArchivedSessions(projectId?: string): CoreLinkSessionRow[];
+  listArchivedSessions(): CoreSessionRow[];
   /**
-   * How many archived sessions the same scope holds. Rides the `sessionRowsList`
+   * How many archived sessions this Core holds. Rides the `sessionRowsList`
    * answer so the Panel can gate and label its Archived tab continuously
    * without fetching a single archived row (ADR 0019).
    */
-  countArchivedSessions(projectId?: string): number;
+  countArchivedSessions(): number;
   /**
    * One session by id, or `null` when this Core has no such row. Unlike
    * `listSessionRows` an archived row still answers — a caller asking by id wants
@@ -156,24 +150,20 @@ export interface CoreQueryPort {
    * learn a session's status *before* a mutation lands, which is what tells a
    * genuine finish from a re-patch of an already-finished Session (issue 20).
    */
-  getSession(sessionId: string): CoreLinkSessionRow | null;
+  getSession(sessionId: string): CoreSessionRow | null;
 }
 
 /**
- * Read-write access to the Core's projects + sessions tables for the
- * `projectsMutate` / `sessionsMutate` / `sessionsList` core-link frames (issue
- * 04, ADR 0004). The Core process owns the write path against its SQLite;
- * on a remote VM no sibling stateful server runs, so mutations go through
- * this port directly. Path validation for projects lives on the Core (a
- * Project's `path` is a VM path per CONTEXT.md) — the port throws a
- * `ProjectPathError`-flavored error on invalid input and the server
- * translates it into an actionable `error` frame.
+ * Read-write access to the Core's sessions table for the `sessionsMutate` /
+ * `sessionsList` core-link frames (issue 04, ADR 0004). The Core process owns
+ * the write path against its SQLite; on a remote VM no sibling stateful server
+ * runs, so mutations go through this port directly. The port throws on invalid
+ * input and the server translates it into an actionable `error` frame.
  *
  * The real implementation (core-mutation-store.ts) opens the
  * shared SQLite read-write; tests inject an in-memory fake. When omitted,
- * `projectsMutate` / `sessionsMutate` return `null` and `sessionsList` returns
- * `[]` — the same "PTY-only Core is a valid Core" backward compat the
- * query port has.
+ * `sessionsMutate` returns `null` and `sessionsList` returns `[]` — the same
+ * "PTY-only Core is a valid Core" backward compat the query port has.
  */
 /**
  * Snapshot access to the Core's CLI availability map (issue 11). The store
@@ -210,14 +200,13 @@ export interface HarnessInstallPort {
 /**
  * The Core's own filesystem, as the Panel's folder picker browses it
  * (web-panel issue 06). The Panel runs in a browser and has no disk to offer;
- * a Project's path is a VM path that only this process can resolve. Both
+ * a path on the Core's machine is one only this process can resolve. Both
  * methods reject with an operator-readable message, which the server passes
  * through as the `error` frame the picker renders.
  *
  * The real implementation is `directory-browse.ts`; tests inject a fake. When
  * omitted, both frames answer with an `error` saying browsing is unavailable —
- * a PTY-only Core stays a valid Core, and the Panel's typed-path fallback
- * still validates at project-create time.
+ * a PTY-only Core stays a valid Core.
  */
 export interface CoreDirectoryPort {
   list(requestedPath: string | null | undefined): Promise<CoreLinkDirListing>;
@@ -273,25 +262,17 @@ export interface CoreExecPort {
 
 export interface CoreMutationPort {
   /**
-   * Create / rename / archive a project. Returns the resulting snapshot on
-   * success; `null` when the mutation targeted a missing row (`rename` /
-   * `archive` on an unknown projectId). Throws on invalid input — the server
-   * turns thrown errors into an `error` frame with the message.
-   */
-  mutateProject(mutation: CoreLinkProjectMutation): CoreLinkProjectSnapshot | null;
-  /**
    * Create / update a session. Returns the resulting snapshot on success;
    * `null` when `update` targeted a missing row.
    */
-  mutateSession(mutation: CoreLinkSessionMutation): CoreLinkSessionRow | null;
+  mutateSession(mutation: CoreSessionMutation): CoreSessionRow | null;
   /**
-   * Every active session on this Core (optionally filtered to one
-   * project). A session is a session-plus-optional-live-PTY: `ptyId` is set
-   * when the Core's PTY core currently has a running PTY for that session,
-   * `null` otherwise. The Panel uses this to know which sessions it can
+   * Every active session on this Core. A session is a session-plus-optional-live-PTY:
+   * `ptyId` is set when the Core's PTY core currently has a running PTY for that
+   * session, `null` otherwise. The Panel uses this to know which sessions it can
    * reattach to on reconnect.
    */
-  listSessions(projectId?: string): CoreLinkSessionSnapshot[];
+  listSessions(): CoreLinkSessionSnapshot[];
 }
 
 export type PtyCoreLinkServerOptions = {
@@ -359,15 +340,14 @@ export type PtyCoreLinkServerOptions = {
    */
   authVerifier?: AuthVerifier;
   /**
-   * Read-only project + session snapshots for the `projectsList` / `sessionRowsList`
-   * frames (issue 07). When omitted, both frames answer with empty results
-   * (a PTY-only Core is still a valid Core).
+   * Read-only Session snapshots for the `sessionRowsList` and
+   * `archivedSessionRowsList` frames (issue 07). When omitted, both frames answer
+   * with empty results (a PTY-only Core is still a valid Core).
    */
   queryPort?: CoreQueryPort;
   /**
-   * Read-write access to project/session rows for the `projectsMutate` /
-   * `sessionsMutate` / `sessionsList` frames (issue 04, ADR 0004). When omitted,
-   * `projectsMutate`/`sessionsMutate` return `{ project: null }` /
+   * Read-write access to session rows for the `sessionsMutate` / `sessionsList`
+   * frames (issue 04, ADR 0004). When omitted, `sessionsMutate` returns
    * `{ session: null }` and `sessionsList` returns `[]` — matching the pre-04
    * stubs so a PTY-only Core (or a test) still round-trips the frames.
    */
@@ -442,7 +422,7 @@ export type PtyCoreLinkServerOptions = {
    * Handed in already built rather than constructed from a port here, and
    * deliberately: this class's job is to mount whatever HTTP surface it is
    * given, not to know what that surface is *about*. `core-entry.ts` wires the
-   * file routes, next to the query store they read Project roots from — so this
+   * file routes, next to the query store — so this
    * module imports only the type, the tar codec never enters its import graph,
    * and a Core with no file surface never loads a line of it.
    */
@@ -611,19 +591,6 @@ const WS_CLOSED = 3;
  */
 type SendOutcome = { ok: true } | { ok: false; reason: string };
 
-/**
- * The event-log kind each project mutation op appends. Typed on the op union
- * rather than written as a ternary chain so a new op cannot ship without
- * deciding what a reconnecting Panel replays for it — the compiler asks.
- */
-const PROJECT_MUTATION_EVENT_KINDS: Record<CoreLinkProjectMutation["op"], string> = {
-  create: "project:created",
-  rename: "project:renamed",
-  archive: "project:archived",
-  pin: "project:pinnedChanged",
-  settings: "project:settingsChanged",
-  appearance: "project:appearanceChanged",
-};
 /**
  * Heartbeat cadence, mirroring the Panel-side client. The Core must detect a
  * vanished client too: PTY output fans out to every registered connection, so a
@@ -1167,27 +1134,6 @@ export class PtyCoreLinkServer {
   }
 
   /**
-   * Record a project mutation in the event log so a reconnecting Panel learns
-   * about the change via the same `subscribe` / `event` / `eventsReplayed`
-   * replay path the PTY lifecycle events use (issue 04). Kinds mirror the
-   * server's AppEvent names (`project:created`, `project:updated`,
-   * `project:archived`, plus the dedicated `project:pinnedChanged` /
-   * `project:settingsChanged` / `project:appearanceChanged`) so the Panel can
-   * route by kind without a translation layer. Only successful mutations are
-   * recorded — a `null` result (row missing) does not append.
-   */
-  private recordProjectMutation(
-    mutation: CoreLinkProjectMutation,
-    project: CoreLinkProjectSnapshot,
-  ): void {
-    if (!this.eventLog) return;
-    const kind = PROJECT_MUTATION_EVENT_KINDS[mutation.op];
-    const payload = JSON.stringify({ projectId: project.projectId });
-    this.eventLog.appendEvent(kind, payload, { sessionId: null, ptyId: null });
-  }
-
-
-  /**
    * Record a pty:spawn event in the log (lifecycle marker for replay). The
    * `shellSession` flag (issue 06) is carried in the payload so a reconnecting
    * Panel can distinguish a VM Shell Session spawn from an agent/session spawn
@@ -1307,6 +1253,14 @@ export class PtyCoreLinkServer {
       this.send(ws, { type: "error", reqId: frame.reqId, message: "invalid frame" });
       return;
     }
+    // A Session frame that still carries what a 0.4.x client grouped Sessions by
+    // is refused by name, before any port sees it (ADR 0041 D1, D2).
+    const fieldRefusal = sessionFrameFieldRefusal(frame);
+    if (fieldRefusal) {
+      log.warn("core-link.frame.refused", { type: frame.type, reason: fieldRefusal });
+      this.send(ws, { type: "error", reqId: frame.reqId, message: fieldRefusal });
+      return;
+    }
     try {
       await this.dispatch(conn, frame);
     } catch (err) {
@@ -1317,8 +1271,7 @@ export class PtyCoreLinkServer {
 
   /**
    * The filesystem port, or `null` after telling the Panel there isn't one.
-   * A Core wired without it is still a valid Core; the Panel's typed-path
-   * fallback keeps working, since project paths are validated on create.
+   * A Core wired without it is still a valid Core.
    */
   private requireDirectoryPort(ws: WebSocketLike, reqId: string): CoreDirectoryPort | null {
     if (this.directoryPort) return this.directoryPort;
@@ -1422,8 +1375,8 @@ export class PtyCoreLinkServer {
    * Record a Session-lock change in the event log, so every other connection
    * learns of it without asking (issue 145, ADR 0024 D8).
    *
-   * A **dedicated kind**, on the precedent ADR 0022 set for
-   * `project:appearanceChanged`: widening `session:updated` to carry lock state
+   * A **dedicated kind**, on the precedent ADR 0022 set (one
+   * kind per kind of change): widening `session:updated` to carry lock state
    * would stop that frame documenting what changed, and a reconnecting client
    * replaying a tail could not tell a takeover it must react to from a title
    * edit it can ignore — which is the generic-field-patch failure ADR 0017 and
@@ -1505,6 +1458,15 @@ export class PtyCoreLinkServer {
         // `sessionsMutate`'s `create` — which names no existing Session — keeps its
         // own carve-out. Only a `sessionId` **another** connection holds is
         // refused.
+        //
+        // A spawn that names a start directory, or any field a spawn does not
+        // take, is refused before anything else looks at it (ADR 0041 D2).
+        const refusal = spawnFieldRefusal(frame.opts);
+        if (refusal) {
+          log.warn("core-link.spawn.refused", { reason: refusal });
+          this.send(ws, { type: "spawnError", reqId: frame.reqId, message: refusal });
+          return;
+        }
         if (this.refuseLockedSession(conn, frame.reqId, frame.opts.sessionId)) return;
         try {
           const { ptyId, hooksReportTurnStart } = await this.core.spawn(frame.opts);
@@ -1589,7 +1551,7 @@ export class PtyCoreLinkServer {
         // Read the prior state before taking it: a re-claim by the connection
         // that already holds the Session is idempotent and changes nothing, and
         // an event for it would be a lock change nobody made — the same reason
-        // `recordProjectMutation` appends only for a mutation that landed.
+        // a mutation is recorded only when it landed.
         const alreadyHeld = this.sessionLocks.isHeldBy(frame.sessionId, conn);
         const { granted } = this.sessionLocks.claim(frame.sessionId, conn);
         // A denied claim leaves the holder untouched, so there is nothing to
@@ -1744,11 +1706,11 @@ export class PtyCoreLinkServer {
         this.handleAuth(conn, frame);
         return;
       }
-      // ─── Session / project / session / hook ops (issue 02 schema + issue 07
-      // wiring). Session + project ops delegate to the CoreQueryPort so the
-      // Panel renders live snapshots with no Panel-side persistence. When no
-      // queryPort is configured (a PTY-only Core, or tests), both answer
-      // with empty results so the Panel can round-trip them without errors.
+      // ─── Session / hook ops (issue 02 schema + issue 07 wiring). Session ops
+      // delegate to the CoreQueryPort so the Panel renders live snapshots with
+      // no Panel-side persistence. When no queryPort is configured (a PTY-only
+      // Core, or tests), they answer with empty results so the Panel can
+      // round-trip them without errors.
       case "sessionRowsList": {
         // Stamped with this connection's own lock state (issue 145, D8). This
         // is the frame a Panel hydrates its Fleet view from, so it is where a
@@ -1757,16 +1719,21 @@ export class PtyCoreLinkServer {
         // buys over the refusal that would otherwise be the first news of it.
         const sessions = this.withPublishedLock(
           conn,
-          this.queryPort ? this.queryPort.listSessionRows(frame.projectId) : [],
+          this.queryPort ? this.queryPort.listSessionRows() : [],
         );
         // The count of archived rows, never the rows — see ADR 0019. It rides
         // this answer because the Panel needs it continuously (to gate and
         // label the Archived tab), while the rows are wanted only when that
         // view is open, over `archivedSessionRowsList`.
         const archivedCount = this.queryPort
-          ? this.queryPort.countArchivedSessions(frame.projectId)
+          ? this.queryPort.countArchivedSessions()
           : 0;
-        this.send(ws, { type: "sessionRowsListResult", reqId: frame.reqId, sessions, archivedCount });
+        this.send(ws, {
+          type: "sessionRowsListResult",
+          reqId: frame.reqId,
+          sessions: toWireSessionRows(sessions),
+          archivedCount,
+        });
         return;
       }
       case "archivedSessionRowsList": {
@@ -1776,14 +1743,13 @@ export class PtyCoreLinkServer {
         // list where "can I write to this" went unanswered.
         const sessions = this.withPublishedLock(
           conn,
-          this.queryPort ? this.queryPort.listArchivedSessions(frame.projectId) : [],
+          this.queryPort ? this.queryPort.listArchivedSessions() : [],
         );
-        this.send(ws, { type: "archivedSessionRowsListResult", reqId: frame.reqId, sessions });
-        return;
-      }
-      case "projectsList": {
-        const projects = this.queryPort ? this.queryPort.listProjects() : [];
-        this.send(ws, { type: "projectsListResult", reqId: frame.reqId, projects });
+        this.send(ws, {
+          type: "archivedSessionRowsListResult",
+          reqId: frame.reqId,
+          sessions: toWireSessionRows(sessions),
+        });
         return;
       }
       case "sessionsMutate": {
@@ -1812,7 +1778,11 @@ export class PtyCoreLinkServer {
           // That is D5 on the wire: the creator got no privilege, and the client
           // reads that rather than assuming either way.
           const [stamped] = session ? this.withPublishedLock(conn, [session]) : [null];
-          this.send(ws, { type: "sessionsMutateResult", reqId: frame.reqId, session: stamped });
+          this.send(ws, {
+            type: "sessionsMutateResult",
+            reqId: frame.reqId,
+            session: stamped ? (toWireSessionRows([stamped])[0] ?? null) : null,
+          });
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
           this.send(ws, { type: "error", reqId: frame.reqId, message });
@@ -1837,21 +1807,6 @@ export class PtyCoreLinkServer {
         this.send(ws, { type: "harnessPromptResult", reqId: frame.reqId, accepted });
         return;
       }
-      case "projectsMutate": {
-        if (!this.mutationPort) {
-          this.send(ws, { type: "projectsMutateResult", reqId: frame.reqId, project: null });
-          return;
-        }
-        try {
-          const project = this.mutationPort.mutateProject(frame.mutation);
-          if (project) this.recordProjectMutation(frame.mutation, project);
-          this.send(ws, { type: "projectsMutateResult", reqId: frame.reqId, project });
-        } catch (err) {
-          const message = err instanceof Error ? err.message : String(err);
-          this.send(ws, { type: "error", reqId: frame.reqId, message });
-        }
-        return;
-      }
       case "sessionsList": {
         // The frame `actana session ls` reads (D8): a list of Sessions, each
         // saying whether this client may write to it. Same stamp, same rule as
@@ -1859,7 +1814,7 @@ export class PtyCoreLinkServer {
         // the same question and must not get different vocabularies for it.
         const sessions = this.withPublishedLock(
           conn,
-          this.mutationPort ? this.mutationPort.listSessions(frame.projectId) : [],
+          this.mutationPort ? this.mutationPort.listSessions() : [],
         );
         this.send(ws, { type: "sessionsListResult", reqId: frame.reqId, sessions });
         return;
@@ -1950,7 +1905,11 @@ export class PtyCoreLinkServer {
     }
     // Exhaustive switch — if a new frame type is added to CoreLinkRequestFrame
     // without a case here, TypeScript flags this unreachable line.
-    this.send(ws, { type: "error", message: `unhandled frame type: ${(frame as { type: string }).type}` });
+    // A frame the codec accepts and this Core no longer handles — the grouping
+    // frames of a 0.4.x client — is refused by name, with its reqId so the
+    // caller's request settles instead of timing out (ADR 0041 D1).
+    const { type, reqId } = frame as { type: string; reqId?: string };
+    this.send(ws, { type: "error", ...(reqId === undefined ? {} : { reqId }), message: `unhandled frame type: ${type}` });
   }
 
   /**

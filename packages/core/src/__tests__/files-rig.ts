@@ -63,7 +63,7 @@ export async function startFilesRig(opts: FilesRigOptions = {}): Promise<FilesRi
   writeTree(root, opts.seed ?? {});
 
   const routes = createCoreFilesRequestHandler({
-    filesPort: { projectRoot: (id) => (id === projectId ? root : null) },
+    filesPort: { workspaceRoot: () => root },
     ...(opts.authVerifier ? { authVerifier: opts.authVerifier } : {}),
   });
   const requests: { method: string; url: string }[] = [];

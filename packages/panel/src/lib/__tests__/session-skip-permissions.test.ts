@@ -36,7 +36,7 @@ function policyDeps(): SpawnPolicyDeps {
   return {
     cwdExists: () => true,
     realpath: (p) => p,
-    projectRoots: () => [PROJECT_ROOT],
+    home: () => PROJECT_ROOT,
     resolveCommand: (name) => `/usr/local/bin/${name}`,
     resolveShell: () => ({
       shell: "/bin/zsh",
@@ -75,7 +75,6 @@ function spawnRequestFor(agent: Harness): SpawnRequest {
   const session = sessionFor(agent);
   return {
     sessionId: session.id,
-    cwd: PROJECT_ROOT,
     command: buildFreshHarnessLaunchCommand(session, SESSION_ID),
     agent,
     dangerouslySkipPermissions: harnessLaunchesWithSkipPermissions(agent),

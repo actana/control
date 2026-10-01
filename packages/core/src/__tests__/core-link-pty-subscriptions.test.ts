@@ -264,7 +264,7 @@ describe("PTY output fans out per connection, by subscription (issue 142)", () =
       spawner.receive({
         type: "spawn",
         reqId: "sp1",
-        opts: { sessionId: "t1", cwd: "/tmp", command: "sh", agent: "claude-code" },
+        opts: { sessionId: "t1", command: "sh", agent: "claude-code" },
       });
       await new Promise((resolve) => setTimeout(resolve, 0));
       const ptyId = spawner.ofType<{ ptyId: string }>("spawned")[0]?.ptyId;

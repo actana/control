@@ -373,7 +373,7 @@ describe("a Core accepts many concurrent core-link connections (issue 141)", () 
     ws.receive({
       type: "spawn",
       reqId: "s1",
-      opts: { sessionId: "t1", cwd: "/tmp", command: "sh", agent: "claude-code" },
+      opts: { sessionId: "t1", command: "sh", agent: "claude-code" },
     });
     ws.receive({ type: "kill", reqId: "k1", ptyId: "pty-1" });
     await Promise.resolve();

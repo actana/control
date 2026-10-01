@@ -1,25 +1,20 @@
-// Shared schema-bootstrap primitives — the CREATE-IF-NOT-EXISTS DDL that owns
-// the shape of `missioncontrol.db`, plus the idempotent helpers that keep older
-// databases and schema-divergent branches converging on that shape.
+// The Panel's SQLite schema bootstrap — the CREATE-IF-NOT-EXISTS DDL that owns
+// the shape of the Panel's `missioncontrol.db`, plus the idempotent helpers that
+// keep older databases converging on that shape.
 //
-// Two callers rely on this module:
-//   • src/db/client.ts — the stateful server's `getDb()` bootstrap on the
-//     loopback host, running under Vite (ESM).
-//   • packages/core/src/core-db-bootstrap.ts — the Core process on a remote VM
-//     where no sibling server exists
-//     (CommonJS).
-//
-// The two entry points share this DDL so the schema on a core-only VM
-// matches the schema on a loopback host byte-for-byte. Migration replay and
-// drizzle bookkeeping stay in client.ts; this file is purely the shape.
+// This was `@actana/shared/schema-bootstrap`, shared with the Core. The Core no
+// longer has Projects (ADR 0041 D1), so it has its own, project-free schema in
+// `@actana/shared/core-schema`; this file is the Panel's alone and moved here
+// unchanged so the Panel's tables, including its Project family, stay as they
+// were until the Panel's own issues remove them (#560, and #567 for the move to
+// Postgres, which deletes this file with SQLite).
 //
 // Kept self-contained (relative imports only, no `~/*` alias, no drizzle, no
-// native binding resolution, no Vite globs) so the Core's tsc build can
-// compile it against its own tsconfig.
+// native binding resolution, no Vite globs).
 
 import type Database from "better-sqlite3";
 import * as fs from "node:fs";
-import { DEFAULT_BRANCH, DEFAULT_SESSION_STATUS } from "./domain";
+import { DEFAULT_BRANCH, DEFAULT_SESSION_STATUS } from "@actana/shared/domain";
 
 // missioncontrol.db holds the API bearer token
 // in cleartext. Created with default perms it is world-readable (~0644), so any

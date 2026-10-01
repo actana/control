@@ -117,16 +117,9 @@ describe("session:finished is emitted by the Core (issue 20)", () => {
     ws = new FakeWebSocket();
     wss.connect(ws);
 
-    coreMutationStore.mutateProject({
-      op: "create",
-      projectId: "p1",
-      name: "Warehouse",
-      path: userDataDir,
-    });
     coreMutationStore.mutateSession({
       op: "create",
       sessionId: "t1",
-      projectId: "p1",
       title: "Rebuild the picker",
       agent: "claude-code",
       status: "running",
@@ -169,10 +162,10 @@ describe("session:finished is emitted by the Core (issue 20)", () => {
     const finishes = finishEvents();
     expect(finishes).toHaveLength(1);
     expect(finishes[0]!.sessionId).toBe("t1");
-    expect(JSON.parse(finishes[0]!.payload)).toMatchObject({
+    // Exactly these three: a Session has no Project to name beside it.
+    expect(JSON.parse(finishes[0]!.payload)).toEqual({
       id: "t1",
-      projectId: "p1",
-      projectName: "Warehouse",
+      sessionId: "t1",
       sessionTitle: "Rebuild the picker",
     });
   });
@@ -232,7 +225,6 @@ describe("session:finished is emitted by the Core (issue 20)", () => {
     await mutate("r1", {
       op: "create",
       sessionId: "t2",
-      projectId: "p1",
       title: "Imported",
       agent: "claude-code",
       status: "finished",

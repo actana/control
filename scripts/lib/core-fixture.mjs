@@ -11,6 +11,7 @@
 //     secrets,         // the Core's own key material — the test asserts the
 //                      // Panel never hands any of it back
 //     makeProjectDir,  // (prefix) => a directory path that exists ON THE CORE
+//     workspaceDir,    // the Core's workspace: its home, where every Session starts
 //     logLines,        // () => string[], the Core's output for failure triage
 //     stop,            // () => void
 //   }
@@ -138,6 +139,8 @@ export async function startLocalCore({ entry, timeoutMs = DEFAULT_BOOT_TIMEOUT_M
     // directory it can see. It lives under the fixture's own home so `stop`
     // takes it away.
     makeProjectDir: (prefix) => fs.mkdtempSync(path.join(home, prefix)),
+    // The workspace is the Core's home (ADR 0041 D1), and the file routes serve it.
+    workspaceDir: home,
     logLines: () => [...observer.logLines],
     stop,
   };

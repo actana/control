@@ -214,12 +214,12 @@ describe("download", () => {
     });
   });
 
-  it("refuses an unknown Project by name", async () => {
+  it("refuses a path the workspace does not have", async () => {
     const core = await open();
 
-    await expect(core.project("proj_nope").files.download({ path: "a" })).rejects.toMatchObject({
+    await expect(core.project("proj_nope").files.download({ path: "no-such-file" })).rejects.toMatchObject({
       status: 404,
-      code: "project-not-found",
+      code: "not-found",
     });
   });
 });

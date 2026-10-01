@@ -83,7 +83,6 @@ import { corePairingStore } from "./core-pairing-store";
 import { runCoreExec } from "./core-exec";
 import { coreHome } from "./core-identity";
 import { startSharedFolder } from "./shared-folder-feed";
-import { configureProjectRootsDb } from "./project-roots";
 import {
   configureEventLogStore,
   disposeEventLogStore,
@@ -215,22 +214,17 @@ async function startCore(): Promise<void> {
     }
   }
 
-  // The project-roots DB is read by the spawn policy to validate cwd. Configure
-  // it the same way main.ts does — the core shares the same SQLite file.
-  configureProjectRootsDb(userDataDir);
   // The event log lives in the same SQLite file. The Core appends PTY
   // lifecycle events (pty:spawn / pty:exit) and serves the reconnect replay
   // tail; the stateful server process appends session/hook events to the
   // same append-only table.
   configureEventLogStore(userDataDir);
-  // The query store reads projects + sessions from the same SQLite (read-only) so
-  // the `projectsList` / `sessionRowsList` core-link frames return live snapshots
-  // with no Panel-side persistence (issue 07 — per-Core navigation + Fleet
-  // view).
+  // The query store reads sessions from the same SQLite (read-only) so the
+  // `sessionRowsList` core-link frame returns live snapshots with no
+  // Panel-side persistence (issue 07 — Fleet view).
   configureCoreQueryStore(userDataDir);
-  // The mutation store writes projects + sessions against the same SQLite
-  // (read-write) so the `projectsMutate` / `sessionsMutate` / `sessionsList`
-  // core-link frames execute the write path directly on the Core (issue
+  // The mutation store writes sessions against the same SQLite (read-write)
+  // so the `sessionsMutate` / `sessionsList` core-link frames execute the write path directly on the Core (issue
   // 04, ADR 0004). WAL absorbs coexistence with the event-log writer.
   configureCoreMutationStore(userDataDir);
 
@@ -403,7 +397,7 @@ async function startCore(): Promise<void> {
   // Issue 11: this Core probes its own PATH for every managed Harness and
   // publishes the resulting map as (a) a live snapshot readable via the
   // `agentsAvailabilityList` frame and (b) an `agents:availabilityChanged`
-  // event appended to the same monotonic event log the PTY / project / session
+  // event appended to the same monotonic event log the PTY / session
   // lifecycle events use. Loopback and remote Cores emit the identical shape
   // so the Panel's per-Core availability store is oblivious to which Core
   // answered. Started after `configureEventLogStore` has run — the first
@@ -474,11 +468,10 @@ async function startCore(): Promise<void> {
       readEventTail,
       getLastEventId,
     },
-    // Issue 07: back the `projectsList` / `sessionRowsList` frames with the shared
-    // SQLite so the Panel renders live project/session snapshots per Core.
+    // Issue 07: back the `sessionRowsList` frames with the shared SQLite so the
+    // Panel renders live Session snapshots per Core.
     queryPort: coreQueryStore,
-    // Issue 04 (ADR 0004): back the `projectsMutate` / `sessionsMutate` /
-    // `sessionsList` frames with the same SQLite (read-write). The Core
+    // Issue 04 (ADR 0004): back the `sessionsMutate` / `sessionsList` frames with the same SQLite (read-write). The Core
     // process is the sole VM-side writer; WAL keeps the event-log writer
     // and this writer coexisting on one DB.
     mutationPort: coreMutationStore,
@@ -517,7 +510,7 @@ async function startCore(): Promise<void> {
     },
     // Web-panel issue 06: the Panel's folder picker browses THIS machine's
     // disk. The browser has none to offer and the operator's laptop is the
-    // wrong one — a Project's path is a VM path, so the Core serves and
+    // wrong one — a path is a path on the Core's machine, so the Core serves and
     // validates every listing.
     directoryPort: {
       list: (requestedPath) => listDirectoryViaCore(requestedPath),
@@ -754,9 +747,8 @@ async function startCore(): Promise<void> {
   }
 
   // Issue 165: the `/v1/…` file routes, mounted on the same HTTPS server the
-  // core link is on (ADR 0028). Built here rather than inside the server, next
-  // to the query store they read Project roots from — the core-link server
-  // mounts whatever HTTP surface it is handed and never imports the tar codec.
+  // core link is on (ADR 0028). Built here rather than inside the server —
+  // the core-link server mounts whatever HTTP surface it is handed and never imports the tar codec.
   //
   // **After** the remote-mode block, not before it, and that ordering is the
   // fix for a real defect rather than tidiness. Built earlier, the routes could
@@ -768,18 +760,11 @@ async function startCore(): Promise<void> {
   // can be passed by value, and "loopback" can be the absence it is documented
   // to be. `buildCoreFileRoutes` holds the rule and is tested directly.
   //
-  // The lookup is a scan of the project list rather than a `WHERE id = ?`, and
-  // deliberately: a Core holds a handful of Projects, `listProjects` is the read
-  // seam that already exists and already degrades to `[]` on a broken DB, and a
-  // second by-id query in `@actana/shared` would be a second thing to keep in
-  // step with the first. If a Core ever holds enough Projects for this to
-  // matter, the fix is an index in SQLite, not a cache here — the filesystem is
-  // the model (ADR 0027) and this is the one lookup that is not the filesystem.
+  // The one thing the routes need from the Core is where the workspace is: the
+  // home of the Core's user (ADR 0041 D1). There is no lookup to make and no
+  // table to read. The filesystem is the model (ADR 0027).
   const fileRoutes = buildCoreFileRoutes({
-    filesPort: {
-      projectRoot: (projectId) =>
-        coreQueryStore.listProjects().find((project) => project.projectId === projectId)?.path ?? null,
-    },
+    filesPort: { workspaceRoot: () => coreHome() },
     ...(serverOpts.authVerifier ? { authVerifier: serverOpts.authVerifier } : {}),
   });
   // The pairing family goes first, and `composeCoreHttpRoutes` documents why:

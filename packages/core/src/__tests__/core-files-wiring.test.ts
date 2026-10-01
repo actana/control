@@ -69,7 +69,7 @@ function get(base: string, url: string, headers: Record<string, string> = {}): P
 /** A Project holding one readable file, so an authorised request has something to answer with. */
 function oneProject(): CoreFilesPort {
   const root = makeTree({ "notes.txt": "hello from a Project" });
-  return { projectRoot: (id) => (id === "p1" ? root : null) };
+  return { workspaceRoot: () => root };
 }
 
 describe("the loopback Core — no bearer verifier", () => {

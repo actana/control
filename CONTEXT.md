@@ -4,7 +4,7 @@ The domain that results from detaching the harness-running layer ("Core") from t
 
 ## Language
 
-The 0.5.0 model is locked by [ADR 0041](docs/adr/0041-the-0-5-0-core-model.md). Until #555 and #556 land, the code, the DB and the wire still say **Project** where this file says **workspace** (there is no Project row that becomes a Session), and **Task** where this file says **Session**.
+The 0.5.0 model is locked by [ADR 0041](docs/adr/0041-the-0-5-0-core-model.md). The Core has said **Session** since #556 (part 1) and has had no Projects since #555: it stores none, handles no Project frame, and starts every Session in the workspace. Until the rest of #552 lands, the published SDK, the CLI, the Panel and the Files API address (`/v1/projects/:id/files`, #557) still say **Project** where this file says **workspace** (there is no Project row that becomes a Session).
 
 ### Topology
 

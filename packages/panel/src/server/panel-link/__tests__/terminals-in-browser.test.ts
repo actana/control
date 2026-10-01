@@ -488,17 +488,18 @@ async function openTab(coreId?: string): Promise<Tab> {
   return tab;
 }
 
-// `satisfies` rather than a plain object: the reconnect test hands this to the
-// real bridge's `spawn`, which is typed, while the hand-rolled `Tab` still
-// sends it as a bag of fields.
+// Typed because the reconnect test hands this to the real bridge's `spawn`,
+// while the hand-rolled `Tab` still sends it as a bag of fields. It names no cwd:
+// a Core starts every Session in its home and refuses a spawn that says
+// otherwise (ADR 0041 D2). The published SDK still types a required `cwd`, hence
+// the cast, which goes when the SDK drops it (actana/client issue 10).
 const HARNESS_SPAWN = {
   sessionId: "session_1",
-  cwd: "/srv/warehouse",
   command: "claude",
   agent: "claude-code",
   cols: 100,
   rows: 30,
-} satisfies CoreLinkPtySpawnOptions;
+} as unknown as CoreLinkPtySpawnOptions;
 
 afterEach(async () => {
   for (const link of browsers.splice(0)) link.close();

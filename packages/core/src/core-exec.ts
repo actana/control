@@ -14,7 +14,7 @@
 // **This grants no privilege the PTY path does not already grant.** Same
 // credential (the registration blob), same transport (the core link, mTLS +
 // bearer), same class of process — a free-form command on this machine, with
-// no project root and no harness. Anybody who can open a VM Shell Session can
+// no harness and no workspace confinement. Anybody who can open a VM Shell Session can
 // already type this command into it. What changes is that the bytes come back
 // structured instead of painted, and that the Core sees the request and can
 // log it — which is more auditable than the `docker exec` this replaces, not

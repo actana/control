@@ -56,9 +56,10 @@ x-actana-managed: true
 
 \`actana\` is a client. A **Core** is a machine running the Actana Control daemon;
 a **Session** is one Harness process — a vendor's coding agent — running on that
-Core inside a **Project**. Sessions belong to the Core, not to this command: a
-Session keeps running after \`actana\` exits, and any later \`actana\` invocation
-can list it, read it, write to it or stop it.
+Core in the Core's workspace (\`~\`). There are no Projects. Sessions
+belong to the Core, not to this command: a Session keeps running after \`actana\`
+exits, and any later \`actana\` invocation can list it, read it, write to it or
+stop it.
 
 If \`actana\` is not on this machine, or reports no Core, say so and stop. Do not
 install anything and do not guess at a Core's address.
@@ -81,7 +82,6 @@ tidiness, is why there are two files.
 actana core ls                 # Cores this machine can reach; * marks the selected one
 actana core use <name>         # select one for subsequent commands
 actana harness ls --json       # what the selected Core can actually run, right now
-actana project ls --json       # the Projects on that Core; a Session needs one
 actana session ls --json       # Sessions already running there
 \`\`\`
 
@@ -105,48 +105,20 @@ the request settles it.
 ## Starting one Session
 
 \`\`\`bash
-actana session start <project> "<prompt>"            # prints the session id, exits
-actana session start <project> "<prompt>" --json     # the same as an object
-actana session start <project> - < brief.md          # a prompt of \`-\` is read from stdin
+actana session start "<prompt>"            # prints the session id, exits
+actana session start "<prompt>" --json     # the same as an object
+actana session start - < brief.md          # a prompt of \`-\` is read from stdin
 \`\`\`
 
 Useful flags: \`--harness <id>\` (one of the ids \`harness ls\` printed),
-\`--title <text>\` (what it is called in a listing), \`--cwd <path>\` (a directory
-**on the Core**, inside the Project), \`--dangerously-skip-permissions\` (run the
-Harness without permission prompts — only when the operator has asked for
-unattended work).
+\`--title <text>\` (what it is called in a listing), \`--dangerously-skip-permissions\`
+(run the Harness without permission prompts — only when the operator has asked
+for unattended work). Every Session starts in the Core's home (\`~\`); there is no
+\`--cwd\` and no Project argument.
 
 \`start\` returns as soon as the Core has the Session running. The prompt is
 delivered by the Core, which watches the Harness boot and types when it is
 ready; add no delays, no leading newline and no "press enter" of your own.
-
-**Running is not the same fact as ready to be sent to.** The Harness is spawned
-when \`start\` returns; it takes the prompt seconds later, once its composer is
-up. A \`session send\` in between goes into a terminal that is not reading and is
-discarded — along with the starting prompt queued behind it, so one impatient
-line loses two messages. If the next thing you do is \`send\`, start with
-\`--await-prompt\`:
-
-\`\`\`bash
-ID=$(actana session start <project> "<prompt>" --await-prompt)  # blocks until it landed
-actana session send "$ID" "<follow-up>" --wait --json --wait-timeout 1800
-\`\`\`
-
-It blocks only until the Core reports the prompt delivered — seconds on a warm
-Harness, not the length of a turn — prints the id as usual, and **exits non-zero
-unless the Core positively confirms the prompt went into a composer it saw**.
-That covers the prompt it gave up on, and it also covers a Harness whose composer
-the Core does not yet recognise, where the prompt was typed on a quiet screen
-that may have been a trust dialog. A start that cannot establish readiness says
-so rather than reporting success; the message names what stopped it.
-
-\`--wait\` is the longer wait and cannot be combined with it. The two do not report
-quite the same thing: \`--wait\` reports a prompt the Core **gave up on**, and
-reports \`promptDelivered\` as whatever the Core said while it waited — never
-from the absence of a report. Without either, \`--json\` answers
-\`promptDelivered: null\`: nobody adjudicated it. \`null\` is also what \`--wait\`
-answers on a verb that hands over no prompt (\`session wait\`, \`send --wait\`) and
-on a Harness that exits before the Core decides. Treat it as "not known".
 
 **\`--harness\` is how one round spans several Harnesses.** Nothing else is
 needed for it: each \`session start\` takes its own \`--harness\`, so a round of
@@ -156,7 +128,7 @@ what \`harness ls --json\` reported as \`available\`, and never out of memory.
 ## Waiting, and reading the result
 
 \`\`\`bash
-actana session start <project> "<prompt>" --wait --json --wait-timeout 900
+actana session start "<prompt>" --wait --json --wait-timeout 900
 \`\`\`
 
 **\`--wait --json\` blocks until that Session's first turn settles.** That is what
@@ -172,11 +144,11 @@ left. A transcript is what a human reads over somebody's shoulder. **A result is
 a file**, and the contract below is how you get one.
 
 The object also carries \`sessionId\` (the Session's id — this is what every other
-verb takes), \`harness\`, \`project\`, \`status\`, \`exited\`, and \`reportsTurnStart\`.
-\`--wait-timeout <seconds>\` bounds the wait; without it \`start --wait\` has no
-deadline of its own (\`send --wait\` does — see the loop below). A timeout is this
-side giving up, not a verdict about the Session: the Session is still running on
-the Core and can still be listed, read and stopped.
+verb takes), \`harness\`, \`status\`, \`exited\`, and \`reportsTurnStart\`.
+\`--wait-timeout <seconds>\` bounds the wait; without it the wait has no deadline
+of its own. A timeout is this side giving up, not a verdict about the Session:
+the Session is still running on the Core and can still be listed, read and
+stopped.
 
 While a Session is alive — which is what the \`live\` field on its
 \`actana session ls --json\` row tells you, and the only thing that does — you can
@@ -184,7 +156,7 @@ also look at it directly:
 
 \`\`\`bash
 actana session logs <id>          # the transcript, rendered, while the harness is running
-actana session send <id> "text"   # write into it; the carriage return that submits goes too
+actana session send <id> "text"   # write into it; --enter follows with a carriage return
 actana session wait <id>          # block until the Core reports it settled
 actana session kill <id>          # stop the harness running for it
 \`\`\`
@@ -200,16 +172,11 @@ file is.
 A Session is a conversation, not a single question. The whole loop:
 
 \`\`\`bash
-ID=$(actana session start <project> "<first prompt>")   # prints the id, exits
-actana session wait "$ID" --json --wait-timeout 1800    # block until it settles
-actana session send "$ID" "<follow-up>" --wait --json --wait-timeout 1800
-actana session send "$ID" "<next>" --wait --json --wait-timeout 1800
+ID=$(actana session start "<first prompt>")   # prints the id, exits
+actana session wait "$ID" --json --wait-timeout 900     # block until it settles
+actana session send "$ID" "<follow-up>" --enter --wait --json --wait-timeout 900
+actana session send "$ID" "<next>" --enter --wait --json
 \`\`\`
-
-Every line carries the same budget on purpose: 1800 seconds is what \`await.sh\`
-gives a round, and a loop whose steps disagree about how long a turn may take
-gives up in the middle of one. Pass it explicitly rather than leaning on a
-default — \`send --wait\` has one (1020 seconds) and the other two do not.
 
 **\`actana session wait <id>\` blocks until the Core reports the Session settled**
 — \`finished\`, \`needs-input\`, \`interrupted\`, \`terminated\` or \`disconnected\`,
@@ -225,52 +192,21 @@ object** \`start --wait --json\` prints — same keys, same \`screen\` — so on
 reads all three verbs. Two of those keys are \`null\` on a Session you attached to
 rather than started: \`command\` and \`reportsTurnStart\` are answers to a spawn.
 
-Five things to know before you build on it:
+Three things to know before you build on it:
 
 1. **Sending into a turn that is already running resolves on *that* turn's
    end.** A keystroke into a busy Harness is not a new turn. If the Session was
    mid-turn when your text landed, the wait ends when the current turn ends —
    possibly before the Harness has read a character of what you sent. Wait for
    the Session to settle *first*, then send.
-2. **A \`send\` presses Enter for you, and \`--no-enter\` is how you stop it.** The
-   text goes first and the carriage return follows as its own separate write.
-   \`--no-enter\` sends no return, so that send starts no turn — and it **cannot
-   be combined with \`--wait\`**, which is refused as a usage error: a send that
-   submits nothing has no turn to await. Type with \`--no-enter\`, then
-   \`actana session wait\` once a turn is actually running. \`--enter\` is still
-   accepted and does nothing on a send that carries text, so an older script
-   that passes it keeps working; on a send with no text it still means a bare
-   carriage return and nothing else.
+2. **\`--enter\` is what submits the text.** \`send\` writes exactly the bytes it
+   was given and appends nothing, so text with no return sits in the Harness's
+   composer and no turn starts — and the wait then runs to your timeout.
 3. **A timeout is this side giving up, not a status.** \`--wait-timeout
-   <seconds>\` bounds the wait. \`session wait\` has no deadline unless you set
-   one, because a turn takes as long as the work takes; **\`send --wait\` defaults
-   to 1020 seconds**, because it is the one wait for a turn that has not started
-   yet and a carriage return that lands on a dialog rather than a composer
-   starts none at all. \`--wait-timeout 0\` waits with no deadline. On expiry you
-   get a message saying the wait gave up and a non-zero exit — the Session is
-   still running on the Core, and \`session logs\` and \`session kill\` still work.
-   When no turn end was reported since your text went in, the message says so
-   and names both readings: the text may have started no turn, or a turn may
-   still be running on a Harness that reports nothing until it ends. The text
-   was delivered either way — read the screen with \`session logs\` rather than
-   sending it again.
-4. **Do not answer that timeout with \`session wait\`.** It is uncursored: it
-   answers from the status the Session is parked at, so on a turn that never
-   started it returns **at once, with the status from before your text, and
-   exits zero** — which reads as a completed turn and is not one. To carry on
-   waiting, follow the log from the delivery instead:
-   \`actana events tail --since <event id>\`, the id the timeout message names.
-5. **A wait whose link to the Core drops ends as *unknown*.** Every wait listens
-   over that link, so a Core that restarts or a connection that is reaped takes
-   the report the wait was waiting for with it. Rather than hang — which is what
-   it used to do, with no deadline of any kind to end it — the command exits
-   non-zero saying **the turn's outcome is unknown**: it may have ended while
-   this side was deaf, and it may still be running. That is not a failed turn
-   and not a finished one, and it is the one case where the Session's status has
-   to be re-read from the Core rather than taken from the wait. Do that once the
-   Core is reachable again — \`actana session ls\` says whether it is still live,
-   \`actana events tail --since <event id>\` follows the log from your delivery —
-   and **do not** answer it with \`session wait\`, for the reason in 4.
+   <seconds>\` bounds the wait; without it there is no deadline, because a turn
+   takes as long as the work takes. On expiry you get a message saying the wait
+   gave up and a non-zero exit — the Session is still running on the Core, and
+   \`session logs\`, another \`session wait\` and \`session kill\` all still work.
 
 **Every turn of that loop gets its own report file**, and the turn number in the
 filename is what keeps them apart. See below.
@@ -284,38 +220,12 @@ truncated by a Harness that decided to repaint.
 
 The contract, in full. Every clause is load-bearing:
 
-- **The path is \`.actana/reports/<id>-r<turn>.md\`, relative to the Session's own
-  \`cwd\` on its own Core.** Dot-prefixed so it reads as machine state rather than
-  as project content, and so it falls under the ignore habits operators already
-  have for dot-directories. The Session's \`cwd\` is the anchor because it is the
-  only directory a prompt can name in a sentence: a Session knows where it is
-  standing and nothing else.
-- **Everything that reads the file back is anchored at the Project root
-  instead, and closing that gap is yours.** \`actana project cp\` takes
-  \`<project>:<path>\` and resolves \`<path>\` against the **Project**, and so does
-  every lane you hand \`await.sh\`. The two anchors are the same path only when
-  the Session runs at the Project root. So:
-
-  - **Start a lane you intend to collect with no \`--cwd\`, and the question does
-    not arise.** A Session with no \`--cwd\` runs at the Project root, which is
-    where the collectors are already anchored, and the prompt's path and the
-    lane's path are one string.
-  - **If a lane needs a \`--cwd\`, convert once, when you mint the name.**
-    \`--cwd\` is a directory **on the Core**, so the lane's path is that
-    directory *relative to the Project root*, followed by the path you put in
-    the prompt. A Project \`api\` at \`/srv/work/api\`, started with
-    \`--cwd /srv/work/api/apps/api\` and told \`.actana/reports/api-r1.md\`, is
-    collected as the lane \`api:apps/api/.actana/reports/api-r1.md\`, and read
-    with \`core exec --cwd /srv/work/api/apps/api -- tail -n 3 --\` and that same
-    prompt path. Keep both forms beside the lane, and never derive one from the
-    other twice.
-
-  \`actana project ls --json\` prints each Project's \`path\`, which is the root
-  both of those are relative to.
-
-  Getting this wrong is silent. The sub-agent writes the file it was told to
-  write, the collector looks somewhere else, and every lane in the round runs to
-  its timeout reporting nothing — with no error anywhere, because nothing failed.
+- **The path is \`.actana/reports/<id>-r<turn>.md\`, relative to the Core's home
+  (\`~\`) — every Session starts there.** Dot-prefixed so it reads as
+  machine state rather than workspace content, and so it falls under the ignore
+  habits operators already have for dot-directories. The prompt's path and the
+  lane's path are the same string: there is no Project and no \`--cwd\` to convert
+  against.
 - **You mint the filename; the sub-agent never invents one.** You are the only
   party that knows every lane in the round, so you are the only party that can
   promise no two lanes collide. **Never reuse a name** — not across lanes, not
@@ -353,14 +263,13 @@ skill you ask it to use travels there too.
 ## Collecting a report
 
 \`actana core exec\` runs one command on the Core over the core link: no terminal,
-no rendering, stdout as it was written.
+no rendering, stdout as it was written. Report paths are home-relative; expand
+them against \`$HOME\` (or pass the absolute path \`core exec\` prints from
+\`printenv HOME\`).
 
 \`\`\`bash
-# --cwd here is the directory the Session is running in: the path you gave
-# \`session start --cwd\`, or the Project's own \`path\` from \`project ls --json\`
-# when you gave none. It is what the prompt's report path is relative to.
-actana core exec --cwd <session-cwd> -- tail -n 3 -- .actana/reports/api-r1.md
-actana core exec --core <name> --cwd <session-cwd> -- cat .actana/reports/api-r1.md
+actana core exec -- tail -n 3 -- "$HOME/.actana/reports/api-r1.md"
+actana core exec --core <name> -- cat -- "$HOME/.actana/reports/api-r1.md"
 \`\`\`
 
 The order below is the whole of it:
@@ -374,16 +283,13 @@ The order below is the whole of it:
    else — quoted, inside a fenced block, in a diff — is not a finished report,
    and a search that matched it would settle a Session that has not finished.
    Read the tail and compare its last non-blank line.
-3. **Save the content locally, first.** \`actana project cp <project>:<path>
-   ./<local-path>\` copies it down. **\`<path>\` here is Project-relative** — this
-   is the step where the anchor changes, so it is the lane's path and not the
-   prompt's, and they differ by the Session's \`cwd\` whenever one was given. Give
-   every lane its own local filename, because "three Sessions, each on a
-   different thing" naturally gives every sub-agent the same basename inside its
-   own Project.
+3. **Save the content locally, first.** \`actana core exec -- cat -- <absolute-path>
+   > ./<local-path>\` copies it down. Give every lane its own local filename,
+   because "three Sessions, each on a different thing" naturally gives every
+   sub-agent the same basename under \`~\`.
 4. **Only then, after roughly 20 seconds, delete the remote file** — with
-   \`core exec\`, against the Session's own directory again, like steps 1 and 2:
-   \`actana core exec --cwd <session-cwd> -- rm -f .actana/reports/api-r1.md\`. **The
+   \`core exec\` again:
+   \`actana core exec -- rm -f -- "$HOME/.actana/reports/api-r1.md\`. **The
    delay is not tidiness.** It exists so that a Session still finishing cannot
    have its file deleted out from under it and write it again, which would
    present as a second, partial report at a path you have already retired.
@@ -409,21 +315,15 @@ a killed lane's file is settled and you may retire it at once, while a lane left
 running still wants the ~20 seconds before you delete anything.
 
 \`\`\`bash
-# Both lanes below started with no --cwd, so each Session runs at its Project
-# root and the lane path is the prompt's path unchanged. A lane started at
-# <project-root>/apps/api would instead read
-#   7f3a=api:apps/api/.actana/reports/api-r1.md
+# Every Session starts in \`~\`, so the lane path is the prompt's path unchanged.
 bash await.sh --out ./reports --timeout 1800 \\
-  7f3a=api:.actana/reports/api-r1.md \\
-  9c1b=web:.actana/reports/web-r1.md
+  7f3a=.actana/reports/api-r1.md \\
+  9c1b=.actana/reports/web-r1.md
 \`\`\`
 
-A lane is \`<session-id>=<project>:<report-path>\`, and the report path is the
-**Project's**, exactly as \`actana project cp\` takes it — not the Session's, and
-that is the one conversion this whole procedure asks of you. \`await.sh\` resolves
-it against the Project root the Core reports, so a lane carrying a bare
-prompt path from a Session started somewhere else inside the Project waits for a
-file nobody is writing, and says so only when the round's budget runs out.
+A lane is \`<session-id>=<report-path>\`, and the report path is **home-relative**
+— the same string you put in the prompt. \`await.sh\` resolves it against the
+Core's \`$HOME\`.
 
 \`--core <name>\` passes through to every call it makes; \`--kill\` stops each
 Session once its report is safely on this disk. It exits 0 when every lane's
@@ -438,28 +338,26 @@ has actually happened.
 ## Several Sessions at once
 
 There is no batch verb. Provisioning N Sessions is N \`session start\` calls, and
-that is deliberate: each one gets its own prompt, its own Harness and possibly
-its own Project, and a Session that fails to start is one failure rather than a
-failed batch.
+that is deliberate: each one gets its own prompt and its own Harness, and a
+Session that fails to start is one failure rather than a failed batch.
 
 The shape that works:
 
-1. **Ask what is missing before starting anything.** How many Sessions, what
-   each one is for, and which Project. If the operator said "three sessions,
-   each focusing on three different things", the three things are theirs to
-   name — do not invent a split and do not start work on a guess.
+1. **Ask what is missing before starting anything.** How many Sessions and what
+   each one is for. If the operator said "three sessions, each focusing on three
+   different things", the three things are theirs to name — do not invent a
+   split and do not start work on a guess.
 2. **Check \`harness ls\` once**, and use only \`available\` ids.
 3. **Mint one report path per lane before you start anything, and put it in that
    lane's prompt** along with the sub-agent declaration. The paths are what make
    the round collectable, and minting them up front is what makes them unique:
-   one \`<id>\` per lane, \`-r1\` for the first turn of each. Mint the lane's
-   **collection** path in the same breath — the same string when the lane has no
-   \`--cwd\`, and that directory in front of it when it has one.
+   one \`<id>\` per lane, \`-r1\` for the first turn of each. The collection path is
+   the same home-relative string you put in the prompt.
 
    \`\`\`bash
-   actana session start "$project" "$prompt_a" --harness "$h_a" --json > a.json
-   actana session start "$project" "$prompt_b" --harness "$h_b" --json > b.json
-   actana session start "$project" "$prompt_c" --harness "$h_c" --json > c.json
+   actana session start "$prompt_a" --harness "$h_a" --json > a.json
+   actana session start "$prompt_b" --harness "$h_b" --json > b.json
+   actana session start "$prompt_c" --harness "$h_c" --json > c.json
    \`\`\`
 
    No \`--wait\` is needed here and none is wanted: \`start\` returns as soon as the
@@ -467,7 +365,7 @@ The shape that works:
    working side by side. Take each \`sessionId\` out of its object.
 4. **Wait for the files, not for the Sessions.** One loop over every
    outstanding lane — \`bash await.sh\` is that loop — polling each lane's
-   **Project-relative** report path until its last line is \`ACT-REPORT-END\`,
+   **home-relative** report path until its last line is \`ACT-REPORT-END\`,
    saving each one down as it lands. A lane that has not finished costs a lane
    that has nothing.
 5. **\`logs\`, \`events tail\` and \`session ls\` are for watching progress, and that
@@ -539,7 +437,7 @@ breadth — so the round you are running is the whole tree.
 # larger act for no gain.
 #
 #   bash await.sh --out ./reports \\
-#     7f3a=api:.actana/reports/api-r1.md 9c1b=web:.actana/reports/web-r1.md
+#     7f3a=.actana/reports/api-r1.md 9c1b=.actana/reports/web-r1.md
 #
 # ── Why this is a file and not four paragraphs of advice ──────────────────────
 #
@@ -564,9 +462,10 @@ breadth — so the round you are running is the whole tree.
 #
 # ── What it needs ────────────────────────────────────────────────────────────
 #
-# \`actana\` on PATH and a Core selected (or \`--core <name>\`). \`node\` too, only to
-# read one field out of \`actana project ls --json\` — it ships with the CLI, so
-# this adds no dependency the CLI has not already made.
+# \`actana\` on PATH and a Core selected (or \`--core <name>\`). Every Session
+# starts in the Core's home (\`~\`), so a report path is home-relative
+# and \`core exec\` is enough to poll and copy — there is no Project and no
+# \`project cp\`.
 
 set -uo pipefail
 
@@ -581,9 +480,10 @@ usage() {
   cat <<'USAGE'
 bash await.sh [options] <lane>...
 
-  lane            <session-id>=<project>:<report-path>
-                  the report path is the Project's, exactly as \`project cp\`
-                  takes it — \`7f3a=api:.actana/reports/api-r1.md\`
+  lane            <session-id>=<report-path>
+                  the report path is relative to the Core's home (\`~\`),
+                  exactly as the prompt named it —
+                  \`7f3a=.actana/reports/api-r1.md\`
 
   --out <dir>     where saved reports land. Default: .
   --timeout <s>   give up on the round after this long. Default: 1800
@@ -598,7 +498,6 @@ USAGE
 }
 
 LANE_SESSION=()
-LANE_PROJECT=()
 LANE_REMOTE=()
 LANE_LOCAL=()
 LANE_STATE=()
@@ -636,35 +535,36 @@ while [ $# -gt 0 ]; do
 done
 
 if [ $# -eq 0 ]; then
-  echo "await.sh: name at least one lane — <session-id>=<project>:<report-path>" >&2
+  echo "await.sh: name at least one lane — <session-id>=<report-path>" >&2
   usage >&2
   exit 2
 fi
 
 for lane in "$@"; do
   session="\${lane%%=*}"
-  ref="\${lane#*=}"
-  if [ "$session" = "$lane" ] || [ -z "$session" ] || [ -z "$ref" ]; then
-    echo "await.sh: \\"$lane\\" is not <session-id>=<project>:<report-path>" >&2
+  remote="\${lane#*=}"
+  if [ "$session" = "$lane" ] || [ -z "$session" ] || [ -z "$remote" ]; then
+    echo "await.sh: \\"$lane\\" is not <session-id>=<report-path>" >&2
     exit 2
   fi
-  project="\${ref%%:*}"
-  remote="\${ref#*:}"
-  if [ "$project" = "$ref" ] || [ -z "$project" ] || [ -z "$remote" ]; then
-    echo "await.sh: \\"$ref\\" is not <project>:<report-path>" >&2
-    exit 2
-  fi
+  # Refuse a leftover Project-shaped lane (\`id=project:path\`) so a skill that
+  # still remembered Projects fails loudly instead of waiting on a path nobody
+  # will write.
+  case "$remote" in
+    *:*)
+      echo "await.sh: \\"$lane\\" still uses <project>:<path> — lanes are home-relative now" >&2
+      exit 2
+      ;;
+  esac
   # The destination carries the Session id, because the basename alone does not
   # identify a lane. "Three Sessions, each on a different thing" naturally gives
-  # every sub-agent the same report filename inside its own Project, and two
-  # lanes writing \`report.md\` into one directory would overwrite each other,
-  # report \`saved\` twice naming the same file, and under --kill destroy both
-  # Sessions — so the second lane's bytes were saved and the first lane's were
-  # lost anyway. That is the failure "save before deleting" exists to prevent,
-  # arriving by a different route.
+  # every sub-agent the same report filename, and two lanes writing \`report.md\`
+  # into one directory would overwrite each other, report \`saved\` twice naming
+  # the same file, and under --kill destroy both Sessions — so the second lane's
+  # bytes were saved and the first lane's were lost anyway. That is the failure
+  # "save before deleting" exists to prevent, arriving by a different route.
   safe_session="$(printf '%s' "$session" | tr -c 'A-Za-z0-9._-' '_')"
   LANE_SESSION+=("$session")
-  LANE_PROJECT+=("$project")
   LANE_REMOTE+=("$remote")
   LANE_LOCAL+=("$OUT_DIR/\${safe_session}-$(basename "$remote")")
   LANE_STATE+=("waiting")
@@ -688,35 +588,14 @@ done
 
 mkdir -p "$OUT_DIR" || exit 1
 
-# The Project's path on the Core, so the tail below can name an absolute file.
-# Read once per Project rather than per tick: a Project's path is fixed for the
-# life of the Project — no verb edits one — so re-reading it every 15 seconds
-# would be asking a settled question over and over.
-project_root() {
-  actana project ls --json "\${CORE_ARGS[@]+"\${CORE_ARGS[@]}"}" 2>/dev/null |
-    node -e '
-      let raw = "";
-      process.stdin.on("data", (chunk) => (raw += chunk));
-      process.stdin.on("end", () => {
-        let rows = [];
-        try { rows = JSON.parse(raw); } catch { process.exit(1); }
-        const want = process.argv[1];
-        const hit = rows.find((row) => row.name === want || row.projectId === want);
-        if (!hit || !hit.path) process.exit(1);
-        process.stdout.write(hit.path);
-      });
-    ' "$1"
-}
-
-ROOTS=()
-for index in "\${!LANE_PROJECT[@]}"; do
-  root="$(project_root "\${LANE_PROJECT[$index]}")"
-  if [ -z "$root" ]; then
-    echo "await.sh: no Project named \\"\${LANE_PROJECT[$index]}\\" on this Core" >&2
-    exit 1
-  fi
-  ROOTS+=("$root")
-done
+# Every Session starts in the Core's home. Resolve \`$HOME\` once
+# so the poll below can name an absolute file without asking about Projects.
+HOME_ROOT="$(actana core exec "\${CORE_ARGS[@]+"\${CORE_ARGS[@]}"}" -- printenv HOME 2>/dev/null)"
+home_status=$?
+if [ "$home_status" -ne 0 ] || [ -z "$HOME_ROOT" ]; then
+  echo "await.sh: could not read HOME on this Core (actana core exec -- printenv HOME)" >&2
+  exit 1
+fi
 
 # Lesson 1. The sentinel has to be the file's LAST line, so this reads the tail
 # and nothing else. A few lines rather than exactly one, because a trailing
@@ -759,7 +638,7 @@ while [ "$pending" -gt 0 ]; do
   for index in "\${!LANE_SESSION[@]}"; do
     [ "\${LANE_STATE[$index]}" = "waiting" ] || continue
 
-    remote_path="\${ROOTS[$index]}/\${LANE_REMOTE[$index]}"
+    remote_path="\${HOME_ROOT}/\${LANE_REMOTE[$index]}"
     tail_text="$(actana core exec "\${CORE_ARGS[@]+"\${CORE_ARGS[@]}"}" -- tail -n 3 -- "$remote_path" 2>/dev/null)"
     status=$?
 
@@ -776,10 +655,10 @@ while [ "$pending" -gt 0 ]; do
     last_line_is_sentinel "$tail_text" || continue
 
     # Lesson 2. Save first. The Session is not touched until the bytes are on
-    # this disk and the file we wrote is non-empty.
+    # this disk and the file we wrote is non-empty. \`core exec -- cat\` is the
+    # copy via \`core exec -- cat\`.
     local_path="\${LANE_LOCAL[$index]}"
-    if ! actana project cp "\${CORE_ARGS[@]+"\${CORE_ARGS[@]}"}" \\
-      "\${LANE_PROJECT[$index]}:\${LANE_REMOTE[$index]}" "$local_path" >/dev/null 2>&1; then
+    if ! actana core exec "\${CORE_ARGS[@]+"\${CORE_ARGS[@]}"}" -- cat -- "$remote_path" >"$local_path" 2>/dev/null; then
       LANE_STATE[$index]="failed"
       LANE_NOTE[$index]="the report finished but could not be copied down — it is still on the Core"
       pending=$((pending - 1))
@@ -852,9 +731,9 @@ what governs the work. This governs only how the answer gets back.
 ## The report file
 
 - **The path is \`.actana/reports/<id>-r<turn>.md\`, relative to this Session's
-  own working directory — its \`cwd\` on the machine it is running on.** Create
+  own working directory — the Core's home (\`~\`) on the machine it is running on.** Create
   \`.actana/reports\` if it is not there. It is dot-prefixed because it is machine
-  state rather than project content. Write it exactly where the prompt said,
+  state rather than workspace content. Write it exactly where the prompt said,
   and do not helpfully move it somewhere tidier: the Session that woke you
   converts that path into one it can read back, and a file at a different place
   is a file nobody collects.

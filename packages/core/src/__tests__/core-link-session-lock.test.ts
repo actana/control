@@ -6,11 +6,11 @@ import {
   type WebSocketLike,
   type WebSocketServerLike,
 } from "../pty-core-link-server";
+import type { CoreSessionRow } from "@actana/shared/core-query";
 import type { PtyCore, PtyCoreEvent } from "../pty-manager";
 import {
   SESSION_LOCKED_ERROR_CODE,
   type CoreLinkEvent,
-  type CoreLinkSessionRow,
 } from "@actana/sdk/core";
 
 // One Session, at most one writer, named by the core-link connection
@@ -168,9 +168,8 @@ function mockPromptPort() {
 /** A mutation port that answers every `update`/`delete` for a known session. */
 function mockMutationPort(): CoreMutationPort & { mutations: string[] } {
   const mutations: string[] = [];
-  const snapshot = (sessionId: string): CoreLinkSessionRow => ({
+  const snapshot = (sessionId: string): CoreSessionRow => ({
     sessionId,
-    projectId: "p1",
     title: "t",
     titleManuallySet: false,
     claudeSessionId: null,
@@ -183,7 +182,6 @@ function mockMutationPort(): CoreMutationPort & { mutations: string[] } {
   });
   return {
     mutations,
-    mutateProject: () => null,
     mutateSession: (mutation) => {
       mutations.push(`${mutation.op}:${"sessionId" in mutation ? mutation.sessionId : "-"}`);
       return "sessionId" in mutation && mutation.sessionId ? snapshot(mutation.sessionId) : null;
@@ -208,7 +206,7 @@ describe("the Session write lock (issue 144, ADR 0024 D3-D7, D10)", () => {
 
   /** Spawn a Session on one connection and hand back its ptyId. */
   async function spawn(ws: FakeWebSocket, sessionId: string): Promise<string> {
-    ws.receive({ type: "spawn", reqId: `spawn-${sessionId}`, opts: { sessionId, cwd: "/w", command: "c" } });
+    ws.receive({ type: "spawn", reqId: `spawn-${sessionId}`, opts: { sessionId,  command: "c" } });
     await vi.waitFor(() => expect(ws.ofType("spawned").length).toBeGreaterThan(0));
     const spawned = ws.ofType("spawned").at(-1)!;
     return String(spawned.ptyId);
@@ -399,7 +397,7 @@ describe("the Session write lock (issue 144, ADR 0024 D3-D7, D10)", () => {
       other.receive({
         type: "sessionsMutate",
         reqId: "o1",
-        mutation: { op: "create", projectId: "p1", title: "new", agent: "claude-code" },
+        mutation: { op: "create", title: "new", agent: "claude-code" },
       });
 
       expect(other.answerTo("o1")).toMatchObject({ type: "sessionsMutateResult" });
@@ -470,7 +468,7 @@ describe("the Session write lock (issue 144, ADR 0024 D3-D7, D10)", () => {
       other.receive({
         type: "spawn",
         reqId: "o1",
-        opts: { sessionId: "session-a", cwd: "/w", command: "c" },
+        opts: { sessionId: "session-a", command: "c" },
       });
 
       expect(other.answerTo("o1")).toMatchObject({

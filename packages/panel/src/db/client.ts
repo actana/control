@@ -9,7 +9,7 @@ import {
   reconcileStaleSessionsOnBoot,
   restrictDbFilePermissions,
   tableExists,
-} from "@actana/shared/schema-bootstrap";
+} from "./schema-bootstrap";
 
 export {
   backfillTokenUsageRollup,
@@ -17,7 +17,7 @@ export {
   repairProjectIndexes,
   reconcileStaleSessionsOnBoot,
   restrictDbFilePermissions,
-} from "@actana/shared/schema-bootstrap";
+} from "./schema-bootstrap";
 
 const migrationFiles = import.meta.glob("./migrations/*.sql", {
   eager: true,

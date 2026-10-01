@@ -22,7 +22,7 @@ let server: http.Server;
 let base: string;
 let projects: Record<string, string> = {};
 
-const filesPort: CoreFilesPort = { projectRoot: (id) => projects[id] ?? null };
+const filesPort: CoreFilesPort = { workspaceRoot: () => Object.values(projects)[0] ?? null };
 
 function startServer(opts: Parameters<typeof createCoreFilesRequestHandler>[0] = { filesPort }): Promise<void> {
   const routes = createCoreFilesRequestHandler(opts);
@@ -272,11 +272,11 @@ describe("sha256 — on request, not eagerly (ADR 0027 D6)", () => {
 // ─── Refusals ────────────────────────────────────────────────────────────────
 
 describe("refusals", () => {
-  it("404s an unknown Project, with the same code the read route uses", async () => {
+  it("404s when this Core has no workspace to serve, with the same code the read route uses", async () => {
     const res = await call("GET", "/v1/projects/nope/files/list");
 
     expect(res.status).toBe(404);
-    expect(json(res.body).code).toBe("project-not-found");
+    expect(json(res.body).code).toBe("not-found");
   });
 
   it("404s a path that is not there, before the stream starts rather than as a line in it", async () => {
