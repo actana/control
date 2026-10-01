@@ -12,14 +12,20 @@ export type ApiPrincipal =
   | { kind: "session"; ownerId: number }
   | { kind: "api-key"; ownerId: number; keyId: string; scope: ApiKeyScope };
 
-// A bare "Bearer" is still an attempt to present a key, and fails as one; it does not fall back to the cookie.
-const BEARER = /^Bearer(?:[ \t]+(.*))?$/i;
+const BEARER = /^Bearer[ \t]+(.+)$/i;
+const KEY_TOKEN_PREFIX = "ak_";
 
-/** The key a request presents, or null when it presents none (a cookie, or a scheme that is not Bearer). */
+/**
+ * The key a request presents, or null when it presents none: a cookie, a scheme
+ * that is not Bearer, or a Bearer token that is not key-shaped (the hook
+ * endpoints' machine token rides the same header and is the session gate's to
+ * judge, as it always was). Anything shaped `ak_…` is a key being presented,
+ * and fails as one if it is not real.
+ */
 function presentedApiKey(request: Request): string | null {
   const header = request.headers.get("authorization");
-  const match = header ? BEARER.exec(header.trim()) : null;
-  return match ? (match[1] ?? "").trim() : null;
+  const token = header ? BEARER.exec(header.trim())?.[1]?.trim() : undefined;
+  return token?.startsWith(KEY_TOKEN_PREFIX) ? token : null;
 }
 
 /**

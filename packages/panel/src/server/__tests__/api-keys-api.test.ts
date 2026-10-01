@@ -173,9 +173,16 @@ describe("a revoked key", () => {
 describe("what a key presents is judged by the key alone", () => {
   it("answers 401 to an unknown or malformed key, even with a valid session cookie beside it", async () => {
     const real = await createKey({ name: "k" });
-    for (const bearer of ["ak_1_" + "A".repeat(43), "garbage", "", real.key + "x"]) {
+    for (const bearer of ["ak_1_" + "A".repeat(43), "ak_", "ak_1_short", "ak_9_" + "A".repeat(43), real.key + "x"]) {
       expect((await call("/api/cores", { bearer, cookie: true })).status, bearer).toBe(401);
       expect((await call("/api/cores", { bearer })).status, bearer).toBe(401);
+    }
+  });
+
+  it("leaves a Bearer token that is not key-shaped to the session gate, as before", async () => {
+    for (const bearer of ["garbage", ""]) {
+      expect((await call("/api/cores", { bearer })).status, bearer).toBe(401);
+      expect((await call("/api/cores", { bearer, cookie: true })).status, bearer).toBe(200);
     }
   });
 
