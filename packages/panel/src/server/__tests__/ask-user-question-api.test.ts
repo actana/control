@@ -11,11 +11,10 @@ const testDb = await openPanelTestDb();
 const { handleApiRequest } = await import("../api-router");
 const { operatorSessionCookie } = await import("./_operator-session");
 const { getOrCreateApiToken } = await import("../services/settings");
-const { createProject } = await import("../services/projects");
 const { createSession, getSession } = await import("../services/sessions");
 const { getPendingQuestion } = await import("../services/pending-questions");
 const { getDb } = await import("~/db/client");
-const { projects, sessions, groups, appSettings } = await import("~/db/schema");
+const { sessions, appSettings } = await import("~/db/schema");
 const { TITLE_WAITING } = await import("~/lib/session-sentinels");
 
 const LOOPBACK_HEADERS = { origin: "http://127.0.0.1:5173" };
@@ -81,16 +80,11 @@ async function postAskUserQuestion(sessionId: string): Promise<Response | null> 
 function resetDb() {
   const db = getDb();
   db.delete(sessions).run();
-  db.delete(projects).run();
-  db.delete(groups).run();
   db.delete(appSettings).run();
 }
 
 function createHookSession() {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mc-ask-question-proj-"));
-  const project = createProject({ name: "ask-question", path: dir });
   return createSession({
-    projectId: project.id,
     title: TITLE_WAITING,
     agent: "claude-code",
     claudeSessionId: SESSION_ID,

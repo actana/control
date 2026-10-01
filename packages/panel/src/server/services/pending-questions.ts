@@ -8,21 +8,18 @@ const pending = new Map<string, PendingQuestion>();
 
 export function setPendingQuestion(input: {
   sessionId: string;
-  projectId: string;
   questions: HarnessQuestion[];
   id?: string;
 }): PendingQuestion {
   const question: PendingQuestion = {
     id: input.id?.trim() || randomUUID(),
     sessionId: input.sessionId,
-    projectId: input.projectId,
     questions: input.questions,
     createdAt: Date.now(),
   };
   pending.set(input.sessionId, question);
   events.emit("session:question", {
     sessionId: question.sessionId,
-    projectId: question.projectId,
     questionId: question.id,
     questions: question.questions,
   });
@@ -37,8 +34,5 @@ export function clearPendingQuestion(sessionId: string): void {
   const existing = pending.get(sessionId);
   if (!existing) return;
   pending.delete(sessionId);
-  events.emit("session:question-cleared", {
-    sessionId,
-    projectId: existing.projectId,
-  });
+  events.emit("session:question-cleared", { sessionId });
 }

@@ -1,7 +1,7 @@
 // Event-log recorder — wires the stateful server's in-process AppEvent stream
 // into the monotonic per-Core event log (the `event_log` SQLite table).
 //
-// The server emits session/hook/project events via the `events` emitter
+// The server emits session/hook events via the `events` emitter
 // (src/server/events.ts). This module subscribes for the life of the server
 // process and appends each as a row in `event_log`, so a reconnecting Panel
 // can replay the missed event/session timeline via the core-link's `subscribe`

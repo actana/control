@@ -5,18 +5,9 @@ export type TokenTotals = {
   cacheReadTokens: number;
 };
 
-export type ProjectUsage = TokenTotals & {
-  projectId: string;
-  name: string;
-  iconColor: string;
-  icon: string;
-};
-
 export type SessionUsage = TokenTotals & {
   sessionId: string;
   title: string;
-  projectId: string;
-  projectName: string;
   lastTs: number | null;
 };
 
@@ -27,7 +18,6 @@ export type DailyUsage = TokenTotals & {
 
 export type UsageSummary = {
   totals: TokenTotals;
-  perProject: ProjectUsage[];
   perDay: DailyUsage[];
   perSession: SessionUsage[];
   /** Last successful sync time (epoch ms), null if never synced. */

@@ -13,7 +13,6 @@ import {
 
 const baseSession = {
   id: "session-1",
-  projectId: "project-1",
   title: "Session",
   titleManuallySet: false,
   icon: null,

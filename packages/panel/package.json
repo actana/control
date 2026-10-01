@@ -18,7 +18,7 @@
     "db:generate": "drizzle-kit generate"
   },
   "dependencies": {
-    "@actana/sdk": "0.6.0-next.0",
+    "@actana/sdk": "0.6.0-next.2",
     "@actana/shared": "workspace:*",
     "@codemirror/lang-cpp": "6.0.3",
     "@codemirror/lang-css": "6.3.1",

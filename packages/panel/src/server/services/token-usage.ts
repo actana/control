@@ -3,7 +3,6 @@ import * as os from "node:os";
 import * as path from "node:path";
 import type {
   DailyUsage,
-  ProjectUsage,
   SessionUsage,
   TokenTotals,
   UsageSummary,
@@ -15,7 +14,6 @@ import {
   ingestTokenUsageTx,
   selectTotals,
   selectTotalsPerDaySince,
-  selectTotalsPerProject,
   selectTotalsPerSession,
   type TokenUsageIngestRow,
 } from "../repositories/token-usage.repo";
@@ -176,7 +174,6 @@ function doSync(): number {
         rows.push({
           id: `tu-${parsed.uuid}`,
           sessionId: row.sessionId,
-          projectId: row.projectId,
           claudeSessionId: sessionId,
           messageUuid: parsed.uuid,
           model: parsed.model,
@@ -192,7 +189,6 @@ function doSync(): number {
         sessionOffset: {
           claudeSessionId: sessionId,
           sessionId: row.sessionId,
-          projectId: row.projectId,
           byteOffset: newOffset,
         },
       });
@@ -206,10 +202,6 @@ const DEFAULT_USAGE_DAYS = 30;
 export function getUsageSummary(daysBack: number = DEFAULT_USAGE_DAYS): UsageSummary {
   const totalsRow = selectTotals();
   const totals: TokenTotals = totalsRow ?? { ...EMPTY_TOTALS };
-
-  const perProject: ProjectUsage[] = selectTotalsPerProject().sort(
-    (a, b) => totalOf(b) - totalOf(a),
-  );
 
   const sinceMs = startOfLocalDay(Date.now() - (daysBack - 1) * MS_PER_DAY);
   const perDayRows = selectTotalsPerDaySince(sinceMs);
@@ -236,7 +228,6 @@ export function getUsageSummary(daysBack: number = DEFAULT_USAGE_DAYS): UsageSum
 
   return {
     totals,
-    perProject,
     perDay,
     perSession,
     lastSyncedAt: getTokenUsageLastSyncedAt(),

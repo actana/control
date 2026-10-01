@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useRouter } from "@tanstack/react-router";
 import { toast } from "sonner";
@@ -34,13 +34,9 @@ export function CorePage({ coreId, tab }: { coreId: string; tab: CoreTab }) {
   const queryClient = useQueryClient();
   const cliAvailability = useCliAvailability(coreId);
   const { cores, fleet, loading } = useFleet();
-  const { togglePanel, panelOpen, setHomeActive } = useUserTerminals();
+  const { togglePanel, panelOpen } = useUserTerminals();
   const [showNew, setShowNew] = useState(false);
   const [rememberTick, setRememberTick] = useState(0);
-  useEffect(() => {
-    setHomeActive(true);
-    return () => setHomeActive(false);
-  }, [setHomeActive]);
   const core = cores.find((c) => c.id === coreId);
   const rows = useMemo(() => fleet.rows.filter((r) => r.coreId === coreId), [fleet.rows, coreId]);
   const remembered = useMemo(() => {
@@ -83,16 +79,11 @@ export function CorePage({ coreId, tab }: { coreId: string; tab: CoreTab }) {
           sessionId,
           title: TITLE_WAITING,
           agent,
-        } as Parameters<typeof mutateSessionForCore>[1]);
+        });
         if (!snapshot) throw new Error("Core did not return a session snapshot");
         // The workspace finds the Session in its list, so put it there first.
-        appendOptimisticSession(
-          queryClient,
-          coreId,
-          { ...remoteSessionFromSnapshot(snapshot), projectId: coreId },
-          coreId,
-        );
-        void queryClient.invalidateQueries({ queryKey: sessionsCacheKey(coreId, coreId) });
+        appendOptimisticSession(queryClient, coreId, remoteSessionFromSnapshot(snapshot));
+        void queryClient.invalidateQueries({ queryKey: sessionsCacheKey(coreId) });
         // The pane consumes the prompt once, at the Session's first spawn.
         if (prompt.trim()) setPendingInitialInput(snapshot.sessionId, prompt.trim());
         setShowNew(false);
@@ -156,10 +147,7 @@ export function CorePage({ coreId, tab }: { coreId: string; tab: CoreTab }) {
               {rows.map((row) => (
                 <FleetSessionRow
                   key={row.sessionId}
-                  row={{
-                    ...row,
-                    projectId: "projectId" in row && row.projectId ? String(row.projectId) : coreId,
-                  }}
+                  row={row}
                   onOpen={() => openWorkspace(row.sessionId)}
                 />
               ))}

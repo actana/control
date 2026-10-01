@@ -57,9 +57,6 @@ export function GeneralSettingsPage() {
     sessionFinishToastEnabled: toastEnabled,
     sessionFinishOsNotificationEnabled: osNotificationEnabled,
     notificationSoundEnabled,
-    projectsDashboardView: settings?.projectsDashboardView ?? null,
-    activeProjectGroup: settings?.activeProjectGroup ?? null,
-    collapsedProjectGroups: settings?.collapsedProjectGroups ?? null,
     terminalZoomLevel: settings?.terminalZoomLevel ?? DEFAULT_TERMINAL_ZOOM_LEVEL,
     sessionHeaderButtons:
       settings?.sessionHeaderButtons ?? DEFAULT_SESSION_HEADER_BUTTON_VISIBILITY,
@@ -76,8 +73,6 @@ export function GeneralSettingsPage() {
     providerUsageEnabled: settings?.providerUsageEnabled ?? false,
     providerUsageIds: settings?.providerUsageIds ?? ["claude", "codex", "cursor"],
     harnessLauncherConfig: settings?.harnessLauncherConfig ?? DEFAULT_AGENT_LAUNCHER_CONFIG,
-    showGroupSwitcher: settings?.showGroupSwitcher ?? true,
-    showProjectHeaderGroup: settings?.showProjectHeaderGroup ?? true,
     ...queryClient.getQueryData<AppSettings>(queryKeys.settings),
     ...patch,
   });

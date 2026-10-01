@@ -204,21 +204,22 @@ describe("panel-link router · fan-out", () => {
   it("forwards a query to the addressed Core and answers under the same reqId", async () => {
     const link = source.bring("core_a");
     link.answers = (frame) => ({
-      type: "projectsListResult",
+      type: "sessionRowsListResult",
       reqId: frameReqId(frame),
-      projects: [],
+      sessions: [],
+      archivedCount: 0,
     });
     const { tab, session } = openTab();
 
     await session.receive({
       t: "core",
       coreId: "core_a",
-      frame: { type: "projectsList", reqId: "q7" },
+      frame: { type: "sessionRowsList", reqId: "q7" },
     });
 
-    expect(link.sent.map((f) => f.type)).toEqual(["projectsList"]);
+    expect(link.sent.map((f) => f.type)).toEqual(["sessionRowsList"]);
     expect(tab.coreFrames("core_a")).toEqual([
-      { type: "projectsListResult", reqId: "q7", projects: [] },
+      { type: "sessionRowsListResult", reqId: "q7", sessions: [], archivedCount: 0 },
     ]);
   });
 
@@ -235,11 +236,11 @@ describe("panel-link router · fan-out", () => {
     await session.receive({
       t: "core",
       coreId: "core_b",
-      frame: { type: "projectsList", reqId: "q2" },
+      frame: { type: "archivedSessionRowsList", reqId: "q2" },
     });
 
     expect(source.links.get("core_a")!.sent.map((f) => f.type)).toEqual(["sessionRowsList"]);
-    expect(source.links.get("core_b")!.sent.map((f) => f.type)).toEqual(["projectsList"]);
+    expect(source.links.get("core_b")!.sent.map((f) => f.type)).toEqual(["archivedSessionRowsList"]);
   });
 
   it("answers for an unreachable Core with an error frame, not silence", async () => {

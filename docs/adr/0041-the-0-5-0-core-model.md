@@ -287,8 +287,10 @@ fixed list is answered `spawnError` naming the field, and nothing is spawned. A 
 `archivedSessionRowsList`, `sessionsList`) or a `sessionsMutate` `create` that carries a field it no longer takes is
 answered `error`, naming it. A frame the Core no longer handles (`projectsList`, `projectsMutate`) is answered
 `error` with `unhandled frame type`. It is a refusal and not a silent ignore, so a 0.4.x client learns why, instead of
-starting a Session somewhere other than where it asked. The published `@actana/sdk` still sends these fields, so until
-actana/client#10 ships no SDK client can start a Session on a 0.5.0 Core.
+starting a Session somewhere other than where it asked. Since `@actana/sdk` 0.6.0-next.2 (protocol 0.19.0, 2026-10-01) the
+codec no longer parses the two retired frames, so the Core names them from the refused text and still carries the caller's
+`reqId`; any other frame the codec refuses is answered `invalid frame`. An SDK older than that still sends these fields and
+cannot start a Session on a 0.5.0 Core.
 
 **D28 — A database from before 0.5.0 is refused, not adopted.** The Core's database holds `sessions` and `event_log`
 and nothing else. A boot that finds any other table, or a column of `sessions` it does not define, throws and says to

@@ -15,8 +15,7 @@ function session(over: Partial<OpenTerminal> = {}): OpenTerminal {
     ptyId: null,
     startCommand: "claude",
     dangerouslySkipPermissions: false,
-    cwd: "/work",
-    project: { id: "p1" },
+    coreId: "core-a",
     session: { id: "t1" },
     ...over,
   } as OpenTerminal;
@@ -49,16 +48,6 @@ describe("archiveOpenSession", () => {
       sessionId: "t1",
       archived: true,
     });
-  });
-
-  it("passes a Panel-owned session's null coreId straight through", async () => {
-    const { client } = queryClientStub();
-
-    await archiveOpenSession(session({ coreId: null }), vi.fn().mockResolvedValue(undefined), client as never, {
-      skipInvalidate: true,
-    });
-
-    expect(mutateSessionForCore.mock.calls[0]?.[0]).toBeNull();
   });
 
   it("still archives when closing the PTY fails", async () => {

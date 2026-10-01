@@ -38,14 +38,14 @@ import { isEditableTarget, useHotkey } from "~/lib/use-hotkey";
 import { useUserTerminals } from "~/lib/user-terminal-store";
 import { queryKeys, sessionsCacheKey, useSettings, useSessions } from "~/queries";
 import type { Harness } from "@actana/shared/domain";
-import { scopeKeyForProject } from "~/lib/scoped-project";
+import { coreScopeKey } from "~/lib/core-scope";
 import { GridLayoutQuickPicker } from "./GridLayoutQuickPicker";
 import { TerminalPane } from "./TerminalPane";
 import type { Session } from "~/db/schema";
 
 // Grid layout is stored per scope key so each
-// project keeps its own rows, order, and sizing — the grid mirrors the single
-// panel view's scoping instead of pooling every project's sessions together.
+// Core keeps its own rows, order, and sizing — the grid mirrors the single
+// panel view's scoping instead of pooling every Core's sessions together.
 const GRID_LAYOUT_PREFIX = "mc.gridLayout";
 const DRAG_THRESHOLD_PX = 4;
 // Cell gap / outer padding of the grid (kept in sync with the container style
@@ -62,7 +62,7 @@ const GRID_PADDING = 8;
 // point on a session?" has to account for (#401, `board-drop-arbiter.ts`).
 const HANDLE_HIT = GRID_GAP;
 // Cards glide between grid slots on reorder — same timing/easing as the
-// sidebar's pinned-project slide so the two motions feel related.
+// Core rail's motion so the two feel related.
 const FLIP_ID = "grid-cell-flip";
 const FLIP_DURATION_MS = 140;
 const FLIP_EASING = "cubic-bezier(0.4, 0, 0.2, 1)";
@@ -173,7 +173,7 @@ function saveHiddenSessionIds(scopeKey: string, ids: ReadonlySet<string>): void 
 }
 
 // The expanded (spotlighted) cell is stored per scope alongside the layout, so
-// an expansion survives switching to another project and back. A stale id
+// an expansion survives switching to another Core and back. A stale id
 // (archived/closed session) is pruned against the live session list by the
 // reconcile effect after load.
 const GRID_EXPANDED_PREFIX = "mc.gridExpanded";
@@ -470,7 +470,7 @@ function moveCellInLayout(
  *  matches the route's `selectedScopeKey` exactly so we can filter by it.
  *  Exported so the header's grid-layout dropdown scopes sessions identically. */
 export function scopeKeyFor(session: OpenTerminal): string {
-  return scopeKeyForProject(session.project);
+  return coreScopeKey(session.coreId);
 }
 
 type PointerDragState = {
@@ -608,7 +608,6 @@ const GridCell = memo(function GridCell({
       >
         {mounted && (
           <TerminalPane
-            project={session.project}
             session={session.session}
             descriptor={session}
             isLast
@@ -653,20 +652,15 @@ function HiddenSessionsBar({
 }: {
   sessions: OpenTerminal[];
   flush: boolean;
-  /** Which Core owns the sessions in this bar. Forwarded to the scoped-sessions
-   *  query so the transport layer — not this component — picks the Core's link
-   *  or the Panel's own rows. */
-  coreId: string | null;
+  /** Which Core owns the sessions in this bar. */
+  coreId: string;
   onRestore: (sessionId: string) => void;
   onRestoreAll: () => void;
 }) {
   // Live session rows so titles/statuses keep updating while hidden (the store's
   // session is a snapshot from open time). Every session in the bar belongs to
-  // the grid's scope, so one query covers all of them. `useSessions` reads the
-  // owning Core off the query key so this component doesn't branch on
-  // `coreId`; picking the transport is the query layer's job (ADR-0005).
-  const scopeProject = sessions[0]?.project;
-  const { data: liveSessions } = useSessions(scopeProject?.id ?? "", { coreId });
+  // the grid's scope, so one query covers all of them.
+  const { data: liveSessions } = useSessions(coreId);
 
   return (
     <div
@@ -781,7 +775,7 @@ function HiddenSessionsBar({
 }
 
 /**
- * Grid of the current project/scope's open sessions, laid out as authored rows.
+ * Grid of the current Core's open sessions, laid out as authored rows.
  * Each cell reuses TerminalPane (which carries its own title header + expand/
  * close controls). Every row sizes its own columns independently; expanding a
  * cell fills the grid; closing archives the session. Cards can be reordered by
@@ -790,18 +784,15 @@ function HiddenSessionsBar({
  * per scope to localStorage.
  */
 export function SessionGrid({
-  scopeKey,
-  coreId = null,
+  coreId,
   emptyHeader,
   filter = "active",
   pinnedSessionIds,
   onTogglePinned,
   pinningSessionIds,
 }: {
-  scopeKey: string;
-  /** Which Core owns the underlying sessions (Singular UI across Cores). Null
-   *  means the Panel's own rows. */
-  coreId?: string | null;
+  /** The Core whose sessions the grid shows; a Core is the grid's one scope. */
+  coreId: string;
   /** "Sessions" title row rendered above the empty state (all sessions hidden). */
   emptyHeader?: ReactNode;
   /** Which scope the grid renders. "pinned" packs the grid down to the pinned
@@ -826,6 +817,7 @@ export function SessionGrid({
     activeSessionIdFor,
     consumeGridFocusRequest,
   } = useTerminals();
+  const scopeKey = coreScopeKey(coreId);
   const queryClient = useQueryClient();
   const userTerminals = useUserTerminals();
   const { bindings } = useKeybindings();
@@ -835,7 +827,7 @@ export function SessionGrid({
   // centred on the 0-width seam.
   const gridGap = 0;
   const gridPad = 0;
-  // Persisted per scope so an expansion survives switching projects and back
+  // Persisted per scope so an expansion survives switching Cores and back
   // (the scope-swap block reloads it; the reconcile effect prunes a stale id).
   const [expandedSessionId, setExpandedSessionId] = useState<string | null>(() =>
     loadExpandedSessionId(scopeKey),
@@ -893,7 +885,7 @@ export function SessionGrid({
   );
 
   // Only this scope's *visible* sessions belong to the rendered grid (matches
-  // the single-panel view's scoping) — so switching projects shows a
+  // the single-panel view's scoping) — so switching Cores shows a
   // different grid, and hidden sessions drop out of the layout entirely.
   const scopedSessions = useMemo(
     () => allScopedSessions.filter((s) => !hiddenSessionIds.has(s.sessionId)),
@@ -964,7 +956,7 @@ export function SessionGrid({
   }, [scopeKey, hiddenSessionIds]);
 
   // Persist the expanded cell whenever it changes, so an expansion survives
-  // switching projects and back (the scope-swap block reloads it per scope).
+  // switching Cores and back (the scope-swap block reloads it per scope).
   useEffect(() => {
     saveExpandedSessionId(scopeKey, expandedSessionId);
   }, [scopeKey, expandedSessionId]);
@@ -1003,11 +995,11 @@ export function SessionGrid({
   // Progressive pane mounting: how many panes may be mounted right now. Starts
   // at 0 — the first grid paint is just the empty cell frames — and grows every
   // frame (see the budget loop below) until nothing is deferred. Declared above
-  // the scope swap so a project switch can reset it.
+  // the scope swap so a Core switch can reset it.
   const [paneMountBudget, setPaneMountBudget] = useState(0);
 
   // Switch scopes during render (React's "adjust state when a prop changes"
-  // pattern) so the previous project's rows never paint for the new one — which
+  // pattern) so the previous Core's rows never paint for the new one — which
   // would flash the wrong layout and, worse, carry the previous scope's
   // expandedSessionId over, matching no new cell and hiding every cell for a frame.
   // Each per-scope slice (layout, hidden set, column lock, expanded cell) is
@@ -1033,7 +1025,7 @@ export function SessionGrid({
 
   // Reconcile the layout against the scope's live sessions. On a scope switch,
   // reload that scope's saved layout (or seed a fresh square one) rather than
-  // carrying the previous project's rows over. A layout effect so the placement
+  // carrying the previous Core's rows over. A layout effect so the placement
   // re-render happens before paint: a new (or renamed) session must never paint
   // in the transient trailing "extras" row — that one-frame squish is what the
   // FLIP effect would otherwise animate across every row.
@@ -1073,7 +1065,7 @@ export function SessionGrid({
 
     // A session removed out from under a stale expandedSessionId must not leave the
     // grid with reorder/resize disabled while no cell is visibly expanded. (The
-    // scope-swap above already cleared transient state on a project change.)
+    // scope-swap above already cleared transient state on a Core change.)
     setExpandedSessionId((prev) => (prev && !idSet.has(prev) ? null : prev));
   }, [scopedSessions, scopeKey, columnLimit]);
 
@@ -1144,7 +1136,7 @@ export function SessionGrid({
       )?.getAttribute("data-session-id");
       if (id) {
         lastFocusedSessionIdRef.current = id;
-        // Also surface it to the store so the project route can anchor a new
+        // Also surface it to the store so the Core workspace route can anchor a new
         // session beside this pane even after a toolbar-button click.
         noteGridFocusedSession(id);
       }
@@ -1160,7 +1152,7 @@ export function SessionGrid({
   useEffect(() => {
     if (!gridFocusRequest) return;
     // Claim the request exactly once (store-side ref): the request state lingers
-    // after this effect runs, and the grid remounts across project switches —
+    // after this effect runs, and the grid remounts across Core switches —
     // without the claim a stale request would replay on mount and un-hide the
     // (possibly deliberately hidden) session it targeted.
     if (!consumeGridFocusRequest(gridFocusRequest.nonce)) return;
@@ -1265,13 +1257,13 @@ export function SessionGrid({
   }, [resizing]);
 
   // Whether closing this session needs the running-session warning. Prefer the
-  // owning project's live cache; when it hasn't populated yet (right after a
+  // owning Core's live cache; when it hasn't populated yet (right after a
   // reload into grid view) the persisted snapshot can be stale, so err toward
   // confirming rather than silently killing a possibly-running agent.
   const shouldConfirmClose = useCallback(
     (session: OpenTerminal): boolean => {
       const sessions = queryClient.getQueryData<Session[]>(
-        sessionsCacheKey(session.project.id, session.coreId),
+        sessionsCacheKey(session.coreId),
       );
       if (!sessions) return true;
       const live = sessions.find((t) => t.id === session.sessionId);
@@ -1309,9 +1301,9 @@ export function SessionGrid({
     return ids[idx - 1] ?? ids[idx + 1] ?? null;
   }, []);
 
-  // Close + archive one session (works across projects). Hand activation to the
+  // Close + archive one session (works across Cores). Hand activation to the
   // closing cell's neighbour so the grid keeps a focused session instead of
-  // going inert: `close` promotes it to the project's active session (for the
+  // going inert: `close` promotes it to the Core's active session (for the
   // single-panel view) and we move the caret into its terminal (for the grid).
   const archiveSession = useCallback(
     async (session: OpenTerminal) => {
@@ -1403,7 +1395,7 @@ export function SessionGrid({
   // pull its pane out of the grid without archiving it (the PTY keeps running
   // and re-attaches when it comes back). This is the grid's take on the normal
   // view's "hide session panel", but per focused cell since the grid shows every
-  // session at once. The project route's own terminal.close handler no-ops while
+  // session at once. The Core workspace route's own terminal.close handler no-ops while
   // the grid is on screen so this one drives it (mirrors session.cycle*). A
   // focused user terminal claims the shortcut first (matches handleCloseIntent).
   // Only with no visible session left — every session already hidden — the most
@@ -1413,15 +1405,15 @@ export function SessionGrid({
     const focusedCell = document.activeElement?.closest("[data-grid-cell]");
     // The session the chord means by "current": the cell owning the caret, else
     // the expanded cell, else — when nothing in the grid holds focus, e.g. right
-    // after switching back to this project — the last-focused cell, then the
+    // after switching back to this Core — the last-focused cell, then the
     // scope's persisted active session, then the first visible cell. Candidates
-    // must be visible in this scope (a stale ref from another project, or an
+    // must be visible in this scope (a stale ref from another Core, or an
     // active id that is itself hidden, falls through to the next).
     const candidates = [
       focusedCell?.getAttribute("data-session-id"),
       expandedSessionId,
       lastFocusedSessionIdRef.current,
-      activeSessionIdFor(scopeKey),
+      activeSessionIdFor(coreId),
       scopedSessions[0]?.sessionId,
     ];
     const sessionId = candidates.find(
@@ -1456,6 +1448,7 @@ export function SessionGrid({
     expandedSessionId,
     scopedSessions,
     scopeKey,
+    coreId,
     activeSessionIdFor,
     hiddenSessionIds,
     neighbourAfterClose,
@@ -1513,7 +1506,7 @@ export function SessionGrid({
   // answer to session.cycleNext/cyclePrev: in the normal view those chords swap
   // the single visible pane, but the grid shows every pane at once, so cycling
   // means moving the caret between cells — the same thing a click does. The
-  // project route's own handler for these actions no-ops in grid view so this
+  // Core workspace route's own handler for these actions no-ops in grid view so this
   // one drives it. Anchors on the cell that currently owns the caret, falling
   // back to the last-focused cell, then the first session.
   const cycleFocusedSession = useCallback(
@@ -1550,7 +1543,7 @@ export function SessionGrid({
   );
 
   // Capture phase so a focused xterm surface can't swallow the chord first —
-  // mirrors how the project route wires these same actions in the normal view.
+  // mirrors how the Core workspace route wires these same actions in the normal view.
   useHotkey("session.cycleNext", () => cycleFocusedSession(1), { capture: true });
   useHotkey("session.cyclePrev", () => cycleFocusedSession(-1), { capture: true });
 
@@ -1582,7 +1575,7 @@ export function SessionGrid({
   // Progressive mount: cells beyond the budget render as empty frames and fill
   // in over the following frames. Panes with a cached surface used to bypass
   // the budget ("just a DOM re-parent"), but reattaching also refits the xterm
-  // and re-acquires a GPU renderer — so returning to a project with many parked
+  // and re-acquires a GPU renderer — so returning to a Core with many parked
   // sessions remounted every pane in one synchronous commit and froze the
   // switch for its whole duration. Staggering ALL panes keeps each frame's work
   // bounded: the grid paints instantly and cells stream in a few per frame.
@@ -2308,7 +2301,7 @@ export function SessionGrid({
       />
     ) : null;
 
-  // The project route only mounts the grid once the scope has a session, so an
+  // The Core workspace route only mounts the grid once the scope has a session, so an
   // empty grid usually means a transient frame — unless the user hid every
   // session, in which case the restore bar must stay reachable. The "pinned"
   // tab can also empty the view while the scope still has (unpinned) sessions;
@@ -2326,10 +2319,10 @@ export function SessionGrid({
       ? "Click a session in the bar below to bring it back."
       : isFiltered
         ? "Pin a session from its header to keep it in this view."
-        : "Start a new session to begin working on this project.";
+        : "Start a new session to begin working on this Core.";
     return (
       <>
-        {/* Grid mode leaves 12px under the project header where the list view
+        {/* Grid mode leaves 12px under the Core header where the list view
             leaves 32px — pad the difference so the header sits identically. */}
         {emptyHeader != null && <div style={{ marginTop: 20 }}>{emptyHeader}</div>}
         <div

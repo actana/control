@@ -10,7 +10,7 @@ export type TotalsRow = {
 };
 
 // Every summary read below aggregates token_usage_rollup (pre-summed per
-// project/session/local-day) rather than scanning token_usage, which keeps these
+// session/local-day) rather than scanning token_usage, which keeps these
 // sub-millisecond even at ~1M raw rows. The rollup is kept equal to the raw
 // table by the ingest transaction and ON DELETE CASCADE (see ensureSchema).
 
@@ -32,42 +32,6 @@ export function selectTotals(): TotalsRow | null {
     cacheCreationTokens: Number(row.cacheCreationTokens) || 0,
     cacheReadTokens: Number(row.cacheReadTokens) || 0,
   };
-}
-
-export type PerProjectRow = TotalsRow & {
-  projectId: string;
-  name: string;
-  icon: string;
-  iconColor: string;
-};
-
-export function selectTotalsPerProject(): PerProjectRow[] {
-  const rows = getSqlite()
-    .prepare(
-      `SELECT
-         r.project_id AS projectId,
-         p.name AS name,
-         p.icon AS icon,
-         p.icon_color AS iconColor,
-         COALESCE(SUM(r.input_tokens), 0) AS inputTokens,
-         COALESCE(SUM(r.output_tokens), 0) AS outputTokens,
-         COALESCE(SUM(r.cache_creation_tokens), 0) AS cacheCreationTokens,
-         COALESCE(SUM(r.cache_read_tokens), 0) AS cacheReadTokens
-       FROM token_usage_rollup r
-       INNER JOIN projects p ON p.id = r.project_id
-       GROUP BY r.project_id`,
-    )
-    .all() as PerProjectRow[];
-  return rows.map((r) => ({
-    projectId: r.projectId,
-    name: r.name,
-    icon: r.icon,
-    iconColor: r.iconColor,
-    inputTokens: Number(r.inputTokens) || 0,
-    outputTokens: Number(r.outputTokens) || 0,
-    cacheCreationTokens: Number(r.cacheCreationTokens) || 0,
-    cacheReadTokens: Number(r.cacheReadTokens) || 0,
-  }));
 }
 
 export type PerDayRow = TotalsRow & { day: string };
@@ -98,8 +62,6 @@ export function selectTotalsPerDaySince(sinceMs: number): PerDayRow[] {
 export type PerSessionRow = TotalsRow & {
   sessionId: string;
   title: string;
-  projectId: string;
-  projectName: string;
   lastTs: number | null;
 };
 
@@ -112,8 +74,6 @@ export function selectTotalsPerSession(): PerSessionRow[] {
       `SELECT
          r.session_id AS sessionId,
          t.title AS title,
-         t.project_id AS projectId,
-         p.name AS projectName,
          MAX(r.last_ts) AS lastTs,
          COALESCE(SUM(r.input_tokens), 0) AS inputTokens,
          COALESCE(SUM(r.output_tokens), 0) AS outputTokens,
@@ -121,7 +81,6 @@ export function selectTotalsPerSession(): PerSessionRow[] {
          COALESCE(SUM(r.cache_read_tokens), 0) AS cacheReadTokens
        FROM token_usage_rollup r
        INNER JOIN sessions t ON t.id = r.session_id
-       INNER JOIN projects p ON p.id = t.project_id
        GROUP BY r.session_id
        ORDER BY (
          SUM(r.input_tokens) + SUM(r.output_tokens)
@@ -133,8 +92,6 @@ export function selectTotalsPerSession(): PerSessionRow[] {
   return rows.map((r) => ({
     sessionId: r.sessionId,
     title: r.title,
-    projectId: r.projectId,
-    projectName: r.projectName,
     lastTs: r.lastTs ? Number(r.lastTs) : null,
     inputTokens: Number(r.inputTokens) || 0,
     outputTokens: Number(r.outputTokens) || 0,
@@ -161,7 +118,6 @@ export function findAllSessionOffsets(): SessionOffsetRow[] {
 export type TokenUsageIngestRow = {
   id: string;
   sessionId: string;
-  projectId: string;
   claudeSessionId: string;
   messageUuid: string;
   model: string | null;
@@ -192,7 +148,6 @@ export function ingestTokenUsageTx(
     sessionOffset: {
       claudeSessionId: string;
       sessionId: string;
-      projectId: string;
       byteOffset: number;
     };
   }) => void) => void,
@@ -201,31 +156,30 @@ export function ingestTokenUsageTx(
   const sqlite = getSqlite();
   const insertUsage = sqlite.prepare(
     `INSERT OR IGNORE INTO token_usage (
-      id, session_id, project_id, claude_session_id, message_uuid, model,
+      id, session_id, claude_session_id, message_uuid, model,
       input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens, ts
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   );
   const upsertOffset = sqlite.prepare(
     `INSERT INTO token_usage_session_offsets
-       (claude_session_id, session_id, project_id, byte_offset, updated_at)
-     VALUES (?, ?, ?, ?, ?)
+       (claude_session_id, session_id, byte_offset, updated_at)
+     VALUES (?, ?, ?, ?)
      ON CONFLICT(claude_session_id) DO UPDATE SET
        session_id = excluded.session_id,
-       project_id = excluded.project_id,
        byte_offset = excluded.byte_offset,
        updated_at = excluded.updated_at`
   );
-  // Fold each newly-inserted row into its (project, session, local day) rollup
+  // Fold each newly-inserted row into its (session, local day) rollup
   // bucket. The day expression and the accumulation must match the backfill and
   // the read queries exactly so the rollup stays equal to the raw aggregate.
   const upsertRollup = sqlite.prepare(
     `INSERT INTO token_usage_rollup (
-       project_id, session_id, day,
+       session_id, day,
        input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens, last_ts
      ) VALUES (
-       ?, ?, strftime('%Y-%m-%d', ? / 1000, 'unixepoch', 'localtime'), ?, ?, ?, ?, ?
+       ?, strftime('%Y-%m-%d', ? / 1000, 'unixepoch', 'localtime'), ?, ?, ?, ?, ?
      )
-     ON CONFLICT(project_id, session_id, day) DO UPDATE SET
+     ON CONFLICT(session_id, day) DO UPDATE SET
        input_tokens = input_tokens + excluded.input_tokens,
        output_tokens = output_tokens + excluded.output_tokens,
        cache_creation_tokens = cache_creation_tokens + excluded.cache_creation_tokens,
@@ -240,7 +194,6 @@ export function ingestTokenUsageTx(
         const result = insertUsage.run(
           r.id,
           r.sessionId,
-          r.projectId,
           r.claudeSessionId,
           r.messageUuid,
           r.model,
@@ -256,7 +209,6 @@ export function ingestTokenUsageTx(
         if (result.changes > 0) {
           inserted += 1;
           upsertRollup.run(
-            r.projectId,
             r.sessionId,
             r.ts,
             r.inputTokens,
@@ -270,7 +222,6 @@ export function ingestTokenUsageTx(
       upsertOffset.run(
         sessionOffset.claudeSessionId,
         sessionOffset.sessionId,
-        sessionOffset.projectId,
         sessionOffset.byteOffset,
         now,
       );

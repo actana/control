@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import { createPanelBridge } from "../panel-bridge";
 import { PanelLinkClient, type PanelLinkSocketLike } from "../panel-link-client";
 import type { PanelLinkClientFrame, PanelLinkServerFrame } from "~/shared/panel-link";
-import type { CoreLinkProjectSnapshot } from "@actana/sdk/core";
 
 /**
  * The bridge is what UI components call. What matters here is which frame each
@@ -62,55 +61,17 @@ function lastRequest(socket: FakeSocket) {
   return { coreId: frame.coreId, frame: frame.frame as Record<string, unknown> };
 }
 
-const PROJECT: CoreLinkProjectSnapshot = {
-  projectId: "proj_1",
-  name: "warehouse",
-  path: "/srv/warehouse",
-  icon: "wa",
-  iconColor: "#3b6ea5",
-  pinned: true,
-  rememberHarnessSettings: false,
-  savedHarness: null,
-  savedSkipPermissions: false,
-  savedBareSession: false,
-  defaultGridView: false,
-  updatedAt: 7,
-};
-
 describe("panel bridge — writes", () => {
-  it("sends a project mutation to the Core that owns the row", async () => {
-    const { bridge, socket } = bridged();
-
-    const pending = bridge.mutateProject("core_b", { op: "pin", projectId: "proj_1", pinned: true });
-    const sent = lastRequest(socket);
-    expect(sent.coreId).toBe("core_b");
-    expect(sent.frame).toMatchObject({
-      type: "projectsMutate",
-      mutation: { op: "pin", projectId: "proj_1", pinned: true },
-    });
-
-    socket.push({
-      t: "core",
-      coreId: "core_b",
-      frame: {
-        type: "projectsMutateResult",
-        reqId: sent.frame.reqId as string,
-        project: PROJECT,
-      },
-    });
-    await expect(pending).resolves.toEqual(PROJECT);
-  });
-
   it("sends a session mutation and hands back the Core's snapshot", async () => {
     const { bridge, socket } = bridged();
 
     const pending = bridge.mutateSession("core_a", {
       op: "create",
-      projectId: "proj_1",
       title: "restock",
       agent: "claude-code",
     });
     const sent = lastRequest(socket);
+    expect(sent.coreId).toBe("core_a");
     expect(sent.frame).toMatchObject({ type: "sessionsMutate", mutation: { op: "create" } });
 
     socket.push({
@@ -121,7 +82,6 @@ describe("panel bridge — writes", () => {
         reqId: sent.frame.reqId as string,
         session: {
           sessionId: "session_9",
-          projectId: "proj_1",
           title: "restock",
           titleManuallySet: false,
           claudeSessionId: null,
@@ -140,19 +100,19 @@ describe("panel bridge — writes", () => {
   it("surfaces a Core rejection as a failed call, not a result to inspect", async () => {
     const { bridge, socket } = bridged();
 
-    const pending = bridge.mutateProject("core_a", {
-      op: "create",
-      name: "warehouse",
-      path: "/not/a/folder",
+    const pending = bridge.mutateSession("core_a", {
+      op: "update",
+      sessionId: "session_9",
+      title: "restock",
     });
     const sent = lastRequest(socket);
     socket.push({
       t: "core",
       coreId: "core_a",
-      frame: { type: "error", reqId: sent.frame.reqId as string, message: "Not a folder" },
+      frame: { type: "error", reqId: sent.frame.reqId as string, message: "Session not found" },
     });
 
-    await expect(pending).rejects.toThrow("Not a folder");
+    await expect(pending).rejects.toThrow("Session not found");
   });
 });
 
@@ -164,7 +124,6 @@ describe("panel bridge — writes", () => {
 describe("panel bridge — the archived read path", () => {
   const ARCHIVED = {
     sessionId: "session_old",
-    projectId: "proj_1",
     title: "last winter's stocktake",
     titleManuallySet: false,
     claudeSessionId: null,
@@ -179,7 +138,7 @@ describe("panel bridge — the archived read path", () => {
   it("hands back the archived count alongside the active rows", async () => {
     const { bridge, socket } = bridged();
 
-    const pending = bridge.listSessionRows("core_a", "proj_1");
+    const pending = bridge.listSessionRows("core_a");
     const sent = lastRequest(socket);
     expect(sent.frame).toMatchObject({ type: "sessionRowsList" });
     expect(sent.frame).not.toHaveProperty("projectId");
@@ -203,7 +162,7 @@ describe("panel bridge — the archived read path", () => {
   it("fetches the archived rows over their own frame", async () => {
     const { bridge, socket } = bridged();
 
-    const pending = bridge.listArchivedSessions("core_a", "proj_1");
+    const pending = bridge.listArchivedSessions("core_a");
     const sent = lastRequest(socket);
     expect(sent.coreId).toBe("core_a");
     expect(sent.frame).toMatchObject({ type: "archivedSessionRowsList" });
@@ -224,7 +183,7 @@ describe("panel bridge — the archived read path", () => {
   it("surfaces an unreachable Core as a failed call, like the active list does", async () => {
     const { bridge, socket } = bridged();
 
-    const pending = bridge.listArchivedSessions("core_gone", "proj_1");
+    const pending = bridge.listArchivedSessions("core_gone");
     const sent = lastRequest(socket);
     socket.push({
       t: "core",
@@ -237,71 +196,5 @@ describe("panel bridge — the archived read path", () => {
     });
 
     await expect(pending).rejects.toThrow("core_gone is unreachable");
-  });
-});
-
-describe("panel bridge — browsing the Core's filesystem", () => {
-  it("asks the named Core for a listing, and for its home when given no path", async () => {
-    const { bridge, socket } = bridged();
-
-    const pending = bridge.listFolders("core_b", null);
-    const sent = lastRequest(socket);
-    expect(sent.coreId).toBe("core_b");
-    expect(sent.frame).toMatchObject({ type: "dirList", path: null });
-
-    socket.push({
-      t: "core",
-      coreId: "core_b",
-      frame: {
-        type: "dirListResult",
-        reqId: sent.frame.reqId as string,
-        listing: {
-          path: "/home/op",
-          parent: "/home",
-          home: "/home/op",
-          roots: [{ label: "Home", path: "/home/op" }],
-          entries: [{ name: "projects", childCount: 2 }],
-          truncated: false,
-        },
-      },
-    });
-    await expect(pending).resolves.toMatchObject({ path: "/home/op" });
-  });
-
-  it("creates a folder on the Core's machine and resolves to its path", async () => {
-    const { bridge, socket } = bridged();
-
-    const pending = bridge.createFolder("core_b", "/srv", "warehouse");
-    const sent = lastRequest(socket);
-    expect(sent.frame).toMatchObject({ type: "dirCreate", parent: "/srv", name: "warehouse" });
-
-    socket.push({
-      t: "core",
-      coreId: "core_b",
-      frame: {
-        type: "dirCreateResult",
-        reqId: sent.frame.reqId as string,
-        path: "/srv/warehouse",
-      },
-    });
-    await expect(pending).resolves.toBe("/srv/warehouse");
-  });
-
-  it("surfaces a refused folder creation as a failed call", async () => {
-    const { bridge, socket } = bridged();
-
-    const pending = bridge.createFolder("core_b", "/srv", "warehouse");
-    const sent = lastRequest(socket);
-    socket.push({
-      t: "core",
-      coreId: "core_b",
-      frame: {
-        type: "error",
-        reqId: sent.frame.reqId as string,
-        message: "Something with that name already exists here",
-      },
-    });
-
-    await expect(pending).rejects.toThrow("Something with that name already exists here");
   });
 });

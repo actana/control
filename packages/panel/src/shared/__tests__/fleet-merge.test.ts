@@ -14,7 +14,7 @@ import type { CoreLinkSessionRow } from "@actana/sdk/core";
 // stale. With a single registered Core the Fleet view degenerates to per-Core
 // navigation.
 
-const session = (over: Partial<CoreLinkSessionRow> & Pick<CoreLinkSessionRow, "sessionId" | "projectId">): CoreLinkSessionRow => ({
+const session = (over: Partial<CoreLinkSessionRow> & Pick<CoreLinkSessionRow, "sessionId">): CoreLinkSessionRow => ({
   title: over.title ?? "session",
   titleManuallySet: over.titleManuallySet ?? false,
   claudeSessionId: over.claudeSessionId ?? null,
@@ -45,8 +45,8 @@ const offline = (coreId: string, coreLabel: string, lastSeenAt: number | null = 
 describe("mergeFleetSessions", () => {
   it("merges sessions from multiple online Cores, keyed by coreId/sessionId", () => {
     const result = mergeFleetSessions([
-      online("core-home", "This Mac", [session({ sessionId: "t1", projectId: "p1", title: "a" })]),
-      online("core_x", "prod-vm-1", [session({ sessionId: "t2", projectId: "p9", title: "b" })]),
+      online("core-home", "This Mac", [session({ sessionId: "t1", title: "a" })]),
+      online("core_x", "prod-vm-1", [session({ sessionId: "t2", title: "b" })]),
     ]);
     expect(result.rows).toHaveLength(2);
     expect(result.rows.map((r) => `${r.coreId}/${r.sessionId}`).sort()).toEqual([
@@ -62,7 +62,7 @@ describe("mergeFleetSessions", () => {
 
   it("an offline Core shows in offlineCores with no session rows", () => {
     const result = mergeFleetSessions([
-      online("core-home", "This Mac", [session({ sessionId: "t1", projectId: "p1" })]),
+      online("core-home", "This Mac", [session({ sessionId: "t1" })]),
       offline("core_x", "prod-vm-1", 1_700_000_000_000),
     ]);
     expect(result.rows).toHaveLength(1);
@@ -91,7 +91,7 @@ describe("mergeFleetSessions", () => {
 
   it("degenerates to single-Core navigation when only one Core is registered", () => {
     const result = mergeFleetSessions([
-      online("core-home", "This Mac", [session({ sessionId: "t1", projectId: "p1" })]),
+      online("core-home", "This Mac", [session({ sessionId: "t1" })]),
     ]);
     expect(result.singleCore).toBe(true);
     expect(result.rows).toHaveLength(1);
@@ -107,10 +107,10 @@ describe("mergeFleetSessions", () => {
   it("sorts rows by updatedAt descending (most recent first)", () => {
     const result = mergeFleetSessions([
       online("c1", "C1", [
-        session({ sessionId: "old", projectId: "p1", updatedAt: 100 }),
-        session({ sessionId: "new", projectId: "p1", updatedAt: 999 }),
+        session({ sessionId: "old", updatedAt: 100 }),
+        session({ sessionId: "new", updatedAt: 999 }),
       ]),
-      online("c2", "C2", [session({ sessionId: "mid", projectId: "p9", updatedAt: 500 })]),
+      online("c2", "C2", [session({ sessionId: "mid", updatedAt: 500 })]),
     ]);
     expect(result.rows.map((r) => r.sessionId)).toEqual(["new", "mid", "old"]);
   });
@@ -142,8 +142,8 @@ describe("mergeFleetSessions", () => {
     // Core never pollutes the active dashboard.
     const result = mergeFleetSessions([
       online("c1", "C1", [
-        session({ sessionId: "live", projectId: "p1", archived: false }),
-        session({ sessionId: "done", projectId: "p1", archived: true }),
+        session({ sessionId: "live", archived: false }),
+        session({ sessionId: "done", archived: true }),
       ]),
     ]);
     expect(result.rows.map((r) => r.sessionId)).toEqual(["live"]);
@@ -156,14 +156,14 @@ describe("fanOutSessions", () => {
     coreLabel,
     lastSeenAt,
   });
-  const sessions = (sessionId: string, projectId = "p1"): CoreLinkSessionRow[] => [
-    { sessionId, projectId, title: "t", titleManuallySet: false, claudeSessionId: null, agent: "claude-code", status: "running", pinned: false, archived: false, icon: null, updatedAt: 1 },
+  const sessions = (sessionId: string): CoreLinkSessionRow[] => [
+    { sessionId, title: "t", titleManuallySet: false, claudeSessionId: null, agent: "claude-code", status: "running", pinned: false, archived: false, icon: null, updatedAt: 1 },
   ];
 
   it("returns ok+sessions for Cores whose query resolves", async () => {
     const results = await fanOutSessions(
       [target("c1", "C1"), target("c2", "C2")],
-      async (coreId) => (coreId === "c1" ? sessions("t1") : sessions("t2", "p2")),
+      async (coreId) => (coreId === "c1" ? sessions("t1") : sessions("t2")),
     );
     expect(results).toHaveLength(2);
     const c1 = results.find((r) => r.coreId === "c1")!;

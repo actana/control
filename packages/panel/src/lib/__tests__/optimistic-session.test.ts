@@ -37,31 +37,28 @@ describe("optimistic-session", () => {
 
   it("builds a ready-status placeholder session", () => {
     const session = buildOptimisticSession({
-      projectId: "p1",
       agent: "claude-code",
       claudeSessionId: "sess-1",
     });
     expect(session.title).toBe("Waiting for initial prompt...");
     expect(session.status).toBe("ready");
-    expect(session.projectId).toBe("p1");
+    expect(session).not.toHaveProperty("projectId");
     expect(isOptimisticSessionId(session.id)).toBe(true);
   });
 
   it("prepends optimistic rows to match server createdAt desc order", () => {
     const qc = createQueryClientStub();
-    const key = queryKeys.sessions("p1");
+    const key = queryKeys.sessions("core-a");
     const existing = buildOptimisticSession({
       id: "t-existing",
-      projectId: "p1",
       agent: "codex",
     });
     qc.setQueryData(key, [existing]);
 
     const optimistic = buildOptimisticSession({
-      projectId: "p1",
       agent: "codex",
     });
-    appendOptimisticSession(qc as never, "p1", optimistic);
+    appendOptimisticSession(qc as never, "core-a", optimistic);
 
     const sessions = qc.getQueryData<Session[]>(key)!;
     expect(sessions.map((t) => t.id)).toEqual([optimistic.id, "t-existing"]);
@@ -69,22 +66,20 @@ describe("optimistic-session", () => {
 
   it("replaces an optimistic row without duplicating the persisted session", () => {
     const qc = createQueryClientStub();
-    const key = queryKeys.sessions("p1");
+    const key = queryKeys.sessions("core-a");
     const existing = buildOptimisticSession({
       id: "t-existing",
-      projectId: "p1",
       agent: "codex",
     });
     qc.setQueryData(key, [existing]);
 
     const optimistic = buildOptimisticSession({
-      projectId: "p1",
       agent: "codex",
     });
-    appendOptimisticSession(qc as never, "p1", optimistic);
+    appendOptimisticSession(qc as never, "core-a", optimistic);
 
     const persisted = { ...optimistic, id: "t-real", updatedAt: optimistic.updatedAt + 1 } satisfies Session;
-    replaceOptimisticSession(qc as never, "p1", optimistic.id, persisted);
+    replaceOptimisticSession(qc as never, "core-a", optimistic.id, persisted);
 
     const sessions = qc.getQueryData<Session[]>(key)!;
     expect(sessions).toHaveLength(2);
@@ -94,50 +89,47 @@ describe("optimistic-session", () => {
 
   it("drops an optimistic row on rollback", () => {
     const qc = createQueryClientStub();
-    const key = queryKeys.sessions("p1");
+    const key = queryKeys.sessions("core-a");
     const optimistic = buildOptimisticSession({
-      projectId: "p1",
       agent: "codex",
     });
-    appendOptimisticSession(qc as never, "p1", optimistic);
-    removeOptimisticSession(qc as never, "p1", optimistic.id);
+    appendOptimisticSession(qc as never, "core-a", optimistic);
+    removeOptimisticSession(qc as never, "core-a", optimistic.id);
     expect(qc.getQueryData<Session[]>(key)).toEqual([]);
   });
 
   it("removes persisted sessions from cache and restores on rollback", () => {
     const qc = createQueryClientStub();
-    const key = queryKeys.sessions("p1");
+    const key = queryKeys.sessions("core-a");
     const keep = buildOptimisticSession({
       id: "t-keep",
-      projectId: "p1",
       agent: "codex",
     });
     const remove = buildOptimisticSession({
       id: "t-remove",
-      projectId: "p1",
       agent: "claude-code",
     });
     const snapshot = [keep, remove];
     qc.setQueryData(key, snapshot);
 
-    removeSessionFromCache(qc as never, "p1", "t-remove");
+    removeSessionFromCache(qc as never, "core-a", "t-remove");
     expect(qc.getQueryData<Session[]>(key)).toEqual([keep]);
 
-    restoreSessionsCache(qc as never, "p1", snapshot);
+    restoreSessionsCache(qc as never, "core-a", snapshot);
     expect(qc.getQueryData<Session[]>(key)).toEqual(snapshot);
   });
 
   it("removes multiple sessions from cache in one update", () => {
     const qc = createQueryClientStub();
-    const key = queryKeys.sessions("p1");
+    const key = queryKeys.sessions("core-a");
     const sessions = [
-      buildOptimisticSession({ id: "t-1", projectId: "p1", agent: "codex" }),
-      buildOptimisticSession({ id: "t-2", projectId: "p1", agent: "codex" }),
-      buildOptimisticSession({ id: "t-3", projectId: "p1", agent: "codex" }),
+      buildOptimisticSession({ id: "t-1", agent: "codex" }),
+      buildOptimisticSession({ id: "t-2", agent: "codex" }),
+      buildOptimisticSession({ id: "t-3", agent: "codex" }),
     ];
     qc.setQueryData(key, sessions);
 
-    removeSessionsFromCache(qc as never, "p1", new Set(["t-1", "t-3"]));
+    removeSessionsFromCache(qc as never, "core-a", new Set(["t-1", "t-3"]));
     expect(qc.getQueryData<Session[]>(key)?.map((t) => t.id)).toEqual(["t-2"]);
   });
 });

@@ -2,7 +2,7 @@ const DEFAULT_TERMINAL_NAME_RE = /^Terminal (\d+)$/;
 
 /**
  * Pick the lowest unused "Terminal N" name given the existing terminal names in
- * a scope. Callers gather whichever names apply (per-scope, per-project, …) and
+ * a scope. Callers gather whichever names apply (per-scope, per-Core, …) and
  * pass them in; this owns the numbering.
  */
 export function nextTerminalName(usedNames: Iterable<string>): string {

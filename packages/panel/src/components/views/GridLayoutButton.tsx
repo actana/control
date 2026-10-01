@@ -26,7 +26,7 @@ import { scopeKeyFor } from "./SessionGrid";
 const MENU_WIDTH = 288;
 
 /**
- * Grid-view layout control in the project header: pick how many sessions a row
+ * Grid-view layout control in the Core header: pick how many sessions a row
  * holds (a per-scope lock — new sessions flow into the next row with space, or
  * a fresh one, once a row is full; picking a width also reflows the current
  * cells), and one-shot "sort by agent" actions that group the grid's cells with
@@ -181,7 +181,7 @@ export function GridLayoutButton({ scopeKey }: { scopeKey: string }) {
             role="menu"
             aria-label="Grid layout"
             solid
-            className="mc-project-actions-menu"
+            className="mc-actions-menu"
             style={{
               position: "fixed",
               top: menuRect.top,

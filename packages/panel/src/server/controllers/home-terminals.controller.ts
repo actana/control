@@ -11,7 +11,6 @@ import { HTTP_CREATED } from "~/shared/http-status";
 const createHomeTerminalBody = z.object({
   id: z.string().optional(),
   name: z.string().optional(),
-  cwd: z.string().nullable().optional(),
 });
 
 const renameHomeTerminalBody = z.object({
@@ -29,7 +28,6 @@ export async function create(request: Request): Promise<Response> {
     const terminal = createHomeTerminal({
       id: parsed.data.id,
       name: parsed.data.name,
-      cwd: parsed.data.cwd ?? null,
     });
     return json({ terminal }, { status: HTTP_CREATED });
   } catch (e) {

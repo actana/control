@@ -35,7 +35,7 @@ import {
 import { TerminalPanel } from "~/components/views/TerminalPanel";
 import { UserTerminalPanel } from "~/components/views/UserTerminalPanel";
 import { CoreRail } from "~/components/views/CoreRail";
-import { projectIdFromPath } from "~/lib/project-id-from-path";
+import { routeCoreIdFromLocation, workspaceCoreIdFromPath } from "~/lib/workspace-core-id";
 import {
   HeaderActionsProvider,
   HeaderActionsSlot,
@@ -136,7 +136,7 @@ function RootComponent() {
                      * plus direct localStorage reads (theme, minimal mode).
                      * The server has none of that, so server HTML and the first
                      * client render disagree → hydration mismatch on every data-driven
-                     * node (ProjectPicker, …). ClientOnly renders the
+                     * node (CoreRail, …). ClientOnly renders the
                      * fallback on the server AND the first client render so they match,
                      * then mounts the real shell after hydration. Past this boundary
                      * there's no SSR markup to match, so children are free to show
@@ -173,19 +173,19 @@ function RootComponent() {
 // The active-session tail lives in its own leaf so the per-tick re-render from
 // subscribing to the terminal data slice (`activeFor` returns a fresh session
 // object whenever that session's session row updates) is confined here, instead of
-// re-rendering the whole Shell + TopBar + ProjectBar. Props are all stable
+// re-rendering the whole Shell + TopBar + CoreRail. Props are all stable
 // (actions + booleans) so it re-renders only on its own subscription.
-const ProjectTerminalPanel = memo(function ProjectTerminalPanel({
-  projectId,
+const CoreTerminalPanel = memo(function CoreTerminalPanel({
+  coreId,
   onClose,
   onHide,
   onPtyReady,
   expanded,
   onToggleExpanded,
 }: {
-  projectId: string;
+  coreId: string;
   onClose: (sessionId: string, opts?: { activateSessionId?: string | null }) => Promise<void>;
-  onHide: (projectId: string) => void;
+  onHide: (coreId: string) => void;
   onPtyReady: (sessionId: string, ptyId: string | null, scopeKey?: string) => void;
   expanded: boolean;
   onToggleExpanded: () => void;
@@ -193,9 +193,9 @@ const ProjectTerminalPanel = memo(function ProjectTerminalPanel({
   const { activeFor } = useTerminals();
   return (
     <TerminalPanel
-      active={activeFor(projectId)}
+      active={activeFor(coreId)}
       onClose={onClose}
-      onHide={() => onHide(projectId)}
+      onHide={() => onHide(coreId)}
       onPtyReady={onPtyReady}
       expanded={expanded}
       onToggleExpanded={onToggleExpanded}
@@ -222,7 +222,7 @@ function Shell() {
   const closeSettingsPanel = () => setSettingsRequest(null);
 
   // Mirror the React open-state into the module flag that non-React global
-  // keydown listeners (use-hotkey, the project route) read to suppress app
+  // keydown listeners (use-hotkey, the Core workspace route) read to suppress app
   // shortcuts while the modal-style overlay is open.
   useEffect(() => {
     setSettingsOverlayOpen(settingsOpen);
@@ -251,7 +251,7 @@ function Shell() {
   const { cores } = useFleet();
   // Pure actions (stable identity) + narrow flip-only subscriptions, so a
   // background session-status tick doesn't re-render the whole shell. The active
-  // session itself lives in the ProjectTerminalPanel leaf below.
+  // session itself lives in the CoreTerminalPanel leaf below.
   const { close, deselect, setPtyId } = useTerminalActions();
   const gridView = useGridView();
   const workspaceRef = useRef<HTMLDivElement>(null);
@@ -285,23 +285,24 @@ function Shell() {
   // level pre-warm needed.
 
   const path = useRouterState({ select: (state) => state.location.pathname });
-  const projectId = projectIdFromPath(path);
+  const workspaceCoreId = workspaceCoreIdFromPath(path);
   // Which Core owns the currently-mounted shell (issue 08 — Singular UI across
   // Cores): the Core page names it in the path, the session workspace in the
   // `coreId` search param; every other route has none.
   const routeCoreId = useRouterState({
-    select: (state) => {
-      const onCorePage = /^\/cores\/([^/]+)/.exec(state.location.pathname);
-      if (onCorePage) return decodeURIComponent(onCorePage[1]!);
-      const search = state.location.search as { coreId?: unknown } | undefined;
-      return typeof search?.coreId === "string" ? search.coreId : undefined;
-    },
+    select: (state) => routeCoreIdFromLocation(state.location),
   });
 
-  // Flip-only: true iff this project has a materialized active session. Gates
+  // The Core drawer's terminals belong to whichever Core this route is on.
+  const { setCore: setUserTerminalCore } = userTerminals;
+  useEffect(() => {
+    setUserTerminalCore(routeCoreId ?? null);
+  }, [routeCoreId, setUserTerminalCore]);
+
+  // Flip-only: true iff this Core has a materialized active session. Gates
   // the expanded-terminal layout without subscribing to the churning data slice.
-  const hasActiveSession = useHasActiveSession(projectId);
-  const expandedKey = projectId ? `mc:terminalExpanded:${projectId}` : null;
+  const hasActiveSession = useHasActiveSession(workspaceCoreId);
+  const expandedKey = workspaceCoreId ? `mc:terminalExpanded:${workspaceCoreId}` : null;
   const [terminalExpanded, setTerminalExpanded] = useState<boolean>(false);
   useEffect(() => {
     if (!expandedKey) {
@@ -327,11 +328,11 @@ function Shell() {
     });
   }, [expandedKey]);
   const sessionExpanded =
-    !!projectId && terminalExpanded && hasActiveSession;
+    !!workspaceCoreId && terminalExpanded && hasActiveSession;
   // Grid view takes over the whole workspace: the Outlet (which renders the
-  // grid below the project header) spans full width and the single right-hand
+  // grid below the Core header) spans full width and the single right-hand
   // terminal panel is hidden.
-  const gridActive = !!projectId && gridView;
+  const gridActive = !!workspaceCoreId && gridView;
   const goHome = () => {
     setActivePanel(null);
     if (settingsOpen) requestCloseSettings();
@@ -420,7 +421,7 @@ function Shell() {
         window.dispatchEvent(new Event(GRID_EXPAND_TOGGLE_EVENT));
         return;
       }
-      if (projectId && hasActiveSession) toggleTerminalExpanded();
+      if (workspaceCoreId && hasActiveSession) toggleTerminalExpanded();
     },
     { capture: true },
   );
@@ -483,7 +484,7 @@ function Shell() {
       <div id="root">
         {/* Banner hidden for now — toggle also removed from Settings. */}
         {/* Above the top bar and across the full width: it is about the
-         * deployment, not about whatever project is open below it. Renders
+         * deployment, not about whatever Core is open below it. Renders
          * nothing at all unless a newer release exists and this browser has
          * not dismissed that release. */}
         <UpdateBanner />
@@ -492,9 +493,8 @@ function Shell() {
           onHome={goHome}
           centerActions={
             <>
-              {/* Project cockpit, one grouped band: context (which project)
-               * then the project actions (run, grid) portalled in by the
-               * project route. */}
+              {/* One grouped band of the Core's actions (grid), portalled in
+               * by the Core workspace route. */}
               <HeaderActionsSlot />
             </>
           }
@@ -537,23 +537,23 @@ function Shell() {
                 flex: 1,
                 // Grid view lives inside the Outlet, so the expanded-terminal
                 // flag must never hide it — both can be true at once (the
-                // expand flag persists per project, the grid flag globally).
+                // expand flag persists per Core, the grid flag globally).
                 display: sessionExpanded && !gridActive ? "none" : "flex",
                 flexDirection: "column",
                 overflow: "hidden",
-                // On the project detail view the terminal panel sits to the
+                // On the Core workspace the terminal panel sits to the
                 // right; floor the left panel so dragging the terminal wider
                 // shrinks the terminal instead of wrapping the session columns.
                 // In grid view the panel is hidden, so let the Outlet go full width.
-                minWidth: projectId && !gridActive ? 640 : 0,
+                minWidth: workspaceCoreId && !gridActive ? 640 : 0,
                 minHeight: 0,
               }}
             >
               <Outlet />
             </div>
-            {projectId && !gridActive && (
-              <ProjectTerminalPanel
-                projectId={projectId}
+            {workspaceCoreId && !gridActive && (
+              <CoreTerminalPanel
+                coreId={workspaceCoreId}
                 onClose={close}
                 onHide={deselect}
                 onPtyReady={setPtyId}
@@ -562,7 +562,7 @@ function Shell() {
               />
             )}
           </div>
-          <UserTerminalPanel coreId={routeCoreId} />
+          <UserTerminalPanel />
         </div>
         {activePanel === "usage" && <UsagePanel onBack={closePanel} />}
         {settingsOpen && (

@@ -18,17 +18,15 @@ import { queryKeys } from "~/queries";
  * have touched as stale, which is the same bargain `useCoreLiveQueries` makes
  * for a dropped core-link: after a gap, ask again rather than trust the screen.
  *
- * `["projects"]` is a prefix, not an exact key, so one invalidation reaches the
- * projects list, every project row (Panel-owned and Core-tagged alike) and
- * every session-list bucket under them — see `queryKeys` and `sessionsCacheKey`. The
+ * `["cores"]` is a prefix, not an exact key, so one invalidation reaches every
+ * Core's session-list bucket — see `queryKeys` and `sessionsCacheKey`. The
  * archived buckets sit deliberately outside that tree, so they are named.
  */
 export function useEventStreamReconcile(): void {
   const queryClient = useQueryClient();
   useServerEventsReconnect(
     useCallback(() => {
-      void queryClient.invalidateQueries({ queryKey: queryKeys.projects });
-      void queryClient.invalidateQueries({ queryKey: queryKeys.groups });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.coresAll });
       void queryClient.invalidateQueries({ queryKey: queryKeys.coreArchivedSessionsAll });
     }, [queryClient]),
   );

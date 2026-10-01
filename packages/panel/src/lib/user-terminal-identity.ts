@@ -3,45 +3,29 @@ import { readJson, writeJson } from "./local-storage-json";
 /**
  * Persisted identity for the Panel's user terminals (issue 394).
  *
- * The row behind a user terminal lives in `home_terminals` whatever scope it
- * was opened in (issue 266), so the row alone cannot say *which* shell it is:
- * the project it was opened on, the Core its PTY runs on, the kind of shell the
- * pane must spawn and the cwd it opens at were all in-memory only. A reload
- * therefore lost the pane from its project, and Home — the one scope that did
- * reload its rows — re-spawned them as plain home shells: a different shell
- * kind, in a different place, from the one the operator opened.
+ * The row behind a user terminal lives in `home_terminals` whichever Core it
+ * was opened on (issue 266), so the row alone cannot say *which* shell it is:
+ * the Core its PTY runs on was in-memory only. A reload therefore lost the pane
+ * from its Core.
  *
  * This module is the missing half: a small localStorage map, terminal id →
  * identity, written when a terminal is opened and dropped when it is killed.
  * What it cannot answer it refuses to guess — a row with no identity is not
  * restored at all, so a reload shows that terminal gone on purpose rather than
  * spawning a different one somewhere else.
+ *
+ * Every terminal is a VM Shell Session now, a login shell in the Core's home
+ * folder, so the Core is all there is to record. An entry written before that —
+ * a shell at a project path, or a "home" shell — names a spawn that no longer
+ * exists and is treated as missing.
  */
 
 /** localStorage key for the identity map. */
 export const IDENTITY_STORAGE_KEY = "mc.userTerminalIdentity";
 
-/**
- * Which shell a terminal is, i.e. which spawn the pane must make. One value per
- * branch in `UserTerminalPane`'s spawn, so restoring a terminal cannot land it
- * on a different one:
- * - `vm-shell` — a VM Shell Session (issue 06): a login shell on the Core's own
- *   machine, spawned with `shellSession: true` and no cwd;
- * - `home`     — a shell at the Core's home dir, spawned with the `home` flag;
- * - `project`  — a shell at a project path, spawned with that cwd.
- */
-export type UserTerminalKind = "vm-shell" | "home" | "project";
-
-const KINDS: readonly UserTerminalKind[] = ["vm-shell", "home", "project"];
-
 export type UserTerminalIdentity = {
-  /** Terminal-store bucket this shell belongs to (`<projectId>:main`, or home). */
-  scopeKey: string;
-  /** The Core the shell runs on; null when it was opened without one in scope. */
-  coreId: string | null;
-  kind: UserTerminalKind;
-  /** The cwd the shell opens at. Empty for kinds the Core resolves itself. */
-  cwd: string;
+  /** The Core the shell runs on. */
+  coreId: string;
 };
 
 export type UserTerminalIdentityMap = Record<string, UserTerminalIdentity>;
@@ -49,12 +33,12 @@ export type UserTerminalIdentityMap = Record<string, UserTerminalIdentity>;
 function isIdentity(value: unknown): value is UserTerminalIdentity {
   if (!value || typeof value !== "object") return false;
   const record = value as Record<string, unknown>;
+  // `kind` was recorded while shells came in three kinds; only the VM shell
+  // survives, so an entry for any other is a spawn this Panel can no longer make.
   return (
-    typeof record.scopeKey === "string" &&
-    record.scopeKey.length > 0 &&
-    (record.coreId === null || typeof record.coreId === "string") &&
-    KINDS.includes(record.kind as UserTerminalKind) &&
-    typeof record.cwd === "string"
+    typeof record.coreId === "string" &&
+    record.coreId.length > 0 &&
+    (record.kind === undefined || record.kind === "vm-shell")
   );
 }
 
@@ -67,7 +51,7 @@ export function parseIdentityMap(raw: unknown): UserTerminalIdentityMap {
   if (!raw || typeof raw !== "object") return {};
   const out: UserTerminalIdentityMap = {};
   for (const [id, value] of Object.entries(raw as Record<string, unknown>)) {
-    if (isIdentity(value)) out[id] = value;
+    if (isIdentity(value)) out[id] = { coreId: value.coreId };
   }
   return out;
 }
@@ -138,21 +122,24 @@ export function commitIdentityChange(
 }
 
 /**
- * Sort persisted terminal rows back into the buckets they were opened in.
+ * Sort persisted terminal rows back onto the Core they were opened on.
  *
- * A row with no identity is deliberately dropped rather than defaulted into the
- * home bucket: defaulting is precisely how a project's VM shell came back as a
- * home shell (issue 394). Callers show nothing for those.
+ * A row with no identity is deliberately dropped rather than defaulted onto a
+ * Core: defaulting is precisely how a shell came back somewhere it was never
+ * opened (issue 394). Callers show nothing for those.
+ *
+ * `scopeKeyFor` names the bucket a Core's terminals live in.
  */
 export function restoreUserTerminals<T extends { id: string }>(
   terminals: readonly T[],
   identities: UserTerminalIdentityMap,
+  scopeKeyFor: (coreId: string) => string,
 ): Record<string, Array<{ terminal: T; identity: UserTerminalIdentity }>> {
   const byScope: Record<string, Array<{ terminal: T; identity: UserTerminalIdentity }>> = {};
   for (const terminal of terminals) {
     const identity = identities[terminal.id];
     if (!identity) continue;
-    (byScope[identity.scopeKey] ??= []).push({ terminal, identity });
+    (byScope[scopeKeyFor(identity.coreId)] ??= []).push({ terminal, identity });
   }
   return byScope;
 }

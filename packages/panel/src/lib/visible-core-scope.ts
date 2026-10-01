@@ -1,13 +1,13 @@
 /**
- * Which project+core the operator is actually looking at right now, and how
- * many times they have walked away from it.
+ * Which Core the operator is actually looking at right now, and how many times
+ * they have walked away from it.
  *
- * A project's rows are read per `(projectId, coreId)` bucket, and a read of an
- * uncached pin is slow enough to outlive the click that started it. Clicking
- * A then B then A leaves B's `useProject` / `useSessions` fetches in flight
- * against a URL that has already gone back to A: whatever they were going to
- * materialize — sessions, the archived count, the focus that follows them —
- * arrives for a project nobody is on any more (issue 381).
+ * A Core's rows are read per `coreId` bucket, and a read of an uncached Core is
+ * slow enough to outlive the click that started it. Clicking A then B then A
+ * leaves B's `useSessions` fetch in flight against a URL that has already gone
+ * back to A: whatever it was going to materialize — sessions, the archived
+ * count, the focus that follows them — arrives for a Core nobody is on any more
+ * (issue 381).
  *
  * So the query layer keeps two things per scope:
  *
@@ -31,15 +31,6 @@
  * "is anyone still watching B?" without a shared parent.
  */
 
-export type ProjectScope = { projectId: string; coreId: string | null };
-
-/** The Panel's own rows have no Core behind them, so `null` is a scope of its
- *  own — never the same bucket as a Core's project of the same id. The
- *  separator is a character no id can carry, so no two scopes can collide. */
-export function projectScopeToken(projectId: string, coreId: string | null): string {
-  return `${coreId ?? ""}\u0000${projectId}`;
-}
-
 type ScopeViews = {
   viewers: number;
   /** Bumped when `viewers` falls to zero — see the module docstring. */
@@ -49,7 +40,7 @@ type ScopeViews = {
    * key each reader reads, so a pane mounting and unmounting through a single
    * visit replaces its entry instead of piling up another closure over the
    * same key. Entries are held until zero rather than dropped as each reader
-   * releases: a project is read by two queries whose cleanups run one after
+   * releases: a Core is read by two queries whose cleanups run one after
    * the other inside one commit, and dropping the first reader's entry as it
    * goes would leave its fetch uncancelled when the second reader takes the
    * scope to zero a moment later.
@@ -61,45 +52,43 @@ type ScopeViews = {
  * Entries are never removed, only emptied: the generation is the whole point
  * and it has to survive the scope being left, or a read stamped during visit 2
  * would compare against a freshly minted zero. Bounded by the number of
- * distinct projects one tab visits.
+ * distinct Cores one tab visits.
  */
 const scopes = new Map<string, ScopeViews>();
 
-function scopeFor(token: string): ScopeViews {
-  let scope = scopes.get(token);
+function scopeFor(coreId: string): ScopeViews {
+  let scope = scopes.get(coreId);
   if (!scope) {
     scope = { viewers: 0, generation: 0, onLeft: new Map() };
-    scopes.set(token, scope);
+    scopes.set(coreId, scope);
   }
   return scope;
 }
 
 /**
- * Register a live view of this project+core. Call it while a component that
+ * Register a live view of this Core. Call it while a component that
  * shows the scope is mounted; the returned release is idempotent, so a double
  * cleanup (StrictMode) cannot drive the count negative.
  *
  * `onLeft` runs when the *scope* loses its last viewer — not when this
- * particular view does. A project is read by more than one query at a time
- * (its row, its session list), each unmounting in its own cleanup, and the first
+ * particular view does. A Core is read by more than one query at a time
+ * (its session list, its archived list), each unmounting in its own cleanup, and the first
  * of them to go must not conclude the operator has left while the others are
  * still on screen. So every reader's `onLeft` is held until the count reaches
  * zero, and then all of them run together, once per distinct `readerKey`.
  */
-export function retainProjectScope(
-  projectId: string,
-  coreId: string | null,
+export function retainCoreScope(
+  coreId: string,
   reader?: { readerKey: string; onLeft: () => void },
 ): () => void {
-  const token = projectScopeToken(projectId, coreId);
-  const scope = scopeFor(token);
+  const scope = scopeFor(coreId);
   scope.viewers += 1;
   if (reader) scope.onLeft.set(reader.readerKey, reader.onLeft);
   let released = false;
   return () => {
     if (released) return;
     released = true;
-    const current = scopes.get(token);
+    const current = scopes.get(coreId);
     if (!current) return;
     current.viewers -= 1;
     if (current.viewers > 0) return;
@@ -114,19 +103,19 @@ export function retainProjectScope(
   };
 }
 
-/** Is anything on screen still showing this project+core? */
-export function isProjectScopeVisible(projectId: string, coreId: string | null): boolean {
-  return (scopes.get(projectScopeToken(projectId, coreId))?.viewers ?? 0) > 0;
+/** Is anything on screen still showing this Core? */
+export function isCoreScopeVisible(coreId: string): boolean {
+  return (scopes.get(coreId)?.viewers ?? 0) > 0;
 }
 
-/** How many times this project+core has been left. Exposed for tests and for
- *  reasoning about {@link watchProjectScope}; callers should prefer that. */
-export function projectScopeGeneration(projectId: string, coreId: string | null): number {
-  return scopes.get(projectScopeToken(projectId, coreId))?.generation ?? 0;
+/** How many times this Core has been left. Exposed for tests and for
+ *  reasoning about {@link watchCoreScope}; callers should prefer that. */
+export function coreScopeGeneration(coreId: string): number {
+  return scopes.get(coreId)?.generation ?? 0;
 }
 
 /**
- * Stamp this project+core's visit for a read that is about to start. The
+ * Stamp this Core's visit for a read that is about to start. The
  * returned predicate answers one question at the moment the read lands: *does
  * this answer still belong to the visit that asked for it?*
  *
@@ -141,13 +130,12 @@ export function projectScopeGeneration(projectId: string, coreId: string | null)
  * prefetch, a server-side render — spans no visit and so ends none: its
  * generation cannot move under it, and it keeps its side effects.
  */
-export function watchProjectScope(projectId: string, coreId: string | null): () => boolean {
-  const token = projectScopeToken(projectId, coreId);
-  const startedAt = scopes.get(token)?.generation ?? 0;
-  return () => (scopes.get(token)?.generation ?? 0) !== startedAt;
+export function watchCoreScope(coreId: string): () => boolean {
+  const startedAt = scopes.get(coreId)?.generation ?? 0;
+  return () => (scopes.get(coreId)?.generation ?? 0) !== startedAt;
 }
 
 /** Test-only: forget every registered view and every visit counted. */
-export function __resetProjectScopesForTests(): void {
+export function __resetCoreScopesForTests(): void {
   scopes.clear();
 }

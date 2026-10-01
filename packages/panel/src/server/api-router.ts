@@ -7,10 +7,7 @@ import {
   HTTP_INTERNAL_SERVER_ERROR,
   HTTP_NOT_FOUND,
 } from "~/shared/http-status";
-import * as projectsController from "./controllers/projects.controller";
-import * as projectPresentationController from "./controllers/project-presentation.controller";
 import * as sessionsController from "./controllers/sessions.controller";
-import * as groupsController from "./controllers/groups.controller";
 import * as homeTerminalsController from "./controllers/home-terminals.controller";
 import * as settingsController from "./controllers/settings.controller";
 import * as keybindingsController from "./controllers/keybindings.controller";
@@ -29,13 +26,8 @@ import * as updateCheckController from "./controllers/update-check.controller";
 import * as webhooksController from "./controllers/webhooks.controller";
 
 const HARNESS_HOOK_PATH = /^\/api\/hooks\/([a-z0-9-]+)$/;
-const PROJECT_PATH = /^\/api\/projects\/([^/]+)$/;
-const PROJECT_PATH_STATUS_PATH = /^\/api\/projects\/([^/]+)\/path-status$/;
-const PROJECT_IMAGE_PATH = /^\/api\/projects\/([^/]+)\/image$/;
-const PROJECT_PRESENTATION_PATH = /^\/api\/project-presentation\/([^/]+)$/;
-const PROJECT_SESSIONS_PATH = /^\/api\/projects\/([^/]+)\/sessions$/;
-const GROUP_PATH = /^\/api\/groups\/([^/]+)$/;
 const CORE_PATH = /^\/api\/cores\/([^/]+)$/;
+<<<<<<< HEAD
 const WEBHOOK_PATH = /^\/api\/webhooks\/([^/]+)$/;
 const WEBHOOK_PING_PATH = /^\/api\/webhooks\/([^/]+)\/ping$/;
 const WEBHOOK_DELIVERIES_PATH = /^\/api\/webhooks\/([^/]+)\/deliveries$/;
@@ -43,6 +35,12 @@ const WEBHOOK_DELIVERIES_PATH = /^\/api\/webhooks\/([^/]+)\/deliveries$/;
 // row for a Core-owned Project (ADR 0005) and therefore cannot look one up from
 // the other. `files/list` is matched before `files` so the leaf is never read as
 // a path — the same order, and the same reason, as on the Core (#216).
+=======
+// A Core's files, addressed by both ids: the SDK's Files client still builds its
+// requests as `/v1/projects/:id/files`, which a Core answers as an alias of the
+// workspace's files (issue 557), so the Panel's proxy takes the same shape.
+// `files/list` is matched before `files` so the leaf is never read as a path — the same order, and the same reason, as on the Core (#216).
+>>>>>>> origin/feat/0.5.0
 const CORE_PROJECT_FILES_LIST_PATH = /^\/api\/cores\/([^/]+)\/projects\/([^/]+)\/files\/list$/;
 const CORE_PROJECT_FILES_PATH = /^\/api\/cores\/([^/]+)\/projects\/([^/]+)\/files$/;
 // Literal path — checked before SESSION_PATH so the id patterns never see it.
@@ -236,7 +234,7 @@ async function dispatch(
   if (pathname === "/api/cores/pairing" && method === "POST") {
     return coresController.pair(request);
   }
-  // A Project's files, on the Core that owns them (#129 F6/F11, #169). The
+  // A Core's files, on the Core that owns them (#129 F6/F11, #169). The
   // Panel is a dumb pipe here: these three lines resolve a Core and forward a
   // stream, and every decision about what a path means is the Core's.
   m = pathname.match(CORE_PROJECT_FILES_LIST_PATH);
@@ -259,76 +257,6 @@ async function dispatch(
     // change them.
     if (method === "PATCH") return coresController.rename(id, request);
     if (method === "DELETE") return coresController.remove(id);
-  }
-
-  // Projects
-  if (pathname === "/api/projects") {
-    if (method === "GET") return projectsController.list(request);
-    if (method === "POST") return projectsController.create(request);
-  }
-  if (pathname === "/api/projects/pinned-order" && method === "PATCH") {
-    return projectsController.reorderPinned(request);
-  }
-  m = pathname.match(PROJECT_PATH);
-  if (m) {
-    const id = decode(m[1]);
-    if (method === "GET") return projectsController.getOne(id, request);
-    if (method === "PATCH") return projectsController.update(id, request);
-    if (method === "DELETE") return projectsController.remove(id, request);
-  }
-  m = pathname.match(PROJECT_PATH_STATUS_PATH);
-  if (m) {
-    const id = decode(m[1]);
-    if (method === "GET") return projectsController.pathStatus(id);
-  }
-  m = pathname.match(PROJECT_IMAGE_PATH);
-  if (m) {
-    const id = decode(m[1]);
-    if (method === "GET") return projectsController.getImage(id);
-    if (method === "PUT") return projectsController.putImage(id, request);
-    if (method === "DELETE") return projectsController.removeImage(id, request);
-  }
-
-  // Panel-local presentation for Core-owned projects (issue 98) — group, card
-  // image and launch URL for a project whose row lives on its Core.
-  if (pathname === "/api/project-presentation" && method === "GET") {
-    return projectPresentationController.list();
-  }
-  if (pathname === "/api/project-presentation/prune" && method === "POST") {
-    return projectPresentationController.prune(request);
-  }
-  // Literal path — matched before PROJECT_PRESENTATION_PATH so "pinned-order"
-  // is never read as a project id.
-  if (pathname === "/api/project-presentation/pinned-order" && method === "PATCH") {
-    return projectPresentationController.reorderPinned(request);
-  }
-  m = pathname.match(PROJECT_PRESENTATION_PATH);
-  if (m) {
-    const id = decode(m[1]);
-    if (method === "PATCH") return projectPresentationController.upsert(id, request);
-    if (method === "DELETE") return projectPresentationController.remove(id);
-  }
-
-  m = pathname.match(PROJECT_SESSIONS_PATH);
-  if (m) {
-    const id = decode(m[1]);
-    if (method === "GET") return sessionsController.listForProject(id, request);
-    if (method === "POST") return sessionsController.create(id, request);
-  }
-  // Groups
-  if (pathname === "/api/groups") {
-    if (method === "GET") return groupsController.list(request);
-    if (method === "POST") return groupsController.create(request);
-  }
-  // Must precede GROUP_PATH — otherwise "order" is captured as a group id.
-  if (pathname === "/api/groups/order" && method === "PATCH") {
-    return groupsController.reorder(request);
-  }
-  m = pathname.match(GROUP_PATH);
-  if (m) {
-    const id = decode(m[1]);
-    if (method === "PATCH") return groupsController.update(id, request);
-    if (method === "DELETE") return groupsController.remove(id, request);
   }
 
   // Sessions

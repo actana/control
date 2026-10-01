@@ -42,7 +42,6 @@
 // back with the project argument gone.
 import { describe, it, expect, afterEach } from "vitest";
 import type {
-  CoreLinkProjectSnapshot,
   CoreLinkSessionSnapshot,
   CoreLinkSessionRow,
 } from "@actana/sdk/core";
@@ -69,7 +68,29 @@ import {
   type InProcessCore,
 } from "./in-process-core.ts";
 
-const PROJECT: CoreLinkProjectSnapshot = {
+/**
+ * The Project row this in-repo CLI's fixtures still hand it. The published SDK
+ * dropped `CoreLinkProjectSnapshot` and the row's `projectId` in 0.6.0-next.2; the
+ * CLI here still speaks Projects until it is rewritten (actana/control#580), so the
+ * fixtures name them locally. Nothing here reaches the wire typed.
+ */
+type ProjectSnapshot = {
+  projectId: string;
+  name: string;
+  path: string;
+  icon: string;
+  iconColor: string;
+  pinned: boolean;
+  rememberHarnessSettings: boolean;
+  savedHarness: string | null;
+  savedSkipPermissions: boolean;
+  savedBareSession: boolean;
+  defaultGridView: boolean;
+  updatedAt: number;
+};
+type ProjectSessionRow = CoreLinkSessionRow & { projectId: string };
+
+const PROJECT: ProjectSnapshot = {
   projectId: "proj_web",
   name: "web",
   path: "/home/core/projects/web",
@@ -84,7 +105,7 @@ const PROJECT: CoreLinkProjectSnapshot = {
   updatedAt: 1_700_000_000_000,
 };
 
-function session(overrides: Partial<CoreLinkSessionRow> = {}): CoreLinkSessionRow {
+function session(overrides: Partial<ProjectSessionRow> = {}): ProjectSessionRow {
   return {
     sessionId: "session_live",
     projectId: PROJECT.projectId,

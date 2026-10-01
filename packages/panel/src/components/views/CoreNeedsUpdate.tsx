@@ -16,7 +16,7 @@ import { CORE_UPDATE_COMMAND, coreDriftDirection, type CoreDialStatus } from "~/
 // this notice would keep saying the same thing. `CORE_UPDATE_COMMAND`'s
 // docstring says which command does that and which two do not.
 //
-// Everything else about the Core — its projects, sessions, terminals — is
+// Everything else about the Core — its sessions, terminals — is
 // suppressed at the panel-link router, so this notice stands where that data
 // would have been rather than beside it.
 

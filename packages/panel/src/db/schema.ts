@@ -11,104 +11,10 @@ import {
   type SessionStatus,
 } from "@actana/shared/domain";
 
-export const groups = sqliteTable("groups", {
-  id: text("id").primaryKey(),
-  name: text("name").notNull(),
-  color: text("color").notNull(),
-  // Manual display order (0-based). Null on legacy rows created before
-  // reordering existed; those sort last by createdAt until the user reorders,
-  // which assigns every group a concrete index. See groups.repo findAllGroups.
-  sortOrder: integer("sort_order"),
-  createdAt: integer("created_at").notNull(),
-});
-
-export const projects = sqliteTable(
-  "projects",
-  {
-    id: text("id").primaryKey(),
-    name: text("name").notNull(),
-    path: text("path").notNull(),
-    icon: text("icon").notNull(),
-    iconColor: text("icon_color").notNull(),
-    imagePath: text("image_path"),
-    groupId: text("group_id").references(() => groups.id, { onDelete: "set null" }),
-    pinned: integer("pinned", { mode: "boolean" }).notNull().default(false),
-    pinnedOrder: integer("pinned_order"),
-    launchUrl: text("launch_url"),
-    rememberHarnessSettings: integer("remember_agent_settings", { mode: "boolean" })
-      .notNull()
-      .default(false),
-    savedHarness: text("saved_agent").$type<Harness>(),
-    savedSkipPermissions: integer("saved_skip_permissions", { mode: "boolean" })
-      .notNull()
-      .default(false),
-    savedBareSession: integer("saved_bare_session", { mode: "boolean" })
-      .notNull()
-      .default(false),
-    // Which layout this project opens in: true = grid (all sessions tiled),
-    // false = list (sessions stacked in a column). Chosen at create time; the
-    // in-session toggle still lets the user switch on the fly.
-    defaultGridView: integer("default_grid_view", { mode: "boolean" })
-      .notNull()
-      .default(false),
-    createdAt: integer("created_at").notNull(),
-    updatedAt: integer("updated_at").notNull(),
-  },
-  (t) => ({
-    groupIdx: index("projects_group_idx").on(t.groupId),
-    pinnedIdx: index("projects_pinned_idx").on(t.pinned),
-  })
-);
-
-/**
- * Panel-local presentation for a project the Panel does not own (issue 98).
- *
- * A Core-owned Project's row lives on its Core, and the core-link carries only
- * Core facts (name, path, icon, pin, remembered settings). Group membership,
- * the card image and the launch URL are the Panel operator's own filing — they
- * mean nothing on the Core and have no frame to travel in — so they are kept
- * here, keyed to the Core's project id, and joined onto the Core's snapshot on
- * read. Without this table those three fields PATCHed a `projects` row that
- * does not exist and 404'd.
- *
- * Keyed by `projectId` alone: ids are minted `p-<base36 ms>-<6 hex>`
- * (shared/client-id), so two Cores colliding is not a case worth a composite
- * key. `coreId` rides along anyway — it is what an orphan sweep needs to ask
- * the right Core whether the project is still there.
- *
- * No foreign key to `projects`: the whole point is a row with no project row.
- */
-export const projectPresentation = sqliteTable(
-  "project_presentation",
-  {
-    projectId: text("project_id").primaryKey(),
-    coreId: text("core_id").notNull(),
-    imagePath: text("image_path"),
-    groupId: text("group_id").references(() => groups.id, { onDelete: "set null" }),
-    launchUrl: text("launch_url"),
-    /**
-     * Where this pin sits on the rail (issue 382). The rail is one sequence of
-     * slots shared by the Panel's own pins and every Core's, so the slot number
-     * cannot be a fact of any one Core — it is Panel-local presentation, kept
-     * in the same numbering space as `projects.pinnedOrder` so the merged list
-     * sorts back into the operator's order.
-     */
-    pinnedOrder: integer("pinned_order"),
-    updatedAt: integer("updated_at").notNull(),
-  },
-  (t) => ({
-    coreIdx: index("project_presentation_core_idx").on(t.coreId),
-    groupIdx: index("project_presentation_group_idx").on(t.groupId),
-  })
-);
-
 export const sessions = sqliteTable(
   "sessions",
   {
     id: text("id").primaryKey(),
-    projectId: text("project_id")
-      .notNull()
-      .references(() => projects.id, { onDelete: "cascade" }),
     title: text("title").notNull(),
     titleManuallySet: integer("title_manually_set", { mode: "boolean" }).notNull().default(false),
     icon: text("icon"),
@@ -126,7 +32,6 @@ export const sessions = sqliteTable(
     updatedAt: integer("updated_at").notNull(),
   },
   (t) => ({
-    projectIdx: index("sessions_project_idx").on(t.projectId),
     statusIdx: index("sessions_status_idx").on(t.status),
     archivedIdx: index("sessions_archived_idx").on(t.archived),
     pinnedIdx: index("sessions_pinned_idx").on(t.pinned),
@@ -148,13 +53,8 @@ export const terminalLogs = sqliteTable(
   })
 );
 
-// The Panel's only terminal table (issue 266). It was introduced as the
-// project-less "home" half beside `user_terminals`, deliberately separate so
-// the FK-heavy project table never needed a destructive rebuild — and it is
-// what is left now that the project-root terminal path is gone: every terminal
-// the Panel opens is a VM Shell Session on a Core and persists here. Rows are
-// surfaced to the renderer shaped as UserTerminal (with a sentinel projectId)
-// so the existing terminal store/panel/pane can render them.
+// The Panel's only terminal table (issue 266): every terminal the Panel opens
+// is a VM Shell Session on a Core and persists here.
 //
 // `user_terminals` itself is **dropped**, not orphaned: `ensureSchema` no
 // longer creates it and `dropLegacyUserTerminals` removes it from a DB that
@@ -184,9 +84,6 @@ export const tokenUsage = sqliteTable(
     sessionId: text("session_id")
       .notNull()
       .references(() => sessions.id, { onDelete: "cascade" }),
-    projectId: text("project_id")
-      .notNull()
-      .references(() => projects.id, { onDelete: "cascade" }),
     claudeSessionId: text("claude_session_id").notNull(),
     messageUuid: text("message_uuid").notNull().unique(),
     model: text("model"),
@@ -198,7 +95,6 @@ export const tokenUsage = sqliteTable(
   },
   (t) => ({
     sessionIdx: index("token_usage_session_idx").on(t.sessionId),
-    projectIdx: index("token_usage_project_idx").on(t.projectId),
     tsIdx: index("token_usage_ts_idx").on(t.ts),
   })
 );
@@ -210,9 +106,6 @@ export const tokenUsageSessionOffsets = sqliteTable(
     sessionId: text("session_id")
       .notNull()
       .references(() => sessions.id, { onDelete: "cascade" }),
-    projectId: text("project_id")
-      .notNull()
-      .references(() => projects.id, { onDelete: "cascade" }),
     byteOffset: integer("byte_offset").notNull().default(0),
     updatedAt: integer("updated_at").notNull(),
   }
@@ -246,17 +139,7 @@ export const eventLog = sqliteTable(
   }),
 );
 
-export const groupsRelations = relations(groups, ({ many }) => ({
-  projects: many(projects),
-}));
-
-export const projectsRelations = relations(projects, ({ one, many }) => ({
-  group: one(groups, { fields: [projects.groupId], references: [groups.id] }),
-  sessions: many(sessions),
-}));
-
-export const sessionsRelations = relations(sessions, ({ one, many }) => ({
-  project: one(projects, { fields: [sessions.projectId], references: [projects.id] }),
+export const sessionsRelations = relations(sessions, ({ many }) => ({
   logs: many(terminalLogs),
 }));
 
@@ -265,24 +148,10 @@ export const terminalLogsRelations = relations(terminalLogs, ({ one }) => ({
   session: one(sessions, { fields: [terminalLogs.sessionId], references: [sessions.id] }),
 }));
 
-export type Group = typeof groups.$inferSelect;
-export type NewGroup = typeof groups.$inferInsert;
-export type Project = typeof projects.$inferSelect;
-export type NewProject = typeof projects.$inferInsert;
-export type ProjectPresentation = typeof projectPresentation.$inferSelect;
 export type Session = typeof sessions.$inferSelect;
 export type NewSession = typeof sessions.$inferInsert;
-/**
- * A terminal as the renderer sees one.
- *
- * A `home_terminals` row plus the sentinel `projectId` the store, panel and
- * pane already key on ({@link HOME_TERMINAL_PROJECT_ID}). It used to be
- * `user_terminals.$inferSelect` widened with a runtime-only `startCommand`
- * hint for launch/ephemeral shells; both the table and that hint went with the
- * project-root path (issue 266), so this is now stated directly rather than
- * inferred from a table that no longer exists.
- */
-export type UserTerminal = HomeTerminal & { projectId: string };
+/** A terminal as the renderer sees one: a `home_terminals` row. */
+export type UserTerminal = HomeTerminal;
 export type HomeTerminal = typeof homeTerminals.$inferSelect;
 export type NewHomeTerminal = typeof homeTerminals.$inferInsert;
 export type EventLogRow = typeof eventLog.$inferSelect;

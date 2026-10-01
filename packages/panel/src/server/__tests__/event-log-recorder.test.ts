@@ -41,19 +41,19 @@ describe("registerEventLogRecorder", () => {
 
   it("appends session:created with session_id filled from the `id` field", () => {
     registerEventLogRecorder();
-    events.emit("session:created", { id: "t1", projectId: "p1" });
+    events.emit("session:created", { id: "t1" });
 
     const tail = readEventTail(db as unknown as EventLogSqlite, 0);
     expect(tail).toHaveLength(1);
     expect(tail[0]!.kind).toBe("session:created");
     expect(tail[0]!.sessionId).toBe("t1");
     expect(tail[0]!.ptyId).toBeNull();
-    expect(JSON.parse(tail[0]!.payload)).toEqual({ id: "t1", projectId: "p1" });
+    expect(JSON.parse(tail[0]!.payload)).toEqual({ id: "t1" });
   });
 
   it("appends session:updated with session_id filled from the `id` field", () => {
     registerEventLogRecorder();
-    events.emit("session:updated", { id: "t2", projectId: "p1" });
+    events.emit("session:updated", { id: "t2" });
 
     const tail = readEventTail(db as unknown as EventLogSqlite, 0);
     expect(tail[0]!.kind).toBe("session:updated");
@@ -64,7 +64,6 @@ describe("registerEventLogRecorder", () => {
     registerEventLogRecorder();
     events.emit("session:question", {
       sessionId: "t9",
-      projectId: "p1",
       questionId: "q1",
       questions: [],
     });
@@ -74,19 +73,10 @@ describe("registerEventLogRecorder", () => {
     expect(tail[0]!.sessionId).toBe("t9");
   });
 
-  it("leaves session_id null for project-level events", () => {
-    registerEventLogRecorder();
-    events.emit("project:created", { id: "p1" });
-
-    const tail = readEventTail(db as unknown as EventLogSqlite, 0);
-    expect(tail[0]!.kind).toBe("project:created");
-    expect(tail[0]!.sessionId).toBeNull();
-  });
-
   it("assigns sequential monotonic eventIds across emits", () => {
     registerEventLogRecorder();
-    events.emit("session:created", { id: "t1", projectId: "p1" });
-    events.emit("session:updated", { id: "t1", projectId: "p1" });
+    events.emit("session:created", { id: "t1" });
+    events.emit("session:updated", { id: "t1" });
 
     const tail = readEventTail(db as unknown as EventLogSqlite, 0);
     expect(tail.map((e) => e.eventId)).toEqual([1, 2]);
@@ -95,7 +85,7 @@ describe("registerEventLogRecorder", () => {
   it("is idempotent — registering twice does not double-record", () => {
     registerEventLogRecorder();
     registerEventLogRecorder();
-    events.emit("session:created", { id: "t1", projectId: "p1" });
+    events.emit("session:created", { id: "t1" });
 
     const tail = readEventTail(db as unknown as EventLogSqlite, 0);
     expect(tail).toHaveLength(1);
@@ -104,6 +94,6 @@ describe("registerEventLogRecorder", () => {
   it("does not throw when getSqlite fails (best-effort durability)", () => {
     registerEventLogRecorder();
     holder.db = null; // simulate getSqlite blowing up
-    expect(() => events.emit("session:created", { id: "t1", projectId: "p1" })).not.toThrow();
+    expect(() => events.emit("session:created", { id: "t1" })).not.toThrow();
   });
 });

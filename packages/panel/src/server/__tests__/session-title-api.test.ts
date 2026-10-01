@@ -15,11 +15,10 @@ const testDb = await openPanelTestDb();
 const { runCli } = await import("../services/claude-cli");
 const { handleApiRequest } = await import("../api-router");
 const { operatorSessionCookie } = await import("./_operator-session");
-const { createProject } = await import("../services/projects");
 const { createSession, getSession, updateSession } = await import("../services/sessions");
 const { generateTitleForSession } = await import("../services/title-generator");
 const { getDb } = await import("~/db/client");
-const { projects, sessions, groups, appSettings } = await import("~/db/schema");
+const { sessions, appSettings } = await import("~/db/schema");
 const { TITLE_WAITING } = await import("~/lib/session-sentinels");
 
 const LOOPBACK_HEADERS = { origin: "http://127.0.0.1:5173" };
@@ -38,16 +37,11 @@ async function authed(input: string, init: RequestInit = {}): Promise<Request> {
 function resetDb() {
   const db = getDb();
   db.delete(sessions).run();
-  db.delete(projects).run();
-  db.delete(groups).run();
   db.delete(appSettings).run();
 }
 
 function createTitleSession() {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mc-session-title-proj-"));
-  const project = createProject({ name: "session-title", path: dir });
   return createSession({
-    projectId: project.id,
     title: TITLE_WAITING,
     agent: "codex",
   });

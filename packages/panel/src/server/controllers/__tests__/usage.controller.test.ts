@@ -34,7 +34,6 @@ describe("usage controller", () => {
     expect(body).toMatchObject({ syncing: false });
     expect(body).toHaveProperty("totals");
     expect(body).toHaveProperty("perDay");
-    expect(body).toHaveProperty("perProject");
     expect(body).toHaveProperty("perSession");
   });
 

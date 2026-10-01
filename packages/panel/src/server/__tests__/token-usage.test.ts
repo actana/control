@@ -115,21 +115,15 @@ describe("syncTokenUsage", () => {
     );
     _resetSyncSingleton();
 
-    // Seed project + session referencing a fake claude session id.
+    // Seed a session referencing a fake claude session id.
     const sqlite = getSqlite();
     getDb();
     const sessionId = "sess-xyz";
     const now = Date.now();
     sqlite
       .prepare(
-        `INSERT INTO projects (id, name, path, icon, icon_color, pinned, remember_agent_settings, saved_skip_permissions, saved_bare_session, created_at, updated_at)
-         VALUES ('p1', 'Demo', '/tmp/demo', 'folder', '#888', 0, 0, 0, 0, ?, ?)`
-      )
-      .run(now, now);
-    sqlite
-      .prepare(
-        `INSERT INTO sessions (id, project_id, title, agent, status, branch, preview, lines, archived, claude_session_id, claude_skip_permissions, claude_bare_session, created_at, updated_at)
-         VALUES ('t1', 'p1', 'a session', 'claude-code', 'ready', 'main', '', 0, 0, ?, 0, 0, ?, ?)`
+        `INSERT INTO sessions (id, title, agent, status, branch, preview, lines, archived, claude_session_id, claude_skip_permissions, claude_bare_session, created_at, updated_at)
+         VALUES ('t1', 'a session', 'claude-code', 'ready', 'main', '', 0, 0, ?, 0, 0, ?, ?)`
       )
       .run(sessionId, now, now);
 

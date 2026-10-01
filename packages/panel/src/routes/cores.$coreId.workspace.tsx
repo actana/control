@@ -28,8 +28,6 @@ import {
   rememberActiveSession,
   type LastActiveSession,
 } from "~/lib/active-session-memory";
-import { coreWorkspaceProject } from "~/lib/core-workspace-project";
-type ProjectOnboardIntent = { gridView?: boolean };
 import { readCoreRemember, writeCoreRemember } from "~/lib/core-remember";
 import { useCores } from "~/lib/use-fleet";
 import { useHideableMenu } from "~/lib/hideable-elements";
@@ -39,7 +37,6 @@ import { CursorGlow } from "~/components/ui/CursorGlow";
 import { HotkeyTooltip } from "~/components/ui/Tooltip";
 import { ConfirmDialog } from "~/components/ui/ConfirmDialog";
 import { isEditableTarget, useHotkey } from "~/lib/use-hotkey";
-import { api } from "~/lib/api";
 
 import { mutateSessionForCore } from "~/lib/mutate-session-for-core";
 import { newSessionId } from "~/lib/claude-command";
@@ -52,19 +49,13 @@ import {
   removeSessionsFromCache,
   replaceOptimisticSession,
   restoreSessionsCache,
-  setSessionArchivedInCache,
   setSessionPinnedInCache,
   setSessionsArchivedInCache,
 } from "~/lib/optimistic-session";
 import { prefetchTerminalModules } from "~/lib/prefetch-terminal-modules";
 import { newClientId } from "@actana/shared/client-id";
-import {
-  defaultSessionPayload,
-  sessionCreateSignature,
-  type SessionCreatePayload,
-} from "~/lib/session-warm-pool";
+import { defaultSessionPayload, type SessionCreatePayload } from "~/lib/session-create-payload";
 import { useServerEvents } from "~/lib/use-events";
-import { useDebouncedCallback } from "~/lib/use-debounced-callback";
 import { applyQuestionServerEvent } from "~/lib/harness-question-store";
 import {
   setPendingInitialInput,
@@ -78,7 +69,6 @@ import {
 import { DEFAULT_SHIP_PROMPT } from "~/shared/ship-defaults";
 import type { AiModelId } from "@actana/shared/ai-runtime-defaults";
 import { useTerminals } from "~/lib/terminal-store";
-import { useUserTerminals } from "~/lib/user-terminal-store";
 import {
   groupActiveListSessionsForDisplay,
   groupArchivedSessionsForDisplay,
@@ -112,7 +102,7 @@ import {
 } from "~/lib/session-notification-store";
 import type { Session } from "~/db/schema";
 
-import { projectScopeKey, scopeKeyForProject } from "~/lib/scoped-project";
+import { coreScopeKey } from "~/lib/core-scope";
 import {
   ARCHIVE_ACTIVE_SESSION_EVENT,
   DUPLICATE_ACTIVE_SESSION_EVENT,
@@ -121,8 +111,8 @@ import {
   type ArchiveActiveSessionEventDetail,
 } from "~/lib/design-meta";
 
-// Session workspace for a Core (issue 560). Replaces the legacy /projects/$id
-// route: Sessions belong to the Core and always start in ~ (ADR 0041 D1, D2).
+// Session workspace for a Core (issue 560). Sessions belong to the Core and
+// always start in ~ (ADR 0041 D1, D2).
 export const Route = createFileRoute("/cores/$coreId/workspace")({
   component: CoreWorkspacePage,
 });
@@ -140,9 +130,7 @@ function readFocusedGridSessionId(): string | null {
 }
 
 function CoreWorkspacePage() {
-  const { coreId: routeCoreId } = Route.useParams();
-  const coreId = routeCoreId;
-  const id = coreId; // terminal/session caches still key off a scope id = Core id
+  const { coreId } = Route.useParams();
   const router = useRouter();
   const queryClient = useQueryClient();
   const { data: settings } = useSettings();
@@ -156,49 +144,18 @@ function CoreWorkspacePage() {
     void rememberTick;
     return readCoreRemember(coreId);
   }, [coreId, rememberTick]);
-  const project = useMemo(
-    () => coreWorkspaceProject(coreId, coreLabel),
-    [coreId, coreLabel, remembered.rememberHarnessSettings, remembered.savedHarness],
-  );
-  const selectedScopeKey = projectScopeKey(id);
-  const scopedProject = project;
-  // Every Session starts in ~ on this Core — there is no path to verify (ADR 0041 D2).
-  const projectPathReady = true;
-  const terminalProject = scopedProject;
-  const defaultWarmPayload = useMemo(
-    () => (project ? defaultSessionPayload(project) : null),
-    [
-      project?.rememberHarnessSettings,
-      project?.savedHarness,
-      project?.savedSkipPermissions,
-      project?.savedBareSession,
-    ],
-  );
-  const warmPrepareKey =
-    terminalProject && defaultWarmPayload
-      ? `${terminalProject.id}:${terminalProject.path}:${sessionCreateSignature(coreId ?? "", defaultWarmPayload, terminalProject.path)}`
-      : null;
-  // Read the latest inputs through a ref so a project-query refetch that returns
-  // a new `project` reference with identical data doesn't change the effect deps
-  // and churn the warm slot (kill + respawn a full agent PTY). `warmPrepareKey`
-  // already encodes everything that should trigger teardown/re-prepare.
-  const warmInputRef = useRef({ terminalProject, defaultWarmPayload });
-  warmInputRef.current = { terminalProject, defaultWarmPayload };
+  const selectedScopeKey = coreScopeKey(coreId);
+  // Terminal modules are prefetched once per Core. There is no warm-slot
+  // pre-spawn: a session's row belongs to the Core that runs it (ADR 0004), so
+  // Sessions take the one cold path, which is a mutation frame.
   useEffect(() => {
-    const { terminalProject, defaultWarmPayload } = warmInputRef.current;
-    if (!terminalProject || !defaultWarmPayload || !warmPrepareKey) return;
     void prefetchTerminalModules();
-    // No warm-slot pre-spawn any more: the pool spawned through the in-process
-    // Core's core-link and persisted its session over the Panel's local HTTP
-    // API, and a session's row belongs to the Core that runs it (ADR 0004).
-    // Sessions take the one cold path, which is a mutation frame.
-    // Depend only on warmPrepareKey (the stable logical key); inputs come from the ref.
-  }, [warmPrepareKey]);
-  const sessionsQuery = useSessions(id, { coreId });
-  // A remote Core's projects and sessions change on the Core, not in the
-  // Panel's own database, so the SSE stream that keeps the rest of this route
-  // fresh says nothing about them. Core events over the panel link do.
-  useCoreLiveQueries(coreId, id);
+  }, [coreId]);
+  const sessionsQuery = useSessions(coreId);
+  // A Core's sessions change on the Core, not in the Panel's own database, so
+  // the SSE stream that keeps the rest of this route fresh says nothing about
+  // them. Core events over the panel link do.
+  useCoreLiveQueries(coreId);
   const sessions = sessionsQuery.data ?? [];
   // Live pinned-session ids for the grid's "Pinned" filter — derived from the
   // session query (not the store's open-time snapshot) so a pin toggle reflects
@@ -216,17 +173,14 @@ function CoreWorkspacePage() {
   const [sessionView, setSessionView] = useState<SessionView>("active");
   const showArchived = sessionView === "archived";
   const showPinned = sessionView === "pinned";
-  // Where the Archived view's contents come from differs by owner (ADR 0019).
-  // A Panel-owned project's session list already carries its archived rows, so
-  // both the rows and the count are a filter away. A Core's list carries none
-  // of them: the count rides the `sessionRowsList` answer as a scalar, and the rows
-  // arrive over their own frame — fetched only once this view is open.
-  const archivedSessionsQuery = useArchivedSessions(id, { coreId, enabled: showArchived });
-  const coreArchivedCount = useCoreArchivedSessionCount(id, coreId);
-  const archivedSessions = coreId ? (archivedSessionsQuery.data ?? []) : sessions.filter((t) => t.archived);
-  // Count, not `archivedSessions.length` — for a Core the rows are absent until
-  // the view opens, and the tab has to be gated and labelled before that.
-  const archivedCount = coreId ? coreArchivedCount : archivedSessions.length;
+  // A Core's list carries none of its archived rows (ADR 0019): the count rides
+  // the `sessionRowsList` answer as a scalar, and the rows arrive over their own
+  // frame — fetched only once this view is open.
+  const archivedSessionsQuery = useArchivedSessions(coreId, { enabled: showArchived });
+  const archivedSessions = archivedSessionsQuery.data ?? [];
+  // Count, not `archivedSessions.length` — the rows are absent until the view
+  // opens, and the tab has to be gated and labelled before that.
+  const archivedCount = useCoreArchivedSessionCount(coreId);
   const hasArchivedSessions = archivedCount > 0;
   const [pinningSessionIds, setPinningSessionIds] = useState<Set<string>>(() => new Set());
   const pinRequestSeqRef = useRef<Record<string, number>>({});
@@ -334,9 +288,8 @@ function CoreWorkspacePage() {
 
   // How many sessions the current scope's grid shows (drives "Archive all").
   const gridScopeSessionCount = useMemo(
-    () =>
-      terminals.sessions.filter((s) => scopeKeyForProject(s.project) === selectedScopeKey).length,
-    [terminals.sessions, selectedScopeKey],
+    () => terminals.sessions.filter((s) => s.coreId === coreId).length,
+    [terminals.sessions, coreId],
   );
   // The grid only takes over the workspace once the scope has a session to show.
   // With none, we fall back to the normal sessions view so an empty grid matches
@@ -355,7 +308,6 @@ function CoreWorkspacePage() {
   const syncSession = terminals.syncSession;
   const rehydrateTerminal = terminals.rehydrate;
   const toggleTerminalSession = terminals.toggle;
-  const setVisibleTerminalScope = terminals.setVisibleScope;
   // "Grid view — show all sessions": entering the grid materializes every
   // active session for the visible scope, not just the already-open
   // ones. TerminalPane's spawn queue staggers the agent launches.
@@ -366,17 +318,16 @@ function CoreWorkspacePage() {
     // it as a side panel rather than fighting for the slot, so switching views
     // shouldn't dismiss the review.
     terminals.setGridView(true);
-    if (!terminalProject) return;
     for (const session of sessionsRef.current) {
       if (session.archived) continue;
-      rehydrateTerminal(terminalProject, session, { coreId });
+      rehydrateTerminal(coreId, session);
     }
     // Focus the session that was active in normal view so entering the grid keeps
     // the same session current instead of landing on an arbitrary cell.
     // focusGridSession retries until that cell's pane mounts.
-    const activeSessionId = terminals.activeSessionIdFor(selectedScopeKey);
+    const activeSessionId = terminals.activeSessionIdFor(coreId);
     if (activeSessionId) terminals.focusGridSession(activeSessionId);
-  }, [terminals, terminalProject, rehydrateTerminal, selectedScopeKey, coreId]);
+  }, [terminals, rehydrateTerminal, coreId]);
   const toggleGridViewShowingAll = useCallback(() => {
     if (terminals.gridView) {
       // Carry the grid's focused session into normal view so leaving the grid
@@ -386,8 +337,8 @@ function CoreWorkspacePage() {
       // focus off the grid).
       const focused = readFocusedGridSessionId() ?? terminals.getGridFocusedSessionId();
       terminals.setGridView(false);
-      if (focused && terminalProject && sessions.some((t) => t.id === focused)) {
-        terminals.setActiveSession(terminalProject, focused);
+      if (focused && sessions.some((t) => t.id === focused)) {
+        terminals.setActiveSession(coreId, focused);
         // setActiveSession only picks which session docks in normal view; the
         // cached terminal surface reattaches blurred, so without this the pane
         // is shown but drops keystrokes until a click. Post the focus request
@@ -402,19 +353,7 @@ function CoreWorkspacePage() {
     } else {
       enterGridView();
     }
-  }, [terminals, enterGridView, terminalProject, sessions]);
-  const {
-    setProject: setActiveUserTerminalProject,
-  } = useUserTerminals();
-
-  useEffect(() => {
-    if (terminalProject) setActiveUserTerminalProject(terminalProject, coreId);
-  }, [terminalProject, coreId, setActiveUserTerminalProject]);
-
-  useLayoutEffect(() => {
-    setVisibleTerminalScope(id, selectedScopeKey);
-    return () => setVisibleTerminalScope(id, null);
-  }, [id, selectedScopeKey, setVisibleTerminalScope]);
+  }, [terminals, enterGridView, coreId, sessions]);
 
   useEffect(() => {
     for (const session of sessions) syncSession(session);
@@ -424,12 +363,12 @@ function CoreWorkspacePage() {
   // highest-priority card. Plain deselect (Cmd+L, X) leaves the panel closed.
   // We hold the prev active id across renders until the sessions query catches
   // up — only then can we tell deletion (session gone) from deselect (still there).
-  // Scope the ref to {projectId, sessionId} so the route component being reused
-  // across project switches doesn't make a stale ref look like a deletion in
-  // the new project (which would auto-open a session there).
+  // Scope the ref to {coreId, sessionId} so the route component being reused
+  // across Core switches doesn't make a stale ref look like a deletion on the
+  // new Core (which would auto-open a session there).
   const lastActiveRef = useRef<LastActiveSession | null>(null);
-  const activeSessionId = terminals.activeSessionIdFor(selectedScopeKey);
-  const lastHiddenSessionRef = useRef<{ projectId: string; sessionId: string } | null>(null);
+  const activeSessionId = terminals.activeSessionIdFor(coreId);
+  const lastHiddenSessionRef = useRef<{ coreId: string; sessionId: string } | null>(null);
   const archiveSessionRef = useRef<(sessionId: string) => void>(() => undefined);
   useEffect(() => {
     const onArchiveRequest = (e: Event) => {
@@ -446,7 +385,7 @@ function CoreWorkspacePage() {
   // it every deselect on one reads as a deletion — see `active-session-memory`.
   useEffect(() => {
     if (activeSessionId !== null) {
-      lastActiveRef.current = rememberActiveSession(activeSessionId, selectedScopeKey, {
+      lastActiveRef.current = rememberActiveSession(activeSessionId, coreId, {
         sessions,
         archivedSessions,
         previous: lastActiveRef.current,
@@ -454,9 +393,9 @@ function CoreWorkspacePage() {
       return;
     }
     const prev = lastActiveRef.current;
-    if (!prev || prev.projectId !== selectedScopeKey || !terminalProject) return;
+    if (!prev || prev.coreId !== coreId) return;
     const visible = sessions.filter((t) => !t.archived);
-    if (!activeSessionWentAway(prev, selectedScopeKey, visible)) {
+    if (!activeSessionWentAway(prev, coreId, visible)) {
       // An archived row leaving the slot is always a deselect, and it can never
       // turn up in `visible` later — forget it instead of re-deciding it every
       // time the session list moves. A live row still on screen is kept, so its
@@ -466,27 +405,19 @@ function CoreWorkspacePage() {
     }
     lastActiveRef.current = null;
     const next = pickByPriority(visible);
-    if (next) toggleTerminalSession(terminalProject, next);
-  }, [
-    activeSessionId,
-    sessions,
-    archivedSessions,
-    terminalProject,
-    toggleTerminalSession,
-    selectedScopeKey,
-  ]);
+    if (next) toggleTerminalSession(coreId, next);
+  }, [activeSessionId, sessions, archivedSessions, toggleTerminalSession, coreId]);
 
   // Rehydrate after reload: if a persisted activeSessionId resolves to an
-  // existing session for this project, materialize a session entry so the panel
+  // existing session for this Core, materialize a session entry so the panel
   // reopens without requiring a click.
   useEffect(() => {
-    if (!terminalProject) return;
     if (!activeSessionId) return;
     const session = sessions.find((t) => t.id === activeSessionId);
-    if (session) rehydrateTerminal(terminalProject, session);
-  }, [activeSessionId, terminalProject, sessions, rehydrateTerminal]);
+    if (session) rehydrateTerminal(coreId, session);
+  }, [activeSessionId, coreId, sessions, rehydrateTerminal]);
 
-  // The rehydrate above re-shows the active session on a project switch,
+  // The rehydrate above re-shows the active session on a Core switch,
   // but its cached terminal surface reattaches blurred (it doesn't self-focus),
   // so the newly-shown session drops keystrokes until a manual click. Re-assert
   // keyboard focus once per scope switch — guarded by scope so it fires on the
@@ -496,83 +427,53 @@ function CoreWorkspacePage() {
   // (normal view), so a single call covers both layouts.
   const focusedScopeRef = useRef<string | null>(null);
   useEffect(() => {
-    if (!terminalProject) return;
     if (focusedScopeRef.current === selectedScopeKey) return;
     if (!activeSessionId) return;
     focusedScopeRef.current = selectedScopeKey;
     terminals.focusGridSession(activeSessionId);
-  }, [selectedScopeKey, terminalProject, activeSessionId, terminals]);
+  }, [selectedScopeKey, activeSessionId, terminals]);
 
   const openRequestedSession = useCallback(
     (request: PendingSessionOpen) => {
-      void (async () => {
-        if (!terminalProject || request.projectId !== id) return;
-        // A pending open is Core-scoped: same project id on two Cores is two
-        // different projects. Leave requests for another Core untouched — the
-        // navigation that enqueued them lands on `?coreId=<theirs>` and the
-        // remounted route consumes them there.
-        if (request.coreId !== coreId) return;
-        // In grid view every open session is already on screen regardless of the
-        // selected scope, so the panel-switching logic below does
-        // nothing visible. If the target session is live, just spotlight its cell
-        // so the user can pick it out; the scope guards would otherwise no-op.
-        if (terminals.gridView && terminals.sessions.some((s) => s.sessionId === request.sessionId)) {
-          terminals.focusGridSession(request.sessionId);
-          clearPendingSessionOpen(request);
-          return;
-        }
-
-        let session = sessions.find((entry) => entry.id === request.sessionId && !entry.archived) ?? null;
-
-        if (!session) {
-          if (sessionsQuery.isLoading) return;
-          if (coreId) {
-            // A Core's sessions only travel as core-link snapshots (already in
-            // `sessions`); `api.getSession` reads the Panel's own rows and could
-            // resolve a colliding id. Absent from the snapshot list ⇒ stale.
-            clearPendingSessionOpen(request);
-            return;
-          }
-          try {
-            const { session: remoteSession } = await api.getSession(request.sessionId);
-            if (!remoteSession || remoteSession.projectId !== id || remoteSession.archived) {
-              clearPendingSessionOpen(request);
-              return;
-            }
-            session = remoteSession;
-          } catch {
-            clearPendingSessionOpen(request);
-            return;
-          }
-        }
-
-        showRequestedSession({
-          terminals,
-          scopeKey: selectedScopeKey,
-          project: terminalProject,
-          session,
-          coreId,
-        });
-        // Now that the session is materialized in the grid, spotlight its cell.
-        if (terminals.gridView) terminals.focusGridSession(session.id);
+      // A pending open is Core-scoped. Leave requests for another Core untouched —
+      // the navigation that enqueued them lands on that Core's workspace and the
+      // remounted route consumes them there.
+      if (request.coreId !== coreId) return;
+      // In grid view every open session is already on screen regardless of the
+      // selected scope, so the panel-switching logic below does
+      // nothing visible. If the target session is live, just spotlight its cell
+      // so the user can pick it out; the scope guards would otherwise no-op.
+      if (terminals.gridView && terminals.sessions.some((s) => s.sessionId === request.sessionId)) {
+        terminals.focusGridSession(request.sessionId);
         clearPendingSessionOpen(request);
-      })();
+        return;
+      }
+
+      // A Core's sessions only travel as core-link snapshots (already in
+      // `sessions`). Absent from the snapshot list ⇒ stale.
+      const session = sessions.find((entry) => entry.id === request.sessionId && !entry.archived);
+      if (!session) {
+        if (sessionsQuery.isLoading) return;
+        clearPendingSessionOpen(request);
+        return;
+      }
+
+      showRequestedSession({
+        terminals,
+        session,
+        coreId,
+      });
+      // Now that the session is materialized in the grid, spotlight its cell.
+      if (terminals.gridView) terminals.focusGridSession(session.id);
+      clearPendingSessionOpen(request);
     },
-    [
-      id,
-      coreId,
-      terminalProject,
-      selectedScopeKey,
-      sessions,
-      sessionsQuery.isLoading,
-      terminals,
-    ],
+    [coreId, sessions, sessionsQuery.isLoading, terminals],
   );
 
   useEffect(() => {
-    const pending = readPendingSessionOpen(id);
+    const pending = readPendingSessionOpen(coreId);
     if (pending) openRequestedSession(pending);
-  }, [id, openRequestedSession]);
+  }, [coreId, openRequestedSession]);
 
   useEffect(() => {
     const onOpenRequest = (event: Event) => {
@@ -585,41 +486,20 @@ function CoreWorkspacePage() {
     };
   }, [openRequestedSession]);
 
-  const invalidateProject = useCallback(
-    () => queryClient.invalidateQueries({ queryKey: queryKeys.project(id) }),
-    [queryClient, id],
-  );
   const invalidateSessions = useCallback(
-    () =>
-      queryClient.invalidateQueries({
-        queryKey: sessionsCacheKey(id, coreId),
-      }),
-    [queryClient, id, coreId]
+    () => queryClient.invalidateQueries({ queryKey: sessionsCacheKey(coreId) }),
+    [queryClient, coreId],
   );
-  // The archived list lives in its own bucket outside the project key (ADR
+  // The archived list lives in its own bucket outside the sessions key (ADR
   // 0019), so nothing else's invalidation reaches it — anything that can move
   // a row across the archived line has to say so.
   const invalidateArchivedSessions = useCallback(
-    () =>
-      coreId
-        ? queryClient.invalidateQueries({
-            queryKey: queryKeys.coreArchivedSessions(id, coreId),
-          })
-        : Promise.resolve(),
-    [queryClient, id, coreId],
-  );
-  const invalidateProjects = useCallback(
-    () => queryClient.invalidateQueries({ queryKey: queryKeys.projects }),
-    [queryClient]
+    () => queryClient.invalidateQueries({ queryKey: queryKeys.coreArchivedSessions(coreId) }),
+    [queryClient, coreId],
   );
   const refresh = useCallback(async () => {
-    await Promise.all([
-      invalidateProject(),
-      invalidateSessions(),
-      invalidateArchivedSessions(),
-      invalidateProjects(),
-    ]);
-  }, [invalidateProject, invalidateSessions, invalidateArchivedSessions, invalidateProjects]);
+    await Promise.all([invalidateSessions(), invalidateArchivedSessions()]);
+  }, [invalidateSessions, invalidateArchivedSessions]);
 
   const [showCodexHooksNotice, setShowCodexHooksNotice] = useState(false);
   const [harnessUpdateRequired, setHarnessUpdateRequired] = useState<{
@@ -643,7 +523,6 @@ function CoreWorkspacePage() {
       payload: SessionCreatePayload,
       opts?: { initialInput?: string; focusOnCreate?: boolean; model?: AiModelId | null },
     ) => {
-      if (!project || !terminalProject) return;
       const selectedAvailability = availabilityFor(cliAvailability, payload.agent);
       if (selectedAvailability.status === "outdated") {
         showHarnessUpdateRequired(payload.agent, selectedAvailability);
@@ -654,7 +533,7 @@ function CoreWorkspacePage() {
         return;
       }
 
-      const sessionsKey = sessionsCacheKey(project.id, coreId);
+      const sessionsKey = sessionsCacheKey(coreId);
       void queryClient.cancelQueries({ queryKey: sessionsKey });
 
       const usesPersistedSession =
@@ -666,13 +545,12 @@ function CoreWorkspacePage() {
       const clientSessionId = newClientId("t");
       const optimisticSession = buildOptimisticSession({
         id: clientSessionId,
-        projectId: project.id,
         agent: payload.agent,
         claudeSessionId,
         claudeSkipPermissions: harnessLaunchesWithSkipPermissions(payload.agent),
         claudeBareSession: payload.agent === "claude-code" ? payload.bareSession : undefined,
       });
-      appendOptimisticSession(queryClient, project.id, optimisticSession, coreId);
+      appendOptimisticSession(queryClient, coreId, optimisticSession);
       if (opts?.initialInput) {
         // TerminalPane consumes this once, at the first spawn, as the PTY's
         // initialInput — the main process writes it after the agent TUI is ready.
@@ -681,10 +559,7 @@ function CoreWorkspacePage() {
       if (opts?.model) {
         setPendingSessionModel(optimisticSession.id, opts.model);
       }
-      terminals.toggle(terminalProject, optimisticSession, {
-        awaitCreate: false,
-        coreId,
-      });
+      terminals.toggle(coreId, optimisticSession, { awaitCreate: false });
       // Clone/new-session focus: put the caret in the just-added grid cell so the
       // user can type immediately. focusGridSession retries until the pane mounts
       // (and re-asserts across the awaitingCreate→persisted rebuild), so calling
@@ -696,35 +571,24 @@ function CoreWorkspacePage() {
       void (async () => {
         try {
           // The Core owns the row (ADR-0004/0005), so starting a session is
-          // a mutation frame to the Core the project lives on — there is no
+          // a mutation frame to the Core — there is no
           // Panel-side session table to write to instead. The frame doesn't carry
           // claudeSessionId / bareSession today, so a session creates as a
           // plain Harness session without those fields: no persisted-claude-session
           // resume until the protocol grows them. Skip-permissions is not a row
           // field any launch path reads — it is derived from the Harness
           // (issue 22).
-          // A 0.5.0 Core refuses projectId on create (ADR 0041 D27). The published
-          // SDK types still name it until actana/client#10 ships — cast away.
           const snapshot = await mutateSessionForCore(coreId, {
             op: "create",
             sessionId: clientSessionId,
             title: TITLE_WAITING,
             agent: payload.agent,
-          } as Parameters<typeof mutateSessionForCore>[1]);
+          });
           if (!snapshot) throw new Error("Core did not return a session snapshot");
-          const createdSession: Session = {
-            ...remoteSessionFromSnapshot(snapshot),
-            projectId: project.id,
-          };
-          replaceOptimisticSession(
-            queryClient,
-            project.id,
-            optimisticSession.id,
-            createdSession,
-            coreId,
-          );
+          const createdSession: Session = remoteSessionFromSnapshot(snapshot);
+          replaceOptimisticSession(queryClient, coreId, optimisticSession.id, createdSession);
           if (clientSessionId && createdSession.id === clientSessionId) {
-            terminals.openSession(terminalProject, createdSession, { coreId });
+            terminals.openSession(coreId, createdSession);
           } else {
             const pendingModel = peekPendingSessionModel(optimisticSession.id);
             if (pendingModel) {
@@ -733,7 +597,7 @@ function CoreWorkspacePage() {
             }
             terminals.adoptSessionId(optimisticSession.id, createdSession);
           }
-          void Promise.all([invalidateProject(), invalidateSessions(), invalidateProjects()]);
+          void invalidateSessions();
           if (payload.agent === "codex" && !hasSeenCodexHooksNotice()) {
             setShowCodexHooksNotice(true);
           }
@@ -741,23 +605,13 @@ function CoreWorkspacePage() {
           // The session never spawned — discard any staged prompt / model.
           takePendingInitialInput(optimisticSession.id);
           clearPendingSessionModel(optimisticSession.id);
-          removeOptimisticSession(queryClient, project.id, optimisticSession.id, coreId);
+          removeOptimisticSession(queryClient, coreId, optimisticSession.id);
           await terminals.close(optimisticSession.id);
           toast.error(e instanceof Error ? e.message : "Could not create session");
         }
       })();
     },
-    [
-      project,
-      terminalProject,
-      queryClient,
-      invalidateProject,
-      invalidateSessions,
-      invalidateProjects,
-      terminals,
-      cliAvailability,
-      showHarnessUpdateRequired,
-    ]
+    [coreId, queryClient, invalidateSessions, terminals, cliAvailability, showHarnessUpdateRequired],
   );
 
   // The session a fresh one should anchor on: the grid cell the user is looking
@@ -770,15 +624,14 @@ function CoreWorkspacePage() {
     for (const candidate of [readFocusedGridSessionId(), terminals.getGridFocusedSessionId()]) {
       if (candidate && sessions.some((t) => t.id === candidate)) return candidate;
     }
-    return terminals.activeFor(selectedScopeKey)?.sessionId ?? undefined;
-  }, [sessions, terminals, selectedScopeKey]);
+    return terminals.activeFor(coreId)?.sessionId ?? undefined;
+  }, [sessions, terminals, coreId]);
 
   const startWithSaved = useCallback(() => {
-    if (!project) return;
-    if (!(project.rememberHarnessSettings && project.savedHarness)) return;
-    const savedAvailability = availabilityFor(cliAvailability, project.savedHarness);
+    if (!(remembered.rememberHarnessSettings && remembered.savedHarness)) return;
+    const savedAvailability = availabilityFor(cliAvailability, remembered.savedHarness);
     if (savedAvailability.status === "outdated") {
-      showHarnessUpdateRequired(project.savedHarness, savedAvailability);
+      showHarnessUpdateRequired(remembered.savedHarness, savedAvailability);
       return;
     }
     if (savedAvailability.status === "missing") {
@@ -789,21 +642,14 @@ function CoreWorkspacePage() {
     const anchor = anchorSessionId();
     if (anchor) terminals.requestCloneInsertAfter(anchor);
     // void: `createSession` reports a failed create as a toast.
-    void createSession(
-      {
-        agent: project.savedHarness,
-        bareSession: project.savedHarness === "claude-code" ? !!project.savedBareSession : false,
-      },
-      { focusOnCreate: true },
-    );
-  }, [project, createSession, cliAvailability, showHarnessUpdateRequired, anchorSessionId, terminals]);
+    void createSession(defaultSessionPayload(remembered), { focusOnCreate: true });
+  }, [remembered, createSession, cliAvailability, showHarnessUpdateRequired, anchorSessionId, terminals]);
 
   const startWithSavedInNewRow = useCallback(() => {
-    if (!project) return;
-    if (!(project.rememberHarnessSettings && project.savedHarness)) return;
-    const savedAvailability = availabilityFor(cliAvailability, project.savedHarness);
+    if (!(remembered.rememberHarnessSettings && remembered.savedHarness)) return;
+    const savedAvailability = availabilityFor(cliAvailability, remembered.savedHarness);
     if (savedAvailability.status === "outdated") {
-      showHarnessUpdateRequired(project.savedHarness, savedAvailability);
+      showHarnessUpdateRequired(remembered.savedHarness, savedAvailability);
       return;
     }
     if (savedAvailability.status === "missing") {
@@ -813,94 +659,36 @@ function CoreWorkspacePage() {
     // Start session in a fresh grid row instead of beside the active one.
     terminals.requestNewRow();
     // void: `createSession` reports a failed create as a toast.
-    void createSession(
-      {
-        agent: project.savedHarness,
-        bareSession: project.savedHarness === "claude-code" ? !!project.savedBareSession : false,
-      },
-      { focusOnCreate: true },
-    );
-  }, [project, createSession, cliAvailability, showHarnessUpdateRequired, terminals]);
+    void createSession(defaultSessionPayload(remembered), { focusOnCreate: true });
+  }, [remembered, createSession, cliAvailability, showHarnessUpdateRequired, terminals]);
 
   const onNewHarnessPrimary = useCallback(() => {
-    if (!projectPathReady) return;
     if (showNewHarness) return;
-    if (project?.rememberHarnessSettings && project.savedHarness) {
+    if (remembered.rememberHarnessSettings && remembered.savedHarness) {
       void startWithSaved();
       return;
     }
     setShowNewHarness(true);
-  }, [project, projectPathReady, showNewHarness, startWithSaved]);
+  }, [remembered, showNewHarness, startWithSaved]);
 
   useHotkey("agent.new", onNewHarnessPrimary, { ignoreEditable: true });
-
-  // Create-then-start onboarding: the Add-project flow hands off a one-shot
-  // intent (see project-onboard-intent). On first render for the new project we
-  // consume it, apply the chosen layout immediately, and — once the working
-  // directory is ready — launch the saved agent so the user lands in a live
-  // session instead of a dead empty page.
-  const onboardConsumedForRef = useRef<string | null>(null);
-  const onboardIntentRef = useRef<ProjectOnboardIntent | null>(null);
-  const onboardStartedRef = useRef(false);
-  const gridDefaultAppliedForRef = useRef<string | null>(null);
-  useEffect(() => {
-    if (onboardConsumedForRef.current === id) return;
-    onboardConsumedForRef.current = id;
-    onboardStartedRef.current = false;
-    const intent = null as ProjectOnboardIntent | null;
-    onboardIntentRef.current = intent;
-    if (intent?.gridView != null) {
-      terminals.setGridView(intent.gridView);
-      // The intent already carries the layout for this first navigation; don't
-      // re-apply the stored default on top of it.
-      gridDefaultAppliedForRef.current = id;
-    }
-  }, [id, terminals]);
-  // The layout the project was created with is a Core fact on the project row
-  // (issue 22), so it applies on every later visit too — the one-shot onboard
-  // intent above only covers the navigation that created the project.
-  //
-  // Two things this deliberately does not do. It does not persist: grid view is
-  // one global preference shared by every project, and a project asserting its
-  // own layout must not overwrite what the operator last chose everywhere else.
-  // And it only ever turns the grid *on* — a project whose default is off says
-  // nothing about the layout, so the operator's standing preference wins, which
-  // is what Panel-owned projects (whose default is off) keep doing today.
-  //
-  // Applied once per project rather than on every render, so toggling the grid
-  // off during a visit sticks.
-  useEffect(() => {
-    if (!project) return;
-    if (gridDefaultAppliedForRef.current === id) return;
-    gridDefaultAppliedForRef.current = id;
-    if (project.defaultGridView) terminals.setGridView(true, { persist: false });
-  }, [id, project, terminals]);
-  useEffect(() => {
-    const intent = onboardIntentRef.current;
-    if (!intent || onboardStartedRef.current) return;
-    if (!project || !projectPathReady) return;
-    onboardStartedRef.current = true;
-    onNewHarnessPrimary();
-  }, [project, projectPathReady, onNewHarnessPrimary]);
 
   // New-row variant of agent.new: the session lands in a fresh grid row at the
   // bottom instead of beside the active one. Grid-only — rows don't exist
   // outside the grid.
   const onNewRowPrimary = useCallback(() => {
-    if (!projectPathReady) return;
     if (showNewHarness) return;
-    if (project?.rememberHarnessSettings && project.savedHarness) {
+    if (remembered.rememberHarnessSettings && remembered.savedHarness) {
       void startWithSavedInNewRow();
       return;
     }
     setNewHarnessTarget("newRow");
     setShowNewHarness(true);
-  }, [project, projectPathReady, showNewHarness, startWithSavedInNewRow]);
+  }, [remembered, showNewHarness, startWithSavedInNewRow]);
 
   // Ship: open an AI session that pushes/syncs with remote using Settings → Defaults → Ship.
   const startShipSession = useCallback(() => {
-    if (!project || !projectPathReady) return;
-    const payload = defaultSessionPayload(project);
+    const payload = defaultSessionPayload(remembered);
     const anchor = anchorSessionId();
     if (anchor) terminals.requestCloneInsertAfter(anchor);
     void createSession(
@@ -916,8 +704,7 @@ function CoreWorkspacePage() {
       },
     );
   }, [
-    project,
-    projectPathReady,
+    remembered,
     createSession,
     settings?.shipHarness,
     settings?.shipModel,
@@ -934,7 +721,6 @@ function CoreWorkspacePage() {
 
   const cycleSession = useCallback(
     (direction: 1 | -1) => {
-      if (!project || !terminalProject) return;
       if (anyBlockingDialogOpen) return;
       // When the grid is on screen it cycles by moving the focused cell through
       // the on-screen layout, which SessionGrid owns (it tracks "current" via
@@ -952,12 +738,12 @@ function CoreWorkspacePage() {
         for (const t of visible) if (t.status === status) ordered.push(t);
       }
       if (ordered.length === 0) return;
-      const currentId = terminals.activeSessionIdFor(selectedScopeKey);
+      const currentId = terminals.activeSessionIdFor(coreId);
       // Panel closed: open the highest-priority card instead of cycling.
       if (!currentId) {
         const firstByPriority = pickByPriority(visible);
         if (!firstByPriority) return;
-        terminals.toggle(terminalProject, firstByPriority);
+        terminals.toggle(coreId, firstByPriority);
         // Focus the terminal so the keyboard drives the newly-opened session
         // instead of leaving it blurred (see selectTerminal).
         terminals.focusGridSession(firstByPriority.id);
@@ -968,25 +754,16 @@ function CoreWorkspacePage() {
       const nextIdx = (idx + direction + ordered.length) % ordered.length;
       const nextSession = ordered[nextIdx];
       if (!nextSession || nextSession.id === currentId) return;
-      terminals.toggle(terminalProject, nextSession);
+      terminals.toggle(coreId, nextSession);
       // Carry keyboard focus into the session we cycled to, so successive
       // presses keep cycling and the caret is ready to type (see selectTerminal).
       terminals.focusGridSession(nextSession.id);
     },
-    [
-      project,
-      terminalProject,
-      selectedScopeKey,
-      sessions,
-      terminals,
-      anyBlockingDialogOpen,
-      showGrid,
-    ],
+    [coreId, sessions, terminals, anyBlockingDialogOpen, showGrid],
   );
 
   const duplicateActiveSession = useCallback(
     (sourceSessionId?: string) => {
-      if (!project) return;
       if (anyBlockingDialogOpen) return;
       // Resolve which session to clone, most-specific first:
       //  1. The session whose "Clone" button fired the event (menu path).
@@ -1002,7 +779,7 @@ function CoreWorkspacePage() {
         (sourceSessionId && sessions.find((t) => t.id === sourceSessionId)) ||
         (focusedGridSessionId && sessions.find((t) => t.id === focusedGridSessionId)) ||
         (() => {
-          const active = terminals.activeFor(selectedScopeKey);
+          const active = terminals.activeFor(coreId);
           return active ? sessions.find((t) => t.id === active.sessionId) : undefined;
         })();
       if (!sourceSession) return;
@@ -1017,7 +794,7 @@ function CoreWorkspacePage() {
         { focusOnCreate: true },
       );
     },
-    [project, selectedScopeKey, sessions, terminals, createSession, anyBlockingDialogOpen],
+    [coreId, sessions, terminals, createSession, anyBlockingDialogOpen],
   );
   const duplicateActiveSessionRef = useRef(duplicateActiveSession);
   duplicateActiveSessionRef.current = duplicateActiveSession;
@@ -1056,12 +833,11 @@ function CoreWorkspacePage() {
   }, []);
 
   // Ship: open the commit/push/sync AI session. Capture phase so a focused
-  // session terminal can't swallow the chord first; startShipSession itself
-  // guards project/path-ready and the local-scope requirement.
+  // session terminal can't swallow the chord first.
   useHotkey(
-    "project.ship",
+    "session.ship",
     () => {
-      if (anyBlockingDialogOpen || !projectPathReady) return;
+      if (anyBlockingDialogOpen) return;
       startShipSession();
     },
     { capture: true },
@@ -1080,47 +856,39 @@ function CoreWorkspacePage() {
 
   const hiddenSession = lastHiddenSessionRef.current;
   const canRestoreHiddenSession =
-    !!project &&
-    hiddenSession?.projectId === selectedScopeKey &&
-    terminals.sessions.some(
-      (s) =>
-        s.sessionId === hiddenSession.sessionId &&
-        scopeKeyForProject(s.project) === selectedScopeKey,
-    ) &&
+    !!hiddenSession &&
+    hiddenSession.coreId === coreId &&
+    terminals.sessions.some((s) => s.sessionId === hiddenSession.sessionId && s.coreId === coreId) &&
     sessions.some((t) => t.id === hiddenSession.sessionId && !t.archived);
-  const closePanelEnabled =
-    !anyBlockingDialogOpen && !!project
-      ? terminals.activeFor(selectedScopeKey) !== null || canRestoreHiddenSession
-      : false;
+  const closePanelEnabled = !anyBlockingDialogOpen
+    ? terminals.activeFor(coreId) !== null || canRestoreHiddenSession
+    : false;
 
   // Capture phase so xterm.js (focused terminal) can't swallow the key first.
   useHotkey(
     "terminal.close",
     () => {
-      if (!project) return;
       // On screen, the grid owns terminal.close: it hides the focused cell's
       // session (SessionGrid's handleHideIntent) instead of toggling the single
       // active panel this handler tracks. Guard on showGrid (not gridViewActive)
       // so the empty-grid fallback — where SessionGrid isn't mounted — still
       // falls through to the panel hide here. Mirrors cycleSession.
       if (showGrid) return;
-      const active = terminals.activeFor(selectedScopeKey);
+      const active = terminals.activeFor(coreId);
       if (active) {
-        lastHiddenSessionRef.current = { projectId: selectedScopeKey, sessionId: active.sessionId };
-        terminals.deselect(selectedScopeKey);
+        lastHiddenSessionRef.current = { coreId, sessionId: active.sessionId };
+        terminals.deselect(coreId);
         return;
       }
       const hidden = lastHiddenSessionRef.current;
-      if (!hidden || hidden.projectId !== selectedScopeKey) return;
+      if (!hidden || hidden.coreId !== coreId) return;
       const sessionStillOpen = terminals.sessions.some(
-        (s) =>
-          s.sessionId === hidden.sessionId &&
-          scopeKeyForProject(s.project) === selectedScopeKey,
+        (s) => s.sessionId === hidden.sessionId && s.coreId === coreId,
       );
       if (!sessionStillOpen) return;
       const session = sessions.find((t) => t.id === hidden.sessionId && !t.archived);
       if (!session) return;
-      if (terminalProject) terminals.toggle(terminalProject, session);
+      terminals.toggle(coreId, session);
     },
     {
       enabled: closePanelEnabled,
@@ -1128,51 +896,24 @@ function CoreWorkspacePage() {
     },
   );
 
-  // Coalesce bursts of session events for THIS project into a single refetch. A
-  // running agent emits many session:updated events per second; each used to
-  // refetch this project's sessions + detail + the global projects list. The
-  // sidebar (ProjectBar / ProjectPicker) owns the projects-list refresh, so
-  // this route only refetches its own sessions + detail — and ignores session events
-  // for other projects entirely.
-  // maxWait bounds staleness under a sustained event storm: without it a
-  // continuous <150ms stream would defer the refetch indefinitely.
-  const invalidateThisProjectSessions = useDebouncedCallback(() => {
-    void invalidateSessions();
-    void invalidateProject();
-  }, 150, 400);
+  // The Panel's own event stream carries pending questions; a Core's session
+  // changes arrive over the panel link (see `useCoreLiveQueries`).
+  useServerEvents(applyQuestionServerEvent);
 
-  useServerEvents(
-    useCallback(
-      (e) => {
-        applyQuestionServerEvent(e);
-        if (e.type.startsWith("session:")) {
-          if (e.projectId === id) {
-            invalidateThisProjectSessions();
-          }
-        } else if (e.type.startsWith("project:")) {
-          void invalidateProject();
-          void invalidateProjects();
-        }
-      },
-      [id, invalidateThisProjectSessions, invalidateProject, invalidateProjects, queryClient]
-    )
-  );
-
-  // Auto-focus the board when a project's board first loads (and on every Cmd+U
-  // project switch). Without this, focus can land on / remain inside a session
+  // Auto-focus the board when a Core's board first loads (and on every Core
+  // switch). Without this, focus can land on / remain inside a session
   // terminal's xterm <textarea> after the switch — which swallows bubble-phase
   // hotkeys and trips useHotkey's ignoreEditable guard — so shortcuts do nothing
   // until the user clicks the board background to blur the terminal. Moving focus
   // to the (non-editable) board container restores every shortcut immediately.
   const boardRef = useRef<HTMLDivElement>(null);
-  const lastAutoFocusedProjectIdRef = useRef<string | null>(null);
+  const lastAutoFocusedCoreIdRef = useRef<string | null>(null);
   useEffect(() => {
-    if (!project) return; // board not mounted yet (loading / error state)
     if (anyBlockingDialogOpen) return; // a dialog/overlay owns focus — don't fight it
-    if (lastAutoFocusedProjectIdRef.current === id) return; // already handled this project
+    if (lastAutoFocusedCoreIdRef.current === coreId) return; // already handled this Core
     const board = boardRef.current;
     if (!board) return;
-    lastAutoFocusedProjectIdRef.current = id;
+    lastAutoFocusedCoreIdRef.current = coreId;
     // rAF so we win the parked-terminal reattach that happens on the same commit.
     const raf = requestAnimationFrame(() => {
       const active = document.activeElement;
@@ -1185,7 +926,7 @@ function CoreWorkspacePage() {
       board.focus({ preventScroll: true });
     });
     return () => cancelAnimationFrame(raf);
-  }, [id, project, anyBlockingDialogOpen]);
+  }, [coreId, anyBlockingDialogOpen]);
 
   const activeSessions = sessions.filter((t) => !t.archived);
   const pinnedSessions = activeSessions.filter((t) => t.pinned);
@@ -1202,7 +943,7 @@ function CoreWorkspacePage() {
       : groupSessionsByStatusForDisplay(visibleSessions);
   const pinnedListSessions = activeListGroups?.pinned ?? [];
 
-  const activeId = terminals.activeSessionIdFor(selectedScopeKey);
+  const activeId = terminals.activeSessionIdFor(coreId);
   const setSessionPinning = (sessionId: string, pinning: boolean) => {
     setPinningSessionIds((current) => {
       if (pinning && current.has(sessionId)) return current;
@@ -1221,14 +962,12 @@ function CoreWorkspacePage() {
     openClickedSession(sessionId, {
       sessions,
       archivedSessions,
-      project: terminalProject,
       coreId,
       terminals,
     });
   };
 
   const toggleSessionPinned = async (sessionId: string) => {
-    if (!project) return;
     const session = sessions.find((t) => t.id === sessionId);
     if (!session || session.archived) return;
     const nextPinned = !session.pinned;
@@ -1237,17 +976,14 @@ function CoreWorkspacePage() {
     pinRequestSeqRef.current[sessionId] = requestId;
     setSessionPinning(sessionId, true);
 
-    const sessionsKey = sessionsCacheKey(project.id, coreId);
+    const sessionsKey = sessionsCacheKey(coreId);
     await queryClient.cancelQueries({ queryKey: sessionsKey });
-    setSessionPinnedInCache(queryClient, project.id, sessionId, nextPinned, coreId);
+    setSessionPinnedInCache(queryClient, coreId, sessionId, nextPinned);
 
     try {
-      // Session pin is Core-owned state; the mutation goes over the coreId-
-      // parameterised core-link surface (ADR-0005). For a Panel-owned row
-      // this replaces the previous local-HTTP `api.updateSession({pinned})`
-      // path — the DB row still moves, but the write travels through the
-      // in-process core-link so two Panels connected to the same Core (once
-      // that lands for a Panel-owned row) see the same pin state.
+      // Session pin is Core-owned state; the mutation goes over the core-link
+      // surface (ADR-0005), so two Panels connected to the same Core see the
+      // same pin state.
       const saved = await mutateSessionForCore(coreId, {
         op: "update",
         sessionId,
@@ -1272,7 +1008,7 @@ function CoreWorkspacePage() {
       if (pinRequestSeqRef.current[sessionId] === requestId) {
         const currentSession = queryClient.getQueryData<Session[]>(sessionsKey)?.find((t) => t.id === sessionId);
         if (currentSession?.pinned === nextPinned) {
-          setSessionPinnedInCache(queryClient, project.id, sessionId, previousPinned, coreId);
+          setSessionPinnedInCache(queryClient, coreId, sessionId, previousPinned);
         }
         void invalidateSessions();
         toast.error(e instanceof Error ? e.message : "Could not update pinned session");
@@ -1287,13 +1023,13 @@ function CoreWorkspacePage() {
 
   const deleteSession = (sessionId: string) => {
     const session = sessions.find((t) => t.id === sessionId);
-    if (!session || !project) return;
+    if (!session) return;
 
-    const sessionsKey = sessionsCacheKey(project.id, coreId);
+    const sessionsKey = sessionsCacheKey(coreId);
     void queryClient.cancelQueries({ queryKey: sessionsKey });
     const previousSessions = queryClient.getQueryData<Session[]>(sessionsKey);
 
-    const isActive = terminals.activeSessionIdFor(selectedScopeKey) === sessionId;
+    const isActive = terminals.activeSessionIdFor(coreId) === sessionId;
     const next = isActive
       ? pickByPriority(sessions.filter((t) => !t.archived && t.id !== sessionId))
       : undefined;
@@ -1301,12 +1037,12 @@ function CoreWorkspacePage() {
     // Point the panel at the replacement session before the deleted row disappears
     // or its PTY is torn down — otherwise close() briefly clears active and the
     // panel unmounts before the auto-select effect catches up.
-    if (isActive && terminalProject) {
-      if (next) terminals.openSession(terminalProject, next, { coreId });
-      else terminals.deselect(selectedScopeKey);
+    if (isActive) {
+      if (next) terminals.openSession(coreId, next);
+      else terminals.deselect(coreId);
     }
 
-    removeSessionFromCache(queryClient, project.id, sessionId, coreId);
+    removeSessionFromCache(queryClient, coreId, sessionId);
 
     void (async () => {
       try {
@@ -1314,13 +1050,12 @@ function CoreWorkspacePage() {
           sessionId,
           isActive ? { activateSessionId: next?.id ?? null } : undefined,
         );
-        // Route to the Core that owns the row (ADR 0005) — the Panel's own
-        // delete endpoint only knows Panel-owned rows.
+        // The row lives on the Core (ADR 0005).
         await mutateSessionForCore(coreId, { op: "delete", sessionId });
         void refresh();
       } catch (e: unknown) {
         if (previousSessions) {
-          restoreSessionsCache(queryClient, project.id, previousSessions, coreId);
+          restoreSessionsCache(queryClient, coreId, previousSessions);
         }
         toast.error(e instanceof Error ? e.message : "Could not delete session");
       } finally {
@@ -1331,18 +1066,18 @@ function CoreWorkspacePage() {
 
   // Archive one or more active sessions: kill each tty, flip the archived flag,
   // and repoint the terminal panel if the active session is being archived.
-  // No confirmation — archiving is reversible via Restore, for a Core-owned
-  // row as much as a Panel-owned one: the Core lists its archived rows over
-  // their own frame (ADR 0019), so the row reappears under Archived.
+  // No confirmation — archiving is reversible via Restore: the Core lists its
+  // archived rows over their own frame (ADR 0019), so the row reappears under
+  // Archived.
   const archiveSessions = (targets: Session[]) => {
-    if (!project || targets.length === 0) return;
+    if (targets.length === 0) return;
     const ids = new Set(targets.map((t) => t.id));
 
-    const sessionsKey = sessionsCacheKey(project.id, coreId);
+    const sessionsKey = sessionsCacheKey(coreId);
     void queryClient.cancelQueries({ queryKey: sessionsKey });
     const previousSessions = queryClient.getQueryData<Session[]>(sessionsKey);
 
-    const activeSessionId = terminals.activeSessionIdFor(selectedScopeKey);
+    const activeSessionId = terminals.activeSessionIdFor(coreId);
     const archivingActive = !!activeSessionId && ids.has(activeSessionId);
     const next = archivingActive
       ? pickByPriority(sessions.filter((t) => !t.archived && !ids.has(t.id)))
@@ -1350,21 +1085,18 @@ function CoreWorkspacePage() {
 
     // Repoint the panel at the replacement session before the PTY is torn down,
     // mirroring deleteSession so the panel doesn't briefly unmount.
-    if (archivingActive && terminalProject) {
-      if (next) terminals.openSession(terminalProject, next, { coreId });
-      else terminals.deselect(selectedScopeKey);
+    if (archivingActive) {
+      if (next) terminals.openSession(coreId, next);
+      else terminals.deselect(coreId);
     }
 
-    setSessionsArchivedInCache(queryClient, project.id, ids, true, coreId);
+    setSessionsArchivedInCache(queryClient, coreId, ids, true);
     // Bump the count the Archived tab is gated on, so the tab appears with the
     // row rather than one refetch later — the mirror of what restore does when
-    // it takes a row back out (ADR 0019). A Panel-owned project counts its own
-    // rows and needs no bucket.
-    const countKey = coreId ? queryKeys.coreArchivedSessionCount(project.id, coreId) : null;
-    const previousCount = countKey ? queryClient.getQueryData<number>(countKey) : undefined;
-    if (countKey) {
-      queryClient.setQueryData<number>(countKey, (current) => (current ?? 0) + ids.size);
-    }
+    // it takes a row back out (ADR 0019).
+    const countKey = queryKeys.coreArchivedSessionCount(coreId);
+    const previousCount = queryClient.getQueryData<number>(countKey);
+    queryClient.setQueryData<number>(countKey, (current) => (current ?? 0) + ids.size);
 
     void (async () => {
       try {
@@ -1376,8 +1108,7 @@ function CoreWorkspacePage() {
                 t.id === activeSessionId ? { activateSessionId: next?.id ?? null } : undefined,
               )
               .catch(() => undefined);
-            // Route to the Core that owns the row (ADR 0005) — the Panel's
-            // own archive endpoint only knows Panel-owned rows.
+            // The row lives on the Core (ADR 0005).
             await mutateSessionForCore(coreId, {
               op: "update",
               sessionId: t.id,
@@ -1388,9 +1119,9 @@ function CoreWorkspacePage() {
         void refresh();
       } catch (e: unknown) {
         if (previousSessions) {
-          restoreSessionsCache(queryClient, project.id, previousSessions, coreId);
+          restoreSessionsCache(queryClient, coreId, previousSessions);
         }
-        if (countKey && previousCount !== undefined) {
+        if (previousCount !== undefined) {
           queryClient.setQueryData<number>(countKey, previousCount);
         }
         toast.error(e instanceof Error ? e.message : "Could not archive session");
@@ -1404,23 +1135,20 @@ function CoreWorkspacePage() {
   };
   archiveSessionRef.current = archiveSession;
 
-  // Archive every open session shown in the grid (across all projects). Used by
-  // the grid-view header's "Archive all" action. Plain function (not a hook)
-  // because it lives after this component's early returns.
+  // Archive every open session shown in the grid. Used by the grid-view
+  // header's "Archive all" action. Plain function (not a hook) because it lives
+  // after this component's early returns.
   const archiveAllGridSessions = async () => {
-    // Only archive the sessions shown in this project/scope's grid, not every
-    // open session across all projects.
-    const openSessions = terminals.sessions.filter(
-      (s) => scopeKeyForProject(s.project) === selectedScopeKey,
-    );
+    // Only archive the sessions shown in this Core's grid, not every open
+    // session across all Cores.
+    const openSessions = terminals.sessions.filter((s) => s.coreId === coreId);
     if (openSessions.length === 0) return;
     const results = await Promise.allSettled(
       openSessions.map((session) =>
         archiveOpenSession(session, terminals.close, queryClient, { skipInvalidate: true }),
       ),
     );
-    // One deduped invalidation pass instead of a per-session fan-out (the
-    // global projects key alone would otherwise be invalidated N times).
+    // One deduped invalidation pass instead of a per-session fan-out.
     await invalidateSessionQueries(queryClient, openSessions);
     const failed = results.filter((r) => r.status === "rejected").length;
     if (failed > 0) {
@@ -1432,38 +1160,27 @@ function CoreWorkspacePage() {
     }
   };
 
-  // Un-archive one session, routed by owner like every other session mutation.
-  //
-  // The two owners keep their rows in different buckets, so the optimistic
-  // move differs. A Panel-owned row is already in the session list with
-  // `archived: true` — clearing the flag there moves it between the two
-  // views. A Core's archived rows live in their own list (ADR 0019), so the
-  // row leaves that one and the count that gates the tab drops with it; the
-  // refetch behind `refresh()` is what puts it back in the active list.
+  // Un-archive one session. A Core's archived rows live in their own list
+  // (ADR 0019), so the row leaves that one and the count that gates the tab
+  // drops with it; the refetch behind `refresh()` is what puts it back in the
+  // active list.
   const restoreSession = (sessionId: string) => {
-    if (!project) return;
     const session = archivedSessions.find((t) => t.id === sessionId) ?? sessions.find((t) => t.id === sessionId);
     if (!session) return;
 
-    const sessionsKey = sessionsCacheKey(project.id, coreId);
+    const sessionsKey = sessionsCacheKey(coreId);
     void queryClient.cancelQueries({ queryKey: sessionsKey });
     const previousSessions = queryClient.getQueryData<Session[]>(sessionsKey);
-    const archivedKey = coreId ? queryKeys.coreArchivedSessions(project.id, coreId) : null;
-    const previousArchived = archivedKey
-      ? queryClient.getQueryData<Session[]>(archivedKey)
-      : undefined;
-    const countKey = coreId ? queryKeys.coreArchivedSessionCount(project.id, coreId) : null;
-    const previousCount = countKey ? queryClient.getQueryData<number>(countKey) : undefined;
+    const archivedKey = queryKeys.coreArchivedSessions(coreId);
+    const previousArchived = queryClient.getQueryData<Session[]>(archivedKey);
+    const countKey = queryKeys.coreArchivedSessionCount(coreId);
+    const previousCount = queryClient.getQueryData<number>(countKey);
 
-    if (archivedKey && countKey) {
-      void queryClient.cancelQueries({ queryKey: archivedKey });
-      queryClient.setQueryData<Session[]>(archivedKey, (current) =>
-        (current ?? []).filter((t) => t.id !== sessionId),
-      );
-      queryClient.setQueryData<number>(countKey, (current) => Math.max(0, (current ?? 1) - 1));
-    } else {
-      setSessionArchivedInCache(queryClient, project.id, sessionId, false, coreId);
-    }
+    void queryClient.cancelQueries({ queryKey: archivedKey });
+    queryClient.setQueryData<Session[]>(archivedKey, (current) =>
+      (current ?? []).filter((t) => t.id !== sessionId),
+    );
+    queryClient.setQueryData<number>(countKey, (current) => Math.max(0, (current ?? 1) - 1));
 
     void (async () => {
       try {
@@ -1471,12 +1188,12 @@ function CoreWorkspacePage() {
         void refresh();
       } catch (e: unknown) {
         if (previousSessions) {
-          restoreSessionsCache(queryClient, project.id, previousSessions, coreId);
+          restoreSessionsCache(queryClient, coreId, previousSessions);
         }
-        if (archivedKey && previousArchived) {
+        if (previousArchived) {
           queryClient.setQueryData<Session[]>(archivedKey, previousArchived);
         }
-        if (countKey && previousCount !== undefined) {
+        if (previousCount !== undefined) {
           queryClient.setQueryData<number>(countKey, previousCount);
         }
         toast.error(e instanceof Error ? e.message : "Could not restore session");
@@ -1494,24 +1211,20 @@ function CoreWorkspacePage() {
     onTogglePinned: toggleSessionPinned,
   };
 
-  // Delete every archived row shown for this project. Routed by owner like
-  // every other session mutation; the rows come from wherever this project's
-  // Archived view sources them (ADR 0019), which for a Core is its own list.
+  // Delete every archived row shown for this Core; they come from its own
+  // Archived list (ADR 0019).
   const deleteAllArchived = () => {
     setConfirmDeleteArchived(false);
-    if (!project) return;
     const archived = archivedSessions;
     if (archived.length === 0) return;
 
-    const sessionsKey = sessionsCacheKey(project.id, coreId);
+    const sessionsKey = sessionsCacheKey(coreId);
     void queryClient.cancelQueries({ queryKey: sessionsKey });
     const previousSessions = queryClient.getQueryData<Session[]>(sessionsKey);
     const archivedIds = new Set(archived.map((t) => t.id));
-    removeSessionsFromCache(queryClient, project.id, archivedIds, coreId);
-    if (coreId) {
-      queryClient.setQueryData<Session[]>(queryKeys.coreArchivedSessions(project.id, coreId), []);
-      queryClient.setQueryData<number>(queryKeys.coreArchivedSessionCount(project.id, coreId), 0);
-    }
+    removeSessionsFromCache(queryClient, coreId, archivedIds);
+    queryClient.setQueryData<Session[]>(queryKeys.coreArchivedSessions(coreId), []);
+    queryClient.setQueryData<number>(queryKeys.coreArchivedSessionCount(coreId), 0);
 
     void (async () => {
       try {
@@ -1524,18 +1237,10 @@ function CoreWorkspacePage() {
         void refresh();
       } catch (e: unknown) {
         if (previousSessions) {
-          restoreSessionsCache(queryClient, project.id, previousSessions, coreId);
+          restoreSessionsCache(queryClient, coreId, previousSessions);
         }
-        if (coreId) {
-          queryClient.setQueryData<Session[]>(
-            queryKeys.coreArchivedSessions(project.id, coreId),
-            archived,
-          );
-          queryClient.setQueryData<number>(
-            queryKeys.coreArchivedSessionCount(project.id, coreId),
-            archived.length,
-          );
-        }
+        queryClient.setQueryData<Session[]>(queryKeys.coreArchivedSessions(coreId), archived);
+        queryClient.setQueryData<number>(queryKeys.coreArchivedSessionCount(coreId), archived.length);
         toast.error(e instanceof Error ? e.message : "Could not delete archived sessions");
       } finally {
         setCleanupStatus(null);
@@ -1569,7 +1274,7 @@ function CoreWorkspacePage() {
     );
   };
 
-  // Grid-view toggle lives in the project header beside the other session
+  // Grid-view toggle lives in the Core header beside the other session
   // controls — a session view mode, not app chrome, so it left the top bar.
   const gridViewToggle = (
     <HotkeyTooltip
@@ -1611,7 +1316,7 @@ function CoreWorkspacePage() {
         className="dot-grid-bg"
       >
       <CardFrame
-        className="mc-project-frame"
+        className="mc-core-frame"
         style={{
           width: "100%",
           minHeight: showGrid ? 0 : "100%",
@@ -1625,7 +1330,7 @@ function CoreWorkspacePage() {
         }}
       >
         <div
-          className="mc-project-header"
+          className="mc-core-header"
           style={{
             display: "flex",
             alignItems: "center",
@@ -1670,7 +1375,7 @@ function CoreWorkspacePage() {
                     ref={overflowDropdownRef}
                     role="menu"
                     solid
-                    className="mc-project-actions-menu"
+                    className="mc-actions-menu"
                     style={{
                       position: "fixed",
                       top: overflowMenuRect.top,
@@ -1726,14 +1431,11 @@ function CoreWorkspacePage() {
             {headerButtons.gridView && gridViewToggle}
             {!showArchived && (
               <NewHarnessButton
-                remembered={!!(project.rememberHarnessSettings && project.savedHarness)}
-                savedHarness={project.savedHarness}
+                remembered={!!(remembered.rememberHarnessSettings && remembered.savedHarness)}
+                savedHarness={remembered.savedHarness}
                 onPrimary={onNewHarnessPrimary}
                 onNewRow={showGrid ? onNewRowPrimary : undefined}
-                disabled={!projectPathReady}
-                onConfigure={() => {
-                  if (projectPathReady) setShowNewHarness(true);
-                }}
+                onConfigure={() => setShowNewHarness(true)}
               />
             )}
             {showArchived && archivedSessions.length > 0 && (
@@ -1751,7 +1453,6 @@ function CoreWorkspacePage() {
 
         {showGrid ? (
           <SessionGrid
-            scopeKey={selectedScopeKey}
             coreId={coreId}
             filter={showPinned ? "pinned" : "active"}
             pinnedSessionIds={pinnedSessionIds}
@@ -1809,8 +1510,7 @@ function CoreWorkspacePage() {
           ) : showArchived && archivedSessionsQuery.isLoading ? (
             // A Core fetches its archived rows over their own frame when this
             // view opens (ADR 0019), so unlike the active list there is a real
-            // wait here. Both branches stay dark for a Panel-owned project,
-            // whose query is disabled and so never pending-and-fetching.
+            // wait here.
             <EmptyState
               title="Loading archived sessions"
               subtitle="Fetching this Core's archived sessions."
@@ -1860,13 +1560,10 @@ function CoreWorkspacePage() {
               action={
                 <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                   <NewHarnessButton
-                    remembered={!!(project.rememberHarnessSettings && project.savedHarness)}
-                    savedHarness={project.savedHarness}
+                    remembered={!!(remembered.rememberHarnessSettings && remembered.savedHarness)}
+                    savedHarness={remembered.savedHarness}
                     onPrimary={onNewHarnessPrimary}
-                    disabled={!projectPathReady}
-                    onConfigure={() => {
-                      if (projectPathReady) setShowNewHarness(true);
-                    }}
+                    onConfigure={() => setShowNewHarness(true)}
                   />
                   {hasArchivedSessions && (
                     <Btn variant="ghost" icon="archive" onClick={() => setSessionView("archived")}>
@@ -1880,7 +1577,7 @@ function CoreWorkspacePage() {
             <>
               {pinnedListSessions.length > 0 && (
                 <SessionColumn
-                  key={`${id}:pinned`}
+                  key={`${coreId}:pinned`}
                   title="Pinned"
                   color="var(--accent)"
                   sessions={pinnedListSessions}
@@ -1904,7 +1601,7 @@ function CoreWorkspacePage() {
                     (sessionsByStatus.finished.length === 0 && status === firstArchivedStatus));
                 return (
                 <SessionColumn
-                  key={`${id}:${status}`}
+                  key={`${coreId}:${status}`}
                   title={
                     isArchivedTitleRow
                       ? "Archived"
@@ -1999,10 +1696,7 @@ function CoreWorkspacePage() {
         open={showNewHarness}
         coreId={coreId}
         coreLabel={coreLabel}
-        initialRemember={{
-          rememberHarnessSettings: project.rememberHarnessSettings,
-          savedHarness: project.savedHarness,
-        }}
+        initialRemember={remembered}
         onClose={() => {
           setShowNewHarness(false);
           setNewHarnessTarget("default");
@@ -2183,7 +1877,7 @@ function SessionScopeToggle({
             role="menu"
             aria-label="Show sessions by type"
             solid
-            className="mc-project-actions-menu"
+            className="mc-actions-menu"
             style={{
               position: "fixed",
               top: menuRect.top,

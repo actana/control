@@ -15,9 +15,22 @@ const {
 } = await import("../home-terminals");
 const { getDb } = await import("~/db/client");
 const { homeTerminals } = await import("~/db/schema");
-const { HOME_TERMINAL_PROJECT_ID } = await import("~/shared/home-terminal");
 
 describe("home-terminals service", () => {
+  it("stores no cwd: a terminal is a login shell in the Core's home, whatever the caller sends", async () => {
+    // A POST body can still carry the field a 0.4.x client sent.
+    const { create } = await import("../../controllers/home-terminals.controller");
+    const response = await create(
+      new Request("http://localhost/api/home/user-terminals", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name: "shell", cwd: "/home/core/web" }),
+      }),
+    );
+    const { terminal } = (await response.json()) as { terminal: { cwd: string | null } };
+    expect(terminal.cwd).toBeNull();
+  });
+
   beforeEach(() => {
     getDb().delete(homeTerminals).run();
   });
@@ -28,18 +41,6 @@ describe("home-terminals service", () => {
     expect(a.name).toBe("Terminal 1");
     expect(b.name).toBe("Terminal 2");
     expect(listHomeTerminals().map((t) => t.id)).toEqual([a.id, b.id]);
-  });
-
-  it("shapes rows as UserTerminal with the home sentinel projectId", () => {
-    const t = createHomeTerminal({ name: "scratch" });
-    expect(t.projectId).toBe(HOME_TERMINAL_PROJECT_ID);
-    expect(t.name).toBe("scratch");
-  });
-
-  it("is independent of any project (no project row required)", () => {
-    // Unlike user terminals, home terminals never validate a project exists.
-    const t = createHomeTerminal({});
-    expect(listHomeTerminals().map((x) => x.id)).toEqual([t.id]);
   });
 
   it("renames and trims", () => {

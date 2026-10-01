@@ -38,12 +38,11 @@ function core(id: string, label: string, state: CoreWithDial["dial"]["state"] = 
   };
 }
 
-function row(coreId: string, sessionId: string, title: string, projectId = "p") {
+function row(coreId: string, sessionId: string, title: string) {
   return {
     coreId,
     coreLabel: coreId,
     sessionId,
-    projectId,
     title,
     agent: "claude-code",
     status: "running",
@@ -79,9 +78,9 @@ describe("FleetView", () => {
   it("groups Sessions under their Core with no project level in between", async () => {
     cores = [core("a", "workstation-berlin"), core("b", "build-box-01")];
     rows = [
-      row("a", "s1", "Refactor executor", "p1"),
-      row("a", "s2", "Add Linear trigger", "p2"),
-      row("b", "s3", "Reindex embeddings", "p9"),
+      row("a", "s1", "Refactor executor"),
+      row("a", "s2", "Add Linear trigger"),
+      row("b", "s3", "Reindex embeddings"),
     ];
     await mount();
     const section = (id: string) => document.querySelector<HTMLElement>(`[data-core-section="${id}"]`)!;
@@ -90,9 +89,8 @@ describe("FleetView", () => {
     expect(within(berlin).getByText("Add Linear trigger")).toBeTruthy();
     expect(within(berlin).queryByText("Reindex embeddings")).toBeNull();
     expect(within(section("b")).getByText("Reindex embeddings")).toBeTruthy();
-    // The project ids the rows carry are not drawn as group headings.
-    expect(screen.queryByText("p1")).toBeNull();
-    expect(screen.queryByTitle(/^Open p/)).toBeNull();
+    // Core is the only grouping level: a section per Core, nothing inside it.
+    expect(berlin.querySelectorAll("[data-core-section]")).toHaveLength(0);
   });
 
   it("still lists a Core with no Sessions, and says an unreachable one is not reachable", async () => {

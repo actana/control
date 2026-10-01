@@ -1,7 +1,7 @@
 // The Panel's Core registry, as the browser sees it.
 //
 // A Core is the Panel's handle for "this Core I can talk to": an endpoint,
-// an alias, and a replay cursor. Everything else about a Core — its projects,
+// an alias, and a replay cursor. Everything else about a Core — its
 // sessions, events — lives on the Core and is read over the
 // core-link. The registry is the only Core state the Panel persists.
 //
@@ -112,7 +112,7 @@ export const CORE_UPDATE_COMMAND = "actana update";
  * (ADR 0010). It runs on the host beside `deploy/docker-compose.yml`, never
  * inside the Panel — pulling and recreating the container is the operator's
  * gesture, and a service that could do it to itself would be the in-app updater
- * this project deliberately does not have.
+ * this Panel deliberately does not have.
  */
 export const PANEL_UPDATE_COMMAND = "docker compose pull && docker compose up -d";
 

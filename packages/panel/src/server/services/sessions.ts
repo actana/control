@@ -8,11 +8,9 @@ import {
   deleteSessionRow,
   findActiveLocalSessions,
   findSessionById,
-  findSessionsByProjectId,
   insertSession,
   updateSessionRow,
 } from "../repositories/sessions.repo";
-import { findProjectNameById } from "../repositories/projects.repo";
 import {
   deleteTerminalLogById,
   findTerminalLogsBySessionId,
@@ -21,17 +19,12 @@ import {
 import { newId } from "./_ids";
 import { isClientDomainId } from "@actana/shared/client-id";
 
-export function listSessionsForProject(projectId: string): Session[] {
-  return findSessionsByProjectId(projectId);
-}
-
 export function getSession(id: string): Session | null {
   return findSessionById(id);
 }
 
 export function createSession(input: {
   id?: string;
-  projectId: string;
   title: string;
   agent: Harness;
   status?: SessionStatus;
@@ -40,7 +33,6 @@ export function createSession(input: {
   claudeSkipPermissions?: boolean;
   claudeBareSession?: boolean;
 }): Session {
-  if (!input.projectId) throw new Error("projectId required");
   if (!input.title?.trim()) throw new Error("title required");
   if (!isHarness(input.agent)) throw new Error("invalid agent");
 
@@ -50,7 +42,6 @@ export function createSession(input: {
   if (requestedId && findSessionById(requestedId)) throw new Error("session id already exists");
   const row: Session = {
     id: requestedId || newId("t"),
-    projectId: input.projectId,
     title: input.title.trim(),
     titleManuallySet: false,
     icon: null,
@@ -68,7 +59,7 @@ export function createSession(input: {
     updatedAt: now,
   };
   insertSession(row);
-  events.emit("session:created", { id: row.id, projectId: row.projectId });
+  events.emit("session:created", { id: row.id });
   return row;
 }
 
@@ -92,7 +83,7 @@ export function updateStatus(
     lines: next.lines,
     updatedAt: next.updatedAt,
   });
-  events.emit("session:updated", { id, projectId: existing.projectId });
+  events.emit("session:updated", { id });
   // Any status transition away from needs-input means the agent moved on, so
   // whatever question was pending is stale (answered, cancelled, interrupted).
   if (patch.status && patch.status !== "needs-input") {
@@ -107,11 +98,8 @@ export function updateStatus(
     patch.status === "finished" &&
     existing.status !== "finished"
   ) {
-    const projectName = findProjectNameById(existing.projectId);
     events.emit("session:finished", {
       id,
-      projectId: existing.projectId,
-      projectName: projectName ?? "Project",
       sessionTitle: existing.title,
     });
   }
@@ -153,7 +141,7 @@ export function updateSession(
   if (!existing) return null;
   const next = { ...existing, ...patch, updatedAt: Date.now() };
   updateSessionRow(id, next);
-  events.emit("session:updated", { id, projectId: existing.projectId });
+  events.emit("session:updated", { id });
   return next;
 }
 
@@ -163,7 +151,7 @@ export function archiveSession(id: string): Session | null {
   updateSessionRow(id, { archived: true, updatedAt: Date.now() });
   const next = { ...existing, archived: true } as Session;
   clearPendingQuestion(id);
-  events.emit("session:archived", { id, projectId: existing.projectId });
+  events.emit("session:archived", { id });
   return next;
 }
 
@@ -172,7 +160,7 @@ export function restoreSession(id: string): Session | null {
   if (!existing) return null;
   updateSessionRow(id, { archived: false, updatedAt: Date.now() });
   const next = { ...existing, archived: false } as Session;
-  events.emit("session:restored", { id, projectId: existing.projectId });
+  events.emit("session:restored", { id });
   return next;
 }
 
@@ -182,7 +170,7 @@ export function deleteSession(id: string): boolean {
   const changes = deleteSessionRow(id);
   if (changes > 0) {
     clearPendingQuestion(id);
-    events.emit("session:deleted", { id, projectId: existing.projectId });
+    events.emit("session:deleted", { id });
     return true;
   }
   return false;

@@ -6,7 +6,7 @@ import { useKeybindings } from "~/lib/keybindings/store";
 import { bindingComboKey, bindingsEqual, eventToBinding, isValidBinding } from "~/lib/keybindings/match";
 import { DEFAULT_BINDINGS } from "~/lib/keybindings/defaults";
 import { KEYBINDING_GROUPS } from "~/lib/keybindings/groups";
-import { formatPinnedSlotBindingParts } from "~/lib/keybindings/format";
+import { formatCoreSlotBindingParts } from "~/lib/keybindings/format";
 import { ACTION_META, HOTKEY_ACTIONS, type Binding, type HotkeyAction } from "~/lib/keybindings/types";
 
 export function KeybindingsSettings() {
@@ -335,8 +335,8 @@ function BindingRow({
           </div>
         ) : (
           <>
-            {action === "project.pinnedSlot" ? (
-              <KbdCombo parts={formatPinnedSlotBindingParts(binding)} variant="ghost" size="lg" />
+            {action === "core.slot" ? (
+              <KbdCombo parts={formatCoreSlotBindingParts(binding)} variant="ghost" size="lg" />
             ) : (
               <KbdCombo binding={binding} variant="ghost" size="lg" />
             )}

@@ -49,9 +49,8 @@ export function TopBar({
           minWidth: 0,
         }}
       >
-        {/* App identity recedes to a logo-only home button so the project
-         * cockpit (picker → scope → run → branch/ship) is the bar's centre of
-         * gravity. The wordmark still shows on the home/launch screen. */}
+        {/* App identity recedes to a home button so the Core header is the bar's
+         * centre of gravity. */}
         <button
           type="button"
           onClick={onHome}

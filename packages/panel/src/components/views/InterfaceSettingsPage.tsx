@@ -46,7 +46,7 @@ const HEADER_BUTTON_META: Record<
   gridView: {
     title: "Grid view",
     description:
-      "The button in an open project's header that shows every session at once. Grid view keeps its hotkey.",
+      "The button in an open Core's header that shows every session at once. Grid view keeps its hotkey.",
     label: "Show grid view button",
   },
 };
