@@ -106,7 +106,7 @@ describe.skipIf(!configured)("the sync against real SeaweedFS and real STS keys"
   });
 
   /** A machine: its own home, its own state directory, its own sync, a new Core id. */
-  async function machine(): Promise<Machine & { key: SharedKey }> {
+  async function machine(wrapFetch?: (real: typeof fetch) => typeof fetch): Promise<Machine & { key: SharedKey }> {
     const coreId = `core-s-${randomBytes(5).toString("hex")}`;
     const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "shared-sync-sw-")));
     roots.push(root);
@@ -119,6 +119,7 @@ describe.skipIf(!configured)("the sync against real SeaweedFS and real STS keys"
       stateDir,
       home: createSharedHome({ home, identityEnv: {} }),
       intervalMs: 3_600_000,
+      ...(wrapFetch ? { fetch: wrapFetch(fetch) } : {}),
     });
     return { coreId, root, folder, stateDir, sync, key: await issuer.issue(coreId) };
   }
@@ -169,7 +170,24 @@ describe.skipIf(!configured)("the sync against real SeaweedFS and real STS keys"
   }, 60_000);
 
   it("a key refresh during an upload does not break it", async () => {
-    const m = await machine();
+    // The push is made from inside the first PUT, so it lands while that upload is in flight,
+    // whatever the timing of the network. Every PUT is recorded with the key it was signed with.
+    const puts: Array<{ key: string; status: number }> = [];
+    let push: (() => Promise<void>) | null = null;
+    const m = await machine(
+      (real) => async (input, init) => {
+        const request = (init?.method ?? "GET").toUpperCase();
+        const key = /Credential=([^/]+)\//.exec(new Headers(init?.headers).get("authorization") ?? "")?.[1] ?? "";
+        if (request === "PUT" && push) {
+          const run = push;
+          push = null;
+          await run();
+        }
+        const response = await real(input, init);
+        if (request === "PUT") puts.push({ key, status: response.status });
+        return response;
+      },
+    );
     expect(await m.sync.handle(attachFrame(m.coreId, m.key))).toMatchObject({ state: "attached" });
     await m.sync.idle();
     const names: string[] = [];
@@ -178,20 +196,28 @@ describe.skipIf(!configured)("the sync against real SeaweedFS and real STS keys"
       names.push(name);
       fs.writeFileSync(path.join(m.folder, name), Buffer.alloc(512 * 1024, i));
     }
-    const pass = m.sync.pass();
-    // The controller's push, with a second real key, lands while the uploads are in flight.
     const fresh = await issuer.issue(m.coreId);
-    const status = await m.sync.handle({
-      type: "sharedCredentials",
-      reqId: "r2",
-      credentials: { accessKeyId: fresh.accessKeyId, secretAccessKey: fresh.secretAccessKey, sessionToken: fresh.sessionToken },
-      expiresAt: fresh.expiresAt.toISOString(),
-    });
-    expect(status).toMatchObject({ state: "attached" });
-    const report = await pass;
+    expect(fresh.accessKeyId).not.toBe(m.key.accessKeyId);
+    let pushed: unknown = null;
+    push = async () => {
+      pushed = await m.sync.handle({
+        type: "sharedCredentials",
+        reqId: "r2",
+        credentials: { accessKeyId: fresh.accessKeyId, secretAccessKey: fresh.secretAccessKey, sessionToken: fresh.sessionToken },
+        expiresAt: fresh.expiresAt.toISOString(),
+      });
+    };
+    const report = await m.sync.pass();
     await m.sync.idle();
+
+    expect(pushed).toMatchObject({ state: "attached" });
     expect(report.failed).toEqual([]);
     expect(createSharedKeyStore(m.stateDir).load()?.accessKeyId).toBe(fresh.accessKeyId);
+    // The upload in flight when the push landed finished under the old key; what followed used the new one.
+    const objectPuts = puts.filter((p) => p.status === 200);
+    expect(objectPuts[0]!.key).toBe(m.key.accessKeyId);
+    expect(objectPuts.some((p) => p.key === fresh.accessKeyId)).toBe(true);
+    expect(puts.every((p) => p.status === 200)).toBe(true);
 
     const own = clientFor(fresh, `${env.prefix}/${m.coreId}`);
     const listed = await own.list("");
