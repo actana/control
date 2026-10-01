@@ -11,6 +11,8 @@
 #   check-conventions.sh message <file>       commit message file (as git hands commit-msg)
 #   check-conventions.sh message -            commit message on stdin (the PR title)
 #   check-conventions.sh range <from> <to>    every commit in `git log <from>..<to>`
+#   check-conventions.sh commit <sha>         one commit's message
+#   check-conventions.sh commit <sha>         one commit's message
 #   check-conventions.sh last                 the tip commit alone
 #
 # Exit 0: passes. 1: breaks a rule. 2: cannot check (commitlint not installed).
@@ -89,11 +91,15 @@ case "${1:-}" in
     [ $# -eq 3 ] || { echo "usage: $0 range <from> <to>" >&2; exit 2; }
     run_commitlint --from "$2" --to "$3"
     ;;
+  commit)
+    [ $# -eq 2 ] || { echo "usage: $0 commit <sha>" >&2; exit 2; }
+    git -C "$root" log -1 --format=%B "$2" | run_commitlint
+    ;;
   last)
     run_commitlint --last
     ;;
   *)
-    echo "usage: $0 branch <name> | message <file|-> | range <from> <to> | last" >&2
+    echo "usage: $0 branch <name> | message <file|-> | range <from> <to> | commit <sha> | last" >&2
     exit 2
     ;;
 esac

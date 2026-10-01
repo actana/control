@@ -195,6 +195,52 @@ describe("pre-push hook", () => {
     expect(push("chore/614-on-top").status).toBe(0);
   });
 
+  // The base gains a commit that breaks a rule (a squash that predates the
+  // hooks, say) and the branch merges it in: the one way to update a branch
+  // when force-push is not allowed. CI's base..head never holds that commit,
+  // so the hook must not either.
+  const baseGainsBadCommit = () => {
+    git(c.work, "checkout", "-q", "feat/0.5.0");
+    // Empty, so merging it into the branch cannot conflict with the branch's edits.
+    git(c.work, "commit", "--no-verify", "--allow-empty", "-m", "chore: base commit", "-m", LONG_LINE);
+    expect(git(c.work, "push", "--no-verify", "origin", "feat/0.5.0").status).toBe(0);
+  };
+
+  it("accepts a new branch that merged in a base commit that breaks a rule", () => {
+    git(c.work, "checkout", "-q", "-b", "chore/614-merged-new");
+    commit(c.work, GOOD);
+    baseGainsBadCommit();
+    git(c.work, "checkout", "-q", "chore/614-merged-new");
+    expect(git(c.work, "merge", "--no-edit", "feat/0.5.0").status).toBe(0);
+    const r = push("chore/614-merged-new");
+    expect(r.status, r.stderr).toBe(0);
+    expect(remoteRefs(c.remote)).toContain("chore/614-merged-new");
+  });
+
+  it("accepts an update that merged in a base commit that breaks a rule", () => {
+    git(c.work, "checkout", "-q", "-b", "chore/614-merged-update");
+    commit(c.work, GOOD);
+    expect(push("chore/614-merged-update").status).toBe(0);
+    baseGainsBadCommit();
+    git(c.work, "checkout", "-q", "chore/614-merged-update");
+    expect(git(c.work, "merge", "--no-edit", "feat/0.5.0").status).toBe(0);
+    commit(c.work, GOOD);
+    const r = push("chore/614-merged-update");
+    expect(r.status, r.stderr).toBe(0);
+  });
+
+  it("still refuses the branch's own bad commit after the base was merged in", () => {
+    git(c.work, "checkout", "-q", "-b", "chore/614-merged-bad");
+    baseGainsBadCommit();
+    git(c.work, "checkout", "-q", "chore/614-merged-bad");
+    git(c.work, "merge", "--no-edit", "feat/0.5.0");
+    commit(c.work, `chore: mine\n\n${LONG_LINE}\n`, "--no-verify");
+    const r = push("chore/614-merged-bad");
+    expect(r.status).not.toBe(0);
+    expect(r.stderr).toContain("body's lines must not be longer than 132");
+    expect(remoteRefs(c.remote)).not.toContain("chore/614-merged-bad");
+  });
+
   it("does not check a branch deletion", () => {
     commit(c.work, GOOD);
     expect(push("chore/614-del").status).toBe(0);

@@ -667,8 +667,8 @@ documented exception to "no force-push".
 > App: `promote.yml`'s `next-train` job is deleted and **a train is cut by a
 > person** ([ADR 0023](adr/0023-release-trains-and-digest-promotion.md) D3 and
 > D25 as amended; 0023:179's own amendment already says so). That person pushes
-> the cut commit directly to a new `beta/x.y.z` branch, with `--no-verify`, for
-> the reason [`ci-cd.md` §Cutting a train](ci-cd.md#cutting-a-train) gives — so
+> the cut commit directly to a new `beta/x.y.z` branch, as
+> [`ci-cd.md` §Cutting a train](ci-cd.md#cutting-a-train) describes — so
 > **a human identity must also bypass this ruleset**, or no train can be cut at
 > all. Two operations stay the App's; the third became a person's.
 >

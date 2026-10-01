@@ -1289,7 +1289,7 @@ sed -i.bak 's/^LINE=".*"$/LINE="x.y.z"/' install.sh && rm -f install.sh.bak
 grep -n '^LINE=' install.sh                    # must print LINE="x.y.z"
 
 git commit -a -F cut-message.txt               # Conventional Commits, see below
-git push --no-verify origin beta/x.y.z         # --no-verify: see below
+git push origin beta/x.y.z
 ```
 
 The push is what publishes `beta-x.y.z`, so the train has an image before
@@ -1395,7 +1395,7 @@ named for it:
 ```bash
 git fetch origin
 git switch -c beta/0.4.5-f1 origin/beta/0.4.5
-git push --no-verify -u origin beta/0.4.5-f1   # --no-verify: the same #269 note as a cut
+git push -u origin beta/0.4.5-f1
 ```
 
 **That is the whole cut.** A sub-beta writes no version: the suffix names the

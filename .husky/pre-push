@@ -22,24 +22,20 @@ while read -r local_ref local_sha remote_ref remote_sha; do
     continue
   fi
 
-  # An update lints what the remote does not have yet. A new branch lints what
-  # no remote branch has: from the parent of the oldest such commit.
+  # Lint only the commits no remote has — for an update and for a new branch
+  # alike. CI lints BASE_SHA..HEAD_SHA, which never holds the base's own
+  # commits, so a branch that merged the base in must not be asked about them.
+  # Merge commits are skipped: git writes their messages, commitlint ignores them.
+  known="--remotes"
   case "$remote_sha" in
-    *[!0]*) from="$remote_sha" ;;
-    *)
-      oldest="$(git rev-list --reverse "$local_sha" --not --remotes | sed -n 1p)"
-      [ -n "$oldest" ] || continue
-      # A root commit has no parent to range from; lint the tip alone.
-      from="$(git rev-parse --verify --quiet "$oldest^")" || from=''
-      ;;
+    *[!0]*) git cat-file -e "$remote_sha^{commit}" 2>/dev/null && known="--remotes $remote_sha" ;;
   esac
-
-  if [ -n "$from" ]; then
-    sh "$check" range "$from" "$local_sha"
-  else
-    sh "$check" last
-  fi
-  if [ $? -ne 0 ]; then
+  status=0
+  # shellcheck disable=SC2086 # $known is two words on purpose
+  for sha in $(git rev-list --reverse --no-merges "$local_sha" --not $known); do
+    sh "$check" commit "$sha" || status=1
+  done
+  if [ "$status" -ne 0 ]; then
     echo "pre-push: refused — a commit being pushed to '$branch' breaks the commit rules in commitlint.config.mjs (listed above); reword it before pushing, because a pushed commit can never be rewritten." >&2
     failed=1
   fi
