@@ -481,6 +481,16 @@ describe("runActanaSetup — the install layout", () => {
     expect(fs.readlinkSync(layout.binLink)).toBe(path.join(layout.currentLink, "bin", "actana"));
   });
 
+  it("creates the Shared folder in the operator's home, and leaves one that is there alone (#561)", async () => {
+    await runActanaSetup(options(fakeSystem()));
+    const shared = path.join(home, "shared");
+    expect(fs.statSync(shared).isDirectory()).toBe(true);
+
+    fs.writeFileSync(path.join(shared, "kept.md"), "from before");
+    await runActanaSetup(options(fakeSystem()));
+    expect(fs.readFileSync(path.join(shared, "kept.md"), "utf8")).toBe("from before");
+  });
+
   it("writes no file outside the operator's home — nothing needs sudo", async () => {
     await runActanaSetup(options(fakeSystem()));
     for (const p of [layout.root, layout.configDir, layout.servicePath, layout.binLink]) {

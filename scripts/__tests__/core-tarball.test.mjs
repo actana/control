@@ -680,3 +680,14 @@ describe("the tarball stages the core-home helper beside the daemon", () => {
     expect(builder).toMatch(/file: "core-home-ops\.cjs", dist: path\.join\(repoRoot, "packages", "core", "dist"\)/);
   });
 });
+
+// ─── The Shared folder watcher ships beside the daemon (#561) ───────────────
+
+describe("the tarball stages the Shared folder watcher beside the daemon", () => {
+  it("builds it in the Core package and stages it into app/", () => {
+    const build = fs.readFileSync(path.join(repoRoot, "packages", "core", "build.mjs"), "utf8");
+    expect(build).toContain('outfile: "dist/core-shared-watch.cjs"');
+    const builder = fs.readFileSync(path.join(repoRoot, "scripts", "build-core-tarball.mjs"), "utf8");
+    expect(builder).toMatch(/file: "core-shared-watch\.cjs", dist: path\.join\(repoRoot, "packages", "core", "dist"\)/);
+  });
+});
