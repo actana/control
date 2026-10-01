@@ -23,6 +23,8 @@ import * as authController from "./controllers/auth.controller";
 import * as coresController from "./controllers/cores.controller";
 import * as coreFilesController from "./controllers/core-files.controller";
 import * as updateCheckController from "./controllers/update-check.controller";
+import * as tasksController from "./controllers/tasks.controller";
+import { OPERATOR_ID } from "./services/operator";
 
 const HARNESS_HOOK_PATH = /^\/api\/hooks\/([a-z0-9-]+)$/;
 const CORE_PATH = /^\/api\/cores\/([^/]+)$/;
@@ -34,6 +36,10 @@ const CORE_PROJECT_FILES_LIST_PATH = /^\/api\/cores\/([^/]+)\/projects\/([^/]+)\
 const CORE_PROJECT_FILES_PATH = /^\/api\/cores\/([^/]+)\/projects\/([^/]+)\/files$/;
 // Literal path — checked before SESSION_PATH so the id patterns never see it.
 const SESSION_SWEEP_DISCONNECTED_PATH = "/api/sessions/sweep-disconnected";
+const TASK_PATH = /^\/api\/tasks\/([^/]+)$/;
+const TASK_STATUS_PATH = /^\/api\/tasks\/([^/]+)\/status$/;
+const TASK_COMMENTS_PATH = /^\/api\/tasks\/([^/]+)\/comments$/;
+const CORE_AGENTS_PATH = /^\/api\/cores\/([^/]+)\/agents$/;
 const SESSION_PATH = /^\/api\/sessions\/([^/]+)$/;
 const SESSION_STATUS_PATH = /^\/api\/sessions\/([^/]+)\/status$/;
 const SESSION_QUESTION_PATH = /^\/api\/sessions\/([^/]+)\/question$/;
@@ -226,6 +232,23 @@ async function dispatch(
     if (method === "GET") return coreFilesController.read(coreId, projectId, url);
     if (method === "PUT") return coreFilesController.write(coreId, projectId, url, request);
   }
+
+  // Tasks (#571). Every route runs as the session's owner, and the Tasks and
+  // Agents services apply the status rules; nothing here moves a status itself.
+  // A Panel session belongs to the one Operator today (ADR 0011), so that is the owner.
+  const ownerId = OPERATOR_ID;
+  if (pathname === "/api/tasks") {
+    if (method === "GET") return tasksController.list(ownerId);
+    if (method === "POST") return tasksController.create(ownerId, request);
+  }
+  m = pathname.match(TASK_PATH);
+  if (m && method === "GET") return tasksController.read(ownerId, decode(m[1]));
+  m = pathname.match(TASK_STATUS_PATH);
+  if (m && method === "POST") return tasksController.setStatus(ownerId, decode(m[1]), request);
+  m = pathname.match(TASK_COMMENTS_PATH);
+  if (m && method === "POST") return tasksController.comment(ownerId, decode(m[1]), request);
+  m = pathname.match(CORE_AGENTS_PATH);
+  if (m && method === "GET") return tasksController.listCoreAgents(ownerId, decode(m[1]));
 
   m = pathname.match(CORE_PATH);
   if (m) {
