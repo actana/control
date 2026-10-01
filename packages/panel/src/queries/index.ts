@@ -98,28 +98,10 @@ export const projectQueryOptions = (id: string, opts?: { coreId?: string | null 
         // invalidation.
         const bridge = getPanelBridge();
         if (!bridge) throw new Error("panel link unavailable");
-        // A failed presentation read costs the operator's filing, not the
-        // project — degrade to unfiled rather than failing a read whose Core
-        // facts arrived fine. `useRemotePinnedProjects` degrades the same way.
-        const [projects, presentation] = await Promise.all([
-          bridge.listProjects(coreId),
-          api
-            .listProjectPresentation()
-            .then((r) => r.presentation)
-            .catch(() => []),
-        ]);
+        const projects = await bridge.listProjects(coreId);
         const snapshot = projects.find((p) => p.projectId === id);
         if (!snapshot) throw new Error(`project ${id} not found on core ${coreId}`);
-        // We just read what this Core has; anything the Panel still files under
-        // a project it no longer lists is an orphan nothing else collects
-        // (issue 98). Fire-and-forget — a failed sweep must not fail the read.
-        void api
-          .pruneProjectPresentation(coreId, projects.map((p) => p.projectId))
-          .catch(() => undefined);
-        return projectRowFromSnapshot(
-          snapshot,
-          presentation.find((row) => row.projectId === id),
-        );
+        return projectRowFromSnapshot(snapshot);
       }
       return (await api.getProject(id)).project;
     },

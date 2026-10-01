@@ -55,7 +55,7 @@ const EVERY_NAME = [
 ] as const;
 
 /** The nouns that are built, so the help below cannot go quiet about them. */
-const BUILT = ["core", "project", "harness", "events", "session"] as const;
+const BUILT = ["core", "harness", "events", "session"] as const;
 
 describe("nothing is reserved any more, and a typo is still a typo", () => {
   it("answers `not built yet` for no name in the tree", async () => {

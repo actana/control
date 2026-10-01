@@ -46,6 +46,14 @@ await build({
   outfile: "dist/core-files-op.cjs",
 });
 
+// The Shared folder watcher (#561). In the container `~/shared` is `core`'s, so the
+// daemon starts this, through `asCore`, to watch it and report changes on stdout.
+await build({
+  ...shared,
+  entryPoints: ["src/shared-folder-watch-entry.ts"],
+  outfile: "dist/core-shared-watch.cjs",
+});
+
 // **No second daemon bundle here.** `dist/actana-cli.cjs` used to be emitted from this
 // package too, because the operator CLI lived in `packages/core/src`. It does
 // not any more: `packages/cli` owns the whole `actana` command and emits both

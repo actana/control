@@ -14,7 +14,7 @@
 //     actana daemon    run the Core in the foreground (what the unit execs)
 //
 //   Client nouns — what Cores, near or far, are asked to do
-//     actana core | project | harness | events | session
+//     actana core | harness | events | session
 //
 // **There is one `actana` and this is it (#288).** Until 0.4.0 there were two
 // different programs under this name — the operator CLI inside the Core
@@ -138,7 +138,6 @@ import { parseArgs } from "./cli-args.ts";
 import { registryPaths } from "./blob-registry.ts";
 import { runCoreCommand } from "./core-command.ts";
 import { runPairCommand } from "./actana-pair.ts";
-import { runProjectCommand } from "./project-command.ts";
 import { runHarnessCommand } from "./harness-command.ts";
 import { runEventsCommand } from "./events-command.ts";
 import { runSessionCommand } from "./session-command.ts";
@@ -170,7 +169,7 @@ export const CLI_VERSION: string = manifest.version;
 const RESERVED_NOUNS: Record<string, string> = {};
 
 /** The nouns that talk to a Core. Never refused in a container. */
-const CLIENT_NOUNS = ["core", "project", "harness", "events", "session"] as const;
+const CLIENT_NOUNS = ["core", "harness", "events", "session"] as const;
 
 
 /** Default core-link port. Matches the port the docs and install script use. */
@@ -187,7 +186,6 @@ Usage:
 
 Cores this machine can reach
   core       Pair with a Core, register, select and inspect them
-  project    The Projects a Core owns: ls, add, browse, files, cp
   harness    The coding agents a Core can run: ls, install, skills
   events     Follow a Core's event log: tail
   session    Start, ls, logs, resume, attach, kill and send to Sessions on one
@@ -1690,8 +1688,6 @@ export async function runActanaCli(deps: ActanaCliDeps): Promise<number> {
     switch (head) {
       case "core":
         return runCoreCommand(deps, args, paths);
-      case "project":
-        return runProjectCommand(deps, args, paths);
       case "harness":
         return runHarnessCommand(deps, args, paths);
       case "events":

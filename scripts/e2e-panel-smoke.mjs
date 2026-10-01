@@ -24,8 +24,9 @@
 //     no browser is attached, and a reconnected link replaying from its cursor
 //     sees every one of them — no event loss;
 //   • the credential the pairing issued is unreadable at rest: it appears
-//     nowhere in panel.db in the clear, and a data directory restored without
-//     its `secrets.key` cannot dial the Core it still lists;
+//     nowhere in core_secrets.sealed (or the rest of the Panel's Postgres rows)
+//     in the clear, and a data directory restored without its `secrets.key`
+//     cannot dial the Core it still lists;
 //   • the `AC_SECRETS_KEY` path works: a Panel given the key by environment
 //     pairs and dials without ever writing a key file;
 //   • and a file dropped on a Project reaches that Core's disk — read back with
@@ -67,7 +68,7 @@ import {
   pollUntil,
   startPanelService,
 } from "./lib/panel-e2e.mjs";
-import { ensurePanelDatabase } from "./lib/postgres-fixture.mjs";
+import { ensurePanelDatabase, allocatePanelDatabase, queryPanelDatabase } from "./lib/postgres-fixture.mjs";
 
 const die = makeDie("panel-e2e");
 const log = (message) => console.log(`[panel-e2e] ${message}`);
@@ -146,6 +147,8 @@ async function main() {
   teardown.push(() => core.stop());
 
   // The Panel refuses to start without a Postgres (#567), so one runs beside it.
+  // Each phase then gets a database of its own on that server: setup wants 200,
+  // and a shared database already has the Operator from the phase before.
   teardown.push(await ensurePanelDatabase({ name: `ac-e2e-panel-pg-${process.pid}`, log }));
 
   await keyFilePhase({ panelBin, panelEntry, core });
@@ -163,10 +166,18 @@ async function main() {
  * deployment is supposed to survive on.
  */
 async function keyFilePhase({ panelBin, panelEntry, core }) {
+  const { url: databaseUrl } = await allocatePanelDatabase({ label: "keyfile", log });
   const dataDir = tempDir("ac-e2e-panel-");
   const port = await pickFreePort();
   const boot = () =>
-    startPanelService({ bin: panelBin, serverEntry: panelEntry, dataDir, port, log });
+    startPanelService({
+      bin: panelBin,
+      serverEntry: panelEntry,
+      dataDir,
+      port,
+      extra: { AC_PANEL_DATABASE_URL: databaseUrl },
+      log,
+    });
 
   let panel = await boot().catch((err) => die(`panel failed to boot: ${err.message}`, err.logLines));
   teardown.push(() => panel.kill());
@@ -188,7 +199,7 @@ async function keyFilePhase({ panelBin, panelEntry, core }) {
   await assertPtyStreams(link, coreId, fail);
   await assertReconnectReplaysMissedEvents(panel, link, coreId, fail);
 
-  await assertSecretsSealedAtRest(dataDir, core, fail);
+  await assertSecretsSealedAtRest(databaseUrl, core, fail);
 
   // …and a data directory whose key file is gone cannot read them back.
   await panel.stop();
@@ -204,7 +215,7 @@ async function keyFilePhase({ panelBin, panelEntry, core }) {
   fs.renameSync(keyBackup, keyPath);
   panel = await boot().catch((err) => die(`panel failed to reboot: ${err.message}`, err.logLines));
   await assertLoginAndDial(panel, coreId, fail);
-  log("secrets at rest: sealed in panel.db, dead without the key file, alive with it");
+  log("secrets at rest: sealed in Postgres, dead without the key file, alive with it");
 
   // Hand the Core back before the next phase pairs with it. A Core serves
   // one core-link at a time, so two live Panels dialing it would spend the run
@@ -218,6 +229,7 @@ async function keyFilePhase({ panelBin, panelEntry, core }) {
  * writing a key file beside the data.
  */
 async function envKeyPhase({ panelBin, panelEntry, core }) {
+  const { url: databaseUrl } = await allocatePanelDatabase({ label: "envkey", log });
   const dataDir = tempDir("ac-e2e-panel-envkey-");
   const port = await pickFreePort();
   const secretsKey = randomBytes(32).toString("hex");
@@ -227,6 +239,7 @@ async function envKeyPhase({ panelBin, panelEntry, core }) {
     dataDir,
     port,
     secretsKey,
+    extra: { AC_PANEL_DATABASE_URL: databaseUrl },
     log,
   }).catch((err) => die(`panel (AC_SECRETS_KEY) failed to boot: ${err.message}`, err.logLines));
   teardown.push(() => panel.kill());
@@ -241,7 +254,7 @@ async function envKeyPhase({ panelBin, panelEntry, core }) {
   if (fs.existsSync(path.join(dataDir, "secrets.key"))) {
     fail("AC_SECRETS_KEY was set but the Panel still wrote a secrets.key beside the data");
   }
-  await assertSecretsSealedAtRest(dataDir, core, fail);
+  await assertSecretsSealedAtRest(databaseUrl, core, fail);
   log("AC_SECRETS_KEY: paired and dialed with the key held outside the data directory");
   // The Core takes one core-link at a time; hand it back before the next phase
   // pairs with it, or the two Panels spend the run displacing each other.
@@ -273,6 +286,7 @@ async function envKeyPhase({ panelBin, panelEntry, core }) {
  * by a harness on that Core" means when you stop paraphrasing it.
  */
 async function fileDropPhase({ panelBin, panelEntry, core }) {
+  const { url: databaseUrl } = await allocatePanelDatabase({ label: "files", log });
   const dataDir = tempDir("ac-e2e-panel-files-");
   const port = await pickFreePort();
   const panel = await startPanelService({
@@ -283,7 +297,10 @@ async function fileDropPhase({ panelBin, panelEntry, core }) {
     // The limit the whole phase is about. A Panel container is a small one; this
     // is smaller, so that "bigger than the Panel's memory" needs a file measured
     // in gigabytes rather than in tens of them.
-    extra: { NODE_OPTIONS: `--max-old-space-size=${PANEL_HEAP_CAP_MB}` },
+    extra: {
+      AC_PANEL_DATABASE_URL: databaseUrl,
+      NODE_OPTIONS: `--max-old-space-size=${PANEL_HEAP_CAP_MB}`,
+    },
     log,
   }).catch((err) => die(`panel (file drop) failed to boot: ${err.message}`, err.logLines));
   teardown.push(() => panel.kill());
@@ -934,24 +951,48 @@ async function assertReconnectReplaysMissedEvents(panel, link, coreId, fail) {
  *
  * The Panel's own client key never leaves it, so the fixture cannot hand this
  * a copy to search for — what it searches for instead is the shape: a PEM
- * header in the file at all means a credential was written unsealed, whichever
+ * header in any Panel row means a credential was written unsealed, whichever
  * one it is. The Core's own material is checked by name on top of that.
  *
- * Every `panel.db*` file, not just `panel.db`: the Panel runs in WAL mode, so a
- * row written moments ago normally lives in `panel.db-wal` and a scan of the
- * main file alone would clear a Panel that had just written a key in the clear.
+ * Reads `core_secrets.sealed` and every other Panel table row from the Postgres
+ * the phase started — the sealed blob and the rest of the state live there now,
+ * not in a SQLite file beside the data directory.
  */
-async function assertSecretsSealedAtRest(dataDir, core, fail) {
-  if (!fs.existsSync(path.join(dataDir, "panel.db"))) fail(`no panel.db in ${dataDir}`);
-  const dbFiles = fs.readdirSync(dataDir).filter((name) => name.startsWith("panel.db"));
-  for (const file of dbFiles) {
-    const raw = fs.readFileSync(path.join(dataDir, file));
-    if (raw.includes(Buffer.from("-----BEGIN", "utf8"))) {
-      fail(`${file} holds PEM material in the clear`);
+async function assertSecretsSealedAtRest(databaseUrl, core, fail) {
+  const pem = Buffer.from("-----BEGIN", "utf8");
+  const secretBytes = Object.entries(core.secrets).map(([name, secret]) => [
+    name,
+    Buffer.from(secret, "utf8"),
+  ]);
+
+  const sealedRows = await queryPanelDatabase(databaseUrl, "select sealed from core_secrets").catch(
+    (err) => fail(`could not read core_secrets from Postgres: ${err.message}`),
+  );
+  if (sealedRows.length === 0) fail("no core_secrets rows in Postgres after pairing");
+
+  const otherRows = await queryPanelDatabase(
+    databaseUrl,
+    `select 'operator'::text as table_name, row_to_json(t)::text as payload from operator t
+     union all
+     select 'panel_sessions', row_to_json(t)::text from panel_sessions t
+     union all
+     select 'cores', row_to_json(t)::text from cores t
+     union all
+     select 'core_secrets', row_to_json(t)::text from core_secrets t`,
+  ).catch((err) => fail(`could not read Panel rows from Postgres: ${err.message}`));
+
+  const blobs = [
+    ...sealedRows.map((row) => Buffer.from(row.sealed)),
+    ...otherRows.map((row) => Buffer.from(String(row.payload), "utf8")),
+  ];
+
+  for (const raw of blobs) {
+    if (raw.includes(pem)) {
+      fail("a Panel Postgres row holds PEM material in the clear");
     }
-    for (const [name, secret] of Object.entries(core.secrets)) {
-      if (raw.includes(Buffer.from(secret, "utf8"))) {
-        fail(`the Core's ${name} is stored in ${file} in the clear`);
+    for (const [name, secret] of secretBytes) {
+      if (raw.includes(secret)) {
+        fail(`the Core's ${name} is stored in Postgres in the clear`);
       }
     }
   }

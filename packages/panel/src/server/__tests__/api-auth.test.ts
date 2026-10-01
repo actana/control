@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it } from "vitest";
+import { closePanelTestDb, openPanelTestDb } from "./_panel-test-db";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -6,6 +7,7 @@ import * as path from "node:path";
 const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mc-api-auth-test-"));
 process.env.AC_USER_DATA_DIR = tmpRoot;
 
+const testDb = await openPanelTestDb();
 const { handleApiRequest, ANONYMOUS_ROUTES, redactSensitiveErrorText } = await import("../api-router");
 const { getOrCreateApiToken } = await import("../services/settings");
 const { operatorSessionCookie } = await import("./_operator-session");
@@ -17,12 +19,16 @@ function unauth(input: string, init: RequestInit = {}): Request {
   });
 }
 
+afterAll(async () => {
+  await closePanelTestDb(testDb);
+});
+
 /** A signed-in Operator's browser. */
-function authed(input: string, init: RequestInit = {}): Request {
+async function authed(input: string, init: RequestInit = {}): Promise<Request> {
   return new Request(`http://panel.example.test${input}`, {
     ...init,
     headers: {
-      cookie: operatorSessionCookie(),
+      cookie: await operatorSessionCookie(),
       ...(init.headers as Record<string, string> | undefined),
     },
   });
@@ -185,7 +191,7 @@ describe("api auth gate", () => {
     });
 
     it(`${route.method} ${route.pathname} lets a signed-in Operator reach dispatch`, async () => {
-      const res = await handleApiRequest(authed(route.pathname, { method: route.method }));
+      const res = await handleApiRequest(await authed(route.pathname, { method: route.method }));
       // Anything other than 401 means the gate let the call through; 400/404
       // from downstream validation/lookups is expected for these synthetic ids.
       expect(res?.status).not.toBe(401);
@@ -202,7 +208,7 @@ describe("api auth gate", () => {
     it(`${route.method} ${route.pathname} does not accept an Operator session`, async () => {
       // Hooks are a machine surface: a browser session must not be able to
       // forge agent status updates.
-      const res = await handleApiRequest(authed(route.pathname, { method: route.method }));
+      const res = await handleApiRequest(await authed(route.pathname, { method: route.method }));
       expect(res?.status).toBe(401);
     });
 
@@ -219,7 +225,7 @@ describe("api auth gate", () => {
     });
 
     it("opens for a signed-in Operator's EventSource", async () => {
-      const res = await handleApiRequest(authed("/api/events", { method: "GET" }));
+      const res = await handleApiRequest(await authed("/api/events", { method: "GET" }));
       expect(res?.status).toBe(200);
       expect(res?.headers.get("content-type")).toMatch(/event-stream/i);
       // Don't actually consume the stream — Vitest would hang.

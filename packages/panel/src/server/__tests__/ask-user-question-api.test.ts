@@ -1,4 +1,5 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { closePanelTestDb, openPanelTestDb } from "./_panel-test-db";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -6,6 +7,7 @@ import * as path from "node:path";
 const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mc-ask-question-api-test-"));
 process.env.AC_USER_DATA_DIR = tmpRoot;
 
+const testDb = await openPanelTestDb();
 const { handleApiRequest } = await import("../api-router");
 const { operatorSessionCookie } = await import("./_operator-session");
 const { getOrCreateApiToken } = await import("../services/settings");
@@ -35,14 +37,14 @@ const QUESTION_TOOL_INPUT = {
   ],
 };
 
-function authed(input: string, init: RequestInit = {}): Request {
+async function authed(input: string, init: RequestInit = {}): Promise<Request> {
   return new Request(`http://127.0.0.1:5173${input}`, {
     ...init,
     headers: {
       ...LOOPBACK_HEADERS,
       // This file drives both surfaces: the agent hook endpoints (machine
       // token) and the Operator's session API (session cookie).
-      cookie: operatorSessionCookie(),
+      cookie: await operatorSessionCookie(),
       authorization: `Bearer ${getOrCreateApiToken()}`,
       ...(init.headers as Record<string, string> | undefined),
     },
@@ -54,16 +56,16 @@ async function postHook(
   body: Record<string, unknown>,
 ): Promise<Response | null> {
   return handleApiRequest(
-    authed(`/api/hooks/claude?sessionId=${encodeURIComponent(sessionId)}`, {
+    (await authed(`/api/hooks/claude?sessionId=${encodeURIComponent(sessionId)}`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(body),
-    }),
+    })),
   );
 }
 
 async function getQuestion(sessionId: string): Promise<Response | null> {
-  return handleApiRequest(authed(`/api/sessions/${encodeURIComponent(sessionId)}/question`));
+  return handleApiRequest((await authed(`/api/sessions/${encodeURIComponent(sessionId)}/question`)));
 }
 
 async function postAskUserQuestion(sessionId: string): Promise<Response | null> {
@@ -205,4 +207,8 @@ describe("AskUserQuestion hook API", () => {
     await expect(res?.json()).resolves.toEqual({ ok: true, ignored: "foreign-session" });
     expect(getPendingQuestion(sessionId)).toBeNull();
   });
+});
+
+afterAll(async () => {
+  await closePanelTestDb(testDb);
 });

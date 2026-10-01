@@ -1,4 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { closePanelTestDb, openPanelTestDb } from "./_panel-test-db";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -6,14 +7,15 @@ import * as path from "node:path";
 const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mc-claude-usage-test-"));
 process.env.AC_USER_DATA_DIR = tmpRoot;
 
+const testDb = await openPanelTestDb();
 const { handleApiRequest } = await import("../api-router");
 const { operatorSessionCookie } = await import("./_operator-session");
 const { _setTokenReaderForTests, _resetClaudeUsageLimitsCache, _setSharedLimitsFileForTests } =
   await import("../services/claude-usage-limits");
 
-function authedRequest(input: string): Request {
+async function authedRequest(input: string): Promise<Request> {
   return new Request(input, {
-    headers: { cookie: operatorSessionCookie() },
+    headers: { cookie: await operatorSessionCookie() },
   });
 }
 
@@ -38,7 +40,7 @@ describe("GET /api/claude-usage-limits", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     const response = await handleApiRequest(
-      authedRequest("http://localhost/api/claude-usage-limits"),
+      (await authedRequest("http://localhost/api/claude-usage-limits")),
     );
     expect(response?.status).toBe(200);
     expect(await response!.json()).toMatchObject({ status: "unauthenticated" });
@@ -62,7 +64,7 @@ describe("GET /api/claude-usage-limits", () => {
     );
 
     const response = await handleApiRequest(
-      authedRequest("http://localhost/api/claude-usage-limits"),
+      (await authedRequest("http://localhost/api/claude-usage-limits")),
     );
     expect(response?.status).toBe(200);
     expect(await response!.json()).toMatchObject({
@@ -71,4 +73,8 @@ describe("GET /api/claude-usage-limits", () => {
       weekly: { utilization: 36 },
     });
   });
+});
+
+afterAll(async () => {
+  await closePanelTestDb(testDb);
 });

@@ -763,25 +763,24 @@ describe("actana core pair, at a terminal", () => {
     expect(run.out.join("\n")).not.toContain("actana core use prod");
   });
 
-  it("ends in the four verbs a freshly paired Core exists for", async () => {
+  it("ends in the verbs a freshly paired Core exists for", async () => {
     const run = await cli().run(pairArgv(), { stdoutIsTty: true, pairing: fakePairing() });
     const screen = run.out.join("\n");
 
     expect(screen).toContain("Next steps");
     for (const verb of [
       "actana core status",
-      "actana project ls",
       "actana harness ls",
-      "actana session start <project>",
+      'actana session start "<prompt>"',
       // #360 names this beside `session start`, and #366 review 4 caught it
       // missing.
       "actana core shell",
     ]) {
       expect(screen, `the success block does not teach ${verb}`).toContain(verb);
     }
+    expect(screen).not.toContain("actana project");
     // In that order: verify, then look around, then do something.
-    expect(screen.indexOf("actana core status")).toBeLessThan(screen.indexOf("actana project ls"));
-    expect(screen.indexOf("actana project ls")).toBeLessThan(screen.indexOf("actana harness ls"));
+    expect(screen.indexOf("actana core status")).toBeLessThan(screen.indexOf("actana harness ls"));
     expect(screen.indexOf("actana harness ls")).toBeLessThan(screen.indexOf("actana session start"));
     expect(screen.indexOf("actana session start")).toBeLessThan(screen.indexOf("actana core shell"));
     // And the Panel, which is the other thing to pair with the same Core.
