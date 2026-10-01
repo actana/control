@@ -252,21 +252,18 @@ export class SharedFolders {
     if (mode === "attach") {
       status = await attach();
       if (status.state === "error" && status.code === "already-attached") {
-        // Mounted somewhere this Panel did not record: let go (the Core copies S3 into its folder and keeps it),
-        // then attach to this Core's own folder, so the row names where the Core really is.
-        // A Core whose key has run out refuses to detach ("push credentials, then detach"), and one unpaired while
-        // it was unreachable is exactly that: give it this key first.
-        const fresh = await send({ type: "sharedCredentials", reqId: reqId(), credentials, expiresAt });
-        if (fresh.state !== "attached") {
-          throw new SharedFolderError(
-            `The Core is attached to a Shared folder this Panel did not set up and would not take a new key: ${describe(fresh)}.`,
-            "core-refused",
-          );
-        }
+        // Mounted somewhere this Panel did not record. It is asked to let go WITHOUT being given a key first: a detach
+        // only copies S3 into `~/shared` and never deletes on either side, while a key makes the Core run a full sync
+        // pass, which deletes here every file it synced before that is gone in S3 (a Core whose Core was deleted finds
+        // its prefix empty). If it will not let go (its key has run out), it is left as it is and nothing is sent. Once it has let go (its state is cleared), the attach
+        // below is fresh: a first pass copies and never deletes, and the row then names where the Core really is.
+        // See the pairing-time table in the PR body and `shared-folders-attach-table.test.ts`.
         const letGoStatus = await send({ type: "sharedDetach", reqId: reqId(), keepLocalCopy: true });
-        if (letGoStatus.state !== "detached") {
+        if (letGoStatus.state !== "detached" && !(letGoStatus.state === "error" && letGoStatus.code === "not-attached")) {
           throw new SharedFolderError(
-            `The Core is attached to a Shared folder this Panel did not set up and would not let go of it: ${describe(letGoStatus)}.`,
+            `This machine is still attached to a Shared folder from an earlier pairing and cannot let go of it (${describe(letGoStatus)}). ` +
+              "Nothing was changed: the Panel will not give it a key, because a key makes it sync, and with that folder " +
+              "empty or deleted it would delete the files in its own ~/shared. Once it can detach (its key valid), try again.",
             "core-refused",
           );
         }

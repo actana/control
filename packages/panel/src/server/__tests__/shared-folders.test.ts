@@ -167,7 +167,7 @@ describe("attaching the Shared folder", () => {
     await r.service.finishPairing(coreId);
     // Mounted somewhere this Panel did not record: it lets go first, then attaches to this Core's own folder,
     // so the row names where the Core really is.
-    expect(r.link.frames.map((f) => f.type)).toEqual(["sharedAttach", "sharedCredentials", "sharedDetach", "sharedAttach"]);
+    expect(r.link.frames.map((f) => f.type)).toEqual(["sharedAttach", "sharedDetach", "sharedAttach"]);
     expect(await findSharedFolder(1, coreId)).toMatchObject({ state: "attached", s3Prefix: `${PREFIX}/${coreId}/` });
   });
 });
@@ -337,36 +337,16 @@ describe("unpair", () => {
 });
 
 describe("a Core still attached with a key that has run out", () => {
-  it("can finish pairing again: it is given a key first, because it refuses to detach without one", async () => {
+  it("is not given a key and is left as it is: a key would make it sync", async () => {
     const r = await rig();
     const coreId = await pairedCore();
     // Unpaired while unreachable, then paired again more than an hour later: still mounted, key long gone.
     r.link.attached = true;
     r.link.expired = true;
-    const row = await r.service.finishPairing(coreId);
-    expect(r.link.frames.map((f) => f.type)).toEqual(["sharedAttach", "sharedCredentials", "sharedDetach", "sharedAttach"]);
-    expect(r.link.expired).toBe(false);
-    expect(row).toMatchObject({ state: "attached", s3Prefix: `${PREFIX}/${coreId}/` });
+    await expect(r.service.finishPairing(coreId)).rejects.toThrow(/still attached to a Shared folder from an earlier pairing/);
+    // Asked to let go, refused for its key, and nothing else was sent: above all no sharedCredentials.
+    expect(r.link.frames.map((f) => f.type)).toEqual(["sharedAttach", "sharedDetach"]);
     expect(r.link.attached).toBe(true);
-  });
-
-  it("says why when the Core will not take a new key either, and stays pending", async () => {
-    const r = await rig();
-    const coreId = await pairedCore();
-    r.link.attached = true;
-    r.link.expired = true;
-    // The second request (the sharedCredentials push after the already-attached answer) is the refused one.
-    const original = r.link.request;
-    let n = 0;
-    r.link.request = async (frame) => {
-      n += 1;
-      if (n === 2) {
-        r.link.frames.push(frame);
-        return { type: "sharedStatus", reqId: (frame as { reqId: string }).reqId, status: { state: "error", code: "mount-failed", message: "no key store" } };
-      }
-      return original(frame);
-    };
-    await expect(r.service.finishPairing(coreId)).rejects.toThrow(/would not take a new key: mount-failed: no key store/);
     expect((await findSharedFolder(1, coreId))?.state).toBe("pending");
   });
 });

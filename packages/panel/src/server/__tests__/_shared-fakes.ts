@@ -146,3 +146,92 @@ export class FakeCoreLink implements SharedLink {
     return this.frames.filter((f): f is Extract<CoreLinkRequestFrame, { type: T }> => f.type === type);
   }
 }
+
+/**
+ * A Core with the sync semantics that matter to a pairing-time attach (the Core's `shared-sync.ts`, #562): it keeps a
+ * record of the files it has synced while attached; a key push runs a full pass that deletes, on each side, every
+ * recorded file that is gone on the other; a detach only copies S3 into the folder and clears the record, and is refused
+ * once its key has run out; a fresh attach has no record, so its first pass copies and never deletes. The world's S3 is a
+ * plain map shared with the test, so a test can compare it before and after.
+ *
+ * A key is for one folder. A Core mounted on an earlier Core's folder that is handed a key for another folder cannot list
+ * its own: that pass fails and changes nothing (what the real store answers with `forbidden`).
+ */
+export class SyncingCore implements SharedLink {
+  readonly frames: CoreLinkRequestFrame[] = [];
+  /** `~/shared`, as file names; null when the folder is missing (a pass then does nothing). */
+  local: Set<string> | null;
+  mount: string | null = null;
+  keyPrefix: string | null = null;
+  keyExpired = false;
+  record = new Set<string>();
+
+  constructor(
+    /** The world's S3: object key to content. */
+    readonly s3: Map<string, string>,
+    local: Iterable<string> | null,
+    /** The prefix a key the Panel issues now is for (the Core being paired). */
+    private readonly panelFolder: string,
+  ) {
+    this.local = local === null ? null : new Set(local);
+  }
+
+  /** Make this Core already attached to `prefix`, having synced `files` before. */
+  attachedTo(prefix: string, files: Iterable<string>, expired: boolean): void {
+    this.mount = prefix;
+    this.keyPrefix = prefix;
+    this.keyExpired = expired;
+    this.record = new Set(files);
+  }
+
+  sharedCapability = (): { version: 1 } | null => ({ version: 1 });
+
+  private keys(): string[] {
+    return this.mount ? [...this.s3.keys()].filter((k) => k.startsWith(`${this.mount}/`)).map((k) => k.slice(this.mount!.length + 1)) : [];
+  }
+
+  /** One full pass, as a key push triggers it. */
+  private pass(): void {
+    if (!this.mount || this.local === null || this.keyPrefix !== this.mount) return;
+    const remote = new Set(this.keys());
+    for (const name of [...this.local]) if (this.record.has(name) && !remote.has(name)) this.local.delete(name);
+    for (const name of remote) if (this.record.has(name) && !this.local.has(name)) this.s3.delete(`${this.mount}/${name}`);
+    for (const name of this.local) this.s3.set(`${this.mount}/${name}`, name);
+    for (const name of this.keys()) this.local.add(name);
+    this.record = new Set(this.local);
+  }
+
+  request = async (frame: CoreLinkRequestFrame): Promise<CoreLinkResponseFrame> => {
+    this.frames.push(frame);
+    const reqId = (frame as { reqId: string }).reqId;
+    const reply = (status: CoreLinkSharedMountStatus): CoreLinkResponseFrame => ({ type: "sharedStatus", reqId, status });
+    const refuse = (code: "already-attached" | "not-attached" | "mount-failed", message: string) => reply({ state: "error", code, message });
+    if (frame.type === "sharedAttach") {
+      if (this.mount) return refuse("already-attached", "already attached");
+      this.mount = frame.prefix;
+      this.keyPrefix = frame.prefix;
+      this.keyExpired = false;
+      this.record = new Set();
+      this.pass();
+      return reply({ state: "attached", expiresAt: frame.expiresAt });
+    }
+    if (frame.type === "sharedCredentials") {
+      if (!this.mount) return refuse("not-attached", "not attached");
+      this.keyPrefix = this.panelFolder;
+      this.keyExpired = false;
+      this.pass();
+      return reply({ state: "attached", expiresAt: frame.expiresAt });
+    }
+    if (frame.type === "sharedDetach") {
+      if (!this.mount) return refuse("not-attached", "not attached");
+      if (this.keyExpired) return refuse("mount-failed", "the key has expired, so S3 cannot be copied: push credentials, then detach");
+      if (this.keyPrefix !== this.mount) return refuse("mount-failed", "S3 could not be copied into the folder; nothing was detached");
+      if (this.local !== null) for (const name of this.keys()) this.local.add(name);
+      this.mount = null;
+      this.keyPrefix = null;
+      this.record = new Set();
+      return reply({ state: "detached", keptLocalCopy: true });
+    }
+    throw new Error(`unexpected frame ${frame.type}`);
+  };
+}

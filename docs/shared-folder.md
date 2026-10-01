@@ -218,6 +218,10 @@ POST /api/cores/:id/delete {confirmPrefix} ──▶ prefix typed exactly ──
   test, sends `sharedAttach`, and only then marks it `attached`. A refusal (no storage, a Core that is offline or announces no
   `shared`, a key that reaches another folder, a Core that answers with an error) leaves it `pending`. The first-run wizard does not count a
   pending Core as a fleet. The CLI's pairing has no such step, and a Core registered before 0.5.0 has no folder row and is not asked for one.
+- **A Core that is already attached when step 4 runs** (it answers `sharedAttach` with `already-attached`) is asked to `sharedDetach`, never
+  given a key: a detach only copies S3 into `~/shared`, while a key makes the Core run a deleting pass, which with its S3 folder emptied
+  by a delete would empty its own `~/shared`. If it cannot detach (its key has run out) it is left as it is and the Core stays `pending`
+  with the reason. The table of every case is in `shared-folders-attach-table.test.ts`.
 - **Rotation** pushes `sharedCredentials` at the SDK's refresh point, falling back to `sharedAttach` when the Core says `not-attached`. A push
   that fails is retried (5 s, 15 s, 60 s, then 5 min), the Core's folder goes to `error` with the reason, and the Panel logs it:
   never silently. A reconnecting Core gets a new key at once; at boot every attached Core does.
