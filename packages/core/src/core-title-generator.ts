@@ -23,6 +23,7 @@ import {
 import { TITLE_GENERATING, TITLE_WAITING, isSentinelTitle } from "@actana/shared/session-sentinels";
 import type { Harness } from "@actana/shared/domain";
 import { runCli } from "./harness-cli-run";
+import { stripPromptBlock } from "./prompt-standard-block";
 import type { CoreSessionWriter } from "./core-session-writer";
 
 export type CoreTitleGeneratorDeps = {
@@ -40,7 +41,12 @@ export class CoreTitleGenerator {
    * not report one. A failure to name a Session is never a reason to fail
    * what triggered it.
    */
-  schedule(sessionId: string, prompt: string): void {
+  schedule(sessionId: string, promptWithBlock: string): void {
+    // The harness hands back what it was given: the user's text plus the
+    // Core's standard block (issue 563). Naming reads the user's text only —
+    // the block would be the fallback title, and an agent-run title CLI would
+    // be told to write a report. Every caller comes through here.
+    const prompt = stripPromptBlock(promptWithBlock);
     // Never name a Session from this generator's OWN meta-prompt. A headless
     // helper inherits the session's hook env, so if one ever fires these
     // hooks, generating from its prompt is a loop with no end. The guard lives

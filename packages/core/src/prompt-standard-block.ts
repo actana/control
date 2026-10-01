@@ -20,6 +20,7 @@ export function reportPath(sessionId: string, turn: number): string {
 }
 
 const BLOCK_OPEN = `[Actana standard block v${PROMPT_BLOCK_VERSION}]`;
+const BLOCK_CLOSE = `[/Actana standard block v${PROMPT_BLOCK_VERSION}]`;
 
 export function buildPromptBlock(input: { sessionId: string; turn: number }): string {
   const path = `~/${reportPath(input.sessionId, input.turn)}`;
@@ -28,7 +29,7 @@ export function buildPromptBlock(input: { sessionId: string; turn: number }): st
     "Your workspace is your home directory (~); go into a subfolder only when this prompt says so. " +
     "~/shared is shared with the operator and syncs within seconds. " +
     `When this turn is done, write your report to ${path} and make its last line exactly ${REPORT_END_MARKER}. ` +
-    "Never use sudo."
+    `Never use sudo. ${BLOCK_CLOSE}`
   );
 }
 
@@ -39,4 +40,19 @@ export function buildPromptBlock(input: { sessionId: string; turn: number }): st
 export function appendPromptBlock(text: string, input: { sessionId: string; turn: number }): string {
   if (/\[Actana standard block v\d+\]/.test(text)) return text;
   return `${text} ${buildPromptBlock(input)}`;
+}
+
+const BLOCK_SPAN = /\s*\[Actana standard block v(\d+)\][\s\S]*?\[\/Actana standard block v\1\]/g;
+// A block cut short (a terminal capture, a truncated hook) has no closing
+// marker; the block is always last, so everything from its opening goes.
+const BLOCK_OPEN_TO_END = /\s*\[Actana standard block v\d+\][\s\S]*$/;
+
+/**
+ * `text` as the user wrote it: the standard block removed by its versioned
+ * markers. A harness reports the prompt it was given back on its own hook, and
+ * that text is the user's plus the block, so anything that reads prompt text
+ * for its own purpose (naming a Session) strips it first.
+ */
+export function stripPromptBlock(text: string): string {
+  return text.replace(BLOCK_SPAN, "").replace(BLOCK_OPEN_TO_END, "").trim();
 }
