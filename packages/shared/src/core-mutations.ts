@@ -113,6 +113,15 @@ export function createSession(
 }
 
 /**
+ * Record the standard prompt block version a Session's starting prompt carried
+ * (ADR 0026, issue 563). Not a wire mutation: only the Core delivers prompts,
+ * so no client has a say in it.
+ */
+export function recordPromptBlockVersion(sqlite: CoreMutationSqlite, sessionId: string, version: number): void {
+  sqlite.prepare("UPDATE sessions SET prompt_block_version = ? WHERE id = ?").run(version, sessionId);
+}
+
+/**
  * Normalize a caller-supplied icon value into what the SQL column stores.
  * `undefined` → `null` (create); trimmed empty string → `null`; else the trimmed
  * string. The Core does not validate against `SESSION_ICON_OPTIONS` — the

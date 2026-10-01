@@ -100,6 +100,7 @@ import {
 } from "./core-query-store";
 import {
   configureCoreMutationStore,
+  recordPromptBlockVersion,
   disposeCoreMutationStore,
   coreMutationStore,
   setLivePtyProbe,
@@ -344,7 +345,14 @@ async function startCore(): Promise<void> {
     // evidence there is that the composer is listening — nobody outside this
     // process sees the screen (ADR 0026), and #191 removed the last client that
     // tried to infer it from quietness.
-    onSessionPromptDelivered: ({ sessionId, ptyId, characters, waitedMs, composerObserved }) => {
+    onSessionPromptDelivered: ({ sessionId, ptyId, characters, waitedMs, composerObserved, promptBlockVersion }) => {
+      // Issue 563: the Session row says which block version it was handed. Its
+      // own try, so a failed write never costs the delivered row below.
+      try {
+        if (promptBlockVersion !== null) recordPromptBlockVersion(sessionId, promptBlockVersion);
+      } catch (err) {
+        console.error(`[core-entry] prompt-block-version.record-failed: ${err}`);
+      }
       const payload: CoreLinkSessionPromptDeliveredPayload = {
         sessionId,
         ptyId,

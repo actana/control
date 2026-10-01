@@ -5,6 +5,7 @@ import {
   Pre050DatabaseError,
   refusePre050Database,
 } from "../core-schema";
+import { createSession, recordPromptBlockVersion, type CoreMutationSqlite } from "../core-mutations";
 
 // The Core's database is two tables, and a 0.5.0 Core refuses to open the one an
 // earlier Core left behind (ADR 0041 D1; #555: a clean break, no migration, so a
@@ -97,5 +98,32 @@ describe("a database from before 0.5.0 is refused, not adopted", () => {
     expect(
       (db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as { name: string }[]).map((t) => t.name),
     ).toEqual(["tasks"]);
+  });
+});
+
+describe("the prompt block version column (issue 563)", () => {
+  it("is on a fresh sessions table, empty until the Core delivers a block, and accepted on a second boot", () => {
+    const db = new Database(":memory:");
+    ensureCoreSchema(db);
+    const cols = (db.prepare("PRAGMA table_info(sessions)").all() as { name: string }[]).map((c) => c.name);
+    expect(cols).toContain("prompt_block_version");
+    db.prepare("INSERT INTO sessions (id, title, agent, created_at, updated_at) VALUES ('s1', 't', 'codex', 1, 1)").run();
+    expect(db.prepare("SELECT prompt_block_version AS v FROM sessions WHERE id = 's1'").get()).toEqual({ v: null });
+    expect(() => refusePre050Database(db)).not.toThrow();
+    db.close();
+  });
+
+  it("records the version the Core hands a Session, on that Session's row only", () => {
+    const db = new Database(":memory:");
+    ensureCoreSchema(db);
+    const w = db as unknown as CoreMutationSqlite;
+    createSession(w, { op: "create", sessionId: "a", title: "A", agent: "codex" }, 1);
+    createSession(w, { op: "create", sessionId: "b", title: "B", agent: "codex" }, 1);
+    recordPromptBlockVersion(w, "a", 1);
+    expect(db.prepare("SELECT id, prompt_block_version AS v FROM sessions ORDER BY id").all()).toEqual([
+      { id: "a", v: 1 },
+      { id: "b", v: null },
+    ]);
+    db.close();
   });
 });
