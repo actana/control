@@ -80,7 +80,7 @@ import {
 import { createPairing } from "@actana/sdk/pairing/server";
 import { pairingStorePath } from "@actana/sdk/pairing/stores/json-file";
 import { corePairingStore } from "./core-pairing-store";
-import { createDirectory, listDirectory } from "./directory-browse";
+import { createDirectory } from "./directory-browse";
 import { runCoreExec } from "./core-exec";
 import { coreHome } from "./core-identity";
 import { configureProjectRootsDb } from "./project-roots";
@@ -144,7 +144,7 @@ import log from "@actana/shared/log";
 import { bootstrapCoreDb } from "./core-db-bootstrap";
 import { HarnessAvailabilityStore } from "@actana/shared/harness-availability-store";
 import { HarnessSkillWatcher } from "./harness-skill-watcher";
-import { ensureOrchestrationSkill } from "./orchestration-skill";
+import { ensureOrchestrationSkillViaCore, listDirectoryViaCore } from "./core-home-ops-client";
 import { HarnessInstallService } from "./harness-install-service";
 import { daemonHarnessSystem } from "./core-harness-system";
 import { legacyEnvRefusal, plaintextExposureRefusal } from "./core-boot-refusals";
@@ -378,7 +378,7 @@ async function startCore(): Promise<void> {
 
   // Eagerly install Claude Code's Shift+Enter keybinding flag for terminals
   // spawned by this Core (best-effort; see ensureClaudeShiftEnterBinding).
-  ensureClaudeShiftEnterBinding();
+  await ensureClaudeShiftEnterBinding();
 
   const core = new PtyCore(deps);
 
@@ -418,9 +418,10 @@ async function startCore(): Promise<void> {
   // hold: it sees each event once, in order, as it is produced. The guard is
   // there anyway, because "this is only ever fed live events" is a property of
   // this one call site and not of the class.
-  ensureOrchestrationSkill(coreHome());
+  await ensureOrchestrationSkillViaCore();
   const skillWatcher = new HarnessSkillWatcher({
-    ensure: () => ensureOrchestrationSkill(coreHome()),
+    // Fire and forget: the helper has its own deadline and the wrapper never rejects.
+    ensure: () => void ensureOrchestrationSkillViaCore(),
   });
   const availabilityStore = new HarnessAvailabilityStore({
     appendEvent: (kind, payload, opts) => {
@@ -516,7 +517,7 @@ async function startCore(): Promise<void> {
     // wrong one — a Project's path is a VM path, so the Core serves and
     // validates every listing.
     directoryPort: {
-      list: (requestedPath) => listDirectory(requestedPath),
+      list: (requestedPath) => listDirectoryViaCore(requestedPath),
       create: (parent, name) => createDirectory(parent, name),
     },
     // Issue 266: `actana core exec` runs one command here, non-interactively.
@@ -715,7 +716,7 @@ async function startCore(): Promise<void> {
       // volume that predates this has material but no registry entry, and this
       // is the boot that fixes it. See `core-self-register.ts`.
       if (containerMode) {
-        const registered = registerSelfWithLocalCli({
+        const registered = await registerSelfWithLocalCli({
           material,
           bindHost: host,
           port,
