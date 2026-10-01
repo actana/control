@@ -94,7 +94,7 @@ describe("Shared-folder frames on the core link (#562)", () => {
   beforeEach(() => {
     output = [];
     for (const method of ["log", "warn", "error", "info"] as const) {
-      vi.spyOn(console, method).mockImplementation((...args: unknown[]) => void output.push(args.map(String).join(" ")));
+      vi.spyOn(console, method).mockImplementation((...args: unknown[]) => void output.push(args.map((a) => (typeof a === "string" ? a : JSON.stringify(a))).join(" ")));
     }
   });
   afterEach(() => {

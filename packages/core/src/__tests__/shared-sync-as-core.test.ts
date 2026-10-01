@@ -188,7 +188,7 @@ describe("the sync as the container runs it", () => {
   it("never logs the key, whatever happens to the pass", async () => {
     const output: string[] = [];
     for (const method of ["log", "warn", "error", "info"] as const) {
-      vi.spyOn(console, method).mockImplementation((...args: unknown[]) => void output.push(args.map(String).join(" ")));
+      vi.spyOn(console, method).mockImplementation((...args: unknown[]) => void output.push(args.map((a) => (typeof a === "string" ? a : JSON.stringify(a))).join(" ")));
     }
     await sync.handle(attachFrame);
     await sync.idle();
