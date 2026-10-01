@@ -1,11 +1,11 @@
 export const PROJECT_PATH_DRAG_MIME = "application/x-mission-control-project-path";
 
 const PATH_NEEDS_QUOTING = /[\s"'\\]/;
-const QUOTE_ESCAPE = /"/g;
+const QUOTE_ESCAPE = /["\\]/g;
 
 /** Quote a filesystem path when spaces or shell metacharacters would break paste. */
 export function formatPathForTerminalPaste(path: string): string {
-  return PATH_NEEDS_QUOTING.test(path) ? `"${path.replace(QUOTE_ESCAPE, '\\"')}"` : path;
+  return PATH_NEEDS_QUOTING.test(path) ? `"${path.replace(QUOTE_ESCAPE, "\\$&")}"` : path;
 }
 
 export function setProjectPathDragData(

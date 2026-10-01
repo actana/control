@@ -19,6 +19,13 @@ describe("formatPathForTerminalPaste", () => {
   });
 });
 
+describe("formatPathForTerminalPaste backslashes", () => {
+  it("escapes a backslash so a trailing one cannot swallow the closing quote", () => {
+    expect(formatPathForTerminalPaste("/tmp/a b\\")).toBe('"/tmp/a b\\\\"');
+    expect(formatPathForTerminalPaste('/tmp/a\\"b')).toBe('"/tmp/a\\\\\\"b"');
+  });
+});
+
 describe("project path drag payload", () => {
   it("sets custom and plain-text mime types", () => {
     const data = new Map<string, string>();
