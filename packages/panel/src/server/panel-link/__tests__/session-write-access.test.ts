@@ -28,15 +28,15 @@ import type { PanelLinkServerFrame } from "~/shared/panel-link";
 
 class FakeCoreLink implements CoreLinkClientLike {
   answers: (frame: CoreLinkRequestFrame) => CoreLinkResponseFrame = (frame) => ({
-    type: "tasksListResult",
+    type: "sessionRowsListResult",
     reqId: (frame as { reqId: string }).reqId,
-    tasks: [],
+    sessions: [],
     archivedCount: 0,
   });
   readonly sent: CoreLinkRequestFrame[] = [];
   multiConnection = true;
   private event?: (msg: { event: CoreLinkEvent }) => void;
-  private reclaimed?: (msg: { replaced: boolean; taskIds: string[] }) => void;
+  private reclaimed?: (msg: { replaced: boolean; sessionIds: string[] }) => void;
   private ready?: (msg: { version: string | null; compatible: boolean }) => void;
   private disconnected?: (msg: { error?: string }) => void;
 
@@ -77,7 +77,7 @@ class FakeCoreLink implements CoreLinkClientLike {
   canSendMultiConnectionFrames() {
     return this.multiConnection;
   }
-  onReclaimed(cb: (msg: { replaced: boolean; taskIds: string[] }) => void) {
+  onReclaimed(cb: (msg: { replaced: boolean; sessionIds: string[] }) => void) {
     this.reclaimed = cb;
     return () => {};
   }
@@ -85,7 +85,7 @@ class FakeCoreLink implements CoreLinkClientLike {
 
   /** A `session:lockChanged` row on the ordinary event stream (ADR 0024 D8). */
   pushLockChanged(
-    taskId: string,
+    sessionId: string,
     transition: "claimed" | "released" | "taken-over",
     locked: boolean,
     eventId = 1,
@@ -96,13 +96,13 @@ class FakeCoreLink implements CoreLinkClientLike {
         ts: eventId,
         kind: SESSION_LOCK_CHANGED_EVENT_KIND,
         ptyId: null,
-        taskId,
-        payload: JSON.stringify({ taskId, transition, locked }),
+        sessionId,
+        payload: JSON.stringify({ sessionId, transition, locked }),
       },
     });
   }
-  pushReclaimed(taskIds: string[]) {
-    this.reclaimed?.({ replaced: true, taskIds });
+  pushReclaimed(sessionIds: string[]) {
+    this.reclaimed?.({ replaced: true, sessionIds });
   }
   pushReady() {
     this.ready?.({ version: "1.0.0", compatible: true });
@@ -120,22 +120,22 @@ class FakeTab {
   close() {}
 
   /** Every Session-lock answer this tab was given, in order. */
-  locks(taskId: string) {
+  locks(sessionId: string) {
     return this.received.flatMap((f) =>
-      f.t === "lock" && f.taskId === taskId ? [f.lock] : [],
+      f.t === "lock" && f.sessionId === sessionId ? [f.lock] : [],
     );
   }
   /** Every drive answer this tab was given, in order. */
-  drives(taskId: string) {
+  drives(sessionId: string) {
     return this.received.flatMap((f) =>
-      f.t === "drive" && f.taskId === taskId ? [{ driving: f.driving, reason: f.reason }] : [],
+      f.t === "drive" && f.sessionId === sessionId ? [{ driving: f.driving, reason: f.reason }] : [],
     );
   }
-  lastLock(taskId: string) {
-    return this.locks(taskId).at(-1);
+  lastLock(sessionId: string) {
+    return this.locks(sessionId).at(-1);
   }
-  lastDrive(taskId: string) {
-    return this.drives(taskId).at(-1);
+  lastDrive(sessionId: string) {
+    return this.drives(sessionId).at(-1);
   }
 }
 
@@ -167,7 +167,7 @@ class FakeSource implements CoreLinkSource {
 }
 
 const CORE = "core_a";
-const TASK = "task_1";
+const SESSION = "session_1";
 
 let source: FakeSource;
 let router: PanelLinkRouter;
@@ -190,10 +190,10 @@ function openTab() {
   return { tab, session };
 }
 
-/** One task row as a Core publishes it, with its addressed lock (ADR 0024 D8). */
-function taskRow(state: "unlocked" | "held-by-you" | "held-by-another") {
+/** One session row as a Core publishes it, with its addressed lock (ADR 0024 D8). */
+function sessionRow(state: "unlocked" | "held-by-you" | "held-by-another") {
   return {
-    taskId: TASK,
+    sessionId: SESSION,
     projectId: "p1",
     title: "Ship the thing",
     titleManuallySet: false,
@@ -208,17 +208,17 @@ function taskRow(state: "unlocked" | "held-by-you" | "held-by-another") {
   };
 }
 
-function listTasks(session: ReturnType<PanelLinkRouter["attach"]>, link: FakeCoreLink, row: unknown) {
+function listSessionRows(session: ReturnType<PanelLinkRouter["attach"]>, link: FakeCoreLink, row: unknown) {
   link.answers = (frame) => ({
-    type: "tasksListResult",
+    type: "sessionRowsListResult",
     reqId: (frame as { reqId: string }).reqId,
-    tasks: [row] as never,
+    sessions: [row] as never,
     archivedCount: 0,
   });
   return session.receive({
     t: "core",
     coreId: CORE,
-    frame: { type: "tasksList", reqId: "q1" },
+    frame: { type: "sessionRowsList", reqId: "q1" },
   });
 }
 
@@ -227,11 +227,11 @@ describe("a Session another Core client holds", () => {
     const link = source.bring(CORE);
     const { tab, session } = openTab();
 
-    await listTasks(session, link, taskRow("held-by-another"));
+    await listSessionRows(session, link, sessionRow("held-by-another"));
 
     // The snapshot alone did it. No keystroke, no refused write, no second
     // round trip — which is the whole of what D8 is for.
-    expect(tab.lastLock(TASK)).toEqual({
+    expect(tab.lastLock(SESSION)).toEqual({
       supported: true,
       writable: false,
       state: "held-by-another",
@@ -241,14 +241,14 @@ describe("a Session another Core client holds", () => {
   it("tells a tab that opens later, on the gesture that announces its pane", async () => {
     const link = source.bring(CORE);
     const { session: first } = openTab();
-    await listTasks(first, link, taskRow("held-by-another"));
+    await listSessionRows(first, link, sessionRow("held-by-another"));
 
     // A second tab was not watching when the register learned it. It asks by
     // opening a pane, and is answered before it can render an editable one.
     const { tab: second, session } = openTab();
-    void session.receive({ t: "drive", coreId: CORE, taskId: TASK, want: "watch" });
+    void session.receive({ t: "drive", coreId: CORE, sessionId: SESSION, want: "watch" });
 
-    expect(second.lastLock(TASK)).toEqual({
+    expect(second.lastLock(SESSION)).toEqual({
       supported: true,
       writable: false,
       state: "held-by-another",
@@ -260,45 +260,45 @@ describe("claiming a Session from the Panel", () => {
   it("reflects in the UI on the answer, with no refetch", async () => {
     const link = source.bring(CORE);
     const { tab, session } = openTab();
-    await listTasks(session, link, taskRow("unlocked"));
-    expect(tab.lastLock(TASK)?.state).toBe("unlocked");
+    await listSessionRows(session, link, sessionRow("unlocked"));
+    expect(tab.lastLock(SESSION)?.state).toBe("unlocked");
 
     link.answers = (frame) => ({
       type: "claimResult",
       reqId: (frame as { reqId: string }).reqId,
-      taskId: TASK,
+      sessionId: SESSION,
       granted: true,
     });
     await session.receive({
       t: "core",
       coreId: CORE,
-      frame: { type: "claim", reqId: "c1", taskId: TASK },
+      frame: { type: "claim", reqId: "c1", sessionId: SESSION },
     });
 
-    expect(tab.lastLock(TASK)).toEqual({ supported: true, writable: true, state: "held-by-you" });
+    expect(tab.lastLock(SESSION)).toEqual({ supported: true, writable: true, state: "held-by-you" });
     // Nothing was re-listed to find that out.
-    expect(link.sent.filter((f) => f.type === "tasksList")).toHaveLength(1);
+    expect(link.sent.filter((f) => f.type === "sessionRowsList")).toHaveLength(1);
   });
 
   it("reaches the Panel's other tabs too — one connection holds it for all of them", async () => {
     const link = source.bring(CORE);
     const { session: driver } = openTab();
     const { tab: other, session: otherSession } = openTab();
-    void otherSession.receive({ t: "drive", coreId: CORE, taskId: TASK, want: "watch" });
+    void otherSession.receive({ t: "drive", coreId: CORE, sessionId: SESSION, want: "watch" });
 
     link.answers = (frame) => ({
       type: "claimResult",
       reqId: (frame as { reqId: string }).reqId,
-      taskId: TASK,
+      sessionId: SESSION,
       granted: true,
     });
     await driver.receive({
       t: "core",
       coreId: CORE,
-      frame: { type: "claim", reqId: "c1", taskId: TASK },
+      frame: { type: "claim", reqId: "c1", sessionId: SESSION },
     });
 
-    expect(other.lastLock(TASK)?.state).toBe("held-by-you");
+    expect(other.lastLock(SESSION)?.state).toBe("held-by-you");
   });
 
   it("queues no echo for a re-claim the Core publishes nothing for", async () => {
@@ -309,49 +309,49 @@ describe("claiming a Session from the Panel", () => {
     // real lock change from another client — the loser's notice D8 exists for.
     const link = source.bring(CORE);
     const { tab, session } = openTab();
-    await listTasks(session, link, taskRow("unlocked"));
+    await listSessionRows(session, link, sessionRow("unlocked"));
     link.answers = (frame) => ({
       type: "claimResult",
       reqId: (frame as { reqId: string }).reqId,
-      taskId: TASK,
+      sessionId: SESSION,
       granted: true,
     });
 
     await session.receive({
       t: "core",
       coreId: CORE,
-      frame: { type: "claim", reqId: "c1", taskId: TASK },
+      frame: { type: "claim", reqId: "c1", sessionId: SESSION },
     });
-    link.pushLockChanged(TASK, "claimed", true, 1); // the first claim's echo
+    link.pushLockChanged(SESSION, "claimed", true, 1); // the first claim's echo
     await session.receive({
       t: "core",
       coreId: CORE,
-      frame: { type: "claim", reqId: "c2", taskId: TASK },
+      frame: { type: "claim", reqId: "c2", sessionId: SESSION },
     });
-    expect(tab.lastLock(TASK)?.state).toBe("held-by-you");
+    expect(tab.lastLock(SESSION)?.state).toBe("held-by-you");
 
     // The Panel gives it back, and its `released` echo must be the one that is
     // consumed — not left mismatched behind a stale `claimed`.
     link.answers = (frame) => ({
       type: "releaseResult",
       reqId: (frame as { reqId: string }).reqId,
-      taskId: TASK,
+      sessionId: SESSION,
       released: true,
     });
     await session.receive({
       t: "core",
       coreId: CORE,
-      frame: { type: "release", reqId: "r1", taskId: TASK },
+      frame: { type: "release", reqId: "r1", sessionId: SESSION },
     });
-    link.pushLockChanged(TASK, "released", false, 2);
-    expect(tab.lastLock(TASK)?.state).toBe("unlocked");
+    link.pushLockChanged(SESSION, "released", false, 2);
+    expect(tab.lastLock(SESSION)?.state).toBe("unlocked");
 
     // Another Core client takes the free Session. This is somebody else's
     // change and the tab has to see it, or it keeps an editable terminal on a
     // Session this Panel does not hold until something refetches.
-    link.pushLockChanged(TASK, "claimed", true, 3);
+    link.pushLockChanged(SESSION, "claimed", true, 3);
 
-    expect(tab.lastLock(TASK)).toEqual({
+    expect(tab.lastLock(SESSION)).toEqual({
       supported: true,
       writable: false,
       state: "held-by-another",
@@ -364,17 +364,17 @@ describe("claiming a Session from the Panel", () => {
     link.answers = (frame) => ({
       type: "claimResult",
       reqId: (frame as { reqId: string }).reqId,
-      taskId: TASK,
+      sessionId: SESSION,
       granted: false,
     });
 
     await session.receive({
       t: "core",
       coreId: CORE,
-      frame: { type: "claim", reqId: "c1", taskId: TASK },
+      frame: { type: "claim", reqId: "c1", sessionId: SESSION },
     });
 
-    expect(tab.lastLock(TASK)).toEqual({
+    expect(tab.lastLock(SESSION)).toEqual({
       supported: true,
       writable: false,
       state: "held-by-another",
@@ -386,27 +386,27 @@ describe("a force takeover", () => {
   it("leaves this Panel holding the Session, and its own echo does not undo that", async () => {
     const link = source.bring(CORE);
     const { tab, session } = openTab();
-    await listTasks(session, link, taskRow("held-by-another"));
+    await listSessionRows(session, link, sessionRow("held-by-another"));
 
     link.answers = (frame) => ({
       type: "forceTakeoverResult",
       reqId: (frame as { reqId: string }).reqId,
-      taskId: TASK,
+      sessionId: SESSION,
       takenFrom: "another-connection",
     });
     await session.receive({
       t: "core",
       coreId: CORE,
-      frame: { type: "forceTakeover", reqId: "f1", taskId: TASK },
+      frame: { type: "forceTakeover", reqId: "f1", sessionId: SESSION },
     });
-    expect(tab.lastLock(TASK)?.state).toBe("held-by-you");
+    expect(tab.lastLock(SESSION)?.state).toBe("held-by-you");
 
     // The Core's own event for the takeover this Panel performed arrives after
     // the answer, because live events are polled. Read naively it says "the
     // holder is now somebody" — and the tab that just took the Session would be
     // told it lost it.
-    link.pushLockChanged(TASK, "taken-over", true);
-    expect(tab.lastLock(TASK)?.state).toBe("held-by-you");
+    link.pushLockChanged(SESSION, "taken-over", true);
+    expect(tab.lastLock(SESSION)?.state).toBe("held-by-you");
   });
 
   it("is how the loser finds out — on the event, before its next keystroke", async () => {
@@ -415,23 +415,23 @@ describe("a force takeover", () => {
     link.answers = (frame) => ({
       type: "claimResult",
       reqId: (frame as { reqId: string }).reqId,
-      taskId: TASK,
+      sessionId: SESSION,
       granted: true,
     });
     await session.receive({
       t: "core",
       coreId: CORE,
-      frame: { type: "claim", reqId: "c1", taskId: TASK },
+      frame: { type: "claim", reqId: "c1", sessionId: SESSION },
     });
     // Our own claim's echo, consumed.
-    link.pushLockChanged(TASK, "claimed", true, 1);
-    expect(tab.lastLock(TASK)?.state).toBe("held-by-you");
+    link.pushLockChanged(SESSION, "claimed", true, 1);
+    expect(tab.lastLock(SESSION)?.state).toBe("held-by-you");
 
     // Somebody else takes it. Nothing was sent, nothing was refused, and this
     // Panel learns it is a Reader now.
-    link.pushLockChanged(TASK, "taken-over", true, 2);
+    link.pushLockChanged(SESSION, "taken-over", true, 2);
 
-    expect(tab.lastLock(TASK)).toEqual({
+    expect(tab.lastLock(SESSION)).toEqual({
       supported: true,
       writable: false,
       state: "held-by-another",
@@ -441,11 +441,11 @@ describe("a force takeover", () => {
   it("frees the Session for everybody when the holder releases it", async () => {
     const link = source.bring(CORE);
     const { tab, session } = openTab();
-    await listTasks(session, link, taskRow("held-by-another"));
+    await listSessionRows(session, link, sessionRow("held-by-another"));
 
-    link.pushLockChanged(TASK, "released", false);
+    link.pushLockChanged(SESSION, "released", false);
 
-    expect(tab.lastLock(TASK)).toEqual({ supported: true, writable: true, state: "unlocked" });
+    expect(tab.lastLock(SESSION)).toEqual({ supported: true, writable: true, state: "unlocked" });
   });
 });
 
@@ -455,45 +455,45 @@ describe("two tabs of one Panel on one Session", () => {
     const { tab: first, session: firstSession } = openTab();
     const { tab: second, session: secondSession } = openTab();
 
-    void firstSession.receive({ t: "drive", coreId: CORE, taskId: TASK, want: "watch" });
-    void secondSession.receive({ t: "drive", coreId: CORE, taskId: TASK, want: "watch" });
+    void firstSession.receive({ t: "drive", coreId: CORE, sessionId: SESSION, want: "watch" });
+    void secondSession.receive({ t: "drive", coreId: CORE, sessionId: SESSION, want: "watch" });
 
-    expect(first.lastDrive(TASK)?.driving).toBe(true);
-    expect(second.lastDrive(TASK)?.driving).toBe(false);
+    expect(first.lastDrive(SESSION)?.driving).toBe(true);
+    expect(second.lastDrive(SESSION)?.driving).toBe(false);
     // And it is obvious which: both were told, neither had to infer it from the
     // other's silence.
-    expect(first.drives(TASK)).toHaveLength(1);
-    expect(second.drives(TASK)).toHaveLength(1);
+    expect(first.drives(SESSION)).toHaveLength(1);
+    expect(second.drives(SESSION)).toHaveLength(1);
   });
 
   it("hands the keyboard over on request, and tells the loser it was a handover", () => {
     source.bring(CORE);
     const { tab: first, session: firstSession } = openTab();
     const { tab: second, session: secondSession } = openTab();
-    void firstSession.receive({ t: "drive", coreId: CORE, taskId: TASK, want: "watch" });
-    void secondSession.receive({ t: "drive", coreId: CORE, taskId: TASK, want: "watch" });
+    void firstSession.receive({ t: "drive", coreId: CORE, sessionId: SESSION, want: "watch" });
+    void secondSession.receive({ t: "drive", coreId: CORE, sessionId: SESSION, want: "watch" });
 
-    void secondSession.receive({ t: "drive", coreId: CORE, taskId: TASK, want: "take" });
+    void secondSession.receive({ t: "drive", coreId: CORE, sessionId: SESSION, want: "take" });
 
-    expect(second.lastDrive(TASK)).toEqual({ driving: true, reason: "watch" });
+    expect(second.lastDrive(SESSION)).toEqual({ driving: true, reason: "watch" });
     // The loser's own event, with its own reason. Not a takeover: nothing left
     // this Panel and no Core heard about it.
-    expect(first.lastDrive(TASK)).toEqual({ driving: false, reason: "handover" });
+    expect(first.lastDrive(SESSION)).toEqual({ driving: false, reason: "handover" });
   });
 
   it("never mentions the Session lock while arbitrating tabs", () => {
     source.bring(CORE);
     const { tab: first, session: firstSession } = openTab();
     const { session: secondSession } = openTab();
-    void firstSession.receive({ t: "drive", coreId: CORE, taskId: TASK, want: "watch" });
-    void secondSession.receive({ t: "drive", coreId: CORE, taskId: TASK, want: "watch" });
-    const before = first.locks(TASK).length;
+    void firstSession.receive({ t: "drive", coreId: CORE, sessionId: SESSION, want: "watch" });
+    void secondSession.receive({ t: "drive", coreId: CORE, sessionId: SESSION, want: "watch" });
+    const before = first.locks(SESSION).length;
 
-    void secondSession.receive({ t: "drive", coreId: CORE, taskId: TASK, want: "take" });
+    void secondSession.receive({ t: "drive", coreId: CORE, sessionId: SESSION, want: "take" });
 
     // A handover is not a lock change. The Panel still holds exactly what it
     // held, and nothing went down the core-link (ADR 0024 D3).
-    expect(first.locks(TASK)).toHaveLength(before);
+    expect(first.locks(SESSION)).toHaveLength(before);
     expect(source.links.get(CORE)!.sent).toHaveLength(0);
   });
 
@@ -501,13 +501,13 @@ describe("two tabs of one Panel on one Session", () => {
     source.bring(CORE);
     const { session: firstSession } = openTab();
     const { tab: second, session: secondSession } = openTab();
-    void firstSession.receive({ t: "drive", coreId: CORE, taskId: TASK, want: "watch" });
-    void secondSession.receive({ t: "drive", coreId: CORE, taskId: TASK, want: "watch" });
+    void firstSession.receive({ t: "drive", coreId: CORE, sessionId: SESSION, want: "watch" });
+    void secondSession.receive({ t: "drive", coreId: CORE, sessionId: SESSION, want: "watch" });
 
     firstSession.detach();
 
     // Told it drives now — and told it plainly, not as a handover it performed.
-    expect(second.lastDrive(TASK)).toEqual({ driving: true, reason: "watch" });
+    expect(second.lastDrive(SESSION)).toEqual({ driving: true, reason: "watch" });
   });
 });
 
@@ -515,19 +515,19 @@ describe("a reconnect", () => {
   it("re-learns the Sessions the reclaim brought across (ADR 0024 D9)", async () => {
     const link = source.bring(CORE);
     const { tab, session } = openTab();
-    await listTasks(session, link, taskRow("held-by-you"));
+    await listSessionRows(session, link, sessionRow("held-by-you"));
 
     // The link dropped: every lock it held went with it.
     link.pushDisconnected();
-    expect(tab.lastLock(TASK)?.state).toBe("unlocked");
+    expect(tab.lastLock(SESSION)?.state).toBe("unlocked");
 
     // A new connection presents the same client id, and the Core moves the
     // locks across. No event says so — the transfer is a rewrite in place — so
-    // `reclaimResult.taskIds` is the only thing that can tell the Panel.
+    // `reclaimResult.sessionIds` is the only thing that can tell the Panel.
     link.pushReady();
-    link.pushReclaimed([TASK]);
+    link.pushReclaimed([SESSION]);
 
-    expect(tab.lastLock(TASK)).toEqual({ supported: true, writable: true, state: "held-by-you" });
+    expect(tab.lastLock(SESSION)).toEqual({ supported: true, writable: true, state: "held-by-you" });
   });
 });
 
@@ -539,9 +539,9 @@ describe("a Core without the multiConnection capability", () => {
     // Even a Core that somehow published lock state is not believed: this Core
     // has no lock table, and a Panel that rendered one would show a Session
     // locked against the only client that Core has.
-    await listTasks(session, link, taskRow("held-by-another"));
+    await listSessionRows(session, link, sessionRow("held-by-another"));
 
-    for (const lock of tab.locks(TASK)) {
+    for (const lock of tab.locks(SESSION)) {
       expect(lock.supported).toBe(false);
       expect(lock.writable).toBe(true);
     }
@@ -552,12 +552,12 @@ describe("a Core without the multiConnection capability", () => {
     const { tab: first, session: firstSession } = openTab();
     const { tab: second, session: secondSession } = openTab();
 
-    void firstSession.receive({ t: "drive", coreId: CORE, taskId: TASK, want: "watch" });
-    void secondSession.receive({ t: "drive", coreId: CORE, taskId: TASK, want: "watch" });
+    void firstSession.receive({ t: "drive", coreId: CORE, sessionId: SESSION, want: "watch" });
+    void secondSession.receive({ t: "drive", coreId: CORE, sessionId: SESSION, want: "watch" });
 
-    expect(first.lastDrive(TASK)?.driving).toBe(true);
-    expect(second.lastDrive(TASK)?.driving).toBe(true);
-    expect(first.lastLock(TASK)).toEqual({
+    expect(first.lastDrive(SESSION)?.driving).toBe(true);
+    expect(second.lastDrive(SESSION)?.driving).toBe(true);
+    expect(first.lastLock(SESSION)).toEqual({
       supported: false,
       writable: true,
       state: "unlocked",
@@ -568,12 +568,12 @@ describe("a Core without the multiConnection capability", () => {
     source.bring(CORE, { multiConnection: false });
     const { tab: first, session: firstSession } = openTab();
     const { session: secondSession } = openTab();
-    void firstSession.receive({ t: "drive", coreId: CORE, taskId: TASK, want: "watch" });
+    void firstSession.receive({ t: "drive", coreId: CORE, sessionId: SESSION, want: "watch" });
 
-    void secondSession.receive({ t: "drive", coreId: CORE, taskId: TASK, want: "take" });
+    void secondSession.receive({ t: "drive", coreId: CORE, sessionId: SESSION, want: "take" });
 
     // Nothing arbitrated it, so nothing was lost. The first tab was told once,
     // that it drives, and never told otherwise.
-    expect(first.drives(TASK)).toEqual([{ driving: true, reason: "watch" }]);
+    expect(first.drives(SESSION)).toEqual([{ driving: true, reason: "watch" }]);
   });
 });

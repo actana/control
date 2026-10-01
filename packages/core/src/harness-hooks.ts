@@ -42,7 +42,7 @@ import { hookEndpointSlug } from "@actana/shared/mission-control-hook-env";
 import { ASK_USER_QUESTION_TOOL } from "@actana/shared/harness-questions";
 import {
   HOOK_MISS_LOG_ENV,
-  HOOK_TASK_ID_ENV,
+  HOOK_SESSION_ID_ENV,
   HOOK_TOKEN_ENV,
   HOOK_URL_ENV,
 } from "./harness-hook-env";
@@ -67,13 +67,13 @@ const LEGACY_MANAGED_FLAG = "_mcManaged";
 export {
   HOOK_URL_ENV,
   HOOK_TOKEN_ENV,
-  HOOK_TASK_ID_ENV,
+  HOOK_SESSION_ID_ENV,
   HOOK_MISS_LOG_ENV,
 } from "./harness-hook-env";
 
 /**
  * The shell command a managed hook entry runs: POST the payload the harness
- * pipes on stdin to this Core's loopback receiver, tagged with the task it
+ * pipes on stdin to this Core's loopback receiver, tagged with the session it
  * belongs to. Short timeout and a `|| true` at the end — see the fail-soft
  * rule above.
  *
@@ -121,10 +121,10 @@ export function hookCommand(slug: string, event: string): string {
     `-H "Content-Type: application/json" ` +
     `--data-binary @- ` +
     `"$${HOOK_URL_ENV}/api/hooks/${slug}` +
-    `?taskId=$${HOOK_TASK_ID_ENV}&hookEvent=${encodeURIComponent(event)}"; ` +
+    `?sessionId=$${HOOK_SESSION_ID_ENV}&hookEvent=${encodeURIComponent(event)}"; ` +
     `s=$?; [ "$s" = 0 ] || ` +
     `printf "%s\\t%s\\t%s\\t%s\\n" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" ` +
-    `"$${HOOK_TASK_ID_ENV}" "${event}" "$s" ` +
+    `"$${HOOK_SESSION_ID_ENV}" "${event}" "$s" ` +
     `>> "$\{${HOOK_MISS_LOG_ENV}:-/dev/null}" || true'`
   );
 }

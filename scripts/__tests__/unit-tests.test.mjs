@@ -18,6 +18,7 @@ import {
   STAGES,
   countByPrefix,
   diskHeadroom,
+  escapeCell,
   exitCodeFor,
   failedStages,
   isLeakedName,
@@ -204,6 +205,13 @@ describe("the report a reviewer reads", () => {
       expect(row.replace(/\\\|/g, "").split("|").filter(Boolean)).toHaveLength(4);
     }
     expect(renderJobSummary(mixed)).toContain("1 failed \\| 29 passed \\| 1 skipped (31)");
+  });
+
+  it("escapes a backslash before a pipe, so `\\|` is not read as an escaped pipe", () => {
+    // `a\|b` escaped to `a\\|b` is an escaped backslash followed by a live `|`: a fifth column.
+    expect(escapeCell("a\\|b")).toBe("a\\\\\\|b");
+    expect(escapeCell("a|b")).toBe("a\\|b");
+    expect(escapeCell("plain")).toBe("plain");
   });
 
   it("still lists the failures when the machine was the cause", () => {

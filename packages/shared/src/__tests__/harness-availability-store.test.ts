@@ -8,7 +8,7 @@ import type { Harness } from "@actana/shared/domain";
 type AppendEventFn = (
   kind: string,
   payload: string,
-  opts?: { ptyId?: string | null; taskId?: string | null },
+  opts?: { ptyId?: string | null; sessionId?: string | null },
 ) => number;
 
 // Issue 11: the Core-side probe publishes CLI availability as (a) a live
@@ -35,7 +35,7 @@ describe("HarnessAvailabilityStore", () => {
     expect(appendEvent).toHaveBeenCalledTimes(1);
     const [kind, payload, opts] = appendEvent.mock.calls[0];
     expect(kind).toBe(HARNESSES_AVAILABILITY_EVENT_KIND);
-    expect(opts).toEqual({ ptyId: null, taskId: null });
+    expect(opts).toEqual({ ptyId: null, sessionId: null });
     const parsed = JSON.parse(payload as string) as {
       availability: Record<string, { status: string; version?: string }>;
     };

@@ -157,12 +157,12 @@ describe("PanelLink", () => {
     const socket = fakeSocket();
     const link = new PanelLink(socket);
     const subscribing = link.subscribe("core_1", 3);
-    socket.deliver(coreFrame({ type: "event", event: { eventId: 4, kind: "task:updated" } }));
+    socket.deliver(coreFrame({ type: "event", event: { eventId: 4, kind: "session:updated" } }));
     socket.deliver(coreFrame({ type: "event", event: { eventId: 5, kind: "pty:exit" } }));
     socket.deliver(coreFrame({ type: "eventsReplayed", lastEventId: 5 }));
     await expect(subscribing).resolves.toEqual({
       events: [
-        { eventId: 4, kind: "task:updated" },
+        { eventId: 4, kind: "session:updated" },
         { eventId: 5, kind: "pty:exit" },
       ],
       lastEventId: 5,

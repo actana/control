@@ -53,10 +53,10 @@ function projectStore(initial: CoreLinkProjectSnapshot[] = []) {
   const mutations: CoreLinkProjectMutation[] = [];
   const queryPort: CoreQueryPort = {
     listProjects: () => rows,
-    listTasks: () => [],
-    listArchivedTasks: () => [],
-    countArchivedTasks: () => 0,
-    getTask: () => null,
+    listSessionRows: () => [],
+    listArchivedSessions: () => [],
+    countArchivedSessions: () => 0,
+    getSession: () => null,
   };
   const mutationPort: CoreMutationPort = {
     mutateProject: (mutation) => {
@@ -71,7 +71,7 @@ function projectStore(initial: CoreLinkProjectSnapshot[] = []) {
       rows.push(row);
       return row;
     },
-    mutateTask: () => null,
+    mutateSession: () => null,
     listSessions: () => [],
   };
   return { rows, mutations, queryPort, mutationPort };
@@ -276,7 +276,7 @@ describe("actana harness, against a Core in this process", () => {
     };
     for (let i = 0; i < 1_500; i += 1) {
       if (i === 1_200) log.push(HARNESSES_AVAILABILITY_EVENT_KIND, JSON.stringify(wasAvailable));
-      else log.push("task:updated");
+      else log.push("session:updated");
     }
 
     const installPort: HarnessInstallPort = {
@@ -321,7 +321,7 @@ describe("actana harness, against a Core in this process", () => {
           HARNESS_INSTALL_FAILED_EVENT_KIND,
           JSON.stringify({ harness: "opencode", message: "an hour ago, this failed" }),
         );
-      } else log.push("task:updated");
+      } else log.push("session:updated");
     }
 
     const installPort: HarnessInstallPort = {

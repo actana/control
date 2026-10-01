@@ -63,9 +63,9 @@ const PROTECTED_ROUTES: ReadonlyArray<{ method: string; pathname: string }> = [
   { method: "PATCH", pathname: "/api/projects/pinned-order" },
   { method: "DELETE", pathname: "/api/projects/abc" },
   { method: "DELETE", pathname: "/api/projects/abc/file?path=foo" },
-  // Project tasks
-  { method: "GET", pathname: "/api/projects/abc/tasks" },
-  { method: "POST", pathname: "/api/projects/abc/tasks" },
+  // Project sessions
+  { method: "GET", pathname: "/api/projects/abc/sessions" },
+  { method: "POST", pathname: "/api/projects/abc/sessions" },
   // Git
   { method: "GET", pathname: "/api/projects/abc/git/status" },
   { method: "GET", pathname: "/api/projects/abc/git/branches" },
@@ -85,13 +85,13 @@ const PROTECTED_ROUTES: ReadonlyArray<{ method: string; pathname: string }> = [
   { method: "POST", pathname: "/api/groups" },
   { method: "PATCH", pathname: "/api/groups/g1" },
   { method: "DELETE", pathname: "/api/groups/g1" },
-  // Tasks
-  { method: "GET", pathname: "/api/tasks/t1" },
-  { method: "PATCH", pathname: "/api/tasks/t1" },
-  { method: "DELETE", pathname: "/api/tasks/t1" },
-  { method: "POST", pathname: "/api/tasks/t1/status" },
-  { method: "POST", pathname: "/api/tasks/t1/archive" },
-  { method: "POST", pathname: "/api/tasks/t1/restore" },
+  // Sessions
+  { method: "GET", pathname: "/api/sessions/t1" },
+  { method: "PATCH", pathname: "/api/sessions/t1" },
+  { method: "DELETE", pathname: "/api/sessions/t1" },
+  { method: "POST", pathname: "/api/sessions/t1/status" },
+  { method: "POST", pathname: "/api/sessions/t1/archive" },
+  { method: "POST", pathname: "/api/sessions/t1/restore" },
   // Settings
   { method: "GET", pathname: "/api/settings" },
   { method: "POST", pathname: "/api/settings" },

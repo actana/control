@@ -37,7 +37,7 @@ describe("event-log", () => {
         db.prepare("PRAGMA index_list(event_log)").all() as { name: string }[]
       ).map((r) => r.name);
       expect(indexes).toContain("event_log_kind_idx");
-      expect(indexes).toContain("event_log_task_idx");
+      expect(indexes).toContain("event_log_session_idx");
       expect(indexes).toContain("event_log_pty_idx");
     });
   });
@@ -50,8 +50,8 @@ describe("event-log", () => {
 
     it("returns the highest event_id after appends", () => {
       const db = freshDb();
-      appendEvent(db as unknown as EventLogSqlite, "task:created", "{}");
-      appendEvent(db as unknown as EventLogSqlite, "task:updated", "{}");
+      appendEvent(db as unknown as EventLogSqlite, "session:created", "{}");
+      appendEvent(db as unknown as EventLogSqlite, "session:updated", "{}");
       expect(getLastEventId(db as unknown as EventLogSqlite)).toBe(2);
     });
   });
@@ -61,7 +61,7 @@ describe("event-log", () => {
       const db = freshDb();
       const id1 = appendEvent(db as unknown as EventLogSqlite, "pty:spawn", '{"ptyId":"p1"}', {
         ptyId: "p1",
-        taskId: "t1",
+        sessionId: "t1",
       });
       const id2 = appendEvent(db as unknown as EventLogSqlite, "pty:exit", '{"exitCode":0}', {
         ptyId: "p1",
@@ -70,11 +70,11 @@ describe("event-log", () => {
       expect(id1).toBe(1);
     });
 
-    it("persists kind, payload, ptyId, taskId, and a timestamp", () => {
+    it("persists kind, payload, ptyId, sessionId, and a timestamp", () => {
       const db = freshDb();
       const before = Date.now();
-      const id = appendEvent(db as unknown as EventLogSqlite, "task:updated", '{"status":"running"}', {
-        taskId: "t9",
+      const id = appendEvent(db as unknown as EventLogSqlite, "session:updated", '{"status":"running"}', {
+        sessionId: "t9",
         ptyId: "p2",
       });
       const after = Date.now();
@@ -85,25 +85,25 @@ describe("event-log", () => {
           ts: number;
           kind: string;
           pty_id: string | null;
-          task_id: string | null;
+          session_id: string | null;
           payload: string;
         };
-      expect(row.kind).toBe("task:updated");
+      expect(row.kind).toBe("session:updated");
       expect(row.payload).toBe('{"status":"running"}');
       expect(row.pty_id).toBe("p2");
-      expect(row.task_id).toBe("t9");
+      expect(row.session_id).toBe("t9");
       expect(row.ts).toBeGreaterThanOrEqual(before);
       expect(row.ts).toBeLessThanOrEqual(after);
     });
 
-    it("allows null ptyId and taskId (default)", () => {
+    it("allows null ptyId and sessionId (default)", () => {
       const db = freshDb();
       const id = appendEvent(db as unknown as EventLogSqlite, "project:created", "{}");
       const row = db
-        .prepare("SELECT pty_id, task_id FROM event_log WHERE event_id = ?")
-        .get(id) as { pty_id: string | null; task_id: string | null };
+        .prepare("SELECT pty_id, session_id FROM event_log WHERE event_id = ?")
+        .get(id) as { pty_id: string | null; session_id: string | null };
       expect(row.pty_id).toBeNull();
-      expect(row.task_id).toBeNull();
+      expect(row.session_id).toBeNull();
     });
   });
 
@@ -119,19 +119,19 @@ describe("event-log", () => {
 
     it("returns an empty array when the cursor is at or past the end", () => {
       const db = freshDb();
-      appendEvent(db as unknown as EventLogSqlite, "task:created", "{}");
-      appendEvent(db as unknown as EventLogSqlite, "task:updated", "{}");
+      appendEvent(db as unknown as EventLogSqlite, "session:created", "{}");
+      appendEvent(db as unknown as EventLogSqlite, "session:updated", "{}");
       expect(readEventTail(db as unknown as EventLogSqlite, 2)).toEqual([]);
       expect(readEventTail(db as unknown as EventLogSqlite, 99)).toEqual([]);
     });
 
     it("returns all events when the cursor is 0", () => {
       const db = freshDb();
-      appendEvent(db as unknown as EventLogSqlite, "task:created", "{}");
-      appendEvent(db as unknown as EventLogSqlite, "task:updated", "{}");
+      appendEvent(db as unknown as EventLogSqlite, "session:created", "{}");
+      appendEvent(db as unknown as EventLogSqlite, "session:updated", "{}");
       const tail = readEventTail(db as unknown as EventLogSqlite, 0);
       expect(tail).toHaveLength(2);
-      expect(tail.map((e) => e.kind)).toEqual(["task:created", "task:updated"]);
+      expect(tail.map((e) => e.kind)).toEqual(["session:created", "session:updated"]);
     });
 
     it("respects the limit parameter", () => {
@@ -144,11 +144,11 @@ describe("event-log", () => {
       expect(tail.map((e) => e.eventId)).toEqual([1, 2, 3]);
     });
 
-    it("shapes each row as a CoreLinkEvent (eventId, ts, kind, ptyId, taskId, payload)", () => {
+    it("shapes each row as a CoreLinkEvent (eventId, ts, kind, ptyId, sessionId, payload)", () => {
       const db = freshDb();
       appendEvent(db as unknown as EventLogSqlite, "pty:exit", '{"exitCode":0}', {
         ptyId: "p1",
-        taskId: "t1",
+        sessionId: "t1",
       });
       const [event] = readEventTail(db as unknown as EventLogSqlite, 0);
       expect(event).toEqual({
@@ -156,7 +156,7 @@ describe("event-log", () => {
         ts: expect.any(Number),
         kind: "pty:exit",
         ptyId: "p1",
-        taskId: "t1",
+        sessionId: "t1",
         payload: '{"exitCode":0}',
       });
     });

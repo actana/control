@@ -15,7 +15,7 @@ export type HarnessSpawn = Harness;
 export const HARNESS_BINARIES = HARNESS_SPAWN_COMMANDS;
 
 export type BaseSpawnRequest = {
-  taskId: string;
+  sessionId: string;
   cwd: string;
   command: string;
   args?: string[];
@@ -84,7 +84,7 @@ export type ShellSpawnRequest = BaseSpawnRequest & {
  * so nothing here needed relaxing for it.
  */
 export type ShellSessionSpawnRequest = {
-  taskId: string;
+  sessionId: string;
   /**
    * Optional cwd on the Core machine. The renderer never knows a host
    * path, so it sends "" (or omits); the spawn handler

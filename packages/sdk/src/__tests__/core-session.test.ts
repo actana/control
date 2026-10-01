@@ -4,7 +4,7 @@
 // a fake socket — so what is asserted below is the agreement with the Core
 // rather than with a stand-in that answers whatever this file expects. What is
 // faked is the PTY manager behind it (there is no harness to run in a unit test)
-// and the Core's task store, which is where a Session's status lives.
+// and the Core's session store, which is where a Session's status lives.
 //
 // The properties worth reading this file for:
 //
@@ -29,8 +29,8 @@ import type {
   CoreLinkProjectMutation,
   CoreLinkProjectSnapshot,
   CoreLinkSessionSnapshot,
-  CoreLinkTaskMutation,
-  CoreLinkTaskSnapshot,
+  CoreLinkSessionMutation,
+  CoreLinkSessionRow,
 } from "../core-link-frames.ts";
 import type { CoreLinkSocket } from "../core-link-socket.ts";
 import { signBearer, verifyBearer } from "@actana/shared/core-link-bearer";
@@ -60,13 +60,13 @@ const CSI = `${ESC}[`;
 const PROJECT_ID = "p-1";
 
 /**
- * The Core's task store, in memory: create a row, patch its status, list the
+ * The Core's session store, in memory: create a row, patch its status, list the
  * Sessions — and append the event a patch produces, because that event is the
  * whole of how a client learns a harness stopped. The real port
- * (`core-task-writer.ts`) appends exactly these two kinds.
+ * (`core-session-writer.ts`) appends exactly these two kinds.
  */
-class FakeTaskStore implements CoreMutationPort {
-  readonly tasks = new Map<string, CoreLinkTaskSnapshot>();
+class FakeSessionStore implements CoreMutationPort {
+  readonly sessions = new Map<string, CoreLinkSessionRow>();
   private seq = 0;
 
   constructor(private readonly eventLog: FakeEventLog) {}
@@ -76,12 +76,12 @@ class FakeTaskStore implements CoreMutationPort {
     return null;
   }
 
-  mutateTask(mutation: CoreLinkTaskMutation): CoreLinkTaskSnapshot | null {
+  mutateSession(mutation: CoreLinkSessionMutation): CoreLinkSessionRow | null {
     if (mutation.op === "create") {
       if (mutation.projectId !== PROJECT_ID) return null;
-      const taskId = mutation.taskId ?? `t-${++this.seq}`;
-      const task: CoreLinkTaskSnapshot = {
-        taskId,
+      const sessionId = mutation.sessionId ?? `t-${++this.seq}`;
+      const session: CoreLinkSessionRow = {
+        sessionId,
         projectId: mutation.projectId,
         title: mutation.title,
         titleManuallySet: false,
@@ -93,47 +93,47 @@ class FakeTaskStore implements CoreMutationPort {
         icon: null,
         updatedAt: 1,
       };
-      this.tasks.set(taskId, task);
-      this.eventLog.appendEvent("task:created", JSON.stringify({ taskId }), { taskId });
-      return task;
+      this.sessions.set(sessionId, session);
+      this.eventLog.appendEvent("session:created", JSON.stringify({ sessionId }), { sessionId });
+      return session;
     }
     if (mutation.op === "delete") {
-      this.tasks.delete(mutation.taskId);
+      this.sessions.delete(mutation.sessionId);
       return null;
     }
-    const existing = this.tasks.get(mutation.taskId);
+    const existing = this.sessions.get(mutation.sessionId);
     if (!existing) return null;
     const previousStatus = existing.status;
-    const next: CoreLinkTaskSnapshot = {
+    const next: CoreLinkSessionRow = {
       ...existing,
       ...(mutation.status ? { status: mutation.status } : {}),
       ...(mutation.title ? { title: mutation.title } : {}),
       updatedAt: existing.updatedAt + 1,
     };
-    this.tasks.set(next.taskId, next);
-    // The **patched** status rides in the payload, as `core-task-writer.ts`
+    this.sessions.set(next.sessionId, next);
+    // The **patched** status rides in the payload, as `core-session-writer.ts`
     // appends it: it is what tells a waiter that this event reported a turn
     // rather than a rename, and a fake that dropped it would let a wait pass
     // here and hang against a Core.
     this.eventLog.appendEvent(
-      "task:updated",
+      "session:updated",
       JSON.stringify({
-        taskId: next.taskId,
+        sessionId: next.sessionId,
         ...(mutation.status === undefined ? {} : { status: mutation.status }),
       }),
-      { taskId: next.taskId },
+      { sessionId: next.sessionId },
     );
     if (next.status === "finished" && previousStatus !== "finished") {
-      this.eventLog.appendEvent("session:finished", JSON.stringify({ id: next.taskId }), {
-        taskId: next.taskId,
+      this.eventLog.appendEvent("session:finished", JSON.stringify({ id: next.sessionId }), {
+        sessionId: next.sessionId,
       });
     }
     return next;
   }
 
   listSessions(): CoreLinkSessionSnapshot[] {
-    return [...this.tasks.values()].map((t) => ({
-      taskId: t.taskId,
+    return [...this.sessions.values()].map((t) => ({
+      sessionId: t.sessionId,
       ptyId: null,
       status: t.status,
       updatedAt: t.updatedAt,
@@ -141,13 +141,13 @@ class FakeTaskStore implements CoreMutationPort {
   }
 
   /** What the Core's hook pipeline does when a harness reports its lifecycle. */
-  setStatus(taskId: string, status: string): void {
-    this.mutateTask({ op: "update", taskId, status });
+  setStatus(sessionId: string, status: string): void {
+    this.mutateSession({ op: "update", sessionId, status });
   }
 
   /** A row change that is not a turn — what the title generator does (issue 84). */
-  rename(taskId: string, title: string): void {
-    this.mutateTask({ op: "update", taskId, title });
+  rename(sessionId: string, title: string): void {
+    this.mutateSession({ op: "update", sessionId, title });
   }
 
   /**
@@ -158,18 +158,18 @@ class FakeTaskStore implements CoreMutationPort {
    * one route by which a status still reaches a client through a read rather
    * than through the event that announced it.
    */
-  setStatusSilently(taskId: string, status: string): void {
-    const existing = this.tasks.get(taskId);
+  setStatusSilently(sessionId: string, status: string): void {
+    const existing = this.sessions.get(sessionId);
     if (!existing) return;
-    this.tasks.set(taskId, { ...existing, status, updatedAt: existing.updatedAt + 1 });
-    this.eventLog.appendEvent("task:updated", JSON.stringify({ taskId }), { taskId });
+    this.sessions.set(sessionId, { ...existing, status, updatedAt: existing.updatedAt + 1 });
+    this.eventLog.appendEvent("session:updated", JSON.stringify({ sessionId }), { sessionId });
   }
 }
 
 type Rig = {
   client: CoreClient;
   ptyCore: PtyCore & { emitEvent: (e: PtyCoreEvent) => void };
-  tasks: FakeTaskStore;
+  sessions: FakeSessionStore;
   eventLog: FakeEventLog;
   /** Every connection this rig has handed out, in dial order. */
   pairs: FakeSocketPair[];
@@ -211,19 +211,19 @@ function startRig(
   const ptyCore = makeMockPtyCore();
   if (opts.spawn) ptyCore.spawn = opts.spawn;
   const eventLog = new FakeEventLog();
-  const tasks = new FakeTaskStore(eventLog);
-  // The Core stamps a delivery with the Task behind the PTY (#289 A), and the
+  const sessions = new FakeSessionStore(eventLog);
+  // The Core stamps a delivery with the Session behind the PTY (#289 A), and the
   // shared fake answers `null` — every Session in this suite runs on `pty-1`,
   // so the newest row is the one it belongs to.
-  ptyCore.taskIdForPty = vi.fn((ptyId: string) =>
-    ptyId === "pty-1" ? ([...tasks.tasks.keys()].at(-1) ?? null) : null,
-  ) as unknown as typeof ptyCore.taskIdForPty;
+  ptyCore.sessionIdForPty = vi.fn((ptyId: string) =>
+    ptyId === "pty-1" ? ([...sessions.sessions.keys()].at(-1) ?? null) : null,
+  ) as unknown as typeof ptyCore.sessionIdForPty;
   const wss = new FakeSocketServer();
   const server = new PtyCoreLinkServer(ptyCore, {
     port: 0,
     createServer: () => wss as unknown as WebSocketServerLike,
     eventLog,
-    mutationPort: tasks,
+    mutationPort: sessions,
     liveEventPollMs: 5,
     ...(opts.announceMultiConnection === undefined
       ? {}
@@ -255,7 +255,7 @@ function startRig(
   const built: Rig = {
     client,
     ptyCore,
-    tasks,
+    sessions,
     eventLog,
     pairs,
     drop: () => pairs[pairs.length - 1]?.server.close(),
@@ -292,14 +292,14 @@ async function startSession(
 }
 
 describe("CoreSession.start", () => {
-  it("creates the Task, spawns the harness, and hands the prompt over as text", async () => {
+  it("creates the Session, spawns the harness, and hands the prompt over as text", async () => {
     rig = startRig();
     session = await startSession(rig);
 
-    expect(rig.tasks.tasks.size).toBe(1);
+    expect(rig.sessions.sessions.size).toBe(1);
     const spawn = vi.mocked(rig.ptyCore.spawn).mock.calls[0]?.[0];
     expect(spawn).toMatchObject({
-      taskId: session.taskId,
+      sessionId: session.sessionId,
       cwd: "/home/op/projects/thing",
       command: HARNESS_LAUNCH_COMMANDS["claude-code"],
       agent: "claude-code",
@@ -319,7 +319,7 @@ describe("CoreSession.start", () => {
 
     const spawn = vi.mocked(rig.ptyCore.spawn).mock.calls[0]?.[0] as Record<string, unknown>;
     expect(Object.keys(spawn).sort()).toEqual(
-      ["agent", "cols", "command", "cwd", "initialInput", "rows", "taskId"].sort(),
+      ["agent", "cols", "command", "cwd", "initialInput", "rows", "sessionId"].sort(),
     );
   });
 
@@ -368,20 +368,20 @@ describe("CoreSession.start", () => {
     expect("initialInput" in spawn).toBe(false);
   });
 
-  it("uses an existing Task when handed one, and creates nothing", async () => {
+  it("uses an existing Session when handed one, and creates nothing", async () => {
     rig = startRig();
     await rig.client.connect();
-    const created = await rig.client.tasksMutate({
+    const created = await rig.client.sessionsMutate({
       op: "create",
       projectId: PROJECT_ID,
       title: "mine",
       agent: "claude-code",
     });
 
-    session = await startSession(rig, { projectId: undefined, taskId: created!.taskId });
+    session = await startSession(rig, { projectId: undefined, sessionId: created!.sessionId });
 
-    expect(session.taskId).toBe(created!.taskId);
-    expect(rig.tasks.tasks.size).toBe(1);
+    expect(session.sessionId).toBe(created!.sessionId);
+    expect(rig.sessions.sessions.size).toBe(1);
   });
 
   it("appends the harness's skip-permissions flag to the command it defaults to", async () => {
@@ -393,7 +393,7 @@ describe("CoreSession.start", () => {
     expect(spawn.dangerouslySkipPermissions).toBe(true);
   });
 
-  it("refuses to start without a Project or a Task to start against", async () => {
+  it("refuses to start without a Project or a Session to start against", async () => {
     rig = startRig();
     await rig.client.connect();
 
@@ -588,8 +588,8 @@ describe("waiting on the Core's report", () => {
     const idle = session.waitForIdle();
 
     // What the harness's own Stop hook does on the Core.
-    r.tasks.setStatus(session.taskId, "running");
-    r.tasks.setStatus(session.taskId, "finished");
+    r.sessions.setStatus(session.sessionId, "running");
+    r.sessions.setStatus(session.sessionId, "finished");
 
     await expect(idle).resolves.toEqual({ status: "finished", exited: false });
   });
@@ -600,25 +600,25 @@ describe("waiting on the Core's report", () => {
     const r = rig;
     const idle = session.waitForIdle();
 
-    r.tasks.setStatus(session.taskId, "needs-input");
+    r.sessions.setStatus(session.sessionId, "needs-input");
 
     await expect(idle).resolves.toEqual({ status: "needs-input", exited: false });
   });
 
-  it("does not settle on the status the Task already carried", async () => {
-    // A Session started on a Task that finished yesterday is waiting for this
+  it("does not settle on the status the Session already carried", async () => {
+    // A Session started on a Session that finished yesterday is waiting for this
     // turn, not being handed the last one's answer.
     rig = startRig();
     await rig.client.connect();
-    const created = await rig.client.tasksMutate({
+    const created = await rig.client.sessionsMutate({
       op: "create",
       projectId: PROJECT_ID,
       title: "old",
       agent: "claude-code",
     });
-    rig.tasks.setStatus(created!.taskId, "finished");
+    rig.sessions.setStatus(created!.sessionId, "finished");
 
-    session = await startSession(rig, { projectId: undefined, taskId: created!.taskId });
+    session = await startSession(rig, { projectId: undefined, sessionId: created!.sessionId });
     let settled = false;
     void session.waitForIdle().then(() => {
       settled = true;
@@ -636,9 +636,9 @@ describe("waiting on the Core's report", () => {
     session.onStatus((s) => seen.push(s));
     const r = rig;
 
-    r.tasks.setStatus(session.taskId, "running");
+    r.sessions.setStatus(session.sessionId, "running");
     await vi.waitFor(() => expect(seen).toContain("running"));
-    r.tasks.setStatus(session.taskId, "finished");
+    r.sessions.setStatus(session.sessionId, "finished");
     await vi.waitFor(() => expect(seen).toContain("finished"));
 
     expect(seen).toEqual(["running", "finished"]);
@@ -660,7 +660,7 @@ describe("waiting on the Core's report", () => {
     rig = startRig();
     session = await startSession(rig);
     const r = rig;
-    r.tasks.setStatus(session.taskId, "finished");
+    r.sessions.setStatus(session.sessionId, "finished");
     await vi.waitFor(() => expect(session!.status()).toBe("finished"));
 
     await expect(session.waitForIdle()).resolves.toEqual({
@@ -672,7 +672,7 @@ describe("waiting on the Core's report", () => {
   it("gives up on a deadline the caller set, and says what it was still doing", async () => {
     rig = startRig();
     session = await startSession(rig);
-    rig.tasks.setStatus(session.taskId, "running");
+    rig.sessions.setStatus(session.sessionId, "running");
     await vi.waitFor(() => expect(session!.status()).toBe("running"));
 
     await expect(session.waitForIdle({ timeoutMs: 30 })).rejects.toThrow(/still running/);
@@ -693,7 +693,7 @@ describe("waiting on the Core's report", () => {
 
   it("asks again when the status read fails, because the event will not come twice", async () => {
     // Against a Core that does not name the status it patched, a transition
-    // reaches this layer as a bare `task:updated` — the event says a row moved
+    // reaches this layer as a bare `session:updated` — the event says a row moved
     // and nothing more, so the status is read back off the Core, and that event
     // is appended once. A read swallowed on the transition that mattered leaves
     // `waitForIdle()` waiting for a report already made, and by design it has no
@@ -712,7 +712,7 @@ describe("waiting on the Core's report", () => {
     });
     const idle = session.waitForIdle();
 
-    r.tasks.setStatusSilently(session.taskId, "needs-input");
+    r.sessions.setStatusSilently(session.sessionId, "needs-input");
 
     await expect(idle).resolves.toEqual({ status: "needs-input", exited: false });
     expect(failed).toBe(1);
@@ -727,7 +727,7 @@ describe("waiting on the Core's report", () => {
     const r = rig;
     vi.spyOn(r.client, "sessionsList").mockRejectedValue(new Error("link dropped"));
 
-    r.tasks.setStatusSilently(session.taskId, "needs-input");
+    r.sessions.setStatusSilently(session.sessionId, "needs-input");
 
     const attempts = () => vi.mocked(r.client.sessionsList).mock.calls.length;
     await vi.waitFor(() => expect(attempts()).toBe(1 + STATUS_READ_RETRIES), { timeout: 3000 });
@@ -750,23 +750,23 @@ describe("attaching to a Session that is already running (#289)", () => {
   async function runningSession(status = "running"): Promise<string> {
     const r = rig!;
     await r.client.connect();
-    const created = await r.client.tasksMutate({
+    const created = await r.client.sessionsMutate({
       op: "create",
       projectId: PROJECT_ID,
       title: "somebody else's session",
       agent: "claude-code",
     });
-    r.tasks.setStatus(created!.taskId, status);
-    return created!.taskId;
+    r.sessions.setStatus(created!.sessionId, status);
+    return created!.sessionId;
   }
 
   it("joins a running PTY, paints its scrollback, and names none of the spawn's answers", async () => {
     rig = startRig();
-    const taskId = await runningSession();
+    const sessionId = await runningSession();
 
-    session = await CoreSession.attach(rig.client, { taskId });
+    session = await CoreSession.attach(rig.client, { sessionId });
 
-    expect(session.taskId).toBe(taskId);
+    expect(session.sessionId).toBe(sessionId);
     expect(session.ptyId).toBe("pty-1");
     // The Core's replay ring, so the transcript starts where the conversation
     // does rather than where this process happened to arrive.
@@ -784,10 +784,10 @@ describe("attaching to a Session that is already running (#289)", () => {
     // Session nothing is running for has nothing that will ever report a turn,
     // so it would sit until the caller's deadline and then blame the Core.
     rig = startRig();
-    const taskId = await runningSession();
-    rig.ptyCore.findByTask = vi.fn(() => ({ ptyId: null })) as unknown as typeof rig.ptyCore.findByTask;
+    const sessionId = await runningSession();
+    rig.ptyCore.findBySession = vi.fn(() => ({ ptyId: null })) as unknown as typeof rig.ptyCore.findBySession;
 
-    await expect(CoreSession.attach(rig.client, { taskId })).rejects.toThrow(
+    await expect(CoreSession.attach(rig.client, { sessionId })).rejects.toThrow(
       /has no harness running/,
     );
   });
@@ -798,9 +798,9 @@ describe("attaching to a Session that is already running (#289)", () => {
     // and saying so at once is the truthful answer — there is no turn in flight
     // that this could be mistaken for.
     rig = startRig();
-    const taskId = await runningSession("needs-input");
+    const sessionId = await runningSession("needs-input");
 
-    session = await CoreSession.attach(rig.client, { taskId });
+    session = await CoreSession.attach(rig.client, { sessionId });
 
     await expect(session.waitForIdle()).resolves.toEqual({
       status: "needs-input",
@@ -814,10 +814,10 @@ describe("attaching to a Session that is already running (#289)", () => {
     // wait that would otherwise return before the harness had read a character
     // — reporting the previous turn's answer as this turn's.
     rig = startRig();
-    const taskId = await runningSession("finished");
+    const sessionId = await runningSession("finished");
     const r = rig;
 
-    session = await CoreSession.attach(r.client, { taskId });
+    session = await CoreSession.attach(r.client, { sessionId });
     expect(session.status()).toBe("finished");
 
     const { ok, deliveryEventId } = await session.deliver("carry on");
@@ -838,7 +838,7 @@ describe("attaching to a Session that is already running (#289)", () => {
     // it was already at — which is the ordinary case on a harness that never
     // moved the row to `running` — and it still ends the wait, because what
     // the wait is counting is *events after the delivery*, not value changes.
-    r.tasks.setStatus(taskId, "finished");
+    r.sessions.setStatus(sessionId, "finished");
 
     await vi.waitFor(() => expect(settled).toEqual({ status: "finished", exited: false }));
   });
@@ -851,22 +851,22 @@ describe("attaching to a Session that is already running (#289)", () => {
     rig = startRig();
     const r = rig;
     await r.client.connect();
-    const created = await r.client.tasksMutate({
+    const created = await r.client.sessionsMutate({
       op: "create",
       projectId: PROJECT_ID,
       title: "a codex session",
       agent: "codex",
     });
-    const taskId = created!.taskId;
+    const sessionId = created!.sessionId;
     // Its first turn ended here, and nothing will move it again until the next
     // one ends: `ready` → `finished`, and then `finished` → `finished`.
-    r.tasks.setStatus(taskId, "finished");
+    r.sessions.setStatus(sessionId, "finished");
 
-    session = await CoreSession.attach(r.client, { taskId });
+    session = await CoreSession.attach(r.client, { sessionId });
     const { deliveryEventId } = await session.deliver("and now the tests\r");
     const idle = session.waitForTurnEnd({ afterEventId: deliveryEventId });
 
-    r.tasks.setStatus(taskId, "finished");
+    r.sessions.setStatus(sessionId, "finished");
 
     await expect(idle).resolves.toEqual({ status: "finished", exited: false });
   });
@@ -879,12 +879,12 @@ describe("attaching to a Session that is already running (#289)", () => {
     for (const status of ["finished", "needs-input", "interrupted", "terminated", "disconnected"]) {
       rig = startRig();
       const r = rig;
-      const taskId = await runningSession();
-      session = await CoreSession.attach(r.client, { taskId });
+      const sessionId = await runningSession();
+      session = await CoreSession.attach(r.client, { sessionId });
       const { deliveryEventId } = await session.deliver("go on");
       const idle = session.waitForTurnEnd({ afterEventId: deliveryEventId });
 
-      r.tasks.setStatus(taskId, status);
+      r.sessions.setStatus(sessionId, status);
 
       await expect(idle).resolves.toEqual({ status, exited: false });
       session.dispose();
@@ -896,22 +896,22 @@ describe("attaching to a Session that is already running (#289)", () => {
   });
 
   it("does not read a rename as the end of a turn", async () => {
-    // A `task:updated` that patched no status is not a report about a turn. The
+    // A `session:updated` that patched no status is not a report about a turn. The
     // title generator renames a Session while it works (issue 84), and a waiter
     // that took the row's status from that event would call the rename the end
     // of the turn — with the row still carrying the status it had before.
     rig = startRig();
-    const taskId = await runningSession("finished");
+    const sessionId = await runningSession("finished");
     const r = rig;
 
-    session = await CoreSession.attach(r.client, { taskId });
+    session = await CoreSession.attach(r.client, { sessionId });
     const { deliveryEventId } = await session.deliver("carry on");
     let settled: unknown = null;
     void session.waitForTurnEnd({ afterEventId: deliveryEventId }).then((idle) => {
       settled = idle;
     });
 
-    r.tasks.rename(taskId, "a better title");
+    r.sessions.rename(sessionId, "a better title");
     await new Promise((done) => setTimeout(done, 50));
 
     expect(settled).toBeNull();
@@ -925,10 +925,10 @@ describe("attaching to a Session that is already running (#289)", () => {
     // would hang to its deadline instead. The subscribe is not part of the
     // replay, and turning the scrollback off does not make the attachment deaf.
     rig = startRig();
-    const taskId = await runningSession("finished");
+    const sessionId = await runningSession("finished");
     const r = rig;
 
-    session = await CoreSession.attach(r.client, { taskId, replay: false });
+    session = await CoreSession.attach(r.client, { sessionId, replay: false });
     // No scrollback: that is what `replay: false` buys, and all it buys.
     expect(session.screen().trim()).toBe("");
 
@@ -943,14 +943,14 @@ describe("attaching to a Session that is already running (#289)", () => {
   it("reports a link that blinked mid-attach as a failed attach, not as a dead harness", async () => {
     // The two are different next steps. "Nothing is running" sends an operator
     // to `logs` or `resume`; a Core that was busy for a moment wants a retry.
-    // Only the `findByTask` answer decides the first, and it decided before any
+    // Only the `findBySession` answer decides the first, and it decided before any
     // of this ran.
     rig = startRig();
-    const taskId = await runningSession();
+    const sessionId = await runningSession();
     const r = rig;
     vi.spyOn(r.client, "sessionsList").mockRejectedValueOnce(new Error("link dropped mid-read"));
 
-    const attaching = CoreSession.attach(r.client, { taskId });
+    const attaching = CoreSession.attach(r.client, { sessionId });
 
     await expect(attaching).rejects.toThrow(/could not attach/);
     await expect(attaching).rejects.not.toBeInstanceOf(CoreSessionAttachError);
@@ -962,11 +962,11 @@ describe("attaching to a Session that is already running (#289)", () => {
     // many Sessions on one long-lived client would otherwise leave every one of
     // those streams running at it for the life of the client.
     rig = startRig();
-    const taskId = await runningSession();
+    const sessionId = await runningSession();
     const r = rig;
     const unsubscribe = vi.spyOn(r.client, "ptyUnsubscribe");
 
-    const attached = await CoreSession.attach(r.client, { taskId });
+    const attached = await CoreSession.attach(r.client, { sessionId });
     expect(unsubscribe).not.toHaveBeenCalled();
     attached.dispose();
 
@@ -992,10 +992,10 @@ describe("attaching to a Session that is already running (#289)", () => {
     // A harness that died is not going to report anything else, cursor or no
     // cursor. The alternative is a wait that outlives the process it is about.
     rig = startRig();
-    const taskId = await runningSession("finished");
+    const sessionId = await runningSession("finished");
     const r = rig;
 
-    session = await CoreSession.attach(r.client, { taskId });
+    session = await CoreSession.attach(r.client, { sessionId });
     const { deliveryEventId } = await session.deliver("carry on");
     const idle = session.waitForTurnEnd({ afterEventId: deliveryEventId });
 
@@ -1009,16 +1009,16 @@ describe("attaching to a Session that is already running (#289)", () => {
     // `send --enter --wait` is a text write, a return write, and a wait counting
     // from the **later** stamp — the turn starts at the return, not at the text.
     rig = startRig();
-    const taskId = await runningSession("finished");
+    const sessionId = await runningSession("finished");
     const r = rig;
 
-    session = await CoreSession.attach(r.client, { taskId });
+    session = await CoreSession.attach(r.client, { sessionId });
     const text = await session.deliver("run the tests");
     const submit = await session.deliver("\r");
     expect(submit.deliveryEventId).toBeGreaterThan(text.deliveryEventId);
 
     const idle = session.waitForTurnEnd({ afterEventId: submit.deliveryEventId });
-    r.tasks.setStatus(taskId, "finished");
+    r.sessions.setStatus(sessionId, "finished");
 
     await expect(idle).resolves.toEqual({ status: "finished", exited: false });
   });
@@ -1032,12 +1032,12 @@ describe("attaching to a Session that is already running (#289)", () => {
     // delivery, so the wait was waiting on a harness that is doing something,
     // and the wording that has said so since #289 is kept.
     rig = startRig();
-    const taskId = await runningSession("finished");
+    const sessionId = await runningSession("finished");
     const r = rig;
 
-    session = await CoreSession.attach(r.client, { taskId });
+    session = await CoreSession.attach(r.client, { sessionId });
     const { deliveryEventId } = await session.deliver("carry on");
-    r.tasks.setStatus(taskId, "running");
+    r.sessions.setStatus(sessionId, "running");
     await vi.waitFor(() => expect(session!.status()).toBe("running"));
 
     const err = await session
@@ -1050,7 +1050,7 @@ describe("attaching to a Session that is already running (#289)", () => {
 
   it("names a deadline with no reported turn end as the open question it is", async () => {
     // **The seeded-status landmine, made loud** (#405). A status seeded from the
-    // Task row carries event id 0, so it can never satisfy a delivery cursor —
+    // Session row carries event id 0, so it can never satisfy a delivery cursor —
     // which is correct, and which is why a Session parked at a dialog that ate
     // the carriage return has nothing that will ever end this wait. The
     // comparison that cannot be satisfied is reported rather than sat on.
@@ -1061,9 +1061,9 @@ describe("attaching to a Session that is already running (#289)", () => {
     // the table. It names both readings, sends the reader to the screen, and
     // says the text was delivered so it is not sent twice.
     rig = startRig();
-    const taskId = await runningSession("needs-input");
+    const sessionId = await runningSession("needs-input");
 
-    session = await CoreSession.attach(rig.client, { taskId });
+    session = await CoreSession.attach(rig.client, { sessionId });
     // Seeded, not learned: this is the state the cursor can never be answered by.
     expect(session.status()).toBe("needs-input");
     const { deliveryEventId } = await session.deliver("2\r");
@@ -1106,14 +1106,14 @@ describe("a wait cannot outlive its link (#396)", () => {
   async function runningSession(status = "running"): Promise<string> {
     const r = rig!;
     await r.client.connect();
-    const created = await r.client.tasksMutate({
+    const created = await r.client.sessionsMutate({
       op: "create",
       projectId: PROJECT_ID,
       title: "somebody else's session",
       agent: "claude-code",
     });
-    r.tasks.setStatus(created!.taskId, status);
-    return created!.taskId;
+    r.sessions.setStatus(created!.sessionId, status);
+    return created!.sessionId;
   }
 
   it("ends a wait that has no deadline at all, rather than hanging on a dead link", async () => {
@@ -1123,9 +1123,9 @@ describe("a wait cannot outlive its link (#396)", () => {
     // (#405) — so this rejection is the only thing in the world that will ever
     // settle this promise.
     rig = startRig();
-    const taskId = await runningSession("running");
+    const sessionId = await runningSession("running");
 
-    session = await CoreSession.attach(rig.client, { taskId });
+    session = await CoreSession.attach(rig.client, { sessionId });
     const idle = session.waitForIdle().catch((thrown: unknown) => thrown);
 
     rig.drop();
@@ -1139,12 +1139,12 @@ describe("a wait cannot outlive its link (#396)", () => {
     // at `running`, the link dies, and what comes back must not read as a turn
     // that ended — not in the class, not in the fields, and not in the prose.
     rig = startRig();
-    const taskId = await runningSession("finished");
+    const sessionId = await runningSession("finished");
     const r = rig;
 
-    session = await CoreSession.attach(r.client, { taskId });
+    session = await CoreSession.attach(r.client, { sessionId });
     const { deliveryEventId } = await session.deliver("carry on");
-    r.tasks.setStatus(taskId, "running");
+    r.sessions.setStatus(sessionId, "running");
     await vi.waitFor(() => expect(session!.status()).toBe("running"));
 
     const idle = session
@@ -1160,7 +1160,7 @@ describe("a wait cannot outlive its link (#396)", () => {
     // this side going deaf. A caller branches on the class, not on the wording.
     expect(err).not.toBeInstanceOf(CoreSessionTurnTimeoutError);
     // The cursor and the last-known status are carried as context…
-    expect(err.taskId).toBe(taskId);
+    expect(err.sessionId).toBe(sessionId);
     expect(err.afterEventId).toBe(deliveryEventId);
     expect(err.lastStatus).toBe("running");
     // …and `running` was learned after the delivery, so the turn was seen to be
@@ -1178,9 +1178,9 @@ describe("a wait cannot outlive its link (#396)", () => {
     // wait simply begins against a link that is already down. It has exactly as
     // little chance of hearing a status, so it gets exactly the same ending.
     rig = startRig();
-    const taskId = await runningSession("running");
+    const sessionId = await runningSession("running");
 
-    session = await CoreSession.attach(rig.client, { taskId });
+    session = await CoreSession.attach(rig.client, { sessionId });
     rig.drop();
 
     await expect(session.waitForIdle()).rejects.toBeInstanceOf(CoreSessionLinkLostError);
@@ -1193,9 +1193,9 @@ describe("a wait cannot outlive its link (#396)", () => {
     // the hang this fixes.
     rig = startRig();
     expect(rig.client.willReconnect()).toBe(false);
-    const taskId = await runningSession("running");
+    const sessionId = await runningSession("running");
 
-    session = await CoreSession.attach(rig.client, { taskId });
+    session = await CoreSession.attach(rig.client, { sessionId });
     const idle = session.waitForIdle().catch((thrown: unknown) => thrown);
     rig.drop();
 
@@ -1215,10 +1215,10 @@ describe("a wait cannot outlive its link (#396)", () => {
     // seconds and a unit test may not take thirty seconds. That default is
     // asserted separately, below.
     rig = startRig();
-    const taskId = await runningSession("running");
+    const sessionId = await runningSession("running");
     const r = rig;
 
-    session = await CoreSession.attach(r.client, { taskId, linkLostGraceMs: 60 });
+    session = await CoreSession.attach(r.client, { sessionId, linkLostGraceMs: 60 });
     const idle = session.waitForIdle().catch((thrown: unknown) => thrown);
 
     r.drop();
@@ -1243,10 +1243,10 @@ describe("a wait cannot outlive its link (#396)", () => {
     // pending, still owed a status by the Core, never resolved and never failed
     // by anything that happened to the socket.
     rig = startRig();
-    const taskId = await runningSession("running");
+    const sessionId = await runningSession("running");
     const r = rig;
 
-    session = await CoreSession.attach(r.client, { taskId, linkLostGraceMs: 40 });
+    session = await CoreSession.attach(r.client, { sessionId, linkLostGraceMs: 40 });
     let outcome: unknown = null;
     void session.waitForIdle().then(
       (idle) => {
@@ -1272,9 +1272,9 @@ describe("a wait cannot outlive its link (#396)", () => {
     // the client is the one that knows which it is.
     expect(CORE_LINK_LOST_GRACE_MS).toBe(30_000);
     rig = startRig();
-    const taskId = await runningSession("running");
+    const sessionId = await runningSession("running");
 
-    session = await CoreSession.attach(rig.client, { taskId });
+    session = await CoreSession.attach(rig.client, { sessionId });
     const idle = session.waitForIdle().catch((thrown: unknown) => thrown);
     rig.drop();
 
@@ -1316,10 +1316,10 @@ describe("a wait cannot outlive its link (#396)", () => {
     // Five outages of ~65 ms against a 100 ms budget, and **no `timeoutMs`** —
     // the deaf time is what has to end this, because nothing else can.
     rig = startRig();
-    const taskId = await runningSession("running");
+    const sessionId = await runningSession("running");
     const r = rig;
 
-    session = await CoreSession.attach(r.client, { taskId, linkLostGraceMs: 100 });
+    session = await CoreSession.attach(r.client, { sessionId, linkLostGraceMs: 100 });
     const idle = session.waitForIdle().catch((thrown: unknown) => thrown);
 
     for (let flap = 0; flap < 5; flap += 1) {
@@ -1364,10 +1364,10 @@ describe("a wait cannot outlive its link (#396)", () => {
         return socket.asClientSocket();
       },
     });
-    const taskId = await runningSession("running");
+    const sessionId = await runningSession("running");
     const r = rig;
 
-    session = await CoreSession.attach(r.client, { taskId, linkLostGraceMs: 120 });
+    session = await CoreSession.attach(r.client, { sessionId, linkLostGraceMs: 120 });
     const idle = session.waitForIdle().catch((thrown: unknown) => thrown);
 
     r.drop();
@@ -1391,10 +1391,10 @@ describe("a wait cannot outlive its link (#396)", () => {
     // that stale, part-spent one and was failed early against a budget it never
     // had.
     rig = startRig();
-    const taskId = await runningSession("running");
+    const sessionId = await runningSession("running");
     const r = rig;
 
-    session = await CoreSession.attach(r.client, { taskId, linkLostGraceMs: 300 });
+    session = await CoreSession.attach(r.client, { sessionId, linkLostGraceMs: 300 });
     r.drop();
 
     // Wait A gives up on its own clock well inside the grace.
@@ -1425,9 +1425,9 @@ describe("a wait cannot outlive its link (#396)", () => {
     // where the process exits; an SDK consumer holds the event loop for the
     // whole of a seventeen-minute deadline it has already stopped caring about.
     rig = startRig();
-    const taskId = await runningSession("running");
+    const sessionId = await runningSession("running");
 
-    session = await CoreSession.attach(rig.client, { taskId });
+    session = await CoreSession.attach(rig.client, { sessionId });
     rig.drop();
     await new Promise((res) => setTimeout(res, 5));
 
@@ -1450,13 +1450,13 @@ describe("a wait cannot outlive its link (#396)", () => {
     // settled status stop resolving a wait, and a Session whose link never
     // wobbles must behave exactly as it did before #396.
     rig = startRig();
-    const taskId = await runningSession("running");
+    const sessionId = await runningSession("running");
     const r = rig;
 
-    session = await CoreSession.attach(r.client, { taskId });
+    session = await CoreSession.attach(r.client, { sessionId });
     const { deliveryEventId } = await session.deliver("carry on");
     const idle = session.waitForTurnEnd({ afterEventId: deliveryEventId });
-    r.tasks.setStatus(taskId, "finished");
+    r.sessions.setStatus(sessionId, "finished");
 
     await expect(idle).resolves.toEqual({ status: "finished", exited: false });
   });

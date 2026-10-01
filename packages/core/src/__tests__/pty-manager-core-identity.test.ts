@@ -98,7 +98,7 @@ describe("PtyCore.spawn", () => {
     inContainer();
     configureCoreHomeOps(cannedHelper().options);
     const spawn = vi.spyOn(nodePty, "spawn").mockReturnValue(fakePty() as never);
-    await core().spawn({ taskId: "t1", shellSession: true } as never);
+    await core().spawn({ sessionId: "t1", shellSession: true } as never);
 
     expect(spawn).toHaveBeenCalledTimes(1);
     const [command, args, options] = spawn.mock.calls[0]! as [string, string[], Record<string, any>];
@@ -132,7 +132,7 @@ describe("PtyCore.spawn", () => {
     configureCoreHomeOps(cannedHelper().options);
     setprivPresent.value = false;
     const spawn = vi.spyOn(nodePty, "spawn").mockReturnValue(fakePty() as never);
-    await expect(core().spawn({ taskId: "t2", shellSession: true } as never)).rejects.toThrow(
+    await expect(core().spawn({ sessionId: "t2", shellSession: true } as never)).rejects.toThrow(
       /setpriv is not in/,
     );
     expect(spawn).not.toHaveBeenCalled();
@@ -140,7 +140,7 @@ describe("PtyCore.spawn", () => {
 
   it("is unchanged outside container mode: the shell itself, the real home, no wrapper", async () => {
     const spawn = vi.spyOn(nodePty, "spawn").mockReturnValue(fakePty() as never);
-    await core().spawn({ taskId: "t3", shellSession: true } as never);
+    await core().spawn({ sessionId: "t3", shellSession: true } as never);
     const [command, args, options] = spawn.mock.calls[0]! as [string, string[], Record<string, any>];
     expect(command).not.toContain("setpriv");
     expect(args).not.toContain("--reuid=1000");

@@ -19,7 +19,7 @@ import {
   selectTotalsPerSession,
   type TokenUsageIngestRow,
 } from "../repositories/token-usage.repo";
-import { findTasksWithClaudeSessionId } from "../repositories/tasks.repo";
+import { findSessionsWithClaudeSessionId } from "../repositories/sessions.repo";
 
 /**
  * Parse one JSONL line. Returns null for lines that don't carry token usage
@@ -124,7 +124,7 @@ export function syncTokenUsage(): Promise<number> {
 }
 
 function doSync(): number {
-  const sessionRows = findTasksWithClaudeSessionId();
+  const sessionRows = findSessionsWithClaudeSessionId();
   if (sessionRows.length === 0) return 0;
 
   const offsets = new Map(
@@ -175,7 +175,7 @@ function doSync(): number {
         if (!parsed) continue;
         rows.push({
           id: `tu-${parsed.uuid}`,
-          taskId: row.taskId,
+          sessionId: row.sessionId,
           projectId: row.projectId,
           claudeSessionId: sessionId,
           messageUuid: parsed.uuid,
@@ -191,7 +191,7 @@ function doSync(): number {
         rows,
         sessionOffset: {
           claudeSessionId: sessionId,
-          taskId: row.taskId,
+          sessionId: row.sessionId,
           projectId: row.projectId,
           byteOffset: newOffset,
         },

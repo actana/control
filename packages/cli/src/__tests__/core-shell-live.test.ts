@@ -42,7 +42,7 @@ const CORE_ID = "core_shell_live";
 /** One PTY the fake manager is holding. */
 type FakePty = {
   id: string;
-  taskId: string;
+  sessionId: string;
   cols: number;
   rows: number;
   /** Everything the CLI wrote to it, joined. */
@@ -73,7 +73,7 @@ function echoingPtyCore() {
       const id = `pty_live_${++nextId}`;
       ptys.set(id, {
         id,
-        taskId: String(opts.taskId),
+        sessionId: String(opts.sessionId),
         cols: Number(opts.cols ?? 0),
         rows: Number(opts.rows ?? 0),
         input: [],
@@ -95,11 +95,11 @@ function echoingPtyCore() {
     },
     kill: (ptyId: string) => ptys.has(ptyId),
     killLaunchProcesses: () => ({ killed: [], errors: [] }),
-    findByTask: (taskId: string) => ({
-      ptyId: [...ptys.values()].find((p) => p.taskId === taskId)?.id ?? null,
+    findBySession: (sessionId: string) => ({
+      ptyId: [...ptys.values()].find((p) => p.sessionId === sessionId)?.id ?? null,
     }),
     replay: () => ({ data: "", nextSeq: 0 }),
-    taskIdForPty: (ptyId: string) => ptys.get(ptyId)?.taskId ?? null,
+    sessionIdForPty: (ptyId: string) => ptys.get(ptyId)?.sessionId ?? null,
   };
 
   return {
@@ -252,7 +252,7 @@ describe("the shell channel, against a Core in this process", () => {
       expect(machine.spawns).toHaveLength(1);
       expect(machine.spawns[0]).toMatchObject({ shellSession: true, cols: 120, rows: 40 });
       expect(machine.spawns[0]!.agent).toBeUndefined();
-      expect(String(machine.spawns[0]!.taskId)).toMatch(/^cli_shell_/);
+      expect(String(machine.spawns[0]!.sessionId)).toMatch(/^cli_shell_/);
       // No starting command: the operator gets their own login shell.
       expect(machine.spawns[0]!.command ?? "").toBe("");
     } finally {

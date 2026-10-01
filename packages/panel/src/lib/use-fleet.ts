@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { api } from "./api";
 import { getPanelBridge } from "./panel-bridge";
-import { mergeFleetTasks, type CoreFanOutResult, type FleetMergeResult } from "~/shared/fleet-merge";
+import { mergeFleetSessions, type CoreFanOutResult, type FleetMergeResult } from "~/shared/fleet-merge";
 import {
   FLEET_POLL_MS,
-  TASK_EVENT_KINDS,
+  SESSION_EVENT_KINDS,
   createCoalescingRunner,
   sameSnapshot,
 } from "~/lib/fleet-refresh";
@@ -14,7 +14,7 @@ import {
   setCorePinsCores,
   subscribeCorePins,
 } from "~/lib/core-pins-engine";
-import type { CoreLinkProjectSnapshot, CoreLinkTaskSnapshot } from "@actana/shared/sdk-link-frames";
+import type { CoreLinkProjectSnapshot, CoreLinkSessionRow } from "@actana/shared/sdk-link-frames";
 import type { Harness } from "@actana/shared/domain";
 import { coreOrder, type CoreWithDial } from "~/shared/cores";
 import { subscribeCoreProjectEvents } from "~/lib/subscribe-core-project-events";
@@ -27,7 +27,7 @@ import type { ProjectPresentation } from "~/db/schema";
 
 // The fleet, as the browser sees it.
 //
-// The Panel caches nothing task-shaped: every list here is a live query down a
+// The Panel caches nothing session-shaped: every list here is a live query down a
 // core-link, fanned out over the tab's single panel link. A Core the service
 // cannot reach contributes no rows at all — an unreachable Core is honestly
 // blank, with a last-seen time, rather than quietly stale.
@@ -103,14 +103,14 @@ export function useCores(nonce = 0): { cores: CoreWithDial[]; loading: boolean; 
 }
 
 /**
- * Every Core's active tasks, merged into one Fleet view model.
+ * Every Core's active sessions, merged into one Fleet view model.
  *
- * The fan-out is the browser's: one `tasksList` per Core, in parallel, down the
+ * The fan-out is the browser's: one `sessionRowsList` per Core, in parallel, down the
  * one panel link. There is no server-side fan-out endpoint to keep in step with
  * it — the router already addresses frames by `coreId`, so asking N Cores is
  * N frames, not a new API.
  */
-export function useFleetTasks(): {
+export function useFleetSessions(): {
   fleet: FleetMergeResult;
   /** The registry behind the fan-out, with each Core's live link state. */
   cores: CoreWithDial[];
@@ -151,12 +151,12 @@ export function useFleetTasks(): {
           // router would only answer with an error.
           if (core.dial.state !== "connected") return offline;
           try {
-            const { tasks } = await bridge.listTasks(core.id);
+            const { sessions } = await bridge.listSessionRows(core.id);
             return {
               coreId: core.id,
               coreLabel: core.label,
               ok: true,
-              tasks,
+              sessions,
               lastSeenAt: core.dial.lastSeenAt ?? Date.now(),
             };
           } catch {
@@ -168,7 +168,7 @@ export function useFleetTasks(): {
       // `fleet.rows` is a dependency of memos and effects several layers up,
       // and a fresh array on every event would tear those down for nothing —
       // the merge is already O(rows), so comparing it costs the same order.
-      const merged = mergeFleetTasks(results);
+      const merged = mergeFleetSessions(results);
       setFleet((prev) => (sameSnapshot(prev, merged) ? prev : merged));
       setError(null);
       return true;
@@ -195,14 +195,14 @@ export function useFleetTasks(): {
     await runnerRef.current?.();
   }, [bridge]);
 
-  // Watch every Core so its task events reach this tab, and refetch when one
+  // Watch every Core so its session events reach this tab, and refetch when one
   // lands. This is what "without refresh" means: an agent finishing on a VM
   // moves the row here, not on the next poll.
   useEffect(() => {
     if (!bridge) return;
     const releases = coresRef.current.map((core) => bridge.watchCore(core.id));
     const offEvent = bridge.onEvent(({ event }) => {
-      if (TASK_EVENT_KINDS.test(event.kind)) void run();
+      if (SESSION_EVENT_KINDS.test(event.kind)) void run();
     });
     // A reconnect means a gap; whatever the replay says, refetch the lists.
     const offConnection = bridge.onConnectionChange((connected) => {
@@ -331,40 +331,40 @@ export function useCoreProjectRows(coreId: string | null): {
   return { projects: loading && projects.length === 0 ? undefined : projects, error };
 }
 
-/** One Core's tasks for one project — the per-Core navigation's second level. */
-export function useCoreTasks(
+/** One Core's sessions for one project — the per-Core navigation's second level. */
+export function useCoreSessions(
   coreId: string | null,
   projectId: string | null,
 ): {
-  tasks: CoreLinkTaskSnapshot[];
+  sessions: CoreLinkSessionRow[];
   loading: boolean;
   error: string | null;
   refresh: () => void;
 } {
   const bridge = getPanelBridge();
-  const [tasks, setTasks] = useState<CoreLinkTaskSnapshot[]>([]);
+  const [sessions, setSessions] = useState<CoreLinkSessionRow[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [nonce, setNonce] = useState(0);
 
   useEffect(() => {
     if (!coreId || !projectId || !bridge) {
-      setTasks([]);
+      setSessions([]);
       return;
     }
     let cancelled = false;
     setLoading(true);
     void (async () => {
       try {
-        const result = await bridge.listTasks(coreId, projectId);
+        const result = await bridge.listSessionRows(coreId, projectId);
         if (!cancelled) {
-          setTasks(result.tasks);
+          setSessions(result.sessions);
           setError(null);
         }
       } catch (err) {
         if (!cancelled) {
           setError(err instanceof Error ? err.message : String(err));
-          setTasks([]);
+          setSessions([]);
         }
       } finally {
         if (!cancelled) setLoading(false);
@@ -375,7 +375,7 @@ export function useCoreTasks(
     };
   }, [coreId, projectId, bridge, nonce]);
 
-  return { tasks, loading, error, refresh: () => setNonce((n) => n + 1) };
+  return { sessions, loading, error, refresh: () => setNonce((n) => n + 1) };
 }
 
 /**
@@ -384,8 +384,8 @@ export function useCoreTasks(
  * Pin state is a Core fact, so this is a live read per Core rather than
  * anything the Panel remembers — and it re-reads when a Core says a pin
  * changed, so two Panels on one Core agree. The rail's activity dots are the
- * same kind of fact and come from the same read: each row's `taskCounts` is
- * derived from that Core's own `tasksList` snapshots, the rows the grid renders
+ * same kind of fact and come from the same read: each row's `sessionCounts` is
+ * derived from that Core's own `sessionRowsList` snapshots, the rows the grid renders
  * from, so a running Session lights its pin's dot and a finish clears it on the
  * event rather than on a reload (#377).
  *

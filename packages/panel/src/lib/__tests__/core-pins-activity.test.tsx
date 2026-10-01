@@ -2,7 +2,7 @@
 //
 // The rail's activity dots for a Core-owned pin (#377).
 //
-// A pin row's `taskCounts` is what `ProjectBar` draws its dots from, and for a
+// A pin row's `sessionCounts` is what `ProjectBar` draws its dots from, and for a
 // Core-owned project it used to be zero whatever the Core was doing. These
 // tests drive `useRemotePinnedProjects` against a fake Core and check the three
 // things that matter: a running Session lights the count, a finish clears it on
@@ -19,7 +19,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import type {
   CoreLinkProjectSnapshot,
-  CoreLinkTaskSnapshot,
+  CoreLinkSessionRow,
 } from "@actana/sdk/core";
 import type { CoreDialStatus } from "~/shared/cores";
 import { getPinnedProjectStatusDots } from "~/components/views/project-bar-status-dots";
@@ -31,20 +31,20 @@ const PROJECT_ID = "project-1";
 const h = vi.hoisted(() => ({
   eventHandlers: new Set<(msg: { coreId: string; event: { kind: string } }) => void>(),
   dialHandlers: new Set<(status: unknown) => void>(),
-  listTasksCalls: 0,
+  listSessionRowsCalls: 0,
   listProjectsCalls: 0,
   /** What the Core would answer right now. Mutated by the tests. */
-  tasks: [] as CoreLinkTaskSnapshot[],
+  sessions: [] as CoreLinkSessionRow[],
   projects: [] as CoreLinkProjectSnapshot[],
   /** The dial state `listCores` reports. */
   dialState: "connected" as string,
 }));
 
-function task(taskId: string, status: string): CoreLinkTaskSnapshot {
+function session(sessionId: string, status: string): CoreLinkSessionRow {
   return {
-    taskId,
+    sessionId,
     projectId: PROJECT_ID,
-    title: taskId,
+    title: sessionId,
     titleManuallySet: false,
     claudeSessionId: null,
     agent: "claude-code",
@@ -108,9 +108,9 @@ const bridge = {
     h.listProjectsCalls++;
     return [...h.projects];
   },
-  listTasks: async () => {
-    h.listTasksCalls++;
-    return { tasks: [...h.tasks], archivedCount: 0 };
+  listSessionRows: async () => {
+    h.listSessionRowsCalls++;
+    return { sessions: [...h.sessions], archivedCount: 0 };
   },
 };
 
@@ -146,11 +146,11 @@ function pinFor(projects: readonly ProjectWithCounts[], projectId = PROJECT_ID) 
 beforeEach(() => {
   h.eventHandlers.clear();
   h.dialHandlers.clear();
-  h.listTasksCalls = 0;
+  h.listSessionRowsCalls = 0;
   h.listProjectsCalls = 0;
   h.dialState = "connected";
   h.projects = [project(PROJECT_ID)];
-  h.tasks = [task("task-1", "running")];
+  h.sessions = [session("session-1", "running")];
 });
 
 afterEach(() => {
@@ -167,41 +167,41 @@ describe("useRemotePinnedProjects — a Core-owned pin's activity dots", () => {
     await waitFor(() => expect(result.current.projects).toHaveLength(1));
     const pin = pinFor(result.current.projects)!;
     expect(pin.coreId).toBe(CORE_ID);
-    expect(pin.taskCounts.running).toBe(1);
-    expect(getPinnedProjectStatusDots(pin.taskCounts)).toEqual(["running"]);
+    expect(pin.sessionCounts.running).toBe(1);
+    expect(getPinnedProjectStatusDots(pin.sessionCounts)).toEqual(["running"]);
   });
 
   it("clears the dot when the Session finishes, on the event and not a reload", async () => {
     const { result } = renderHook(() => useRemotePinnedProjects());
-    await waitFor(() => expect(pinFor(result.current.projects)?.taskCounts.running).toBe(1));
+    await waitFor(() => expect(pinFor(result.current.projects)?.sessionCounts.running).toBe(1));
 
     // The Core finishes the Session and says so. Nothing remounts, nothing
     // reloads: the event is the whole of the update path.
-    h.tasks = [task("task-1", "finished")];
+    h.sessions = [session("session-1", "finished")];
     await emit("session:finished");
 
-    await waitFor(() => expect(pinFor(result.current.projects)?.taskCounts.running).toBe(0));
+    await waitFor(() => expect(pinFor(result.current.projects)?.sessionCounts.running).toBe(0));
     const pin = pinFor(result.current.projects)!;
-    expect(pin.taskCounts.finished).toBe(1);
-    expect(getPinnedProjectStatusDots(pin.taskCounts)).not.toContain("running");
+    expect(pin.sessionCounts.finished).toBe(1);
+    expect(getPinnedProjectStatusDots(pin.sessionCounts)).not.toContain("running");
   });
 
   it("lights a dot the Core reports after the pin was already on screen", async () => {
-    h.tasks = [];
+    h.sessions = [];
     const { result } = renderHook(() => useRemotePinnedProjects());
     await waitFor(() => expect(result.current.projects).toHaveLength(1));
-    expect(pinFor(result.current.projects)?.taskCounts.running).toBe(0);
+    expect(pinFor(result.current.projects)?.sessionCounts.running).toBe(0);
 
-    h.tasks = [task("task-1", "running")];
-    await emit("task:statusChanged");
+    h.sessions = [session("session-1", "running")];
+    await emit("session:statusChanged");
 
-    await waitFor(() => expect(pinFor(result.current.projects)?.taskCounts.running).toBe(1));
+    await waitFor(() => expect(pinFor(result.current.projects)?.sessionCounts.running).toBe(1));
   });
 
   it("keeps an unreachable Core's pins and their last counts rather than zeroing", async () => {
     const { result } = renderHook(() => useRemotePinnedProjects());
-    await waitFor(() => expect(pinFor(result.current.projects)?.taskCounts.running).toBe(1));
-    const readsWhileConnected = h.listTasksCalls;
+    await waitFor(() => expect(pinFor(result.current.projects)?.sessionCounts.running).toBe(1));
+    const readsWhileConnected = h.listSessionRowsCalls;
 
     // The link drops. The Panel has no idea what that Core is running now — and
     // "no dots" would say it is running nothing, which is exactly what it must
@@ -209,15 +209,15 @@ describe("useRemotePinnedProjects — a Core-owned pin's activity dots", () => {
     await dial("unreachable");
 
     await waitFor(() => expect(result.current.projects).toHaveLength(1));
-    expect(pinFor(result.current.projects)?.taskCounts.running).toBe(1);
+    expect(pinFor(result.current.projects)?.sessionCounts.running).toBe(1);
     // And it was not asked: a Core the service cannot reach is not worth a
     // frame the router would only answer with an error.
-    expect(h.listTasksCalls).toBe(readsWhileConnected);
+    expect(h.listSessionRowsCalls).toBe(readsWhileConnected);
 
     // Back up, and the answer is live again.
-    h.tasks = [task("task-1", "finished")];
+    h.sessions = [session("session-1", "finished")];
     await dial("connected");
-    await waitFor(() => expect(pinFor(result.current.projects)?.taskCounts.running).toBe(0));
+    await waitFor(() => expect(pinFor(result.current.projects)?.sessionCounts.running).toBe(0));
   });
 
   it("costs one fan-out per event however many rails are mounted", async () => {
@@ -227,30 +227,30 @@ describe("useRemotePinnedProjects — a Core-owned pin's activity dots", () => {
     await waitFor(() => expect(first.result.current.projects).toHaveLength(1));
     await waitFor(() => expect(third.result.current.projects).toHaveLength(1));
 
-    const before = { tasks: h.listTasksCalls, projects: h.listProjectsCalls };
-    h.tasks = [task("task-1", "finished")];
+    const before = { sessions: h.listSessionRowsCalls, projects: h.listProjectsCalls };
+    h.sessions = [session("session-1", "finished")];
     await emit("session:finished");
     await waitFor(() =>
-      expect(pinFor(second.result.current.projects)?.taskCounts.running).toBe(0),
+      expect(pinFor(second.result.current.projects)?.sessionCounts.running).toBe(0),
     );
 
     // One event, one read of each list — not one per mounted rail.
-    expect(h.listTasksCalls - before.tasks).toBe(1);
+    expect(h.listSessionRowsCalls - before.sessions).toBe(1);
     expect(h.listProjectsCalls - before.projects).toBe(1);
     // And every mount sees it, because they are all reading one snapshot.
     for (const mount of [first, second, third]) {
-      expect(pinFor(mount.result.current.projects)?.taskCounts.running).toBe(0);
+      expect(pinFor(mount.result.current.projects)?.sessionCounts.running).toBe(0);
     }
   });
 
   it("refreshes the counts, not just the pins, when the rail asks", async () => {
     const { result } = renderHook(() => useRemotePinnedProjects());
-    await waitFor(() => expect(pinFor(result.current.projects)?.taskCounts.running).toBe(1));
+    await waitFor(() => expect(pinFor(result.current.projects)?.sessionCounts.running).toBe(1));
 
     // A pin toggle refreshes through this. The Core has moved on since the last
     // pass, and the toggled tile must not land carrying the old counts.
     h.projects = [project(PROJECT_ID), project("project-2")];
-    h.tasks = [task("task-1", "finished")];
+    h.sessions = [session("session-1", "finished")];
     await act(async () => {
       result.current.refresh();
       await Promise.resolve();
@@ -258,21 +258,21 @@ describe("useRemotePinnedProjects — a Core-owned pin's activity dots", () => {
     });
 
     await waitFor(() => expect(result.current.projects).toHaveLength(2));
-    expect(pinFor(result.current.projects)?.taskCounts.running).toBe(0);
-    expect(pinFor(result.current.projects)?.taskCounts.finished).toBe(1);
+    expect(pinFor(result.current.projects)?.sessionCounts.running).toBe(0);
+    expect(pinFor(result.current.projects)?.sessionCounts.finished).toBe(1);
   });
 
-  it("counts only the pinned project's own tasks", async () => {
+  it("counts only the pinned project's own sessions", async () => {
     h.projects = [project(PROJECT_ID), project("project-2")];
-    h.tasks = [
-      task("task-1", "running"),
-      { ...task("task-2", "needs-input"), projectId: "project-2" },
+    h.sessions = [
+      session("session-1", "running"),
+      { ...session("session-2", "needs-input"), projectId: "project-2" },
     ];
     const { result } = renderHook(() => useRemotePinnedProjects());
 
     await waitFor(() => expect(result.current.projects).toHaveLength(2));
-    expect(pinFor(result.current.projects)?.taskCounts.running).toBe(1);
-    expect(pinFor(result.current.projects)?.taskCounts["needs-input"]).toBe(0);
-    expect(pinFor(result.current.projects, "project-2")?.taskCounts["needs-input"]).toBe(1);
+    expect(pinFor(result.current.projects)?.sessionCounts.running).toBe(1);
+    expect(pinFor(result.current.projects)?.sessionCounts["needs-input"]).toBe(0);
+    expect(pinFor(result.current.projects, "project-2")?.sessionCounts["needs-input"]).toBe(1);
   });
 });

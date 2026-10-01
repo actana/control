@@ -57,16 +57,16 @@ export type OpenCoreShellFn = (
 ) => Promise<CoreShellChannel>;
 
 /**
- * The task id a CLI shell spawns under.
+ * The session id a CLI shell spawns under.
  *
  * Fresh per invocation, and deliberately not a real Session: a `shellSession`
- * spawn takes a task id because every PTY on a Core is keyed by one, not
- * because there is a task. A random id also means two `actana core shell`
+ * spawn takes a session id because every PTY on a Core is keyed by one, not
+ * because there is a session. A random id also means two `actana core shell`
  * invocations against one Core never collide on the Session write lock (ADR
  * 0024 D6) — each holds its own, which is the whole of this command's
  * interaction with #140's connection model.
  */
-export function shellTaskId(): string {
+export function shellSessionId(): string {
   return `cli_shell_${randomUUID()}`;
 }
 
@@ -91,7 +91,7 @@ export const openCoreShell: OpenCoreShellFn = async (blob, opts) => {
     // chose for them.
     ({ ptyId } = await client.spawn({
       shellSession: true,
-      taskId: shellTaskId(),
+      sessionId: shellSessionId(),
       cols: opts.cols,
       rows: opts.rows,
     }));

@@ -13,7 +13,7 @@ import { projectPickerSections } from "~/lib/group-projects";
 import { nextProjectPickerHighlight } from "~/lib/project-picker-navigation";
 import { ACTIVE_GROUP_ALL, useActiveGroup } from "~/lib/active-group";
 import { getGroupRailCluster } from "~/lib/rail-projects";
-import type { TaskStatus } from "@actana/shared/domain";
+import type { SessionStatus } from "@actana/shared/domain";
 import { useServerEvents } from "~/lib/use-events";
 import { useDebouncedCallback } from "~/lib/use-debounced-callback";
 import { isEditableTarget, useHotkey } from "~/lib/use-hotkey";
@@ -21,7 +21,7 @@ import { useCoreProjectRows } from "~/lib/use-fleet";
 import { queryKeys, useGroups, useProjects } from "~/queries";
 import { getProjectActivity, isProjectActive, type ProjectWithCounts } from "~/shared/projects";
 
-function DotCount({ status, count, size }: { status: TaskStatus; count: number; size: number }) {
+function DotCount({ status, count, size }: { status: SessionStatus; count: number; size: number }) {
   return (
     <span style={{ display: "inline-flex", alignItems: "center", gap: 4, color: STATUS_META[status].color }}>
       <StatusDot status={status} size={size} />
@@ -31,13 +31,13 @@ function DotCount({ status, count, size }: { status: TaskStatus; count: number; 
 }
 
 function ActivityCounts({ project, size = 6 }: { project: ProjectWithCounts; size?: number }) {
-  const running = project.taskCounts.running;
-  const needs = project.taskCounts["needs-input"];
-  const interrupted = project.taskCounts.interrupted;
+  const running = project.sessionCounts.running;
+  const needs = project.sessionCounts["needs-input"];
+  const interrupted = project.sessionCounts.interrupted;
   if (!running && !needs && !interrupted) return null;
   const title = [
-    interrupted ? `${interrupted} ${interrupted === 1 ? "task interrupted" : "tasks interrupted"}` : null,
-    needs ? `${needs} ${needs === 1 ? "task needs input" : "tasks need input"}` : null,
+    interrupted ? `${interrupted} ${interrupted === 1 ? "session interrupted" : "sessions interrupted"}` : null,
+    needs ? `${needs} ${needs === 1 ? "session needs input" : "sessions need input"}` : null,
     running ? `${running} ${running === 1 ? "session running" : "sessions running"}` : null,
   ]
     .filter(Boolean)
@@ -128,7 +128,7 @@ export function ProjectPicker({
   const allProjectsIndex = showAllProjectsAction ? flatItems.length : -1;
   const selectableCount = flatItems.length + (showAllProjectsAction ? 1 : 0);
 
-  // Coalesce task/project bursts into a single projects-list refetch.
+  // Coalesce session/project bursts into a single projects-list refetch.
   const debouncedInvalidateProjects = useDebouncedCallback(
     () => void queryClient.invalidateQueries({ queryKey: queryKeys.projects }),
     150,
@@ -136,7 +136,7 @@ export function ProjectPicker({
   useServerEvents(
     useCallback(
       (e) => {
-        if (e.type.startsWith("project:") || e.type.startsWith("task:")) {
+        if (e.type.startsWith("project:") || e.type.startsWith("session:")) {
           debouncedInvalidateProjects();
         }
         if (e.type.startsWith("group:")) {

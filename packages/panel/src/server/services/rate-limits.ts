@@ -55,8 +55,8 @@ export function requestIp(request: Request): string {
   }
 }
 
-export function hookCallRateLimit(request: Request, taskId: string): RateLimitResult {
-  return rateLimit(`hook-call:${requestIp(request)}:${taskId || "no-task"}`, {
+export function hookCallRateLimit(request: Request, sessionId: string): RateLimitResult {
+  return rateLimit(`hook-call:${requestIp(request)}:${sessionId || "no-session"}`, {
     limit: envNumber("AC_HOOK_RATE_LIMIT_PER_MINUTE", 120),
     windowMs: RATE_LIMIT_WINDOW_MS,
     message: "too many hook calls",

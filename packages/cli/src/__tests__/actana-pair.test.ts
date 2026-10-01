@@ -72,6 +72,7 @@ function run(
   now = NOW,
   env: Record<string, string> = {},
   stdoutIsTty = false,
+  uid = 501,
 ): number {
   out = [];
   err = [];
@@ -84,6 +85,7 @@ function run(
     out: (line: string) => out.push(line),
     err: (line: string) => err.push(line),
     stdoutIsTty,
+    uid,
   };
   return runPairCommand(deps, argv, {
     materialPath: () => materialPath,
@@ -92,8 +94,8 @@ function run(
 }
 
 /** The same run with a terminal on stdout — the framed shape (#357). */
-function runTty(argv: string[], now = NOW, env: Record<string, string> = {}): number {
-  return run(argv, now, env, true);
+function runTty(argv: string[], now = NOW, env: Record<string, string> = {}, uid = 501): number {
+  return run(argv, now, env, true, uid);
 }
 
 function store(): PairingStore {
@@ -374,7 +376,7 @@ describe("actana pair new --public-host", () => {
     expect(
       run(["new", "--label", "laptop", "--public-host", "192.168.1.20"], NOW, {
         ACTANA_CONTAINER: "1",
-      }),
+      }, false, 1001),
     ).toBe(2);
 
     const said = err.join("\n");
@@ -819,7 +821,7 @@ describe("actana pair new, at a terminal", () => {
   });
 
   it("dials the container's port when it is running in one", () => {
-    runTty(["new", "--label", "laptop"], NOW, { ACTANA_CONTAINER: "1", ACTANA_PORT: "7443" });
+    runTty(["new", "--label", "laptop"], NOW, { ACTANA_CONTAINER: "1", ACTANA_PORT: "7443" }, 1001);
     expect(commands()[0]).toContain(" 10.0.0.5:7443 ");
   });
 
@@ -1275,5 +1277,91 @@ describe("--ttl parsing", () => {
 describe("the material this all reads", () => {
   it("is the one on disk, so the CLI and the daemon cannot disagree", () => {
     expect(loadMaterialFromFile(materialPath)?.coreId).toBe(material.coreId);
+  });
+});
+
+// ─── the daemon's user, in the container (#559) ─────────────────────────────
+
+describe("actana pair in the container, as anyone but actana", () => {
+  const CONTAINER = { ACTANA_CONTAINER: "1" };
+  const EXEC = "docker compose exec -u actana core actana";
+
+  /** What is on disk beside the material, so a refusal can be shown to have changed nothing. */
+  function snapshot(): string {
+    return fs
+      .readdirSync(dir)
+      .sort()
+      .map((name) => `${name}:${fs.readFileSync(path.join(dir, name), "utf8").length}`)
+      .join("|");
+  }
+
+  it.each([
+    [["new", "--label", "laptop"], "pair new"],
+    [["ls"], "pair ls"],
+    [["list"], "pair ls"],
+    [["revoke", "ps_1"], "pair revoke <target>"],
+  ])("refuses `pair %j` as core, root and a stranger, and says the exact command", (argv, shown) => {
+    for (const uid of [1000, 0, 501]) {
+      const before = snapshot();
+      expect(run(argv, NOW, CONTAINER, false, uid)).toBe(1);
+      expect(out).toEqual([]);
+      expect(err).toHaveLength(1);
+      expect(err[0]).toContain(`${EXEC} ${shown}`);
+      expect(err[0]).toContain(`this is uid ${uid}`);
+      expect(snapshot()).toBe(before);
+      expect(fs.existsSync(pairingStorePath(materialPath))).toBe(false);
+    }
+  });
+
+  it("names the one command the operator asked for in `pair new`", () => {
+    run(["new"], NOW, CONTAINER, false, 1000);
+    expect(err[0]).toContain("`docker compose exec -u actana core actana pair new`");
+  });
+
+  it("never opens the material when it refuses", () => {
+    let asked = 0;
+    const deps: ActanaCliDeps = {
+      ...stubClientHalf(() => NOW),
+      ...stubMachineHalf(),
+      argv: ["pair", "new"],
+      env: CONTAINER,
+      home: dir,
+      out: (line: string) => out.push(line),
+      err: (line: string) => err.push(line),
+      uid: 1000,
+    };
+    out = [];
+    err = [];
+    const code = runPairCommand(deps, ["new"], {
+      materialPath: () => {
+        asked += 1;
+        return materialPath;
+      },
+    });
+    expect(code).toBe(1);
+    expect(asked).toBe(0);
+  });
+
+  it("lets the actana user mint, list and revoke", () => {
+    expect(run(["new", "--label", "laptop"], NOW, CONTAINER, false, 1001)).toBe(0);
+    expect(out.join("\n")).toContain("Pairing code");
+    expect(run(["ls"], NOW, CONTAINER, false, 1001)).toBe(0);
+    expect(err).toEqual([]);
+  });
+
+  it("still answers --help and an unknown verb for anyone", () => {
+    expect(run(["new", "--help"], NOW, CONTAINER, false, 1000)).toBe(0);
+    expect(out.join("\n")).toContain("actana pair");
+    expect(run(["frobnicate"], NOW, CONTAINER, false, 1000)).toBe(2);
+    expect(err.join("\n")).toContain('unknown verb "frobnicate"');
+  });
+
+  it("changes nothing outside the container: any uid mints exactly as before", () => {
+    for (const uid of [1000, 0, 501]) {
+      expect(run(["new", "--label", `l${uid}`], NOW, {}, false, uid)).toBe(0);
+      expect(err.join("\n")).not.toContain("docker compose");
+      expect(out.join("\n")).toContain("Pairing code");
+    }
+    expect(run(["ls"], NOW, {}, false, 1000)).toBe(0);
   });
 });

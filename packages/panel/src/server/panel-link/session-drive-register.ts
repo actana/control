@@ -71,7 +71,7 @@
 export type DriveClientId = string;
 
 export type DriveChange = {
-  taskId: string;
+  sessionId: string;
   /** The client id now driving, or null if nobody is. */
   driving: DriveClientId | null;
   /** Tabs that were driving and are not any more. They are told; nobody else is. */
@@ -84,21 +84,21 @@ export type DriveChange = {
  * One Core's intra-Panel drive arbitration.
  *
  * Scoped per Core because a Session id is only unique within one — the same
- * `taskId` on two Cores is two Sessions, and a register that mixed them would
+ * `sessionId` on two Cores is two Sessions, and a register that mixed them would
  * have a tab on one machine silently arbitrating against a tab on another.
  */
 export class SessionDriveRegister {
-  /** taskId → client ids watching it, driver first. */
+  /** sessionId → client ids watching it, driver first. */
   private readonly interest = new Map<string, DriveClientId[]>();
 
   /** Who drives this Session in this Panel right now, or null if nobody has asked to. */
-  driverOf(taskId: string): DriveClientId | null {
-    return this.interest.get(taskId)?.[0] ?? null;
+  driverOf(sessionId: string): DriveClientId | null {
+    return this.interest.get(sessionId)?.[0] ?? null;
   }
 
   /** Is this tab watching this Session at all — driving or following? */
-  watches(taskId: string, clientId: DriveClientId): boolean {
-    return (this.interest.get(taskId) ?? []).includes(clientId);
+  watches(sessionId: string, clientId: DriveClientId): boolean {
+    return (this.interest.get(sessionId) ?? []).includes(clientId);
   }
 
   /**
@@ -124,17 +124,17 @@ export class SessionDriveRegister {
    * the rule #242 chose on purpose. See the module comment.
    */
   want(
-    taskId: string,
+    sessionId: string,
     clientId: DriveClientId,
     opts: { take?: boolean } = {},
   ): DriveChange {
-    const before = this.driverOf(taskId);
-    const watchers = this.interest.get(taskId) ?? [];
+    const before = this.driverOf(sessionId);
+    const watchers = this.interest.get(sessionId) ?? [];
     const without = watchers.filter((w) => w !== clientId);
     const next = opts.take === true ? [clientId, ...without] : [...without, clientId];
     // First-come: an appended holder is the driver only when the list was empty.
-    this.interest.set(taskId, next);
-    return this.settle(taskId, before);
+    this.interest.set(sessionId, next);
+    return this.settle(sessionId, before);
   }
 
   /**
@@ -148,33 +148,33 @@ export class SessionDriveRegister {
    * is a question only the browser can answer, and it does — see the module
    * comment.
    */
-  release(taskId: string, clientId: DriveClientId): DriveChange {
-    const watchers = this.interest.get(taskId);
+  release(sessionId: string, clientId: DriveClientId): DriveChange {
+    const watchers = this.interest.get(sessionId);
     if (!watchers?.includes(clientId)) {
-      return { taskId, driving: this.driverOf(taskId), lost: [], gained: [] };
+      return { sessionId, driving: this.driverOf(sessionId), lost: [], gained: [] };
     }
     const before = watchers[0];
     const next = watchers.filter((w) => w !== clientId);
-    if (next.length) this.interest.set(taskId, next);
-    else this.interest.delete(taskId);
-    return this.settle(taskId, before);
+    if (next.length) this.interest.set(sessionId, next);
+    else this.interest.delete(sessionId);
+    return this.settle(sessionId, before);
   }
 
   /** Every Session this tab was watching, given back at once. Returns one change each. */
   releaseAll(clientId: DriveClientId): DriveChange[] {
     const changes: DriveChange[] = [];
-    for (const taskId of [...this.interest.keys()]) {
-      if (!this.watches(taskId, clientId)) continue;
-      changes.push(this.release(taskId, clientId));
+    for (const sessionId of [...this.interest.keys()]) {
+      if (!this.watches(sessionId, clientId)) continue;
+      changes.push(this.release(sessionId, clientId));
     }
     return changes;
   }
 
-  private settle(taskId: string, before: DriveClientId | null | undefined): DriveChange {
-    const after = this.driverOf(taskId);
-    if (before === after) return { taskId, driving: after, lost: [], gained: [] };
+  private settle(sessionId: string, before: DriveClientId | null | undefined): DriveChange {
+    const after = this.driverOf(sessionId);
+    if (before === after) return { sessionId, driving: after, lost: [], gained: [] };
     return {
-      taskId,
+      sessionId,
       driving: after,
       lost: before ? [before] : [],
       gained: after ? [after] : [],

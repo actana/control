@@ -8,27 +8,27 @@ export type AppEvent =
   | { type: "group:created"; id: string }
   | { type: "group:updated"; id: string }
   | { type: "group:deleted"; id: string }
-  | { type: "task:created"; id: string; projectId: string }
-  | { type: "task:updated"; id: string; projectId: string }
-  | { type: "task:archived"; id: string; projectId: string }
-  | { type: "task:restored"; id: string; projectId: string }
-  | { type: "task:deleted"; id: string; projectId: string }
+  | { type: "session:created"; id: string; projectId: string }
+  | { type: "session:updated"; id: string; projectId: string }
+  | { type: "session:archived"; id: string; projectId: string }
+  | { type: "session:restored"; id: string; projectId: string }
+  | { type: "session:deleted"; id: string; projectId: string }
   | {
       type: "session:finished";
       id: string;
       projectId: string;
       projectName: string;
-      taskTitle: string;
+      sessionTitle: string;
     }
   | {
-      type: "task:question";
-      taskId: string;
+      type: "session:question";
+      sessionId: string;
       projectId: string;
       questionId: string;
       questions: HarnessQuestion[];
     }
-  | { type: "task:question-cleared"; taskId: string; projectId: string }
-  | { type: "prompt:submitted"; taskId: string; projectId: string; snippet: string };
+  | { type: "session:question-cleared"; sessionId: string; projectId: string }
+  | { type: "prompt:submitted"; sessionId: string; projectId: string; snippet: string };
 
 class TypedEmitter {
   private inner = new EventEmitter();

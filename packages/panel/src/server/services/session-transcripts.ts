@@ -1,6 +1,6 @@
 // Claude Code hook payloads carry `transcript_path` — the absolute path to the
 // session's JSONL log (assistant messages + tool_use/tool_result). We stash the
-// latest per task as hooks report it so downstream consumers of session:finished
+// latest per session as hooks report it so downstream consumers of session:finished
 // can read the full session, not just the user's prompts. Deliberately kept out
 // of the generic updateStatus/session:finished signature to avoid threading a
 // Claude-only field through shared plumbing.
@@ -9,12 +9,12 @@ import * as os from "node:os";
 import * as path from "node:path";
 import * as fs from "node:fs";
 
-// taskId -> latest known transcript path. The path is stable for a session, so
+// sessionId -> latest known transcript path. The path is stable for a session, so
 // we overwrite (not clear on read): the same session finishes many times and
 // each read should still find it. Bounded: nothing else evicts entries in
-// production, so past the cap the oldest-inserted task is dropped (a task that
+// production, so past the cap the oldest-inserted session is dropped (a session that
 // old has long since had its last session:finished).
-const MAX_TRACKED_TASKS = 500;
+const MAX_TRACKED_SESSIONS = 500;
 const transcriptPaths = new Map<string, string>();
 
 // Claude Code writes its per-session JSONL logs under `~/.claude/projects/`
@@ -53,28 +53,28 @@ export function isAllowedTranscriptPath(transcriptPath: string): boolean {
   return true;
 }
 
-export function setTranscriptPath(taskId: string, transcriptPath: string): void {
-  if (!taskId || !transcriptPath) return;
+export function setTranscriptPath(sessionId: string, transcriptPath: string): void {
+  if (!sessionId || !transcriptPath) return;
   // Only accept paths inside the real Claude transcript directory — the value
   // is attacker-influenced (it comes straight from a hook payload) and is later
   // read from disk by downstream consumers.
   if (!isAllowedTranscriptPath(transcriptPath)) return;
   // Re-insert so the Map's insertion order doubles as recency order.
-  transcriptPaths.delete(taskId);
-  transcriptPaths.set(taskId, transcriptPath);
-  while (transcriptPaths.size > MAX_TRACKED_TASKS) {
+  transcriptPaths.delete(sessionId);
+  transcriptPaths.set(sessionId, transcriptPath);
+  while (transcriptPaths.size > MAX_TRACKED_SESSIONS) {
     const oldest = transcriptPaths.keys().next().value;
     if (oldest === undefined) break;
     transcriptPaths.delete(oldest);
   }
 }
 
-export function getTranscriptPath(taskId: string): string | undefined {
-  return transcriptPaths.get(taskId);
+export function getTranscriptPath(sessionId: string): string | undefined {
+  return transcriptPaths.get(sessionId);
 }
 
-export function clearTranscriptPath(taskId: string): void {
-  transcriptPaths.delete(taskId);
+export function clearTranscriptPath(sessionId: string): void {
+  transcriptPaths.delete(sessionId);
 }
 
 /** Test-only: reset all stashed paths. */
@@ -88,13 +88,13 @@ export function __resetTranscriptPaths(): void {
 const TAIL_READ_BYTES = 256 * 1024;
 
 /**
- * The text of the last assistant message in a task's session transcript, or
+ * The text of the last assistant message in a session's session transcript, or
  * null when there is no stashed path / readable file / assistant text. Reads
  * only the file's tail, newest lines first — this runs inside the Stop hook's
  * request, so it must stay cheap and fail-soft.
  */
-export function readLastAssistantText(taskId: string): string | null {
-  const transcriptPath = transcriptPaths.get(taskId);
+export function readLastAssistantText(sessionId: string): string | null {
+  const transcriptPath = transcriptPaths.get(sessionId);
   if (!transcriptPath) return null;
   let tail: string;
   try {

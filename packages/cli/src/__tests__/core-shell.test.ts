@@ -216,7 +216,7 @@ describe("raw mode is restored on every exit path", () => {
     expect(result.code).toBe(EXIT_FAILURE);
     expect(result.err.join("\n")).toContain("raw mode");
     // The shell was already spawned on the Core. Leaving it would strand a
-    // login shell nobody can reach: the task id was random and is now gone.
+    // login shell nobody can reach: the session id was random and is now gone.
     expect(shell.killCount()).toBe(1);
     expect(shell.closeCount()).toBe(1);
   });

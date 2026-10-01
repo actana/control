@@ -4,7 +4,7 @@ export type SessionFinishNotification = {
   id: string;
   projectId: string;
   projectName: string;
-  taskTitle: string;
+  sessionTitle: string;
   finishedAt: number;
   /** The Core the session ran on; null for a Panel-local row. */
   coreId: string | null;
@@ -16,13 +16,13 @@ export type AppNotification = SessionFinishNotification;
 /** `coreId` omitted prunes across every Core; `coreId: null` prunes only the
  *  Panel's own rows. */
 export type SessionNotificationPruneTarget =
-  | { type: "task"; taskId: string; projectId?: string; coreId?: string | null }
+  | { type: "session"; sessionId: string; projectId?: string; coreId?: string | null }
   | { type: "project"; projectId: string; coreId?: string | null };
 
 export type PendingNotificationOpen = {
   kind: "session-finished";
   projectId: string;
-  taskId: string;
+  sessionId: string;
   requestedAt: number;
   coreId: string | null;
   coreAlias?: string | null;
@@ -64,7 +64,7 @@ function toSessionFinishNotification(
   const id = typeof value.id === "string" ? value.id : "";
   const projectId = typeof value.projectId === "string" ? value.projectId : "";
   const projectName = typeof value.projectName === "string" ? value.projectName : "Project";
-  const taskTitle = typeof value.taskTitle === "string" ? value.taskTitle : "Session";
+  const sessionTitle = typeof value.sessionTitle === "string" ? value.sessionTitle : "Session";
   const finishedAt = typeof value.finishedAt === "number" ? value.finishedAt : 0;
   if (!id || !projectId || !Number.isFinite(finishedAt)) return null;
   const coreId =
@@ -76,7 +76,7 @@ function toSessionFinishNotification(
     id,
     projectId,
     projectName,
-    taskTitle,
+    sessionTitle,
     finishedAt,
     coreId,
     coreAlias,
@@ -91,9 +91,9 @@ function toNotification(value: unknown): AppNotification | null {
 function toPendingOpen(value: unknown): PendingNotificationOpen | null {
   if (!isRecord(value)) return null;
   const projectId = typeof value.projectId === "string" ? value.projectId : "";
-  const taskId = typeof value.taskId === "string" ? value.taskId : "";
+  const sessionId = typeof value.sessionId === "string" ? value.sessionId : "";
   const requestedAt = typeof value.requestedAt === "number" ? value.requestedAt : 0;
-  if (!projectId || !taskId || !Number.isFinite(requestedAt)) return null;
+  if (!projectId || !sessionId || !Number.isFinite(requestedAt)) return null;
   const coreId =
     typeof value.coreId === "string" && value.coreId ? value.coreId : null;
   const coreAlias =
@@ -101,7 +101,7 @@ function toPendingOpen(value: unknown): PendingNotificationOpen | null {
   return {
     kind: "session-finished",
     projectId,
-    taskId,
+    sessionId,
     requestedAt,
     coreId,
     coreAlias,
@@ -278,10 +278,10 @@ function notificationMatchesPruneTarget(
   notification: AppNotification,
   target: SessionNotificationPruneTarget,
 ): boolean {
-  if (target.type === "task") {
+  if (target.type === "session") {
     return (
       notification.kind === "session-finished" &&
-      notification.id === target.taskId &&
+      notification.id === target.sessionId &&
       (!target.projectId || notification.projectId === target.projectId) &&
       (target.coreId === undefined || notification.coreId === target.coreId)
     );
@@ -314,8 +314,8 @@ function notificationPruneTarget(
   notification: AppNotification,
 ): SessionNotificationPruneTarget {
   return {
-    type: "task",
-    taskId: notification.id,
+    type: "session",
+    sessionId: notification.id,
     projectId: notification.projectId,
   };
 }
@@ -408,7 +408,7 @@ export function requestSessionNotificationOpen(
   const request: PendingNotificationOpen = {
     kind: "session-finished",
     projectId: notification.projectId,
-    taskId: notification.id,
+    sessionId: notification.id,
     requestedAt: Date.now(),
     coreId: notification.coreId,
     coreAlias: notification.coreAlias,
@@ -453,7 +453,7 @@ export function clearPendingNotificationOpen(request: PendingNotificationOpen) {
     if (
       current &&
       current.projectId === request.projectId &&
-      current.taskId === request.taskId &&
+      current.sessionId === request.sessionId &&
       current.requestedAt === request.requestedAt
     ) {
       window.localStorage.removeItem(PENDING_OPEN_KEY);

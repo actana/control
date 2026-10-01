@@ -19,7 +19,7 @@ export function UsageView({ data }: { data: UsageSummary }) {
         <PageHeader lastSyncedAt={data.lastSyncedAt} />
         <EmptyState
           title="No token usage yet"
-          subtitle="Run a Claude Code task from a project, then come back to see usage here."
+          subtitle="Run a Claude Code session from a project, then come back to see usage here."
         />
       </div>
     );
@@ -147,7 +147,7 @@ export function UsageView({ data }: { data: UsageSummary }) {
               {data.perSession.map((s) => {
                 const total = totalOfRow(s);
                 return (
-                  <tr key={s.taskId} style={{ borderTop: "1px solid var(--border)" }}>
+                  <tr key={s.sessionId} style={{ borderTop: "1px solid var(--border)" }}>
                     <Td>
                       <span
                         style={{

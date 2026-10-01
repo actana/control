@@ -21,7 +21,7 @@ git clone https://github.com/actana/control
 cd control/deploy
 echo "AC_PANEL_DB_PASSWORD=$(openssl rand -hex 24)" > .env    # the Panel's Postgres password
 docker compose up -d
-docker compose exec core actana pair new     # a one-time code and a fingerprint
+docker compose exec -u actana core actana pair new     # a one-time code and a fingerprint
 ```
 
 Then open <http://localhost:7420>, create the Operator (name + password), and
@@ -44,7 +44,7 @@ guess. Every path in the file is relative to the file.
 | --- | --- |
 | **`panel`** | The web service. Publishes `127.0.0.1:7420`, holds the Operator login, the Core registry and the presentation layer, and nothing else. |
 | **`postgres`** | The Panel's database, a digest-pinned Postgres. Publishes **no port**; the Panel reaches it by service name and will not start until its healthcheck passes. Nothing in the Panel reads it yet — it is the first step of moving the Panel's state there (#567). |
-| **`core`** | A Core daemon. Publishes **no port at all** — the Panel reaches it over the compose network. Owns its projects, sessions, SQLite database and PTYs. |
+| **`core`** | A Core daemon. Publishes **no port at all** — the Panel reaches it over the compose network. Owns its sessions, SQLite database and PTYs. Two users live in it; see [Two users in the Core](#two-users-in-the-core). |
 | **one network** | Compose's default. It is what lets the Panel dial `wss://core:8443` by service name. |
 | **five volumes** | `panel-data`, `postgres-data`, `core-home`, `core-state`, and a bind mount of `./repos` (plus `seaweedfs-data` if you opt in to SeaweedFS). See [Volumes](#volumes--what-survives-what). |
 
@@ -60,11 +60,16 @@ It prints no credential and writes none into the log: a client is enrolled one
 at a time, with a one-time code.
 
 ```bash
-docker compose exec core actana pair new       # a code, a CA fingerprint, an expiry
-docker compose exec core actana pair ls        # pending codes and paired clients
-docker compose exec core actana pair revoke <target>   # unpair one, or cancel a code
-docker compose exec core actana token regenerate       # rotate this Core's identity
+docker compose exec -u actana core actana pair new       # a code, a CA fingerprint, an expiry
+docker compose exec -u actana core actana pair ls        # pending codes and paired clients
+docker compose exec -u actana core actana pair revoke <target>   # unpair one, or cancel a code
+docker compose exec -u actana core actana token regenerate       # rotate this Core's identity
 ```
+
+`-u actana` is not optional: the pairing identity and the pairings are the daemon's, and the daemon's user is the only
+one that can read them. Run as `core` or as a plain `docker compose exec` (root), `actana pair` and `actana status`
+refuse in one sentence that names this command, exit non-zero and change nothing. See
+[Two users in the Core](#two-users-in-the-core).
 
 The code is single-use, expires in five minutes by default, and dies after five
 wrong guesses. Read it out with the fingerprint beside it: the client checks the
@@ -129,8 +134,8 @@ so the container's own `actana` can dial it.
 Then pair each client to the address it can actually reach:
 
 ```bash
-docker compose exec core actana pair new --label panel  --public-host core
-docker compose exec core actana pair new --label laptop --public-host 192.168.1.20
+docker compose exec -u actana core actana pair new --label panel  --public-host core
+docker compose exec -u actana core actana pair new --label laptop --public-host 192.168.1.20
 ```
 
 `--public-host` **chooses** from that list; it can never add to it. Name an
@@ -150,8 +155,8 @@ does.
 | --- | --- | --- |
 | `panel-data` | Operator login, Core registry, sealed pairing credentials, the secrets key (unless `AC_SECRETS_KEY` is set), your Panel-side preferences | `docker compose down -v` |
 | `postgres-data` | The Panel's Postgres cluster. Empty of Panel data for now: the Panel only connects to it | `docker compose down -v` |
-| `core-home` | The Core's home: its work and **each Harness's own credentials** (`~/.claude`, `~/.codex`, …) | `docker compose down -v` |
-| `core-state` | What only the Core's daemon may hold, at `/var/lib/actana`: its pairing identity and pairings, its SQLite database, the update-check caches. A Session working in `core-home` is not working beside them | `docker compose down -v` |
+| `core-home` | The Core's home, `/home/core`: its work and **each Harness's own credentials** (`~/.claude`, `~/.codex`, …). The user `core` (uid 1000) owns it | `docker compose down -v` |
+| `core-state` | What only the Core's daemon may hold, at `/var/lib/actana` (mode 700): its pairing identity and pairings, its SQLite database, the update-check caches. The user `actana` (uid 1001) owns it. A Session, which runs as `core`, cannot read it | `docker compose down -v` |
 | `seaweedfs-data` | Only with `--profile seaweedfs`: the Shared folder's stored objects | `docker compose down -v` |
 | `./repos` (bind mount) | Your checkouts, where **Add project** finds them | nothing — it is a directory on your host |
 
@@ -169,13 +174,45 @@ Backing up the Panel is backing up `panel-data` **and** the database —
 they are sealed, and the key that opens them is in `panel-data` or your
 `AC_SECRETS_KEY`.
 
-One caveat on `./repos`: files the Core writes there are owned by uid 1000,
+One caveat on `./repos`: files the Core's Sessions write there are owned by uid 1000,
 which is your own uid only on a host whose login user was the first created. If
 that bites, swap it for a named volume (`core-repos:/home/core/repos`, with
 `core-repos:` added under `volumes:`) and let the Core own them. A missing host
 `./repos` that Docker creates as root is repaired by the `core-init` one-shot
-(mount point only) before `core` starts — the main service stays uid 1000 so
-`docker compose exec` is never root.
+(mount point only) before `core` starts. It also hands the `core-state` volume to uid 1001 (the `actana` user).
+
+## Two users in the Core
+
+The `core` container has two users, and what each can read is the point
+([ADR 0041](../docs/adr/0041-the-0-5-0-core-model.md) D24–D26). This section describes the image and
+compose file as #611 made them.
+
+| User | uid | What it is | What it owns |
+| --- | --- | --- | --- |
+| `actana` | 1001 | The daemon: pairing, the core link, the database. A system user | `/var/lib/actana` (the `core-state` volume, mode 700) |
+| `core` | 1000 | Sessions, and everything a Harness does. Has no sudo | `/home/core` (the `core-home` volume): the work, `~/shared`, each Harness's login |
+
+The container starts as root only for the entrypoint's step before it `exec`s tini as `actana`; tini is PID 1 as
+uid 1001, and no process of the container is root after that. The daemon holds two capabilities, `CAP_SETUID` and
+`CAP_SETGID`, and no others. It starts every Session as `core` with no capabilities and `no_new_privs` set, so a
+Session cannot read `/var/lib/actana` and cannot become the daemon's user. The compose file asks for exactly those two
+capabilities (`cap_drop: ALL`, `cap_add: [SETUID, SETGID]`) and sets `no-new-privileges`.
+
+**Which user to `docker compose exec` as.** Without `-u` you are root. That root cannot override file permissions, so it
+can read neither the home nor the state. Name the user:
+
+```bash
+docker compose exec -u core core bash -l                 # a shell as a Session would have it (-l for ~/.local/bin)
+docker compose exec -u actana core actana pair new       # the daemon's own files: pairing
+docker compose exec -u actana core actana status
+```
+
+`actana pair` and `actana status` check this for you. Run as any other user in the container they print one sentence with
+the exact command above, exit non-zero and change nothing. Outside the container (`actana setup` on a machine) there
+is one user, and nothing is checked.
+
+Upgrading from an earlier 0.5.0 build is not supported: 0.5.0 Cores are installed fresh. A state volume that is not
+owned by uid 1001 with mode 700 is refused at start with the owner it found, and is left as it was.
 
 ## The `127.0.0.1:7420:7420` port
 
@@ -208,7 +245,7 @@ between `# >>> second Core` and `# <<< second Core`; uncomment it, add
 
 Three things change per Core, and they must agree: the **service name**,
 `ACTANA_PUBLIC_HOST` **to match it**, and its **own volumes**. Pair it the same
-way — `docker compose exec core2 actana pair new` prints its own code and CA
+way — `docker compose exec -u actana core2 actana pair new` prints its own code and CA
 fingerprint, and **Add Core** takes the address `core2:8443` with that code.
 
 Its repos are a named volume rather than a second bind mount, which is exactly
@@ -374,4 +411,5 @@ job:
 
 The verbs that still work are the ones that are about *this* Core rather than
 its lifecycle — `actana status`, `actana pair`, `actana harnesses install
-<id>`. `docker compose exec core actana --help` prints the container page.
+<id>`. `docker compose exec -u actana core actana --help` prints the container page. `status` and `pair` need `-u actana`
+(see [Two users in the Core](#two-users-in-the-core)).

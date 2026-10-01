@@ -1,8 +1,8 @@
-// The Core's one way to change a task row.
+// The Core's one way to change a session row.
 //
-// A Core-owned Task's status, title and icon are Core state (ADR 0004/0005),
+// A Core-owned Session's status, title and icon are Core state (ADR 0004/0005),
 // and two callers now change them: the Panel, over the core-link's
-// `tasksMutate` frame, and the Core itself — the hook receiver settling a
+// `sessionsMutate` frame, and the Core itself — the hook receiver settling a
 // harness's status, the PTY exit settling a dead session, the title generator
 // naming a new one (issue 84). Both go through here, so a row never changes
 // without the matching event landing in the log the Panel replays from.
@@ -14,15 +14,15 @@
 // cursor when it comes back.
 
 import type {
-  CoreLinkTaskMutation,
-  CoreLinkTaskSnapshot,
+  CoreLinkSessionMutation,
+  CoreLinkSessionRow,
 } from "@actana/sdk/core";
-import type { TaskStatus } from "@actana/shared/domain";
+import type { SessionStatus } from "@actana/shared/domain";
 import type { CoreMutationPort, CoreQueryPort, EventLogPort } from "./pty-core-link-server";
 
-const FINISHED_TASK_STATUS: TaskStatus = "finished";
+const FINISHED_SESSION_STATUS: SessionStatus = "finished";
 
-export type CoreTaskWriterPorts = {
+export type CoreSessionWriterPorts = {
   /** Writes the row. Absent on a PTY-only Core; every write then answers `null`. */
   mutationPort: CoreMutationPort | null;
   /** Reads the row's prior facts. Absent means "no prior status known". */
@@ -32,96 +32,96 @@ export type CoreTaskWriterPorts = {
 };
 
 /**
- * Apply a task mutation to this Core's database and append the events that
+ * Apply a session mutation to this Core's database and append the events that
  * describe it. Returns the resulting snapshot, or `null` when the mutation
  * targeted a row this Core does not have — the same answer the core-link
  * frame carries, so a caller never has to tell "wrote nothing" from "no such
  * row" by a different route. Throws what the mutation port throws (invalid
  * input); the core-link server turns that into an `error` frame.
  */
-export class CoreTaskWriter {
-  constructor(private readonly ports: CoreTaskWriterPorts) {}
+export class CoreSessionWriter {
+  constructor(private readonly ports: CoreSessionWriterPorts) {}
 
-  mutate(mutation: CoreLinkTaskMutation): CoreLinkTaskSnapshot | null {
+  mutate(mutation: CoreLinkSessionMutation): CoreLinkSessionRow | null {
     const { mutationPort } = this.ports;
     if (!mutationPort) return null;
-    const previousStatus = this.priorTaskStatus(mutation);
-    const task = mutationPort.mutateTask(mutation);
-    if (task) this.recordTaskMutation(mutation, task, previousStatus);
-    return task;
+    const previousStatus = this.priorSessionStatus(mutation);
+    const session = mutationPort.mutateSession(mutation);
+    if (session) this.recordSessionMutation(mutation, session, previousStatus);
+    return session;
   }
 
-  /** This Core's current row for `taskId`, or `null` when it has none. */
-  readTask(taskId: string): CoreLinkTaskSnapshot | null {
-    return this.ports.queryPort?.getTask(taskId) ?? null;
+  /** This Core's current row for `sessionId`, or `null` when it has none. */
+  readSession(sessionId: string): CoreLinkSessionRow | null {
+    return this.ports.queryPort?.getSession(sessionId) ?? null;
   }
 
   /**
-   * Record a task mutation in the event log so a reconnecting Panel learns
+   * Record a session mutation in the event log so a reconnecting Panel learns
    * about the change via the same `subscribe` / `event` / `eventsReplayed`
    * replay path the PTY lifecycle events use (issue 04).
    *
    * On `update`, the kind depends on which fields the frame carried:
-   *  - `icon` set (with no other patched field) → `task:iconChanged` — the
+   *  - `icon` set (with no other patched field) → `session:iconChanged` — the
    *    Panel's live query wants to route icon-only edits distinctly from other
-   *    task updates so a reconnecting Panel replays the change through the
+   *    session updates so a reconnecting Panel replays the change through the
    *    existing `subscribe`/`event`/`eventsReplayed` path (issue 09).
-   *  - `pinned` set (with no other patched field) → `task:pinnedChanged` —
+   *  - `pinned` set (with no other patched field) → `session:pinnedChanged` —
    *    same rationale as icon (issue 10). Pin toggles are frequent and
    *    consumers that only track pinned state (e.g. the SessionGrid pinned
    *    filter) can subscribe distinctly.
-   *  - anything else → `task:updated` (unchanged).
+   *  - anything else → `session:updated` (unchanged).
    *
-   * On `create`, the kind is always `task:created` — a new row's icon is part
-   * of the initial snapshot the tasks list carries, not a discrete change.
+   * On `create`, the kind is always `session:created` — a new row's icon is part
+   * of the initial snapshot the sessions list carries, not a discrete change.
    *
-   * On `delete`, the kind is `task:deleted` — the same name the Panel server
+   * On `delete`, the kind is `session:deleted` — the same name the Panel server
    * emits when it deletes a Panel-owned row, so a reconnecting Panel replays a
    * Core-owned delete through the handler it already has (it prunes that
-   * session's stored finish notifications keyed on the event's `taskId`).
+   * session's stored finish notifications keyed on the event's `sessionId`).
    *
    * A transition into `finished` additionally appends `session:finished`
    * (issue 20) — the event ADR 0008 built the Panel's notification on and no
    * Core ever produced. It is additional, not a replacement: the live query
-   * still needs the `task:updated` event for the same mutation.
+   * still needs the `session:updated` event for the same mutation.
    */
-  private recordTaskMutation(
-    mutation: CoreLinkTaskMutation,
-    task: CoreLinkTaskSnapshot,
+  private recordSessionMutation(
+    mutation: CoreLinkSessionMutation,
+    session: CoreLinkSessionRow,
     previousStatus: string | null,
   ): void {
     const { eventLog } = this.ports;
     if (!eventLog) return;
     const kind =
       mutation.op === "create"
-        ? "task:created"
+        ? "session:created"
         : mutation.op === "delete"
-          ? "task:deleted"
+          ? "session:deleted"
           : isOnlyPatchedField(mutation, "icon")
-            ? "task:iconChanged"
+            ? "session:iconChanged"
             : isOnlyPatchedField(mutation, "pinned")
-              ? "task:pinnedChanged"
-              : "task:updated";
+              ? "session:pinnedChanged"
+              : "session:updated";
     // The **patched** status, when the mutation carried one — never the status
     // the resulting row happens to have (#289 A). That distinction is the whole
     // value of the field: a rename of a Session sitting at `finished` produces a
-    // `task:updated` whose row still reads `finished`, and a waiter that took
+    // `session:updated` whose row still reads `finished`, and a waiter that took
     // the row's status from it would call the rename the end of a turn. A patch
     // that sets the status is a report about a turn even when it sets the status
     // it already had — which is the ordinary case on a harness that never moved
     // the row to `running`, and the one a follow-up turn depends on.
     const status = mutation.op === "update" ? mutation.status : undefined;
     const payload = JSON.stringify({
-      taskId: task.taskId,
-      projectId: task.projectId,
+      sessionId: session.sessionId,
+      projectId: session.projectId,
       ...(status === undefined ? {} : { status }),
     });
-    eventLog.appendEvent(kind, payload, { taskId: task.taskId });
-    this.recordSessionFinish(mutation, task, previousStatus);
+    eventLog.appendEvent(kind, payload, { sessionId: session.sessionId });
+    this.recordSessionFinish(mutation, session, previousStatus);
   }
 
   /**
-   * Append `session:finished` when a mutation moved a task into `finished` —
+   * Append `session:finished` when a mutation moved a session into `finished` —
    * and only then. Two things have to hold, and both are load-bearing.
    *
    * The mutation must be the one that set the status: the resulting snapshot
@@ -133,45 +133,45 @@ export class CoreTaskWriter {
    * or a second tab racing the first cannot raise a second notification. That
    * is what the prior status is for; the snapshot cannot tell the two apart.
    *
-   * The payload carries what the Panel's finish normalizer reads: the task id
+   * The payload carries what the Panel's finish normalizer reads: the session id
    * (as `id`, its preferred key), the project id, the project name, and the
-   * task title. Without the last two the toast reads "Project" / "Session",
+   * session title. Without the last two the toast reads "Project" / "Session",
    * which is the degraded output this event exists to avoid. The project name
-   * is the one field not on the task snapshot; it is read through the query
+   * is the one field not on the session snapshot; it is read through the query
    * port, and omitted when no query port is wired (a PTY-only Core).
    */
   private recordSessionFinish(
-    mutation: CoreLinkTaskMutation,
-    task: CoreLinkTaskSnapshot,
+    mutation: CoreLinkSessionMutation,
+    session: CoreLinkSessionRow,
     previousStatus: string | null,
   ): void {
     const { eventLog, queryPort } = this.ports;
     if (!eventLog) return;
     if (!patchesFinishedStatus(mutation)) return;
-    if (task.status !== FINISHED_TASK_STATUS) return;
-    if (previousStatus === FINISHED_TASK_STATUS) return;
+    if (session.status !== FINISHED_SESSION_STATUS) return;
+    if (previousStatus === FINISHED_SESSION_STATUS) return;
     const projectName = queryPort
       ?.listProjects()
-      .find((p) => p.projectId === task.projectId)?.name;
+      .find((p) => p.projectId === session.projectId)?.name;
     const payload = JSON.stringify({
-      id: task.taskId,
-      taskId: task.taskId,
-      projectId: task.projectId,
+      id: session.sessionId,
+      sessionId: session.sessionId,
+      projectId: session.projectId,
       ...(projectName ? { projectName } : {}),
-      taskTitle: task.title,
+      sessionTitle: session.title,
     });
-    eventLog.appendEvent("session:finished", payload, { taskId: task.taskId });
+    eventLog.appendEvent("session:finished", payload, { sessionId: session.sessionId });
   }
 
   /**
-   * The status a task carried before a mutation is applied, or `null` when
+   * The status a session carried before a mutation is applied, or `null` when
    * there is nothing to read — an unknown row, a Core with no query port, or
    * a mutation that could not produce a finish. Only a patch that could pays
    * for the read; nothing else consults the prior status.
    */
-  private priorTaskStatus(mutation: CoreLinkTaskMutation): string | null {
+  private priorSessionStatus(mutation: CoreLinkSessionMutation): string | null {
     if (!patchesFinishedStatus(mutation)) return null;
-    return this.ports.queryPort?.getTask(mutation.taskId)?.status ?? null;
+    return this.ports.queryPort?.getSession(mutation.sessionId)?.status ?? null;
   }
 }
 
@@ -180,9 +180,9 @@ export class CoreTaskWriter {
  * is not enough — every later write to a finished row says the same.
  */
 function patchesFinishedStatus(
-  mutation: CoreLinkTaskMutation,
-): mutation is Extract<CoreLinkTaskMutation, { op: "update" }> {
-  return mutation.op === "update" && mutation.status === FINISHED_TASK_STATUS;
+  mutation: CoreLinkSessionMutation,
+): mutation is Extract<CoreLinkSessionMutation, { op: "update" }> {
+  return mutation.op === "update" && mutation.status === FINISHED_SESSION_STATUS;
 }
 
 /**
@@ -191,9 +191,9 @@ function patchesFinishedStatus(
  * that changed?" checks below — which is exactly how an icon-plus-something
  * patch would otherwise keep announcing itself as an icon-only change.
  */
-function patchedFields(mutation: CoreLinkTaskMutation): string[] {
+function patchedFields(mutation: CoreLinkSessionMutation): string[] {
   if (mutation.op !== "update") return [];
-  const { op: _op, taskId: _taskId, ...patch } = mutation;
+  const { op: _op, sessionId: _sessionId, ...patch } = mutation;
   return Object.entries(patch)
     .filter(([, value]) => value !== undefined)
     .map(([field]) => field)
@@ -204,13 +204,13 @@ function patchedFields(mutation: CoreLinkTaskMutation): string[] {
 
 /**
  * Detect an update mutation whose only patched column is `field` — the
- * narrowing that keeps the dedicated `task:iconChanged` (issue 09) and
- * `task:pinnedChanged` (issue 10) kinds meaningful. Anything patched alongside
- * degrades the frame back to `task:updated`, which is fine: a consumer that
+ * narrowing that keeps the dedicated `session:iconChanged` (issue 09) and
+ * `session:pinnedChanged` (issue 10) kinds meaningful. Anything patched alongside
+ * degrades the frame back to `session:updated`, which is fine: a consumer that
  * only cares about icon subscribes to the dedicated kind, and a mixed edit
  * already invalidates the whole row through the generic one.
  */
-function isOnlyPatchedField(mutation: CoreLinkTaskMutation, field: string): boolean {
+function isOnlyPatchedField(mutation: CoreLinkSessionMutation, field: string): boolean {
   const patched = patchedFields(mutation);
   return patched.length === 1 && patched[0] === field;
 }

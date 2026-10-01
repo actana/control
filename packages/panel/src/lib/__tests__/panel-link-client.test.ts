@@ -68,18 +68,18 @@ class FakeSocket implements PanelLinkSocketLike {
   /** Session-drive frames this socket sent, for one Core (issue 147). */
   drives(coreId: string) {
     return this.sent.flatMap((f) =>
-      f.t === "drive" && f.coreId === coreId ? [{ taskId: f.taskId, want: f.want }] : [],
+      f.t === "drive" && f.coreId === coreId ? [{ sessionId: f.sessionId, want: f.want }] : [],
     );
   }
 }
 
 function event(eventId: number): CoreLinkEvent {
-  return { eventId, ts: eventId, kind: "task:statusChanged", ptyId: null, taskId: "t", payload: "{}" };
+  return { eventId, ts: eventId, kind: "session:statusChanged", ptyId: null, sessionId: "t", payload: "{}" };
 }
 
 function client(): PanelLinkClient {
   return new PanelLinkClient({
-    url: "ws://panel.test/panel-link?v=1",
+    url: "ws://panel.test/panel-link?v=2",
     createSocket: (url) => new FakeSocket(url),
     reconnectInitialMs: 10,
     reconnectMaxMs: 10,
@@ -110,7 +110,7 @@ describe("panel link · one socket for the whole fleet", () => {
     live();
     link.watch("core_a");
     link.watch("core_b");
-    link.request("core_a", { type: "tasksList" }).catch(() => {});
+    link.request("core_a", { type: "sessionRowsList" }).catch(() => {});
     link.request("core_b", { type: "projectsList" }).catch(() => {});
 
     expect(FakeSocket.opened).toHaveLength(1);
@@ -120,23 +120,23 @@ describe("panel link · one socket for the whole fleet", () => {
   it("answers a query with the Core's frame, matched to the caller's request", async () => {
     const link = client();
     const socket = live();
-    const answer = link.request("core_a", { type: "tasksList" });
+    const answer = link.request("core_a", { type: "sessionRowsList" });
     const reqId = (socket.outgoing("core_a")[0] as { reqId: string }).reqId;
 
     socket.push({
       t: "core",
       coreId: "core_a",
-      frame: { type: "tasksListResult", reqId, tasks: [], archivedCount: 0 },
+      frame: { type: "sessionRowsListResult", reqId, sessions: [], archivedCount: 0 },
     });
 
-    await expect(answer).resolves.toMatchObject({ type: "tasksListResult" });
+    await expect(answer).resolves.toMatchObject({ type: "sessionRowsListResult" });
     link.close();
   });
 
   it("rejects when the Panel answers with an error frame", async () => {
     const link = client();
     const socket = live();
-    const answer = link.request("core_gone", { type: "tasksList" });
+    const answer = link.request("core_gone", { type: "sessionRowsList" });
     const reqId = (socket.outgoing("core_gone")[0] as { reqId: string }).reqId;
 
     socket.push({
@@ -291,7 +291,7 @@ describe("panel link · reconnect and replay", () => {
   it("fails in-flight requests on a drop rather than hanging until timeout", async () => {
     const link = client();
     const socket = live();
-    const answer = link.request("core_a", { type: "tasksList" });
+    const answer = link.request("core_a", { type: "sessionRowsList" });
 
     socket.drop();
 
@@ -315,11 +315,11 @@ describe("panel link · reconnect and replay", () => {
   it("sends a frame written while the link was down once it comes back", () => {
     const link = client();
     live().drop();
-    link.request("core_a", { type: "tasksList" }).catch(() => {});
+    link.request("core_a", { type: "sessionRowsList" }).catch(() => {});
     vi.advanceTimersByTime(20);
     const second = live();
 
-    expect(second.outgoing("core_a").map((f) => f.type)).toEqual(["tasksList"]);
+    expect(second.outgoing("core_a").map((f) => f.type)).toEqual(["sessionRowsList"]);
     link.close();
   });
 });
@@ -538,7 +538,7 @@ describe("panel link · a socket that dies without saying so", () => {
 
   function staleClient(opts: PanelLinkOptions = {}) {
     return new PanelLinkClient({
-      url: "ws://panel.test/panel-link?v=1",
+      url: "ws://panel.test/panel-link?v=2",
       createSocket: (url) => new FakeSocket(url),
       reconnectInitialMs: 100,
       reconnectMaxMs: 10_000,
@@ -579,7 +579,7 @@ describe("panel link · a socket that dies without saying so", () => {
     // about is what the *next* socket is told. The claim is recorded before the
     // ask, which is precisely what makes it survive a link that dies mid-flight.
     link.ptySubscribe("core_a", "pty_1", { catchUp: true }).catch(() => {});
-    link.driveSession("core_a", "task_1");
+    link.driveSession("core_a", "session_1");
     expect(first.readyState).toBe(1);
 
     // The socket dies in silence again: no close, no error, no readyState
@@ -601,7 +601,7 @@ describe("panel link · a socket that dies without saying so", () => {
     ]);
     // `watch`, not `take`: a tab coming back from hours hidden is not the
     // operator asking for the keyboard.
-    expect(second.drives("core_a")).toEqual([{ taskId: "task_1", want: "watch" }]);
+    expect(second.drives("core_a")).toEqual([{ sessionId: "session_1", want: "watch" }]);
     link.close();
   });
 
@@ -671,7 +671,7 @@ describe("panel link · a socket that dies without saying so", () => {
     // caller rather than leaving it to expire.
     const link = staleClient({ requestTimeoutMs: 10 * 60_000 });
     live();
-    const answer = link.request("core_a", { type: "tasksList" });
+    const answer = link.request("core_a", { type: "sessionRowsList" });
     vi.advanceTimersByTime(90_000);
 
     doc.reveal();
@@ -738,14 +738,14 @@ describe("panel link · a tab's panes on one Session", () => {
     const link = client();
     const socket = live();
 
-    link.driveSession("core_a", "task_1");
-    link.driveSession("core_a", "task_1");
+    link.driveSession("core_a", "session_1");
+    link.driveSession("core_a", "session_1");
 
     // Not a saving of bytes. A second `watch` re-asserts interest the service
     // already holds, and re-asserting moves this tab to the tail of that
     // Session's queue: the keyboard leaves the pane the operator is looking at,
     // with no gesture of theirs to explain it.
-    expect(socket.drives("core_a")).toEqual([{ taskId: "task_1", want: "watch" }]);
+    expect(socket.drives("core_a")).toEqual([{ sessionId: "session_1", want: "watch" }]);
     link.close();
   });
 
@@ -753,12 +753,12 @@ describe("panel link · a tab's panes on one Session", () => {
     const link = client();
     const socket = live();
 
-    link.driveSession("core_a", "task_1");
-    link.driveSession("core_a", "task_2");
+    link.driveSession("core_a", "session_1");
+    link.driveSession("core_a", "session_2");
 
     expect(socket.drives("core_a")).toEqual([
-      { taskId: "task_1", want: "watch" },
-      { taskId: "task_2", want: "watch" },
+      { sessionId: "session_1", want: "watch" },
+      { sessionId: "session_2", want: "watch" },
     ]);
     link.close();
   });
@@ -767,14 +767,14 @@ describe("panel link · a tab's panes on one Session", () => {
     const link = client();
     const socket = live();
 
-    link.driveSession("core_a", "task_1");
-    link.driveSession("core_a", "task_1", { take: true });
+    link.driveSession("core_a", "session_1");
+    link.driveSession("core_a", "session_1", { take: true });
 
     // `take` is the operator's gesture, not a pane arriving. Deduping it would
     // be a button that does nothing in the one case it exists for.
     expect(socket.drives("core_a")).toEqual([
-      { taskId: "task_1", want: "watch" },
-      { taskId: "task_1", want: "take" },
+      { sessionId: "session_1", want: "watch" },
+      { sessionId: "session_1", want: "take" },
     ]);
     link.close();
   });
@@ -783,19 +783,19 @@ describe("panel link · a tab's panes on one Session", () => {
     const link = client();
     const socket = live();
 
-    link.driveSession("core_a", "task_1");
-    link.driveSession("core_a", "task_1");
+    link.driveSession("core_a", "session_1");
+    link.driveSession("core_a", "session_1");
 
-    expect(link.releaseSessionDrive("core_a", "task_1")).toBe(false);
+    expect(link.releaseSessionDrive("core_a", "session_1")).toBe(false);
     // The tab still has the Session on screen. A `drop` here would have the
     // service hand the drive to another tab while this one keeps a writable
     // pane and keeps typing — two writers, and nothing on screen to say so.
-    expect(socket.drives("core_a")).toEqual([{ taskId: "task_1", want: "watch" }]);
+    expect(socket.drives("core_a")).toEqual([{ sessionId: "session_1", want: "watch" }]);
 
-    expect(link.releaseSessionDrive("core_a", "task_1")).toBe(true);
+    expect(link.releaseSessionDrive("core_a", "session_1")).toBe(true);
     expect(socket.drives("core_a")).toEqual([
-      { taskId: "task_1", want: "watch" },
-      { taskId: "task_1", want: "drop" },
+      { sessionId: "session_1", want: "watch" },
+      { sessionId: "session_1", want: "drop" },
     ]);
     link.close();
   });
@@ -804,11 +804,11 @@ describe("panel link · a tab's panes on one Session", () => {
     const link = client();
     const socket = live();
 
-    link.driveSession("core_a", "task_1");
-    link.driveSession("core_a", "task_1", { take: true });
+    link.driveSession("core_a", "session_1");
+    link.driveSession("core_a", "session_1", { take: true });
 
-    expect(link.releaseSessionDrive("core_a", "task_1")).toBe(true);
-    expect(socket.drives("core_a").at(-1)).toEqual({ taskId: "task_1", want: "drop" });
+    expect(link.releaseSessionDrive("core_a", "session_1")).toBe(true);
+    expect(socket.drives("core_a").at(-1)).toEqual({ sessionId: "session_1", want: "drop" });
     link.close();
   });
 
@@ -816,7 +816,7 @@ describe("panel link · a tab's panes on one Session", () => {
     const link = client();
     const socket = live();
 
-    expect(link.releaseSessionDrive("core_a", "task_1")).toBe(false);
+    expect(link.releaseSessionDrive("core_a", "session_1")).toBe(false);
 
     expect(socket.drives("core_a")).toEqual([]);
     link.close();
@@ -825,8 +825,8 @@ describe("panel link · a tab's panes on one Session", () => {
   it("re-announces a twice-held Session once on a reconnect", () => {
     const link = client();
     const first = live();
-    link.driveSession("core_a", "task_1");
-    link.driveSession("core_a", "task_1");
+    link.driveSession("core_a", "session_1");
+    link.driveSession("core_a", "session_1");
 
     first.drop();
     vi.advanceTimersByTime(20);
@@ -835,17 +835,17 @@ describe("panel link · a tab's panes on one Session", () => {
     // What the new socket is owed is the tab's interest, which is one Session
     // whatever it is showing it in. Re-announcing it per pane on every flap is
     // the duplicate `watch` again, with a reconnect for a trigger.
-    expect(second.drives("core_a")).toEqual([{ taskId: "task_1", want: "watch" }]);
+    expect(second.drives("core_a")).toEqual([{ sessionId: "session_1", want: "watch" }]);
     link.close();
   });
 
   it("re-announces nothing once every pane on the Session has gone", () => {
     const link = client();
     const first = live();
-    link.driveSession("core_a", "task_1");
-    link.driveSession("core_a", "task_1");
-    link.releaseSessionDrive("core_a", "task_1");
-    link.releaseSessionDrive("core_a", "task_1");
+    link.driveSession("core_a", "session_1");
+    link.driveSession("core_a", "session_1");
+    link.releaseSessionDrive("core_a", "session_1");
+    link.releaseSessionDrive("core_a", "session_1");
 
     first.drop();
     vi.advanceTimersByTime(20);

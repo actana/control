@@ -72,6 +72,13 @@ describe("the panel-link endpoint", () => {
     await expect(dial({ cookie: (await operatorSessionCookie()) }, 999)).resolves.toBe("http 400");
   });
 
+  it("refuses a tab still on version 1, which names a Session by taskId (#556)", async () => {
+    // Version 2 is the Task-to-Session rename: `drive`, `lock` and every other
+    // frame carrying a Session id say `sessionId`. A tab left open across the
+    // upgrade would send `taskId` and be silently ignored, so it is refused.
+    await expect(dial({ cookie: (await operatorSessionCookie()) }, 1)).resolves.toBe("http 400");
+  });
+
   it("leaves other upgrade paths to whoever else is listening", async () => {
     // A second upgrade handler on the same server, standing in for anything the
     // Panel might mount later (Vite's HMR socket, in dev). The panel link must

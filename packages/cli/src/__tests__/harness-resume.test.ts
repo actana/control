@@ -49,7 +49,7 @@ function policyDeps(): SpawnPolicyDeps {
 function planFor(harness: CoreLinkPtySpawnHarness, command: string, skip: boolean) {
   return resolveSpawnPlan(
     {
-      taskId: "t1",
+      sessionId: "t1",
       cwd: PROJECT_ROOT,
       command,
       agent: harness,

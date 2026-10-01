@@ -8,7 +8,7 @@
 // `PtyCoreLinkServer` on a real `wss://` port, the real `openSessionGateway`,
 // and nothing faked between them except the machine they would otherwise be on.
 //
-// The Core here holds **Sessions this CLI did not start** — a task list, a
+// The Core here holds **Sessions this CLI did not start** — a session list, a
 // project list, and a PTY that was already running when the command was typed.
 // That is not scene-setting: it is the ticket's criterion. Nothing about having
 // started a Session is remembered locally, so `ls`, `logs`, `send` and `kill`
@@ -23,10 +23,10 @@
 // about what a `start`/`resume` *returns*, and its report is read off a row the
 // Core appends **during the spawn round trip** — the window #483's review
 // called the deaf one. No fake gateway can stage that: the whole question is
-// whether a real frame arriving before the client has a Task id to bind it to
+// whether a real frame arriving before the client has a Session id to bind it to
 // is held and then judged. So `livePtyCore` grows an opt-in `spawn` that
 // registers a PTY id and nothing else — no binary, no process, no bytes — and
-// the two tests at the bottom use `resume`, which spawns against a Task the
+// the two tests at the bottom use `resume`, which spawns against a Session the
 // Core already holds. Everything a real harness would do is still out of scope.
 //
 // The Core comes from `in-process-core.ts`, which #160 and #161 each extracted
@@ -38,7 +38,7 @@ import { describe, it, expect, afterEach } from "vitest";
 import type {
   CoreLinkProjectSnapshot,
   CoreLinkSessionSnapshot,
-  CoreLinkTaskSnapshot,
+  CoreLinkSessionRow,
 } from "@actana/sdk/core";
 import {
   SESSION_DELIVERED_EVENT_KIND,
@@ -78,9 +78,9 @@ const PROJECT: CoreLinkProjectSnapshot = {
   updatedAt: 1_700_000_000_000,
 };
 
-function task(overrides: Partial<CoreLinkTaskSnapshot> = {}): CoreLinkTaskSnapshot {
+function session(overrides: Partial<CoreLinkSessionRow> = {}): CoreLinkSessionRow {
   return {
-    taskId: "task_live",
+    sessionId: "session_live",
     projectId: PROJECT.projectId,
     title: "rebuild the flaky auth test",
     titleManuallySet: false,
@@ -120,7 +120,7 @@ function livePtyCore(
      * reproduces that ordering exactly, on a real socket, which is the only way
      * to prove the latch holds a row it cannot yet judge.
      */
-    onSpawn?: (info: { taskId: string; ptyId: string; initialInput: string | undefined }) => void;
+    onSpawn?: (info: { sessionId: string; ptyId: string; initialInput: string | undefined }) => void;
   } = {},
 ): {
   core: unknown;
@@ -128,28 +128,28 @@ function livePtyCore(
   killed: string[];
   resolutions: string[];
   /** The same lookup, uncounted — for the query ports, which are not a verb. */
-  ptyFor: (taskId: string) => string | null;
+  ptyFor: (sessionId: string) => string | null;
   exit: (ptyId: string) => void;
   spawns: () => number;
 } {
   const writes: string[] = [];
   const killed: string[] = [];
-  // Every `findByTask` this Core is asked, so a verb that resolves the PTY
+  // Every `findBySession` this Core is asked, so a verb that resolves the PTY
   // twice — and opens a window between the two — is visible rather than
   // arguable (#289: one resolution for the write and the wait).
   const resolutions: string[] = [];
-  const ptys = new Map<string, string>([["task_live", "pty_live"]]);
+  const ptys = new Map<string, string>([["session_live", "pty_live"]]);
   let emit: ((event: { type: "exit"; ptyId: string; exitCode: number }) => void) | null = null;
   let spawns = 0;
   const core = {
     setEmitTarget: (target: typeof emit) => {
       emit = target;
     },
-    findByTask: (taskId: string) => {
-      resolutions.push(taskId);
-      return { ptyId: ptys.get(taskId) ?? null };
+    findBySession: (sessionId: string) => {
+      resolutions.push(sessionId);
+      return { ptyId: ptys.get(sessionId) ?? null };
     },
-    taskIdForPty: (ptyId: string) =>
+    sessionIdForPty: (ptyId: string) =>
       [...ptys.entries()].find(([, id]) => id === ptyId)?.[0] ?? null,
     replay: (ptyId: string) =>
       ptyId === "pty_live"
@@ -163,16 +163,16 @@ function livePtyCore(
     kill: (ptyId: string) => {
       if (ptyId !== "pty_live") return false;
       killed.push(ptyId);
-      for (const [taskId, id] of ptys) if (id === ptyId) ptys.delete(taskId);
+      for (const [sessionId, id] of ptys) if (id === ptyId) ptys.delete(sessionId);
       return true;
     },
     resize: () => true,
-    spawn: (spawnOpts: { taskId: string; initialInput?: string }) => {
+    spawn: (spawnOpts: { sessionId: string; initialInput?: string }) => {
       if (!opts.onSpawn) throw new Error("this suite does not spawn — see the header");
-      const ptyId = `pty_${spawnOpts.taskId}`;
-      ptys.set(spawnOpts.taskId, ptyId);
+      const ptyId = `pty_${spawnOpts.sessionId}`;
+      ptys.set(spawnOpts.sessionId, ptyId);
       spawns += 1;
-      opts.onSpawn({ taskId: spawnOpts.taskId, ptyId, initialInput: spawnOpts.initialInput });
+      opts.onSpawn({ sessionId: spawnOpts.sessionId, ptyId, initialInput: spawnOpts.initialInput });
       return { ptyId, hooksReportTurnStart: true };
     },
     killAll: () => {},
@@ -184,15 +184,15 @@ function livePtyCore(
     writes,
     killed,
     resolutions,
-    ptyFor: (taskId: string) => ptys.get(taskId) ?? null,
+    ptyFor: (sessionId: string) => ptys.get(sessionId) ?? null,
     /** Push a PTY exit the way a dying process does — a frame, not a log row. */
     exit: (ptyId: string) => emit?.({ type: "exit", ptyId, exitCode: 0 }),
     spawns: () => spawns,
   };
 }
 
-/** Task and project reads, answered from memory. */
-function ports(tasks: CoreLinkTaskSnapshot[], live: (taskId: string) => string | null) {
+/** Session and project reads, answered from memory. */
+function ports(sessionRows: CoreLinkSessionRow[], live: (sessionId: string) => string | null) {
   /**
    * How many `sessionsList` frames this Core has answered.
    *
@@ -209,11 +209,11 @@ function ports(tasks: CoreLinkTaskSnapshot[], live: (taskId: string) => string |
   let sessionListReads = 0;
   const sessions = (): CoreLinkSessionSnapshot[] => {
     sessionListReads += 1;
-    return tasks
+    return sessionRows
       .filter((row) => !row.archived)
       .map((row) => ({
-        taskId: row.taskId,
-        ptyId: live(row.taskId),
+        sessionId: row.sessionId,
+        ptyId: live(row.sessionId),
         status: row.status,
         updatedAt: row.updatedAt,
       }));
@@ -222,14 +222,14 @@ function ports(tasks: CoreLinkTaskSnapshot[], live: (taskId: string) => string |
     sessionListReads: () => sessionListReads,
     queryPort: {
       listProjects: () => [PROJECT],
-      listTasks: () => tasks.filter((row) => !row.archived),
-      listArchivedTasks: () => tasks.filter((row) => row.archived),
-      countArchivedTasks: () => tasks.filter((row) => row.archived).length,
-      getTask: (taskId: string) => tasks.find((row) => row.taskId === taskId) ?? null,
+      listSessionRows: () => sessionRows.filter((row) => !row.archived),
+      listArchivedSessions: () => sessionRows.filter((row) => row.archived),
+      countArchivedSessions: () => sessionRows.filter((row) => row.archived).length,
+      getSession: (sessionId: string) => sessionRows.find((row) => row.sessionId === sessionId) ?? null,
     },
     mutationPort: {
       mutateProject: () => null,
-      mutateTask: () => null,
+      mutateSession: () => null,
       listSessions: sessions,
     },
   };
@@ -294,7 +294,7 @@ async function coreWithSessions(
   /** How many `sessionsList` frames the Core has answered — see {@link ports}. */
   sessionListReads: () => number;
   /** What the harness's own Stop hook does on the Core: patch the row, say so. */
-  endTurn: (taskId: string, status: string) => void;
+  endTurn: (sessionId: string, status: string) => void;
   /** Kill a PTY the way a process death does — an `exit` frame, no log row. */
   exitPty: (ptyId: string) => void;
   /** How many spawns this Core has served — the suite's "the harness is up". */
@@ -303,57 +303,57 @@ async function coreWithSessions(
   // Forward-declared because the hook below runs inside the Core and the log is
   // built after it — the same knot the real Core ties by wiring `core-entry`'s
   // `appendEvent` into `PtyCoreDeps`.
-  let appendPromptRow: ((taskId: string, ptyId: string) => void) | null = null;
+  let appendPromptRow: ((sessionId: string, ptyId: string) => void) | null = null;
   const pty = livePtyCore(
     opts.onPromptDelivery === undefined
       ? {}
       : {
-          onSpawn: ({ taskId, ptyId }) => appendPromptRow?.(taskId, ptyId),
+          onSpawn: ({ sessionId, ptyId }) => appendPromptRow?.(sessionId, ptyId),
         },
   );
-  const tasks = [
-    task({ archived: opts.archived?.includes("task_live") ?? false }),
-    task({ taskId: "task_done", title: "ship the changelog", status: "finished" }),
+  const sessionRows = [
+    session({ archived: opts.archived?.includes("session_live") ?? false }),
+    session({ sessionId: "session_done", title: "ship the changelog", status: "finished" }),
   ];
   // The uncounted lookup: `listSessions` resolves every row's PTY, and counting
   // those would drown the one thing `resolutions` is watching for — a *verb*
   // that resolves the same Session twice.
-  const { queryPort, mutationPort, sessionListReads } = ports(tasks, pty.ptyFor);
+  const { queryPort, mutationPort, sessionListReads } = ports(sessionRows, pty.ptyFor);
   // The Core's event log, wired because #289's wait is a cursor into it: the
   // Core stamps a delivery there and the client counts settling statuses from
   // that id. Without one every write comes back unstamped, which is the
   // older-Core case and not the one these tests are about.
   const eventLog = arrayEventLog();
   for (let i = 0; i < (opts.filler ?? 0); i += 1) {
-    eventLog.appendEvent("task:updated", JSON.stringify({ taskId: "task_filler" }), {
-      taskId: "task_filler",
+    eventLog.appendEvent("session:updated", JSON.stringify({ sessionId: "session_filler" }), {
+      sessionId: "session_filler",
     });
   }
   if (opts.onPromptDelivery) {
     const outcome = opts.onPromptDelivery;
-    appendPromptRow = (taskId, ptyId) => {
+    appendPromptRow = (sessionId, ptyId) => {
       if (outcome === "delivered" || outcome === "blind") {
         eventLog.appendEvent(
           SESSION_PROMPT_DELIVERED_EVENT_KIND,
           JSON.stringify({
-            taskId,
+            sessionId,
             ptyId,
             characters: 2,
             waitedMs: 812,
             composerObserved: outcome === "delivered",
           }),
-          { taskId, ptyId },
+          { sessionId, ptyId },
         );
         return;
       }
       eventLog.appendEvent(
         SESSION_PROMPT_ABANDONED_EVENT_KIND,
         JSON.stringify({
-          taskId,
+          sessionId,
           ptyId,
           reason: "opencode composer never appeared within 90000 ms",
         }),
-        { taskId, ptyId },
+        { sessionId, ptyId },
       );
     };
   }
@@ -372,16 +372,16 @@ async function coreWithSessions(
   });
   fixture = makeCliFixture();
   registerCore(fixture.paths, "inproc", core.blobText);
-  const endTurn = (taskId: string, status: string): void => {
-    const row = tasks.find((t) => t.taskId === taskId);
+  const endTurn = (sessionId: string, status: string): void => {
+    const row = sessionRows.find((t) => t.sessionId === sessionId);
     if (row) row.status = status;
-    // The event the Core's task writer appends, with the status the mutation
+    // The event the Core's session writer appends, with the status the mutation
     // patched on it — a report about a turn, and legible as one even when the
     // status it lands on is the status the row already had.
     eventLog.appendEvent(
-      "task:updated",
-      JSON.stringify({ taskId, projectId: PROJECT.projectId, status }),
-      { taskId },
+      "session:updated",
+      JSON.stringify({ sessionId, projectId: PROJECT.projectId, status }),
+      { sessionId },
     );
   };
   return {
@@ -410,21 +410,21 @@ describe("actana session, against a Core in this process", () => {
 
     const rows = JSON.parse(run.out.join("\n")) as Array<Record<string, unknown>>;
     expect(rows).toHaveLength(2);
-    const live = rows.find((row) => row.taskId === "task_live")!;
+    const live = rows.find((row) => row.sessionId === "session_live")!;
     expect(live.live).toBe(true);
     expect(live.ptyId).toBe("pty_live");
-    // Joined off the Task rows: `sessionsList` carries neither, and a listing
+    // Joined off the Session rows: `sessionsList` carries neither, and a listing
     // that showed only ids would be unreadable.
     expect(live.title).toBe("rebuild the flaky auth test");
     expect(live.project).toBe("web");
     expect(live.harness).toBe("claude-code");
-    expect(rows.find((row) => row.taskId === "task_done")!.live).toBe(false);
+    expect(rows.find((row) => row.sessionId === "session_done")!.live).toBe(false);
   }, 30_000);
 
   it("renders the transcript rather than concatenating the bytes", async () => {
     await coreWithSessions();
 
-    const rendered = await fixture!.run(["session", "logs", "task_live"], withCore());
+    const rendered = await fixture!.run(["session", "logs", "session_live"], withCore());
     expect(rendered.code, rendered.err.join("\n")).toBe(EXIT_OK);
     const screen = rendered.out.join("\n");
     expect(screen).toContain("done: 3 files changed");
@@ -434,7 +434,7 @@ describe("actana session, against a Core in this process", () => {
     expect(screen).not.toContain("Scanning…");
     expect(screen).not.toContain("\u001B");
 
-    const raw = await fixture!.run(["session", "logs", "task_live", "--raw"], withCore());
+    const raw = await fixture!.run(["session", "logs", "session_live", "--raw"], withCore());
     expect(raw.code).toBe(EXIT_OK);
     expect(raw.out.join("\n")).toContain("\u001B[1G");
   }, 30_000);
@@ -446,18 +446,18 @@ describe("actana session, against a Core in this process", () => {
     // write to the same PTY — never `"2\r"` as one, because a harness that
     // treats a paste as one unit would swallow the return with the characters.
     // No timer between them: prompt delivery is still the Core's (ADR 0026).
-    const sent = await fixture!.run(["session", "send", "task_live", "2"], withCore());
+    const sent = await fixture!.run(["session", "send", "session_live", "2"], withCore());
     expect(sent.code, sent.err.join("\n")).toBe(EXIT_OK);
     expect(writes).toEqual(["2", "\r"]);
 
     // `--enter` asks for what already happened, and a script that passes it
     // keeps working.
-    const withEnter = await fixture!.run(["session", "send", "task_live", "2", "--enter"], withCore());
+    const withEnter = await fixture!.run(["session", "send", "session_live", "2", "--enter"], withCore());
     expect(withEnter.code).toBe(EXIT_OK);
     expect(writes).toEqual(["2", "\r", "2", "\r"]);
 
     // And the opt-out reaches the wire as one write and nothing else.
-    const typed = await fixture!.run(["session", "send", "task_live", "2", "--no-enter"], withCore());
+    const typed = await fixture!.run(["session", "send", "session_live", "2", "--no-enter"], withCore());
     expect(typed.code, typed.err.join("\n")).toBe(EXIT_OK);
     expect(writes).toEqual(["2", "\r", "2", "\r", "2"]);
     expect(typed.err.join("\n")).toContain("started no turn");
@@ -465,21 +465,21 @@ describe("actana session, against a Core in this process", () => {
 
   it("kills a Session this CLI did not start", async () => {
     // The ticket's criterion, stated as a test: the PTY below was running
-    // before this process existed, and the only thing naming it is a Task id.
+    // before this process existed, and the only thing naming it is a Session id.
     const { killed } = await coreWithSessions();
 
-    const run = await fixture!.run(["session", "kill", "task_live", "--json"], withCore());
+    const run = await fixture!.run(["session", "kill", "session_live", "--json"], withCore());
     expect(run.code, run.err.join("\n")).toBe(EXIT_OK);
     expect(killed).toEqual(["pty_live"]);
     expect(JSON.parse(run.out.join("\n"))).toEqual({
-      taskId: "task_live",
+      sessionId: "session_live",
       ptyId: "pty_live",
       killed: true,
     });
 
     // And it is gone: the second kill finds no PTY and says so rather than
     // reporting a success the Core did not perform.
-    const again = await fixture!.run(["session", "kill", "task_live", "--json"], withCore());
+    const again = await fixture!.run(["session", "kill", "session_live", "--json"], withCore());
     expect(again.code).toBe(EXIT_FAILURE);
     expect(JSON.parse(again.out.join("\n")).error).toContain("no harness running");
   }, 30_000);
@@ -488,13 +488,13 @@ describe("actana session, against a Core in this process", () => {
     // The whole of #289, against a Core that answers real frames: the write is
     // stamped in the event log, the wait counts from that id, and the turn that
     // ends afterwards is the one reported. The Session here is **already
-    // settled** when the text lands — `task_live` is `running`, and the turn
+    // settled** when the text lands — `session_live` is `running`, and the turn
     // below ends on `finished` — so nothing about this could be satisfied by
     // the status the Session was sitting at.
     const { writes, resolutions, eventLog, endTurn } = await coreWithSessions();
 
     const run = fixture!.run(
-      ["session", "send", "task_live", "carry on", "--enter", "--wait", "--json"],
+      ["session", "send", "session_live", "carry on", "--enter", "--wait", "--json"],
       withCore(),
     );
     // The turn ends once the delivery has been stamped — which is the ordering
@@ -512,7 +512,7 @@ describe("actana session, against a Core in this process", () => {
       "the text and the return were both stamped",
       30_000,
     );
-    endTurn("task_live", "finished");
+    endTurn("session_live", "finished");
 
     const result = await awaitStage(
       run,
@@ -523,17 +523,17 @@ describe("actana session, against a Core in this process", () => {
 
     // Two writes, verbatim, with the return as its own byte (ADR 0026).
     expect(writes).toEqual(["carry on", "\r"]);
-    // **One resolution for the write and the wait.** A second `findByTask`
+    // **One resolution for the write and the wait.** A second `findBySession`
     // between them is the window this design exists to close.
-    expect(resolutions).toEqual(["task_live"]);
+    expect(resolutions).toEqual(["session_live"]);
 
     const stamps = eventLog.events.filter((e) => e.kind === SESSION_DELIVERED_EVENT_KIND);
     expect(stamps).toHaveLength(2);
-    expect(stamps[0]!.taskId).toBe("task_live");
+    expect(stamps[0]!.sessionId).toBe("session_live");
 
     const payload = JSON.parse(result.out.join("\n")) as Record<string, unknown>;
     expect(payload).toMatchObject({
-      taskId: "task_live",
+      sessionId: "session_live",
       ptyId: "pty_live",
       harness: "claude-code",
       waited: true,
@@ -551,16 +551,16 @@ describe("actana session, against a Core in this process", () => {
   it("waits as a verb, and refuses to wait on a Session with no harness running", async () => {
     const { eventLog, endTurn } = await coreWithSessions();
 
-    const waiting = fixture!.run(["session", "wait", "task_live", "--json"], withCore());
+    const waiting = fixture!.run(["session", "wait", "session_live", "--json"], withCore());
     // Nothing was delivered, so there is no cursor — the wait takes the next
     // settling status this attachment hears about.
     await waitFor(() => eventLog.tailReads > 0, "the wait subscribed to the event log");
-    endTurn("task_live", "needs-input");
+    endTurn("session_live", "needs-input");
 
     const settled = await waiting;
     expect(settled.code, settled.err.join("\n")).toBe(EXIT_OK);
     expect(JSON.parse(settled.out.join("\n"))).toMatchObject({
-      taskId: "task_live",
+      sessionId: "session_live",
       status: "needs-input",
       waited: true,
       // An attach did not spawn, and says so rather than inventing an answer.
@@ -568,7 +568,7 @@ describe("actana session, against a Core in this process", () => {
       reportsTurnStart: null,
     });
 
-    const stopped = await fixture!.run(["session", "wait", "task_done", "--json"], withCore());
+    const stopped = await fixture!.run(["session", "wait", "session_done", "--json"], withCore());
     expect(stopped.code).toBe(EXIT_FAILURE);
     expect(JSON.parse(stopped.out.join("\n")).error).toContain("no harness running");
   }, 60_000);
@@ -597,27 +597,27 @@ describe("actana session, against a Core in this process", () => {
     // one ordered connection.
     const { eventLog, endTurn, sessionListReads } = await coreWithSessions();
 
-    const waiting = fixture!.run(["session", "wait", "task_live", "--json"], withCore());
+    const waiting = fixture!.run(["session", "wait", "session_live", "--json"], withCore());
     await waitFor(() => sessionListReads() > 0, "the wait attached and seeded its status");
     const abandonedAt = eventLog.appendEvent(
       SESSION_PROMPT_ABANDONED_EVENT_KIND,
       JSON.stringify({
-        taskId: "task_live",
+        sessionId: "session_live",
         ptyId: "pty_live",
         reason: "opencode composer never appeared within 90000 ms",
       }),
-      { taskId: "task_live" },
+      { sessionId: "session_live" },
     );
     // The status the wait ends on is strictly behind the reason, which is the
     // discipline `pty-manager` now keeps on the Core: a client that hears the
     // status has already heard why.
-    endTurn("task_live", "needs-input");
+    endTurn("session_live", "needs-input");
     expect(eventLog.getLastEventId()).toBeGreaterThan(abandonedAt);
 
     const settled = await waiting;
     expect(settled.code).toBe(EXIT_FAILURE);
     expect(JSON.parse(settled.out.join("\n"))).toMatchObject({
-      taskId: "task_live",
+      sessionId: "session_live",
       status: "needs-input",
       promptDelivered: false,
       promptAbandonedReason: "opencode composer never appeared within 90000 ms",
@@ -640,15 +640,15 @@ describe("actana session, against a Core in this process", () => {
     eventLog.appendEvent(
       SESSION_PROMPT_ABANDONED_EVENT_KIND,
       JSON.stringify({
-        taskId: "task_live",
+        sessionId: "session_live",
         ptyId: "pty_live",
         reason: "opencode composer never appeared within 90000 ms",
       }),
-      { taskId: "task_live" },
+      { sessionId: "session_live" },
     );
 
     const sending = fixture!.run(
-      ["session", "send", "task_live", "carry", "on", "--wait", "--json"],
+      ["session", "send", "session_live", "carry", "on", "--wait", "--json"],
       withCore(),
     );
     // **Both** stamps, not the first. A send is two writes since #404 and the
@@ -660,12 +660,12 @@ describe("actana session, against a Core in this process", () => {
       () => eventLog.events.filter((e) => e.kind === SESSION_DELIVERED_EVENT_KIND).length >= 2,
       "both halves of the send were stamped",
     );
-    endTurn("task_live", "finished");
+    endTurn("session_live", "finished");
 
     const settled = await sending;
     expect(settled.code, settled.err.join("\n")).toBe(EXIT_OK);
     const payload = JSON.parse(settled.out.join("\n"));
-    expect(payload).toMatchObject({ taskId: "task_live", status: "finished" });
+    expect(payload).toMatchObject({ sessionId: "session_live", status: "finished" });
     // **What this guards is that the stale row was not latched**, and that is
     // `not false` — a latched abandon would be `false`, would carry
     // `promptAbandonedReason`, and would exit non-zero.
@@ -694,21 +694,21 @@ describe("actana session, against a Core in this process", () => {
     eventLog.appendEvent(
       SESSION_PROMPT_ABANDONED_EVENT_KIND,
       JSON.stringify({
-        taskId: "task_live",
+        sessionId: "session_live",
         ptyId: "pty_live",
         reason: "opencode composer never appeared within 90000 ms",
       }),
-      { taskId: "task_live" },
+      { sessionId: "session_live" },
     );
 
-    const waiting = fixture!.run(["session", "wait", "task_live", "--json"], withCore());
+    const waiting = fixture!.run(["session", "wait", "session_live", "--json"], withCore());
     await waitFor(() => sessionListReads() > 0, "the wait attached and seeded its status");
-    endTurn("task_live", "finished");
+    endTurn("session_live", "finished");
 
     const settled = await waiting;
     expect(settled.code, settled.err.join("\n")).toBe(EXIT_OK);
     const payload = JSON.parse(settled.out.join("\n"));
-    expect(payload).toMatchObject({ taskId: "task_live", status: "finished" });
+    expect(payload).toMatchObject({ sessionId: "session_live", status: "finished" });
     // Same reading as the send above: `not false` is the guard, and `null` is
     // the honest value. A bare `session wait` hands over no prompt at all, so
     // there is nothing for the Core to have delivered and nothing it could
@@ -721,23 +721,23 @@ describe("actana session, against a Core in this process", () => {
     // The whole of #395 on a real socket. `session resume … --await-prompt`
     // spawns, and the Core appends `session:promptDelivered` *while the spawn
     // frame is being handled* — before the answer goes back, and long before
-    // `wrap()` has a Task id to bind the latch to. The row is therefore held,
+    // `wrap()` has a Session id to bind the latch to. The row is therefore held,
     // judged against the `eventsReplayed` floor once the latch is armed, and
     // reported. Nothing here polls, sleeps or measures: the command ends
     // because the Core said something.
     //
     // A `resume` rather than a `start` only because the Core in this suite
-    // holds Tasks and does not create them; the return path under test is the
+    // holds Sessions and does not create them; the return path under test is the
     // same one, `reportStartedSession`, and both verbs reach it.
     await coreWithSessions({ onPromptDelivery: "delivered" });
 
     const run = await fixture!.run(
-      ["session", "resume", "task_done", "carry", "on", "--await-prompt", "--json"],
+      ["session", "resume", "session_done", "carry", "on", "--await-prompt", "--json"],
       withCore(),
     );
     expect(run.code, run.err.join("\n")).toBe(EXIT_OK);
     expect(JSON.parse(run.out.join("\n"))).toMatchObject({
-      taskId: "task_done",
+      sessionId: "session_done",
       awaitedPrompt: true,
       promptDelivered: true,
       // Not a turn wait, and the object says so rather than leaving a caller to
@@ -754,7 +754,7 @@ describe("actana session, against a Core in this process", () => {
     await coreWithSessions({ onPromptDelivery: "abandoned" });
 
     const run = await fixture!.run(
-      ["session", "resume", "task_done", "carry", "on", "--await-prompt"],
+      ["session", "resume", "session_done", "carry", "on", "--await-prompt"],
       withCore(),
     );
     expect(run.code).toBe(EXIT_FAILURE);
@@ -763,7 +763,7 @@ describe("actana session, against a Core in this process", () => {
     expect(err).toContain("opencode composer never appeared within 90000 ms");
     // And it names the recovery, which is the one thing `needs-input` alone
     // would have sent an operator the wrong way on.
-    expect(err).toContain("session send task_done");
+    expect(err).toContain("session send session_done");
   }, 60_000);
 
   it("does not read a previous start's abandon row as this start's verdict (#395)", async () => {
@@ -776,15 +776,15 @@ describe("actana session, against a Core in this process", () => {
     eventLog.appendEvent(
       SESSION_PROMPT_ABANDONED_EVENT_KIND,
       JSON.stringify({
-        taskId: "task_done",
-        ptyId: "pty_task_done",
+        sessionId: "session_done",
+        ptyId: "pty_session_done",
         reason: "a composer that never appeared, two starts ago",
       }),
-      { taskId: "task_done" },
+      { sessionId: "session_done" },
     );
 
     const run = await fixture!.run(
-      ["session", "resume", "task_done", "carry", "on", "--await-prompt", "--json"],
+      ["session", "resume", "session_done", "carry", "on", "--await-prompt", "--json"],
       withCore(),
     );
     expect(run.code, run.err.join("\n")).toBe(EXIT_OK);
@@ -810,33 +810,33 @@ describe("actana session, against a Core in this process", () => {
     // floor and used to be judged as this command's verdict — exit 0 and "this
     // session can take a send now", before the Core had typed a character.
     //
-    // The stale row is for this very Task, which is the case that matters: a
+    // The stale row is for this very Session, which is the case that matters: a
     // Session resumed after a start that delivered once carries that row for as
     // long as the log does.
     const { eventLog } = await coreWithSessions({ onPromptDelivery: "abandoned", filler: 1_200 });
     const staleAt = eventLog.appendEvent(
       SESSION_PROMPT_DELIVERED_EVENT_KIND,
       JSON.stringify({
-        taskId: "task_done",
-        ptyId: "pty_task_done",
+        sessionId: "session_done",
+        ptyId: "pty_session_done",
         characters: 2,
         waitedMs: 400,
         composerObserved: true,
       }),
-      { taskId: "task_done", ptyId: "pty_task_done" },
+      { sessionId: "session_done", ptyId: "pty_session_done" },
     );
     // Above the cap, and therefore above the marker the old floor used.
     expect(staleAt).toBeGreaterThan(1_000);
 
     const run = await fixture!.run(
-      ["session", "resume", "task_done", "carry", "on", "--await-prompt", "--json"],
+      ["session", "resume", "session_done", "carry", "on", "--await-prompt", "--json"],
       withCore(),
     );
     // This start's own verdict, which is the one the Core gave for *this*
     // prompt — not the delivery from the life before it.
     expect(run.code).toBe(EXIT_FAILURE);
     expect(JSON.parse(run.out.join("\n"))).toMatchObject({
-      taskId: "task_done",
+      sessionId: "session_done",
       promptDelivered: false,
       promptAbandonedReason: "opencode composer never appeared within 90000 ms",
     });
@@ -857,7 +857,7 @@ describe("actana session, against a Core in this process", () => {
     const { exitPty, spawns } = await coreWithSessions({ onPromptDelivery: null });
 
     const running = fixture!.run(
-      ["session", "resume", "task_done", "carry", "on", "--await-prompt", "--json"],
+      ["session", "resume", "session_done", "carry", "on", "--await-prompt", "--json"],
       withCore(),
     );
     // After the spawn, so the exit is a live frame about a PTY that exists
@@ -865,7 +865,7 @@ describe("actana session, against a Core in this process", () => {
     // that beats `wrap()` all the same; this only keeps the test about the
     // bound rather than about that.
     await waitFor(() => spawns() > 0, "the Core spawned the harness");
-    exitPty("pty_task_done");
+    exitPty("pty_session_done");
 
     const run = await running;
     expect(run.code).toBe(EXIT_FAILURE);
@@ -893,7 +893,7 @@ describe("actana session, against a Core in this process", () => {
     });
 
     const running = fixture!.run(
-      ["session", "resume", "task_done", "carry", "on", "--wait", "--json"],
+      ["session", "resume", "session_done", "carry", "on", "--wait", "--json"],
       withCore(),
     );
     await waitFor(() => spawns() > 0, "the Core spawned the harness");
@@ -902,13 +902,13 @@ describe("actana session, against a Core in this process", () => {
     eventLog.appendEvent(
       SESSION_PROMPT_ABANDONED_EVENT_KIND,
       JSON.stringify({
-        taskId: "task_done",
-        ptyId: "pty_task_done",
+        sessionId: "session_done",
+        ptyId: "pty_session_done",
         reason: "the harness exited before the prompt was delivered",
       }),
-      { taskId: "task_done", ptyId: "pty_task_done" },
+      { sessionId: "session_done", ptyId: "pty_session_done" },
     );
-    exitPty("pty_task_done");
+    exitPty("pty_session_done");
 
     const run = await running;
     const payload = JSON.parse(run.out.join("\n"));
@@ -933,11 +933,11 @@ describe("actana session, against a Core in this process", () => {
     });
 
     const running = fixture!.run(
-      ["session", "resume", "task_done", "carry", "on", "--wait", "--json"],
+      ["session", "resume", "session_done", "carry", "on", "--wait", "--json"],
       withCore(),
     );
     await waitFor(() => spawns() > 0, "the Core spawned the harness");
-    exitPty("pty_task_done");
+    exitPty("pty_session_done");
 
     const run = await running;
     const payload = JSON.parse(run.out.join("\n"));
@@ -957,7 +957,7 @@ describe("actana session, against a Core in this process", () => {
     await coreWithSessions({ eventLog: false, onPromptDelivery: null });
 
     const run = await fixture!.run(
-      ["session", "resume", "task_done", "carry", "on", "--await-prompt", "--json"],
+      ["session", "resume", "session_done", "carry", "on", "--await-prompt", "--json"],
       withCore(),
     );
     expect(run.code).toBe(EXIT_FAILURE);
@@ -982,7 +982,7 @@ describe("actana session, against a Core in this process", () => {
     await coreWithSessions({ eventLog: "unavailable", onPromptDelivery: null });
 
     const run = await fixture!.run(
-      ["session", "resume", "task_done", "carry", "on", "--await-prompt", "--json"],
+      ["session", "resume", "session_done", "carry", "on", "--await-prompt", "--json"],
       withCore(),
     );
     expect(run.code).toBe(EXIT_FAILURE);
@@ -1005,7 +1005,7 @@ describe("actana session, against a Core in this process", () => {
     await coreWithSessions({ onPromptDelivery: "blind" });
 
     const run = await fixture!.run(
-      ["session", "resume", "task_done", "carry", "on", "--await-prompt", "--json"],
+      ["session", "resume", "session_done", "carry", "on", "--await-prompt", "--json"],
       withCore(),
     );
     expect(run.code).toBe(EXIT_FAILURE);
@@ -1026,7 +1026,7 @@ describe("actana session, against a Core in this process", () => {
     const { writes } = await coreWithSessions({ eventLog: false });
 
     const run = await fixture!.run(
-      ["session", "send", "task_live", "carry on", "--enter", "--wait", "--json"],
+      ["session", "send", "session_live", "carry on", "--enter", "--wait", "--json"],
       withCore(),
     );
 
@@ -1040,20 +1040,20 @@ describe("actana session, against a Core in this process", () => {
   }, 30_000);
 
   it("waits on a Session that was archived while its harness kept running", async () => {
-    // `tasksList` is active rows only by design (ADR 0019), and every other
+    // `sessionRowsList` is active rows only by design (ADR 0019), and every other
     // verb that names a live PTY works on an archived Session. Refusing here
     // would make `wait` the odd one out over a row it reads two display fields
     // off.
-    const { endTurn, eventLog } = await coreWithSessions({ archived: ["task_live"] });
+    const { endTurn, eventLog } = await coreWithSessions({ archived: ["session_live"] });
 
-    const waiting = fixture!.run(["session", "wait", "task_live", "--json"], withCore());
+    const waiting = fixture!.run(["session", "wait", "session_live", "--json"], withCore());
     await waitFor(() => eventLog.tailReads > 0, "the wait subscribed to the event log");
-    endTurn("task_live", "finished");
+    endTurn("session_live", "finished");
 
     const settled = await waiting;
     expect(settled.code, settled.err.join("\n")).toBe(EXIT_OK);
     expect(JSON.parse(settled.out.join("\n"))).toMatchObject({
-      taskId: "task_live",
+      sessionId: "session_live",
       status: "finished",
       // Read off the archived row rather than lost with it.
       harness: "claude-code",
@@ -1063,7 +1063,7 @@ describe("actana session, against a Core in this process", () => {
   it("says a stopped Session has no transcript rather than printing an empty one", async () => {
     await coreWithSessions();
 
-    const run = await fixture!.run(["session", "logs", "task_done", "--json"], withCore());
+    const run = await fixture!.run(["session", "logs", "session_done", "--json"], withCore());
     expect(run.code).toBe(EXIT_FAILURE);
     expect(JSON.parse(run.out.join("\n")).error).toContain("no harness running");
     expect(run.err.join("\n")).toContain("actana session logs");
@@ -1074,9 +1074,9 @@ describe("actana session, against a Core in this process", () => {
 
     for (const argv of [
       ["session", "ls", "--json", "--verbose"],
-      ["session", "logs", "task_live", "--json", "--verbose"],
-      ["session", "logs", "task_missing", "--json", "--verbose"],
-      ["session", "kill", "task_missing", "--json", "--verbose"],
+      ["session", "logs", "session_live", "--json", "--verbose"],
+      ["session", "logs", "session_missing", "--json", "--verbose"],
+      ["session", "kill", "session_missing", "--json", "--verbose"],
     ]) {
       const run = await fixture!.run(argv, withCore());
       // One document, parsed whole. A single stray progress line would throw.

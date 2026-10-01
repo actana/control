@@ -326,14 +326,14 @@ export const ProjectBar = memo(function ProjectBar({
       groupDragOrderRef.current = null;
     }
   }, [groupDrag, groupDragOrder, groups]);
-  // The sidebar's status-dot counts move on task:updated too, so we can't drop
-  // task events — but a burst of them should refetch the projects list once, not
+  // The sidebar's status-dot counts move on session:updated too, so we can't drop
+  // session events — but a burst of them should refetch the projects list once, not
   // once per event.
   const debouncedInvalidateProjects = useDebouncedCallback(() => void invalidateProjects(), 150);
   useServerEvents(
     useCallback(
       (e) => {
-        if (e.type.startsWith("project:") || e.type.startsWith("task:")) {
+        if (e.type.startsWith("project:") || e.type.startsWith("session:")) {
           debouncedInvalidateProjects();
         }
         // The rail renders group colors/labels (cluster dividers, workspace
@@ -910,7 +910,7 @@ export const ProjectBar = memo(function ProjectBar({
   const HOTKEY_BADGE_RADIUS = 0;
   const activeProject = activeIndex >= 0 ? visible[activeIndex] : null;
   const activeStatusDots = activeProject
-    ? getPinnedProjectStatusDots(activeProject.taskCounts)
+    ? getPinnedProjectStatusDots(activeProject.sessionCounts)
     : [];
   const activeItemWidth =
     activeProject && activeStatusDots.length > 0 ? ITEM_WIDTH : IDLE_ITEM_WIDTH;
@@ -1254,15 +1254,15 @@ export const ProjectBar = memo(function ProjectBar({
         const chordHint = directProjectShortcuts
           ? pinnedSlotBinding(projectNumber)
           : `${pinnedSlotBinding(groupNumber)} ${projectNumber}`;
-        const runningCount = project.taskCounts.running;
+        const runningCount = project.sessionCounts.running;
         const logoShouldFlash = shouldFlashPinnedProjectLogo({
           cliRunningCount: runningCount,
           terminalOpen: false,
         });
-        const finishedCount = project.taskCounts.finished;
-        const statusDots = getPinnedProjectStatusDots(project.taskCounts);
+        const finishedCount = project.sessionCounts.finished;
+        const statusDots = getPinnedProjectStatusDots(project.sessionCounts);
         const hasStatusDots = statusDots.length > 0;
-        const needsInputCount = project.taskCounts["needs-input"];
+        const needsInputCount = project.sessionCounts["needs-input"];
         const needsInputLabel =
           needsInputCount > 0
             ? `${needsInputCount} ${needsInputCount === 1 ? "session needs" : "sessions need"} input`

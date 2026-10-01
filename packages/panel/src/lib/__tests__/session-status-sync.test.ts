@@ -5,7 +5,7 @@ import {
   IDLE_TERMINAL_TURN,
   shouldResetTerminalRunningFallback,
   terminalInputStartsTurn,
-} from "../task-status-sync";
+} from "../session-status-sync";
 
 /** Fold a script of onData chunks, keeping every submit the run produced. */
 function typeInto(chunks: string[]) {

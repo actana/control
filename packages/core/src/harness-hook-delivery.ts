@@ -58,7 +58,7 @@ const MAX_LOGGED_PER_DRAIN = 10;
 export type HookMiss = {
   /** When the hook command gave up, as it stamped it (UTC, second-resolution). */
   at: string;
-  taskId: string;
+  sessionId: string;
   event: string;
   /** curl's exit status — 28 is the timeout, 7 connection refused, 22 a 4xx/5xx. */
   code: string;
@@ -179,7 +179,7 @@ function cleanField(value: string): string {
 
 /**
  * One recorded line, as `hookCommand` writes it:
- * `<iso8601>\t<taskId>\t<event>\t<curl exit>`. A line this cannot read is
+ * `<iso8601>\t<sessionId>\t<event>\t<curl exit>`. A line this cannot read is
  * dropped rather than guessed at — the file is written by a shell in a Session,
  * and anything a Session can write to is input, not a record: too long a line
  * is not ours, extra fields are ignored, and the fields are stripped of control
@@ -189,9 +189,9 @@ function parseMiss(line: string): HookMiss | null {
   if (line.length > MAX_LINE_CHARS) return null;
   const parts = line.split("\t");
   if (parts.length < 4) return null;
-  const [at, taskId, event, code] = parts.map(cleanField);
-  if (!taskId) return null;
-  return { at, taskId, event, code };
+  const [at, sessionId, event, code] = parts.map(cleanField);
+  if (!sessionId) return null;
+  return { at, sessionId, event, code };
 }
 
 export type HookDeliveryMonitorDeps = {
@@ -245,7 +245,7 @@ export class HookDeliveryMonitor {
     this.total += misses.length;
     for (const miss of misses.slice(0, MAX_LOGGED_PER_DRAIN)) {
       log.warn("hook-delivery.missed", {
-        taskId: miss.taskId,
+        sessionId: miss.sessionId,
         event: miss.event,
         at: miss.at,
         curlExit: miss.code,

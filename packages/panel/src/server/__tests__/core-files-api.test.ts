@@ -92,8 +92,8 @@ function mockCore(): PtyCore {
     kill: () => true,
     killLaunchProcesses: async () => ({ ptyCount: 0, ports: [] }),
     killPtysUnderPath: async () => ({ ptyCount: 0 }),
-    findByTask: () => ({ ptyId: null }),
-    taskIdForPty: () => null,
+    findBySession: () => ({ ptyId: null }),
+    sessionIdForPty: () => null,
     replay: () => ({ data: "", nextSeq: 0 }),
     killAll: () => {},
   } as unknown as PtyCore;

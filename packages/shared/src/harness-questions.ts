@@ -20,7 +20,7 @@ export type HarnessQuestion = {
 
 export type PendingQuestion = {
   id: string;
-  taskId: string;
+  sessionId: string;
   projectId: string;
   questions: HarnessQuestion[];
   createdAt: number;

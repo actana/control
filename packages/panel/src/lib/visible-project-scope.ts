@@ -4,7 +4,7 @@
  *
  * A project's rows are read per `(projectId, coreId)` bucket, and a read of an
  * uncached pin is slow enough to outlive the click that started it. Clicking
- * A then B then A leaves B's `useProject` / `useTasks` fetches in flight
+ * A then B then A leaves B's `useProject` / `useSessions` fetches in flight
  * against a URL that has already gone back to A: whatever they were going to
  * materialize — sessions, the archived count, the focus that follows them —
  * arrives for a project nobody is on any more (issue 381).
@@ -81,7 +81,7 @@ function scopeFor(token: string): ScopeViews {
  *
  * `onLeft` runs when the *scope* loses its last viewer — not when this
  * particular view does. A project is read by more than one query at a time
- * (its row, its task list), each unmounting in its own cleanup, and the first
+ * (its row, its session list), each unmounting in its own cleanup, and the first
  * of them to go must not conclude the operator has left while the others are
  * still on screen. So every reader's `onLeft` is held until the count reaches
  * zero, and then all of them run together, once per distinct `readerKey`.

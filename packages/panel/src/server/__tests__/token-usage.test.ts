@@ -115,7 +115,7 @@ describe("syncTokenUsage", () => {
     );
     _resetSyncSingleton();
 
-    // Seed project + task referencing a fake claude session id.
+    // Seed project + session referencing a fake claude session id.
     const sqlite = getSqlite();
     getDb();
     const sessionId = "sess-xyz";
@@ -128,7 +128,7 @@ describe("syncTokenUsage", () => {
       .run(now, now);
     sqlite
       .prepare(
-        `INSERT INTO tasks (id, project_id, title, agent, status, branch, preview, lines, archived, claude_session_id, claude_skip_permissions, claude_bare_session, created_at, updated_at)
+        `INSERT INTO sessions (id, project_id, title, agent, status, branch, preview, lines, archived, claude_session_id, claude_skip_permissions, claude_bare_session, created_at, updated_at)
          VALUES ('t1', 'p1', 'a session', 'claude-code', 'ready', 'main', '', 0, 0, ?, 0, 0, ?, ?)`
       )
       .run(sessionId, now, now);
@@ -188,8 +188,8 @@ describe("syncTokenUsage", () => {
       .get() as { c: number };
     expect(total.c).toBe(2);
 
-    // Cascade-delete: removing the task should clear its usage rows.
-    sqlite.prepare("DELETE FROM tasks WHERE id = 't1'").run();
+    // Cascade-delete: removing the session should clear its usage rows.
+    sqlite.prepare("DELETE FROM sessions WHERE id = 't1'").run();
     const after = sqlite
       .prepare("SELECT COUNT(*) AS c FROM token_usage")
       .get() as { c: number };

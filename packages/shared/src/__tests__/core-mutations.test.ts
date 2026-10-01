@@ -3,21 +3,21 @@ import Database from "better-sqlite3";
 import {
   archiveProject,
   createProject,
-  createTask,
+  createSession,
   pinProject,
   querySessions,
   renameProject,
-  deleteTask,
+  deleteSession,
   updateProjectAppearance,
   updateProjectSettings,
-  updateTask,
+  updateSession,
   validateProjectPath,
   type CoreMutationSqlite,
   type ProjectPathProbe,
 } from "../core-mutations";
-import { queryProjects, queryTasks, type CoreQuerySqlite } from "../core-query";
+import { queryProjects, querySessionRows, type CoreQuerySqlite } from "../core-query";
 
-// Pure SQL helpers that write to the Core's projects + tasks tables and
+// Pure SQL helpers that write to the Core's projects + sessions tables and
 // read the derived sessions view for the write path (issue 04, ADR 0004).
 // The tests use an in-memory better-sqlite3 with the same DDL the shared
 // schema-bootstrap module applies — kept minimal here to what the mutation
@@ -41,7 +41,7 @@ function openDb(): Database.Database {
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL
     );
-    CREATE TABLE tasks (
+    CREATE TABLE sessions (
       id TEXT PRIMARY KEY,
       project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
       title TEXT NOT NULL,
@@ -444,19 +444,19 @@ describe("archiveProject", () => {
       "/p",
       1,
     );
-    createTask(
+    createSession(
       asWriter(db),
-      { op: "create", taskId: "t1", projectId: "p1", title: "child", agent: "claude-code" },
+      { op: "create", sessionId: "t1", projectId: "p1", title: "child", agent: "claude-code" },
       1,
     );
   });
 
-  it("deletes the row, cascades child tasks, and returns the pre-delete snapshot", () => {
+  it("deletes the row, cascades child sessions, and returns the pre-delete snapshot", () => {
     const snap = archiveProject(asWriter(db), "p1");
     expect(snap?.projectId).toBe("p1");
     expect(snap?.path).toBe("/p");
     expect(queryProjects(asReader(db))).toEqual([]);
-    expect(queryTasks(asReader(db))).toEqual([]);
+    expect(querySessionRows(asReader(db))).toEqual([]);
   });
 
   it("returns null when the projectId is unknown", () => {
@@ -465,9 +465,9 @@ describe("archiveProject", () => {
   });
 });
 
-// ─── createTask / updateTask / deleteTask ─────────────────────────────────
+// ─── createSession / updateSession / deleteSession ─────────────────────────────────
 
-describe("createTask", () => {
+describe("createSession", () => {
   let db: Database.Database;
   beforeEach(() => {
     db = openDb();
@@ -479,8 +479,8 @@ describe("createTask", () => {
     );
   });
 
-  it("inserts a row that queryTasks reads back", () => {
-    const snap = createTask(
+  it("inserts a row that querySessionRows reads back", () => {
+    const snap = createSession(
       asWriter(db),
       { op: "create", projectId: "p1", title: "fix bug", agent: "claude-code" },
       2,
@@ -492,12 +492,12 @@ describe("createTask", () => {
     expect(snap.pinned).toBe(false);
     expect(snap.archived).toBe(false);
     expect(snap.icon).toBeNull();
-    expect(queryTasks(asReader(db))).toHaveLength(1);
-    expect(queryTasks(asReader(db))[0]!.icon).toBeNull();
+    expect(querySessionRows(asReader(db))).toHaveLength(1);
+    expect(querySessionRows(asReader(db))[0]!.icon).toBeNull();
   });
 
   it("stores a caller-supplied icon at creation time", () => {
-    const snap = createTask(
+    const snap = createSession(
       asWriter(db),
       {
         op: "create",
@@ -509,15 +509,15 @@ describe("createTask", () => {
       2,
     );
     expect(snap.icon).toBe("bug");
-    expect(queryTasks(asReader(db))[0]!.icon).toBe("bug");
+    expect(querySessionRows(asReader(db))[0]!.icon).toBe("bug");
   });
 
-  it("honors a caller-supplied taskId + status", () => {
-    const snap = createTask(
+  it("honors a caller-supplied sessionId + status", () => {
+    const snap = createSession(
       asWriter(db),
       {
         op: "create",
-        taskId: "t-custom",
+        sessionId: "t-custom",
         projectId: "p1",
         title: "x",
         agent: "codex",
@@ -525,7 +525,7 @@ describe("createTask", () => {
       },
       2,
     );
-    expect(snap.taskId).toBe("t-custom");
+    expect(snap.sessionId).toBe("t-custom");
     expect(snap.status).toBe("running");
   });
 
@@ -534,11 +534,11 @@ describe("createTask", () => {
     ["title", { op: "create" as const, projectId: "p1", title: "  ", agent: "claude-code" }],
     ["agent", { op: "create" as const, projectId: "p1", title: "t", agent: "  " }],
   ])("throws when %s is empty", (_, input) => {
-    expect(() => createTask(asWriter(db), input, 2)).toThrow();
+    expect(() => createSession(asWriter(db), input, 2)).toThrow();
   });
 });
 
-describe("updateTask", () => {
+describe("updateSession", () => {
   let db: Database.Database;
   beforeEach(() => {
     db = openDb();
@@ -548,17 +548,17 @@ describe("updateTask", () => {
       "/p",
       1,
     );
-    createTask(
+    createSession(
       asWriter(db),
-      { op: "create", taskId: "t1", projectId: "p1", title: "orig", agent: "claude-code" },
+      { op: "create", sessionId: "t1", projectId: "p1", title: "orig", agent: "claude-code" },
       1,
     );
   });
 
   it("patches only the fields the caller sends (partial update)", () => {
-    const snap = updateTask(
+    const snap = updateSession(
       asWriter(db),
-      { op: "update", taskId: "t1", status: "running", pinned: true },
+      { op: "update", sessionId: "t1", status: "running", pinned: true },
       5,
     );
     expect(snap?.status).toBe("running");
@@ -567,58 +567,58 @@ describe("updateTask", () => {
     expect(snap?.updatedAt).toBe(5);
   });
 
-  it("returns null when the taskId is unknown", () => {
+  it("returns null when the sessionId is unknown", () => {
     expect(
-      updateTask(asWriter(db), { op: "update", taskId: "missing", status: "running" }, 5),
+      updateSession(asWriter(db), { op: "update", sessionId: "missing", status: "running" }, 5),
     ).toBeNull();
   });
 
   it("throws on empty title patch", () => {
     expect(() =>
-      updateTask(asWriter(db), { op: "update", taskId: "t1", title: "  " }, 5),
+      updateSession(asWriter(db), { op: "update", sessionId: "t1", title: "  " }, 5),
     ).toThrow(/title cannot be empty/);
   });
 
   it("no-op update returns the existing row unchanged", () => {
-    const snap = updateTask(asWriter(db), { op: "update", taskId: "t1" }, 5);
+    const snap = updateSession(asWriter(db), { op: "update", sessionId: "t1" }, 5);
     expect(snap?.title).toBe("orig");
     expect(snap?.updatedAt).toBe(1); // unchanged: no SET clause
   });
 
-  it("archived flag flows through to queryTasks (row is filtered)", () => {
-    updateTask(asWriter(db), { op: "update", taskId: "t1", archived: true }, 5);
-    expect(queryTasks(asReader(db))).toEqual([]); // archived filtered out
+  it("archived flag flows through to querySessionRows (row is filtered)", () => {
+    updateSession(asWriter(db), { op: "update", sessionId: "t1", archived: true }, 5);
+    expect(querySessionRows(asReader(db))).toEqual([]); // archived filtered out
   });
 
   it("sets the icon when the caller sends a string", () => {
-    const snap = updateTask(
+    const snap = updateSession(
       asWriter(db),
-      { op: "update", taskId: "t1", icon: "wrench" },
+      { op: "update", sessionId: "t1", icon: "wrench" },
       5,
     );
     expect(snap?.icon).toBe("wrench");
-    expect(queryTasks(asReader(db))[0]!.icon).toBe("wrench");
+    expect(querySessionRows(asReader(db))[0]!.icon).toBe("wrench");
   });
 
   it("clears the icon when the caller sends null", () => {
-    updateTask(asWriter(db), { op: "update", taskId: "t1", icon: "wrench" }, 5);
-    const snap = updateTask(
+    updateSession(asWriter(db), { op: "update", sessionId: "t1", icon: "wrench" }, 5);
+    const snap = updateSession(
       asWriter(db),
-      { op: "update", taskId: "t1", icon: null },
+      { op: "update", sessionId: "t1", icon: null },
       6,
     );
     expect(snap?.icon).toBeNull();
-    expect(queryTasks(asReader(db))[0]!.icon).toBeNull();
+    expect(querySessionRows(asReader(db))[0]!.icon).toBeNull();
   });
 
   it("leaves the icon untouched when omitted (partial patch)", () => {
-    updateTask(asWriter(db), { op: "update", taskId: "t1", icon: "wrench" }, 5);
-    updateTask(asWriter(db), { op: "update", taskId: "t1", title: "renamed" }, 6);
-    expect(queryTasks(asReader(db))[0]!.icon).toBe("wrench");
+    updateSession(asWriter(db), { op: "update", sessionId: "t1", icon: "wrench" }, 5);
+    updateSession(asWriter(db), { op: "update", sessionId: "t1", title: "renamed" }, 6);
+    expect(querySessionRows(asReader(db))[0]!.icon).toBe("wrench");
   });
 });
 
-describe("deleteTask", () => {
+describe("deleteSession", () => {
   let db: Database.Database;
   beforeEach(() => {
     db = openDb();
@@ -628,36 +628,36 @@ describe("deleteTask", () => {
       "/p",
       1,
     );
-    createTask(
+    createSession(
       asWriter(db),
-      { op: "create", taskId: "t1", projectId: "p1", title: "orig", agent: "claude-code" },
+      { op: "create", sessionId: "t1", projectId: "p1", title: "orig", agent: "claude-code" },
       1,
     );
-    createTask(
+    createSession(
       asWriter(db),
-      { op: "create", taskId: "t2", projectId: "p1", title: "keep", agent: "claude-code" },
+      { op: "create", sessionId: "t2", projectId: "p1", title: "keep", agent: "claude-code" },
       1,
     );
   });
 
   it("removes the row and returns the pre-delete snapshot", () => {
-    const snap = deleteTask(asWriter(db), "t1");
-    expect(snap?.taskId).toBe("t1");
+    const snap = deleteSession(asWriter(db), "t1");
+    expect(snap?.sessionId).toBe("t1");
     expect(snap?.title).toBe("orig");
-    expect(queryTasks(asReader(db)).map((t) => t.taskId)).toEqual(["t2"]);
+    expect(querySessionRows(asReader(db)).map((t) => t.sessionId)).toEqual(["t2"]);
   });
 
   it("deletes an archived row too — that is the only way one leaves the DB", () => {
-    updateTask(asWriter(db), { op: "update", taskId: "t1", archived: true }, 5);
-    expect(deleteTask(asWriter(db), "t1")?.archived).toBe(true);
+    updateSession(asWriter(db), { op: "update", sessionId: "t1", archived: true }, 5);
+    expect(deleteSession(asWriter(db), "t1")?.archived).toBe(true);
     expect(
-      db.prepare(`SELECT COUNT(*) AS n FROM tasks WHERE id = 't1'`).get(),
+      db.prepare(`SELECT COUNT(*) AS n FROM sessions WHERE id = 't1'`).get(),
     ).toEqual({ n: 0 });
   });
 
-  it("returns null when the taskId is unknown, leaving every row in place", () => {
-    expect(deleteTask(asWriter(db), "missing")).toBeNull();
-    expect(queryTasks(asReader(db))).toHaveLength(2);
+  it("returns null when the sessionId is unknown, leaving every row in place", () => {
+    expect(deleteSession(asWriter(db), "missing")).toBeNull();
+    expect(querySessionRows(asReader(db))).toHaveLength(2);
   });
 });
 
@@ -679,45 +679,45 @@ describe("querySessions", () => {
       "/q",
       1,
     );
-    createTask(
+    createSession(
       asWriter(db),
-      { op: "create", taskId: "t1", projectId: "p1", title: "a", agent: "claude-code" },
+      { op: "create", sessionId: "t1", projectId: "p1", title: "a", agent: "claude-code" },
       10,
     );
-    createTask(
+    createSession(
       asWriter(db),
-      { op: "create", taskId: "t2", projectId: "p2", title: "b", agent: "codex" },
+      { op: "create", sessionId: "t2", projectId: "p2", title: "b", agent: "codex" },
       20,
     );
   });
 
-  it("returns one session per active task, enriched with live ptyId when the probe answers", () => {
-    const probe = (taskId: string) => (taskId === "t1" ? "pty-abc" : null);
+  it("returns one session per active session, enriched with live ptyId when the probe answers", () => {
+    const probe = (sessionId: string) => (sessionId === "t1" ? "pty-abc" : null);
     const sessions = querySessions(asWriter(db), probe);
     expect(sessions).toHaveLength(2);
-    const s1 = sessions.find((s) => s.taskId === "t1");
-    const s2 = sessions.find((s) => s.taskId === "t2");
+    const s1 = sessions.find((s) => s.sessionId === "t1");
+    const s2 = sessions.find((s) => s.sessionId === "t2");
     expect(s1?.ptyId).toBe("pty-abc");
     expect(s2?.ptyId).toBeNull();
   });
 
   it("filters by projectId", () => {
     const sessions = querySessions(asWriter(db), () => null, "p1");
-    expect(sessions.map((s) => s.taskId)).toEqual(["t1"]);
+    expect(sessions.map((s) => s.sessionId)).toEqual(["t1"]);
   });
 
-  it("omits archived tasks (same rule as tasksList)", () => {
-    updateTask(asWriter(db), { op: "update", taskId: "t1", archived: true }, 30);
+  it("omits archived sessions (same rule as sessionRowsList)", () => {
+    updateSession(asWriter(db), { op: "update", sessionId: "t1", archived: true }, 30);
     const sessions = querySessions(asWriter(db), () => null);
-    expect(sessions.map((s) => s.taskId)).toEqual(["t2"]);
+    expect(sessions.map((s) => s.sessionId)).toEqual(["t2"]);
   });
 
   it("orders by updated_at DESC (most recent first)", () => {
     const sessions = querySessions(asWriter(db), () => null);
-    expect(sessions.map((s) => s.taskId)).toEqual(["t2", "t1"]);
+    expect(sessions.map((s) => s.sessionId)).toEqual(["t2", "t1"]);
   });
 
-  it("returns empty when the tasks table is absent", () => {
+  it("returns empty when the sessions table is absent", () => {
     const empty = new Database(":memory:");
     expect(querySessions(asWriter(empty), () => null)).toEqual([]);
   });

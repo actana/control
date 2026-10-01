@@ -210,7 +210,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
       }
       if (name === "--core") parsed.core = value;
       else if (name === "--since") parsed.since = value;
-      // Repeatable, unlike the other three: `--kind task:created --kind
+      // Repeatable, unlike the other three: `--kind session:created --kind
       // pty:exit` is a filter somebody will build up, and the alternative — one
       // comma-joined string — puts a second syntax inside a flag value.
       else if (name === "--kind") parsed.kind.push(value);

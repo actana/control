@@ -28,6 +28,7 @@ export function corePairingStore(filePath: string): CorePairingStore {
     createSession: (session) => store.createSession(session),
     claimAttempt: (sessionId, now) => store.claimAttempt(sessionId, now),
     consume: (sessionId, now) => store.consume(sessionId, now),
+    releaseAttempt: (sessionId) => store.releaseAttempt(sessionId),
     recordClient: (client) => store.recordClient(client),
     revoke: (target) => store.revoke(target),
     listSessions: () => store.listSessions(),

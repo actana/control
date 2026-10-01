@@ -62,9 +62,9 @@ describe("agent registry", () => {
       supportsSkipPermissions: false,
     });
     expect(HARNESS_REGISTRY.opencode.startCommand()).toBe("opencode");
-    expect(HARNESS_REGISTRY.opencode.titleInvocation?.("name this task")).toEqual({
+    expect(HARNESS_REGISTRY.opencode.titleInvocation?.("name this session")).toEqual({
       cmd: "opencode",
-      args: ["run", "name this task"],
+      args: ["run", "name this session"],
     });
   });
 
@@ -77,9 +77,9 @@ describe("agent registry", () => {
     });
     expect(HARNESS_REGISTRY.pi.disabled).toBeUndefined();
     expect(HARNESS_REGISTRY.pi.startCommand()).toBe("pi");
-    expect(HARNESS_REGISTRY.pi.titleInvocation?.("name this task")).toEqual({
+    expect(HARNESS_REGISTRY.pi.titleInvocation?.("name this session")).toEqual({
       cmd: "pi",
-      args: ["-p", "--no-tools", "-nc", "--no-session", "name this task"],
+      args: ["-p", "--no-tools", "-nc", "--no-session", "name this session"],
     });
   });
 });

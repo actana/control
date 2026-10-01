@@ -48,8 +48,8 @@ describe("recording hooks this Core never acked", () => {
     );
 
     expect(drainHookMisses(missLog)).toEqual([
-      { at: "2026-08-17T10:54:51Z", taskId: "t-1", event: "Stop", code: "28" },
-      { at: "2026-08-17T10:55:02Z", taskId: "t-1", event: "SubagentStop", code: "7" },
+      { at: "2026-08-17T10:54:51Z", sessionId: "t-1", event: "Stop", code: "28" },
+      { at: "2026-08-17T10:55:02Z", sessionId: "t-1", event: "SubagentStop", code: "7" },
     ]);
     // Drained means drained: a second pass must not re-report the same drops,
     // or the running total stops meaning anything.
@@ -107,10 +107,10 @@ describe("the hook command's half of the ack", () => {
   it("records what it could not deliver, and writes nowhere when unconfigured", () => {
     const command = hookCommand("claude", "Stop");
     expect(command).toContain(`$\{${HOOK_MISS_LOG_ENV}:-/dev/null}`);
-    // The record names the task and the event, which is what makes a drop
+    // The record names the session and the event, which is what makes a drop
     // attributable to the Session it wedged.
     expect(command).toContain('"Stop"');
-    expect(command).toContain("$AC_HOOK_TASK_ID");
+    expect(command).toContain("$AC_HOOK_SESSION_ID");
   });
 });
 
@@ -128,12 +128,12 @@ describe("the two ends together, run as a hook really runs them", () => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), "ac-hook-delivery-e2e-"));
     missLog = hookMissLogPath(dir);
     seen = [];
-    receiver = await startHarnessHookReceiver((taskId, _payload, eventName) => {
-      seen.push(`${taskId}:${eventName}`);
-      // "t-gone" is a task this Core does not have — the 404 the pipeline
+    receiver = await startHarnessHookReceiver((sessionId, _payload, eventName) => {
+      seen.push(`${sessionId}:${eventName}`);
+      // "t-gone" is a session this Core does not have — the 404 the pipeline
       // answers when a hook names a row that was deleted.
-      return taskId === "t-gone"
-        ? { ok: false, body: { error: "task not found" } }
+      return sessionId === "t-gone"
+        ? { ok: false, body: { error: "session not found" } }
         : { ok: true, body: { ok: true, status: "finished" } };
     });
   });
@@ -165,7 +165,7 @@ describe("the two ends together, run as a hook really runs them", () => {
     await runHook({
       AC_HOOK_URL: receiver!.url,
       AC_HOOK_TOKEN: receiver!.token,
-      AC_HOOK_TASK_ID: "t-1",
+      AC_HOOK_SESSION_ID: "t-1",
       AC_HOOK_MISS_LOG: missLog,
     });
 
@@ -180,13 +180,13 @@ describe("the two ends together, run as a hook really runs them", () => {
     await runHook({
       AC_HOOK_URL: "http://127.0.0.1:1",
       AC_HOOK_TOKEN: "irrelevant",
-      AC_HOOK_TASK_ID: "t-wedged",
+      AC_HOOK_SESSION_ID: "t-wedged",
       AC_HOOK_MISS_LOG: missLog,
     });
 
     const misses = drainHookMisses(missLog);
     expect(misses).toHaveLength(1);
-    expect(misses[0]).toMatchObject({ taskId: "t-wedged", event: "Stop" });
+    expect(misses[0]).toMatchObject({ sessionId: "t-wedged", event: "Stop" });
     expect(misses[0].at).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/);
     expect(receiver!.acceptedCount()).toBe(0);
   }, DROP_PATH_TIMEOUT_MS);
@@ -195,18 +195,18 @@ describe("the two ends together, run as a hook really runs them", () => {
     await runHook({
       AC_HOOK_URL: receiver!.url,
       AC_HOOK_TOKEN: "wrong-token",
-      AC_HOOK_TASK_ID: "t-1",
+      AC_HOOK_SESSION_ID: "t-1",
       AC_HOOK_MISS_LOG: missLog,
     });
     expect(drainHookMisses(missLog)).toHaveLength(1);
     expect(receiver!.acceptedCount()).toBe(0);
 
-    // …and a task this Core no longer has, which is the other answer the old
+    // …and a session this Core no longer has, which is the other answer the old
     // `|| true` made indistinguishable from success.
     await runHook({
       AC_HOOK_URL: receiver!.url,
       AC_HOOK_TOKEN: receiver!.token,
-      AC_HOOK_TASK_ID: "t-gone",
+      AC_HOOK_SESSION_ID: "t-gone",
       AC_HOOK_MISS_LOG: missLog,
     });
     expect(drainHookMisses(missLog)).toHaveLength(1);
@@ -219,7 +219,7 @@ describe("the two ends together, run as a hook really runs them", () => {
     const code = await runHook({
       AC_HOOK_URL: "http://127.0.0.1:1",
       AC_HOOK_TOKEN: "irrelevant",
-      AC_HOOK_TASK_ID: "t-1",
+      AC_HOOK_SESSION_ID: "t-1",
       AC_HOOK_MISS_LOG: "",
     });
     expect(code).toBe(0);
@@ -295,12 +295,12 @@ describe("the hook miss drop box", () => {
         ...process.env,
         AC_HOOK_URL: "http://127.0.0.1:1",
         AC_HOOK_TOKEN: "t",
-        AC_HOOK_TASK_ID: "t-drop",
+        AC_HOOK_SESSION_ID: "t-drop",
         AC_HOOK_MISS_LOG: missLog,
       },
     });
     expect(result.status).toBe(0);
-    expect(drainHookMisses(missLog).map((miss) => miss.taskId)).toEqual(["t-drop"]);
+    expect(drainHookMisses(missLog).map((miss) => miss.sessionId)).toEqual(["t-drop"]);
   });
 
   describe("read as untrusted input", () => {
@@ -320,7 +320,7 @@ describe("the hook miss drop box", () => {
       const misses = drainHookMisses(missLog);
 
       expect(misses.length).toBe(filler);
-      expect(misses.some((miss) => miss.taskId === "t-cut")).toBe(false);
+      expect(misses.some((miss) => miss.sessionId === "t-cut")).toBe(false);
       expect(fs.statSync(missLog).size).toBe(0);
     });
 
@@ -341,9 +341,9 @@ describe("the hook miss drop box", () => {
       const misses = drainHookMisses(missLog);
 
       expect(misses).toEqual([
-        { at: "2026-01-01T00:00:00Z", taskId: "t-[31mred", event: "Stop", code: "28" },
-        { at: "2026-01-01T00:00:00Z", taskId: "y".repeat(128), event: "Stop", code: "28" },
-        { at: "2026-01-01T00:00:00Z", taskId: "t-c1x", event: "Stop", code: "28" },
+        { at: "2026-01-01T00:00:00Z", sessionId: "t-[31mred", event: "Stop", code: "28" },
+        { at: "2026-01-01T00:00:00Z", sessionId: "y".repeat(128), event: "Stop", code: "28" },
+        { at: "2026-01-01T00:00:00Z", sessionId: "t-c1x", event: "Stop", code: "28" },
       ]);
     });
 

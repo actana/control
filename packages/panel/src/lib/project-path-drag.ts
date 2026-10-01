@@ -1,11 +1,19 @@
 export const PROJECT_PATH_DRAG_MIME = "application/x-mission-control-project-path";
 
-const PATH_NEEDS_QUOTING = /[\s"'\\]/;
-const QUOTE_ESCAPE = /"/g;
+/** Letters, digits, and a small set of path punctuation that needs no shell quoting. */
+const PATH_SAFE = /^[A-Za-z0-9/._\-+,:@]+$/;
+/** Control bytes and newlines are PTY keystrokes; never paste them. */
+const PATH_HAS_CONTROL = /[\u0000-\u001f\u007f]/;
 
-/** Quote a filesystem path when spaces or shell metacharacters would break paste. */
-export function formatPathForTerminalPaste(path: string): string {
-  return PATH_NEEDS_QUOTING.test(path) ? `"${path.replace(QUOTE_ESCAPE, '\\"')}"` : path;
+/**
+ * Quote a filesystem path for paste into a Unix PTY shell.
+ * Returns null when the path contains control characters (refuse: write nothing).
+ */
+export function formatPathForTerminalPaste(path: string): string | null {
+  if (PATH_HAS_CONTROL.test(path)) return null;
+  if (PATH_SAFE.test(path)) return path;
+  // POSIX single-quote: close, escaped quote, reopen — `'\''`
+  return `'${path.replace(/'/g, "'\\''")}'`;
 }
 
 export function setProjectPathDragData(

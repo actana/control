@@ -10,10 +10,10 @@ process.env.AC_USER_DATA_DIR = tmpRoot;
 const { handleApiRequest } = await import("../api-router");
 const { getOrCreateApiToken } = await import("../services/settings");
 const { createProject } = await import("../services/projects");
-const { createTask, getTask, updateStatus } = await import("../services/tasks");
+const { createSession, getSession, updateStatus } = await import("../services/sessions");
 const { getDb } = await import("~/db/client");
-const { projects, tasks, groups, appSettings } = await import("~/db/schema");
-const { TITLE_WAITING } = await import("~/lib/task-sentinels");
+const { projects, sessions, groups, appSettings } = await import("~/db/schema");
+const { TITLE_WAITING } = await import("~/lib/session-sentinels");
 
 const LOOPBACK_HEADERS = { origin: "http://127.0.0.1:5173" };
 const SESSION_ID = "00000000-0000-4000-8000-000000000000";
@@ -37,11 +37,11 @@ function authed(input: string, init: RequestInit = {}): Request {
 
 async function postHook(
   slug: string,
-  taskId: string,
+  sessionId: string,
   body: Record<string, unknown>,
 ): Promise<Response | null> {
   return handleApiRequest(
-    authed(`/api/hooks/${slug}?taskId=${encodeURIComponent(taskId)}`, {
+    authed(`/api/hooks/${slug}?sessionId=${encodeURIComponent(sessionId)}`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(body),
@@ -51,16 +51,16 @@ async function postHook(
 
 function resetDb() {
   const db = getDb();
-  db.delete(tasks).run();
+  db.delete(sessions).run();
   db.delete(projects).run();
   db.delete(groups).run();
   db.delete(appSettings).run();
 }
 
-function createHookTask(agent: Harness) {
+function createHookSession(agent: Harness) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), `mc-${agent}-hooks-proj-`));
   const project = createProject({ name: `${agent}-hooks`, path: dir });
-  return createTask({
+  return createSession({
     projectId: project.id,
     title: TITLE_WAITING,
     agent,
@@ -72,15 +72,15 @@ describe.each([
   { agent: "claude-code" as const, slug: "claude" },
   { agent: "codex" as const, slug: "codex" },
 ])("$agent hook API", ({ agent, slug }) => {
-  let taskId = "";
+  let sessionId = "";
 
   beforeEach(() => {
     resetDb();
-    taskId = createHookTask(agent).id;
+    sessionId = createHookSession(agent).id;
   });
 
-  it("marks tasks running on UserPromptSubmit", async () => {
-    const res = await postHook(slug, taskId, {
+  it("marks sessions running on UserPromptSubmit", async () => {
+    const res = await postHook(slug, sessionId, {
       hook_event_name: "UserPromptSubmit",
       session_id: SESSION_ID,
       prompt: "fix the login bug",
@@ -88,60 +88,60 @@ describe.each([
 
     expect(res?.status).toBe(200);
     await expect(res?.json()).resolves.toEqual({ ok: true, status: "running" });
-    expect(getTask(taskId)?.status).toBe("running");
+    expect(getSession(sessionId)?.status).toBe("running");
   });
 
   it("captures session ids from UserPromptSubmit", async () => {
-    const res = await postHook(slug, taskId, {
+    const res = await postHook(slug, sessionId, {
       hook_event_name: "UserPromptSubmit",
       session_id: SESSION_ID,
       prompt: "wire hook tests",
     });
 
     expect(res?.status).toBe(200);
-    expect(getTask(taskId)).toMatchObject({
+    expect(getSession(sessionId)).toMatchObject({
       claudeSessionId: SESSION_ID,
       status: "running",
     });
   });
 
-  it("marks tasks finished on Stop", async () => {
-    const res = await postHook(slug, taskId, {
+  it("marks sessions finished on Stop", async () => {
+    const res = await postHook(slug, sessionId, {
       hook_event_name: "Stop",
       session_id: SESSION_ID,
     });
 
     expect(res?.status).toBe(200);
     await expect(res?.json()).resolves.toEqual({ ok: true, status: "finished" });
-    expect(getTask(taskId)?.status).toBe("finished");
+    expect(getSession(sessionId)?.status).toBe("finished");
   });
 
-  it("marks tasks needs-input on PermissionRequest", async () => {
-    const res = await postHook(slug, taskId, {
+  it("marks sessions needs-input on PermissionRequest", async () => {
+    const res = await postHook(slug, sessionId, {
       hook_event_name: "PermissionRequest",
       session_id: SESSION_ID,
     });
 
     expect(res?.status).toBe(200);
     await expect(res?.json()).resolves.toEqual({ ok: true, status: "needs-input" });
-    expect(getTask(taskId)?.status).toBe("needs-input");
+    expect(getSession(sessionId)?.status).toBe("needs-input");
   });
 
   it("walks the full hook lifecycle over HTTP", async () => {
-    const running = await postHook(slug, taskId, {
+    const running = await postHook(slug, sessionId, {
       hook_event_name: "UserPromptSubmit",
       session_id: SESSION_ID,
       prompt: "ship agent hook coverage",
     });
     expect(running?.status).toBe(200);
 
-    const finished = await postHook(slug, taskId, {
+    const finished = await postHook(slug, sessionId, {
       hook_event_name: "Stop",
       session_id: SESSION_ID,
     });
     expect(finished?.status).toBe(200);
 
-    expect(getTask(taskId)).toMatchObject({
+    expect(getSession(sessionId)).toMatchObject({
       claudeSessionId: SESSION_ID,
       status: "finished",
     });
@@ -149,15 +149,15 @@ describe.each([
 });
 
 describe("cursor-cli hook API", () => {
-  let taskId = "";
+  let sessionId = "";
 
   beforeEach(() => {
     resetDb();
-    taskId = createHookTask("cursor-cli").id;
+    sessionId = createHookSession("cursor-cli").id;
   });
 
-  it("marks tasks running on beforeSubmitPrompt", async () => {
-    const res = await postHook("cursor", taskId, {
+  it("marks sessions running on beforeSubmitPrompt", async () => {
+    const res = await postHook("cursor", sessionId, {
       hook_event_name: "beforeSubmitPrompt",
       session_id: SESSION_ID,
       prompt: "fix the login bug",
@@ -165,86 +165,86 @@ describe("cursor-cli hook API", () => {
 
     expect(res?.status).toBe(200);
     await expect(res?.json()).resolves.toEqual({ ok: true, status: "running" });
-    expect(getTask(taskId)?.status).toBe("running");
+    expect(getSession(sessionId)?.status).toBe("running");
   });
 
   it("captures session ids from beforeSubmitPrompt", async () => {
-    const res = await postHook("cursor", taskId, {
+    const res = await postHook("cursor", sessionId, {
       hook_event_name: "beforeSubmitPrompt",
       session_id: SESSION_ID,
       prompt: "wire hook tests",
     });
 
     expect(res?.status).toBe(200);
-    expect(getTask(taskId)).toMatchObject({
+    expect(getSession(sessionId)).toMatchObject({
       claudeSessionId: SESSION_ID,
       status: "running",
     });
   });
 
   it("captures conversation ids from beforeSubmitPrompt", async () => {
-    const res = await postHook("cursor", taskId, {
+    const res = await postHook("cursor", sessionId, {
       hook_event_name: "beforeSubmitPrompt",
       conversation_id: SESSION_ID,
       prompt: "wire hook tests",
     });
 
     expect(res?.status).toBe(200);
-    expect(getTask(taskId)).toMatchObject({
+    expect(getSession(sessionId)).toMatchObject({
       claudeSessionId: SESSION_ID,
       status: "running",
     });
   });
 
   it("captures conversation ids from sessionStart", async () => {
-    const res = await postHook("cursor", taskId, {
+    const res = await postHook("cursor", sessionId, {
       hook_event_name: "sessionStart",
       conversation_id: SESSION_ID,
     });
 
     expect(res?.status).toBe(200);
-    expect(getTask(taskId)).toMatchObject({
+    expect(getSession(sessionId)).toMatchObject({
       claudeSessionId: SESSION_ID,
     });
   });
 
-  it("marks tasks finished on stop", async () => {
-    const res = await postHook("cursor", taskId, {
+  it("marks sessions finished on stop", async () => {
+    const res = await postHook("cursor", sessionId, {
       hook_event_name: "stop",
       session_id: SESSION_ID,
     });
 
     expect(res?.status).toBe(200);
     await expect(res?.json()).resolves.toEqual({ ok: true, status: "finished" });
-    expect(getTask(taskId)?.status).toBe("finished");
+    expect(getSession(sessionId)?.status).toBe("finished");
   });
 
-  it("marks tasks finished on afterAgentResponse", async () => {
-    const res = await postHook("cursor", taskId, {
+  it("marks sessions finished on afterAgentResponse", async () => {
+    const res = await postHook("cursor", sessionId, {
       hook_event_name: "afterAgentResponse",
       session_id: SESSION_ID,
     });
 
     expect(res?.status).toBe(200);
     await expect(res?.json()).resolves.toEqual({ ok: true, status: "finished" });
-    expect(getTask(taskId)?.status).toBe("finished");
+    expect(getSession(sessionId)?.status).toBe("finished");
   });
 
   it("walks the full hook lifecycle over HTTP", async () => {
-    const running = await postHook("cursor", taskId, {
+    const running = await postHook("cursor", sessionId, {
       hook_event_name: "beforeSubmitPrompt",
       session_id: SESSION_ID,
       prompt: "ship agent hook coverage",
     });
     expect(running?.status).toBe(200);
 
-    const finished = await postHook("cursor", taskId, {
+    const finished = await postHook("cursor", sessionId, {
       hook_event_name: "afterAgentResponse",
       session_id: SESSION_ID,
     });
     expect(finished?.status).toBe(200);
 
-    expect(getTask(taskId)).toMatchObject({
+    expect(getSession(sessionId)).toMatchObject({
       claudeSessionId: SESSION_ID,
       status: "finished",
     });
@@ -252,24 +252,24 @@ describe("cursor-cli hook API", () => {
 });
 
 describe("background subagents over the claude hook API", () => {
-  let taskId = "";
+  let sessionId = "";
 
   beforeEach(() => {
     resetDb();
-    taskId = createHookTask("claude-code").id;
+    sessionId = createHookSession("claude-code").id;
   });
 
-  async function prompt(sessionId = SESSION_ID) {
-    const res = await postHook("claude", taskId, {
+  async function prompt(harnessSessionId = SESSION_ID) {
+    const res = await postHook("claude", sessionId, {
       hook_event_name: "UserPromptSubmit",
-      session_id: sessionId,
+      session_id: harnessSessionId,
       prompt: "run the sweep with background agents",
     });
     expect(res?.status).toBe(200);
   }
 
   async function subagent(event: "SubagentStart" | "SubagentStop", harnessId?: string) {
-    const res = await postHook("claude", taskId, {
+    const res = await postHook("claude", sessionId, {
       hook_event_name: event,
       session_id: SESSION_ID,
       ...(harnessId ? { agent_id: harnessId } : {}),
@@ -279,10 +279,10 @@ describe("background subagents over the claude hook API", () => {
     return res;
   }
 
-  async function stop(sessionId = SESSION_ID) {
-    const res = await postHook("claude", taskId, {
+  async function stop(harnessSessionId = SESSION_ID) {
+    const res = await postHook("claude", sessionId, {
       hook_event_name: "Stop",
-      session_id: sessionId,
+      session_id: harnessSessionId,
     });
     expect(res?.status).toBe(200);
     return (await res?.json()) as { status?: string };
@@ -295,13 +295,13 @@ describe("background subagents over the claude hook API", () => {
     // Foreground turn ends while the background subagent still runs.
     const held = await stop();
     expect(held.status).toBe("running");
-    expect(getTask(taskId)?.status).toBe("running");
+    expect(getSession(sessionId)?.status).toBe("running");
 
     // Subagent completes; the re-invoked main agent's own Stop is the real finish.
     await subagent("SubagentStop", "sub-1");
     const finished = await stop();
     expect(finished.status).toBe("finished");
-    expect(getTask(taskId)?.status).toBe("finished");
+    expect(getSession(sessionId)?.status).toBe("finished");
   });
 
   it("finishes on Stop when subagents already completed within the turn", async () => {
@@ -313,7 +313,7 @@ describe("background subagents over the claude hook API", () => {
 
     const finished = await stop();
     expect(finished.status).toBe("finished");
-    expect(getTask(taskId)?.status).toBe("finished");
+    expect(getSession(sessionId)?.status).toBe("finished");
   });
 
   it("holds until the LAST of several background subagents reports in", async () => {
@@ -339,13 +339,13 @@ describe("background subagents over the claude hook API", () => {
     expect((await stop()).status).toBe("finished");
   });
 
-  it("does not change task status on subagent lifecycle events themselves", async () => {
+  it("does not change session status on subagent lifecycle events themselves", async () => {
     await prompt();
-    expect(getTask(taskId)?.status).toBe("running");
+    expect(getSession(sessionId)?.status).toBe("running");
     await subagent("SubagentStart", "sub-1");
-    expect(getTask(taskId)?.status).toBe("running");
+    expect(getSession(sessionId)?.status).toBe("running");
     await subagent("SubagentStop", "sub-1");
-    expect(getTask(taskId)?.status).toBe("running");
+    expect(getSession(sessionId)?.status).toBe("running");
   });
 
   it("drops tracked subagents when a new session id is captured", async () => {
@@ -363,7 +363,7 @@ describe("background subagents over the claude hook API", () => {
   it("ignores subagent events from a foreign session", async () => {
     await prompt();
     const foreign = "22222222-2222-4222-8222-222222222222";
-    const res = await postHook("claude", taskId, {
+    const res = await postHook("claude", sessionId, {
       hook_event_name: "SubagentStart",
       session_id: foreign,
       agent_id: "foreign-sub",
@@ -375,7 +375,7 @@ describe("background subagents over the claude hook API", () => {
     expect(finished.status).toBe("finished");
   });
 
-  it("heals a finished task when a late subagent event loses the race to Stop", async () => {
+  it("heals a finished session when a late subagent event loses the race to Stop", async () => {
     await prompt();
     // Stop wins the race against the just-launched subagent's SubagentStart.
     // Both POSTs leave the same harness process microseconds apart, so the
@@ -385,7 +385,7 @@ describe("background subagents over the claude hook API", () => {
     expect((await stop()).status).toBe("finished");
 
     await subagent("SubagentStart", "late-sub");
-    expect(getTask(taskId)?.status).toBe("running");
+    expect(getSession(sessionId)?.status).toBe("running");
     Date.now = realNow;
 
     await subagent("SubagentStop", "late-sub");
@@ -396,7 +396,7 @@ describe("background subagents over the claude hook API", () => {
     await prompt();
     await subagent("SubagentStart", "sub-1");
 
-    const cleared = await postHook("claude", taskId, {
+    const cleared = await postHook("claude", sessionId, {
       hook_event_name: "SessionStart",
       session_id: SESSION_ID,
       source: "clear",
@@ -410,16 +410,16 @@ describe("background subagents over the claude hook API", () => {
   it("drops tracked subagents when the terminal is terminated", async () => {
     await prompt();
     await subagent("SubagentStart", "sub-1");
-    updateStatus(taskId, { status: "terminated" });
+    updateStatus(sessionId, { status: "terminated" });
 
-    // A later session of the same task must not be held by the dead
+    // A later session of the same session must not be held by the dead
     // session's never-stopped subagent.
     await prompt();
     const finished = await stop();
     expect(finished.status).toBe("finished");
   });
 
-  it("ignores post-turn helper subagent events on a long-finished task", async () => {
+  it("ignores post-turn helper subagent events on a long-finished session", async () => {
     await prompt();
     expect((await stop()).status).toBe("finished");
 
@@ -430,9 +430,9 @@ describe("background subagents over the claude hook API", () => {
     // card flipped back to running and stayed there until the drain backstop.
     Date.now = () => realNow() + 5_000;
     await subagent("SubagentStart", "away-helper");
-    expect(getTask(taskId)?.status).toBe("finished");
+    expect(getSession(sessionId)?.status).toBe("finished");
     await subagent("SubagentStop", "away-helper");
-    expect(getTask(taskId)?.status).toBe("finished");
+    expect(getSession(sessionId)?.status).toBe("finished");
     Date.now = realNow;
 
     // The helper's start must not count as active work either — a lost helper
@@ -443,15 +443,15 @@ describe("background subagents over the claude hook API", () => {
 });
 
 describe("synthetic session-process-exit over the claude hook API", () => {
-  let taskId = "";
+  let sessionId = "";
 
   beforeEach(() => {
     resetDb();
-    taskId = createHookTask("claude-code").id;
+    sessionId = createHookSession("claude-code").id;
   });
 
   async function processExited(exitCode: number) {
-    const res = await postHook("claude", taskId, {
+    const res = await postHook("claude", sessionId, {
       hook_event_name: "MissionControlSessionEnded",
       exit_code: exitCode,
     });
@@ -462,38 +462,38 @@ describe("synthetic session-process-exit over the claude hook API", () => {
     });
   }
 
-  it("terminates a running task whose process died", async () => {
-    updateStatus(taskId, { status: "running" });
+  it("terminates a running session whose process died", async () => {
+    updateStatus(sessionId, { status: "running" });
     await processExited(137);
-    expect(getTask(taskId)?.status).toBe("terminated");
+    expect(getSession(sessionId)?.status).toBe("terminated");
   });
 
-  it("finishes a running task whose process exited cleanly", async () => {
-    updateStatus(taskId, { status: "running" });
+  it("finishes a running session whose process exited cleanly", async () => {
+    updateStatus(sessionId, { status: "running" });
     await processExited(0);
-    expect(getTask(taskId)?.status).toBe("finished");
+    expect(getSession(sessionId)?.status).toBe("finished");
   });
 
-  it("terminates a needs-input task whose process died", async () => {
-    updateStatus(taskId, { status: "needs-input" });
+  it("terminates a needs-input session whose process died", async () => {
+    updateStatus(sessionId, { status: "needs-input" });
     await processExited(1);
-    expect(getTask(taskId)?.status).toBe("terminated");
+    expect(getSession(sessionId)?.status).toBe("terminated");
   });
 
-  it("leaves settled tasks alone", async () => {
-    updateStatus(taskId, { status: "finished" });
+  it("leaves settled sessions alone", async () => {
+    updateStatus(sessionId, { status: "finished" });
     await processExited(1);
-    expect(getTask(taskId)?.status).toBe("finished");
+    expect(getSession(sessionId)?.status).toBe("finished");
 
-    updateStatus(taskId, { status: "interrupted" });
+    updateStatus(sessionId, { status: "interrupted" });
     await processExited(0);
-    expect(getTask(taskId)?.status).toBe("interrupted");
+    expect(getSession(sessionId)?.status).toBe("interrupted");
   });
 
   it("never heals on laggard subagent events after the process died", async () => {
-    updateStatus(taskId, { status: "running" });
+    updateStatus(sessionId, { status: "running" });
     // A real Stop lands the finish moments before the process exits…
-    const stopped = await postHook("claude", taskId, {
+    const stopped = await postHook("claude", sessionId, {
       hook_event_name: "Stop",
       session_id: SESSION_ID,
     });
@@ -502,19 +502,19 @@ describe("synthetic session-process-exit over the claude hook API", () => {
 
     // …then an in-flight SubagentStart from the dying session arrives inside
     // what would be the heal window. A dead process can't be re-invoked, so
-    // healing here would wedge the task on "running" for the whole TTL.
-    const laggard = await postHook("claude", taskId, {
+    // healing here would wedge the session on "running" for the whole TTL.
+    const laggard = await postHook("claude", sessionId, {
       hook_event_name: "SubagentStart",
       session_id: SESSION_ID,
       agent_id: "laggard",
     });
     expect(laggard?.status).toBe(200);
-    expect(getTask(taskId)?.status).toBe("finished");
+    expect(getSession(sessionId)?.status).toBe("finished");
   });
 
   it("drops tracked subagents with the dead process", async () => {
-    updateStatus(taskId, { status: "running" });
-    const started = await postHook("claude", taskId, {
+    updateStatus(sessionId, { status: "running" });
+    const started = await postHook("claude", sessionId, {
       hook_event_name: "SubagentStart",
       session_id: SESSION_ID,
       agent_id: "orphan",
@@ -522,15 +522,15 @@ describe("synthetic session-process-exit over the claude hook API", () => {
     expect(started?.status).toBe(200);
     await processExited(1);
 
-    // A later session of the same task must not be held by the dead
+    // A later session of the same session must not be held by the dead
     // session's never-stopped subagent.
-    const prompted = await postHook("claude", taskId, {
+    const prompted = await postHook("claude", sessionId, {
       hook_event_name: "UserPromptSubmit",
       session_id: SESSION_ID,
       prompt: "start again",
     });
     expect(prompted?.status).toBe(200);
-    const res = await postHook("claude", taskId, {
+    const res = await postHook("claude", sessionId, {
       hook_event_name: "Stop",
       session_id: SESSION_ID,
     });

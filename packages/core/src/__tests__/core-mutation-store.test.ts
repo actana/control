@@ -61,24 +61,24 @@ describe("coreMutationStore (integration against real schema)", () => {
     expect(listed[0]!.projectId).toBe("p-int-1");
   });
 
-  it("round-trips create-task → tasksList", () => {
+  it("round-trips create-session → sessionRowsList", () => {
     coreMutationStore.mutateProject({
       op: "create",
       projectId: "p-int-2",
       name: "MC",
       path: userDataDir,
     });
-    const t = coreMutationStore.mutateTask({
+    const t = coreMutationStore.mutateSession({
       op: "create",
-      taskId: "t-int-1",
+      sessionId: "t-int-1",
       projectId: "p-int-2",
       title: "fix bug",
       agent: "claude-code",
     });
-    expect(t?.taskId).toBe("t-int-1");
+    expect(t?.sessionId).toBe("t-int-1");
 
-    const tasks = coreQueryStore.listTasks("p-int-2");
-    expect(tasks.map((x) => x.taskId)).toEqual(["t-int-1"]);
+    const sessions = coreQueryStore.listSessionRows("p-int-2");
+    expect(sessions.map((x) => x.sessionId)).toEqual(["t-int-1"]);
   });
 
   it("rejects a project path that doesn't exist with an actionable error", () => {
@@ -102,21 +102,21 @@ describe("coreMutationStore (integration against real schema)", () => {
     ).toThrow(/must be absolute/);
   });
 
-  it("archive cascades child tasks and returns the pre-delete snapshot", () => {
+  it("archive cascades child sessions and returns the pre-delete snapshot", () => {
     coreMutationStore.mutateProject({
       op: "create",
       projectId: "p-int-3",
       name: "cascade-src",
       path: userDataDir,
     });
-    coreMutationStore.mutateTask({
+    coreMutationStore.mutateSession({
       op: "create",
-      taskId: "t-int-2",
+      sessionId: "t-int-2",
       projectId: "p-int-3",
       title: "child",
       agent: "claude-code",
     });
-    expect(coreQueryStore.listTasks("p-int-3")).toHaveLength(1);
+    expect(coreQueryStore.listSessionRows("p-int-3")).toHaveLength(1);
 
     const snap = coreMutationStore.mutateProject({
       op: "archive",
@@ -125,69 +125,69 @@ describe("coreMutationStore (integration against real schema)", () => {
     expect(snap?.projectId).toBe("p-int-3");
     expect(snap?.name).toBe("cascade-src");
     expect(coreQueryStore.listProjects()).toEqual([]);
-    expect(coreQueryStore.listTasks("p-int-3")).toEqual([]);
+    expect(coreQueryStore.listSessionRows("p-int-3")).toEqual([]);
   });
 
-  it("sessionsList returns tasks enriched with the live PTY probe", () => {
+  it("sessionsList returns sessions enriched with the live PTY probe", () => {
     coreMutationStore.mutateProject({
       op: "create",
       projectId: "p-int-4",
       name: "sess",
       path: userDataDir,
     });
-    coreMutationStore.mutateTask({
+    coreMutationStore.mutateSession({
       op: "create",
-      taskId: "t-live",
+      sessionId: "t-live",
       projectId: "p-int-4",
       title: "live",
       agent: "claude-code",
     });
-    coreMutationStore.mutateTask({
+    coreMutationStore.mutateSession({
       op: "create",
-      taskId: "t-idle",
+      sessionId: "t-idle",
       projectId: "p-int-4",
       title: "idle",
       agent: "claude-code",
     });
-    setLivePtyProbe((taskId) => (taskId === "t-live" ? "pty-abc" : null));
+    setLivePtyProbe((sessionId) => (sessionId === "t-live" ? "pty-abc" : null));
 
     const sessions = coreMutationStore.listSessions("p-int-4");
-    const live = sessions.find((s) => s.taskId === "t-live");
-    const idle = sessions.find((s) => s.taskId === "t-idle");
+    const live = sessions.find((s) => s.sessionId === "t-live");
+    const idle = sessions.find((s) => s.sessionId === "t-idle");
     expect(live?.ptyId).toBe("pty-abc");
     expect(idle?.ptyId).toBeNull();
   });
 
-  it("delete removes the task from tasksList and hands back what it removed", () => {
+  it("delete removes the session from sessionRowsList and hands back what it removed", () => {
     coreMutationStore.mutateProject({
       op: "create",
       projectId: "p-int-5",
       name: "delete-src",
       path: userDataDir,
     });
-    coreMutationStore.mutateTask({
+    coreMutationStore.mutateSession({
       op: "create",
-      taskId: "t-doomed",
+      sessionId: "t-doomed",
       projectId: "p-int-5",
       title: "doomed",
       agent: "claude-code",
     });
-    coreMutationStore.mutateTask({
+    coreMutationStore.mutateSession({
       op: "create",
-      taskId: "t-spared",
+      sessionId: "t-spared",
       projectId: "p-int-5",
       title: "spared",
       agent: "claude-code",
     });
 
-    const removed = coreMutationStore.mutateTask({ op: "delete", taskId: "t-doomed" });
-    expect(removed?.taskId).toBe("t-doomed");
+    const removed = coreMutationStore.mutateSession({ op: "delete", sessionId: "t-doomed" });
+    expect(removed?.sessionId).toBe("t-doomed");
     expect(removed?.title).toBe("doomed");
-    expect(coreQueryStore.listTasks("p-int-5").map((t) => t.taskId)).toEqual(["t-spared"]);
+    expect(coreQueryStore.listSessionRows("p-int-5").map((t) => t.sessionId)).toEqual(["t-spared"]);
   });
 
   it("reports a delete of a row that isn't there as null, not an exception", () => {
-    expect(coreMutationStore.mutateTask({ op: "delete", taskId: "t-ghost" })).toBeNull();
+    expect(coreMutationStore.mutateSession({ op: "delete", sessionId: "t-ghost" })).toBeNull();
   });
 
   // Issue 98: the icons were Core facts with no op to change them, so the

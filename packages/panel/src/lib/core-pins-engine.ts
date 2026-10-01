@@ -2,16 +2,16 @@ import { api } from "~/lib/api";
 import { getPanelBridge } from "~/lib/panel-bridge";
 import {
   FLEET_POLL_MS,
-  TASK_EVENT_KINDS,
+  SESSION_EVENT_KINDS,
   createCoalescingRunner,
   sameSnapshot,
 } from "~/lib/fleet-refresh";
 import { isProjectListEventKind } from "~/lib/subscribe-core-project-events";
-import { corePinTaskCounts } from "~/shared/core-pin-counts";
+import { corePinSessionCounts } from "~/shared/core-pin-counts";
 import {
   projectPresentationById,
   projectRowFromSnapshot,
-  type ProjectTaskCounts,
+  type ProjectSessionCounts,
   type ProjectWithCounts,
 } from "~/shared/projects";
 import type { CoreWithDial } from "~/shared/cores";
@@ -23,7 +23,7 @@ import type { ProjectPresentation } from "~/db/schema";
  * `useRemotePinnedProjects` is mounted more than once on every route (the shell
  * for its rail chords, `ProjectBar` for the tiles it draws, and a third time on
  * Fleet), and each mount used to run its own per-Core `listProjects` fan-out.
- * Deriving the activity dots (#377) means also reading each Core's tasks, and
+ * Deriving the activity dots (#377) means also reading each Core's sessions, and
  * doing that per mount would have turned one event into two or three fan-outs
  * per Core — the cost PR #456's reviewer called out for whoever owned the dot.
  *
@@ -33,8 +33,8 @@ import type { ProjectPresentation } from "~/db/schema";
  * `useSyncExternalStore`, so the reads no longer scale with the mounts —
  * they scale with the Cores, which is the number that should decide them.
  *
- * What this costs: on the Fleet route, `useFleetTasks` still runs its own task
- * fan-out for the grid, so a task event there is two `tasksList` frames per
+ * What this costs: on the Fleet route, `useFleetSessions` still runs its own session
+ * fan-out for the grid, so a session event there is two `sessionRowsList` frames per
  * Core (grid and rail) rather than one. Folding the grid onto this engine as
  * well is the obvious next step and is deliberately not done here — that hook
  * is #389's, its coalescing loop is what this shares, and its tests pin exact
@@ -42,9 +42,9 @@ import type { ProjectPresentation } from "~/db/schema";
  * `listProjects` fan-out, which was already 2-3 reads per Core and is now one.
  *
  * Nothing here is a second status authority. A pin's counts are derived from
- * the Core's own `tasksList` answer at the moment it lands, and the only thing
+ * the Core's own `sessionRowsList` answer at the moment it lands, and the only thing
  * remembered between passes is the last answer each Core gave — for the one
- * case where forgetting it would be a lie (see {@link corePinTaskCounts}).
+ * case where forgetting it would be a lie (see {@link corePinSessionCounts}).
  */
 
 /**
@@ -59,8 +59,8 @@ let cores: CoreWithDial[] = [];
 let coreSignature = "";
 /** The last rows each Core answered with, so an unreachable one keeps its pins. */
 let lastRowsByCore = new Map<string, ProjectWithCounts[]>();
-/** The last counts each Core answered with, by project id. See `corePinTaskCounts`. */
-let lastCountsByCore = new Map<string, Map<string, ProjectTaskCounts>>();
+/** The last counts each Core answered with, by project id. See `corePinSessionCounts`. */
+let lastCountsByCore = new Map<string, Map<string, ProjectSessionCounts>>();
 /**
  * Filing this tab has written for a Core-owned pin but has not yet read back
  * (issue 382). See {@link applyCorePinFiling}: it is an overlay on top of the
@@ -139,12 +139,12 @@ function withFiling<T extends ProjectWithCounts>(
 }
 
 /**
- * One Core's pinned rows, with the counts its tasks say they have.
+ * One Core's pinned rows, with the counts its sessions say they have.
  *
  * A Core the service cannot reach is not asked at all — the router would only
  * answer with an error — and keeps the rows it last gave. A Core that answers
- * its projects but not its tasks keeps its counts and takes the fresh pins;
- * `corePinTaskCounts` is where that rule lives.
+ * its projects but not its sessions keeps its counts and takes the fresh pins;
+ * `corePinSessionCounts` is where that rule lives.
  */
 async function readCore(
   core: CoreWithDial,
@@ -164,17 +164,17 @@ async function readCore(
   } catch {
     return remembered();
   }
-  const tasks = await bridge
-    .listTasks(core.id)
-    .then((answer) => answer.tasks)
+  const sessions = await bridge
+    .listSessionRows(core.id)
+    .then((answer) => answer.sessions)
     .catch(() => null);
   const pinned = projects.filter((p) => p.pinned);
-  const counts = corePinTaskCounts(
+  const counts = corePinSessionCounts(
     pinned.map((p) => p.projectId),
-    tasks,
+    sessions,
     lastCountsByCore.get(core.id) ?? new Map(),
   );
-  if (tasks !== null) lastCountsByCore.set(core.id, counts);
+  if (sessions !== null) lastCountsByCore.set(core.id, counts);
   // Where a pin sits on the rail (issue 382) is the field `projectRowFromSnapshot`
   // cannot supply: the core-link snapshot has no answer for it, because the rail
   // spans every Core and this Panel's own rows and the slot belongs to none of
@@ -229,9 +229,9 @@ function start(): void {
   if (!bridge || teardown) return;
   const releases = cores.map((core) => bridge.watchCore(core.id));
   // One subscription for both halves of a pin row: a project event moves the
-  // pins, a task event moves the dots, and both land in the same pass.
+  // pins, a session event moves the dots, and both land in the same pass.
   const offEvent = bridge.onEvent(({ event }) => {
-    if (TASK_EVENT_KINDS.test(event.kind) || isProjectListEventKind(event.kind)) void run();
+    if (SESSION_EVENT_KINDS.test(event.kind) || isProjectListEventKind(event.kind)) void run();
   });
   // A dropped link means a gap the replay may not fully cover; re-read on the
   // way back rather than trusting what is on screen.
@@ -290,7 +290,7 @@ export function refreshCorePins(): void {
  * a whole fan-out. So the tile the operator had just dragged to the top was
  * re-rendered at the bottom the moment the drop settled — `pinnedOrder` still
  * `null`, which `comparePinnedProjects` reads as `MAX_SAFE_INTEGER` — and it
- * stayed there for two HTTP round trips plus a `listProjects` and a `listTasks`
+ * stayed there for two HTTP round trips plus a `listProjects` and a `listSessionRows`
  * per Core. With Shift+Arrow there was not even a settle animation to hide it:
  * the key went down and the tile did not move.
  *
@@ -326,7 +326,7 @@ export function applyCorePinFiling(filing: ReadonlyMap<string, CorePinFiling>): 
  *
  * `run.fresh()` rather than `run()`, and the difference is the whole of this.
  * The plain runner coalesces: with a pass already in flight — the 15s poll, a
- * reconnect, or any task, session, PTY or project-list event, so continuously
+ * reconnect, or any session, PTY or project-list event, so continuously
  * on a live fleet — it records the request and resolves having read nothing.
  * The overlay then came down while a pass that had read the table *before* the
  * write was still fanning out, and that pass repainted the tile back where the

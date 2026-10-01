@@ -1,8 +1,8 @@
 // Core-side mutation store — a read-write handle to the shared SQLite's
-// projects + tasks tables, owned by the Core (PTY-manager) process.
+// projects + sessions tables, owned by the Core (PTY-manager) process.
 //
 // Backs the `CoreMutationPort` consumed by `PtyCoreLinkServer` for the
-// `projectsMutate` / `tasksMutate` / `sessionsList` core-link frames (issue
+// `projectsMutate` / `sessionsMutate` / `sessionsList` core-link frames (issue
 // 04, ADR 0004). On a remote Core no sibling stateful server runs, so the
 // Core itself owns writes against `missioncontrol.db` — schema bootstrap
 // (issue 02), read snapshots (issue 07), and now mutations (this file) all
@@ -23,14 +23,14 @@ import * as path from "node:path";
 import {
   archiveProject as archiveProjectSql,
   createProject as createProjectSql,
-  createTask as createTaskSql,
-  deleteTask as deleteTaskSql,
+  createSession as createSessionSql,
+  deleteSession as deleteSessionSql,
   pinProject as pinProjectSql,
   querySessions as querySessionsSql,
   renameProject as renameProjectSql,
   updateProjectAppearance as updateProjectAppearanceSql,
   updateProjectSettings as updateProjectSettingsSql,
-  updateTask as updateTaskSql,
+  updateSession as updateSessionSql,
   validateProjectPath,
   type CoreMutationSqlite,
   type LivePtyProbe,
@@ -40,8 +40,8 @@ import type {
   CoreLinkProjectMutation,
   CoreLinkProjectSnapshot,
   CoreLinkSessionSnapshot,
-  CoreLinkTaskMutation,
-  CoreLinkTaskSnapshot,
+  CoreLinkSessionMutation,
+  CoreLinkSessionRow,
 } from "@actana/sdk/core";
 import type { CoreMutationPort } from "./pty-core-link-server";
 
@@ -74,7 +74,7 @@ export function configureCoreMutationStore(userDataDir: string): void {
 }
 
 /**
- * Register the live-PTY probe used by `listSessions` to enrich task rows with
+ * Register the live-PTY probe used by `listSessions` to enrich session rows with
  * their currently-running `ptyId`. Called from the Core entry after
  * `PtyCore` is constructed — kept as a setter so this module has no
  * import-time dependency on `PtyCore`.
@@ -107,7 +107,7 @@ function ensureConnection(): Database.Database {
  * Panel sees "project path missing" instead of "nothing happened".
  *
  * The Core passes this to `PtyCoreLinkServer` so the Panel's
- * `projectsMutate` / `tasksMutate` / `sessionsList` frames resolve against
+ * `projectsMutate` / `sessionsMutate` / `sessionsList` frames resolve against
  * the same DB the read-only query port serves — one shared SQLite, WAL keeps
  * a reader coexisting with two writers (event log + row mutations).
  */
@@ -138,18 +138,18 @@ export const coreMutationStore: CoreMutationPort = {
     // frame instead of silently no-op'ing.
     throw new Error(`unknown project mutation op: ${(mutation as { op?: string }).op}`);
   },
-  mutateTask(mutation: CoreLinkTaskMutation): CoreLinkTaskSnapshot | null {
+  mutateSession(mutation: CoreLinkSessionMutation): CoreLinkSessionRow | null {
     const conn = ensureConnection() as unknown as CoreMutationSqlite;
     const now = Date.now();
     switch (mutation.op) {
       case "create":
-        return createTaskSql(conn, mutation, now);
+        return createSessionSql(conn, mutation, now);
       case "update":
-        return updateTaskSql(conn, mutation, now);
+        return updateSessionSql(conn, mutation, now);
       case "delete":
-        return deleteTaskSql(conn, mutation.taskId);
+        return deleteSessionSql(conn, mutation.sessionId);
     }
-    throw new Error(`unknown task mutation op: ${(mutation as { op?: string }).op}`);
+    throw new Error(`unknown session mutation op: ${(mutation as { op?: string }).op}`);
   },
   listSessions(projectId?: string): CoreLinkSessionSnapshot[] {
     const conn = ensureConnection() as unknown as CoreMutationSqlite;

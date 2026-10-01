@@ -208,7 +208,7 @@ export function terminalInputStartsTurn(
 }
 
 /**
- * Clear the Enter→running one-shot latch once the task is no longer running.
+ * Clear the Enter→running one-shot latch once the session is no longer running.
  * Without this, a second prompt in the same Cursor session never flips the
  * card back to running after stop → finished.
  */

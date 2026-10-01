@@ -3,7 +3,7 @@
 //
 // The Core appends PTY lifecycle events (pty:spawn / pty:exit) and serves
 // the reconnect replay tail to the Panel. The stateful server process
-// (server-runner.mjs) appends task/session/hook events to the same table via
+// (server-runner.mjs) appends session/hook events to the same table via
 // its own connection (src/server/event-log-recorder.ts). Both write to the
 // same append-only table; SQLite's WAL write lock serializes the commits and
 // `busy_timeout` absorbs the brief contention, so the two writers never
@@ -102,7 +102,7 @@ function ensureConnection(): Database.Database | null {
 export function appendEvent(
   kind: string,
   payload: string,
-  opts: { ptyId?: string | null; taskId?: string | null } = {},
+  opts: { ptyId?: string | null; sessionId?: string | null } = {},
 ): number {
   const conn = ensureConnection();
   if (!conn) return 0;

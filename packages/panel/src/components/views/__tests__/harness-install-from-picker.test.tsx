@@ -75,7 +75,7 @@ function emit(kind: string, payload: unknown): void {
     for (const cb of listeners) {
       cb({
         coreId: "core_a",
-        event: { eventId: 1, ts: 0, kind, ptyId: null, taskId: null, payload: JSON.stringify(payload) },
+        event: { eventId: 1, ts: 0, kind, ptyId: null, sessionId: null, payload: JSON.stringify(payload) },
       });
     }
   });
@@ -168,7 +168,7 @@ describe("installing a missing Harness from the picker (issue 83)", () => {
     expect(installButton().title).toMatch(/ on build-box$/);
   });
 
-  it("asks the Core that owns the picker's Task to install that Harness", async () => {
+  it("asks the Core that owns the picker's Session to install that Harness", async () => {
     await openPicker();
 
     await act(async () => {

@@ -435,7 +435,7 @@ export function assertPublishSet(found, all) {
  * The release path is untouched: `beta` defaults to false and no line under it
  * changed.
  */
-export function assertPackedManifest(packed, { version, beta = false } = {}) {
+export function assertPackedManifest(packed, { version, beta = false, sdkPin } = {}) {
   const where = `${packed.name}@${packed.version}`;
 
   // C1, on the artifact rather than on the workflow that named it. The beta
@@ -553,7 +553,24 @@ export function assertPackedManifest(packed, { version, beta = false } = {}) {
           "bundle by `packages/cli/build.mjs`, so the beta manifest drops it (D16, route 2).",
       );
     }
-    if (PUBLISHABLE.includes(dependency) && range !== packed.version) {
+    if (dependency === SDK_NAME) {
+      // The SDK is no longer on this repository's train: it ships from actana/client
+      // (#553) and is installed from npm, so the CLI's dependency is not the train
+      // version but the one SDK version the whole repo pins. See `pinnedSdkVersion`.
+      if (sdkPin === undefined) {
+        throw new Error(
+          `${where} depends on ${dependency}@${range} and no pinned npm version was given to check it against. ` +
+            "Pass `sdkPin` from `pinnedSdkVersion`.",
+        );
+      }
+      if (range !== sdkPin) {
+        throw new Error(
+          `${where} depends on ${dependency}@${range}, not on ${sdkPin}. One SDK version across the repository: ` +
+            "the CLI must carry exactly the version core, shared and panel pin from npm, never a range and never " +
+            "the train version (ADR 0016 D13, as amended for #553).",
+        );
+      }
+    } else if (PUBLISHABLE.includes(dependency) && range !== packed.version) {
       throw new Error(
         `${where} depends on ${dependency}@${range}, not on ${packed.version}. D13 is one version line, and these two ` +
           "packages are published from the same tag on the same train — a CLI pinned to another train's SDK is the " +
@@ -724,4 +741,53 @@ export function assertMonorepoKeepsTheGuard(repoRoot) {
   if (!fs.existsSync(path.join(repoRoot, "scripts", NODE_GUARD))) {
     throw new Error(`scripts/${NODE_GUARD} is gone; the monorepo's half of D12 is what it enforces.`);
   }
+}
+
+const SDK_NAME = "@actana/sdk";
+const EXACT_VERSION = /^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$/;
+
+/**
+ * The one `@actana/sdk` version this repository pins from npm (#553, ADR 0016 D13).
+ *
+ * `entries` are `{ relative, manifest }` for the root manifest and every workspace
+ * package; `packages/sdk`, the leftover #580 deletes, is skipped because it is the
+ * SDK's own source and depends on nothing named so. Every other dependency on the
+ * SDK, in any dependency field, must be an exact version, and they must all agree.
+ * A range, a `workspace:` link, a disagreement or no dependency at all throws.
+ */
+export function pinnedSdkVersion(entries) {
+  const found = [];
+  for (const { relative, manifest } of entries) {
+    if (manifest.name === SDK_NAME) continue;
+    for (const field of ["dependencies", "devDependencies", "peerDependencies", "optionalDependencies"]) {
+      const range = manifest[field]?.[SDK_NAME];
+      if (range !== undefined) found.push({ relative, field, range });
+    }
+  }
+  if (found.length === 0) {
+    throw new Error(`No manifest depends on ${SDK_NAME}, so there is no pinned npm version to hold the CLI to.`);
+  }
+  const ranged = found.filter(({ range }) => !EXACT_VERSION.test(range));
+  if (ranged.length > 0) {
+    throw new Error(
+      `${SDK_NAME} must be pinned to an exact version, with no caret, tilde, range or workspace link: ` +
+        ranged.map(({ relative, field, range }) => `${relative} ${field} has "${range}"`).join("; "),
+    );
+  }
+  const versions = [...new Set(found.map(({ range }) => range))];
+  if (versions.length > 1) {
+    throw new Error(
+      `One SDK version across the repository, and these disagree: ` +
+        found.map(({ relative, range }) => `${relative} pins ${range}`).join("; "),
+    );
+  }
+  return versions[0];
+}
+
+/** {@link pinnedSdkVersion} over the root manifest and the whole workspace. */
+export function pinnedSdkVersionOf(repoRoot) {
+  return pinnedSdkVersion([
+    { relative: "package.json", manifest: readJson(path.join(repoRoot, "package.json")) },
+    ...workspaceManifests(repoRoot),
+  ]);
 }

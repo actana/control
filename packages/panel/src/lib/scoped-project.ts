@@ -2,10 +2,10 @@ import type { Project } from "~/db/schema";
 
 /** A Project as carried by the terminal stores. Worktree scoping is gone
  * (spec 11); the alias survives so store call-sites keep a single name for
- * "the project a task's terminal runs in". */
+ * "the project a session's terminal runs in". */
 export type ScopedProject = Project;
 
-/** Frozen storage-key suffix. Per-scope UI state (grid layouts, active-task
+/** Frozen storage-key suffix. Per-scope UI state (grid layouts, active-session
  * keys) was persisted under `${projectId}:main` when worktree scoping existed —
  * keep the literal so that state survives the removal. */
 const SCOPE_KEY_SUFFIX = "main";

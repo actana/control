@@ -1,20 +1,15 @@
 #!/bin/sh
-# Checks the commit message against commitlint.config.mjs — the same rules CI
-# enforces on every PR, just told to you now rather than after you push.
+# Refuses a commit whose message breaks commitlint.config.mjs — the same rules,
+# from the same script, that the Conventions job in ci.yml enforces (#614).
 #
-# Enable (once per clone, no dependency required):
-#   git config core.hooksPath .husky
-#
-# commitlint is deliberately NOT a dependency of this repo — adding it would
-# churn the lockfile for a local convenience. If it is not resolvable the hook
-# steps aside with a hint rather than blocking your commit; CI is the gate that
-# actually has to pass.
+# Installed by `pnpm install` (the `prepare` script sets core.hooksPath).
 
-if npx --no -- commitlint --version >/dev/null 2>&1; then
-  npx --no -- commitlint --edit "$1"
-else
-  echo "ℹ commitlint not installed — skipping the local commit-message check."
-  echo "  CI will still enforce it. To run it locally, see"
-  echo "  docs/ci-cd.md#running-ci-locally (npm cannot install in this"
-  echo "  workspace's root, so the install goes through a temp directory)."
+root="$(git rev-parse --show-toplevel)" || exit 1
+
+sh "$root/scripts/check-conventions.sh" message "$1" && exit 0
+status=$?
+
+if [ "$status" -eq 1 ]; then
+  echo "commit-msg: refused — this message breaks the Conventional Commits rules in commitlint.config.mjs (listed above); fix it and commit again." >&2
 fi
+exit "$status"

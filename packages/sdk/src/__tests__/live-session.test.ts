@@ -7,10 +7,10 @@
 //     ACTANA_LIVE_CWD=/home/op/projects/scratch \
 //       pnpm --filter @actana/sdk test
 //
-// **Unlike `live-core.test.ts`, this one writes.** It creates a Task, spawns a
+// **Unlike `live-core.test.ts`, this one writes.** It creates a Session, spawns a
 // harness, sends it a prompt and kills it, so it wants a scratch Project rather
 // than the machine somebody is working on — hence the second and third
-// variables, which have no default. Everything it creates it kills; the Task row
+// variables, which have no default. Everything it creates it kills; the Session row
 // it leaves behind is the record of the run.
 //
 // Two things only a live Core can show, and both are the ticket's acceptance
@@ -91,7 +91,7 @@ describe.skipIf(!armed)("a Session on a live Core", () => {
       });
 
       expect(session.ptyId).toBeTruthy();
-      expect(session.taskId).toBeTruthy();
+      expect(session.sessionId).toBeTruthy();
 
       const statuses: string[] = [];
       session.onStatus((s) => statuses.push(s));

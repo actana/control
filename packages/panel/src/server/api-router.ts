@@ -9,7 +9,7 @@ import {
 } from "~/shared/http-status";
 import * as projectsController from "./controllers/projects.controller";
 import * as projectPresentationController from "./controllers/project-presentation.controller";
-import * as tasksController from "./controllers/tasks.controller";
+import * as sessionsController from "./controllers/sessions.controller";
 import * as groupsController from "./controllers/groups.controller";
 import * as homeTerminalsController from "./controllers/home-terminals.controller";
 import * as settingsController from "./controllers/settings.controller";
@@ -32,7 +32,7 @@ const PROJECT_PATH = /^\/api\/projects\/([^/]+)$/;
 const PROJECT_PATH_STATUS_PATH = /^\/api\/projects\/([^/]+)\/path-status$/;
 const PROJECT_IMAGE_PATH = /^\/api\/projects\/([^/]+)\/image$/;
 const PROJECT_PRESENTATION_PATH = /^\/api\/project-presentation\/([^/]+)$/;
-const PROJECT_TASKS_PATH = /^\/api\/projects\/([^/]+)\/tasks$/;
+const PROJECT_SESSIONS_PATH = /^\/api\/projects\/([^/]+)\/sessions$/;
 const GROUP_PATH = /^\/api\/groups\/([^/]+)$/;
 const CORE_PATH = /^\/api\/cores\/([^/]+)$/;
 // A Project's files on a Core, addressed by both ids because the Panel holds no
@@ -41,13 +41,13 @@ const CORE_PATH = /^\/api\/cores\/([^/]+)$/;
 // a path — the same order, and the same reason, as on the Core (#216).
 const CORE_PROJECT_FILES_LIST_PATH = /^\/api\/cores\/([^/]+)\/projects\/([^/]+)\/files\/list$/;
 const CORE_PROJECT_FILES_PATH = /^\/api\/cores\/([^/]+)\/projects\/([^/]+)\/files$/;
-// Literal path — checked before TASK_PATH so the id patterns never see it.
-const TASK_SWEEP_DISCONNECTED_PATH = "/api/tasks/sweep-disconnected";
-const TASK_PATH = /^\/api\/tasks\/([^/]+)$/;
-const TASK_STATUS_PATH = /^\/api\/tasks\/([^/]+)\/status$/;
-const TASK_QUESTION_PATH = /^\/api\/tasks\/([^/]+)\/question$/;
-const TASK_ARCHIVE_PATH = /^\/api\/tasks\/([^/]+)\/archive$/;
-const TASK_RESTORE_PATH = /^\/api\/tasks\/([^/]+)\/restore$/;
+// Literal path — checked before SESSION_PATH so the id patterns never see it.
+const SESSION_SWEEP_DISCONNECTED_PATH = "/api/sessions/sweep-disconnected";
+const SESSION_PATH = /^\/api\/sessions\/([^/]+)$/;
+const SESSION_STATUS_PATH = /^\/api\/sessions\/([^/]+)\/status$/;
+const SESSION_QUESTION_PATH = /^\/api\/sessions\/([^/]+)\/question$/;
+const SESSION_ARCHIVE_PATH = /^\/api\/sessions\/([^/]+)\/archive$/;
+const SESSION_RESTORE_PATH = /^\/api\/sessions\/([^/]+)\/restore$/;
 const HOME_USER_TERMINAL_PATH = /^\/api\/home\/user-terminals\/([^/]+)$/;
 const REQUEST_ID_HEADER = "x-request-id";
 const CORRELATION_ID_HEADER = "x-correlation-id";
@@ -294,11 +294,11 @@ async function dispatch(
     if (method === "DELETE") return projectPresentationController.remove(id);
   }
 
-  m = pathname.match(PROJECT_TASKS_PATH);
+  m = pathname.match(PROJECT_SESSIONS_PATH);
   if (m) {
     const id = decode(m[1]);
-    if (method === "GET") return tasksController.listForProject(id, request);
-    if (method === "POST") return tasksController.create(id, request);
+    if (method === "GET") return sessionsController.listForProject(id, request);
+    if (method === "POST") return sessionsController.create(id, request);
   }
   // Groups
   if (pathname === "/api/groups") {
@@ -316,25 +316,25 @@ async function dispatch(
     if (method === "DELETE") return groupsController.remove(id, request);
   }
 
-  // Tasks
-  if (pathname === TASK_SWEEP_DISCONNECTED_PATH && method === "POST") {
-    return tasksController.sweepDisconnected();
+  // Sessions
+  if (pathname === SESSION_SWEEP_DISCONNECTED_PATH && method === "POST") {
+    return sessionsController.sweepDisconnected();
   }
-  m = pathname.match(TASK_PATH);
+  m = pathname.match(SESSION_PATH);
   if (m) {
     const id = decode(m[1]);
-    if (method === "GET") return tasksController.getOne(id, request);
-    if (method === "PATCH") return tasksController.update(id, request);
-    if (method === "DELETE") return tasksController.remove(id, request);
+    if (method === "GET") return sessionsController.getOne(id, request);
+    if (method === "PATCH") return sessionsController.update(id, request);
+    if (method === "DELETE") return sessionsController.remove(id, request);
   }
-  m = pathname.match(TASK_STATUS_PATH);
-  if (m && method === "POST") return tasksController.setStatus(decode(m[1]), request);
-  m = pathname.match(TASK_QUESTION_PATH);
-  if (m && method === "GET") return tasksController.readQuestion(decode(m[1]));
-  m = pathname.match(TASK_ARCHIVE_PATH);
-  if (m && method === "POST") return tasksController.archive(decode(m[1]), request);
-  m = pathname.match(TASK_RESTORE_PATH);
-  if (m && method === "POST") return tasksController.restore(decode(m[1]), request);
+  m = pathname.match(SESSION_STATUS_PATH);
+  if (m && method === "POST") return sessionsController.setStatus(decode(m[1]), request);
+  m = pathname.match(SESSION_QUESTION_PATH);
+  if (m && method === "GET") return sessionsController.readQuestion(decode(m[1]));
+  m = pathname.match(SESSION_ARCHIVE_PATH);
+  if (m && method === "POST") return sessionsController.archive(decode(m[1]), request);
+  m = pathname.match(SESSION_RESTORE_PATH);
+  if (m && method === "POST") return sessionsController.restore(decode(m[1]), request);
 
   // Terminals. Every terminal is a `home_terminals` row and reaches the Core as
   // a VM Shell Session (issue 266); the `/api/projects/:id/user-terminals` and

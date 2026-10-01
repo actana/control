@@ -7,7 +7,7 @@ const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mc-path-security-test-"))
 process.env.AC_USER_DATA_DIR = tmpRoot;
 
 const { getDb } = await import("~/db/client");
-const { projects, tasks, groups, appSettings } = await import("~/db/schema");
+const { projects, sessions, groups, appSettings } = await import("~/db/schema");
 const { createProject } = await import("../projects");
 const { resolveRegisteredProjectPath } = await import("../path-security");
 
@@ -18,7 +18,7 @@ function mkdir(label: string): string {
 describe("path security guards", () => {
   beforeEach(() => {
     const db = getDb();
-    db.delete(tasks).run();
+    db.delete(sessions).run();
     db.delete(projects).run();
     db.delete(groups).run();
     db.delete(appSettings).run();

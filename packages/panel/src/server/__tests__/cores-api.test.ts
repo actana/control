@@ -87,10 +87,10 @@ function mockCore(): PtyCore {
     kill: () => true,
     killLaunchProcesses: async () => ({ ptyCount: 0, ports: [] }),
     killPtysUnderPath: async () => ({ ptyCount: 0 }),
-    findByTask: () => ({ ptyId: null }),
+    findBySession: () => ({ ptyId: null }),
     // Which Session a `write`/`kill` would touch (issue 144) — the lookup
     // the Core's Session-lock gate resolves a ptyId through.
-    taskIdForPty: () => null,
+    sessionIdForPty: () => null,
     replay: () => ({ data: "", nextSeq: 0 }),
     killAll: () => {},
   } as unknown as PtyCore;
@@ -164,9 +164,9 @@ function fakeEventLog(count: number): EventLogPort & { subscribedFrom: number[] 
   const events: CoreLinkEvent[] = Array.from({ length: count }, (_, i) => ({
     eventId: i + 1,
     ts: i + 1,
-    kind: "task:updated",
+    kind: "session:updated",
     ptyId: null,
-    taskId: null,
+    sessionId: null,
     payload: "{}",
   }));
   const subscribedFrom: number[] = [];

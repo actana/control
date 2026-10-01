@@ -76,12 +76,12 @@ async function attach(opts: AttachOpts = {}) {
       ...(opts.authority === undefined ? {} : { authority: opts.authority }),
       ...(opts.backlog === undefined ? {} : { backlog: opts.backlog }),
     });
-  const asked: Array<{ taskId: string; claimWrite: boolean; cols: number; rows: number }> = [];
+  const asked: Array<{ sessionId: string; claimWrite: boolean; cols: number; rows: number }> = [];
 
-  const run = cli().run(opts.argv ?? ["session", "attach", "task_1"], {
+  const run = cli().run(opts.argv ?? ["session", "attach", "session_1"], {
     terminal,
     openAttach: async (_blob, o) => {
-      asked.push({ taskId: o.taskId, claimWrite: o.claimWrite, cols: o.cols, rows: o.rows });
+      asked.push({ sessionId: o.sessionId, claimWrite: o.claimWrite, cols: o.cols, rows: o.rows });
       return attachment;
     },
   });
@@ -146,7 +146,7 @@ describe("the write lock is the first thing this command settles (ADR 0024 D3–
     // automation that was about to claim.
     const { run, terminal, asked, attachment } = await attach({
       authority: "not-claimed",
-      argv: ["session", "attach", "task_1", "--read-only"],
+      argv: ["session", "attach", "session_1", "--read-only"],
     });
 
     terminal.type("hello");
@@ -230,7 +230,7 @@ describe("the write lock is the first thing this command settles (ADR 0024 D3–
   it("says a `--read-only` drop left the Session's lock exactly as it was", async () => {
     const { run, attachment } = await attach({
       authority: "not-claimed",
-      argv: ["session", "attach", "task_1", "--read-only"],
+      argv: ["session", "attach", "session_1", "--read-only"],
     });
     attachment.drop("socket hang up");
     const said = (await run).err.join("\n");
@@ -359,7 +359,7 @@ describe("the terminal is restored on every exit path", () => {
     terminal.breakRawMode(new Error("not a tty after all"));
     const attachment = fakeAttachment();
 
-    const result = await cli().run(["session", "attach", "task_1"], {
+    const result = await cli().run(["session", "attach", "session_1"], {
       terminal,
       openAttach: async () => attachment,
     });
@@ -380,16 +380,16 @@ describe("the terminal is restored on every exit path", () => {
     await withRegisteredCore();
     const terminal = fakeTerminal();
 
-    const result = await cli().run(["session", "attach", "task_gone"], {
+    const result = await cli().run(["session", "attach", "session_gone"], {
       terminal,
       openAttach: async () => {
-        throw new SessionGatewayError("no-such-session", "this Core has no session task_gone");
+        throw new SessionGatewayError("no-such-session", "this Core has no session session_gone");
       },
     });
 
     expect(result.code).toBe(EXIT_FAILURE);
     expect(terminal.rawModeCalls).toEqual([]);
-    expect(result.err.join("\n")).toContain("this Core has no session task_gone");
+    expect(result.err.join("\n")).toContain("this Core has no session session_gone");
   });
 });
 
@@ -417,7 +417,7 @@ describe("the keyboard", () => {
     terminal.type(CTRL_C);
     const result = await run;
     expect(result.code).toBe(EXIT_OK);
-    expect(result.err.join("\n")).toContain("Detached from session task_1");
+    expect(result.err.join("\n")).toContain("Detached from session session_1");
   });
 
   it("makes Ctrl-C a detach once the lock has been taken away", async () => {
@@ -439,7 +439,7 @@ describe("the keyboard", () => {
     const result = await run;
 
     expect(result.code).toBe(EXIT_OK);
-    expect(result.err.join("\n")).toContain("Detached from session task_1");
+    expect(result.err.join("\n")).toContain("Detached from session session_1");
     // And it is still a detach rather than a stray keystroke on the new holder's
     // harness: nothing after the takeover reached the far side.
     expect(attachment.typed()).toBe("");
@@ -513,7 +513,7 @@ describe("the screen", () => {
 
   it("does not resize the PTY from a read-only attach", async () => {
     // The Core would accept it — `resize` is not gated on the lock (D4 covers
-    // `write`, `kill` and task mutations). This is the CLI's own restraint:
+    // `write`, `kill` and session mutations). This is the CLI's own restraint:
     // reflowing the terminal of the person actually typing because an observer
     // widened a window is interference in the one direction the lock cannot see.
     const { run, terminal, attachment } = await attach({ authority: "held-by-another" });
@@ -551,14 +551,14 @@ describe("the screen", () => {
     terminal.type(DETACH);
     await run;
 
-    expect(asked[0]).toMatchObject({ taskId: "task_1", cols: 132, rows: 43 });
+    expect(asked[0]).toMatchObject({ sessionId: "session_1", cols: 132, rows: 43 });
   });
 });
 
 describe("the command line", () => {
   it("refuses --json, because there is no document to emit", async () => {
     await withRegisteredCore();
-    const run = await cli().run(["session", "attach", "task_1", "--json"], {
+    const run = await cli().run(["session", "attach", "session_1", "--json"], {
       terminal: fakeTerminal(),
     });
     expect(run.code).toBe(EXIT_USAGE);
@@ -573,16 +573,16 @@ describe("the command line", () => {
     expect(none.code).toBe(EXIT_USAGE);
     expect(none.err.join("\n")).toContain("a session id is required");
 
-    const two = await cli().run(["session", "attach", "task_1", "task_2"], {
+    const two = await cli().run(["session", "attach", "session_1", "session_2"], {
       terminal: fakeTerminal(),
     });
     expect(two.code).toBe(EXIT_USAGE);
-    expect(two.err.join("\n")).toContain('unexpected argument "task_2"');
+    expect(two.err.join("\n")).toContain('unexpected argument "session_2"');
   });
 
   it("refuses a flag that belongs to another verb rather than ignoring it", async () => {
     await withRegisteredCore();
-    const run = await cli().run(["session", "attach", "task_1", "--wait"], {
+    const run = await cli().run(["session", "attach", "session_1", "--wait"], {
       terminal: fakeTerminal(),
     });
     expect(run.code).toBe(EXIT_USAGE);
@@ -591,7 +591,7 @@ describe("the command line", () => {
 
   it("refuses `--read-only` on a verb that does not attach", async () => {
     await withRegisteredCore();
-    const run = await cli().run(["session", "kill", "task_1", "--read-only"]);
+    const run = await cli().run(["session", "kill", "session_1", "--read-only"]);
     expect(run.code).toBe(EXIT_USAGE);
     expect(run.err.join("\n")).toContain("--read-only does not apply here");
   });

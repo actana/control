@@ -98,6 +98,7 @@ import {
   betaVersion,
   binTargets,
   discoverPublishable,
+  pinnedSdkVersionOf,
   externalNames,
   publishOrder,
   workspaceManifests,
@@ -186,6 +187,14 @@ try {
 // Dependency-first: the CLI depends on the SDK at the version being released,
 // and it is published by a loop over this list.
 const publishable = publishOrder(discoverPublishable(repoRoot));
+
+// One SDK version across the repo: what the CLI is held to (#553, ADR 0016 D13).
+let sdkPin;
+try {
+  sdkPin = pinnedSdkVersionOf(repoRoot);
+} catch (error) {
+  fail(error.message);
+}
 let absent = [];
 try {
   // The whole workspace, not only what was discovered: a `PUBLISHABLE` package
@@ -226,7 +235,7 @@ for (const pkg of publishable) {
   try {
     const packed = JSON.parse(readEntry(tarball, "package/package.json"));
     const entries = listEntries(tarball);
-    assertPackedManifest(packed, { version });
+    assertPackedManifest(packed, { version, sdkPin });
     assertPackedFiles(packed, entries);
     // The one rule that is about a file's contents rather than its name, so it
     // has to read the file: a linked command without `#!` reaches the shell.

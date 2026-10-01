@@ -1,7 +1,7 @@
 import { useSyncExternalStore } from "react";
 
 // The Panel's "currently selected Core" — the Core new mutations (Add project,
-// New task, spawns from the global Add Project hotkey) route to when the user
+// New session, spawns from the global Add Project hotkey) route to when the user
 // hasn't picked a specific Core from a per-Core view. Persists in
 // `localStorage` so the choice survives reloads.
 //

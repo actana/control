@@ -432,7 +432,7 @@ export function UserTerminalPane({
             if (!ptyApi) return;
             const ptySize = normalizePtySize({ cols: term.cols, rows: term.rows });
             const { ptyId: newId } = await ptyApi.spawn({
-              taskId: terminal.id,
+              sessionId: terminal.id,
               // No command: the Core starts an interactive login shell, rc
               // files and all. The launch/ephemeral `startCommand` hint that
               // used to be threaded through here went with the project-root
@@ -460,7 +460,7 @@ export function UserTerminalPane({
           if (!ptyApi) return;
           const ptySize = normalizePtySize({ cols: term.cols, rows: term.rows });
           const { ptyId: newId } = await ptyApi.spawn({
-            taskId: terminal.id,
+            sessionId: terminal.id,
             // Home terminals open at the Core's home dir (resolved by the
             // Core from the `home` flag); the browser supplies no path.
             cwd: isHome ? "" : cwd,

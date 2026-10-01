@@ -47,7 +47,7 @@
 // with — a force takeover demotes a holder to a Reader mid-session, and a demoted
 // attach that kept the holder's affordances would keep them against somebody
 // else's Session. The resize half is the one with teeth: the Core does not gate
-// `resize` on the lock (D4 covers `write`, `kill` and task mutations, and a
+// `resize` on the lock (D4 covers `write`, `kill` and session mutations, and a
 // Reader has a viewport like anyone else), so this is the CLI's own restraint and
 // not a refusal it met — reflowing the terminal of the person actually typing
 // because an observer widened a window is interference in the one direction the
@@ -168,8 +168,8 @@ export async function runSessionAttach(
     return EXIT_USAGE;
   }
 
-  const [taskId, ...extra] = rest;
-  if (taskId === undefined) {
+  const [sessionId, ...extra] = rest;
+  if (sessionId === undefined) {
     deps.err("actana session attach: a session id is required — `actana session attach <session>`.");
     return EXIT_USAGE;
   }
@@ -201,7 +201,7 @@ export async function runSessionAttach(
   let attached: SessionAttachment;
   try {
     attached = await deps.openAttach(blob, {
-      taskId,
+      sessionId,
       cols,
       rows,
       connectTimeoutMs: ATTACH_CONNECT_TIMEOUT_MS,
@@ -218,7 +218,7 @@ export async function runSessionAttach(
   // attach that announced itself *after* the scrollback would announce itself
   // where nobody is looking. Both lines go to stderr: stdout is about to become
   // a terminal.
-  deps.err(banner(taskId, attached.authority));
+  deps.err(banner(sessionId, attached.authority));
   deps.err(detachHint(writes));
 
   const guard = new RawModeGuard(terminal);
@@ -272,7 +272,7 @@ export async function runSessionAttach(
   }
 
   // Cooked again from here down, so it is safe to print lines.
-  return report(deps, terminal, taskId, blob.endpoint, end, state, attached.authority);
+  return report(deps, terminal, sessionId, blob.endpoint, end, state, attached.authority);
 }
 
 /**
@@ -405,16 +405,16 @@ function runAttachedSession(
  * each of the four authorities has its own. `no-lock-table` is deliberately not
  * a warning: that Core has no lock, so this attach writes.
  */
-function banner(taskId: string, authority: AttachAuthority): string {
+function banner(sessionId: string, authority: AttachAuthority): string {
   switch (authority) {
     case "held":
-      return `Attached to session ${taskId}. You hold the write lock — what you type goes to the harness.`;
+      return `Attached to session ${sessionId}. You hold the write lock — what you type goes to the harness.`;
     case "held-by-another":
-      return `Attached to session ${taskId}, READ-ONLY: another Core client holds this Session's write lock, so keystrokes are not forwarded.`;
+      return `Attached to session ${sessionId}, READ-ONLY: another Core client holds this Session's write lock, so keystrokes are not forwarded.`;
     case "not-claimed":
-      return `Attached to session ${taskId}, READ-ONLY: --read-only, so no claim was sent and keystrokes are not forwarded.`;
+      return `Attached to session ${sessionId}, READ-ONLY: --read-only, so no claim was sent and keystrokes are not forwarded.`;
     case "no-lock-table":
-      return `Attached to session ${taskId}. This Core publishes no Session lock, so nothing arbitrates writes — what you type goes to the harness.`;
+      return `Attached to session ${sessionId}. This Core publishes no Session lock, so nothing arbitrates writes — what you type goes to the harness.`;
   }
 }
 
@@ -437,7 +437,7 @@ function detachHint(writes: boolean): string {
 function report(
   deps: ActanaCliDeps,
   terminal: CliTerminal,
-  taskId: string,
+  sessionId: string,
   endpoint: string,
   end: Ending,
   state: SessionState,
@@ -465,14 +465,14 @@ function report(
 
   switch (end.kind) {
     case "detach":
-      deps.err(`Detached from session ${taskId}. The harness keeps running.`);
+      deps.err(`Detached from session ${sessionId}. The harness keeps running.`);
       return EXIT_OK;
     case "exit": {
       const { exitCode, signal } = end.exit;
       deps.err(
         signal !== undefined && signal > 0
-          ? `The harness for session ${taskId} was killed by signal ${signal}.`
-          : `The harness for session ${taskId} exited with code ${exitCode}.`,
+          ? `The harness for session ${sessionId} was killed by signal ${signal}.`
+          : `The harness for session ${sessionId} exited with code ${exitCode}.`,
       );
       return EXIT_OK;
     }
@@ -489,7 +489,7 @@ function report(
       }
       return EXIT_FAILURE;
     case "signal":
-      deps.err(`actana session attach: ${end.signal} — detached from session ${taskId}.`);
+      deps.err(`actana session attach: ${end.signal} — detached from session ${sessionId}.`);
       return 128 + SIGNAL_NUMBERS[end.signal];
     case "link-error":
       deps.err(`actana session attach: ${end.message}`);

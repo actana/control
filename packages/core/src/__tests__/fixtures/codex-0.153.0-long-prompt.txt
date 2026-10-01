@@ -1,6 +1,6 @@
 You are running as a sub-agent of an orchestrating Session on Core `developer`, project `control`.
 
-Task: implement the readiness row for this harness and nothing else.
+Session: implement the readiness row for this harness and nothing else.
 
 Rules you must follow:
 1. Work only in the worktree you were given. Do not touch main and do not touch any beta branch.

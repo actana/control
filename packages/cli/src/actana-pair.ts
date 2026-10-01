@@ -87,6 +87,7 @@ import {
   pairingAuditor,
   type PairingAuditSink,
 } from "@actana/shared/pairing-audit";
+import { containerUserRefusal } from "./actana-container.ts";
 import { readActanaConfig } from "./actana-config.ts";
 import {
   ANSI,
@@ -220,6 +221,24 @@ export function runPairCommand(
     return EXIT_OK;
   }
 
+  // The pairing material and store are the daemon's own user's (#559): refuse
+  // before anything is resolved, read or written.
+  if (inContainer(deps.env)) {
+    const needs =
+      verb === "new"
+        ? "pair new"
+        : verb === "ls" || verb === "list"
+          ? "pair ls"
+          : verb === "revoke"
+            ? "pair revoke <target>"
+            : null;
+    const refusal = needs ? containerUserRefusal(needs, deps.uid) : null;
+    if (refusal) {
+      deps.err(refusal);
+      return EXIT_FAILURE;
+    }
+  }
+
   switch (verb) {
     case "new":
       return pairNew(deps, rest, ctx);
@@ -267,7 +286,11 @@ function pairNew(deps: ActanaCliDeps, rest: string[], ctx: PairCommandContext): 
   const material = loadMaterialFromFile(materialPath);
   if (!material) {
     deps.err(`actana pair new: this Core has no pairing material at ${materialPath}.`);
-    deps.err("Run `actana setup` — pairing needs a CA to sign against.");
+    deps.err(
+      inContainer(deps.env)
+        ? "The daemon makes it when it first boots — check `docker compose logs core` for why it did not."
+        : "Run `actana setup` — pairing needs a CA to sign against.",
+    );
     return EXIT_FAILURE;
   }
 

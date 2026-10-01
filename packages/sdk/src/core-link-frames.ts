@@ -9,10 +9,10 @@
 // than two that have to be kept in step.
 //
 // A single WebSocket (`ws://127.0.0.1`) carries multiplexed frames keyed by
-// `ptyId`/`taskId` where relevant. Loopback-only (trusted) at this stage;
+// `ptyId`/`sessionId` where relevant. Loopback-only (trusted) at this stage;
 // mTLS + bearer auth is added in a later issue.
 //
-// Issue 02 generalizes the seed PTY protocol into one that carries task,
+// Issue 02 generalizes the seed PTY protocol into one that carries session,
 // session, and hook operations alongside PTY ops, and adds a monotonic
 // per-Core event log with `lastEventId` reconnect replay. The frame shapes:
 //
@@ -32,7 +32,7 @@
 export type CoreLinkPtySpawnHarness = "claude-code" | "codex" | "cursor-cli" | "opencode" | "pi";
 
 export type CoreLinkBaseSpawnOptions = {
-  taskId: string;
+  sessionId: string;
   cwd: string;
   command: string;
   args?: string[];
@@ -76,7 +76,7 @@ export type CoreLinkShellSpawnOptions = CoreLinkBaseSpawnOptions & {
  */
 export type CoreLinkShellSessionSpawnOptions = {
   shellSession: true;
-  taskId: string;
+  sessionId: string;
   /** Optional starting command; empty (or omitted) → interactive login shell. */
   command?: string;
   cols?: number;
@@ -115,7 +115,7 @@ export type CoreLinkLaunchProcessKillResult = {
 
 // ─── Event log envelope ─────────────────────────────────────────────────────
 //
-// A discrete thing that happened on a Core — task status change, hook fired,
+// A discrete thing that happened on a Core — session status change, hook fired,
 // question menu appeared, run finished, PTY spawned/exited. Has a monotonic
 // `eventId` per Core, persisted in the Core's SQLite `event_log` table.
 // On Panel reconnect the Core streams the tail past the Panel's
@@ -129,65 +129,65 @@ export type CoreLinkEvent = {
   /** Wall-clock ms when the event was appended. */
   ts: number;
   /**
-   * Stable kind string: `task:created`, `task:updated`, `session:finished`,
-   * `task:question`, `pty:spawn`, `pty:exit`, … Mirrors the server's AppEvent
+   * Stable kind string: `session:created`, `session:updated`, `session:finished`,
+   * `session:question`, `pty:spawn`, `pty:exit`, … Mirrors the server's AppEvent
    * type names so the Panel can route by kind without a translation layer.
    */
   kind: string;
   /** The PTY this event belongs to, if any (PTY spawn/exit). */
   ptyId: string | null;
-  /** The Task this event belongs to, if any (task status, session finish). */
-  taskId: string | null;
+  /** The Session this event belongs to, if any (session status, session finish). */
+  sessionId: string | null;
   /** JSON-serialized event-specific body. Shape is kind-specific. */
   payload: string;
 };
 
-// ─── Task / session / hook operation frames (generalized in issue 02) ───────
+// ─── Session / session / hook operation frames (generalized in issue 02) ───────
 //
-// The schema carries task/session/hook ops alongside PTY ops, keyed by the
-// same `ptyId`/`taskId` model. They use `reqId` correlation like the PTY RPCs.
-// Issue 04 (ADR 0004) makes task/project mutations real: the Core process
+// The schema carries session/session/hook ops alongside PTY ops, keyed by the
+// same `ptyId`/`sessionId` model. They use `reqId` correlation like the PTY RPCs.
+// Issue 04 (ADR 0004) makes session/project mutations real: the Core process
 // owns the write path directly against its SQLite (no sibling stateful server
-// on remote VMs), so `projectsMutate` / `tasksMutate` land rows via
-// `core-mutation-store` and append `project:created` / `task:updated` etc.
+// on remote VMs), so `projectsMutate` / `sessionsMutate` land rows via
+// `core-mutation-store` and append `project:created` / `session:updated` etc.
 // events to the same monotonic event log the PTY lifecycle events use.
 
-export type CoreLinkTaskStatus = string;
+export type CoreLinkSessionStatus = string;
 
 /**
- * A task mutation — `create` (a new task under an existing project), `update`
- * (patch an existing task row), or `delete` (remove one). The discriminant lets
- * the Core dispatch to `createTask` / `updateTask` / `deleteTask` without a
+ * A session mutation — `create` (a new session under an existing project), `update`
+ * (patch an existing session row), or `delete` (remove one). The discriminant lets
+ * the Core dispatch to `createSession` / `updateSession` / `deleteSession` without a
  * nullable-id sniff.
  *
  * On `create`, `projectId`, `title`, and `agent` are required — everything
  * else defaults on the Core (status → `ready`, pinned/archived → false).
- * `taskId` is optional; when omitted the Core generates one.
+ * `sessionId` is optional; when omitted the Core generates one.
  *
- * On `update`, `taskId` is required and identifies the row; any of
+ * On `update`, `sessionId` is required and identifies the row; any of
  * `status`/`title`/`pinned`/`archived` may be set. Fields omitted are left
  * untouched (partial patch, mirroring the Panel server's PATCH shape).
  *
- * On `delete`, `taskId` is required and the row is removed outright — the
+ * On `delete`, `sessionId` is required and the row is removed outright — the
  * Core's SQLite cascades the rows hanging off it, mirroring the Panel
- * server's own DELETE. A missing row comes back as `task: null`, the same way
+ * server's own DELETE. A missing row comes back as `session: null`, the same way
  * a missing row on `update` does; it is not an error frame.
  */
-export type CoreLinkTaskMutation =
+export type CoreLinkSessionMutation =
   | {
       op: "create";
-      taskId?: string;
+      sessionId?: string;
       projectId: string;
       title: string;
       agent: string;
-      status?: CoreLinkTaskStatus;
+      status?: CoreLinkSessionStatus;
       /** Optional session icon id at creation time; usually null and set later. */
       icon?: string | null;
     }
   | {
       op: "update";
-      taskId: string;
-      status?: CoreLinkTaskStatus;
+      sessionId: string;
+      status?: CoreLinkSessionStatus;
       title?: string;
       /**
        * Whether the `title` on this patch is an operator's rename (issue 84).
@@ -200,7 +200,7 @@ export type CoreLinkTaskMutation =
        */
       titleManuallySet?: boolean;
       /**
-       * The harness's own session id for this Task (issue 84). Captured by the
+       * The harness's own session id for this Session (issue 84). Captured by the
        * Core when a hook reports one, and by the Panel when a resumed session
        * hands back a fresh id — a Core-owned row's session id is Core state
        * like every other column, and writing it to the Panel's database left
@@ -219,7 +219,7 @@ export type CoreLinkTaskMutation =
     }
   | {
       op: "delete";
-      taskId: string;
+      sessionId: string;
     };
 
 /**
@@ -228,7 +228,7 @@ export type CoreLinkTaskMutation =
  * an `error` frame if invalid — a Project's path is a VM path and only the
  * Core can validate it (CONTEXT.md "Project").
  *
- * `archive` deletes the project row (SQLite cascades tasks under
+ * `archive` deletes the project row (SQLite cascades sessions under
  * this project via ON DELETE CASCADE — that is the shared-DB shape). The word
  * "archive" is used at the protocol layer to match the ticket's language and
  * to leave room for a future soft-archive column without changing the frame
@@ -302,9 +302,9 @@ export type CoreLinkProjectMutation =
   | { op: "appearance"; projectId: string; icon?: string; iconColor?: string };
 
 export type CoreLinkHookOp =
-  | { op: "list"; taskId?: string }
-  | { op: "enable"; hookId: string; taskId?: string }
-  | { op: "disable"; hookId: string; taskId?: string };
+  | { op: "list"; sessionId?: string }
+  | { op: "enable"; hookId: string; sessionId?: string }
+  | { op: "disable"; hookId: string; sessionId?: string };
 
 // ─── CLI availability (issue 11) ────────────────────────────────────────────
 //
@@ -439,8 +439,8 @@ export type CoreLinkDirListing = {
 // connection** (D3). The three frames below are the whole of how a connection
 // says so: `claim` takes an unlocked Session, `release` gives it back, and
 // `forceTakeover` takes one whoever holds it. All three are ordinary
-// reqId-correlated requests, and all three name a Session by its `taskId` —
-// the one identifier `tasksMutate` carries directly and `write`/`kill` resolve
+// reqId-correlated requests, and all three name a Session by its `sessionId` —
+// the one identifier `sessionsMutate` carries directly and `write`/`kill` resolve
 // to from their `ptyId`.
 //
 // A Session starts unlocked and its creator gets no privilege (D5), so the
@@ -470,7 +470,7 @@ export type CoreLinkDirListing = {
  * from the other way a mutation fails to land: "that Session is gone". Those two
  * answers arrive on different frames entirely — a refusal is this `error`, while
  * a Session that no longer exists is the ordinary `writeResult { ok: false }` /
- * `killResult { ok: false }` / `tasksMutateResult { task: null }` the Core has
+ * `killResult { ok: false }` / `sessionsMutateResult { session: null }` the Core has
  * always sent — so a client can distinguish them without parsing prose, and one
  * of them is worth retrying after a claim while the other never is.
  */
@@ -518,7 +518,7 @@ export type CoreLinkSessionTakenFrom = "nobody" | "another-connection" | "this-c
 // because a refusal only ever arrives after the mutation it refuses.
 //
 // Two surfaces carry it and they answer different questions. The **snapshot**
-// ({@link CoreLinkSessionLock}, below, on {@link CoreLinkTaskSnapshot} and
+// ({@link CoreLinkSessionLock}, below, on {@link CoreLinkSessionRow} and
 // {@link CoreLinkSessionSnapshot}) answers "can I write to this, right now"; the
 // **event** ({@link SESSION_LOCK_CHANGED_EVENT_KIND}) answers "something about
 // this Session's lock just changed, go look". Neither names a client.
@@ -574,7 +574,7 @@ export type CoreLinkSessionLockState = "unlocked" | "held-by-you" | "held-by-ano
  * `project:appearanceChanged` — and for the same reason both ADR 0017 and ADR
  * 0022 rejected the alternative. Widening an existing mutation event to carry
  * lock state would stop the frame documenting what changed: every client would
- * have to refetch on every `task:updated` to find out whether this one was
+ * have to refetch on every `session:updated` to find out whether this one was
  * about the lock, and a reconnecting client replaying a tail could not tell a
  * takeover it needs to react to from a title edit it does not.
  *
@@ -592,28 +592,28 @@ export const SESSION_LOCK_CHANGED_EVENT_KIND = "session:lockChanged";
  * It exists to be a cursor, not a notification. A client that is about to wait
  * for the turn a write starts needs one fact the event log could not otherwise
  * give it: *where in the log the write landed*. With that id in hand the wait is
- * "the first settling status for this task after event N", which is a question
+ * "the first settling status for this session after event N", which is a question
  * with one answer — and not "is this Session settled?", which answers with the
  * status the Session was already sitting at before the write (the `settledNow`
  * short-circuit in `core-session.ts`, and the reason this event exists).
  *
  * Payload is {@link CoreLinkSessionDeliveredPayload}. Appended only for a write
  * that asked to be stamped and that the PTY accepted, and only when the Core can
- * name the Task behind the PTY — the id is what the cursor is *for*.
+ * name the Session behind the PTY — the id is what the cursor is *for*.
  */
 export const SESSION_DELIVERED_EVENT_KIND = "session:delivered";
 
 /**
  * Payload of a {@link SESSION_DELIVERED_EVENT_KIND} event.
  *
- * The Task, the PTY and how many characters went in — no text. What was typed
+ * The Session, the PTY and how many characters went in — no text. What was typed
  * into a Session is the Session's, and this row goes into a log every connection
  * replays; a length is enough for an operator reading `actana events tail` to
  * tell a prompt from a keystroke, and carries nothing a transcript would not
  * already show to somebody entitled to see it.
  */
 export type CoreLinkSessionDeliveredPayload = {
-  taskId: string;
+  sessionId: string;
   ptyId: string;
   /** Characters accepted, not bytes on the wire. */
   characters: number;
@@ -634,14 +634,14 @@ export type CoreLinkSessionDeliveredPayload = {
  *
  * Payload is {@link CoreLinkSessionPromptAbandonedPayload}. Appended once per
  * delivery, only for a starting prompt the Core decided not to type, and only
- * when the Core can name the Task behind the PTY.
+ * when the Core can name the Session behind the PTY.
  */
 export const SESSION_PROMPT_ABANDONED_EVENT_KIND = "session:promptAbandoned";
 
 /**
  * Payload of a {@link SESSION_PROMPT_ABANDONED_EVENT_KIND} event.
  *
- * The Task, the PTY, and the Core's own words for why it stopped — never the
+ * The Session, the PTY, and the Core's own words for why it stopped — never the
  * prompt. This row goes into a log every connection replays, so it carries what
  * `session:delivered` carries and on the same reasoning: what was typed into a
  * Session is the Session's. `reason` is generated by the delivery module from
@@ -649,7 +649,7 @@ export const SESSION_PROMPT_ABANDONED_EVENT_KIND = "session:promptAbandoned";
  * copied out of harness output.
  */
 export type CoreLinkSessionPromptAbandonedPayload = {
-  taskId: string;
+  sessionId: string;
   ptyId: string;
   /** Why delivery stopped, in the Core's words. */
   reason: string;
@@ -676,14 +676,14 @@ export type CoreLinkSessionPromptAbandonedPayload = {
  * Payload is {@link CoreLinkSessionPromptDeliveredPayload}. Appended once per
  * delivery, only for a *starting* prompt — a `session send` is a raw write
  * (#404) and is stamped with {@link SESSION_DELIVERED_EVENT_KIND} instead — and
- * only when the Core can name the Task behind the PTY.
+ * only when the Core can name the Session behind the PTY.
  */
 export const SESSION_PROMPT_DELIVERED_EVENT_KIND = "session:promptDelivered";
 
 /**
  * Payload of a {@link SESSION_PROMPT_DELIVERED_EVENT_KIND} event.
  *
- * The Task, the PTY, how long the Core waited for the harness and how many
+ * The Session, the PTY, how long the Core waited for the harness and how many
  * characters went in — never the prompt, for the reason
  * {@link CoreLinkSessionDeliveredPayload} gives: what was typed into a Session
  * is the Session's, and this row goes into a log every connection replays.
@@ -694,7 +694,7 @@ export const SESSION_PROMPT_DELIVERED_EVENT_KIND = "session:promptDelivered";
  * and a very different answer to "was it safe to send yet".
  */
 export type CoreLinkSessionPromptDeliveredPayload = {
-  taskId: string;
+  sessionId: string;
   ptyId: string;
   /** Characters accepted, not bytes on the wire. */
   characters: number;
@@ -757,8 +757,8 @@ export type CoreLinkSessionLockTransition = "claimed" | "released" | "taken-over
  * is what tells a client the answer has moved.
  */
 export type CoreLinkSessionLockChangedPayload = {
-  /** The Session whose lock changed. Also on the event row's `taskId` column. */
-  taskId: string;
+  /** The Session whose lock changed. Also on the event row's `sessionId` column. */
+  sessionId: string;
   /** What happened to the lock. */
   transition: CoreLinkSessionLockTransition;
   /**
@@ -803,7 +803,7 @@ export type CoreLinkRequestFrame =
       commands: string[];
       ports?: number[];
     }
-  | { type: "findByTask"; reqId: string; taskId: string }
+  | { type: "findBySession"; reqId: string; sessionId: string }
   // A reattach after a dropped panel link asks for the ring tail past the seq
   // the browser already painted (`sinceSeq`); omitting it asks for the whole
   // scrollback, which is what a first attach wants.
@@ -842,7 +842,7 @@ export type CoreLinkRequestFrame =
   | { type: "ptyUnsubscribe"; reqId: string; ptyId: string }
   // ─── Session lock (issue 144, ADR 0024 D3–D7) ───
   // See the commentary above {@link SESSION_LOCKED_ERROR_CODE}. All three name
-  // a Session by `taskId`, and all three are refused by a client that has not
+  // a Session by `sessionId`, and all three are refused by a client that has not
   // seen `multiConnection` on `ready` — a single-connection Core has no lock
   // table to address.
   //
@@ -850,15 +850,15 @@ export type CoreLinkRequestFrame =
   // denied (changing nothing) when another connection does. Getting past
   // another holder is `forceTakeover` and nothing else, so a retry loop can
   // never take a Session out from under a working client by accident.
-  | { type: "claim"; reqId: string; taskId: string }
+  | { type: "claim"; reqId: string; sessionId: string }
   // Releasing a Session this connection does not hold changes nothing and is
   // not an error — a stale client saying so is talking about a lock it lost,
   // not instructing the Core to unlock somebody else's Session.
-  | { type: "release"; reqId: string; taskId: string }
+  | { type: "release"; reqId: string; sessionId: string }
   // Unconditional, immediate, and unrecoverable by design: the previous
   // holder's in-flight keystrokes are gone and its next mutation is refused.
   // This is the answer to a hung client — the reason D7 needs no idle timeout.
-  | { type: "forceTakeover"; reqId: string; taskId: string }
+  | { type: "forceTakeover"; reqId: string; sessionId: string }
   // ─── Stable client id, for reaping only (issue 146, ADR 0024 D9) ───
   // "I am the same Core client as the connection that last presented this id.
   // Close it and give me its Session locks." That is the whole of it.
@@ -894,14 +894,14 @@ export type CoreLinkRequestFrame =
   // Multi-connection-only: a Core that evicts every client but one already does
   // this on connect, and has no lock table to transfer out of.
   | { type: "reclaim"; reqId: string; clientId: string }
-  // ─── Task ops (issue 02 — schema carries task ops keyed by taskId) ───
-  | { type: "tasksList"; reqId: string; projectId?: string }
+  // ─── Session ops (issue 02 — schema carries session ops keyed by sessionId) ───
+  | { type: "sessionRowsList"; reqId: string; projectId?: string }
   // The Archived view's own read path (issue 62, ADR 0019). Deliberately a
-  // second frame rather than a flag on `tasksList`: archived rows then cannot
+  // second frame rather than a flag on `sessionRowsList`: archived rows then cannot
   // ride the active/Fleet answer whatever a caller passes. Sent only while
-  // that view is open — the count that gates it rides `tasksListResult`.
-  | { type: "archivedTasksList"; reqId: string; projectId?: string }
-  | { type: "tasksMutate"; reqId: string; mutation: CoreLinkTaskMutation }
+  // that view is open — the count that gates it rides `sessionRowsListResult`.
+  | { type: "archivedSessionRowsList"; reqId: string; projectId?: string }
+  | { type: "sessionsMutate"; reqId: string; mutation: CoreLinkSessionMutation }
   /**
    * A prompt the operator submitted, for a harness whose hooks do not report
    * one (issue 84).
@@ -917,7 +917,7 @@ export type CoreLinkRequestFrame =
    * Session that already has a real title, or one the operator renamed, is
    * left alone.
    */
-  | { type: "harnessPrompt"; reqId: string; taskId: string; prompt: string }
+  | { type: "harnessPrompt"; reqId: string; sessionId: string; prompt: string }
   // ─── Project ops (issue 07 — per-Core navigation: list the Core's
   // projects as live snapshots, no Panel-side persistence) ───
   | { type: "projectsList"; reqId: string }
@@ -927,7 +927,7 @@ export type CoreLinkRequestFrame =
   | { type: "projectsMutate"; reqId: string; mutation: CoreLinkProjectMutation }
   // ─── Session ops (observe a session's lifecycle / reattach) ───
   | { type: "sessionsList"; reqId: string; projectId?: string }
-  // ─── Hook ops (list / enable / disable hooks for a task) ───
+  // ─── Hook ops (list / enable / disable hooks for a session) ───
   | { type: "hooksOp"; reqId: string; hook: CoreLinkHookOp }
   // ─── Bearer auth (issue 04) ───
   // Sent by the Panel right after the mTLS handshake, before any other frame.
@@ -986,7 +986,7 @@ export type CoreLinkStreamFrame =
 
 /**
  * Unsolicited event frame — pushed by the Core for every domain event in
- * the monotonic event log (task status, hook, session finish, PTY spawn/exit).
+ * the monotonic event log (session status, hook, session finish, PTY spawn/exit).
  * Carries the sequential {@link CoreLinkEvent} envelope. During a replay the
  * Core streams these back-to-back; live push uses the same frame shape.
  */
@@ -1115,11 +1115,11 @@ export type CoreLinkResponseFrame =
        * when the frame asked for a stamp and the write was accepted (#289 A).
        *
        * The cursor a turn-end wait counts from: the wait resolves on the first
-       * settling status for that task at an event id **strictly greater** than
+       * settling status for that session at an event id **strictly greater** than
        * this one, which is what stops it from answering with the status the
        * Session was already sitting at. 0 or absent means nothing was stamped —
        * a Core that predates this, a write nothing accepted, or a PTY with no
-       * Task behind it — and 0 is not a cursor.
+       * Session behind it — and 0 is not a cursor.
        */
       deliveryEventId?: number;
     }
@@ -1130,7 +1130,7 @@ export type CoreLinkResponseFrame =
       reqId: string;
       result: CoreLinkLaunchProcessKillResult;
     }
-  | { type: "findByTaskResult"; reqId: string; ptyId: string | null }
+  | { type: "findBySessionResult"; reqId: string; ptyId: string | null }
   // `from` is the seq of the first chunk in `data` (absent when `data` is
   // empty). A caller that asked for `sinceSeq` and is handed `from > sinceSeq`
   // knows the bounded ring rolled past its cursor while it was away: the tail
@@ -1164,15 +1164,15 @@ export type CoreLinkResponseFrame =
   // or not it was expecting one. The `error` frame is reserved for a *mutation*
   // that was refused, which is the case a caller has to be able to tell apart
   // from a Session that is gone.
-  | { type: "claimResult"; reqId: string; taskId: string; granted: boolean }
+  | { type: "claimResult"; reqId: string; sessionId: string; granted: boolean }
   // `released: false` means this connection did not hold it — idempotent, not
   // an error. A client releasing on teardown does not have to know whether it
   // already lost the lock to a takeover.
-  | { type: "releaseResult"; reqId: string; taskId: string; released: boolean }
+  | { type: "releaseResult"; reqId: string; sessionId: string; released: boolean }
   | {
       type: "forceTakeoverResult";
       reqId: string;
-      taskId: string;
+      sessionId: string;
       takenFrom: CoreLinkSessionTakenFrom;
     }
   // ─── Stable client id (issue 146, ADR 0024 D9) ───
@@ -1182,7 +1182,7 @@ export type CoreLinkResponseFrame =
   // quiet — a lock can also have been force-taken while the client was away.
   //
   // `replaced` is whether a predecessor connection was found and closed;
-  // `taskIds` are the Sessions that came across with it, which is often empty
+  // `sessionIds` are the Sessions that came across with it, which is often empty
   // and never implies the id was unknown. Both are reporting, not authority:
   // this frame's answer is the same for a client presenting its own id as for
   // one presenting a string it made up, because nothing verifies it.
@@ -1191,22 +1191,22 @@ export type CoreLinkResponseFrame =
       reqId: string;
       clientId: string;
       replaced: boolean;
-      taskIds: string[];
+      sessionIds: string[];
     }
-  // ─── Task / session / hook op responses (issue 02) ───
-  // `tasks` carries active rows only. `archivedCount` is how many archived rows
+  // ─── Session / session / hook op responses (issue 02) ───
+  // `sessions` carries active rows only. `archivedCount` is how many archived rows
   // the same scope holds — unconditional, and never accompanied by the rows
   // themselves. It is what lets the Panel gate and label the Archived tab
   // without an archived row ever crossing this frame (issue 62, ADR 0019); the
-  // rows come back on `archivedTasksListResult` when that view opens.
+  // rows come back on `archivedSessionRowsListResult` when that view opens.
   | {
-      type: "tasksListResult";
+      type: "sessionRowsListResult";
       reqId: string;
-      tasks: CoreLinkTaskSnapshot[];
+      sessions: CoreLinkSessionRow[];
       archivedCount: number;
     }
-  | { type: "archivedTasksListResult"; reqId: string; tasks: CoreLinkTaskSnapshot[] }
-  | { type: "tasksMutateResult"; reqId: string; task: CoreLinkTaskSnapshot | null }
+  | { type: "archivedSessionRowsListResult"; reqId: string; sessions: CoreLinkSessionRow[] }
+  | { type: "sessionsMutateResult"; reqId: string; session: CoreLinkSessionRow | null }
   /**
    * Was the prompt taken up? `false` means this Core has no title generator
    * wired — not that the Session was left unnamed for a reason, which is a
@@ -1310,13 +1310,13 @@ export type CoreLinkProjectSnapshot = {
 };
 
 /**
- * A flattened task snapshot carried over the core-link. The Core is the
- * source of truth for tasks; the Panel holds none. The shape mirrors the
- * server's task row so the Panel can render a fleet view without a separate
- * HTTP round-trip per task.
+ * A flattened session snapshot carried over the core-link. The Core is the
+ * source of truth for sessions; the Panel holds none. The shape mirrors the
+ * server's session row so the Panel can render a fleet view without a separate
+ * HTTP round-trip per session.
  */
-export type CoreLinkTaskSnapshot = {
-  taskId: string;
+export type CoreLinkSessionRow = {
+  sessionId: string;
   projectId: string;
   title: string;
   /**
@@ -1329,7 +1329,7 @@ export type CoreLinkTaskSnapshot = {
    */
   titleManuallySet: boolean;
   /**
-   * The harness's own session id for this Task, or `null` before one has been
+   * The harness's own session id for this Session, or `null` before one has been
    * observed (issue 84). The Core's hook pipeline reads it to tell a hook from
    * this Session apart from one belonging to a session that has since been
    * replaced.
@@ -1367,16 +1367,16 @@ export type CoreLinkTaskSnapshot = {
   lock?: CoreLinkSessionLock;
 };
 
-/** A session snapshot — a task's live or replayable conversation. */
+/** A session snapshot — a session's live or replayable conversation. */
 export type CoreLinkSessionSnapshot = {
-  taskId: string;
+  sessionId: string;
   ptyId: string | null;
   status: string;
   updatedAt: number;
   /**
    * This Session's lock, as it looks to the connection this snapshot was sent
    * to (issue 145, ADR 0024 D8) — the same field, on the same terms, as the one
-   * on {@link CoreLinkTaskSnapshot}, because a client reading either of them is
+   * on {@link CoreLinkSessionRow}, because a client reading either of them is
    * asking the same question about the same Session.
    *
    * This is the one `actana session ls` reads: it lists Sessions, and "can I
@@ -1389,7 +1389,7 @@ export type CoreLinkSessionSnapshot = {
 /** A hook entry returned by `hooksOp`. */
 export type CoreLinkHookEntry = {
   hookId: string;
-  taskId: string | null;
+  sessionId: string | null;
   enabled: boolean;
 };
 
@@ -1404,24 +1404,24 @@ export type CoreLinkServerFrame =
 /**
  * Protocol version advertised in the `ready` frame. Bumped on breaking changes.
  * Issue 02 adds the event-cursor replay (`subscribe` / `event` /
- * `eventsReplayed`) and the task/session/hook op frames → 0.2.0. Issue 04 adds
+ * `eventsReplayed`) and the session/session/hook op frames → 0.2.0. Issue 04 adds
  * the mTLS bearer `auth` / `authOk` / `authError` frames → 0.3.0. Issue 06 adds
  * the `shellSession: true` VM-shell spawn mode (no `agent`, no project-root) →
  * 0.4.0. Issue 07 adds the `projectsList` / `projectsListResult` frames for
  * per-Core navigation (additive — same 0.4.0). Issue 04 lands the write path
- * (`projectsMutate` + real `tasksMutate` handlers + real `sessionsList`) and
- * discriminant-typed mutation shapes → 0.5.0. `tasksMutate`'s payload shape
- * changed from a flat `{taskId, projectId?, status?, ...}` to a discriminated
+ * (`projectsMutate` + real `sessionsMutate` handlers + real `sessionsList`) and
+ * discriminant-typed mutation shapes → 0.5.0. `sessionsMutate`'s payload shape
+ * changed from a flat `{sessionId, projectId?, status?, ...}` to a discriminated
  * `{op: "create"|"update", ...}` union. `parseCoreLinkRequestFrame` only
  * validates the outer `type`, so a stale-shape mutation payload lands at the
  * mutation store's runtime `op` check and comes back as an actionable `error`
- * frame ("unknown task mutation op: undefined"). No shipped Panel yet routes
+ * frame ("unknown session mutation op: undefined"). No shipped Panel yet routes
  * writes through this frame (the loopback API still owns local writes; remote
- * writes were stubbed as `task: null`), so no live caller regresses. Issue 09
- * adds the `icon` field to {@link CoreLinkTaskSnapshot} and the create/update
- * variants of {@link CoreLinkTaskMutation}, plus a dedicated
- * `task:iconChanged` event kind so replays surface icon-only edits distinctly
- * from other task updates → 0.6.0. Issue 11 adds the `agentsAvailabilityList`
+ * writes were stubbed as `session: null`), so no live caller regresses. Issue 09
+ * adds the `icon` field to {@link CoreLinkSessionRow} and the create/update
+ * variants of {@link CoreLinkSessionMutation}, plus a dedicated
+ * `session:iconChanged` event kind so replays surface icon-only edits distinctly
+ * from other session updates → 0.6.0. Issue 11 adds the `agentsAvailabilityList`
  * request/response + the `agents:availabilityChanged` event kind → 0.7.0.
  * Additive on both sides — a Core that has not been upgraded ignores the
  * new request frame (the outer `parseCoreLinkRequestFrame` rejects unknown
@@ -1429,7 +1429,7 @@ export type CoreLinkServerFrame =
  * availability map and falls back to the same "checking…" affordance a fresh
  * boot shows. Issue 10 adds a dedicated `pin` op to
  * {@link CoreLinkProjectMutation} plus the `project:pinnedChanged` /
- * `task:pinnedChanged` event kinds (task pin-only updates now surface
+ * `session:pinnedChanged` event kinds (session pin-only updates now surface
  * distinctly, mirroring the icon-only path from issue 09) → 0.8.0. Web-panel
  * issue 06 adds the `dirList` / `dirCreate` request frames and their results,
  * so the browser's folder picker browses the Core's disk instead of a
@@ -1445,23 +1445,23 @@ export type CoreLinkServerFrame =
  * wanted: the minor moved, so a Core still speaking 0.9.0 is incompatible by
  * the major.minor rule below and renders as "needs update" (ADR 0005). It
  * never reaches the mutation store's runtime `op` check.
- * Issue 63 adds a `delete` op to {@link CoreLinkTaskMutation} and the
- * `task:deleted` event kind the Core appends for it → 0.11.0. Deleting a
+ * Issue 63 adds a `delete` op to {@link CoreLinkSessionMutation} and the
+ * `session:deleted` event kind the Core appends for it → 0.11.0. Deleting a
  * Core-owned Session had no operation to carry, so every delete call site fell
  * through to the Panel's own endpoint and 404'd. Same rule as above: the minor
  * moved, so a Core on 0.10.0 is "needs update" rather than a Core that accepts
  * the frame and silently drops the op.
- * Issue 62 adds the `archivedTasksList` / `archivedTasksListResult` frames and
+ * Issue 62 adds the `archivedSessionRowsList` / `archivedSessionRowsListResult` frames and
  * an unconditional `archivedCount` on {@link CoreLinkServerFrame}'s
- * `tasksListResult` → 0.12.0 (ADR 0019). Archived rows had no way across the
+ * `sessionRowsListResult` → 0.12.0 (ADR 0019). Archived rows had no way across the
  * link at all, so the Panel's Archived view was permanently empty for a Core
  * and restore could not be invoked. The count is required rather than
  * optional: a Core on 0.11.0 would answer without it and the Archived tab
  * would silently never appear, which is exactly the bug — so the minor moves
  * and such a Core renders as "needs update".
  * Issue 84 adds `titleManuallySet` and `claudeSessionId` to
- * {@link CoreLinkTaskSnapshot} and to the `update` variant of
- * {@link CoreLinkTaskMutation}, plus `hooksReportTurnStart` on the `spawned`
+ * {@link CoreLinkSessionRow} and to the `update` variant of
+ * {@link CoreLinkSessionMutation}, plus `hooksReportTurnStart` on the `spawned`
  * response, and the `harnessPrompt` frame that carries a terminal-captured
  * prompt to the Core that can act on it → 0.13.0 (ADR 0020). The snapshot
  * fields are the load-bearing part: a Core that grew them without this bump
@@ -1512,7 +1512,7 @@ export type CoreLinkServerFrame =
  * this version either (ADR 0024 D11), for the same reason #142 and #143 did not.
  * The three frames are gated by the `multiConnection` capability, so they are
  * never put on the wire to a Core that has no lock table to address. The gating
- * of `write` / `kill` / `tasksMutate` is additive in the sense the rule
+ * of `write` / `kill` / `sessionsMutate` is additive in the sense the rule
  * requires: it can only refuse a Session that some connection has explicitly
  * claimed, and a client that never claims — every client that predates this —
  * meets an unlocked Session and is served exactly as it is today. `code` is
@@ -1520,7 +1520,7 @@ export type CoreLinkServerFrame =
  * that has never heard of it reads the same `message` it always did.
  *
  * Issue 145 publishes that lock state — the optional `lock` on
- * {@link CoreLinkTaskSnapshot} and {@link CoreLinkSessionSnapshot}, and the
+ * {@link CoreLinkSessionRow} and {@link CoreLinkSessionSnapshot}, and the
  * {@link SESSION_LOCK_CHANGED_EVENT_KIND} event — and does NOT move this version
  * either (ADR 0024 D11), for the fourth time and the same reason. Note that
  * issue 84 *did* bump for snapshot fields, and the difference is the rule
@@ -1613,10 +1613,16 @@ export type CoreLinkServerFrame =
  * is what covers a Core that is on this version and still could not stamp —
  * one with no event-log port, or whose append failed.
  *
+ * **The Task-to-Session rename moves it to 0.18.0 (actana/control#556).** The id is
+ * `sessionId`, the row frames are `sessionRowsList` / `archivedSessionRowsList` /
+ * `sessionsMutate` / `findBySession`, and the events are `session:*`. A hard cut: no
+ * alias, no dual-read, and no capability flag, because no state exists in which a
+ * 0.17 Core and this build understand each other.
+ *
  * Patch stays 0 — see {@link coreLinkProtocolCompatible}, which compares
  * major.minor only.
  */
-export const CORE_LINK_PROTOCOL_VERSION = "0.17.0";
+export const CORE_LINK_PROTOCOL_VERSION = "0.18.0";
 
 /**
  * Does a Core advertising `reported` speak this build's core-link?
@@ -1690,7 +1696,7 @@ const REQUEST_FRAME_TYPES: ReadonlySet<string> = new Set<CoreLinkRequestFrame["t
   "resize",
   "kill",
   "killLaunchProcesses",
-  "findByTask",
+  "findBySession",
   "replay",
   "subscribe",
   "ptySubscribe",
@@ -1699,9 +1705,9 @@ const REQUEST_FRAME_TYPES: ReadonlySet<string> = new Set<CoreLinkRequestFrame["t
   "release",
   "forceTakeover",
   "reclaim",
-  "tasksList",
-  "archivedTasksList",
-  "tasksMutate",
+  "sessionRowsList",
+  "archivedSessionRowsList",
+  "sessionsMutate",
   "harnessPrompt",
   "projectsList",
   "projectsMutate",

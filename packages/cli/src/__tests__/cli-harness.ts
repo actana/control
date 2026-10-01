@@ -143,7 +143,7 @@ export type RunOptions = {
  */
 export function fakeStartedSession(overrides: Partial<StartedSession> = {}): StartedSession {
   return {
-    taskId: "task_1",
+    sessionId: "session_1",
     ptyId: "pty_1",
     harness: "claude-code",
     command: "claude",
@@ -454,7 +454,7 @@ export function fakeCore(opts: FakeCoreOptions = {}): FakeCore {
       const full: CoreLinkEvent = {
         ts: Date.UTC(2026, 7, 12),
         ptyId: null,
-        taskId: null,
+        sessionId: null,
         payload: "{}",
         ...event,
       };
@@ -851,7 +851,7 @@ export type FakeAttachment = SessionAttachment & {
 };
 
 export function fakeAttachment(
-  opts: { authority?: AttachAuthority; backlog?: string; taskId?: string } = {},
+  opts: { authority?: AttachAuthority; backlog?: string; sessionId?: string } = {},
 ): FakeAttachment {
   const authority = opts.authority ?? "held";
   const sent: string[] = [];
@@ -866,7 +866,7 @@ export function fakeAttachment(
   let writeError: Error | null = null;
 
   return {
-    taskId: opts.taskId ?? "task_1",
+    sessionId: opts.sessionId ?? "session_1",
     ptyId: "pty_1",
     authority,
     backlog: opts.backlog ?? "",

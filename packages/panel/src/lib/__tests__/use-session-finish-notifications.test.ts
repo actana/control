@@ -28,10 +28,10 @@ describe("normalizeSessionFinishedEvent — SSE", () => {
   it("maps a Panel-local SSE event to a NormalizedFinish", () => {
     const finish = normalizeSessionFinishedEvent("sse", {
       type: "session:finished",
-      id: "task-1",
+      id: "session-1",
       projectId: "project-1",
       projectName: "Core",
-      taskTitle: "Answer question",
+      sessionTitle: "Answer question",
     });
     expect(finish).toEqual({
       coreId: null,
@@ -40,16 +40,16 @@ describe("normalizeSessionFinishedEvent — SSE", () => {
       // The Panel's own stream is live by construction: no older time to carry,
       // so the dispatch stamps it with the clock that is right for it.
       finishedAt: null,
-      sessionId: "task-1",
+      sessionId: "session-1",
       projectId: "project-1",
       projectName: "Core",
-      taskTitle: "Answer question",
+      sessionTitle: "Answer question",
     });
   });
 
   it("returns null for non-session:finished SSE events", () => {
     expect(
-      normalizeSessionFinishedEvent("sse", { type: "task:updated", id: "x" }),
+      normalizeSessionFinishedEvent("sse", { type: "session:updated", id: "x" }),
     ).toBeNull();
   });
 
@@ -82,12 +82,12 @@ describe("normalizeSessionFinishedEvent — fleet", () => {
           ts: 1_700_000_000_000,
           kind: "session:finished",
           ptyId: null,
-          taskId: "task-42",
+          sessionId: "session-42",
           payload: JSON.stringify({
-            id: "task-42",
+            id: "session-42",
             projectId: "project-9",
             projectName: "Remote",
-            taskTitle: "Ship it",
+            sessionTitle: "Ship it",
           }),
         },
       },
@@ -100,14 +100,14 @@ describe("normalizeSessionFinishedEvent — fleet", () => {
       // The Core's own `ts`, carried so a replayed finish is dated by when it
       // finished rather than by when a tab was handed it (issue 388).
       finishedAt: 1_700_000_000_000,
-      sessionId: "task-42",
+      sessionId: "session-42",
       projectId: "project-9",
       projectName: "Remote",
-      taskTitle: "Ship it",
+      sessionTitle: "Ship it",
     });
   });
 
-  it("falls back to event.taskId when payload lacks id", () => {
+  it("falls back to event.sessionId when payload lacks id", () => {
     const finish = normalizeSessionFinishedEvent(
       "fleet",
       {
@@ -117,13 +117,13 @@ describe("normalizeSessionFinishedEvent — fleet", () => {
           ts: 1,
           kind: "session:finished",
           ptyId: null,
-          taskId: "task-fallback",
+          sessionId: "session-fallback",
           payload: JSON.stringify({ projectId: "p" }),
         },
       },
       null,
     );
-    expect(finish?.sessionId).toBe("task-fallback");
+    expect(finish?.sessionId).toBe("session-fallback");
     expect(finish?.coreAlias).toBeNull();
   });
 
@@ -135,7 +135,7 @@ describe("normalizeSessionFinishedEvent — fleet", () => {
         ts: 1,
         kind: "session:finished",
         ptyId: null,
-        taskId: null,
+        sessionId: null,
         payload: "not-json",
       },
     });
@@ -150,7 +150,7 @@ describe("normalizeSessionFinishedEvent — fleet", () => {
         ts: 1,
         kind: "pty:exit",
         ptyId: "p",
-        taskId: null,
+        sessionId: null,
         payload: "{}",
       },
     });

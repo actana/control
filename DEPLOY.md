@@ -28,13 +28,17 @@ command. Prerequisite: a machine with Docker.
 git clone https://github.com/actana/control
 cd control/deploy
 docker compose up -d
-docker compose exec core actana pair new     # a one-time code and a fingerprint
+docker compose exec -u actana core actana pair new     # a one-time code and a fingerprint
 ```
 
 Open `http://localhost:7420`: the first boot asks you to create the Operator
 (name + password), and after logging in you give **Add Core** the address
 `core:8443` and that code, checking the fingerprint the Panel shows against the
-one `pair new` printed.
+one `pair new` printed. The `-u actana` matters: the Core container has two users, `actana` (the daemon, uid 1001,
+state in `/var/lib/actana`) and `core` (Sessions, uid 1000, home `/home/core`), and pairing belongs to the daemon's.
+`pair` and `status` refuse any other user and print this command; a plain `docker compose exec` is root and has no access to
+either directory. Use `-u core` for a shell as a Session would have it. See
+[`deploy/README.md`](deploy/README.md#two-users-in-the-core).
 The Panel dials `wss://core:8443` over the compose network — which is why the
 Core's `ACTANA_PUBLIC_HOST` is the compose service name and not a DNS name,
 and why the Core publishes no port to your machine at all.

@@ -4,7 +4,7 @@ import { terminalLogs } from "~/db/schema";
 
 export type TerminalLogRow = {
   id: string;
-  taskId: string;
+  sessionId: string;
   chunk: string;
   createdAt: number;
 };
@@ -13,11 +13,11 @@ export function insertTerminalLog(row: TerminalLogRow): void {
   getDb().insert(terminalLogs).values(row).run();
 }
 
-export function findTerminalLogsByTaskId(taskId: string): TerminalLogRow[] {
+export function findTerminalLogsBySessionId(sessionId: string): TerminalLogRow[] {
   return getDb()
     .select()
     .from(terminalLogs)
-    .where(eq(terminalLogs.taskId, taskId))
+    .where(eq(terminalLogs.sessionId, sessionId))
     .orderBy(asc(terminalLogs.createdAt))
     .all();
 }

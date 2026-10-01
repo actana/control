@@ -8,7 +8,7 @@ import {
   shouldSuppressTerminalKey,
   terminalClipboardAction,
 } from "./terminal-keymap";
-import type { TaskStatus } from "@actana/shared/domain";
+import type { SessionStatus } from "@actana/shared/domain";
 
 /** Write bytes to the pane's live PTY. Resolves false when there is none. */
 type PtyWrite = (data: string) => Promise<boolean> | boolean;
@@ -71,7 +71,7 @@ export function isTerminalXtermFocused(): boolean {
   );
 }
 
-export function terminalExitTaskStatus(exitCode?: number): TaskStatus {
+export function terminalExitSessionStatus(exitCode?: number): SessionStatus {
   return exitCode === 0 ? "finished" : "terminated";
 }
 
@@ -115,8 +115,10 @@ export function wireTerminalFileDrop(opts: {
   const onDrop = (e: DragEvent) => {
     const projectPath = readProjectPathFromDragEvent(e);
     if (!projectPath) return;
+    const pasted = formatPathForTerminalPaste(projectPath);
+    if (!pasted) return;
     e.preventDefault();
-    void write(formatPathForTerminalPaste(projectPath) + " ");
+    void write(pasted + " ");
     onFocus();
   };
   host.addEventListener("dragover", onDragOver);

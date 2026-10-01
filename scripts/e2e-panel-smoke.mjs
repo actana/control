@@ -16,7 +16,7 @@
 //   • a real pairing code, redeemed through "Add Core" against a Core whose
 //     fingerprint was checked first, registers a Core — and its dial reaches
 //     `connected` over the panel link;
-//   • projects and tasks list, and a project created over the panel link shows
+//   • projects and sessions list, and a project created over the panel link shows
 //     up in the next list — the write path is mutation frames, not HTTP;
 //   • a PTY spawned over the panel link streams `coreId`-tagged output frames
 //     carrying what was typed into it;
@@ -196,7 +196,7 @@ async function keyFilePhase({ panelBin, panelEntry, core }) {
   // that a Core which cannot see this machine's filesystem still works here
   // (see scripts/lib/core-fixture.mjs).
   const projectPath = core.makeProjectDir("ac-e2e-project-");
-  await assertProjectAndTaskLists(link, coreId, projectPath, fail);
+  await assertProjectAndSessionLists(link, coreId, projectPath, fail);
   await assertPtyStreams(link, coreId, fail);
   await assertReconnectReplaysMissedEvents(panel, link, coreId, fail);
 
@@ -548,9 +548,9 @@ function dialFrames(link) {
 /**
  * Read and write across the router: list projects, create one over the panel
  * link (mutation frames are the only write path — ADR 0004), list again, and
- * list that project's tasks.
+ * list that project's sessions.
  */
-async function assertProjectAndTaskLists(link, coreId, projectPath, fail) {
+async function assertProjectAndSessionLists(link, coreId, projectPath, fail) {
   const before = await link.request(coreId, { type: "projectsList" });
   if (before.type !== "projectsListResult") fail(`projectsList answered ${before.type}`);
   if (!Array.isArray(before.projects) || before.projects.length !== 0) {
@@ -571,11 +571,11 @@ async function assertProjectAndTaskLists(link, coreId, projectPath, fail) {
     fail(`the created project is missing from projectsList: ${JSON.stringify(after.projects)}`);
   }
 
-  const tasks = await link.request(coreId, { type: "tasksList", projectId });
-  if (tasks.type !== "tasksListResult" || !Array.isArray(tasks.tasks)) {
-    fail(`tasksList answered ${JSON.stringify(tasks).slice(0, 300)}`);
+  const sessions = await link.request(coreId, { type: "sessionRowsList", projectId });
+  if (sessions.type !== "sessionRowsListResult" || !Array.isArray(sessions.sessions)) {
+    fail(`sessionRowsList answered ${JSON.stringify(sessions).slice(0, 300)}`);
   }
-  log(`projects and tasks list over the panel link (project ${projectId})`);
+  log(`projects and sessions list over the panel link (project ${projectId})`);
 }
 
 // ─── Project files (#129 F6/F11, #169) ───────────────────────────────────────
@@ -840,7 +840,7 @@ async function assertPtyStreams(link, coreId, fail) {
 
   const spawned = await link.request(coreId, {
     type: "spawn",
-    opts: { shellSession: true, taskId: `e2e-${randomBytes(4).toString("hex")}`, cols: 80, rows: 24 },
+    opts: { shellSession: true, sessionId: `e2e-${randomBytes(4).toString("hex")}`, cols: 80, rows: 24 },
   });
   if (spawned.type !== "spawned" || !spawned.ptyId) {
     fail(`spawn answered ${JSON.stringify(spawned).slice(0, 300)}`);
@@ -899,7 +899,7 @@ async function assertReconnectReplaysMissedEvents(panel, link, coreId, fail) {
     type: "spawn",
     opts: {
       shellSession: true,
-      taskId: `e2e-exit-${randomBytes(4).toString("hex")}`,
+      sessionId: `e2e-exit-${randomBytes(4).toString("hex")}`,
       command: `sleep ${ptyLifetimeMs / 1000}`,
       cols: 80,
       rows: 24,

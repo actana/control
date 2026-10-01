@@ -26,7 +26,7 @@ export const SESSION_ICON_OPTIONS: readonly SessionIconOption[] = [
   { id: "code-2", hint: "implementation work, write code" },
   { id: "code-xml", hint: "markup, HTML, JSX, XML" },
   { id: "terminal", hint: "shell session, CLI commands" },
-  { id: "square-terminal", hint: "terminal task, scripts" },
+  { id: "square-terminal", hint: "terminal session, scripts" },
 
   // Git / version control
   { id: "git-branch", hint: "branch, switch, create branch" },
@@ -55,7 +55,7 @@ export const SESSION_ICON_OPTIONS: readonly SessionIconOption[] = [
   { id: "frame", hint: "page frame, modal, layout" },
   { id: "mouse-pointer", hint: "click handler, interaction" },
 
-  // Lists / tasks
+  // Lists / sessions
   { id: "list", hint: "list rendering" },
   { id: "list-checks", hint: "checklist, todo, QA" },
   { id: "list-todo", hint: "todo, planning" },

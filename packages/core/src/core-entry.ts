@@ -94,9 +94,9 @@ import {
   configureCoreQueryStore,
   disposeCoreQueryStore,
   coreQueryStore,
-  listActiveTasks,
-  listBootSweepTasks,
-  taskProvenNeverWorked,
+  listActiveSessions,
+  listBootSweepSessions,
+  sessionProvenNeverWorked,
 } from "./core-query-store";
 import {
   configureCoreMutationStore,
@@ -111,7 +111,7 @@ import {
   type CoreLinkSessionPromptAbandonedPayload,
   type CoreLinkSessionPromptDeliveredPayload,
 } from "@actana/sdk/core";
-import { CoreTaskWriter } from "./core-task-writer";
+import { CoreSessionWriter } from "./core-session-writer";
 import { CoreHarnessStatus } from "./core-harness-status";
 import { CoreTitleGenerator } from "./core-title-generator";
 import { startHarnessHookReceiver, type HarnessHookReceiver } from "./harness-hook-receiver";
@@ -219,26 +219,26 @@ async function startCore(): Promise<void> {
   configureProjectRootsDb(userDataDir);
   // The event log lives in the same SQLite file. The Core appends PTY
   // lifecycle events (pty:spawn / pty:exit) and serves the reconnect replay
-  // tail; the stateful server process appends task/session/hook events to the
+  // tail; the stateful server process appends session/hook events to the
   // same append-only table.
   configureEventLogStore(userDataDir);
-  // The query store reads projects + tasks from the same SQLite (read-only) so
-  // the `projectsList` / `tasksList` core-link frames return live snapshots
+  // The query store reads projects + sessions from the same SQLite (read-only) so
+  // the `projectsList` / `sessionRowsList` core-link frames return live snapshots
   // with no Panel-side persistence (issue 07 — per-Core navigation + Fleet
   // view).
   configureCoreQueryStore(userDataDir);
-  // The mutation store writes projects + tasks against the same SQLite
-  // (read-write) so the `projectsMutate` / `tasksMutate` / `sessionsList`
+  // The mutation store writes projects + sessions against the same SQLite
+  // (read-write) so the `projectsMutate` / `sessionsMutate` / `sessionsList`
   // core-link frames execute the write path directly on the Core (issue
   // 04, ADR 0004). WAL absorbs coexistence with the event-log writer.
   configureCoreMutationStore(userDataDir);
 
   // ─── Harness status detection (issue 84) ───
-  // The Core owns its task rows, so the Core is what a harness's hooks report
+  // The Core owns its session rows, so the Core is what a harness's hooks report
   // to and what settles a Session whose process died. One writer underneath
   // all of it, so every change appends the event the Panel's card re-renders
   // from — and does so whether or not a Panel is connected.
-  const taskWriter = new CoreTaskWriter({
+  const sessionWriter = new CoreSessionWriter({
     mutationPort: coreMutationStore,
     queryPort: coreQueryStore,
     eventLog: { appendEvent, readEventTail, getLastEventId },
@@ -250,15 +250,15 @@ async function startCore(): Promise<void> {
   // Panel re-renders from) and before the PTY core, the hook receiver or the
   // core-link server can produce a Session of THIS run that would be in scope.
   //
-  // `listBootSweepTasks` widens that read by the one class of orphan the
+  // `listBootSweepSessions` widens that read by the one class of orphan the
   // status filter could never see: a bare Session left on `ready`, whose PTY
   // spawned and died without a single hook ever firing for it (issue 387).
-  sweepStrandedSessions({ listBootSweepTasks, writer: taskWriter });
+  sweepStrandedSessions({ listBootSweepSessions, writer: sessionWriter });
 
-  const titleGenerator = new CoreTitleGenerator({ writer: taskWriter });
+  const titleGenerator = new CoreTitleGenerator({ writer: sessionWriter });
   const harnessStatus = new CoreHarnessStatus({
-    writer: taskWriter,
-    generateTitle: (taskId, prompt) => titleGenerator.schedule(taskId, prompt),
+    writer: sessionWriter,
+    generateTitle: (sessionId, prompt) => titleGenerator.schedule(sessionId, prompt),
   });
 
   // Loopback only, ephemeral port, token minted here — see the decisions
@@ -271,8 +271,8 @@ async function startCore(): Promise<void> {
 
   let hookReceiver: HarnessHookReceiver | null = null;
   try {
-    hookReceiver = await startHarnessHookReceiver((taskId, payload, eventNameFallback) => {
-      const result = harnessStatus.receiveHook(taskId, payload, eventNameFallback);
+    hookReceiver = await startHarnessHookReceiver((sessionId, payload, eventNameFallback) => {
+      const result = harnessStatus.receiveHook(sessionId, payload, eventNameFallback);
       // A hook that landed is this Session talking, whatever it said — that is
       // what keeps the quiet-Session backstop off a turn that is really
       // running (issue 243) — and it is also the end of the idle rule's claim
@@ -286,7 +286,7 @@ async function startCore(): Promise<void> {
       // positive test — it is already false for a row this Core does not have
       // — and `foreign-session` is the one rejection that answers `ok`.
       if (result.ok && result.body?.ignored !== "foreign-session") {
-        sessionBackstop?.noteActivity(taskId, "hook");
+        sessionBackstop?.noteActivity(sessionId, "hook");
       }
       return result;
     });
@@ -322,21 +322,21 @@ async function startCore(): Promise<void> {
     // and the hook receiver's, for the same reason: killing it would silently
     // strand every running Session's status.
     getProtectedPorts: () => [port, hookReceiver?.port],
-    onSessionExit: ({ taskId, exitCode }) => {
-      harnessStatus.sessionExited(taskId, exitCode);
-      sessionBackstop?.forget(taskId);
+    onSessionExit: ({ sessionId, exitCode }) => {
+      harnessStatus.sessionExited(sessionId, exitCode);
+      sessionBackstop?.forget(sessionId);
     },
-    onSessionOutputSignal: ({ taskId, signal }) => harnessStatus.outputSignal(taskId, signal),
+    onSessionOutputSignal: ({ sessionId, signal }) => harnessStatus.outputSignal(sessionId, signal),
     // Issue 483. The status the signal above writes is what a client renders;
     // this row is what lets it say *why*. It goes into the same monotonic log
     // every other Session event does, so a CLI or an SDK automation waiting on
     // the start reads it on the connection it already has — no new frame, no
     // poll, and nothing for a client that has never heard of the kind to do.
-    onSessionPromptAbandoned: ({ taskId, ptyId, reason }) => {
-      const payload: CoreLinkSessionPromptAbandonedPayload = { taskId, ptyId, reason };
+    onSessionPromptAbandoned: ({ sessionId, ptyId, reason }) => {
+      const payload: CoreLinkSessionPromptAbandonedPayload = { sessionId, ptyId, reason };
       try {
         appendEvent(SESSION_PROMPT_ABANDONED_EVENT_KIND, JSON.stringify(payload), {
-          taskId,
+          sessionId,
           ptyId,
         });
       } catch (err) {
@@ -349,9 +349,9 @@ async function startCore(): Promise<void> {
     // evidence there is that the composer is listening — nobody outside this
     // process sees the screen (ADR 0026), and #191 removed the last client that
     // tried to infer it from quietness.
-    onSessionPromptDelivered: ({ taskId, ptyId, characters, waitedMs, composerObserved }) => {
+    onSessionPromptDelivered: ({ sessionId, ptyId, characters, waitedMs, composerObserved }) => {
       const payload: CoreLinkSessionPromptDeliveredPayload = {
-        taskId,
+        sessionId,
         ptyId,
         characters,
         waitedMs,
@@ -359,7 +359,7 @@ async function startCore(): Promise<void> {
       };
       try {
         appendEvent(SESSION_PROMPT_DELIVERED_EVENT_KIND, JSON.stringify(payload), {
-          taskId,
+          sessionId,
           ptyId,
         });
       } catch (err) {
@@ -372,7 +372,7 @@ async function startCore(): Promise<void> {
     // spinner that is all that is left, with nothing new on screen behind it,
     // is what it reads as an idle TUI nobody will ever hear a `Stop` from
     // (issue 391). The PTY core says which of the two arrived.
-    onSessionOutputActivity: ({ taskId, kind }) => sessionBackstop?.noteActivity(taskId, kind),
+    onSessionOutputActivity: ({ sessionId, kind }) => sessionBackstop?.noteActivity(sessionId, kind),
   };
 
   // Eagerly install Claude Code's Shift+Enter keybinding flag for terminals
@@ -381,10 +381,10 @@ async function startCore(): Promise<void> {
 
   const core = new PtyCore(deps);
 
-  // Enrich `sessionsList` with live PTY ids: a task is "reattachable" when the
+  // Enrich `sessionsList` with live PTY ids: a session is "reattachable" when the
   // Core's PTY core currently has a running PTY for it. Wired here so the
   // mutation store has no import-time dependency on `PtyCore`.
-  setLivePtyProbe((taskId) => core.findByTask(taskId).ptyId);
+  setLivePtyProbe((sessionId) => core.findBySession(sessionId).ptyId);
 
   // The unconditional half of issue 243. `armDeferredFinish` only ever fires
   // for a Session whose hook ARRIVED; when the terminal `Stop` is the POST
@@ -393,16 +393,16 @@ async function startCore(): Promise<void> {
   // the ones that have gone quiet — no hook, no output — for long enough that
   // the turn is provably over.
   sessionBackstop = new CoreSessionBackstop({
-    listActiveTasks,
-    writer: taskWriter,
-    hasLivePty: (taskId) => Boolean(core.findByTask(taskId).ptyId),
+    listActiveSessions,
+    writer: sessionWriter,
+    hasLivePty: (sessionId) => Boolean(core.findBySession(sessionId).ptyId),
   });
   sessionBackstop.start();
 
   // Issue 11: this Core probes its own PATH for every managed Harness and
   // publishes the resulting map as (a) a live snapshot readable via the
   // `agentsAvailabilityList` frame and (b) an `agents:availabilityChanged`
-  // event appended to the same monotonic event log the PTY / project / task
+  // event appended to the same monotonic event log the PTY / project / session
   // lifecycle events use. Loopback and remote Cores emit the identical shape
   // so the Panel's per-Core availability store is oblivious to which Core
   // answered. Started after `configureEventLogStore` has run — the first
@@ -470,32 +470,32 @@ async function startCore(): Promise<void> {
       readEventTail,
       getLastEventId,
     },
-    // Issue 07: back the `projectsList` / `tasksList` frames with the shared
-    // SQLite so the Panel renders live project/task snapshots per Core.
+    // Issue 07: back the `projectsList` / `sessionRowsList` frames with the shared
+    // SQLite so the Panel renders live project/session snapshots per Core.
     queryPort: coreQueryStore,
-    // Issue 04 (ADR 0004): back the `projectsMutate` / `tasksMutate` /
+    // Issue 04 (ADR 0004): back the `projectsMutate` / `sessionsMutate` /
     // `sessionsList` frames with the same SQLite (read-write). The Core
     // process is the sole VM-side writer; WAL keeps the event-log writer
     // and this writer coexisting on one DB.
     mutationPort: coreMutationStore,
-    // One write seam for the Panel's `tasksMutate` and the Core's own hook /
+    // One write seam for the Panel's `sessionsMutate` and the Core's own hook /
     // exit / title writes (issue 84).
-    taskWriter,
+    sessionWriter,
     // Cursor never fires `beforeSubmitPrompt`, so the Panel reads the prompt
     // off the terminal and hands it here — the only way a Core-owned Cursor
     // Session gets named at all (issue 84).
     promptPort: {
-      submitted: (taskId, prompt) => titleGenerator.schedule(taskId, prompt),
+      submitted: (sessionId, prompt) => titleGenerator.schedule(sessionId, prompt),
     },
     // The other side of issue 387's sweep: a bare Session that settled while
     // it had never run a turn is put back on `ready` when a harness is spawned
     // for it again. Nothing else would — no hook fires until the first prompt,
     // so the card would read `disconnected` over a healthy harness.
     relaunchPort: {
-      agentSpawned: (taskId) =>
+      agentSpawned: (sessionId) =>
         void readySessionOnAgentSpawn(
-          { writer: taskWriter, provenNeverWorked: taskProvenNeverWorked },
-          taskId,
+          { writer: sessionWriter, provenNeverWorked: sessionProvenNeverWorked },
+          sessionId,
         ),
     },
     // Issue 11: back the `agentsAvailabilityList` frame with the current

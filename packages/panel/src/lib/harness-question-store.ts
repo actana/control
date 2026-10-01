@@ -5,8 +5,8 @@ import { parseAskUserQuestionInput, type PendingQuestion } from "~/shared/harnes
 import { createListenerSet } from "./listener-set";
 
 /**
- * Renderer-side cache of pending AskUserQuestion payloads, keyed by task.
- * Populated from `task:question` SSE events (which carry the full payload, so
+ * Renderer-side cache of pending AskUserQuestion payloads, keyed by session.
+ * Populated from `session:question` SSE events (which carry the full payload, so
  * no query round-trip) and hydrated on demand for panes that mount after the
  * event fired. `undefined` = not hydrated yet, `null` = known to have none.
  */
@@ -14,22 +14,22 @@ type Entry = PendingQuestion | null;
 
 const entries = new Map<string, Entry>();
 // Questions the user hid locally (esc) — keyed by question id so a NEW
-// question on the same task still shows its overlay.
+// question on the same session still shows its overlay.
 const dismissed = new Set<string>();
 const hydrating = new Set<string>();
 
 const { subscribe, notify } = createListenerSet();
 
-export function getTaskQuestion(taskId: string): Entry | undefined {
-  return entries.get(taskId);
+export function getSessionQuestion(sessionId: string): Entry | undefined {
+  return entries.get(sessionId);
 }
 
-export function getCurrentQuestionId(taskId: string): string | null {
-  return entries.get(taskId)?.id ?? null;
+export function getCurrentQuestionId(sessionId: string): string | null {
+  return entries.get(sessionId)?.id ?? null;
 }
 
-export function useTaskQuestion(taskId: string): PendingQuestion | null | undefined {
-  return useSyncExternalStore(subscribe, () => entries.get(taskId));
+export function useSessionQuestion(sessionId: string): PendingQuestion | null | undefined {
+  return useSyncExternalStore(subscribe, () => entries.get(sessionId));
 }
 
 export function dismissQuestionLocally(questionId: string): void {
@@ -52,8 +52,8 @@ export function useQuestionDismissed(questionId: string | undefined): boolean {
 // wrong row, so the overlay degrades to a passive banner.
 const desynced = new Set<string>();
 
-export function markQuestionDesynced(taskId: string): void {
-  const questionId = entries.get(taskId)?.id;
+export function markQuestionDesynced(sessionId: string): void {
+  const questionId = entries.get(sessionId)?.id;
   if (!questionId || desynced.has(questionId)) return;
   desynced.add(questionId);
   notify();
@@ -68,8 +68,8 @@ export function isQuestionDesynced(questionId: string): boolean {
  * the popup overlay is answering it. Dismissing the overlay or typing in the
  * terminal (desync) hands the menu back to the terminal — returns null then.
  */
-export function getHoldQuestion(taskId: string): PendingQuestion | null {
-  const question = entries.get(taskId);
+export function getHoldQuestion(sessionId: string): PendingQuestion | null {
+  const question = entries.get(sessionId);
   if (!question) return null;
   return dismissed.has(question.id) || desynced.has(question.id) ? null : question;
 }
@@ -85,58 +85,58 @@ export function useQuestionDesynced(questionId: string | undefined): boolean {
   );
 }
 
-function setEntry(taskId: string, entry: Entry): void {
-  const prev = entries.get(taskId);
+function setEntry(sessionId: string, entry: Entry): void {
+  const prev = entries.get(sessionId);
   if (prev === entry || (prev && entry && prev.id === entry.id)) return;
   if (prev) {
     dismissed.delete(prev.id);
     desynced.delete(prev.id);
   }
-  entries.set(taskId, entry);
+  entries.set(sessionId, entry);
   notify();
 }
 
 function parseQuestionEvent(event: ServerEvent): PendingQuestion | null {
-  const taskId = typeof event.taskId === "string" ? event.taskId : "";
+  const sessionId = typeof event.sessionId === "string" ? event.sessionId : "";
   const projectId = typeof event.projectId === "string" ? event.projectId : "";
   const questionId = typeof event.questionId === "string" ? event.questionId : "";
   // The SSE payload is our own emit, but it crosses a JSON boundary — reuse
   // the defensive parser rather than trusting the shape.
   const questions = parseAskUserQuestionInput({ questions: event.questions });
-  if (!taskId || !projectId || !questionId || !questions) return null;
-  return { id: questionId, taskId, projectId, questions, createdAt: Date.now() };
+  if (!sessionId || !projectId || !questionId || !questions) return null;
+  return { id: questionId, sessionId, projectId, questions, createdAt: Date.now() };
 }
 
 export function applyQuestionServerEvent(event: ServerEvent): void {
-  if (event.type === "task:question") {
+  if (event.type === "session:question") {
     const question = parseQuestionEvent(event);
-    if (question) setEntry(question.taskId, question);
+    if (question) setEntry(question.sessionId, question);
     return;
   }
-  if (event.type === "task:question-cleared") {
-    const taskId = typeof event.taskId === "string" ? event.taskId : "";
-    if (taskId) setEntry(taskId, null);
+  if (event.type === "session:question-cleared") {
+    const sessionId = typeof event.sessionId === "string" ? event.sessionId : "";
+    if (sessionId) setEntry(sessionId, null);
     return;
   }
-  if (event.type === "task:deleted") {
-    const taskId = typeof event.id === "string" ? event.id : "";
-    if (taskId && entries.has(taskId)) {
-      entries.delete(taskId);
+  if (event.type === "session:deleted") {
+    const sessionId = typeof event.id === "string" ? event.id : "";
+    if (sessionId && entries.has(sessionId)) {
+      entries.delete(sessionId);
       notify();
     }
   }
 }
 
-export async function hydrateTaskQuestion(taskId: string): Promise<void> {
-  if (entries.has(taskId) || hydrating.has(taskId)) return;
-  hydrating.add(taskId);
+export async function hydrateSessionQuestion(sessionId: string): Promise<void> {
+  if (entries.has(sessionId) || hydrating.has(sessionId)) return;
+  hydrating.add(sessionId);
   try {
-    const { question } = await api.getTaskQuestion(taskId);
+    const { question } = await api.getSessionQuestion(sessionId);
     // An SSE event may have landed while the fetch was in flight; it wins.
-    if (!entries.has(taskId)) setEntry(taskId, question);
+    if (!entries.has(sessionId)) setEntry(sessionId, question);
   } catch {
     /* pane falls back to the plain badge */
   } finally {
-    hydrating.delete(taskId);
+    hydrating.delete(sessionId);
   }
 }

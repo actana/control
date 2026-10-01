@@ -2,7 +2,7 @@
 //
 // An uncached pin answers slower than the operator clicks (issue 381).
 //
-// What is proven here is the shape of A then B then A: B's project and task
+// What is proven here is the shape of A then B then A: B's project and session
 // reads are still in flight when the URL is back on A, and when they finally
 // answer they must not paint B's sessions on A's board. Then the shape one
 // click further — A then B then A then B — where the read that was abandoned
@@ -18,7 +18,7 @@ import { act, cleanup, render, screen } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type {
   CoreLinkProjectSnapshot,
-  CoreLinkTaskSnapshot,
+  CoreLinkSessionRow,
 } from "@actana/sdk/core";
 
 /** A promise the test settles by hand, so an answer can land after the click. */
@@ -32,7 +32,7 @@ function deferred<T>() {
 
 /**
  * One gate per core-link *call*, not per key: this suite turns on two reads of
- * the same project answering out of order, so the second `listTasks` for B has
+ * the same project answering out of order, so the second `listSessionRows` for B has
  * to be a promise of its own that the test can settle first.
  */
 const calls = new Map<string, ReturnType<typeof deferred<unknown>>[]>();
@@ -61,7 +61,7 @@ function callCount(key: string): number {
 vi.mock("~/lib/panel-bridge", () => ({
   getPanelBridge: () => ({
     listProjects: (coreId: string) => nextCall(`projects:${coreId}`).promise,
-    listTasks: (_coreId: string, projectId: string) => nextCall(`tasks:${projectId}`).promise,
+    listSessionRows: (_coreId: string, projectId: string) => nextCall(`sessions:${projectId}`).promise,
   }),
 }));
 vi.mock("~/lib/api", () => ({
@@ -71,7 +71,7 @@ vi.mock("~/lib/api", () => ({
   },
 }));
 
-const { queryKeys, tasksCacheKey, useProject, useTasks } = await import("~/queries");
+const { queryKeys, sessionsCacheKey, useProject, useSessions } = await import("~/queries");
 const { __resetProjectScopesForTests } = await import("~/lib/visible-project-scope");
 
 const CORE_A = "core_a";
@@ -94,9 +94,9 @@ function projectSnapshot(projectId: string, name: string): CoreLinkProjectSnapsh
   };
 }
 
-function taskSnapshot(projectId: string, taskId: string, title: string): CoreLinkTaskSnapshot {
+function sessionSnapshot(projectId: string, sessionId: string, title: string): CoreLinkSessionRow {
   return {
-    taskId,
+    sessionId,
     projectId,
     title,
     titleManuallySet: false,
@@ -110,18 +110,18 @@ function taskSnapshot(projectId: string, taskId: string, title: string): CoreLin
   };
 }
 
-type TaskAnswer = { tasks: CoreLinkTaskSnapshot[]; archivedCount: number };
+type SessionAnswer = { sessions: CoreLinkSessionRow[]; archivedCount: number };
 
 /** The project board, cut down to what this bug is about: which project's name
  *  is in the header and whose sessions are listed under it. */
 function Board({ id, coreId }: { id: string; coreId: string }) {
   const project = useProject(id, { coreId });
-  const tasks = useTasks(id, { coreId });
+  const sessions = useSessions(id, { coreId });
   if (!project.data) return <div data-testid="shell">Loading…</div>;
   return (
     <div data-testid="board">
       <span data-testid="project">{project.data.name}</span>
-      <span data-testid="sessions">{(tasks.data ?? []).map((t) => t.title).join(",")}</span>
+      <span data-testid="sessions">{(sessions.data ?? []).map((t) => t.title).join(",")}</span>
     </div>
   );
 }
@@ -176,8 +176,8 @@ describe("a pin that materializes after you have clicked away", () => {
       id: "p-a",
       name: "Alpha",
     });
-    client.setQueryData(tasksCacheKey("p-a", CORE_A), [
-      taskSnapshot("p-a", "t-a1", "alpha session"),
+    client.setQueryData(sessionsCacheKey("p-a", CORE_A), [
+      sessionSnapshot("p-a", "t-a1", "alpha session"),
     ]);
 
     const view = mount({ id: "p-a", coreId: CORE_A });
@@ -197,8 +197,8 @@ describe("a pin that materializes after you have clicked away", () => {
 
     // Now B answers.
     call<CoreLinkProjectSnapshot[]>(`projects:${CORE_B}`).resolve([projectSnapshot("p-b", "Bravo")]);
-    call<TaskAnswer>("tasks:p-b").resolve({
-      tasks: [taskSnapshot("p-b", "t-b1", "bravo session")],
+    call<SessionAnswer>("sessions:p-b").resolve({
+      sessions: [sessionSnapshot("p-b", "t-b1", "bravo session")],
       archivedCount: 4,
     });
     await settle();
@@ -216,10 +216,10 @@ describe("a pin that materializes after you have clicked away", () => {
     // were cancelled and reverted, so nothing is parked waiting to be painted
     // the moment some other surface subscribes to B.
     expect(client.getQueryData([...queryKeys.project("p-b"), "core", CORE_B])).toBeUndefined();
-    expect(client.getQueryData(tasksCacheKey("p-b", CORE_B))).toBeUndefined();
-    // The archived count rides the task answer; it must not outlive the list
+    expect(client.getQueryData(sessionsCacheKey("p-b", CORE_B))).toBeUndefined();
+    // The archived count rides the session answer; it must not outlive the list
     // it rode in on.
-    expect(client.getQueryData(queryKeys.coreArchivedTaskCount("p-b", CORE_B))).toBeUndefined();
+    expect(client.getQueryData(queryKeys.coreArchivedSessionCount("p-b", CORE_B))).toBeUndefined();
   });
 
   it("does not let B's abandoned read overwrite the count of the read that replaced it", async () => {
@@ -232,7 +232,7 @@ describe("a pin that materializes after you have clicked away", () => {
       id: "p-a",
       name: "Alpha",
     });
-    client.setQueryData(tasksCacheKey("p-a", CORE_A), []);
+    client.setQueryData(sessionsCacheKey("p-a", CORE_A), []);
 
     const view = mount({ id: "p-a", coreId: CORE_A });
     await settle();
@@ -240,7 +240,7 @@ describe("a pin that materializes after you have clicked away", () => {
     // Click B: read one starts.
     view.rerender(<Board id="p-b" coreId={CORE_B} />);
     await settle();
-    expect(callCount("tasks:p-b")).toBe(1);
+    expect(callCount("sessions:p-b")).toBe(1);
 
     // Click A: read one is cancelled and reverted, and still unanswered.
     view.rerender(<Board id="p-a" coreId={CORE_A} />);
@@ -249,26 +249,26 @@ describe("a pin that materializes after you have clicked away", () => {
     // Click B again: read two starts, a second call of its own.
     view.rerender(<Board id="p-b" coreId={CORE_B} />);
     await settle();
-    expect(callCount("tasks:p-b")).toBe(2);
+    expect(callCount("sessions:p-b")).toBe(2);
 
     // Read two lands first, with the truth: one session, seven archived.
     call<CoreLinkProjectSnapshot[]>(`projects:${CORE_B}`, 1).resolve([
       projectSnapshot("p-b", "Bravo"),
     ]);
-    call<TaskAnswer>("tasks:p-b", 1).resolve({
-      tasks: [taskSnapshot("p-b", "t-b2", "bravo session")],
+    call<SessionAnswer>("sessions:p-b", 1).resolve({
+      sessions: [sessionSnapshot("p-b", "t-b2", "bravo session")],
       archivedCount: 7,
     });
     await settle();
     expect(screen.getByTestId("sessions").textContent).toBe("bravo session");
-    expect(client.getQueryData(queryKeys.coreArchivedTaskCount("p-b", CORE_B))).toBe(7);
+    expect(client.getQueryData(queryKeys.coreArchivedSessionCount("p-b", CORE_B))).toBe(7);
 
     // Now the abandoned read one answers, with a stale count nobody wants.
     call<CoreLinkProjectSnapshot[]>(`projects:${CORE_B}`, 0).resolve([
       projectSnapshot("p-b", "Stale Bravo"),
     ]);
-    call<TaskAnswer>("tasks:p-b", 0).resolve({
-      tasks: [taskSnapshot("p-b", "t-b1", "stale session")],
+    call<SessionAnswer>("sessions:p-b", 0).resolve({
+      sessions: [sessionSnapshot("p-b", "t-b1", "stale session")],
       archivedCount: 99,
     });
     await settle();
@@ -278,7 +278,7 @@ describe("a pin that materializes after you have clicked away", () => {
     // stand until an unrelated event happened to refresh B.
     expect(screen.getByTestId("project").textContent).toBe("Bravo");
     expect(screen.getByTestId("sessions").textContent).toBe("bravo session");
-    expect(client.getQueryData(queryKeys.coreArchivedTaskCount("p-b", CORE_B))).toBe(7);
+    expect(client.getQueryData(queryKeys.coreArchivedSessionCount("p-b", CORE_B))).toBe(7);
   });
 
   it("still loads a cold pin the operator stays on", async () => {
@@ -288,15 +288,15 @@ describe("a pin that materializes after you have clicked away", () => {
     expect(screen.getByTestId("shell")).toBeTruthy();
 
     call<CoreLinkProjectSnapshot[]>(`projects:${CORE_B}`).resolve([projectSnapshot("p-b", "Bravo")]);
-    call<TaskAnswer>("tasks:p-b").resolve({
-      tasks: [taskSnapshot("p-b", "t-b1", "bravo session")],
+    call<SessionAnswer>("sessions:p-b").resolve({
+      sessions: [sessionSnapshot("p-b", "t-b1", "bravo session")],
       archivedCount: 4,
     });
     await settle();
 
     expect(screen.getByTestId("project").textContent).toBe("Bravo");
     expect(screen.getByTestId("sessions").textContent).toBe("bravo session");
-    expect(client.getQueryData(queryKeys.coreArchivedTaskCount("p-b", CORE_B))).toBe(4);
+    expect(client.getQueryData(queryKeys.coreArchivedSessionCount("p-b", CORE_B))).toBe(4);
     view.unmount();
   });
 
@@ -313,9 +313,9 @@ describe("a pin that materializes after you have clicked away", () => {
         projectSnapshot("p-b", "Bravo"),
       ]);
     }
-    for (let nth = 0; nth < callCount("tasks:p-b"); nth += 1) {
-      call<TaskAnswer>("tasks:p-b", nth).resolve({
-        tasks: [taskSnapshot("p-b", "t-b1", "bravo session")],
+    for (let nth = 0; nth < callCount("sessions:p-b"); nth += 1) {
+      call<SessionAnswer>("sessions:p-b", nth).resolve({
+        sessions: [sessionSnapshot("p-b", "t-b1", "bravo session")],
         archivedCount: 4,
       });
     }
@@ -323,7 +323,7 @@ describe("a pin that materializes after you have clicked away", () => {
 
     expect(screen.getByTestId("project").textContent).toBe("Bravo");
     expect(screen.getByTestId("sessions").textContent).toBe("bravo session");
-    expect(client.getQueryData(queryKeys.coreArchivedTaskCount("p-b", CORE_B))).toBe(4);
+    expect(client.getQueryData(queryKeys.coreArchivedSessionCount("p-b", CORE_B))).toBe(4);
     view.unmount();
   });
 
@@ -331,8 +331,8 @@ describe("a pin that materializes after you have clicked away", () => {
     const view = mount({ id: "p-b", coreId: CORE_B });
     await settle();
     call<CoreLinkProjectSnapshot[]>(`projects:${CORE_B}`).resolve([projectSnapshot("p-b", "Bravo")]);
-    call<TaskAnswer>("tasks:p-b").resolve({
-      tasks: [taskSnapshot("p-b", "t-b1", "bravo session")],
+    call<SessionAnswer>("sessions:p-b").resolve({
+      sessions: [sessionSnapshot("p-b", "t-b1", "bravo session")],
       archivedCount: 4,
     });
     await settle();
@@ -342,6 +342,6 @@ describe("a pin that materializes after you have clicked away", () => {
     // 30s staleTime still means coming back to B is instant.
     view.unmount();
     await settle();
-    expect(client.getQueryData(tasksCacheKey("p-b", CORE_B))).toHaveLength(1);
+    expect(client.getQueryData(sessionsCacheKey("p-b", CORE_B))).toHaveLength(1);
   });
 });

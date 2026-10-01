@@ -75,7 +75,7 @@ function idsOf(lines: string[]): number[] {
  * store.
  */
 function fillPastTheCap(log: ArrayEventLog): void {
-  for (let i = 0; i < 1_500; i += 1) log.push("task:updated");
+  for (let i = 0; i < 1_500; i += 1) log.push("session:updated");
 }
 
 describe("actana events tail, across a Core restart", () => {
@@ -95,8 +95,8 @@ describe("actana events tail, across a Core restart", () => {
     // The subscribe has been served: from here the Core is pushing live, which
     // is the path the first three events must take.
     await waitFor(() => log.tailReads >= 1, "the tail never subscribed");
-    log.push("task:created");
-    log.push("task:updated");
+    log.push("session:created");
+    log.push("session:updated");
     log.push("session:finished");
     await waitFor(() => printed.length === 3, "the first three live events never arrived");
 
@@ -104,8 +104,8 @@ describe("actana events tail, across a Core restart", () => {
     // them — the gap this whole mechanism exists to close.
     const readsBefore = log.tailReads;
     await first.stop();
-    log.push("task:question");
-    log.push("task:updated");
+    log.push("session:question");
+    log.push("session:updated");
 
     await coreOn(port, log, first.material);
     await waitFor(() => log.tailReads > readsBefore, "the tail never re-subscribed");
@@ -134,8 +134,8 @@ describe("actana events tail, across a Core restart", () => {
     registerCore(fixture.paths, "inproc", core.blobText);
 
     // History this operator has never asked to see.
-    log.push("task:created");
-    log.push("task:updated");
+    log.push("session:created");
+    log.push("session:updated");
     log.push("session:finished");
 
     const firstRun: string[] = [];
@@ -181,7 +181,7 @@ describe("actana events tail, across a Core restart", () => {
     // starts at the end of the log the way `tail -f` does.
     expect(firstRun, "history was printed while the end of the log was being found").toEqual([]);
 
-    log.push("task:question");
+    log.push("session:question");
     log.push("pty:exit");
 
     const firstResult = await first;
@@ -193,7 +193,7 @@ describe("actana events tail, across a Core restart", () => {
     const [file] = readdirSync(dir);
     expect(readFileSync(path.join(dir, file!), "utf8").trim()).toBe("5");
 
-    log.push("task:updated");
+    log.push("session:updated");
 
     const second = await fixture.run(["events", "tail", "--json", "--limit", "1"], {
       connect: connectCore,
@@ -305,9 +305,9 @@ describe("actana events tail, across a Core restart", () => {
     registerCore(fixture.paths, "inproc", core.blobText);
 
     log.push("session:started");
-    log.push("task:created");
+    log.push("session:created");
     log.push("session:finished");
-    log.push("task:updated");
+    log.push("session:updated");
 
     const result = await fixture.run(
       ["events", "tail", "--json", "--kind", "session:finished", "--limit", "1"],
@@ -325,16 +325,16 @@ describe("actana events tail, across a Core restart", () => {
     // run has no cursor, so it subscribes from #0 and its walk covers the whole
     // retained log — nothing prunes the store. A run that printed matches as
     // they went past therefore answered with the *earliest* finish the Core
-    // still held: `#3`, possibly weeks old and carrying a different taskId,
+    // still held: `#3`, possibly weeks old and carrying a different sessionId,
     // returned with exit 0 for a question about the session that just finished
     // at `#22`. A visible hang is a better failure than a confident wrong
     // answer, which is why this is the finding that blocked the round.
     const log = arrayEventLog();
-    for (let i = 0; i < 2; i += 1) log.push("task:updated"); // #1 – #2
-    log.push("session:finished", '{"taskId":"t-old"}'); // #3, weeks ago
-    for (let i = 0; i < 18; i += 1) log.push("task:updated"); // #4 – #21
-    log.push("session:finished", '{"taskId":"t-now"}'); // #22, just watched
-    for (let i = 0; i < 8; i += 1) log.push("task:updated"); // #23 – #30
+    for (let i = 0; i < 2; i += 1) log.push("session:updated"); // #1 – #2
+    log.push("session:finished", '{"sessionId":"t-old"}'); // #3, weeks ago
+    for (let i = 0; i < 18; i += 1) log.push("session:updated"); // #4 – #21
+    log.push("session:finished", '{"sessionId":"t-now"}'); // #22, just watched
+    for (let i = 0; i < 8; i += 1) log.push("session:updated"); // #23 – #30
 
     const port = await freePort();
     const core = await coreOn(port, log);
@@ -361,7 +361,7 @@ describe("actana events tail, across a Core restart", () => {
     // a gap is a match dropped at a round boundary.
     const log = arrayEventLog();
     for (let i = 1; i <= 1_500; i += 1) {
-      log.push(i === 500 || i === 1_200 || i === 1_450 ? "session:finished" : "task:updated");
+      log.push(i === 500 || i === 1_200 || i === 1_450 ? "session:finished" : "session:updated");
     }
 
     const port = await freePort();
@@ -388,7 +388,7 @@ describe("actana events tail, across a Core restart", () => {
     // answer — `[500, 1200]` instead of the two most recent.
     const log = arrayEventLog();
     for (let i = 1; i <= 1_500; i += 1) {
-      log.push(i === 500 || i === 1_200 || i === 1_450 ? "session:finished" : "task:updated");
+      log.push(i === 500 || i === 1_200 || i === 1_450 ? "session:finished" : "session:updated");
     }
 
     const port = await freePort();
@@ -412,8 +412,8 @@ describe("actana events tail, across a Core restart", () => {
     fixture = makeCliFixture();
     registerCore(fixture.paths, "inproc", core.blobText);
 
-    log.push("task:created");
-    log.push("task:updated");
+    log.push("session:created");
+    log.push("session:updated");
 
     const rewound = await fixture.run(
       ["events", "tail", "--json", "--since", "start", "--limit", "2"],

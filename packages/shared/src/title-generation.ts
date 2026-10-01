@@ -40,28 +40,28 @@ function buildMetaPrompt(): string {
     "",
     "Examples:",
     "",
-    "Task: Refactor the auth middleware to use JWT instead of session cookies.",
+    "Session: Refactor the auth middleware to use JWT instead of session cookies.",
     "TITLE: Switch auth from cookies to JWT",
     "ICON: shield-check",
     "",
-    "Task: The login page is broken when clicking submit twice quickly.",
+    "Session: The login page is broken when clicking submit twice quickly.",
     "TITLE: Fix double-submit on login button",
     "ICON: bug",
     "",
-    "Task: Add a dark mode toggle to the settings panel.",
+    "Session: Add a dark mode toggle to the settings panel.",
     "TITLE: Add dark mode toggle",
     "ICON: palette",
     "",
-    "Task: Migrate the users table to add an email_verified column.",
+    "Session: Migrate the users table to add an email_verified column.",
     "TITLE: Add email-verified column to users",
     "ICON: database",
     "",
     "Allowed icon ids:",
     iconList,
     "",
-    "Now do the real task. Respond with TITLE: and ICON: on two lines.",
+    "Now do the real session. Respond with TITLE: and ICON: on two lines.",
     "",
-    "Task: ",
+    "Session: ",
   ].join("\n");
 }
 
@@ -188,7 +188,7 @@ export function parseResponse(raw: string): Parsed {
 
 export function fallbackTitle(prompt: string): string {
   const cleanPrompt = stripTerminalControlText(prompt);
-  const firstLine = cleanPrompt.split(/\r?\n/).map((l) => l.trim()).find(Boolean) ?? "Untitled task";
+  const firstLine = cleanPrompt.split(/\r?\n/).map((l) => l.trim()).find(Boolean) ?? "Untitled session";
   return firstLine.length > FALLBACK_TITLE_MAX_LEN
     ? firstLine.slice(0, FALLBACK_TITLE_MAX_LEN).trim() + "…"
     : firstLine;

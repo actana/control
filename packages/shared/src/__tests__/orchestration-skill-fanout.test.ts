@@ -567,7 +567,7 @@ describe("the sub-agent skill is narrow and forbids provisioning (#303 ยง4 and ย
 
   it("leaves a harness's own sub-agent facility alone, naming no harness", () => {
     // ADR 0035 D3. The prohibition is about one CLI verb; a vendor's in-process
-    // task mechanism is a different thing with different bounds. The "naming no
+    // session mechanism is a different thing with different bounds. The "naming no
     // harness" half is asserted by the D9 sweep above, over both files.
     expect(skill.toLowerCase()).toContain("native sub-agent facility");
     expect(skill.toLowerCase()).toContain("stays available");
