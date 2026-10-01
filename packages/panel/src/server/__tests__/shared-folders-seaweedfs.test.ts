@@ -162,13 +162,19 @@ describe.skipIf(!configured)("the Panel's Shared folders against real SeaweedFS 
     return core.id;
   }
 
-  function service(link = new FakeCoreLink()) {
+  /** One fake Core per Core id, as there are real machines: two Cores never share a mount. */
+  function service() {
     const clock = new FakeClock();
+    const links = new Map<string, FakeCoreLink>();
+    const linkOf = (coreId: string) => {
+      if (!links.has(coreId)) links.set(coreId, new FakeCoreLink());
+      return links.get(coreId)!;
+    };
     return {
-      link,
+      linkOf,
       clock,
       service: new mods.SharedFolders({
-        link: () => link,
+        link: linkOf,
         isConnected: () => true,
         setTimer: clock.setTimer,
         clearTimer: clock.clearTimer,
@@ -189,8 +195,9 @@ describe.skipIf(!configured)("the Panel's Shared folders against real SeaweedFS 
   }
 
   it("finishes a pairing with a real key: the Core is attached, and the connection test proved isolation on the real role", async () => {
-    const { service: s, link } = service();
+    const { service: s, linkOf } = service();
     const coreId = await pairedCore();
+    const link = linkOf(coreId);
     const proof = await s.testConnection(coreId);
     expect(proof).toMatchObject({ read: true, write: true, listOwn: true, reachOther: false, folder: `${env.prefix}/${coreId}/` });
 
@@ -209,7 +216,7 @@ describe.skipIf(!configured)("the Panel's Shared folders against real SeaweedFS 
   }, 90_000);
 
   it("deletes the Core and exactly its own prefix: not one object of any other prefix is touched", async () => {
-    const { service: s, link } = service();
+    const { service: s, linkOf } = service();
     const a = await pairedCore();
     const b = await pairedCore();
     await s.finishPairing(a);
@@ -249,7 +256,7 @@ describe.skipIf(!configured)("the Panel's Shared folders against real SeaweedFS 
     expect(result.prefix).toBe(`${env.prefix}/${a}/`);
 
     expect(await mods.getCore(a)).toBeNull();
-    expect(link.ofType("sharedDetach")).toMatchObject([{ keepLocalCopy: true }]);
+    expect(linkOf(a).ofType("sharedDetach")).toMatchObject([{ keepLocalCopy: true }]);
     const after = await adminKeys(`${env.prefix}/`);
     expect(after.filter((k) => k.startsWith(`${env.prefix}/${a}/`))).toEqual([]);
     // Every other object in the bucket under the Cores' prefix is still there, byte for byte the same set.
