@@ -4,6 +4,7 @@ import { bundledPanelMigrations } from "~/db/pg-migrations-bundle";
 import { createTestDb, type TestDb } from "~/db/test-db";
 import { bootPanel } from "../panel-boot";
 import { CoreLinkManager } from "../services/core-link-manager";
+import { stopWebhookDeliveryWorkerForTests } from "../services/webhook-delivery-worker";
 
 /**
  * The Core registry is in Postgres, so the links to the registered Cores are
@@ -31,6 +32,7 @@ async function poolOver(): Promise<PanelPoolLike> {
 }
 
 afterEach(async () => {
+  stopWebhookDeliveryWorkerForTests();
   await closePanelDatabase();
   vi.restoreAllMocks();
   await Promise.all(open.splice(0).map((db) => db.close()));

@@ -3,16 +3,19 @@ import { findCoreById } from "../repositories/cores.repo";
 import { findCommentsForTask, insertComment } from "../repositories/task-comments.repo";
 import {
   claimAssignedTask,
+  deleteTaskRow,
   findTaskById,
   findTaskHistory,
   findTasks,
   insertTaskWithHistory,
   transitionTask,
+  updateTaskRow,
   type NewTaskCommentRow,
   type TaskCommentRow,
   type TaskRow,
   type TaskStatusHistoryRow,
 } from "../repositories/tasks.repo";
+import type { NewOutboxRow } from "../repositories/webhooks.repo";
 import {
   COMMENT_AUTHOR_KINDS,
   FINISHED_TASK_STATUSES,
@@ -22,6 +25,7 @@ import {
   type CommentAuthorKind,
   type TaskStatus,
 } from "~/shared/tasks";
+import type { WebhookEventType } from "~/shared/webhooks";
 import { newId } from "./_ids";
 
 /**
@@ -31,6 +35,9 @@ import { newId } from "./_ids";
  *
  * The status rules live here, so a route, a script or the dispatcher cannot
  * skip them: the legal moves are `TASK_TRANSITIONS` in `shared/tasks.ts`.
+ *
+ * Each write also inserts a webhook outbox row in the same transaction (#574),
+ * so a rolled-back change never emits.
  */
 
 export type Task = TaskRow;
@@ -106,6 +113,39 @@ async function writeComment<T>(sourceFile: string | null, write: () => Promise<T
   }
 }
 
+function taskPayload(task: TaskRow) {
+  return {
+    id: task.id,
+    title: task.title,
+    description: task.description,
+    status: task.status,
+    coreId: task.coreId,
+    agent: task.agent,
+    attemptCount: task.attemptCount,
+    createdAt: task.createdAt,
+    updatedAt: task.updatedAt,
+  };
+}
+
+function outboxEvent(
+  ownerId: number,
+  eventType: WebhookEventType,
+  data: unknown,
+  coreId: string | null,
+  now: number,
+): NewOutboxRow {
+  const id = newId("wob");
+  return {
+    id,
+    ownerId,
+    eventType,
+    payload: JSON.stringify({ id, type: eventType, createdAt: now, data }),
+    coreId,
+    createdAt: now,
+    processedAt: null,
+  };
+}
+
 export async function createTask(ownerId: number, input: NewTask, now = Date.now()): Promise<Task> {
   const title = input.title.trim();
   if (!title) throw new ValidationError("a Task needs a title");
@@ -125,7 +165,9 @@ export async function createTask(ownerId: number, input: NewTask, now = Date.now
     createdAt: now,
     updatedAt: now,
   };
-  await insertTaskWithHistory(row, newId("tsh"));
+  await insertTaskWithHistory(row, newId("tsh"), [
+    outboxEvent(ownerId, "task.created", { task: taskPayload(row) }, coreId, now),
+  ]);
   return row;
 }
 
@@ -149,6 +191,40 @@ export async function listTaskComments(ownerId: number, id: string): Promise<Tas
   return findCommentsForTask(ownerId, id);
 }
 
+/** Update a Task's title and description; emits `task.updated`. */
+export async function updateTask(
+  ownerId: number,
+  id: string,
+  input: { title?: string; description?: string },
+  now = Date.now(),
+): Promise<Task> {
+  const current = await getTask(ownerId, id);
+  const title = input.title !== undefined ? input.title.trim() : current.title;
+  if (!title) throw new ValidationError("a Task needs a title");
+  const description = input.description !== undefined ? input.description : current.description;
+  const outbox = [
+    outboxEvent(
+      ownerId,
+      "task.updated",
+      { task: taskPayload({ ...current, title, description, updatedAt: now }) },
+      current.coreId,
+      now,
+    ),
+  ];
+  const updated = await updateTaskRow(ownerId, id, { title, description, updatedAt: now }, outbox);
+  if (!updated) throw new NotFoundError("task not found");
+  return updated;
+}
+
+/** Delete a Task; emits `task.deleted` with the last known row. */
+export async function deleteTask(ownerId: number, id: string, now = Date.now()): Promise<Task> {
+  const current = await getTask(ownerId, id);
+  const outbox = [outboxEvent(ownerId, "task.deleted", { task: taskPayload(current) }, current.coreId, now)];
+  const removed = await deleteTaskRow(ownerId, id, outbox);
+  if (!removed) throw new NotFoundError("task not found");
+  return removed;
+}
+
 /** Add a comment without changing the status. */
 export async function addTaskComment(
   ownerId: number,
@@ -156,9 +232,30 @@ export async function addTaskComment(
   input: NewComment,
   now = Date.now(),
 ): Promise<TaskComment> {
+  const task = await getTask(ownerId, id);
   const clean = cleanComment(input);
   const row = { ...clean, taskId: id, ownerId, createdAt: now };
-  const stored = await writeComment(clean.sourceFile, () => insertComment(row));
+  const outbox = [
+    outboxEvent(
+      ownerId,
+      "comment.created",
+      {
+        comment: {
+          id: clean.id,
+          taskId: id,
+          authorKind: clean.authorKind,
+          authorName: clean.authorName,
+          sourceFile: clean.sourceFile,
+          body: clean.body,
+          createdAt: now,
+        },
+        task: taskPayload(task),
+      },
+      task.coreId,
+      now,
+    ),
+  ];
+  const stored = await writeComment(clean.sourceFile, () => insertComment(row, outbox));
   if (!stored) throw new NotFoundError("task not found");
   return stored;
 }
@@ -175,7 +272,41 @@ async function move(
 ): Promise<Task> {
   if (!isTaskStatus(to)) throw new ValidationError(`unknown status: ${String(to)}`);
   const result = await writeComment(comment?.sourceFile ?? null, () =>
-    transitionTask(ownerId, id, legalFrom, to, now, newId("tsh"), comment, patch),
+    transitionTask(ownerId, id, legalFrom, to, now, newId("tsh"), comment, patch ?? {}, ({ from, task }) => {
+      const events: NewOutboxRow[] = [];
+      if (comment) {
+        events.push(
+          outboxEvent(
+            ownerId,
+            "comment.created",
+            {
+              comment: {
+                id: comment.id,
+                taskId: id,
+                authorKind: comment.authorKind,
+                authorName: comment.authorName,
+                sourceFile: comment.sourceFile,
+                body: comment.body,
+                createdAt: now,
+              },
+              task: taskPayload({ ...task, status: from }),
+            },
+            task.coreId,
+            now,
+          ),
+        );
+      }
+      events.push(
+        outboxEvent(
+          ownerId,
+          "task.status_changed",
+          { task: taskPayload(task), from, to },
+          task.coreId,
+          now,
+        ),
+      );
+      return events;
+    }),
   );
   if (result.kind === "missing") throw new NotFoundError("task not found");
   if (result.kind === "illegal") throw new IllegalTaskTransitionError(result.from, to);
@@ -209,10 +340,19 @@ export async function commentAndReassign(
  * Claim an `assigned` Task for dispatch (#570): one conditional update, so of two
  * dispatchers only one gets the Task back and the other gets null. The Task is
  * `in_progress` afterwards, with its attempt count plus one and its dispatch time
- * set. A Task of another owner is null too.
+ * set. A Task of another owner is null too. The winning claim writes
+ * `task.status_changed` in the same transaction (#574).
  */
 export async function claimTask(ownerId: number, id: string, now = Date.now()): Promise<Task | null> {
-  return claimAssignedTask(ownerId, id, now, newId("tsh"));
+  return claimAssignedTask(ownerId, id, now, newId("tsh"), (task) => [
+    outboxEvent(
+      ownerId,
+      "task.status_changed",
+      { task: taskPayload(task), from: "assigned", to: "in_progress" },
+      task.coreId,
+      now,
+    ),
+  ]);
 }
 
 /**

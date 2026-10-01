@@ -25,9 +25,13 @@ import * as coreFilesController from "./controllers/core-files.controller";
 import * as updateCheckController from "./controllers/update-check.controller";
 import * as tasksController from "./controllers/tasks.controller";
 import { OPERATOR_ID } from "./services/operator";
+import * as webhooksController from "./controllers/webhooks.controller";
 
 const HARNESS_HOOK_PATH = /^\/api\/hooks\/([a-z0-9-]+)$/;
 const CORE_PATH = /^\/api\/cores\/([^/]+)$/;
+const WEBHOOK_PATH = /^\/api\/webhooks\/([^/]+)$/;
+const WEBHOOK_PING_PATH = /^\/api\/webhooks\/([^/]+)\/ping$/;
+const WEBHOOK_DELIVERIES_PATH = /^\/api\/webhooks\/([^/]+)\/deliveries$/;
 // A Core's files, addressed by both ids: the SDK's Files client still builds its
 // requests as `/v1/projects/:id/files`, which a Core answers as an alias of the
 // workspace's files (issue 557), so the Panel's proxy takes the same shape.
@@ -208,6 +212,17 @@ async function dispatch(
   if (pathname === "/api/cores") {
     if (method === "GET") return coresController.list();
   }
+  // Webhooks (#574): signed Task event delivery. No UI in this PR.
+  if (pathname === "/api/webhooks") {
+    if (method === "GET") return webhooksController.list();
+    if (method === "POST") return webhooksController.create(request);
+  }
+  let m = pathname.match(WEBHOOK_PING_PATH);
+  if (m && method === "POST") return webhooksController.ping(decode(m[1]));
+  m = pathname.match(WEBHOOK_DELIVERIES_PATH);
+  if (m && method === "GET") return webhooksController.deliveries(decode(m[1]));
+  m = pathname.match(WEBHOOK_PATH);
+  if (m && method === "DELETE") return webhooksController.remove(decode(m[1]));
   // Pairing (#286). Literal paths, and matched before CORE_PATH so `pairing`
   // is never read as a Core id. Both are Node-side work the browser cannot do:
   // a TLS chain is read here, a key pair is born here, and a code is spent
@@ -221,7 +236,7 @@ async function dispatch(
   // A Core's files, on the Core that owns them (#129 F6/F11, #169). The
   // Panel is a dumb pipe here: these three lines resolve a Core and forward a
   // stream, and every decision about what a path means is the Core's.
-  let m = pathname.match(CORE_PROJECT_FILES_LIST_PATH);
+  m = pathname.match(CORE_PROJECT_FILES_LIST_PATH);
   if (m) {
     if (method === "GET") return coreFilesController.list(decode(m[1]), decode(m[2]), url);
   }

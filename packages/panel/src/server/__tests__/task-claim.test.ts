@@ -10,9 +10,8 @@ import { closePanelTestDb, openPanelTestDb } from "./_panel-test-db";
  */
 
 const testDb = await openPanelTestDb();
-const { claimTask, createTask, getTask, failTaskDispatch, listTaskHistory, changeTaskStatus } = await import(
-  "../services/tasks"
-);
+const { claimTask, createTask, getTask, failTaskDispatch, listTaskHistory, changeTaskStatus, applyTaskResult } =
+  await import("../services/tasks");
 const { NotFoundError } = await import("../errors");
 
 const A = 1;
@@ -28,13 +27,44 @@ beforeAll(async () => {
   }
 });
 beforeEach(async () => {
-  await testDb.pool.query("truncate tasks cascade");
+  await testDb.pool.query("truncate webhook_outbox, tasks cascade");
 });
 afterAll(async () => {
   await closePanelTestDb(testDb);
 });
 
+async function statusChangedOutbox(): Promise<
+  { event_type: string; payload: string; processed_at: number | null }[]
+> {
+  const r = await testDb.pool.query(
+    "select event_type, payload, processed_at from webhook_outbox where event_type = 'task.status_changed' order by created_at, id",
+  );
+  return r.rows as { event_type: string; payload: string; processed_at: number | null }[];
+}
+
 describe("claiming an assigned Task", () => {
+  it("writes one task.status_changed outbox row in the claim transaction, and a losing claim writes none", async () => {
+    const task = await createTask(A, { title: "claim-outbox", startNow: true }, 100);
+    expect(await statusChangedOutbox()).toEqual([]);
+
+    const [first, second] = await Promise.all([claimTask(A, task.id, 1_000), claimTask(A, task.id, 1_001)]);
+    expect([first, second].filter((r) => r !== null)).toHaveLength(1);
+
+    const rows = await statusChangedOutbox();
+    expect(rows).toHaveLength(1);
+    const body = JSON.parse(rows[0]!.payload);
+    expect(body.type).toBe("task.status_changed");
+    expect(body.data).toMatchObject({
+      from: "assigned",
+      to: "in_progress",
+      task: { id: task.id, status: "in_progress" },
+    });
+
+    // A third claim after the winner already moved the Task must leave the outbox alone.
+    expect(await claimTask(A, task.id, 1_002)).toBeNull();
+    expect(await statusChangedOutbox()).toHaveLength(1);
+  });
+
   it("lets exactly one of two racing dispatchers claim it", async () => {
     const task = await createTask(A, { title: "race", startNow: true });
     const results = await Promise.all([claimTask(A, task.id, 1_000), claimTask(A, task.id, 1_001)]);
@@ -125,5 +155,60 @@ describe("a failed dispatch", () => {
     const { listTaskComments } = await import("../services/tasks");
     expect(await listTaskComments(A, task.id)).toEqual([]);
     expect((await getTask(A, task.id)).lastError).toBeNull();
+  });
+
+  it("writes task.status_changed (and comment.created) outbox rows with the fail", async () => {
+    const task = await createTask(A, { title: "fail-outbox", startNow: true }, 10);
+    await claimTask(A, task.id, 20);
+    const before = await statusChangedOutbox();
+    expect(before).toHaveLength(1); // the claim
+
+    await failTaskDispatch(A, task.id, "no Agent", 30);
+
+    const statusRows = await statusChangedOutbox();
+    expect(statusRows).toHaveLength(2);
+    const failBody = JSON.parse(statusRows[1]!.payload);
+    expect(failBody.data).toMatchObject({ from: "in_progress", to: "failed", task: { id: task.id, status: "failed" } });
+
+    const comments = await testDb.pool.query(
+      "select event_type, payload from webhook_outbox where event_type = 'comment.created' order by created_at, id",
+    );
+    expect(comments.rows).toHaveLength(1);
+    expect(JSON.parse(String(comments.rows[0]!.payload)).data.comment.body).toContain("no Agent");
+  });
+});
+
+describe("applying a Task result", () => {
+  it("writes task.status_changed and comment.created outbox rows when the move wins", async () => {
+    const task = await createTask(A, { title: "result-outbox", startNow: true }, 10);
+    await claimTask(A, task.id, 20);
+    expect(await statusChangedOutbox()).toHaveLength(1);
+
+    const { task: done, moved } = await applyTaskResult(
+      A,
+      task.id,
+      {
+        to: "done",
+        authorName: "agent",
+        body: "finished",
+        sourceFile: "reports/done.md",
+      },
+      30,
+    );
+    expect(moved).toBe(true);
+    expect(done.status).toBe("done");
+
+    const statusRows = await statusChangedOutbox();
+    expect(statusRows).toHaveLength(2);
+    expect(JSON.parse(statusRows[1]!.payload).data).toMatchObject({
+      from: "in_progress",
+      to: "done",
+      task: { id: task.id, status: "done" },
+    });
+    const comments = await testDb.pool.query(
+      "select payload from webhook_outbox where event_type = 'comment.created'",
+    );
+    expect(comments.rows).toHaveLength(1);
+    expect(JSON.parse(String(comments.rows[0]!.payload)).data.comment.sourceFile).toBe("reports/done.md");
   });
 });
