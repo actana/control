@@ -295,12 +295,12 @@ describe("the hook miss drop box", () => {
         ...process.env,
         AC_HOOK_URL: "http://127.0.0.1:1",
         AC_HOOK_TOKEN: "t",
-        AC_HOOK_TASK_ID: "t-drop",
+        AC_HOOK_SESSION_ID: "t-drop",
         AC_HOOK_MISS_LOG: missLog,
       },
     });
     expect(result.status).toBe(0);
-    expect(drainHookMisses(missLog).map((miss) => miss.taskId)).toEqual(["t-drop"]);
+    expect(drainHookMisses(missLog).map((miss) => miss.sessionId)).toEqual(["t-drop"]);
   });
 
   describe("read as untrusted input", () => {
@@ -320,7 +320,7 @@ describe("the hook miss drop box", () => {
       const misses = drainHookMisses(missLog);
 
       expect(misses.length).toBe(filler);
-      expect(misses.some((miss) => miss.taskId === "t-cut")).toBe(false);
+      expect(misses.some((miss) => miss.sessionId === "t-cut")).toBe(false);
       expect(fs.statSync(missLog).size).toBe(0);
     });
 
@@ -341,9 +341,9 @@ describe("the hook miss drop box", () => {
       const misses = drainHookMisses(missLog);
 
       expect(misses).toEqual([
-        { at: "2026-01-01T00:00:00Z", taskId: "t-[31mred", event: "Stop", code: "28" },
-        { at: "2026-01-01T00:00:00Z", taskId: "y".repeat(128), event: "Stop", code: "28" },
-        { at: "2026-01-01T00:00:00Z", taskId: "t-c1x", event: "Stop", code: "28" },
+        { at: "2026-01-01T00:00:00Z", sessionId: "t-[31mred", event: "Stop", code: "28" },
+        { at: "2026-01-01T00:00:00Z", sessionId: "y".repeat(128), event: "Stop", code: "28" },
+        { at: "2026-01-01T00:00:00Z", sessionId: "t-c1x", event: "Stop", code: "28" },
       ]);
     });
 

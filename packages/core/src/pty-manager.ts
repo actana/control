@@ -110,7 +110,7 @@ const LSOF_PROBE_TIMEOUT_MS = 2_000;
 const SIGTERM_GRACE_MS = 1_500;
 const PORT_KILL_POLL_INTERVAL_MS = 100;
 const PTY_EXIT_POLL_INTERVAL_MS = 50;
-const TASKKILL_TIMEOUT_MS = 5_000;
+const SESSIONKILL_TIMEOUT_MS = 5_000;
 const LOG_VALUE_MAX_LENGTH = 160;
 
 function safeLogValue(value: unknown): unknown {
@@ -394,7 +394,7 @@ function killProcessTreeWindows(pid: number | undefined): void {
     spawnSync(spec.command, spec.args, {
       cwd: spec.cwd,
       env: spec.env,
-      timeout: TASKKILL_TIMEOUT_MS,
+      timeout: SESSIONKILL_TIMEOUT_MS,
     });
   } catch {
     /* best-effort — proc.kill() below is the fallback */
@@ -680,7 +680,7 @@ export class PtyCore {
             // A cwd the helper will not look at is an invalid cwd, said the way the
             // policy says it. (A helper that hangs or crashes is still a plain error.)
             if (err instanceof CoreHomeOpRefusedError) {
-              log.warn("pty.spawn.rejected", { code: "invalid-cwd", cwd: safeLogValue(opts.cwd), taskId: safeLogValue(opts.taskId) });
+              log.warn("pty.spawn.rejected", { code: "invalid-cwd", cwd: safeLogValue(opts.cwd), sessionId: safeLogValue(opts.sessionId) });
               throw new Error("pty:spawn rejected (invalid-cwd)");
             }
             throw err;

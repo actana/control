@@ -92,7 +92,7 @@ describe("spawning a Claude Code Session in container mode", () => {
     vi.spyOn(nodePty, "spawn").mockReturnValue(fakePty() as never);
 
     const result = await core(true).spawn({
-      taskId: "t1",
+      sessionId: "t1",
       cwd: workspace.dir,
       agent: "claude-code",
       command: "claude",
@@ -114,7 +114,7 @@ describe("spawning a Claude Code Session in container mode", () => {
     const helper = cannedHelper();
     configureCoreHomeOps(helper.options);
     vi.spyOn(nodePty, "spawn").mockReturnValue(fakePty() as never);
-    await core(false).spawn({ taskId: "t2", cwd: workspace.dir, agent: "claude-code", command: "claude" } as never);
+    await core(false).spawn({ sessionId: "t2", cwd: workspace.dir, agent: "claude-code", command: "claude" } as never);
     expect(helper.requests.map((r) => r.request.op)).toEqual(["spawnPathFacts", "ensureStatuslineTap"]);
   });
 
@@ -129,7 +129,7 @@ describe("spawning a Claude Code Session in container mode", () => {
     });
     const spawn = vi.spyOn(nodePty, "spawn").mockReturnValue(fakePty() as never);
     await expect(
-      core(true).spawn({ taskId: "t3", cwd: workspace.dir, agent: "claude-code", command: "claude" } as never),
+      core(true).spawn({ sessionId: "t3", cwd: workspace.dir, agent: "claude-code", command: "claude" } as never),
     ).rejects.toThrow("pty:spawn rejected (invalid-cwd)");
     expect(spawn).not.toHaveBeenCalled();
   });
@@ -148,7 +148,7 @@ describe("spawning a Claude Code Session in container mode", () => {
       },
     });
     const spawn = vi.spyOn(nodePty, "spawn").mockReturnValue(fakePty() as never);
-    await expect(core(false).spawn({ taskId: "t4", cwd: other, agent: "claude-code", command: "claude" } as never)).rejects.toThrow(
+    await expect(core(false).spawn({ sessionId: "t4", cwd: other, agent: "claude-code", command: "claude" } as never)).rejects.toThrow(
       "pty:spawn rejected (cwd-outside-project-roots)",
     );
     expect(spawn).not.toHaveBeenCalled();
@@ -168,7 +168,7 @@ describe("a path the helper will not look at does not fail the spawn with a raw 
       "a\0b",
       ...Array.from({ length: 300 }, (_, i) => `/srv/root-${i}`),
     ];
-    await core(false).spawn({ taskId: "t6", cwd: workspace.dir, agent: "claude-code", command: "claude" } as never);
+    await core(false).spawn({ sessionId: "t6", cwd: workspace.dir, agent: "claude-code", command: "claude" } as never);
     const roots = (helper.requests[0]!.request as { roots: string[] }).roots;
     expect(roots).toContain(workspace.dir);
     expect(roots[0]).toBe(path.dirname(workspace.dir)); // core home first: it is what a home shell needs
@@ -181,7 +181,7 @@ describe("a path the helper will not look at does not fail the spawn with a raw 
     configureCoreHomeOps(cannedHelper().options);
     const spawn = vi.spyOn(nodePty, "spawn").mockReturnValue(fakePty() as never);
     await expect(
-      core(false).spawn({ taskId: "t7", cwd: `${workspace.dir}/a\0b`, agent: "claude-code", command: "claude" } as never),
+      core(false).spawn({ sessionId: "t7", cwd: `${workspace.dir}/a\0b`, agent: "claude-code", command: "claude" } as never),
     ).rejects.toThrow("pty:spawn rejected (invalid-cwd)");
     expect(spawn).not.toHaveBeenCalled();
   });
@@ -192,7 +192,7 @@ describe("spawning outside container mode", () => {
     const helperRequests: string[] = [];
     configureCoreHomeOps({ run: async (_s, input) => (helperRequests.push(input), { status: 0, stdout: "{}", stderr: "" }) });
     vi.spyOn(nodePty, "spawn").mockReturnValue(fakePty() as never);
-    await core(true).spawn({ taskId: "t5", cwd: workspace.dir, agent: "claude-code", command: "claude" } as never);
+    await core(true).spawn({ sessionId: "t5", cwd: workspace.dir, agent: "claude-code", command: "claude" } as never);
     expect(helperRequests).toEqual([]);
     // In process, the hook file is written by the daemon, exactly as before.
     expect(fs.existsSync(path.join(workspace.dir, ".claude", "settings.local.json"))).toBe(true);
