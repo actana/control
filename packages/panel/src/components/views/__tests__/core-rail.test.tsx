@@ -1,6 +1,8 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { readFileSync } from "node:fs";
+import path from "node:path";
 import type { CoreWithDial } from "~/shared/cores";
 
 // The rail lists Cores and nothing else: initials, status dots, hotkeys 1 to 9.
@@ -106,6 +108,30 @@ describe("CoreRail", () => {
     const bravo = document.querySelector('[data-core-tile="b"]')!;
     expect(bravo.querySelector('[data-core-dot="offline"]')).toBeTruthy();
     expect(bravo.getAttribute("aria-label")).toBe("bravo, offline");
+  });
+
+  it("colours the dots and the attention badge with colour tokens that styles.css defines", async () => {
+    cores = [core("a", "alpha")];
+    rows = [
+      { coreId: "a", status: "running" },
+      { coreId: "a", status: "needs-input" },
+    ];
+    await mount();
+    const css = readFileSync(path.resolve(__dirname, "../../../styles.css"), "utf8");
+    const defined = (token: string) => new RegExp(`^\\s*${token}\\s*:`, "m").test(css);
+    const tile = document.querySelector('[data-core-tile="a"]')!;
+    const used = [
+      ...tile.querySelectorAll<HTMLElement>("[data-core-dot]"),
+      tile.querySelector<SVGElement>('[aria-label="Needs input"]')!,
+    ].map((el) => {
+      const raw = el.getAttribute("style") ?? "";
+      return /var\((--[a-z-]+)/.exec(raw)?.[1] ?? null;
+    });
+    expect(used.length).toBe(3);
+    for (const token of used) {
+      expect(token, "an element carries no colour token").not.toBeNull();
+      expect(defined(token!), `${token} is not defined in styles.css`).toBe(true);
+    }
   });
 
   it("marks the Core the route is on", async () => {

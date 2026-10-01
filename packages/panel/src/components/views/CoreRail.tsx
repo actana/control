@@ -125,14 +125,14 @@ export const CoreRail = memo(function CoreRail() {
                 <i key={i} data-core-dot="running" style={dotStyle("var(--status-running)")} />
               ))}
               {activity.needsInput > 0 ? (
-                <i data-core-dot="needs-input" style={dotStyle("var(--status-needs-input)")} />
+                <i data-core-dot="needs-input" style={dotStyle("var(--status-needs)")} />
               ) : null}
             </span>
             {activity.needsInput > 0 ? (
               <CircleAlert
                 size={12}
                 aria-label="Needs input"
-                style={{ position: "absolute", top: -4, right: -4, color: "var(--status-needs-input)" }}
+                style={{ position: "absolute", top: -4, right: -4, color: "var(--status-needs)" }}
               />
             ) : null}
             {hotkey ? (
