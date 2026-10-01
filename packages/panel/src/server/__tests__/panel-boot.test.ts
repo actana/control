@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { DATABASE_URL_ENV, closePanelDatabase, type PanelPoolLike } from "~/db/pg";
+import { bundledPanelMigrations } from "~/db/pg-migrations-bundle";
 import { createTestDb, type TestDb } from "~/db/test-db";
 import { bootPanel } from "../panel-boot";
 import { CoreLinkManager } from "../services/core-link-manager";
@@ -42,7 +43,7 @@ describe("bootPanel", { timeout: 30_000 }, () => {
     await bootPanel(env, () => pool);
     await vi.waitFor(() => expect(order).toHaveLength(1));
     expect(start).toHaveBeenCalledTimes(1);
-    expect(order).toEqual(["start (migrations applied: 2)"]);
+    expect(order).toEqual([`start (migrations applied: ${bundledPanelMigrations().length})`]);
   });
 
   it("dials nothing and rejects when the database cannot be reached", async () => {
