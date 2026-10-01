@@ -125,9 +125,13 @@ export async function runFilesOp(
       return await handleRead(out, confined.absolute, confined.relative, request.headOnly);
     }
     case "write": {
-      // A write follows the parents and not the last component, so `path=notes.txt`
-      // replaces `notes.txt` rather than the file a `notes.txt` symlink names.
-      const confined = confineWriteTarget(ctx.root, request.path);
+      // A file write follows the parents and not the last component, so `path=notes.txt`
+      // replaces `notes.txt` rather than the file a `notes.txt` symlink names. A tar is
+      // unpacked *into* its path, so there the path is a folder to be looked through, and
+      // a link that leaves the home is refused up front rather than entry by entry.
+      const confined = request.tar
+        ? confineToWorkspace(ctx.root, request.path)
+        : confineWriteTarget(ctx.root, request.path);
       if (!confined.ok) return refuse(out, confinementRefusal(confined));
       return await handleWrite(body, out, ctx, confined.absolute, confined.relative, request);
     }
