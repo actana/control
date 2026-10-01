@@ -492,7 +492,7 @@ async function fetchCopilot(): Promise<ProviderUsageSnapshot> {
   if (!ghToken) return unauth("copilot", "missing GitHub token (codexbar config / GITHUB_TOKEN / gh cli)");
   const host = configEnterpriseHost("copilot") ?? "api.github.com";
   const base = host.includes("://") ? host.replace(/\/$/, "") : `https://${host}`;
-  const url = base.includes("api.github.com")
+  const url = new URL(base).hostname === "api.github.com"
     ? "https://api.github.com/copilot_internal/user"
     : `${base}/copilot_internal/user`;
   const res = await httpGet(url, {
@@ -2014,6 +2014,16 @@ async function fetchAntigravity(): Promise<ProviderUsageSnapshot> {
   return unauth("antigravity", "no local Antigravity server / oauth creds");
 }
 
+/** `&amp;` goes last: decoding it first would turn `&amp;lt;` into `<` instead of the text `&lt;`. */
+export function decodeXmlAttribute(value: string): string {
+  return value
+    .replace(/&quot;/g, '"')
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&apos;/g, "'")
+    .replace(/&amp;/g, "&");
+}
+
 async function fetchJetBrains(): Promise<ProviderUsageSnapshot> {
   const home = os.homedir();
   const roots: string[] = [];
@@ -2068,12 +2078,7 @@ async function fetchJetBrains(): Promise<ProviderUsageSnapshot> {
   const optionValue = (name: string): Record<string, unknown> | null => {
     const m = xml.match(new RegExp(`<option\\s+name="${name}"\\s+value="([^"]*)"`, "i"));
     if (!m?.[1]) return null;
-    const decoded = m[1]
-      .replace(/&quot;/g, '"')
-      .replace(/&amp;/g, "&")
-      .replace(/&lt;/g, "<")
-      .replace(/&gt;/g, ">")
-      .replace(/&apos;/g, "'");
+    const decoded = decodeXmlAttribute(m[1]);
     try {
       const parsed = JSON.parse(decoded);
       return parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : null;

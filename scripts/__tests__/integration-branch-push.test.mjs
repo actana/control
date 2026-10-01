@@ -81,7 +81,6 @@ const evaluate = (expr, github) => {
   if (expr === null) return true;
   const js = expr
     .replace(/^\$\{\{\s*|\s*\}\}$/g, "")
-    .replace(/startsWith\(/g, "startsWith(")
     .replace(/ == /g, " === ")
     .replace(/ != /g, " !== ");
   expect(js, `unsupported construct in: ${expr}`).toMatch(

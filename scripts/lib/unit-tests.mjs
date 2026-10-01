@@ -242,9 +242,9 @@ export function renderJobSummary(results, { leftovers = null, disk = null, diskA
   return lines.join("\n");
 }
 
-/** A `|` inside a markdown table cell is a column break unless it is escaped. */
+/** A `|` inside a markdown table cell is a column break unless it is escaped, and so is the backslash that would escape it. */
 export function escapeCell(text) {
-  return String(text).replace(/\|/g, "\\|");
+  return String(text).replace(/[\\|]/g, "\\$&");
 }
 
 function formatDuration(ms) {
