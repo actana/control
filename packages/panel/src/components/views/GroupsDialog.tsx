@@ -282,7 +282,7 @@ export function GroupsDialog({
             variant="accent"
             icon="plus"
             disabled={!newName.trim()}
-            onClick={async () => {
+            onClick={() => void (async () => {
               if (newName.trim()) {
                 setError(null);
                 try {
@@ -292,7 +292,7 @@ export function GroupsDialog({
                   setError(e instanceof Error ? e.message : "Could not add group");
                 }
               }
-            }}
+            })()}
           >
             Add
           </Btn>
@@ -433,14 +433,18 @@ export function GroupsDialog({
                         onChange={(e) =>
                           setEditing({ id: g.id, name: e.target.value })
                         }
-                        onKeyDown={async (e) => {
+                        onKeyDown={(e) => void (async () => {
                           if (e.key === "Enter" && editing.name.trim()) {
-                            await onRename(g.id, editing.name.trim());
-                            setEditing(null);
+                            try {
+                              await onRename(g.id, editing.name.trim());
+                              setEditing(null);
+                            } catch (err) {
+                              setError(err instanceof Error ? err.message : "Could not rename group");
+                            }
                           } else if (e.key === "Escape") {
                             setEditing(null);
                           }
-                        }}
+                        })()}
                         style={{
                           flex: 1,
                           background: "var(--surface-1)",
@@ -456,12 +460,16 @@ export function GroupsDialog({
                       <Btn
                         size="sm"
                         variant="accent"
-                        onClick={async () => {
+                        onClick={() => void (async () => {
                           if (editing.name.trim()) {
-                            await onRename(g.id, editing.name.trim());
-                            setEditing(null);
+                            try {
+                              await onRename(g.id, editing.name.trim());
+                              setEditing(null);
+                            } catch (err) {
+                              setError(err instanceof Error ? err.message : "Could not rename group");
+                            }
                           }
-                        }}
+                        })()}
                       >
                         Save
                       </Btn>
@@ -555,7 +563,7 @@ export function GroupsDialog({
                           type="button"
                           aria-label={`Set color ${color}`}
                           aria-pressed={selected}
-                          onClick={async () => {
+                          onClick={() => void (async () => {
                             setError(null);
                             try {
                               await onRecolor(g.id, color);
@@ -563,7 +571,7 @@ export function GroupsDialog({
                             } catch (e) {
                               setError(e instanceof Error ? e.message : "Could not update group color");
                             }
-                          }}
+                          })()}
                           style={{
                             width: 18,
                             height: 18,

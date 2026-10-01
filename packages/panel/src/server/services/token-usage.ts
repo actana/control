@@ -115,9 +115,11 @@ export function syncTokenUsage(): Promise<number> {
   if (inflight) return inflight;
   const p = Promise.resolve().then(doSync);
   inflight = p;
+  // The caller gets `p` and handles its rejection; this derived promise would
+  // reject a second time with nobody listening.
   p.finally(() => {
     if (inflight === p) inflight = null;
-  });
+  }).catch(() => {});
   return p;
 }
 

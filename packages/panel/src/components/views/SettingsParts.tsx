@@ -243,6 +243,8 @@ export function useCopy() {
     navigator.clipboard.writeText(text).then(() => {
       setCopied(label);
       setTimeout(() => setCopied(null), 1500);
+    }).catch(() => {
+      // Clipboard denied: no "copied" flash, and nothing to undo.
     });
   };
   return { copied, copy };

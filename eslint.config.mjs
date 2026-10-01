@@ -58,6 +58,23 @@ export default tseslint.config(
       "react-hooks/exhaustive-deps": "off",
     },
   },
+  // Type-aware rules (#600). Scoped to TypeScript source and tests, where a
+  // tsconfig covers the file; config files, `.mjs` scripts and generated files
+  // stay untyped so they never fail on a missing project.
+  {
+    files: ["packages/*/src/**/*.{ts,tsx}"],
+    ignores: ["packages/panel/src/routeTree.gen.ts"],
+    languageOptions: {
+      parserOptions: {
+        projectService: true,
+        tsconfigRootDir: import.meta.dirname,
+      },
+    },
+    rules: {
+      "@typescript-eslint/no-floating-promises": "error",
+      "@typescript-eslint/no-misused-promises": "error",
+    },
+  },
   {
     files: ["scripts/**/*.mjs", "vite*.ts"],
     languageOptions: {
