@@ -286,7 +286,8 @@ describe("the Files API as core: upload and tar", () => {
   });
 
   it("refuses a second write while one holds the lease, without starting a helper for it", async () => {
-    locks.acquire("shared/big");
+    const held = locks.acquire("shared/big");
+    if (!held.ok) throw new Error("the lease table starts empty");
 
     const answer = await call("PUT", "/v1/files?path=other.txt", Buffer.from("x"));
 
@@ -294,6 +295,13 @@ describe("the Files API as core: upload and tar", () => {
     expect(JSON.parse(answer.body.toString("utf8")).code).toBe("transfer-in-progress");
     expect(launches).toHaveLength(0);
     expect(fs.existsSync(path.join(home, "other.txt"))).toBe(false);
+
+    // Once it lets go, the same write goes through, and through a helper.
+    held.lease.release();
+    const retried = await call("PUT", "/v1/files?path=other.txt", Buffer.from("x"));
+    expect(retried.status).toBe(200);
+    expect(launches).toHaveLength(1);
+    expect(fs.readFileSync(path.join(home, "other.txt"), "utf8")).toBe("x");
   });
 
   it("stops the helper and frees the lease when the client hangs up mid-upload", async () => {

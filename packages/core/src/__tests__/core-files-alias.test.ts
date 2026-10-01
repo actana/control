@@ -43,7 +43,9 @@ function call(method: string, url: string, body?: string): Promise<{ status: num
 }
 
 describe("the /v1/projects/:id/files alias", () => {
-  it("reads, lists and writes the home under any id: the id names nothing", async () => {
+  it("reads, lists and writes the home under any id, as /v1/files does: the id names nothing", async () => {
+    // The alias answers what the route it stands for answers.
+    expect(await call("GET", "/v1/files?path=a.txt")).toEqual({ status: 200, text: "from the home" });
     for (const id of ["p1", "nope", "any-id-at-all"]) {
       const read = await call("GET", `/v1/projects/${id}/files?path=a.txt`);
       expect(read).toEqual({ status: 200, text: "from the home" });
@@ -67,6 +69,8 @@ describe("the /v1/projects/:id/files alias", () => {
   });
 
   it("does not offer what the SDK never sent: no delete, no folder, no move through an address that implies a Project", async () => {
+    // /v1/files has all three; the alias has none of them.
+    expect((await call("POST", "/v1/files/folder?path=made")).status).toBe(201);
     const del = await call("DELETE", "/v1/projects/p1/files?path=a.txt");
     const folder = await call("POST", "/v1/projects/p1/files/folder?path=x");
     const move = await call("POST", "/v1/projects/p1/files/move", JSON.stringify({ from: "a.txt", to: "b.txt" }));
@@ -78,6 +82,7 @@ describe("the /v1/projects/:id/files alias", () => {
   });
 
   it("is only the two addresses the SDK builds", async () => {
+    expect((await call("GET", "/v1/files/list?path=")).status).toBe(200);
     expect((await call("GET", "/v1/projects/p1/files/other")).status).toBe(404);
     expect((await call("GET", "/v1/projects/p1")).status).toBe(404);
     expect((await call("GET", "/v1/projects/files?path=a.txt")).status).toBe(404);
