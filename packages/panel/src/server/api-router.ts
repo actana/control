@@ -24,6 +24,7 @@ import * as apiKeysController from "./controllers/api-keys.controller";
 import * as coresController from "./controllers/cores.controller";
 import * as storageController from "./controllers/storage.controller";
 import * as coreFilesController from "./controllers/core-files.controller";
+import * as sharedFilesController from "./controllers/shared-files.controller";
 import * as updateCheckController from "./controllers/update-check.controller";
 import * as tasksController from "./controllers/tasks.controller";
 import * as v1Controller from "./controllers/v1.controller";
@@ -34,6 +35,8 @@ import * as webhooksController from "./controllers/webhooks.controller";
 const HARNESS_HOOK_PATH = /^\/api\/hooks\/([a-z0-9-]+)$/;
 const CORE_PATH = /^\/api\/cores\/([^/]+)$/;
 const CORE_SHARED_TEST_PATH = /^\/api\/cores\/([^/]+)\/shared\/test$/;
+// The Files tab: the Shared folder read from S3 directly, so it answers while the Core is offline (#565).
+const CORE_SHARED_FILES_PATH = /^\/api\/cores\/([^/]+)\/shared\/files(?:\/([a-z-]+))?$/;
 const CORE_PAIRING_FINISH_PATH = /^\/api\/cores\/([^/]+)\/pairing\/finish$/;
 const CORE_DELETE_PATH = /^\/api\/cores\/([^/]+)\/delete$/;
 const API_KEY_REVOKE_PATH = /^\/api\/api-keys\/([^/]+)\/revoke$/;
@@ -69,6 +72,26 @@ const HOME_USER_TERMINAL_PATH = /^\/api\/home\/user-terminals\/([^/]+)$/;
 const REQUEST_ID_HEADER = "x-request-id";
 const CORRELATION_ID_HEADER = "x-correlation-id";
 const REQUEST_ID_RE = /^[a-zA-Z0-9._:-]{1,128}$/;
+
+const SHARED_FILES_ROUTES: Readonly<Record<string, string>> = {
+  "GET ": "list",
+  "GET details": "details",
+  "GET media": "media",
+  "GET search": "search",
+  "GET summary": "summary",
+  "POST download-url": "download-url",
+  "POST mkdir": "mkdir",
+  "PUT upload": "upload",
+  "POST rename": "rename",
+  "POST move": "move",
+  "POST delete": "delete",
+};
+
+type SharedFilesRoute = "list" | "details" | "media" | "search" | "summary" | "download-url" | "mkdir" | "upload" | "rename" | "move" | "delete" | undefined;
+
+function sharedFilesRoute(method: string, leaf: string | undefined): SharedFilesRoute {
+  return SHARED_FILES_ROUTES[`${method} ${leaf ?? ""}`] as SharedFilesRoute;
+}
 
 function decode(segment: string | undefined): string {
   return decodeURIComponent(segment ?? "");
@@ -337,6 +360,27 @@ async function dispatch(
   if (m && method === "POST") return tasksController.comment(ownerId, decode(m[1]), request);
   m = pathname.match(CORE_AGENTS_PATH);
   if (m && method === "GET") return tasksController.listCoreAgents(ownerId, decode(m[1]));
+
+  // The Files tab (#565): every call runs as the session's owner, on one of that owner's Cores. A key never reaches these.
+  m = pathname.match(CORE_SHARED_FILES_PATH);
+  if (m) {
+    const files = sharedFilesRoute(method, m[2]);
+    const coreId = decode(m[1]);
+    const owner = principal!.ownerId;
+    switch (files) {
+      case "list": return sharedFilesController.list(owner, coreId, url);
+      case "details": return sharedFilesController.details(owner, coreId, url);
+      case "media": return sharedFilesController.media(owner, coreId, url);
+      case "search": return sharedFilesController.search(owner, coreId, url);
+      case "summary": return sharedFilesController.summary(owner, coreId, url);
+      case "download-url": return sharedFilesController.downloadUrl(owner, coreId, request);
+      case "mkdir": return sharedFilesController.mkdir(owner, coreId, request);
+      case "upload": return sharedFilesController.upload(owner, coreId, url, request);
+      case "rename": return sharedFilesController.rename(owner, coreId, request);
+      case "move": return sharedFilesController.move(owner, coreId, request);
+      case "delete": return sharedFilesController.remove(owner, coreId, request);
+    }
+  }
 
   // The Shared folder, from the pairing's last step to delete (#564).
   m = pathname.match(CORE_SHARED_TEST_PATH);
