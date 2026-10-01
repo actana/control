@@ -34,11 +34,10 @@ export function FleetView() {
     },
     [router],
   );
-  // A Session is opened in the session workspace of the project it was
-  // started in, on the Core that owns it.
+  // A Session opens in that Core's workspace (issue 560) — no /projects/$id.
   const openSession = useCallback(
-    (coreId: string, projectId: string) => {
-      void router.navigate({ to: "/projects/$id", params: { id: projectId }, search: { coreId } });
+    (coreId: string, _projectId: string) => {
+      void router.navigate({ to: "/cores/$coreId/workspace", params: { coreId } });
     },
     [router],
   );

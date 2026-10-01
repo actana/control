@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { Modal } from "~/components/ui/Modal";
 import { FormErrorBox } from "~/components/ui/FormErrorBox";
 import { Btn } from "~/components/ui/Btn";
@@ -23,15 +23,12 @@ import {
   visibleLauncherHarnesses,
 } from "~/shared/harness-launcher-config";
 import { useCores } from "~/lib/use-fleet";
-import { DEFAULT_BRANCH } from "@actana/shared/domain";
+import { SESSION_REPORT_LOCATION } from "~/lib/session-report-location";
 import type { Harness } from "@actana/shared/domain";
-import type { Project } from "~/db/schema";
 
 export type RememberPatch = {
   rememberHarnessSettings: boolean;
   savedHarness: Harness | null;
-  savedSkipPermissions: boolean;
-  savedBareSession: boolean;
 };
 
 function isInteractiveTarget(target: EventTarget | null): boolean {
@@ -39,14 +36,26 @@ function isInteractiveTarget(target: EventTarget | null): boolean {
     !!target.closest("button, a, input, textarea, select, [role='button']");
 }
 
+const labelStyle: CSSProperties = {
+  fontFamily: "var(--mono)",
+  fontSize: 10.5,
+  fontWeight: 500,
+  color: "var(--text-dim)",
+  letterSpacing: "0.05em",
+  textTransform: "uppercase",
+  display: "block",
+  marginBottom: 8,
+};
+
+/**
+ * Start a new session (design screen 03, issue 560): harness picker + prompt,
+ * a Runs on line, no path or cwd. Remember is per Core.
+ */
 export function NewHarnessDialog({
   open,
-  project,
-  // The picker reads its availability from the Core this Session will belong to —
-  // one dialog for every Core (Singular UI invariant), no branch inside the
-  // picker. Missing / outdated states, keyboard skip-over, and the submit gate
-  // all consult that Core's Core-published probe.
   coreId = null,
+  coreLabel: coreLabelProp,
+  initialRemember,
   onClose,
   onStart,
   onPersistRemember,
@@ -54,14 +63,17 @@ export function NewHarnessDialog({
   onPrepareWarm,
 }: {
   open: boolean;
-  project: Project | null;
-  /** Which Core the created Session will belong to. Null means no Core is
-   *  selected, and nothing can launch. */
+  /** Which Core the Session will belong to. Null means nothing can launch. */
   coreId?: string | null;
+  /** Display name for the Runs on line; falls back to the Core registry. */
+  coreLabel?: string;
+  /** Seed for the Remember checkbox (from {@link readCoreRemember}). */
+  initialRemember?: RememberPatch | null;
   onClose: () => void;
   onStart: (data: {
     agent: Harness;
     title: string;
+    prompt: string;
     bareSession: boolean;
   }) => Promise<void> | void;
   onPersistRemember: (patch: RememberPatch) => Promise<void> | void;
@@ -72,27 +84,22 @@ export function NewHarnessDialog({
   }) => void;
 }) {
   const [agent, setHarness] = useState<Harness>("claude-code");
+  const [prompt, setPrompt] = useState("");
   const [rememberSettings, setRememberSettings] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const promptRef = useRef<HTMLTextAreaElement>(null);
   const cliAvailability = useCliAvailability(coreId);
-  // A missing CLI is a thing the operator can fix from here (issue 83): the
-  // owning Core installs it and republishes availability. `installIntent` is
-  // the Harness they clicked Install on — it wins the selection once it lands,
-  // ahead of the effect below that moves the selection off missing rows.
   const { installs, install } = useHarnessInstall(coreId);
   const [installIntent, setInstallIntent] = useState<Harness | null>(null);
   const { data: settings } = useSettings();
-  // Resolve the Core's alias for the error copy — an operator with several
-  // Cores registered needs to know *where* to install a missing CLI, not just
-  // that it's missing. Falls back to the coreId when the label lookup misses
-  // (the store hasn't loaded yet, or the coreId isn't in the registry).
   const { cores } = useCores();
   const coreLabel =
-    cores.find((c) => c.id === coreId)?.label || coreId;
+    cores.find((c) => c.id === coreId)?.label ||
+    coreLabelProp ||
+    coreId ||
+    "Core";
 
-  // Order + visibility come from Settings → Providers. Hiding only affects
-  // this picker; a hidden savedHarness still launches through the skip-dialog path.
   const launcherConfig = settings?.harnessLauncherConfig ?? DEFAULT_AGENT_LAUNCHER_CONFIG;
   const harnessOptions = useMemo(
     () =>
@@ -102,24 +109,18 @@ export function NewHarnessDialog({
     [launcherConfig],
   );
 
-  // `savedSkipPermissions` is carried for symmetry with the column that still
-  // exists, and is always false: auto-mode is unconditional (issue 22) and no
-  // launch path reads this field. Setting it from a user choice would
-  // reintroduce the control that was removed.
-  const buildSessionSettingsPatch = (
+  const buildRememberPatch = (
     nextRememberSettings: boolean,
     nextHarness: Harness,
   ): RememberPatch => ({
     rememberHarnessSettings: nextRememberSettings,
     savedHarness: nextHarness,
-    savedSkipPermissions: false,
-    savedBareSession: false,
   });
 
   useEffect(() => {
-    if (!open || !project || !onPrepareWarm) return;
+    if (!open || !onPrepareWarm) return;
     onPrepareWarm({ agent, bareSession: false });
-  }, [open, project, agent, onPrepareWarm]);
+  }, [open, agent, onPrepareWarm]);
 
   useEffect(() => {
     if (!open) {
@@ -127,29 +128,27 @@ export function NewHarnessDialog({
       setSubmitting(false);
       return;
     }
-    // A saved agent that has since been hidden can't be highlighted in the
-    // picker — seed the first visible option instead.
     const seedHarness: Harness =
-      project?.savedHarness && harnessOptions.some((a) => a.id === project.savedHarness)
-        ? project.savedHarness
+      initialRemember?.savedHarness &&
+      harnessOptions.some((a) => a.id === initialRemember.savedHarness)
+        ? initialRemember.savedHarness
         : harnessOptions[0]?.id ?? "claude-code";
     setHarness(seedHarness);
-    // An install still running from a previous opening of this dialog is still
-    // the Harness the operator asked for — the store outlives the component, so
-    // reopening picks the intent back up rather than dropping it.
+    setPrompt("");
     setInstallIntent(
       harnessOptions.find((a) => installStateFor(installs, a.id).installing)?.id ?? null,
     );
-    setRememberSettings(!!project?.rememberHarnessSettings);
+    setRememberSettings(!!initialRemember?.rememberHarnessSettings);
     setError(null);
     setSubmitting(false);
-    // Seed only when the dialog opens; later refreshes of `project` (e.g. after
-    // persisting the remember toggle) must not stomp in-flight form state.
+    // Focus the prompt — New Session is prompt-first (design 03).
+    requestAnimationFrame(() => promptRef.current?.focus());
+    // Seed only when the dialog opens.
   }, [open]);
 
   const toggleRemember = async (next: boolean) => {
     setRememberSettings(next);
-    await onPersistRemember(buildSessionSettingsPatch(next, agent));
+    await onPersistRemember(buildRememberPatch(next, agent));
   };
 
   const selectHarness = (nextHarness: Harness) => {
@@ -158,7 +157,7 @@ export function NewHarnessDialog({
       nextAvailability.status === "outdated";
     if (!canSelect) return;
     setHarness(nextHarness);
-    void onPersistRemember(buildSessionSettingsPatch(rememberSettings, nextHarness));
+    void onPersistRemember(buildRememberPatch(rememberSettings, nextHarness));
   };
 
   const submit = () => {
@@ -177,17 +176,19 @@ export function NewHarnessDialog({
     setSubmitting(true);
     setError(null);
     try {
-      void onPersistRemember(buildSessionSettingsPatch(rememberSettings, agent));
-      // `onStart` may be async; its failure belongs in the dialog's error line.
+      void onPersistRemember(buildRememberPatch(rememberSettings, agent));
       Promise.resolve(
         onStart({
           agent,
           title: TITLE_WAITING,
+          prompt: prompt.trim(),
           bareSession: false,
         }),
-      ).catch((e: any) => setError(e?.message || "Failed to start session"));
-    } catch (e: any) {
-      setError(e?.message || "Failed to start session");
+      ).catch((e: unknown) =>
+        setError(e instanceof Error ? e.message : "Failed to start session"),
+      );
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Failed to start session");
     } finally {
       setSubmitting(false);
     }
@@ -199,9 +200,6 @@ export function NewHarnessDialog({
     install(nextHarness);
   };
 
-  // Clicking Install is a choice of Harness, made before that Harness could be
-  // chosen. Honour it the moment the Core says it landed — otherwise the
-  // operator installs the one they wanted and starts a session on another.
   useEffect(() => {
     if (!open || !installIntent) return;
     if (!harnessCanLaunch(cliAvailability, installIntent)) return;
@@ -212,9 +210,6 @@ export function NewHarnessDialog({
   useEffect(() => {
     if (!open) return;
     if (availabilityFor(cliAvailability, agent).status !== "missing") return;
-    // …but not off a Harness that is being installed right now: the selection
-    // would jump away mid-install and the intent effect above would have to
-    // fight it back.
     if (installStateFor(installs, agent).installing) return;
     const next = harnessOptions.find((a) => harnessCanLaunch(cliAvailability, a.id))?.id;
     if (next && next !== agent) setHarness(next);
@@ -248,7 +243,7 @@ export function NewHarnessDialog({
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [open, agent, submitting, project, rememberSettings, cliAvailability, harnessOptions]);
+  }, [open, agent, submitting, rememberSettings, cliAvailability, harnessOptions, prompt]);
 
   const selectedAvailability = availabilityFor(cliAvailability, agent);
   const selectedHarnessOutdated = selectedAvailability.status === "outdated";
@@ -259,43 +254,45 @@ export function NewHarnessDialog({
   useHotkey("dialog.submit", () => void submit(), { enabled: open && !startDisabled });
 
   return (
-    <>
-      <Modal
-        open={open}
-        onClose={onClose}
-        title="Start a new session"
-        width={540}
-        footer={
-          <>
-            <EscTooltip label="Cancel">
-              <Btn variant="ghost" onClick={onClose}>
-                Cancel
-              </Btn>
-            </EscTooltip>
-            <HotkeyTooltip action="dialog.submit">
-              <Btn variant="primary" icon="play" onClick={submit} disabled={startDisabled}>
-                Start session
-              </Btn>
-            </HotkeyTooltip>
-          </>
-        }
-      >
+    <Modal
+      open={open}
+      onClose={onClose}
+      title="Start a new session"
+      width={540}
+      footer={
+        <>
+          <EscTooltip label="Cancel">
+            <Btn variant="ghost" onClick={onClose}>
+              Cancel
+            </Btn>
+          </EscTooltip>
+          <HotkeyTooltip action="dialog.submit">
+            <Btn variant="primary" icon="play" onClick={submit} disabled={startDisabled}>
+              Start session
+            </Btn>
+          </HotkeyTooltip>
+        </>
+      }
+    >
       <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
         <div>
-          <label
+          <span style={labelStyle}>Runs on</span>
+          <div
             style={{
               fontFamily: "var(--mono)",
-              fontSize: 10.5,
-              fontWeight: 500,
-              color: "var(--text-dim)",
-              letterSpacing: "0.05em",
-              textTransform: "uppercase",
-              display: "block",
-              marginBottom: 8,
+              fontSize: 12,
+              color: "var(--text)",
+              lineHeight: 1.45,
             }}
           >
-            Harness
-          </label>
+            {coreLabel}
+            {"  ·  in ~  ·  reports → "}
+            {SESSION_REPORT_LOCATION}
+          </div>
+        </div>
+
+        <div>
+          <label style={labelStyle}>Harness</label>
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             {harnessOptions.map((a) => {
               const meta = HARNESS_META[a.id];
@@ -303,24 +300,13 @@ export function NewHarnessDialog({
               const availability = availabilityFor(cliAvailability, a.id);
               const installState = installStateFor(installs, a.id);
               const installing = installState.installing;
-              // "unknown" with a live link means the Core hasn't published its
-              // snapshot yet — that reads as checking, not as launchable. An
-              // install in flight outranks it: the Core's post-install re-probe
-              // passes through `checking`, and a row that flipped to "Checking
-              // PATH..." there would drop the install the operator is watching.
               const cliChecking =
                 !installing &&
                 (availability.status === "checking" ||
                   (availability.status === "unknown" && !!getPanelBridge()));
               const cliOutdated = availability.status === "outdated";
-              // A registry-disabled Harness ("Coming soon") also probes as
-              // `missing`, and nothing about it is installable — it stays the
-              // greyed-out row it has always been.
               const cliMissing =
                 !a.disabled && !cliOutdated && (availability.status === "missing" || installing);
-              // Missing is no longer a dead end (issue 83): the row keeps its
-              // full weight and carries an Install button instead. It is still
-              // not selectable — that waits for the Core to report it available.
               const disabled =
                 !cliOutdated && !cliMissing && !harnessCanLaunch(cliAvailability, a.id);
               return (
@@ -348,16 +334,10 @@ export function NewHarnessDialog({
                       alignItems: "center",
                       gap: 12,
                       textAlign: "left",
-                      // Room on the right for the Install button, which sits over
-                      // the card rather than beside it so the row stays one card.
                       padding: cliMissing ? "12px 108px 12px 14px" : "12px 14px",
                       background: selected ? "var(--surface-2)" : "var(--surface-0)",
                       border: `1px solid ${selected ? "var(--accent)" : "var(--border)"}`,
                       borderRadius: 8,
-                      // A missing row is neither greyed out nor selectable: the
-                      // Install button beside it is the thing to click, and a
-                      // pointer over the card would promise a selection that
-                      // `selectHarness` is right to refuse.
                       cursor: disabled ? "not-allowed" : cliMissing ? "default" : "pointer",
                       color: "var(--text)",
                       boxShadow: selected ? "0 0 0 1px var(--accent)" : "none",
@@ -392,7 +372,7 @@ export function NewHarnessDialog({
                           lineHeight: 1.4,
                         }}
                       >
-                      {a.description}
+                        {a.description}
                       </div>
                       {(cliChecking || cliMissing || cliOutdated) && (
                         <div
@@ -442,11 +422,6 @@ export function NewHarnessDialog({
                     )}
                   </button>
                   {cliMissing && (
-                    // Its own button, a sibling of the row rather than a child:
-                    // a button inside a button is not something the DOM keeps.
-                    // Overlaid on the card's right edge and in the tab order, so
-                    // the row a keyboard operator cannot select is still one
-                    // they can act on.
                     <Btn
                       size="sm"
                       variant="frame"
@@ -474,6 +449,47 @@ export function NewHarnessDialog({
           </div>
         </div>
 
+        <div>
+          <label style={labelStyle} htmlFor="new-session-prompt">
+            Prompt
+          </label>
+          <textarea
+            id="new-session-prompt"
+            ref={promptRef}
+            aria-label="Prompt"
+            value={prompt}
+            onChange={(e) => setPrompt(e.target.value)}
+            placeholder="Implement issue 558 in the control repo..."
+            rows={4}
+            style={{
+              width: "100%",
+              boxSizing: "border-box",
+              resize: "vertical",
+              minHeight: 88,
+              padding: "10px 12px",
+              fontFamily: "var(--mono)",
+              fontSize: 12.5,
+              lineHeight: 1.45,
+              color: "var(--text)",
+              background: "var(--surface-0)",
+              border: "1px solid var(--border)",
+              borderRadius: 7,
+            }}
+          />
+          <div
+            style={{
+              marginTop: 6,
+              fontFamily: "var(--mono)",
+              fontSize: 11,
+              color: "var(--text-dim)",
+              lineHeight: 1.4,
+            }}
+          >
+            A Session always starts in ~ and has no path of its own. Name a folder in the prompt to
+            focus it.
+          </div>
+        </div>
+
         <label
           style={{
             display: "flex",
@@ -494,7 +510,7 @@ export function NewHarnessDialog({
           />
           <div style={{ flex: 1 }}>
             <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 2 }}>
-              Remember settings for this project
+              Remember this harness for this Core
             </div>
             <div
               style={{
@@ -512,7 +528,6 @@ export function NewHarnessDialog({
 
         <FormErrorBox error={error} />
       </div>
-      </Modal>
-    </>
+    </Modal>
   );
 }

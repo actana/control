@@ -180,23 +180,23 @@ function makeBridge(link: PanelLinkClient): PanelBridge {
     isConnected: () => link.isConnected(),
     listProjects: async (coreId) =>
       (await link.request<Answer<"projectsListResult">>(coreId, { type: "projectsList" })).projects,
-    listSessionRows: async (coreId, projectId) => {
+    // A 0.5.0 Core refuses projectId on these frames (ADR 0041 D27). The
+    // projectId argument is kept so callers compile against the pre-#555
+    // signature and is ignored on the wire.
+    listSessionRows: async (coreId, _projectId) => {
       const result = await link.request<Answer<"sessionRowsListResult">>(coreId, {
         type: "sessionRowsList",
-        projectId,
       });
       return { sessions: result.sessions, archivedCount: result.archivedCount };
     },
-    listArchivedSessions: async (coreId, projectId) =>
+    listArchivedSessions: async (coreId, _projectId) =>
       (
         await link.request<Answer<"archivedSessionRowsListResult">>(coreId, {
           type: "archivedSessionRowsList",
-          projectId,
         })
       ).sessions,
-    listSessions: async (coreId, projectId) =>
-      (await link.request<Answer<"sessionsListResult">>(coreId, { type: "sessionsList", projectId }))
-        .sessions,
+    listSessions: async (coreId, _projectId) =>
+      (await link.request<Answer<"sessionsListResult">>(coreId, { type: "sessionsList" })).sessions,
     listHarnessAvailability: async (coreId) =>
       (
         await link.request<Answer<"agentsAvailabilityListResult">>(coreId, {

@@ -429,8 +429,8 @@ describe("useSessionFinishNotifications — integration", () => {
 
   // Click-through is the browser's now: the notification this tab raised holds
   // the closure, so clicking it focuses the tab (the Notification API's own job)
-  // and lands on the Core and Session that finished.
-  it("routes a click on a remote notification into the Core-scoped project view", () => {
+  // and lands on the Core workspace that finished.
+  it("routes a click on a remote notification into the Core workspace", () => {
     h.settings = { sessionFinishOsNotificationEnabled: true };
     const hook = renderHook(() => useSessionFinishNotifications());
     act(() => h.fleetHandler?.(remoteFinishFrame()));
@@ -441,9 +441,8 @@ describe("useSessionFinishNotifications — integration", () => {
     act(() => onClick?.());
 
     expect(h.navigate).toHaveBeenCalledWith({
-      to: "/projects/$id",
-      params: { id: "project-9" },
-      search: { coreId: "core-a" },
+      to: "/cores/$coreId/workspace",
+      params: { coreId: "core-a" },
     });
     const pending = JSON.parse(
       window.localStorage.getItem("mc:pendingSessionOpen") ?? "null",

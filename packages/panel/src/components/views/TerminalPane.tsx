@@ -1436,7 +1436,9 @@ export function TerminalPane({
         // pane's "failed to start pty" catch surfaces it — no silent no-op.
         const spawnResult = await ptyApi.spawn({
           sessionId: descriptor.sessionId,
-          cwd: descriptor.cwd,
+          // A 0.5.0 Core starts every Session in ~ and refuses cwd (ADR 0041 D2,
+          // D27). Published SDK types still require it until actana/client#10 —
+          // cast away.
           command,
           cols: ptySize.cols,
           rows: ptySize.rows,
@@ -1444,7 +1446,7 @@ export function TerminalPane({
           dangerouslySkipPermissions: descriptor.dangerouslySkipPermissions,
           missionControlTheme: getTerminalColorScheme(),
           initialInput,
-        });
+        } as Parameters<typeof ptyApi.spawn>[0]);
         const { ptyId } = spawnResult;
         hooksReportTurnStart = spawnResult.hooksReportTurnStart;
         spawnAt = Date.now();

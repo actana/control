@@ -315,7 +315,7 @@ export function useSessionFinishNotifications() {
         coreAlias: finish.coreAlias,
       };
 
-      setNotifications((prev) => {
+      setNotifications((_prev) => {
         const all = loadAppNotifications();
         const nextAll = mergeSessionFinishNotification(all, notification);
         publishAppNotifications(nextAll);
@@ -334,14 +334,14 @@ export function useSessionFinishNotifications() {
 
       const goToProject = () => {
         requestSessionNotificationOpen(notification);
-        // Narrows on `finish.coreId` rather than the equivalent `isRemote`, so
-        // the `string | null` loses its `null` for the search param's `string`.
-        const search = finish.coreId ? { coreId: finish.coreId } : undefined;
-        void router.navigate({
-          to: "/projects/$id",
-          params: { id: finish.projectId },
-          search,
-        });
+        if (finish.coreId) {
+          void router.navigate({
+            to: "/cores/$coreId/workspace",
+            params: { coreId: finish.coreId },
+          });
+          return;
+        }
+        void router.navigate({ to: "/" });
       };
 
       if (toastEnabled) {

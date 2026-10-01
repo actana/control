@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "@tanstack/react-router";
 import { toast } from "sonner";
 import { CardFrame } from "~/components/ui/CardFrame";
@@ -7,28 +7,39 @@ import { EmptyState } from "~/components/ui/EmptyState";
 import { CoreHeader, type CoreTab } from "~/components/views/CoreHeader";
 import { CoreNeedsUpdateNotice } from "~/components/views/CoreNeedsUpdate";
 import { FleetSessionRow } from "~/components/views/FleetSessionRow";
+import { NewHarnessDialog } from "~/components/views/NewHarnessDialog";
 import { useFleet } from "~/lib/fleet-context";
 import { getPanelBridge } from "~/lib/panel-bridge";
 import { useUserTerminals } from "~/lib/user-terminal-store";
+import { readCoreRemember, writeCoreRemember } from "~/lib/core-remember";
+import { mutateSessionForCore } from "~/lib/mutate-session-for-core";
+import { TITLE_WAITING } from "~/lib/session-sentinels";
+import { newClientId } from "@actana/shared/client-id";
+import { setPendingInitialInput } from "~/lib/pending-initial-input";
+import type { Harness } from "@actana/shared/domain";
 
 /**
  * A Core's page (screen 02): header, then one of three tabs. Sessions lists
  * this Core's harness Sessions; Files and Tasks are placeholders until #565
  * and #571 land. The Terminal is the bottom drawer the shell already owns.
+ * New Session is prompt-first (issue 560, screen 03).
  */
 export function CorePage({ coreId, tab }: { coreId: string; tab: CoreTab }) {
   const router = useRouter();
   const { cores, fleet, loading } = useFleet();
   const { togglePanel, panelOpen, setHomeActive } = useUserTerminals();
-  // The drawer is scoped to a project or to "home". A Core page has no project,
-  // so it claims the home scope while it is mounted; without it the drawer has
-  // no scope and neither the header icon nor ctrl+` would open anything.
+  const [showNew, setShowNew] = useState(false);
+  const [rememberTick, setRememberTick] = useState(0);
   useEffect(() => {
     setHomeActive(true);
     return () => setHomeActive(false);
   }, [setHomeActive]);
   const core = cores.find((c) => c.id === coreId);
   const rows = useMemo(() => fleet.rows.filter((r) => r.coreId === coreId), [fleet.rows, coreId]);
+  const remembered = useMemo(() => {
+    void rememberTick;
+    return readCoreRemember(coreId);
+  }, [coreId, rememberTick]);
 
   const setTab = useCallback(
     (next: CoreTab) => {
@@ -42,27 +53,42 @@ export function CorePage({ coreId, tab }: { coreId: string; tab: CoreTab }) {
     },
     [router, tab],
   );
-  // A Session opens in the session workspace, which is still addressed by the
-  // project the Session was started in until #555 removes Projects from the Core.
-  const openSession = useCallback(
-    (projectId: string) => {
-      void router.navigate({ to: "/projects/$id", params: { id: projectId }, search: { coreId } });
+  const openWorkspace = useCallback(() => {
+    void router.navigate({ to: "/cores/$coreId/workspace", params: { coreId } });
+  }, [router, coreId]);
+
+  const startSession = useCallback(
+    async (agent: Harness, prompt: string) => {
+      if (!getPanelBridge()) {
+        toast.error("Not connected to the Panel.");
+        return;
+      }
+      const sessionId = newClientId("t");
+      try {
+        const snapshot = await mutateSessionForCore(coreId, {
+          op: "create",
+          sessionId,
+          title: TITLE_WAITING,
+          agent,
+        } as Parameters<typeof mutateSessionForCore>[1]);
+        if (!snapshot) throw new Error("Core did not return a session snapshot");
+        if (prompt.trim()) setPendingInitialInput(snapshot.sessionId, prompt.trim());
+        setShowNew(false);
+        openWorkspace();
+      } catch (e) {
+        toast.error(e instanceof Error ? e.message : String(e));
+      }
     },
-    [router, coreId],
+    [coreId, openWorkspace],
   );
-  // No Session yet means no project to open: until New Session is prompt-first
-  // (PR 2), start from the Core's first project.
-  const newSession = useCallback(async () => {
-    const bridge = getPanelBridge();
-    if (!bridge) return;
-    try {
-      const first = (await bridge.listProjects(coreId))[0];
-      if (first) openSession(first.projectId);
-      else toast.error("This Core has nowhere to start a Session yet.");
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : String(e));
+
+  const openNewSessionDialog = useCallback(() => {
+    if (remembered.rememberHarnessSettings && remembered.savedHarness) {
+      void startSession(remembered.savedHarness, "");
+      return;
     }
-  }, [coreId, openSession]);
+    setShowNew(true);
+  }, [remembered, startSession]);
 
   if (!core) {
     return (
@@ -96,11 +122,19 @@ export function CorePage({ coreId, tab }: { coreId: string; tab: CoreTab }) {
             <CoreNeedsUpdateNotice dial={core.dial} />
           ) : rows.length > 0 ? (
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 8 }}>
+                <Btn variant="primary" icon="plus" onClick={() => void openNewSessionDialog()}>
+                  New session
+                </Btn>
+              </div>
               {rows.map((row) => (
                 <FleetSessionRow
                   key={row.sessionId}
-                  row={row}
-                  onOpen={() => openSession(row.projectId)}
+                  row={{
+                    ...row,
+                    projectId: "projectId" in row && row.projectId ? String(row.projectId) : coreId,
+                  }}
+                  onOpen={openWorkspace}
                 />
               ))}
             </div>
@@ -115,7 +149,7 @@ export function CorePage({ coreId, tab }: { coreId: string; tab: CoreTab }) {
               icon="terminal"
               action={
                 core.dial.state === "connected" ? (
-                  <Btn variant="primary" icon="plus" onClick={() => void newSession()}>
+                  <Btn variant="primary" icon="plus" onClick={() => void openNewSessionDialog()}>
                     New session
                   </Btn>
                 ) : undefined
@@ -136,6 +170,19 @@ export function CorePage({ coreId, tab }: { coreId: string; tab: CoreTab }) {
           />
         )}
       </CardFrame>
+
+      <NewHarnessDialog
+        open={showNew}
+        coreId={coreId}
+        coreLabel={core.label}
+        initialRemember={remembered}
+        onClose={() => setShowNew(false)}
+        onStart={(data) => void startSession(data.agent, data.prompt)}
+        onPersistRemember={(patch) => {
+          writeCoreRemember(coreId, patch);
+          setRememberTick((n) => n + 1);
+        }}
+      />
     </div>
   );
 }

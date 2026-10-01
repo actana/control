@@ -1,23 +1,24 @@
 import { Btn } from "~/components/ui/Btn";
 import { HotkeyTooltip, Tooltip } from "~/components/ui/Tooltip";
-import type { Project } from "~/db/schema";
+import type { Harness } from "@actana/shared/domain";
 
 export function NewHarnessButton({
-  project,
+  remembered,
+  savedHarness,
   onPrimary,
   onConfigure,
   onNewRow,
   disabled,
 }: {
-  project: Project;
+  /** When true, the primary click skips the dialog (Remember per Core). */
+  remembered: boolean;
+  savedHarness?: Harness | null;
   onPrimary: () => void;
   onConfigure: () => void;
   /** When set (grid view), adds a segment that starts the session in a fresh grid row. */
   onNewRow?: () => void;
   disabled?: boolean;
 }) {
-  const remembered = !!(project.rememberHarnessSettings && project.savedHarness);
-
   const newRowSegment = onNewRow && (
     <HotkeyTooltip action="session.newRow" label="New session in a new row">
       <Btn
@@ -59,7 +60,7 @@ export function NewHarnessButton({
     <div style={{ display: "inline-flex", alignItems: "center", gap: 0 }}>
       <HotkeyTooltip
         action="agent.new"
-        label={`Start ${project.savedHarness} session directly`}
+        label={`Start ${savedHarness ?? "session"} session directly`}
       >
         <Btn
           variant="primary"

@@ -5,7 +5,7 @@ export function FleetSessionRow({
   row,
   onOpen,
 }: {
-  row: { coreId: string; coreLabel: string; sessionId: string; projectId: string; title: string; agent: string; status: string; updatedAt: number };
+  row: { coreId: string; coreLabel: string; sessionId: string; projectId?: string; title: string; agent: string; status: string; updatedAt: number };
   onOpen: () => void;
 }) {
   return (
