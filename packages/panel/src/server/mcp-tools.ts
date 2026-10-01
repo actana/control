@@ -11,6 +11,7 @@ import {
   listTasksV1,
   setTaskStatusV1,
 } from "./controllers/v1.controller";
+import { getShared, listShared } from "./mcp-shared";
 import { OPERATOR_TASK_STATUSES } from "./controllers/tasks.controller";
 import { scopeReaches } from "./services/api-keys";
 import { TASK_STATUSES } from "~/shared/tasks";
@@ -136,5 +137,23 @@ export const MCP_TOOLS: readonly McpTool[] = [
     input: z.object({ taskId: taskIdArg, body: z.string().min(1), reassign: z.boolean().optional() }),
     run: async (principal, { taskId, body, reassign }) =>
       outcomeOf(await addTaskCommentV1(principal, taskId, asJsonRequest({ body, ...(reassign === undefined ? {} : { reassign }) }))),
+  }),
+  tool({
+    name: "list_shared",
+    description:
+      "List a folder in a Core's Shared folder (read-only), where Agents leave their results. path is relative to the " +
+      "Shared folder, with no .. and no leading /; omit it for the top.",
+    readOnly: true,
+    input: z.object({ coreId: coreIdArg, path: z.string().optional() }),
+    run: (principal, args) => listShared(principal, args),
+  }),
+  tool({
+    name: "get_shared",
+    description:
+      "Read one text file from a Core's Shared folder (read-only). path is relative to the Shared folder, with no .. and no " +
+      "leading /. A file over 256 KiB is refused.",
+    readOnly: true,
+    input: z.object({ coreId: coreIdArg, path: z.string() }),
+    run: (principal, args) => getShared(principal, args),
   }),
 ];
