@@ -392,7 +392,8 @@ function Shell() {
   const goHome = () => {
     setActivePanel(null);
     if (settingsOpen) requestCloseSettings();
-    router.navigate({ to: "/" });
+    // void: a failed navigation shows in the router's own error state.
+    void router.navigate({ to: "/" });
   };
 
   // Recompute + re-observe the workspace bounds whenever the workspace div is
@@ -505,7 +506,8 @@ function Shell() {
   // own DB and the page 404s or shows the wrong project (#379).
   const navigateToRailTarget = useCallback(
     (target: RailTarget) => {
-      router.navigate({
+      // void: a failed navigation shows in the router's own error state.
+      void router.navigate({
         to: "/projects/$id",
         params: { id: target.id },
         search: railNavigateSearch(target),

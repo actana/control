@@ -35,6 +35,7 @@ export function missionControlApi(): Plugin {
             console.error(`[mc-api] ${err instanceof Error ? err.message : String(err)}`);
           },
         );
+      // eslint-disable-next-line @typescript-eslint/no-misused-promises -- dev-only middleware; its body catches every failure and calls next()
       server.middlewares.use(async (req, res, next) => {
         if (!req.url || !req.url.startsWith("/api/")) return next();
         try {
@@ -73,6 +74,7 @@ export function missionControlApi(): Plugin {
       // The same Operator gate the built server applies (src/server.ts). Dev
       // renders SSR through Vite's own pipeline, so without this the dev Panel
       // would serve the app shell to anyone.
+      // eslint-disable-next-line @typescript-eslint/no-misused-promises -- dev-only middleware; its body catches every failure and calls next()
       server.middlewares.use(async (req, res, next) => {
         if (!req.headers.accept?.includes("text/html")) return next();
         try {

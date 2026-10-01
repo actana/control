@@ -990,7 +990,9 @@ export function TerminalPane({
       // agent SIGWINCH after the drag settles; targets the then-active pty.
       const settledPtyResize = createSettledPtyResize((cols, rows) => {
         const id = activePtyId;
-        if (id && ptyApi) ptyApi.resize(id, cols, rows);
+        // A resize lost to a dropped link is harmless: the next settled resize
+        // or the re-attach re-sends the size.
+        if (id && ptyApi) ptyApi.resize(id, cols, rows).catch(() => {});
       });
       const PENDING_OUTPUT_MAX_CHARS = 64_000;
       let replayingPtyId: string | null = null;
@@ -1349,7 +1351,9 @@ export function TerminalPane({
               })();
             }
             if (ptyApi) {
-              ptyApi.write(ptyId, data);
+              // Keystrokes lost to a dropped link have no caller to tell; the
+              // link layer reports the disconnect itself.
+              ptyApi.write(ptyId, data).catch(() => {});
             }
           }),
           term.onResize((size) => settledPtyResize.schedule(size)),
@@ -1521,7 +1525,10 @@ export function TerminalPane({
 
       cache.set(surface);
       term.focus();
-      rafHandle = window.requestAnimationFrame(() => ensurePty());
+      rafHandle = window.requestAnimationFrame(() => {
+        // `ensurePty` reports its own failure through `setStartError`.
+        void ensurePty();
+      });
       detachMount = bindMount(surface);
     })().finally(() => releaseBuildTurn?.());
 
