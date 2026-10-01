@@ -2,7 +2,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { CoreSharedError, type CoreShared, type SharedEntry, type SharedFile } from "@actana/sdk/shared";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { closePanelTestDb, openPanelTestDb, resetPanelState } from "./_panel-test-db";
 import { McpTestClient, dataOf, textOf } from "./_mcp-client";
 
@@ -281,7 +281,8 @@ describe("the size cap", () => {
 });
 
 describe("a Core that cannot be reached", () => {
-  it("is a 502 tool error that carries nothing from the failure", async () => {
+  it("is a 502 tool error that carries nothing from the failure, and the server log names only the error class", async () => {
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
     setSharedResolverForTests(async () => {
       throw new Error("connect ECONNREFUSED https://user:hunter2@core.internal/v1/projects/x/files");
     });
@@ -289,5 +290,7 @@ describe("a Core that cannot be reached", () => {
     expect(res.isError).toBe(true);
     expect(textOf(res)).toMatch(/^502/);
     expect(textOf(res)).not.toContain("hunter2");
+    expect(logged.mock.calls.map((c) => c.join(" "))).toEqual(["[mcp] shared read failed: Error"]);
+    logged.mockRestore();
   });
 });
