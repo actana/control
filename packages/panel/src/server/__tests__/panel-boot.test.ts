@@ -1,9 +1,10 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DATABASE_URL_ENV, closePanelDatabase, type PanelPoolLike } from "~/db/pg";
 import { bundledPanelMigrations } from "~/db/pg-migrations-bundle";
 import { createTestDb, type TestDb } from "~/db/test-db";
-import { bootPanel } from "../panel-boot";
+import { bootPanel, closePanel } from "../panel-boot";
 import { CoreLinkManager } from "../services/core-link-manager";
+import { SharedFolders } from "../services/shared-folders";
 import { stopWebhookDeliveryWorkerForTests } from "../services/webhook-delivery-worker";
 
 /**
@@ -15,6 +16,12 @@ import { stopWebhookDeliveryWorkerForTests } from "../services/webhook-delivery-
 // `bootPanel` also starts the Task dispatcher (#570). These tests are about when the Cores are dialed, over a bare
 // one-connection database, so the dispatcher is stubbed out here; `task-dispatch/__tests__/wiring.test.ts` covers it.
 vi.mock("../task-dispatch", () => ({ startTaskDispatch: vi.fn(), stopTaskDispatch: vi.fn() }));
+
+// `bootPanel` also starts the Shared folder key refresh (#564), which reads the database in the background; over this
+// one-connection database that read would race the teardown, so it is stubbed here and proved on its own below.
+const stopSharedFolders = vi.fn();
+const startSharedFolders = () =>
+  vi.spyOn(SharedFolders.prototype, "start").mockResolvedValue(stopSharedFolders as unknown as () => void);
 
 const env = { [DATABASE_URL_ENV]: "postgres://panel:pw@db.internal:5432/panel" };
 const open: TestDb[] = [];
@@ -30,6 +37,11 @@ async function poolOver(): Promise<PanelPoolLike> {
   };
   return pool;
 }
+
+beforeEach(() => {
+  stopSharedFolders.mockClear();
+  startSharedFolders();
+});
 
 afterEach(async () => {
   stopWebhookDeliveryWorkerForTests();
@@ -76,5 +88,30 @@ describe("bootPanel", { timeout: 30_000 }, () => {
     await vi.waitFor(() =>
       expect(error).toHaveBeenCalledWith("[panel] could not dial the registered Cores: registry read failed"),
     );
+  });
+
+  it("starts the Shared folder key refresh once the database is up, and stops it on close", async () => {
+    const pool = await poolOver();
+    vi.spyOn(CoreLinkManager.prototype, "start").mockResolvedValue();
+    await bootPanel(env, () => pool);
+    await vi.waitFor(() => expect(SharedFolders.prototype.start).toHaveBeenCalledTimes(1));
+    expect(stopSharedFolders).not.toHaveBeenCalled();
+    await closePanel();
+    expect(stopSharedFolders).toHaveBeenCalledTimes(1);
+  });
+
+  it("starts no key refresh when the database cannot be reached", async () => {
+    const failing: PanelPoolLike = {
+      query: async () => {
+        throw new Error("connect ECONNREFUSED");
+      },
+      connect: async () => {
+        throw new Error("unreachable");
+      },
+      end: async () => {},
+      on: () => failing,
+    };
+    await expect(bootPanel(env, () => failing)).rejects.toThrow(/cannot reach Postgres/);
+    expect(SharedFolders.prototype.start).not.toHaveBeenCalled();
   });
 });
