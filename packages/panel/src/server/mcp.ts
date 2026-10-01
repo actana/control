@@ -33,6 +33,12 @@ const LATEST_PROTOCOL_VERSION = "2025-06-18";
 const SUPPORTED_PROTOCOL_VERSIONS: readonly string[] = [LATEST_PROTOCOL_VERSION, "2025-03-26", "2024-11-05"];
 /** A JSON-RPC message from a client is a few KB; this is a ceiling, not a target. */
 const MAX_BODY_BYTES = 1024 * 1024;
+/**
+ * Batches are a 2025-03-26 feature (2025-06-18 removed them), kept small: the messages of one are answered one after
+ * another, never at once, and an array over this many is refused, so one request cannot fan out into a flood of Core
+ * and database reads.
+ */
+const MAX_BATCH = 10;
 
 const PARSE_ERROR = -32700;
 const INVALID_REQUEST = -32600;
@@ -191,9 +197,14 @@ async function serve(request: Request): Promise<Response> {
 
   if (Array.isArray(body)) {
     if (body.length === 0) return rpcHttp(rpcError(null, INVALID_REQUEST, "empty batch"), HTTP_BAD_REQUEST);
-    const answers = (await Promise.all(body.map((m) => handleMessage(m, auth.principal)))).filter(
-      (a): a is RpcResponse => a !== null,
-    );
+    if (body.length > MAX_BATCH) {
+      return rpcHttp(rpcError(null, INVALID_REQUEST, `a batch holds at most ${MAX_BATCH} messages`), HTTP_BAD_REQUEST);
+    }
+    const answers: RpcResponse[] = [];
+    for (const message of body) {
+      const answer = await handleMessage(message, auth.principal);
+      if (answer) answers.push(answer);
+    }
     return answers.length === 0 ? new Response(null, { status: HTTP_ACCEPTED, headers: NO_STORE }) : rpcHttp(answers);
   }
   const answer = await handleMessage(body, auth.principal);

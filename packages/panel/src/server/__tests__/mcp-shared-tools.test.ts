@@ -161,6 +161,18 @@ describe("list_shared and get_shared on a Core the key reaches", () => {
     expect(dataOf(await c.call("get_shared", { coreId: "core-b", path: "notes.md" })).content).toBe("notes of core-b");
   });
 
+  it("refuses a folder named without its trailing slash before any read, and a path the listing does not show", async () => {
+    const c = await client(A);
+    const folder = await c.call("get_shared", { coreId: "core-a", path: "reports" });
+    expect(folder.isError).toBe(true);
+    expect(textOf(folder)).toMatch(/^400 .*folder/);
+    const missing = await c.call("get_shared", { coreId: "core-a", path: "reports/nope.md" });
+    expect(textOf(missing)).toMatch(/^404/);
+    const absentParent = await c.call("get_shared", { coreId: "core-a", path: "nodir/x.md" });
+    expect(textOf(absentParent)).toMatch(/^404/);
+    expect(reached.filter((r) => r.includes(" get "))).toEqual([]);
+  });
+
   it("says not-found for a missing file and refuses a folder as a file", async () => {
     const c = await client(A);
     expect(textOf(await c.call("get_shared", { coreId: "core-a", path: "nope.md" }))).toMatch(/^404/);

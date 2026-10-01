@@ -104,10 +104,17 @@ export async function getShared(
     if (parsed.segments.length === 0) throw new CoreSharedError("invalid-path", "the top of the Shared folder is not a file");
     if (parsed.folder) throw new CoreSharedError("is-folder", "that path names a folder (it ends in /), a file is needed");
     const shared = await resolver(principal.ownerId, coreId);
-    // Ask the listing for the size first, so a huge file is refused without being read into memory.
+    // The listing decides what may be read, before anything is: a path it does not show is a 404, and a folder
+    // named without its trailing slash is refused here, because the Core answers a read of a folder with a tar of
+    // everything under it, which the SDK buffers whole before it says `is-folder`. A file's size is checked for the
+    // same reason: a huge file is refused without being read into memory.
     const parent = parsed.segments.slice(0, -1).join("/");
     const listed = (await shared.list(parent === "" ? "" : `${parent}/`)).find((e) => e.path === parsed.relative);
-    if (listed?.size !== undefined && listed.size > MAX_FILE_BYTES) return tooLarge(listed.size);
+    if (!listed) throw new CoreSharedError("not-found", "no such file");
+    if (listed.kind === "folder") {
+      throw new CoreSharedError("is-folder", "that path is a folder; use list_shared, a file is needed here");
+    }
+    if (listed.size !== undefined && listed.size > MAX_FILE_BYTES) return tooLarge(listed.size);
     const file = await shared.get(parsed.relative);
     if (file.body.byteLength > MAX_FILE_BYTES) return tooLarge(file.body.byteLength);
     let content: string;

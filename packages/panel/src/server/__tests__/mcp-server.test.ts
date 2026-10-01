@@ -147,6 +147,43 @@ describe("the transport is stateless Streamable HTTP", () => {
     expect((await postMcp(key, [{ jsonrpc: "2.0", method: "notifications/initialized" }])).status).toBe(202);
   });
 
+  it("answers a batch's messages one after another, never at once", async () => {
+    const { key } = await createKey();
+    const { setSharedResolverForTests } = await import("../mcp-shared");
+    let running = 0;
+    let peak = 0;
+    setSharedResolverForTests(async () => {
+      running += 1;
+      peak = Math.max(peak, running);
+      await new Promise((r) => setTimeout(r, 20));
+      running -= 1;
+      throw new Error("stand-in Core is down");
+    });
+    try {
+      const calls = Array.from({ length: 5 }, (_, i) => ({
+        jsonrpc: "2.0",
+        id: i + 1,
+        method: "tools/call",
+        params: { name: "list_shared", arguments: { coreId: "core-a" } },
+      }));
+      const res = await postMcp(key, calls);
+      expect(((await res.json()) as { id: number }[]).map((r) => r.id)).toEqual([1, 2, 3, 4, 5]);
+      expect(peak).toBe(1);
+    } finally {
+      setSharedResolverForTests(null);
+    }
+  });
+
+  it("refuses a batch over ten messages with 400 and runs none of it", async () => {
+    const { key } = await createKey();
+    const eleven = Array.from({ length: 11 }, (_, i) => ({ jsonrpc: "2.0", id: i, method: "ping" }));
+    const res = await postMcp(key, eleven);
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: { code: number } }).error.code).toBe(-32600);
+    const ten = await postMcp(key, eleven.slice(0, 10));
+    expect(ten.status).toBe(200);
+  });
+
   it("negotiates down to a version it supports and refuses an unsupported header", async () => {
     const { key } = await createKey();
     const old = await postMcp(key, { jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2024-11-05" } });
