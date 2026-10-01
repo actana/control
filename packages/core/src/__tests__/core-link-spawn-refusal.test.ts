@@ -227,12 +227,18 @@ describe("a frame that names a project reaches no port, and is answered by name"
   });
 
   it.each([
-    [{ type: "projectsList", reqId: "r1" }, "projectsList"],
-    [{ type: "projectsMutate", reqId: "r2", mutation: { op: "create", name: "x", path: "/x" } }, "projectsMutate"],
-  ])("answers the project frame %j as unhandled, with its reqId, and emits no Result frame", (frame, type) => {
+    [{ type: "projectsList", reqId: "r1" }],
+    [{ type: "projectsMutate", reqId: "r2", mutation: { op: "create", name: "x", path: "/x" } }],
+  ])("answers the project frame %j as invalid, with its reqId, and emits no Result frame", (frame) => {
     const ws = ask(frame);
     expect(ws.answers).toHaveLength(1);
-    expect(JSON.parse(ws.answers[0]!)).toEqual({ type: "error", reqId: frame.reqId, message: `unhandled frame type: ${type}` });
+    expect(JSON.parse(ws.answers[0]!)).toEqual({ type: "error", reqId: frame.reqId, message: "invalid frame" });
     expect(portCalls).toEqual([]);
+  });
+
+  it("names no request when the refused frame carried no reqId", () => {
+    const ws = ask({ type: "projectsList" });
+    expect(ws.answers).toHaveLength(1);
+    expect(JSON.parse(ws.answers[0]!)).toEqual({ type: "error", message: "invalid frame" });
   });
 });

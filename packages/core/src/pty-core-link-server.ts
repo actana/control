@@ -652,6 +652,17 @@ function namesItsSession(frame: CoreLinkRequestFrame): boolean {
  * streams the tail as `event` frames, sends an `eventsReplayed` marker, and a
  * per-connection poll loop pushes new events live once caught up.
  */
+/** The `reqId` of a frame the codec refused, when the text is JSON that carries one. */
+function readReqId(data: string): string | undefined {
+  try {
+    const parsed: unknown = JSON.parse(data);
+    const reqId = (parsed as { reqId?: unknown } | null)?.reqId;
+    return typeof reqId === "string" && reqId !== "" ? reqId : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export class PtyCoreLinkServer {
   private readonly server: WebSocketServerLike;
   private readonly eventLog: EventLogPort | null;
@@ -1226,7 +1237,12 @@ export class PtyCoreLinkServer {
     const data = typeof raw === "string" ? raw : String(raw);
     const frame = parseCoreLinkRequestFrame(data);
     if (!frame) {
-      this.send(ws, { type: "error", message: "invalid frame" });
+      // The codec refuses a frame it does not know — the project frames of a
+      // 0.4.x client among them, since the SDK dropped them (ADR 0041 D1). Answer
+      // with the caller's reqId when the frame carries one, so its request
+      // settles instead of timing out.
+      const reqId = readReqId(data);
+      this.send(ws, { type: "error", ...(reqId === undefined ? {} : { reqId }), message: "invalid frame" });
       return;
     }
     // ─── Bearer auth gate (issue 04) ───
