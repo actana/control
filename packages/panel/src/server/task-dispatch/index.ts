@@ -32,7 +32,7 @@ export function startTaskDispatch(opts: { s3?: SharedFactoryDeps["s3"]; env?: No
   const dispatcher = new TaskDispatcher({
     ownerId: OPERATOR_ID,
     startSession: startSessionOnCore,
-    sharedFor: createSharedFactory({ s3: opts.s3 ?? null, throughCore: createThroughCoreFactory(feed) }),
+    sharedFor: createSharedFactory({ s3: opts.s3 ?? null, throughCore: createThroughCoreFactory(feed, OPERATOR_ID) }),
     watcher,
   });
   running = { dispatcher, detachFeed };

@@ -591,6 +591,148 @@ describe("a Panel that restarts while Tasks run", () => {
   });
 });
 
+describe("a Task that cannot be taken over cleanly after a restart", () => {
+  const dispatcherOf = (r: ReturnType<typeof rig>, overrides: Record<string, unknown>) =>
+    new TaskDispatcher({
+      ownerId: A,
+      startSession: r.core.startSession,
+      sharedFor: async () => r.shared,
+      watcher: r.watcher,
+      agents: r.agents,
+      now: r.clock.now,
+      log: r.log,
+      ...overrides,
+    });
+  const runningTask = async (r: ReturnType<typeof rig>, overrides: Record<string, unknown> = {}) => {
+    const task = await assign(r.clock, overrides as never);
+    await claimTask(A, task.id, r.clock.now());
+    return task;
+  };
+
+  it("watches by the Task's own Core when its Agent was deleted while it ran", async () => {
+    const r = rig();
+    await testDb.pool.query(
+      "insert into cores (id, owner_id, endpoint, label, created_at, updated_at) values ('core_own', $1, 'wss://x', 'x', 1, 1) on conflict do nothing",
+      [A],
+    );
+    const task = await runningTask(r, { agent: "agent_deleted", coreId: "core_own" });
+    const seen: string[] = [];
+
+    expect(await dispatcherOf(r, { sharedFor: async (id: string) => (seen.push(id), r.shared) }).adoptInProgress()).toBe(1);
+
+    r.clock.advance(1_000);
+    r.shared.write(result(task.id, "success.md"), report("agent gone, result still counts"));
+    await r.watcher.tick();
+    expect([...new Set(seen)]).toEqual(["core_own"]);
+    expect((await getTask(A, task.id)).status).toBe("done");
+  });
+
+  it("fails it with the reason when the Agent is gone and the Task names no Core", async () => {
+    const r = rig();
+    const task = await runningTask(r, { agent: "agent_deleted" });
+
+    await dispatcherOf(r, {}).adoptInProgress();
+
+    const after = await getTask(A, task.id);
+    expect(after.status).toBe("failed");
+    expect(after.lastError).toContain("has no Core to look for its result on");
+  });
+
+  it("still watches it when the Core's Shared folder cannot be reached, so the timeout ends it", async () => {
+    const r = rig();
+    const task = await runningTask(r);
+    const dispatcher = dispatcherOf(r, {
+      sharedFor: async () => {
+        throw new Error("this Core is not registered with this Panel");
+      },
+    });
+
+    expect(await dispatcher.adoptInProgress()).toBe(1);
+    expect(r.watcher.isTracking(task.id)).toBe(true);
+    await r.watcher.tick();
+    expect((await getTask(A, task.id)).status).toBe("in_progress");
+    expect(r.log.errors.join("\n")).toContain("this Core is not registered with this Panel");
+
+    r.clock.advance(TIMEOUT_MS);
+    await r.watcher.tick();
+    expect((await getTask(A, task.id)).status).toBe("failed");
+  });
+
+  it("tries the whole takeover again on the next cycle when it failed", async () => {
+    const r = rig();
+    const task = await runningTask(r);
+    let calls = 0;
+    const flaky = {
+      get: async (owner: number, id: string) => {
+        if ((calls += 1) === 1) throw new Error("database blip");
+        return r.agents.get(owner, id);
+      },
+      resolve: r.agents.resolve,
+    };
+    const dispatcher = dispatcherOf(r, { agents: flaky });
+
+    await dispatcher.dispatchOnce();
+    expect(r.watcher.isTracking(task.id)).toBe(false);
+    expect(r.log.errors.join("\n")).toContain("could not take over running Tasks yet");
+
+    await dispatcher.dispatchOnce();
+    expect(r.watcher.isTracking(task.id)).toBe(true);
+    r.clock.advance(1_000);
+    r.shared.write(result(task.id, "success.md"), report("found on the second try"));
+    await r.watcher.tick();
+    expect((await getTask(A, task.id)).status).toBe("done");
+  });
+});
+
+describe("reading results that are awkward", () => {
+  it("takes a result its change event missed, in the last look before writing fail.md", async () => {
+    const { clock, shared, dispatcher, watcher } = rig();
+    const task = await assign(clock);
+    await dispatcher.dispatchOnce();
+    await watcher.tick();
+    shared.watchBlind = true;
+    clock.advance(1_000);
+    shared.write(result(task.id, "success.md"), report("the event never came"));
+    clock.advance(TIMEOUT_MS);
+
+    await watcher.tick();
+
+    expect((await getTask(A, task.id)).status).toBe("done");
+    expect(shared.text(result(task.id, "fail.md"))).toBeNull();
+  });
+
+  it("is not held up by a result-named file that is gone when it is read", async () => {
+    const { clock, shared, dispatcher, watcher } = rig();
+    const task = await assign(clock);
+    await dispatcher.dispatchOnce();
+    await watcher.tick();
+    clock.advance(1_000);
+    shared.ghosts.push(result(task.id, "partial-1.md"));
+    shared.write(result(task.id, "success.md"), report("behind a ghost"));
+
+    await watcher.tick();
+
+    expect((await getTask(A, task.id)).status).toBe("done");
+  });
+
+  it("keeps a report over the size limit on the Shared folder and comments with a pointer", async () => {
+    const { clock, shared, dispatcher, watcher } = rig();
+    const task = await assign(clock);
+    await dispatcher.dispatchOnce();
+    clock.advance(1_000);
+    shared.write(result(task.id, "success.md"), `${"x".repeat(1024 * 1024 + 1)}\n\nACT-REPORT-END\n`);
+    const gets = () => shared.calls.filter((c) => c.startsWith("get "));
+
+    await watcher.tick();
+
+    expect(gets()).toEqual([]);
+    expect((await getTask(A, task.id)).status).toBe("done");
+    const [comment] = (await listTaskComments(A, task.id)).filter((c) => c.authorKind === "agent");
+    expect(comment!.body).toContain(`tasks/${task.id}/success.md`);
+    expect(comment!.body.length).toBeLessThan(500);
+  });
+});
+
 describe("dispatch while the Panel is up", () => {
   it("claims a Task assigned after start without being called, and stops cleanly", async () => {
     const clock = new FakeClock();

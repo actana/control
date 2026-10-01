@@ -1,4 +1,5 @@
 import { CoreSharedError, type CoreShared } from "@actana/sdk/shared";
+import { NotFoundError } from "../errors";
 import { getAgent, resolveAgent, type Agent, type ResolvedAgent } from "../services/agents";
 import {
   addTaskComment,
@@ -10,7 +11,7 @@ import {
 } from "../services/tasks";
 import { archivedTaskName, classifyTaskEntry, taskFolder } from "~/shared/task-report";
 import { ResultWatcher } from "./result-watcher";
-import type { SharedFor } from "./shared-factory";
+import { lazyShared, type SharedFor } from "./shared-factory";
 import { buildTaskPrompt } from "./task-prompt";
 import { consoleDispatchLog, messageOf, type Clock, type DispatchLog, type SessionStarter } from "./types";
 
@@ -65,7 +66,7 @@ export class TaskDispatcher {
   private readonly log: DispatchLog;
   private timer: ReturnType<typeof setInterval> | null = null;
   private cycling: Promise<number> | null = null;
-  private starting: Promise<void> | null = null;
+  private adopted = false;
   private stopped = false;
 
   constructor(opts: TaskDispatcherOptions) {
@@ -84,6 +85,15 @@ export class TaskDispatcher {
     if (this.cycling) return this.cycling;
     const run = (async () => {
       let claimed = 0;
+      if (!this.adopted) {
+        try {
+          await this.adoptInProgress();
+          this.adopted = true;
+        } catch (err) {
+          // Tried again next cycle: the ones that were taken over are skipped, the rest get another go.
+          this.log.error(`task dispatch: could not take over running Tasks yet: ${messageOf(err)}`);
+        }
+      }
       let waiting: Task[];
       try {
         waiting = (await listTasks(this.ownerId, ["assigned"])).reverse();
@@ -108,34 +118,42 @@ export class TaskDispatcher {
   }
 
   /**
-   * Dispatch on a timer while the Panel is up. Tasks a previous Panel process left `in_progress` are taken
-   * over by the watcher first (their Sessions are still running on their Cores), then the loop begins.
+   * Dispatch on a timer while the Panel is up. Tasks a previous Panel process left `in_progress` are taken over
+   * by the watcher at the start of the first cycle that can read them, and every cycle until one does.
    */
   start(): void {
-    if (this.timer || this.starting || this.stopped) return;
+    if (this.timer || this.stopped) return;
     this.watcher.start();
-    this.starting = this.adoptInProgress()
-      .catch((err: unknown) => this.log.error(`task dispatch: could not adopt running Tasks: ${messageOf(err)}`))
-      .then(() => {
-        this.starting = null;
-        if (this.stopped) return;
-        this.timer = setInterval(() => void this.dispatchOnce(), this.pollMs);
-        this.timer.unref?.();
-        void this.dispatchOnce();
-      });
+    this.timer = setInterval(() => void this.dispatchOnce(), this.pollMs);
+    this.timer.unref?.();
+    void this.dispatchOnce();
   }
 
   /**
    * Watch the Tasks that are `in_progress` and not watched by this process: the Panel restarted while their
    * Sessions ran. Their exit cannot be heard any more, so a result file or the timeout (from the original
-   * dispatch time) ends them. A Task with no Agent to find its Core through fails with the reason.
+   * dispatch time) ends them. No Task is left with nothing watching it:
+   * - an Agent that is gone (deleted while its Task ran) falls back to the Task's own Core;
+   * - a Task with no Core to look on fails with the reason;
+   * - a Core whose Shared folder cannot be reached right now is still watched, through a handle that asks again
+   *   each time it is used, so the timeout ends the Task whatever happens.
+   * Resolves with how many were taken over; throws if the Tasks could not be read, or one could not be failed.
    */
   async adoptInProgress(): Promise<number> {
     let adopted = 0;
+    let unfinished: unknown = null;
     for (const task of await listTasks(this.ownerId, ["in_progress"])) {
       if (this.watcher.isTracking(task.id)) continue;
       try {
-        const agent = task.agent ? await this.agents.get(this.ownerId, task.agent) : null;
+        let agent: Agent | null = null;
+        if (task.agent) {
+          try {
+            agent = await this.agents.get(this.ownerId, task.agent);
+          } catch (err) {
+            if (!(err instanceof NotFoundError)) throw err;
+            this.log.error(`task ${task.id}: its Agent is gone, looking on the Task's own Core`);
+          }
+        }
         const coreId = agent?.coreId ?? task.coreId;
         if (!coreId) {
           await failTaskDispatch(this.ownerId, task.id, "this Task was running when the Panel stopped, and has no Core to look for its result on", this.now());
@@ -146,14 +164,16 @@ export class TaskDispatcher {
           attempt: task.attemptCount,
           dispatchedAt: task.dispatchedAt ?? this.now(),
           coreId,
-          shared: await this.sharedFor(coreId),
+          shared: lazyShared(() => this.sharedFor(coreId)),
           authorName: agent?.name ?? "agent",
         });
         adopted += 1;
       } catch (err) {
+        unfinished = err;
         this.log.error(`task ${task.id}: could not be taken over after a restart: ${messageOf(err)}`);
       }
     }
+    if (unfinished) throw unfinished;
     return adopted;
   }
 
@@ -162,7 +182,6 @@ export class TaskDispatcher {
     this.stopped = true;
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
-    await this.starting;
     await this.cycling;
     await this.watcher.stop();
   }

@@ -93,10 +93,13 @@ export class SharedChangeFeed {
 }
 
 /** The through-the-Core mode for a registered Core: its Files API over mTLS, with the link's bearer. */
-export function createThroughCoreFactory(feed: SharedChangeFeed): (coreId: string) => Promise<CoreShared> {
+export function createThroughCoreFactory(
+  feed: SharedChangeFeed,
+  ownerId: number,
+): (coreId: string) => Promise<CoreShared> {
   return async (coreId) => {
-    const core = await getCore(coreId);
-    const secrets = core ? await getCoreSecrets(coreId) : null;
+    const core = await getCore(coreId, ownerId);
+    const secrets = core ? await getCoreSecrets(coreId, ownerId) : null;
     if (!core || !secrets?.bearer) {
       throw new Error("this Core is not registered with this Panel, or its stored credentials could not be read");
     }
@@ -106,5 +109,24 @@ export function createThroughCoreFactory(feed: SharedChangeFeed): (coreId: strin
       fetch: filesFetchFor(coreId, secrets, createCoreFilesFetch),
       events: feed.source(coreId),
     });
+  };
+}
+
+/**
+ * A `CoreShared` that is looked up on each use instead of once. For a Task taken over after a restart whose Core
+ * is not reachable (or no longer registered) yet: it is still watched, every read fails and says why, and the
+ * timeout ends the Task, instead of the Task having nothing watching it.
+ */
+export function lazyShared(resolve: () => Promise<CoreShared>): CoreShared {
+  return {
+    list: async (path) => (await resolve()).list(path),
+    get: async (path) => (await resolve()).get(path),
+    put: async (path, body) => (await resolve()).put(path, body),
+    mkdir: async (path) => (await resolve()).mkdir(path),
+    rm: async (path) => (await resolve()).rm(path),
+    move: async (from, to) => (await resolve()).move(from, to),
+    upload: async (destination, entries) => (await resolve()).upload(destination, entries),
+    watch: async (since) => (await resolve()).watch(since),
+    signedUrl: async (path, options) => (await resolve()).signedUrl(path, options),
   };
 }

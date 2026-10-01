@@ -1,4 +1,4 @@
-import type { CoreShared, SharedChange } from "@actana/sdk/shared";
+import { CoreSharedError, type CoreShared, type SharedChange } from "@actana/sdk/shared";
 import { DuplicateTaskCommentSourceError, applyTaskResult } from "../services/tasks";
 import { NotFoundError } from "../errors";
 import {
@@ -67,6 +67,8 @@ export type ResultWatcherOptions = {
 export const DEFAULT_TASK_TIMEOUT_MS = 60 * 60_000;
 export const DEFAULT_EXIT_GRACE_MS = 30_000;
 export const DEFAULT_WATCH_POLL_MS = 2_000;
+/** A report is read whole into memory and stored as a comment; a larger file is kept on the Shared folder and pointed to. */
+export const MAX_REPORT_BYTES = 1024 * 1024;
 
 type Tracked = WatchedDispatch & {
   /** Null until the first look, which is a `watch()` with no cursor: every file there is. */
@@ -76,6 +78,10 @@ type Tracked = WatchedDispatch & {
   done: Set<string>;
   release: () => void;
 };
+
+function oversizeNote(path: string, size: number): string {
+  return `${REPORT_END_MARKER}\nThis result is ${size} bytes, over the ${MAX_REPORT_BYTES} the Panel keeps as a comment. Read it at ${path} in the Shared folder.\n${REPORT_END_MARKER}`;
+}
 
 function minutes(ms: number): string {
   const n = Math.max(1, Math.round(ms / 60_000));
@@ -212,7 +218,20 @@ export class ResultWatcher {
       if (t.done.has(name)) continue;
       // Older than the dispatch: an earlier attempt's. Not remembered, so a newer write of the same name is still seen.
       if (change.modifiedAt && change.modifiedAt.getTime() <= t.dispatchedAt) continue;
-      const file = await t.shared.get(change.path);
+      if (change.size !== undefined && change.size > MAX_REPORT_BYTES) {
+        await this.apply(t, name, result, oversizeNote(change.path, change.size));
+        t.done.add(name);
+        finished = true;
+        continue;
+      }
+      let file;
+      try {
+        file = await t.shared.get(change.path);
+      } catch (err) {
+        // Created and gone again within one poll: nothing to read, and no reason to hold up the files behind it.
+        if (err instanceof CoreSharedError && err.code === "not-found") continue;
+        throw err;
+      }
       const modifiedAt = file.modifiedAt ?? change.modifiedAt;
       if (!modifiedAt || modifiedAt.getTime() <= t.dispatchedAt) continue;
       const body = new TextDecoder().decode(file.body);
@@ -252,6 +271,24 @@ export class ResultWatcher {
 
   /** The Panel's own `fail.md`: written to the Shared folder, then recorded like any other result. */
   private async synthesize(t: Tracked, reason: string): Promise<void> {
+    // One last look at the folder itself, not at the change feed: a result whose event was missed still counts.
+    try {
+      const folder = taskFolder(t.taskId);
+      const entries = await t.shared.list(folder);
+      const changes: SharedChange[] = entries.map((e) => ({
+        path: e.path,
+        kind: e.kind,
+        deleted: false,
+        ...(e.size !== undefined ? { size: e.size } : {}),
+        ...(e.modifiedAt ? { modifiedAt: e.modifiedAt } : {}),
+      }));
+      if (await this.consume(t, changes)) {
+        this.drop(t);
+        return;
+      }
+    } catch (err) {
+      this.log.error(`task ${t.taskId}: last look before fail.md failed: ${messageOf(err)}`);
+    }
     const path = taskResultPath(t.taskId, { kind: "fail" });
     const body = `# Failed\n\n${reason} (attempt ${t.attempt}; written by the Panel.)\n\n${REPORT_END_MARKER}\n`;
     try {

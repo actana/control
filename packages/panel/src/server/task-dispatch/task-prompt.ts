@@ -20,10 +20,20 @@ import { REPORT_END_MARKER, taskResultPath } from "~/shared/task-report";
 /** Comments are earlier reports and the operator's steering; a long thread or report is cut, not dropped. */
 export const MAX_PROMPT_COMMENTS = 20;
 export const MAX_PROMPT_COMMENT_CHARS = 4_000;
+export const MAX_PROMPT_DESCRIPTION_CHARS = 20_000;
+
+/** The Core leaves a prompt that already holds its block alone, so text that quotes the block's opening must not. */
+function defuse(text: string): string {
+  return text.replace(/\[(\/?)Actana standard block/g, "[$1Actana standard-block");
+}
+
+function clipTo(text: string, max: number): string {
+  return text.length <= max ? text : `${text.slice(0, max)} [cut]`;
+}
 
 function clip(text: string): string {
   const body = text.trim();
-  return body.length <= MAX_PROMPT_COMMENT_CHARS ? body : `${body.slice(0, MAX_PROMPT_COMMENT_CHARS)} [cut]`;
+  return defuse(body.length <= MAX_PROMPT_COMMENT_CHARS ? body : `${body.slice(0, MAX_PROMPT_COMMENT_CHARS)} [cut]`);
 }
 
 export function buildTaskPrompt(task: Pick<Task, "id" | "title" | "description">, comments: readonly TaskComment[], attempt: number): string {
@@ -35,10 +45,10 @@ export function buildTaskPrompt(task: Pick<Task, "id" | "title" | "description">
   const lines = [
     "You have been given a Task by the operator's Panel. Do the work, then report the result as described at the end.",
     "",
-    `Task: ${task.title.trim()}`,
+    `Task: ${defuse(task.title.trim())}`,
     "",
     "Description:",
-    task.description.trim() || "(none)",
+    defuse(clipTo(task.description.trim(), MAX_PROMPT_DESCRIPTION_CHARS)) || "(none)",
   ];
   if (thread.length > 0) {
     lines.push("", "Comments so far, oldest first:");

@@ -27,6 +27,10 @@ export class FakeShared implements CoreShared {
   private readonly log: { seq: number; path: string; deleted: boolean }[] = [];
   /** Every call made, in order, as `op path`. */
   readonly calls: string[] = [];
+  /** Paths `watch` reports that are not there to read (created and gone within one poll). */
+  ghosts: string[] = [];
+  /** `watch` reports nothing new: the change feed missed it. */
+  watchBlind = false;
   failing: Partial<Record<"watch" | "get" | "put" | "list" | "move", string>> = {};
 
   constructor(private readonly clock: FakeClock) {}
@@ -104,6 +108,7 @@ export class FakeShared implements CoreShared {
       return { changes, cursor: `c${tip}` };
     }
     const from = Number(since.slice(1));
+    if (this.watchBlind) return { changes: [], cursor: `c${tip}` };
     const seen = new Set<string>();
     const changes: SharedChange[] = [];
     for (const entry of this.log.filter((e) => e.seq > from)) {
@@ -115,6 +120,7 @@ export class FakeShared implements CoreShared {
         changes.push({ path: entry.path, kind: "file", deleted: false, size: f.body.length, modifiedAt: new Date(f.mtime) });
       }
     }
+    for (const path of this.ghosts) changes.push({ path, kind: "file", deleted: false, size: 1, modifiedAt: new Date(this.clock.now()) });
     return { changes, cursor: `c${tip}` };
   }
 
