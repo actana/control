@@ -112,10 +112,24 @@ describe("Task routes", () => {
     const t = (await (await post("/api/tasks", { title: "move", coreId: "core-a", agent: "agent-a" })).json()).task;
     expect((await (await post(`/api/tasks/${t.id}/status`, { status: "assigned" })).json()).task.status).toBe("assigned");
     expect((await (await post(`/api/tasks/${t.id}/status`, { status: "draft" })).json()).task.status).toBe("draft");
-    const bad = await post(`/api/tasks/${t.id}/status`, { status: "done" });
+    const bad = await post(`/api/tasks/${t.id}/status`, { status: "draft" });
     expect(bad.status).toBe(409);
     expect((await call(`/api/tasks/${t.id}`).then((r) => r.json())).task.status).toBe("draft");
     expect((await post(`/api/tasks/${t.id}/status`, { status: "nonsense" })).status).toBe(400);
+  });
+
+  it("take only assigned and draft on the status route, and change nothing for any other status", async () => {
+    const t = (await (await post("/api/tasks", { title: "dispatcher's", coreId: "core-a", agent: "agent-a", startNow: true })).json()).task;
+    for (const status of ["in_progress", "done", "failed", "partial"]) {
+      expect((await post(`/api/tasks/${t.id}/status`, { status })).status).toBe(400);
+    }
+    const after = (await (await call(`/api/tasks/${t.id}`)).json()).task;
+    expect(after).toMatchObject({ status: "assigned", attemptCount: 0, dispatchedAt: null });
+    expect((await tasksService.listTaskHistory(A, t.id)).map((h) => h.toStatus)).toEqual(["assigned"]);
+    // A running Task cannot be made finished by hand either, so a re-assign cannot start a second attempt over it.
+    await tasksService.claimTask(A, t.id);
+    expect((await post(`/api/tasks/${t.id}/status`, { status: "failed" })).status).toBe(400);
+    expect((await tasksService.getTask(A, t.id)).status).toBe("in_progress");
   });
 
   it("add a comment as the operator, and refuse an empty one", async () => {

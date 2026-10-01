@@ -48,6 +48,8 @@ export function TaskCard({
       aria-label={`Open task ${task.title}`}
       onClick={() => onOpen(task.id)}
       onKeyDown={(e) => {
+        // A key on the Reply button inside is the button's, not the card's.
+        if (e.target !== e.currentTarget) return;
         if (e.key === "Enter" || e.key === " ") {
           e.preventDefault();
           onOpen(task.id);

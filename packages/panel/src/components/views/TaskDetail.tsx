@@ -1,10 +1,10 @@
 import { useState } from "react";
-import ReactMarkdown from "react-markdown";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Btn } from "~/components/ui/Btn";
 import { FormErrorBox } from "~/components/ui/FormErrorBox";
 import { Icon } from "~/components/ui/Icon";
 import { MarkdownField } from "~/components/views/MarkdownField";
+import { TaskMarkdown } from "~/components/views/TaskMarkdown";
 import { api } from "~/lib/api";
 import { useFleet } from "~/lib/fleet-context";
 import { formatRelativeTime } from "~/lib/format-relative-time";
@@ -86,7 +86,7 @@ export function TaskDetail({ taskId, onClose, focusComposer = false }: { taskId:
             {core ? <Badge>{core.label}</Badge> : null}
             {agent ? <Badge>Agent: {agent.name}</Badge> : null}
           </div>
-          {task.description ? <div className="task-markdown"><ReactMarkdown>{task.description}</ReactMarkdown></div> : null}
+          {task.description ? <TaskMarkdown>{task.description}</TaskMarkdown> : null}
           {task.lastError ? <FormErrorBox error={task.lastError} /> : null}
           {task.status === "draft" || task.status === "assigned" ? (
             <div style={{ display: "flex", gap: 8 }}>
@@ -122,7 +122,7 @@ export function TaskDetail({ taskId, onClose, focusComposer = false }: { taskId:
                   {c.authorKind === "user" ? c.authorName : `${c.authorKind} · ${c.authorName}`}
                   {c.sourceFile ? ` · from ${c.sourceFile}` : ""} · {formatRelativeTime(c.createdAt)}
                 </div>
-                <div className="task-markdown"><ReactMarkdown>{c.body}</ReactMarkdown></div>
+                <TaskMarkdown>{c.body}</TaskMarkdown>
               </article>
             ))}
           </section>

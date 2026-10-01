@@ -89,7 +89,7 @@ function Form({ onClose, initialCoreId, onCreated }: { onClose: () => void; init
         </label>
         <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
           <span style={labelStyle}>Description</span>
-          <MarkdownField value={description} onChange={setDescription} ariaLabel="Description" agentNames={agents.map((a) => a.name)} />
+          <MarkdownField value={description} onChange={setDescription} ariaLabel="Description" agentNames={agent ? [agent.name] : []} />
         </div>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
           <div role="radiogroup" aria-label="Core" style={{ display: "flex", flexDirection: "column", gap: 8 }}>

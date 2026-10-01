@@ -2,7 +2,6 @@ import { z } from "zod";
 import { json, parseJsonBody, rethrowUnlessDomain } from "./_helpers";
 import { NotFoundError, ValidationError } from "../errors";
 import { HTTP_CREATED } from "~/shared/http-status";
-import { TASK_STATUSES } from "~/shared/tasks";
 import type { AgentDto, TaskCommentDto, TaskDto } from "~/shared/task-wire";
 import {
   addTaskComment,
@@ -34,7 +33,11 @@ const newTaskBody = z.object({
   agent: z.string().nullable().optional(),
   startNow: z.boolean().optional(),
 });
-const statusBody = z.object({ status: z.enum(TASK_STATUSES) });
+// Only the moves an operator makes by hand. `in_progress` is the dispatcher's claim and
+// done, failed and partial are the result watcher's: a client that made them would leave a
+// Task running with nothing behind it, or let a re-assign start a second attempt on top of one.
+export const OPERATOR_TASK_STATUSES = ["assigned", "draft"] as const;
+const statusBody = z.object({ status: z.enum(OPERATOR_TASK_STATUSES) });
 const commentBody = z.object({ body: z.string(), reassign: z.boolean().optional() });
 
 function taskDto(t: Task): TaskDto {
@@ -114,7 +117,7 @@ export async function read(ownerId: number, id: string): Promise<Response> {
   }
 }
 
-/** Assign (`assigned`) or send back to `draft`: the service says whether the move is legal. */
+/** Assign (`assigned`) or send back to `draft`. Any other status is a 400; the service says whether the move is legal. */
 export async function setStatus(ownerId: number, id: string, request: Request): Promise<Response> {
   const body = await parseJsonBody(request, statusBody);
   if (!body.ok) return body.response;

@@ -161,6 +161,34 @@ describe("New Task dialog", () => {
   });
 });
 
+describe("Review fixes", () => {
+  it("drops images from agent-written markdown instead of loading them", async () => {
+    tasks = [task("t4", "Review PR", "failed", "c2", { description: "before ![d](https://evil.example/d.png) after" })];
+    comments = [{ id: "k9", taskId: "t4", authorKind: "agent", authorName: "opencode", sourceFile: null, body: "![c](https://evil.example/c.png) text", createdAt: 2 }];
+    const { container } = mount(<TaskDetail taskId="t4" onClose={() => {}} />);
+    await screen.findByText(/text/);
+    expect(container.ownerDocument.querySelector("img")).toBeNull();
+  });
+
+  it("Enter on a card's Reply button is the button's: it does not also open the Task", async () => {
+    mount(<TasksBoard />);
+    await screen.findByText("Review PR");
+    const reply = screen.getByRole("button", { name: "Reply to Review PR" });
+    // Not prevented, so the browser still turns Enter into the button's click.
+    expect(fireEvent.keyDown(reply, { key: "Enter" })).toBe(true);
+    expect(screen.queryByRole("dialog", { name: "Task detail" })).toBeNull();
+  });
+
+  it("inserts the picked Agent for @agent, not the first one", async () => {
+    mount(<TasksBoard />);
+    await screen.findByText("Rotate keys");
+    fireEvent.click(screen.getByRole("button", { name: "New Task" }));
+    fireEvent.click(await screen.findByRole("radio", { name: /cursor-cli/ }));
+    fireEvent.click(screen.getByRole("button", { name: "@agent" }));
+    expect((screen.getByLabelText("Description") as HTMLTextAreaElement).value).toBe("@cursor-cli");
+  });
+});
+
 describe("Task detail", () => {
   const finished = () => task("t4", "Review PR", "failed", "c2", { attemptCount: 1 });
   beforeEach(() => {
