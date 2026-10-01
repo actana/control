@@ -87,9 +87,9 @@ export function sortProjects(
         break;
       }
       case "running":
-        result = compareNumbers(left.taskCounts.running, right.taskCounts.running);
+        result = compareNumbers(left.sessionCounts.running, right.sessionCounts.running);
         if (result === 0) {
-          result = compareNumbers(left.taskCounts.activeNonDone, right.taskCounts.activeNonDone);
+          result = compareNumbers(left.sessionCounts.activeNonDone, right.sessionCounts.activeNonDone);
         }
         break;
       case "createdAt":

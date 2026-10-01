@@ -10,15 +10,15 @@ import { CursorGlow } from "~/components/ui/CursorGlow";
 import { getPanelBridge } from "~/lib/panel-bridge";
 import { CoreNeedsUpdateNotice } from "~/components/views/CoreNeedsUpdate";
 import { formatRelativeTime } from "~/lib/format-relative-time";
-import { useCoreProjects, useFleetTasks } from "~/lib/use-fleet";
+import { useCoreProjects, useFleetSessions } from "~/lib/use-fleet";
 import { setSelectedCoreId as writeSelectedCoreId } from "~/lib/selected-core-store";
 import { useAddProject } from "~/lib/add-project-store";
 import { coreOrder, type CoreWithDial } from "~/shared/cores";
 
-// Fleet view — a live, non-persisted dashboard. `tasksList` fans out to every
+// Fleet view — a live, non-persisted dashboard. `sessionRowsList` fans out to every
 // registered Core over this tab's one panel link and the answers merge keyed by
-// `coreId/taskId`. An unreachable Core shows its state and last-seen with no
-// task rows: the Panel caches nothing task-shaped, so a downed Core is honestly
+// `coreId/sessionId`. An unreachable Core shows its state and last-seen with no
+// session rows: the Panel caches nothing session-shaped, so a downed Core is honestly
 // blank rather than stale.
 //
 // Clicking a row (or picking a Core) navigates *out* of Fleet view into the
@@ -29,7 +29,7 @@ import { coreOrder, type CoreWithDial } from "~/shared/cores";
 export function FleetView() {
   const bridge = getPanelBridge();
   const router = useRouter();
-  const { fleet, cores, loading, error, refresh } = useFleetTasks();
+  const { fleet, cores, loading, error, refresh } = useFleetSessions();
   const addProject = useAddProject();
 
   // Into the per-Core shell, tagged with the owning Core so SessionGrid /
@@ -88,7 +88,7 @@ export function FleetView() {
                 Fleet
               </h1>
               <div style={{ marginTop: 4, fontSize: 14, color: "var(--text-dim)" }}>
-                {`${fleet.rows.length} active ${fleet.rows.length === 1 ? "task" : "tasks"} across ${cores.length} ${cores.length === 1 ? "Core" : "Cores"}`}
+                {`${fleet.rows.length} active ${fleet.rows.length === 1 ? "session" : "sessions"} across ${cores.length} ${cores.length === 1 ? "Core" : "Cores"}`}
               </div>
             </div>
             <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
@@ -149,7 +149,7 @@ function FleetDashboard({
 }: {
   loading: boolean;
   cores: CoreWithDial[];
-  fleetRows: ReturnType<typeof useFleetTasks>["fleet"]["rows"];
+  fleetRows: ReturnType<typeof useFleetSessions>["fleet"]["rows"];
   onOpenProject: (coreId: string, projectId: string) => void;
 }) {
   if (loading && fleetRows.length === 0) {
@@ -245,7 +245,7 @@ function CoreDialLine({ dial }: { dial: CoreWithDial["dial"] }) {
 //   Core label
 //     Project name
 //       Session, Session, …
-// Project names come from the Core's own `projectsList` — task snapshots carry
+// Project names come from the Core's own `projectsList` — session snapshots carry
 // only `projectId`, so names are resolved here rather than plumbed through the
 // fan-out shape. Until a name lands the projectId stands in, so a group is
 // never anonymous.
@@ -255,7 +255,7 @@ function CoreProjectGroups({
   onOpenProject,
 }: {
   coreId: string;
-  rows: ReturnType<typeof useFleetTasks>["fleet"]["rows"];
+  rows: ReturnType<typeof useFleetSessions>["fleet"]["rows"];
   onOpenProject: (coreId: string, projectId: string) => void;
 }) {
   const { projects } = useCoreProjects(coreId);
@@ -313,8 +313,8 @@ function CoreProjectGroups({
             </button>
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
               {projectRows.map((row) => (
-                <FleetTaskRow
-                  key={`${row.coreId}/${row.taskId}`}
+                <FleetSessionRow
+                  key={`${row.coreId}/${row.sessionId}`}
                   row={row}
                   onOpen={() => onOpenProject(row.coreId, row.projectId)}
                 />
@@ -327,11 +327,11 @@ function CoreProjectGroups({
   );
 }
 
-function FleetTaskRow({
+function FleetSessionRow({
   row,
   onOpen,
 }: {
-  row: { coreId: string; coreLabel: string; taskId: string; projectId: string; title: string; agent: string; status: string; updatedAt: number };
+  row: { coreId: string; coreLabel: string; sessionId: string; projectId: string; title: string; agent: string; status: string; updatedAt: number };
   onOpen: () => void;
 }) {
   return (

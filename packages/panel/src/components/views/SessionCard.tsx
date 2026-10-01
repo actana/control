@@ -7,29 +7,29 @@ import { HotkeyTooltip } from "~/components/ui/Tooltip";
 import { HarnessLogo } from "~/components/ui/HarnessLogo";
 import { SessionIcon } from "~/components/ui/SessionIcon";
 import { HARNESS_META, STATUS_META } from "~/lib/design-meta";
-import { isSentinelTitle } from "~/lib/task-sentinels";
+import { isSentinelTitle } from "~/lib/session-sentinels";
 import { formatRelativeTime } from "~/lib/format-relative-time";
 import { DEFAULT_SESSION_ICON, isSessionIcon } from "~/lib/session-icons";
-import type { Task } from "~/db/schema";
+import type { Session } from "~/db/schema";
 
-type TaskCardProps = {
-  task: Task;
+type SessionCardProps = {
+  session: Session;
   selected: boolean;
-  onToggle: (taskId: string) => void;
+  onToggle: (sessionId: string) => void;
   /** Archive an active session (soft, no confirmation, kills the tty). */
-  onArchive?: (taskId: string) => void;
+  onArchive?: (sessionId: string) => void;
   /** Restore an archived session back to the active list. */
-  onRestore?: (taskId: string) => void;
+  onRestore?: (sessionId: string) => void;
   /** Permanently delete a session (confirmed, irreversible). */
-  onDelete?: (taskId: string) => void;
+  onDelete?: (sessionId: string) => void;
   /** Pin or unpin an active session. */
-  onTogglePinned?: (taskId: string) => Promise<void> | void;
+  onTogglePinned?: (sessionId: string) => Promise<void> | void;
   /** True while the pin/unpin mutation for this session is saving. */
   pinning?: boolean;
 };
 
-function TaskCardImpl({
-  task,
+function SessionCardImpl({
+  session,
   selected,
   onToggle,
   onArchive,
@@ -37,32 +37,32 @@ function TaskCardImpl({
   onDelete,
   onTogglePinned,
   pinning = false,
-}: TaskCardProps) {
+}: SessionCardProps) {
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [confirmArchiveOpen, setConfirmArchiveOpen] = useState(false);
   const [hovered, setHovered] = useState(false);
 
-  const meta = HARNESS_META[task.agent];
-  const statusMeta = STATUS_META[task.status];
-  const isRunning = task.status === "running";
+  const meta = HARNESS_META[session.agent];
+  const statusMeta = STATUS_META[session.status];
+  const isRunning = session.status === "running";
 
   // Archived sessions are parked (their tty was killed on archive), but the
   // card is still openable: clicking it reloads/resumes the session terminal.
   // The top-right actions swap delete → restore + permanent delete.
-  const archived = task.archived;
+  const archived = session.archived;
 
-  const sentinel = isSentinelTitle(task.title);
-  const sessionIcon = isSessionIcon(task.icon) ? task.icon : DEFAULT_SESSION_ICON;
-  const updated = formatRelativeTime(task.updatedAt);
+  const sentinel = isSentinelTitle(session.title);
+  const sessionIcon = isSessionIcon(session.icon) ? session.icon : DEFAULT_SESSION_ICON;
+  const updated = formatRelativeTime(session.updatedAt);
   // Opens/focuses the session panel. Re-clicking a selected card does not
   // close it — only the panel's hide control does.
-  const selectTask = () => onToggle(task.id);
+  const selectSession = () => onToggle(session.id);
 
   // Subtitle: prefer the live preview line, otherwise a status hint. On the
   // archived tab everything is under "Archived", so mirror that on the card
   // instead of the underlying pre-archive status label.
   const subtitle =
-    task.preview?.trim() || (archived ? "Archived" : statusMeta.label);
+    session.preview?.trim() || (archived ? "Archived" : statusMeta.label);
 
   return (
     <CardFrame
@@ -81,8 +81,8 @@ function TaskCardImpl({
       <ShimmerBar active={isRunning} color={meta?.color} />
       <button
         type="button"
-        onClick={selectTask}
-        aria-label={`Open terminal for ${task.title}`}
+        onClick={selectSession}
+        aria-label={`Open terminal for ${session.title}`}
         aria-pressed={selected}
         style={{
           position: "absolute",
@@ -101,7 +101,7 @@ function TaskCardImpl({
       <div
         aria-hidden
         style={
-          task.agent === "opencode"
+          session.agent === "opencode"
             ? {
                 position: "absolute",
                 right: 8,
@@ -127,7 +127,7 @@ function TaskCardImpl({
               }
         }
       >
-        {task.agent !== "opencode" ? <HarnessLogo agent={task.agent} size={140} /> : null}
+        {session.agent !== "opencode" ? <HarnessLogo agent={session.agent} size={140} /> : null}
       </div>
 
       <div
@@ -193,7 +193,7 @@ function TaskCardImpl({
               paddingRight: 36,
             }}
           >
-            {task.title}
+            {session.title}
           </div>
 
           <div
@@ -204,11 +204,11 @@ function TaskCardImpl({
               overflow: "hidden",
               textOverflow: "ellipsis",
               whiteSpace: "nowrap",
-              fontStyle: !task.preview?.trim() ? "italic" : "normal",
+              fontStyle: !session.preview?.trim() ? "italic" : "normal",
             }}
           >
             {subtitle}
-            {isRunning && task.preview?.trim() && (
+            {isRunning && session.preview?.trim() && (
               <span
                 style={{
                   marginLeft: 2,
@@ -251,21 +251,21 @@ function TaskCardImpl({
               <Btn
                 variant="ghost"
                 size="sm"
-                icon={task.pinned ? "pin-fill" : "pin"}
+                icon={session.pinned ? "pin-fill" : "pin"}
                 disabled={pinning}
                 aria-busy={pinning}
-                aria-label={`${task.pinned ? "Unpin" : "Pin"} ${task.title}`}
-                title={pinning ? "Saving pin state" : task.pinned ? "Unpin session" : "Pin session"}
+                aria-label={`${session.pinned ? "Unpin" : "Pin"} ${session.title}`}
+                title={pinning ? "Saving pin state" : session.pinned ? "Unpin session" : "Pin session"}
                 onClick={(e) => {
                   e.stopPropagation();
                   if (pinning) return;
-                  void onTogglePinned(task.id);
+                  void onTogglePinned(session.id);
                 }}
                 style={{
                   width: 30,
                   height: 30,
                   padding: 0,
-                  color: task.pinned ? "var(--accent-ink)" : undefined,
+                  color: session.pinned ? "var(--accent-ink)" : undefined,
                 }}
               />
             )}
@@ -274,11 +274,11 @@ function TaskCardImpl({
                 variant="ghost"
                 size="sm"
                 icon="refresh"
-                aria-label={`Restore ${task.title}`}
+                aria-label={`Restore ${session.title}`}
                 title="Restore session"
                 onClick={(e) => {
                   e.stopPropagation();
-                  onRestore(task.id);
+                  onRestore(session.id);
                 }}
                 style={{ width: 30, height: 30, padding: 0 }}
               />
@@ -293,14 +293,14 @@ function TaskCardImpl({
                   variant="ghost"
                   size="sm"
                   icon="archive"
-                  aria-label={`Archive ${task.title}`}
+                  aria-label={`Archive ${session.title}`}
                   title={selected ? undefined : "Archive session"}
                   onClick={(e) => {
                     e.stopPropagation();
                     // Running sessions lose the live terminal + agent on
                     // archive, so confirm first; parked ones archive silently.
                     if (isRunning) setConfirmArchiveOpen(true);
-                    else onArchive(task.id);
+                    else onArchive(session.id);
                   }}
                   style={{ width: 30, height: 30, padding: 0 }}
                 />
@@ -316,7 +316,7 @@ function TaskCardImpl({
                   variant="ghost"
                   size="sm"
                   icon="trash"
-                  aria-label={`Delete ${task.title}`}
+                  aria-label={`Delete ${session.title}`}
                   title={selected ? undefined : "Delete session"}
                   onClick={(e) => {
                     e.stopPropagation();
@@ -329,7 +329,7 @@ function TaskCardImpl({
           </div>
         )}
 
-        {(task.status === "needs-input" || task.status === "interrupted") && (
+        {(session.status === "needs-input" || session.status === "interrupted") && (
           <div
             style={{
               position: "absolute",
@@ -348,7 +348,7 @@ function TaskCardImpl({
               icon="terminal"
               onClick={(e) => {
                 e.stopPropagation();
-                selectTask();
+                selectSession();
               }}
             >
               Reply
@@ -364,7 +364,7 @@ function TaskCardImpl({
             open={confirmArchiveOpen}
             onClose={() => setConfirmArchiveOpen(false)}
             onConfirm={() => {
-              onArchive(task.id);
+              onArchive(session.id);
               setConfirmArchiveOpen(false);
             }}
             title="Archive running session?"
@@ -375,7 +375,7 @@ function TaskCardImpl({
             width={420}
           >
             <div style={{ fontSize: 13, color: "var(--text)", marginBottom: 6, overflowWrap: "anywhere" }}>
-              &ldquo;{task.title}&rdquo; is still running.
+              &ldquo;{session.title}&rdquo; is still running.
             </div>
             <div style={{ fontSize: 12, color: "var(--text-dim)" }}>
               Archiving disconnects its terminal and stops the in-progress agent.
@@ -392,7 +392,7 @@ function TaskCardImpl({
             open={confirmOpen}
             onClose={() => setConfirmOpen(false)}
             onConfirm={() => {
-              onDelete(task.id);
+              onDelete(session.id);
               setConfirmOpen(false);
             }}
             title="Delete session?"
@@ -401,7 +401,7 @@ function TaskCardImpl({
             width={420}
           >
             <div style={{ fontSize: 13, color: "var(--text)", marginBottom: 6, overflowWrap: "anywhere" }}>
-              Delete &ldquo;{task.title}&rdquo;?
+              Delete &ldquo;{session.title}&rdquo;?
             </div>
             <div style={{ fontSize: 12, color: "var(--text-dim)" }}>
               This session will be removed. This cannot be
@@ -414,12 +414,12 @@ function TaskCardImpl({
   );
 }
 
-// A Task is a flat DB row (all scalar columns), so a per-field shallow compare
+// A Session is a flat DB row (all scalar columns), so a per-field shallow compare
 // equals a deep compare — and lets an unchanged session skip re-rendering even
 // when react-query hands back a freshly-parsed object on refetch.
-function taskFieldsEqual(a: Task, b: Task): boolean {
+function sessionFieldsEqual(a: Session, b: Session): boolean {
   if (a === b) return true;
-  const keys = Object.keys(a) as (keyof Task)[];
+  const keys = Object.keys(a) as (keyof Session)[];
   if (keys.length !== Object.keys(b).length) return false;
   for (const k of keys) {
     if (a[k] !== b[k]) return false;
@@ -430,11 +430,11 @@ function taskFieldsEqual(a: Task, b: Task): boolean {
 /**
  * Memoized so a single session's update (one of potentially thousands of cards)
  * re-renders only that card, not the whole column. Relies on the parent passing
- * stable callback identities; task equality is compared by value above so it
+ * stable callback identities; session equality is compared by value above so it
  * survives react-query returning new row objects each refetch.
  */
-export const TaskCard = memo(
-  TaskCardImpl,
+export const SessionCard = memo(
+  SessionCardImpl,
   (prev, next) =>
     prev.selected === next.selected &&
     prev.pinning === next.pinning &&
@@ -443,5 +443,5 @@ export const TaskCard = memo(
     prev.onRestore === next.onRestore &&
     prev.onDelete === next.onDelete &&
     prev.onTogglePinned === next.onTogglePinned &&
-    taskFieldsEqual(prev.task, next.task),
+    sessionFieldsEqual(prev.session, next.session),
 );

@@ -19,7 +19,7 @@ import type { PtyCore } from "@actana/core/pty-manager";
 import type {
   CoreLinkEvent,
   CoreLinkProjectSnapshot,
-  CoreLinkTaskSnapshot,
+  CoreLinkSessionRow,
 } from "@actana/sdk/core";
 import type { PanelLinkClientFrame, PanelLinkServerFrame } from "~/shared/panel-link";
 
@@ -150,10 +150,10 @@ function mockCore(): PtyCore {
     kill: () => true,
     killLaunchProcesses: async () => ({ ptyCount: 0, ports: [] }),
     killPtysUnderPath: async () => ({ ptyCount: 0 }),
-    findByTask: () => ({ ptyId: null }),
+    findBySession: () => ({ ptyId: null }),
     // Which Session a `write`/`kill` would touch (issue 144) — the lookup
     // the Core's Session-lock gate resolves a ptyId through.
-    taskIdForPty: () => null,
+    sessionIdForPty: () => null,
     replay: () => ({ data: "", nextSeq: 0 }),
     killAll: () => {},
   } as unknown as PtyCore;
@@ -225,7 +225,7 @@ function eventLog(): EventLogPort {
         ts: events.length + 1,
         kind,
         ptyId: opts?.ptyId ?? null,
-        taskId: opts?.taskId ?? null,
+        sessionId: opts?.sessionId ?? null,
         payload,
       };
       events.push(event);
@@ -237,13 +237,13 @@ function eventLog(): EventLogPort {
 }
 
 /**
- * A Core's project/task tables, standing in for its SQLite. It validates the
+ * A Core's project/session tables, standing in for its SQLite. It validates the
  * project path against the real filesystem the same way the store does — that
  * is the point of the write living here rather than in the Panel.
  */
 function mutationPort(): CoreMutationPort {
   const projects = new Map<string, CoreLinkProjectSnapshot>();
-  const tasks = new Map<string, CoreLinkTaskSnapshot>();
+  const sessions = new Map<string, CoreLinkSessionRow>();
   let seq = 0;
   return {
     mutateProject(mutation) {
@@ -284,11 +284,11 @@ function mutationPort(): CoreMutationPort {
       projects.set(next.projectId, next);
       return next;
     },
-    mutateTask(mutation) {
+    mutateSession(mutation) {
       if (mutation.op === "create") {
-        const taskId = mutation.taskId ?? `task_${++seq}`;
-        const snapshot: CoreLinkTaskSnapshot = {
-          taskId,
+        const sessionId = mutation.sessionId ?? `session_${++seq}`;
+        const snapshot: CoreLinkSessionRow = {
+          sessionId,
           projectId: mutation.projectId,
           title: mutation.title,
           titleManuallySet: false,
@@ -300,16 +300,16 @@ function mutationPort(): CoreMutationPort {
           icon: mutation.icon ?? null,
           updatedAt: ++seq,
         };
-        tasks.set(taskId, snapshot);
+        sessions.set(sessionId, snapshot);
         return snapshot;
       }
-      const existing = tasks.get(mutation.taskId);
+      const existing = sessions.get(mutation.sessionId);
       if (!existing) return null;
       if (mutation.op === "delete") {
-        tasks.delete(mutation.taskId);
+        sessions.delete(mutation.sessionId);
         return existing;
       }
-      const next: CoreLinkTaskSnapshot = {
+      const next: CoreLinkSessionRow = {
         ...existing,
         ...(mutation.title === undefined ? {} : { title: mutation.title }),
         ...(mutation.pinned === undefined ? {} : { pinned: mutation.pinned }),
@@ -317,12 +317,12 @@ function mutationPort(): CoreMutationPort {
         ...(mutation.status === undefined ? {} : { status: mutation.status }),
         updatedAt: ++seq,
       };
-      tasks.set(next.taskId, next);
+      sessions.set(next.sessionId, next);
       return next;
     },
     listSessions: () =>
-      [...tasks.values()].map((t) => ({
-        taskId: t.taskId,
+      [...sessions.values()].map((t) => ({
+        sessionId: t.sessionId,
         ptyId: null,
         status: t.status,
         updatedAt: t.updatedAt,
@@ -480,13 +480,13 @@ describe("writing to a Core from the browser", () => {
     const tab = await openTab();
 
     const answer = await tab.ask(coreId, {
-      type: "tasksMutate",
+      type: "sessionsMutate",
       mutation: { op: "create", projectId: "proj_1", title: "restock", agent: "claude-code" },
     });
 
     expect(answer).toMatchObject({
-      type: "tasksMutateResult",
-      task: expect.objectContaining({ title: "restock", agent: "claude-code", status: "ready" }),
+      type: "sessionsMutateResult",
+      session: expect.objectContaining({ title: "restock", agent: "claude-code", status: "ready" }),
     });
   });
 
@@ -505,9 +505,9 @@ describe("writing to a Core from the browser", () => {
         },
       })
     ).project as CoreLinkProjectSnapshot;
-    const task = (
+    const session = (
       await author.ask(coreId, {
-        type: "tasksMutate",
+        type: "sessionsMutate",
         mutation: {
           op: "create",
           projectId: created.projectId,
@@ -517,7 +517,7 @@ describe("writing to a Core from the browser", () => {
           agent: "claude-code",
         },
       })
-    ).task as CoreLinkTaskSnapshot;
+    ).session as CoreLinkSessionRow;
 
     await author.ask(coreId, {
       type: "projectsMutate",
@@ -528,14 +528,14 @@ describe("writing to a Core from the browser", () => {
       mutation: { op: "rename", projectId: created.projectId, name: "depot" },
     });
     await author.ask(coreId, {
-      type: "tasksMutate",
-      mutation: { op: "update", taskId: task.taskId, icon: "rocket" },
+      type: "sessionsMutate",
+      mutation: { op: "update", sessionId: session.sessionId, icon: "rocket" },
     });
 
     // The second tab asks the same Core and gets the same answers — there is
     // only one copy of this state and neither tab is holding it.
     const sessions = await observer.ask(coreId, { type: "sessionsList" });
-    expect(sessions.sessions).toEqual([expect.objectContaining({ taskId: task.taskId })]);
+    expect(sessions.sessions).toEqual([expect.objectContaining({ sessionId: session.sessionId })]);
 
     const renamed = await observer.ask(coreId, {
       type: "projectsMutate",
@@ -544,10 +544,10 @@ describe("writing to a Core from the browser", () => {
     expect(renamed.project).toMatchObject({ name: "depot", pinned: true });
 
     const reIconed = await observer.ask(coreId, {
-      type: "tasksMutate",
-      mutation: { op: "update", taskId: task.taskId, title: "restock" },
+      type: "sessionsMutate",
+      mutation: { op: "update", sessionId: session.sessionId, title: "restock" },
     });
-    expect(reIconed.task).toMatchObject({ icon: "rocket" });
+    expect(reIconed.session).toMatchObject({ icon: "rocket" });
   });
 
   it("deletes a session on the Core and tells a watching tab it is gone", async () => {
@@ -555,28 +555,28 @@ describe("writing to a Core from the browser", () => {
     const tab = await openTab();
     tab.subscribe(coreId, 0);
 
-    const task = (
+    const session = (
       await tab.ask(coreId, {
-        type: "tasksMutate",
+        type: "sessionsMutate",
         mutation: { op: "create", projectId: "proj_1", title: "restock", agent: "claude-code" },
       })
-    ).task as CoreLinkTaskSnapshot;
+    ).session as CoreLinkSessionRow;
 
     const removed = await tab.ask(coreId, {
-      type: "tasksMutate",
-      mutation: { op: "delete", taskId: task.taskId },
+      type: "sessionsMutate",
+      mutation: { op: "delete", sessionId: session.sessionId },
     });
 
     // The Core answers with the row it removed, and it is out of the sessions
     // list the next read returns.
     expect(removed).toMatchObject({
-      type: "tasksMutateResult",
-      task: expect.objectContaining({ taskId: task.taskId, title: "restock" }),
+      type: "sessionsMutateResult",
+      session: expect.objectContaining({ sessionId: session.sessionId, title: "restock" }),
     });
     expect((await tab.ask(coreId, { type: "sessionsList" })).sessions).toEqual([]);
 
     await vi.waitFor(() => {
-      expect(tab.events(coreId).map((e) => e.kind)).toContain("task:deleted");
+      expect(tab.events(coreId).map((e) => e.kind)).toContain("session:deleted");
     }, 5_000);
   });
 
@@ -585,11 +585,11 @@ describe("writing to a Core from the browser", () => {
     const tab = await openTab();
 
     const answer = await tab.ask(coreId, {
-      type: "tasksMutate",
-      mutation: { op: "delete", taskId: "task_gone" },
+      type: "sessionsMutate",
+      mutation: { op: "delete", sessionId: "session_gone" },
     });
 
-    expect(answer).toMatchObject({ type: "tasksMutateResult", task: null });
+    expect(answer).toMatchObject({ type: "sessionsMutateResult", session: null });
   });
 
   it("tells a watching tab which kind of change happened", async () => {

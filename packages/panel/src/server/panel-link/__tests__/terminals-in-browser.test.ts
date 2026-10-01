@@ -228,7 +228,7 @@ function freePort(): Promise<number> {
 
 type ScriptedPty = {
   id: string;
-  taskId: string;
+  sessionId: string;
   shellSession: boolean;
   ring: Array<{ seq: number; data: string }>;
   nextSeq: number;
@@ -268,7 +268,7 @@ function scriptedCore(): ScriptedCore {
       const id = `pty-${++nextId}`;
       ptys.set(id, {
         id,
-        taskId: opts.taskId,
+        sessionId: opts.sessionId,
         shellSession: opts.shellSession === true,
         ring: [],
         nextSeq: 0,
@@ -311,17 +311,17 @@ function scriptedCore(): ScriptedCore {
     },
     killLaunchProcesses: async () => ({ ptyCount: 0, ports: [] }),
     killPtysUnderPath: async () => ({ ptyCount: 0 }),
-    findByTask: (taskId: string) => {
+    findBySession: (sessionId: string) => {
       for (const p of ptys.values()) {
-        if (p.taskId === taskId && !p.shellSession) return { ptyId: p.id };
+        if (p.sessionId === sessionId && !p.shellSession) return { ptyId: p.id };
       }
       return { ptyId: null };
     },
     // The inverse (issue 144): which Session a `write`/`kill` would be
     // touching, which is what the Core resolves before consulting the Session
-    // lock. Unlike `findByTask` it answers for every PTY, VM Shell Sessions
+    // lock. Unlike `findBySession` it answers for every PTY, VM Shell Sessions
     // included.
-    taskIdForPty: (ptyId: string) => ptys.get(ptyId)?.taskId ?? null,
+    sessionIdForPty: (ptyId: string) => ptys.get(ptyId)?.sessionId ?? null,
     replay: (ptyId: string, sinceSeq?: number) => {
       const p = ptys.get(ptyId);
       if (!p) return { data: "", nextSeq: 0 };
@@ -395,14 +395,14 @@ function eventLog(): EventLogPort & { all(): CoreLinkEvent[] } {
     appendEvent: (
       kind: string,
       payload: string,
-      keys?: { ptyId?: string | null; taskId?: string | null },
+      keys?: { ptyId?: string | null; sessionId?: string | null },
     ) => {
       const stored: CoreLinkEvent = {
         eventId: events.length + 1,
         ts: Date.now(),
         kind,
         ptyId: keys?.ptyId ?? null,
-        taskId: keys?.taskId ?? null,
+        sessionId: keys?.sessionId ?? null,
         payload,
       };
       events.push(stored);
@@ -490,7 +490,7 @@ async function openTab(coreId?: string): Promise<Tab> {
 // real bridge's `spawn`, which is typed, while the hand-rolled `Tab` still
 // sends it as a bag of fields.
 const HARNESS_SPAWN = {
-  taskId: "task_1",
+  sessionId: "session_1",
   cwd: "/srv/warehouse",
   command: "claude",
   agent: "claude-code",
@@ -566,7 +566,7 @@ describe("terminals in the browser", () => {
     const second = (
       await tab.ask(coreId, {
         type: "spawn",
-        opts: { ...HARNESS_SPAWN, taskId: "task_2" },
+        opts: { ...HARNESS_SPAWN, sessionId: "session_2" },
       })
     ).ptyId as string;
 
@@ -579,14 +579,14 @@ describe("terminals in the browser", () => {
     }, 5_000);
   });
 
-  it("reattaches a live agent session by task instead of spawning a second one", async () => {
+  it("reattaches a live agent session by session instead of spawning a second one", async () => {
     const { coreId } = await pair();
     const tab = await openTab(coreId);
     const ptyId = (await tab.ask(coreId, { type: "spawn", opts: HARNESS_SPAWN })).ptyId as string;
 
-    const found = await tab.ask(coreId, { type: "findByTask", taskId: "task_1" });
+    const found = await tab.ask(coreId, { type: "findBySession", sessionId: "session_1" });
 
-    expect(found).toMatchObject({ type: "findByTaskResult", ptyId });
+    expect(found).toMatchObject({ type: "findBySessionResult", ptyId });
   });
 
   it("opens a VM Shell Session on the Core's own machine", async () => {
@@ -595,7 +595,7 @@ describe("terminals in the browser", () => {
 
     const spawned = await tab.ask(coreId, {
       type: "spawn",
-      opts: { shellSession: true, taskId: "term_vm_1", command: "" },
+      opts: { shellSession: true, sessionId: "term_vm_1", command: "" },
     });
     const ptyId = spawned.ptyId as string;
     core.core.emit(ptyId, "operator@prod-vm-1:~$ ");
@@ -607,8 +607,8 @@ describe("terminals in the browser", () => {
       () => expect(tab.output(coreId, ptyId)).toBe("operator@prod-vm-1:~$ "),
       5_000,
     );
-    // A VM shell is not agent work: reattach-by-task must not hand it back.
-    expect(await tab.ask(coreId, { type: "findByTask", taskId: "term_vm_1" })).toMatchObject({
+    // A VM shell is not agent work: reattach-by-session must not hand it back.
+    expect(await tab.ask(coreId, { type: "findBySession", sessionId: "term_vm_1" })).toMatchObject({
       ptyId: null,
     });
   });
@@ -619,7 +619,7 @@ describe("terminals in the browser", () => {
 
     await tab.ask(coreId, {
       type: "spawn",
-      opts: { shellSession: true, taskId: "term_vm_2", command: "" },
+      opts: { shellSession: true, sessionId: "term_vm_2", command: "" },
     });
 
     const spawns = core.log.all().filter((e) => e.kind === "pty:spawn");

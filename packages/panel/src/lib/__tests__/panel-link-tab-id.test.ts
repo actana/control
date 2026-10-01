@@ -94,7 +94,7 @@ function loadPage(store: FakeStore): { page: FakePage; client: PanelLinkClient }
   page = loaded;
   (globalThis as { window?: unknown }).window = loaded;
   const client = new PanelLinkClient({
-    url: "ws://panel.test/panel-link?v=1",
+    url: "ws://panel.test/panel-link?v=2",
     createSocket: (url) => new FakeSocket(url),
     reconnectInitialMs: 10,
     reconnectMaxMs: 10,
@@ -210,7 +210,7 @@ describe("the id a tab presents on its panel link", () => {
     delete (globalThis as { window?: unknown }).window;
 
     new PanelLinkClient({
-      url: "ws://panel.test/panel-link?v=1",
+      url: "ws://panel.test/panel-link?v=2",
       createSocket: (url) => new FakeSocket(url),
     });
 
@@ -222,7 +222,7 @@ describe("the id a tab presents on its panel link", () => {
     loadPage(new FakeStore());
     const url = new URL(FakeSocket.opened.at(-1)!.url);
 
-    expect(url.searchParams.get("v")).toBe("1");
+    expect(url.searchParams.get("v")).toBe("2");
     expect(url.searchParams.get(PANEL_LINK_CLIENT_PARAM)).toMatch(/^tab-/);
   });
 });

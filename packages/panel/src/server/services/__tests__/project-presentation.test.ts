@@ -17,7 +17,7 @@ const {
 const { projectImagesDir } = await import("../project-image-files");
 const { createGroup } = await import("../groups");
 const { getDb } = await import("~/db/client");
-const { projectPresentation, projects, tasks, groups } = await import("~/db/schema");
+const { projectPresentation, projects, sessions, groups } = await import("~/db/schema");
 
 // Panel-local filing for projects whose row lives on a Core (issue 98). The
 // point of the table is that it is keyed to a project the Panel has no row for,
@@ -38,7 +38,7 @@ describe("project-presentation service", () => {
 
   beforeEach(() => {
     const db = getDb();
-    db.delete(tasks).run();
+    db.delete(sessions).run();
     db.delete(projectPresentation).run();
     db.delete(projects).run();
     db.delete(groups).run();

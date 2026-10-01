@@ -6,7 +6,7 @@ import { Icon } from "~/components/ui/Icon";
 import { ProjectIcon } from "~/components/ui/ProjectIcon";
 import { ProjectStatusBadge } from "~/components/ui/ProjectStatusBadge";
 import { StatusPill } from "~/components/ui/StatusDot";
-import { TASK_STATUSES } from "@actana/shared/domain";
+import { SESSION_STATUSES } from "@actana/shared/domain";
 import { formatRelativeTime } from "~/lib/format-relative-time";
 import {
   DEFAULT_PROJECT_SORT,
@@ -86,8 +86,8 @@ export function ProjectsTable({
               const activity = getProjectActivity(project);
               const active = isProjectActive(activity);
               const group = project.groupId ? groupById.get(project.groupId) : null;
-              const totalShown = TASK_STATUSES.reduce(
-                (sum, status) => sum + project.taskCounts[status],
+              const totalShown = SESSION_STATUSES.reduce(
+                (sum, status) => sum + project.sessionCounts[status],
                 0,
               );
 
@@ -130,13 +130,13 @@ export function ProjectsTable({
                   </td>
                   <td className="mc-projects-table-cell">
                     <div className="mc-projects-table-pills">
-                      {TASK_STATUSES.map(
+                      {SESSION_STATUSES.map(
                         (status) =>
-                          project.taskCounts[status] > 0 && (
+                          project.sessionCounts[status] > 0 && (
                             <StatusPill
                               key={status}
                               status={status}
-                              count={project.taskCounts[status]}
+                              count={project.sessionCounts[status]}
                             />
                           ),
                       )}

@@ -101,26 +101,26 @@ describe("panel bridge — writes", () => {
     await expect(pending).resolves.toEqual(PROJECT);
   });
 
-  it("sends a task mutation and hands back the Core's snapshot", async () => {
+  it("sends a session mutation and hands back the Core's snapshot", async () => {
     const { bridge, socket } = bridged();
 
-    const pending = bridge.mutateTask("core_a", {
+    const pending = bridge.mutateSession("core_a", {
       op: "create",
       projectId: "proj_1",
       title: "restock",
       agent: "claude-code",
     });
     const sent = lastRequest(socket);
-    expect(sent.frame).toMatchObject({ type: "tasksMutate", mutation: { op: "create" } });
+    expect(sent.frame).toMatchObject({ type: "sessionsMutate", mutation: { op: "create" } });
 
     socket.push({
       t: "core",
       coreId: "core_a",
       frame: {
-        type: "tasksMutateResult",
+        type: "sessionsMutateResult",
         reqId: sent.frame.reqId as string,
-        task: {
-          taskId: "task_9",
+        session: {
+          sessionId: "session_9",
           projectId: "proj_1",
           title: "restock",
           titleManuallySet: false,
@@ -134,7 +134,7 @@ describe("panel bridge — writes", () => {
         },
       },
     });
-    await expect(pending).resolves.toMatchObject({ taskId: "task_9" });
+    await expect(pending).resolves.toMatchObject({ sessionId: "session_9" });
   });
 
   it("surfaces a Core rejection as a failed call, not a result to inspect", async () => {
@@ -163,7 +163,7 @@ describe("panel bridge — writes", () => {
  */
 describe("panel bridge — the archived read path", () => {
   const ARCHIVED = {
-    taskId: "task_old",
+    sessionId: "session_old",
     projectId: "proj_1",
     title: "last winter's stocktake",
     titleManuallySet: false,
@@ -179,22 +179,22 @@ describe("panel bridge — the archived read path", () => {
   it("hands back the archived count alongside the active rows", async () => {
     const { bridge, socket } = bridged();
 
-    const pending = bridge.listTasks("core_a", "proj_1");
+    const pending = bridge.listSessionRows("core_a", "proj_1");
     const sent = lastRequest(socket);
-    expect(sent.frame).toMatchObject({ type: "tasksList", projectId: "proj_1" });
+    expect(sent.frame).toMatchObject({ type: "sessionRowsList", projectId: "proj_1" });
 
     socket.push({
       t: "core",
       coreId: "core_a",
       frame: {
-        type: "tasksListResult",
+        type: "sessionRowsListResult",
         reqId: sent.frame.reqId as string,
-        tasks: [{ ...ARCHIVED, taskId: "task_1", archived: false, status: "running" }],
+        sessions: [{ ...ARCHIVED, sessionId: "session_1", archived: false, status: "running" }],
         archivedCount: 4,
       },
     });
     await expect(pending).resolves.toEqual({
-      tasks: [expect.objectContaining({ taskId: "task_1" })],
+      sessions: [expect.objectContaining({ sessionId: "session_1" })],
       archivedCount: 4,
     });
   });
@@ -202,18 +202,18 @@ describe("panel bridge — the archived read path", () => {
   it("fetches the archived rows over their own frame", async () => {
     const { bridge, socket } = bridged();
 
-    const pending = bridge.listArchivedTasks("core_a", "proj_1");
+    const pending = bridge.listArchivedSessions("core_a", "proj_1");
     const sent = lastRequest(socket);
     expect(sent.coreId).toBe("core_a");
-    expect(sent.frame).toMatchObject({ type: "archivedTasksList", projectId: "proj_1" });
+    expect(sent.frame).toMatchObject({ type: "archivedSessionRowsList", projectId: "proj_1" });
 
     socket.push({
       t: "core",
       coreId: "core_a",
       frame: {
-        type: "archivedTasksListResult",
+        type: "archivedSessionRowsListResult",
         reqId: sent.frame.reqId as string,
-        tasks: [ARCHIVED],
+        sessions: [ARCHIVED],
       },
     });
     await expect(pending).resolves.toEqual([ARCHIVED]);
@@ -222,7 +222,7 @@ describe("panel bridge — the archived read path", () => {
   it("surfaces an unreachable Core as a failed call, like the active list does", async () => {
     const { bridge, socket } = bridged();
 
-    const pending = bridge.listArchivedTasks("core_gone", "proj_1");
+    const pending = bridge.listArchivedSessions("core_gone", "proj_1");
     const sent = lastRequest(socket);
     socket.push({
       t: "core",

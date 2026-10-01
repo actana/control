@@ -1,6 +1,6 @@
 import { QueryClient } from "@tanstack/react-query";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { CoreLinkTaskSnapshot } from "@actana/sdk/core";
+import type { CoreLinkSessionRow } from "@actana/sdk/core";
 
 /**
  * Where the Archived view's contents come from, per owner (ADR 0019).
@@ -11,20 +11,20 @@ import type { CoreLinkTaskSnapshot } from "@actana/sdk/core";
  * having been fetched. A Panel-owned project keeps its single read path.
  */
 
-const listTasks = vi.fn();
-const listArchivedTasks = vi.fn();
-const apiListTasks = vi.fn();
+const listSessionRows = vi.fn();
+const listArchivedSessions = vi.fn();
+const apiListSessions = vi.fn();
 
 vi.mock("~/lib/panel-bridge", () => ({
-  getPanelBridge: () => ({ listTasks, listArchivedTasks }),
+  getPanelBridge: () => ({ listSessionRows, listArchivedSessions }),
 }));
-vi.mock("~/lib/api", () => ({ api: { listTasks: (id: string) => apiListTasks(id) } }));
+vi.mock("~/lib/api", () => ({ api: { listSessionRows: (id: string) => apiListSessions(id) } }));
 
-const { archivedTasksQueryOptions, queryKeys, tasksQueryOptions } = await import("~/queries");
+const { archivedSessionsQueryOptions, queryKeys, sessionsQueryOptions } = await import("~/queries");
 
-function snapshot(over: Partial<CoreLinkTaskSnapshot> = {}): CoreLinkTaskSnapshot {
+function snapshot(over: Partial<CoreLinkSessionRow> = {}): CoreLinkSessionRow {
   return {
-    taskId: "t1",
+    sessionId: "t1",
     projectId: "p1",
     title: "restock",
     titleManuallySet: false,
@@ -47,58 +47,58 @@ describe("the archived read path", () => {
     qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   });
 
-  it("parks the archived count from the tasks answer where the Archived tab reads it", async () => {
-    listTasks.mockResolvedValue({ tasks: [snapshot()], archivedCount: 3 });
+  it("parks the archived count from the sessions answer where the Archived tab reads it", async () => {
+    listSessionRows.mockResolvedValue({ sessions: [snapshot()], archivedCount: 3 });
 
-    const tasks = await qc.fetchQuery(tasksQueryOptions("p1", { coreId: "core_a" }));
+    const sessions = await qc.fetchQuery(sessionsQueryOptions("p1", { coreId: "core_a" }));
 
-    expect(tasks.map((t) => t.id)).toEqual(["t1"]);
-    expect(qc.getQueryData(queryKeys.coreArchivedTaskCount("p1", "core_a"))).toBe(3);
+    expect(sessions.map((t) => t.id)).toEqual(["t1"]);
+    expect(qc.getQueryData(queryKeys.coreArchivedSessionCount("p1", "core_a"))).toBe(3);
     // Knowing the count cost no archived rows.
-    expect(listArchivedTasks).not.toHaveBeenCalled();
+    expect(listArchivedSessions).not.toHaveBeenCalled();
   });
 
   it("keeps each Core's count in its own bucket", async () => {
-    listTasks.mockResolvedValueOnce({ tasks: [], archivedCount: 3 });
-    listTasks.mockResolvedValueOnce({ tasks: [], archivedCount: 9 });
+    listSessionRows.mockResolvedValueOnce({ sessions: [], archivedCount: 3 });
+    listSessionRows.mockResolvedValueOnce({ sessions: [], archivedCount: 9 });
 
-    await qc.fetchQuery(tasksQueryOptions("p1", { coreId: "core_a" }));
-    await qc.fetchQuery(tasksQueryOptions("p1", { coreId: "core_b" }));
+    await qc.fetchQuery(sessionsQueryOptions("p1", { coreId: "core_a" }));
+    await qc.fetchQuery(sessionsQueryOptions("p1", { coreId: "core_b" }));
 
-    expect(qc.getQueryData(queryKeys.coreArchivedTaskCount("p1", "core_a"))).toBe(3);
-    expect(qc.getQueryData(queryKeys.coreArchivedTaskCount("p1", "core_b"))).toBe(9);
+    expect(qc.getQueryData(queryKeys.coreArchivedSessionCount("p1", "core_a"))).toBe(3);
+    expect(qc.getQueryData(queryKeys.coreArchivedSessionCount("p1", "core_b"))).toBe(9);
   });
 
   it("parks nothing for a Panel-owned project — its list already carries the rows", async () => {
-    apiListTasks.mockResolvedValue({ tasks: [] });
+    apiListSessions.mockResolvedValue({ sessions: [] });
 
-    await qc.fetchQuery(tasksQueryOptions("p1"));
+    await qc.fetchQuery(sessionsQueryOptions("p1"));
 
-    expect(listTasks).not.toHaveBeenCalled();
-    expect(qc.getQueryData(queryKeys.coreArchivedTaskCount("p1", ""))).toBeUndefined();
+    expect(listSessionRows).not.toHaveBeenCalled();
+    expect(qc.getQueryData(queryKeys.coreArchivedSessionCount("p1", ""))).toBeUndefined();
   });
 
   it("fetches the archived rows over their own frame, scoped to the project", async () => {
-    listArchivedTasks.mockResolvedValue([snapshot({ taskId: "old", archived: true })]);
+    listArchivedSessions.mockResolvedValue([snapshot({ sessionId: "old", archived: true })]);
 
     const rows = await qc.fetchQuery(
-      archivedTasksQueryOptions("p1", { coreId: "core_a", enabled: true }),
+      archivedSessionsQueryOptions("p1", { coreId: "core_a", enabled: true }),
     );
 
-    expect(listArchivedTasks).toHaveBeenCalledWith("core_a", "p1");
+    expect(listArchivedSessions).toHaveBeenCalledWith("core_a", "p1");
     expect(rows).toEqual([expect.objectContaining({ id: "old", archived: true })]);
-    expect(listTasks).not.toHaveBeenCalled();
+    expect(listSessionRows).not.toHaveBeenCalled();
   });
 
   it("keeps the archived rows out of the active list's cache bucket", async () => {
-    listTasks.mockResolvedValue({ tasks: [snapshot()], archivedCount: 1 });
-    listArchivedTasks.mockResolvedValue([snapshot({ taskId: "old", archived: true })]);
+    listSessionRows.mockResolvedValue({ sessions: [snapshot()], archivedCount: 1 });
+    listArchivedSessions.mockResolvedValue([snapshot({ sessionId: "old", archived: true })]);
 
-    await qc.fetchQuery(tasksQueryOptions("p1", { coreId: "core_a" }));
-    await qc.fetchQuery(archivedTasksQueryOptions("p1", { coreId: "core_a", enabled: true }));
+    await qc.fetchQuery(sessionsQueryOptions("p1", { coreId: "core_a" }));
+    await qc.fetchQuery(archivedSessionsQueryOptions("p1", { coreId: "core_a", enabled: true }));
 
     const active = qc.getQueryData<Array<{ id: string }>>([
-      ...queryKeys.tasks("p1"),
+      ...queryKeys.sessions("p1"),
       "core",
       "core_a",
     ]);
@@ -106,10 +106,10 @@ describe("the archived read path", () => {
   });
 
   it("surfaces an unreachable Core as a query error, like the active list does", async () => {
-    listArchivedTasks.mockRejectedValue(new Error("core_a is unreachable"));
+    listArchivedSessions.mockRejectedValue(new Error("core_a is unreachable"));
 
     await expect(
-      qc.fetchQuery(archivedTasksQueryOptions("p1", { coreId: "core_a", enabled: true })),
+      qc.fetchQuery(archivedSessionsQueryOptions("p1", { coreId: "core_a", enabled: true })),
     ).rejects.toThrow("core_a is unreachable");
   });
 });

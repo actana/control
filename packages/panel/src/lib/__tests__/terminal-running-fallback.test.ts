@@ -4,7 +4,7 @@ import {
   IDLE_TERMINAL_RUNNING_FALLBACK,
   noteTerminalWrite,
   type TerminalRunningFallback,
-} from "../task-status-sync";
+} from "../session-status-sync";
 
 /**
  * Issue 386. `TerminalPane`'s `onData` handler is one call to

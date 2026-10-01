@@ -19,7 +19,7 @@
 
 import type Database from "better-sqlite3";
 import * as fs from "node:fs";
-import { DEFAULT_BRANCH, DEFAULT_TASK_STATUS } from "./domain";
+import { DEFAULT_BRANCH, DEFAULT_SESSION_STATUS } from "./domain";
 
 // missioncontrol.db holds the API bearer token
 // in cleartext. Created with default perms it is world-readable (~0644), so any
@@ -223,7 +223,7 @@ export function repairProjectIndexes(sqlite: Database.Database): void {
 
 /**
  * PTYs are owned by the Core process and are not restored across app
- * restarts, so on every launch any task the app left mid-session has a dead PTY
+ * restarts, so on every launch any session the app left mid-session has a dead PTY
  * now: one that was actively `running`, or one blocked waiting on the user
  * (`needs-input`). Left as-is, a `needs-input` row never transitions on its own
  * — its agent is gone — so it would linger forever and keep the project's
@@ -236,7 +236,7 @@ export function repairProjectIndexes(sqlite: Database.Database): void {
 export function reconcileStaleSessionsOnBoot(sqlite: Database.Database): void {
   sqlite
     .prepare(
-      "UPDATE tasks SET status = 'disconnected', updated_at = ? WHERE status IN ('running', 'needs-input')"
+      "UPDATE sessions SET status = 'disconnected', updated_at = ? WHERE status IN ('running', 'needs-input')"
     )
     .run(Date.now());
 }
@@ -300,14 +300,14 @@ export function ensureSchema(sqlite: Database.Database): void {
     CREATE INDEX IF NOT EXISTS project_presentation_core_idx ON project_presentation(core_id);
     CREATE INDEX IF NOT EXISTS project_presentation_group_idx ON project_presentation(group_id);
 
-    CREATE TABLE IF NOT EXISTS tasks (
+    CREATE TABLE IF NOT EXISTS sessions (
       id TEXT PRIMARY KEY,
       project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
       title TEXT NOT NULL,
       title_manually_set INTEGER NOT NULL DEFAULT 0,
       icon TEXT,
       agent TEXT NOT NULL,
-      status TEXT NOT NULL DEFAULT '${DEFAULT_TASK_STATUS}',
+      status TEXT NOT NULL DEFAULT '${DEFAULT_SESSION_STATUS}',
       branch TEXT NOT NULL DEFAULT '${DEFAULT_BRANCH}',
       preview TEXT NOT NULL DEFAULT '',
       lines INTEGER NOT NULL DEFAULT 0,
@@ -319,25 +319,25 @@ export function ensureSchema(sqlite: Database.Database): void {
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL
     );
-    CREATE INDEX IF NOT EXISTS tasks_project_idx ON tasks(project_id);
-    CREATE INDEX IF NOT EXISTS tasks_status_idx ON tasks(status);
-    CREATE INDEX IF NOT EXISTS tasks_archived_idx ON tasks(archived);
-    CREATE INDEX IF NOT EXISTS tasks_pinned_idx ON tasks(pinned);
-    -- listProjects() aggregates non-archived task counts with
+    CREATE INDEX IF NOT EXISTS sessions_project_idx ON sessions(project_id);
+    CREATE INDEX IF NOT EXISTS sessions_status_idx ON sessions(status);
+    CREATE INDEX IF NOT EXISTS sessions_archived_idx ON sessions(archived);
+    CREATE INDEX IF NOT EXISTS sessions_pinned_idx ON sessions(pinned);
+    -- listProjects() aggregates non-archived session counts with
     -- WHERE archived = 0 GROUP BY project_id, status. This partial covering
     -- index lets SQLite satisfy that GROUP BY by scanning the index in
     -- (project_id, status) order, avoiding a temp B-tree that spilled the 2MB
-    -- page cache to disk at extreme scale (~2.6s -> ~25ms at 750k tasks). It's
+    -- page cache to disk at extreme scale (~2.6s -> ~25ms at 750k sessions). It's
     -- scoped to archived = 0 to stay small and match the query's predicate.
-    CREATE INDEX IF NOT EXISTS tasks_active_project_status_idx ON tasks(project_id, status) WHERE archived = 0;
+    CREATE INDEX IF NOT EXISTS sessions_active_project_status_idx ON sessions(project_id, status) WHERE archived = 0;
 
     CREATE TABLE IF NOT EXISTS terminal_logs (
       id TEXT PRIMARY KEY,
-      task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+      session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
       chunk TEXT NOT NULL,
       created_at INTEGER NOT NULL
     );
-    CREATE INDEX IF NOT EXISTS terminal_logs_task_idx ON terminal_logs(task_id);
+    CREATE INDEX IF NOT EXISTS terminal_logs_session_idx ON terminal_logs(session_id);
 
     -- The Panel's only terminal table (issue 266). It arrived as the
     -- project-less "home" half beside user_terminals; the project-root half is
@@ -368,7 +368,7 @@ export function ensureSchema(sqlite: Database.Database): void {
 
     CREATE TABLE IF NOT EXISTS token_usage (
       id TEXT PRIMARY KEY,
-      task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+      session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
       project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
       claude_session_id TEXT NOT NULL,
       message_uuid TEXT NOT NULL UNIQUE,
@@ -379,7 +379,7 @@ export function ensureSchema(sqlite: Database.Database): void {
       cache_read_tokens INTEGER NOT NULL DEFAULT 0,
       ts INTEGER NOT NULL
     );
-    CREATE INDEX IF NOT EXISTS token_usage_task_idx ON token_usage(task_id);
+    CREATE INDEX IF NOT EXISTS token_usage_session_idx ON token_usage(session_id);
     CREATE INDEX IF NOT EXISTS token_usage_project_idx ON token_usage(project_id);
     CREATE INDEX IF NOT EXISTS token_usage_ts_idx ON token_usage(ts);
     -- Covering indexes so a raw-table aggregate (backfill, or any fallback read)
@@ -389,34 +389,34 @@ export function ensureSchema(sqlite: Database.Database): void {
       ON token_usage(project_id, input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens);
     CREATE INDEX IF NOT EXISTS token_usage_ts_cover_idx
       ON token_usage(ts, input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens);
-    CREATE INDEX IF NOT EXISTS token_usage_task_ts_cover_idx
-      ON token_usage(task_id, ts, input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens);
+    CREATE INDEX IF NOT EXISTS token_usage_session_ts_cover_idx
+      ON token_usage(session_id, ts, input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens);
 
-    -- Pre-aggregated token usage per (project, task, local day). Every summary
+    -- Pre-aggregated token usage per (project, session, local day). Every summary
     -- read (totals, per-project, per-session, per-day) sums this instead of
     -- scanning all of token_usage, turning multi-second aggregates at ~1M rows
     -- into sub-millisecond ones. Kept in lockstep with token_usage by the ingest
     -- transaction (only newly-inserted rows are folded in) and by ON DELETE
-    -- CASCADE, which drops rollup rows when a task/project is removed just as it
+    -- CASCADE, which drops rollup rows when a session/project is removed just as it
     -- drops the raw rows — so the rollup always equals the raw aggregate.
     CREATE TABLE IF NOT EXISTS token_usage_rollup (
       project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-      task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+      session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
       day TEXT NOT NULL,
       input_tokens INTEGER NOT NULL DEFAULT 0,
       output_tokens INTEGER NOT NULL DEFAULT 0,
       cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
       cache_read_tokens INTEGER NOT NULL DEFAULT 0,
       last_ts INTEGER NOT NULL DEFAULT 0,
-      PRIMARY KEY (project_id, task_id, day)
+      PRIMARY KEY (project_id, session_id, day)
     );
     CREATE INDEX IF NOT EXISTS token_usage_rollup_project_idx ON token_usage_rollup(project_id);
-    CREATE INDEX IF NOT EXISTS token_usage_rollup_task_idx ON token_usage_rollup(task_id);
+    CREATE INDEX IF NOT EXISTS token_usage_rollup_session_idx ON token_usage_rollup(session_id);
     CREATE INDEX IF NOT EXISTS token_usage_rollup_day_idx ON token_usage_rollup(day);
 
     CREATE TABLE IF NOT EXISTS token_usage_session_offsets (
       claude_session_id TEXT PRIMARY KEY,
-      task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+      session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
       project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
       byte_offset INTEGER NOT NULL DEFAULT 0,
       updated_at INTEGER NOT NULL
@@ -430,11 +430,11 @@ export function ensureSchema(sqlite: Database.Database): void {
       ts INTEGER NOT NULL,
       kind TEXT NOT NULL,
       pty_id TEXT,
-      task_id TEXT,
+      session_id TEXT,
       payload TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS event_log_kind_idx ON event_log(kind);
-    CREATE INDEX IF NOT EXISTS event_log_task_idx ON event_log(task_id);
+    CREATE INDEX IF NOT EXISTS event_log_session_idx ON event_log(session_id);
     CREATE INDEX IF NOT EXISTS event_log_pty_idx ON event_log(pty_id);
   `);
 
@@ -451,19 +451,19 @@ export function ensureSchema(sqlite: Database.Database): void {
   // The rail slot of a Core-owned pin (issue 382); NULL until the operator
   // first reorders a rail that has one on it.
   ensureColumn(sqlite, "project_presentation", "pinned_order", "INTEGER");
-  ensureColumn(sqlite, "tasks", "title_manually_set", "INTEGER NOT NULL DEFAULT 0");
-  ensureColumn(sqlite, "tasks", "pinned", "INTEGER NOT NULL DEFAULT 0");
-  sqlite.exec("CREATE INDEX IF NOT EXISTS tasks_pinned_idx ON tasks(pinned);");
-  // findTasksByProjectId filters project_id and orders by created_at DESC.
+  ensureColumn(sqlite, "sessions", "title_manually_set", "INTEGER NOT NULL DEFAULT 0");
+  ensureColumn(sqlite, "sessions", "pinned", "INTEGER NOT NULL DEFAULT 0");
+  sqlite.exec("CREATE INDEX IF NOT EXISTS sessions_pinned_idx ON sessions(pinned);");
+  // findSessionsByProjectId filters project_id and orders by created_at DESC.
   // Without a composite covering that shape SQLite picks a single-column index
   // and sorts separately; this lets it satisfy the filter + order in one scan.
-  sqlite.exec("CREATE INDEX IF NOT EXISTS tasks_project_created_idx ON tasks(project_id, created_at);");
+  sqlite.exec("CREATE INDEX IF NOT EXISTS sessions_project_created_idx ON sessions(project_id, created_at);");
 
-  // Legacy builds briefly modeled "shell" as a task agent even though shell
-  // terminals are not persisted tasks. Normalize stale rows before the narrowed
+  // Legacy builds briefly modeled "shell" as a session agent even though shell
+  // terminals are not persisted sessions. Normalize stale rows before the narrowed
   // Harness union reaches UI code that indexes HARNESS_REGISTRY.
   sqlite.exec(`
-    UPDATE tasks SET agent = 'claude-code' WHERE agent = 'shell';
+    UPDATE sessions SET agent = 'claude-code' WHERE agent = 'shell';
     UPDATE projects SET saved_agent = NULL WHERE saved_agent = 'shell';
   `);
 
@@ -527,7 +527,7 @@ export function ensureSchema(sqlite: Database.Database): void {
   dropLegacySandboxSchema(sqlite);
 
   // Actana Control removed worktree management and git integration. Every boot
-  // idempotently drops the worktrees table, the tasks/user_terminals
+  // idempotently drops the worktrees table, the sessions/user_terminals
   // worktree_id columns and their indexes, the projects branch /
   // worktree_setup_command columns, and the worktree / git-diff app_settings
   // rows. Sessions previously bound to a non-default worktree collapse to the
@@ -591,16 +591,16 @@ export function dropLegacyThemeSettings(sqlite: Database.Database): void {
 export function dropLegacyWorktreeSchema(sqlite: Database.Database): void {
   // Indexes first — SQLite refuses to DROP COLUMN while an index covers it.
   sqlite.exec(`
-    DROP INDEX IF EXISTS tasks_project_worktree_idx;
-    DROP INDEX IF EXISTS tasks_worktree_idx;
+    DROP INDEX IF EXISTS sessions_project_worktree_idx;
+    DROP INDEX IF EXISTS sessions_worktree_idx;
     DROP INDEX IF EXISTS user_terminals_project_worktree_idx;
     DROP INDEX IF EXISTS user_terminals_worktree_idx;
   `);
   // No `DROP COLUMN IF EXISTS` in SQLite — guard on pragma_table_info so this
   // is a clean no-op on fresh DBs and on every boot after the first. Rows are
   // NOT deleted: a worktree-bound session collapses to the project path.
-  if (columnExists(sqlite, "tasks", "worktree_id")) {
-    sqlite.exec(`ALTER TABLE tasks DROP COLUMN worktree_id;`);
+  if (columnExists(sqlite, "sessions", "worktree_id")) {
+    sqlite.exec(`ALTER TABLE sessions DROP COLUMN worktree_id;`);
   }
   if (columnExists(sqlite, "user_terminals", "worktree_id")) {
     sqlite.exec(`ALTER TABLE user_terminals DROP COLUMN worktree_id;`);
@@ -630,25 +630,25 @@ export function dropLegacySandboxSchema(sqlite: Database.Database): void {
   // Indexes first — SQLite refuses to DROP COLUMN while an index covers it.
   sqlite.exec(`
     DROP INDEX IF EXISTS projects_sandbox_idx;
-    DROP INDEX IF EXISTS tasks_project_worktree_scope_idx;
-    DROP INDEX IF EXISTS tasks_scope_idx;
-    DROP INDEX IF EXISTS tasks_project_scope_created_idx;
+    DROP INDEX IF EXISTS sessions_project_worktree_scope_idx;
+    DROP INDEX IF EXISTS sessions_scope_idx;
+    DROP INDEX IF EXISTS sessions_project_scope_created_idx;
     DROP INDEX IF EXISTS user_terminals_project_worktree_scope_idx;
     DROP INDEX IF EXISTS user_terminals_scope_idx;
     DROP INDEX IF EXISTS home_terminals_scope_idx;
   `);
   // Forward-only cutover: sandbox-scoped rows go with their sandbox (no data
   // migration path — ADR 0009). Delete BEFORE the columns drop; project rows
-  // cascade their tasks/worktrees/terminals via the FKs client.ts enables.
+  // cascade their sessions/worktrees/terminals via the FKs client.ts enables.
   // No `DROP COLUMN IF EXISTS` in SQLite — guard on pragma_table_info so this
   // is a clean no-op on fresh DBs and on every boot after the first.
   if (columnExists(sqlite, "projects", "sandbox_id")) {
     sqlite.exec(`DELETE FROM projects WHERE sandbox_id IS NOT NULL;`);
     sqlite.exec(`ALTER TABLE projects DROP COLUMN sandbox_id;`);
   }
-  if (columnExists(sqlite, "tasks", "scope_id")) {
-    sqlite.exec(`DELETE FROM tasks WHERE scope_id != 'local';`);
-    sqlite.exec(`ALTER TABLE tasks DROP COLUMN scope_id;`);
+  if (columnExists(sqlite, "sessions", "scope_id")) {
+    sqlite.exec(`DELETE FROM sessions WHERE scope_id != 'local';`);
+    sqlite.exec(`ALTER TABLE sessions DROP COLUMN scope_id;`);
   }
   if (columnExists(sqlite, "user_terminals", "scope_id")) {
     sqlite.exec(`DELETE FROM user_terminals WHERE scope_id != 'local';`);
@@ -761,12 +761,12 @@ export function backfillTokenUsageRollup(sqlite: Database.Database): void {
     .transaction(() => {
       sqlite.exec(`
         INSERT INTO token_usage_rollup (
-          project_id, task_id, day,
+          project_id, session_id, day,
           input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens, last_ts
         )
         SELECT
           project_id,
-          task_id,
+          session_id,
           strftime('%Y-%m-%d', ts / 1000, 'unixepoch', 'localtime') AS day,
           SUM(input_tokens),
           SUM(output_tokens),
@@ -774,7 +774,7 @@ export function backfillTokenUsageRollup(sqlite: Database.Database): void {
           SUM(cache_read_tokens),
           MAX(ts)
         FROM token_usage
-        GROUP BY project_id, task_id, day;
+        GROUP BY project_id, session_id, day;
       `);
     })();
 }

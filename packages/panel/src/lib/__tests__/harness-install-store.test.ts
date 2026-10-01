@@ -61,7 +61,7 @@ function publishAvailability(map: CoreLinkHarnessAvailabilityMap): void {
           ts: 0,
           kind: HARNESSES_AVAILABILITY_EVENT_KIND,
           ptyId: null,
-          taskId: null,
+          sessionId: null,
           payload: JSON.stringify({ availability: map }),
         },
       });
@@ -79,7 +79,7 @@ function publishFailure(message: string): void {
           ts: 0,
           kind: HARNESS_INSTALL_FAILED_EVENT_KIND,
           ptyId: null,
-          taskId: null,
+          sessionId: null,
           payload: JSON.stringify({ harness: "claude-code", message }),
         },
       });

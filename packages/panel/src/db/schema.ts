@@ -2,13 +2,13 @@ import { sqliteTable, text, integer, index } from "drizzle-orm/sqlite-core";
 import { relations } from "drizzle-orm";
 import {
   DEFAULT_BRANCH,
-  DEFAULT_TASK_STATUS,
+  DEFAULT_SESSION_STATUS,
   HARNESSES,
-  TASK_STATUSES,
+  SESSION_STATUSES,
   isActiveStatus,
   isTerminalStatus,
   type Harness,
-  type TaskStatus,
+  type SessionStatus,
 } from "@actana/shared/domain";
 
 export const groups = sqliteTable("groups", {
@@ -102,8 +102,8 @@ export const projectPresentation = sqliteTable(
   })
 );
 
-export const tasks = sqliteTable(
-  "tasks",
+export const sessions = sqliteTable(
+  "sessions",
   {
     id: text("id").primaryKey(),
     projectId: text("project_id")
@@ -113,7 +113,7 @@ export const tasks = sqliteTable(
     titleManuallySet: integer("title_manually_set", { mode: "boolean" }).notNull().default(false),
     icon: text("icon"),
     agent: text("agent").$type<Harness>().notNull(),
-    status: text("status").$type<TaskStatus>().notNull().default(DEFAULT_TASK_STATUS),
+    status: text("status").$type<SessionStatus>().notNull().default(DEFAULT_SESSION_STATUS),
     branch: text("branch").notNull().default(DEFAULT_BRANCH),
     preview: text("preview").notNull().default(""),
     lines: integer("lines").notNull().default(0),
@@ -126,10 +126,10 @@ export const tasks = sqliteTable(
     updatedAt: integer("updated_at").notNull(),
   },
   (t) => ({
-    projectIdx: index("tasks_project_idx").on(t.projectId),
-    statusIdx: index("tasks_status_idx").on(t.status),
-    archivedIdx: index("tasks_archived_idx").on(t.archived),
-    pinnedIdx: index("tasks_pinned_idx").on(t.pinned),
+    projectIdx: index("sessions_project_idx").on(t.projectId),
+    statusIdx: index("sessions_status_idx").on(t.status),
+    archivedIdx: index("sessions_archived_idx").on(t.archived),
+    pinnedIdx: index("sessions_pinned_idx").on(t.pinned),
   })
 );
 
@@ -137,14 +137,14 @@ export const terminalLogs = sqliteTable(
   "terminal_logs",
   {
     id: text("id").primaryKey(),
-    taskId: text("task_id")
+    sessionId: text("session_id")
       .notNull()
-      .references(() => tasks.id, { onDelete: "cascade" }),
+      .references(() => sessions.id, { onDelete: "cascade" }),
     chunk: text("chunk").notNull(),
     createdAt: integer("created_at").notNull(),
   },
   (t) => ({
-    taskIdx: index("terminal_logs_task_idx").on(t.taskId),
+    sessionIdx: index("terminal_logs_session_idx").on(t.sessionId),
   })
 );
 
@@ -181,9 +181,9 @@ export const tokenUsage = sqliteTable(
   "token_usage",
   {
     id: text("id").primaryKey(),
-    taskId: text("task_id")
+    sessionId: text("session_id")
       .notNull()
-      .references(() => tasks.id, { onDelete: "cascade" }),
+      .references(() => sessions.id, { onDelete: "cascade" }),
     projectId: text("project_id")
       .notNull()
       .references(() => projects.id, { onDelete: "cascade" }),
@@ -197,7 +197,7 @@ export const tokenUsage = sqliteTable(
     ts: integer("ts").notNull(),
   },
   (t) => ({
-    taskIdx: index("token_usage_task_idx").on(t.taskId),
+    sessionIdx: index("token_usage_session_idx").on(t.sessionId),
     projectIdx: index("token_usage_project_idx").on(t.projectId),
     tsIdx: index("token_usage_ts_idx").on(t.ts),
   })
@@ -207,9 +207,9 @@ export const tokenUsageSessionOffsets = sqliteTable(
   "token_usage_session_offsets",
   {
     claudeSessionId: text("claude_session_id").primaryKey(),
-    taskId: text("task_id")
+    sessionId: text("session_id")
       .notNull()
-      .references(() => tasks.id, { onDelete: "cascade" }),
+      .references(() => sessions.id, { onDelete: "cascade" }),
     projectId: text("project_id")
       .notNull()
       .references(() => projects.id, { onDelete: "cascade" }),
@@ -219,7 +219,7 @@ export const tokenUsageSessionOffsets = sqliteTable(
 );
 
 
-// Monotonic per-Core event log. Every domain event — task status change,
+// Monotonic per-Core event log. Every domain event — session status change,
 // hook fire, question menu, run finish, PTY spawn/exit — is appended here with
 // a sequential `eventId`. On Panel reconnect the server streams the tail past
 // the Panel's `lastEventId`; live push resumes once caught up. PTY byte-stream
@@ -233,15 +233,15 @@ export const eventLog = sqliteTable(
     ts: integer("ts").notNull(),
     kind: text("kind").notNull(),
     ptyId: text("pty_id"),
-    taskId: text("task_id"),
+    sessionId: text("session_id"),
     payload: text("payload").notNull(),
   },
   (t) => ({
     // The replay path reads events strictly after a cursor; a covering index on
     // (event_id) is the clustered PK, but a kind-scoped index keeps per-category
-    // queries (e.g. all task events) cheap.
+    // queries (e.g. all session events) cheap.
     kindIdx: index("event_log_kind_idx").on(t.kind),
-    taskIdx: index("event_log_task_idx").on(t.taskId),
+    sessionIdx: index("event_log_session_idx").on(t.sessionId),
     ptyIdx: index("event_log_pty_idx").on(t.ptyId),
   }),
 );
@@ -252,17 +252,17 @@ export const groupsRelations = relations(groups, ({ many }) => ({
 
 export const projectsRelations = relations(projects, ({ one, many }) => ({
   group: one(groups, { fields: [projects.groupId], references: [groups.id] }),
-  tasks: many(tasks),
+  sessions: many(sessions),
 }));
 
-export const tasksRelations = relations(tasks, ({ one, many }) => ({
-  project: one(projects, { fields: [tasks.projectId], references: [projects.id] }),
+export const sessionsRelations = relations(sessions, ({ one, many }) => ({
+  project: one(projects, { fields: [sessions.projectId], references: [projects.id] }),
   logs: many(terminalLogs),
 }));
 
 
 export const terminalLogsRelations = relations(terminalLogs, ({ one }) => ({
-  task: one(tasks, { fields: [terminalLogs.taskId], references: [tasks.id] }),
+  session: one(sessions, { fields: [terminalLogs.sessionId], references: [sessions.id] }),
 }));
 
 export type Group = typeof groups.$inferSelect;
@@ -270,8 +270,8 @@ export type NewGroup = typeof groups.$inferInsert;
 export type Project = typeof projects.$inferSelect;
 export type NewProject = typeof projects.$inferInsert;
 export type ProjectPresentation = typeof projectPresentation.$inferSelect;
-export type Task = typeof tasks.$inferSelect;
-export type NewTask = typeof tasks.$inferInsert;
+export type Session = typeof sessions.$inferSelect;
+export type NewSession = typeof sessions.$inferInsert;
 /**
  * A terminal as the renderer sees one.
  *
@@ -289,10 +289,10 @@ export type EventLogRow = typeof eventLog.$inferSelect;
 export type NewEventLogRow = typeof eventLog.$inferInsert;
 export {
   DEFAULT_BRANCH,
-  DEFAULT_TASK_STATUS,
+  DEFAULT_SESSION_STATUS,
   HARNESSES,
-  TASK_STATUSES,
+  SESSION_STATUSES,
   isActiveStatus,
   isTerminalStatus,
 };
-export type { Harness, TaskStatus };
+export type { Harness, SessionStatus };

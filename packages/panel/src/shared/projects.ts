@@ -1,12 +1,12 @@
 import type {
   CoreLinkProjectSnapshot,
-  CoreLinkTaskSnapshot,
+  CoreLinkSessionRow,
 } from "@actana/shared/sdk-link-frames";
-import { TASK_STATUSES, isActiveStatus, isTaskStatus, type Harness } from "@actana/shared/domain";
-import type { Project, ProjectPresentation, TaskStatus } from "~/db/schema";
+import { SESSION_STATUSES, isActiveStatus, isSessionStatus, type Harness } from "@actana/shared/domain";
+import type { Project, ProjectPresentation, SessionStatus } from "~/db/schema";
 
 export type ProjectWithCounts = Project & {
-  taskCounts: Record<TaskStatus, number> & { total: number; activeNonDone: number };
+  sessionCounts: Record<SessionStatus, number> & { total: number; activeNonDone: number };
   preview?: string | null;
   githubUrl?: string | null;
   /**
@@ -53,23 +53,23 @@ export function projectSettingsFromSnapshot(
   };
 }
 
-/** The task-count block every project row carries. */
-export type ProjectTaskCounts = ProjectWithCounts["taskCounts"];
+/** The session-count block every project row carries. */
+export type ProjectSessionCounts = ProjectWithCounts["sessionCounts"];
 
-/** Every status at zero — a project with no tasks the caller knows of. */
-export function emptyTaskCounts(): ProjectTaskCounts {
+/** Every status at zero — a project with no sessions the caller knows of. */
+export function emptySessionCounts(): ProjectSessionCounts {
   return {
-    ...(Object.fromEntries(TASK_STATUSES.map((s) => [s, 0])) as Record<TaskStatus, number>),
+    ...(Object.fromEntries(SESSION_STATUSES.map((s) => [s, 0])) as Record<SessionStatus, number>),
     total: 0,
     activeNonDone: 0,
   };
 }
 
 /**
- * One project's task counts, derived from the Core's own task snapshots.
+ * One project's session counts, derived from the Core's own session snapshots.
  *
- * The Core stays the single authority for task status (ADR 0005): this counts
- * the very rows `tasksList` answers with — the same frame, and so the same
+ * The Core stays the single authority for session status (ADR 0005): this counts
+ * the very rows `sessionRowsList` answers with — the same frame, and so the same
  * facts, the grid renders from — rather than keeping a second opinion about
  * what is running. Archived rows travel in their own list (ADR 0019) and are
  * filtered here too, so the block matches the Panel server's own aggregation
@@ -81,41 +81,41 @@ export function emptyTaskCounts(): ProjectTaskCounts {
  * toward `total` — the row exists — but lands in no status bucket, which is
  * the same degradation the server makes for an unrecognised status.
  */
-export function taskCountsFromCoreTasks(
-  tasks: readonly CoreLinkTaskSnapshot[],
-): ProjectTaskCounts {
-  const counts = emptyTaskCounts();
-  for (const task of tasks) {
-    if (task.archived) continue;
+export function sessionCountsFromCoreSessions(
+  sessions: readonly CoreLinkSessionRow[],
+): ProjectSessionCounts {
+  const counts = emptySessionCounts();
+  for (const session of sessions) {
+    if (session.archived) continue;
     counts.total += 1;
-    if (!isTaskStatus(task.status)) continue;
-    counts[task.status] += 1;
-    if (isActiveStatus(task.status) && task.status !== "finished") counts.activeNonDone += 1;
+    if (!isSessionStatus(session.status)) continue;
+    counts[session.status] += 1;
+    if (isActiveStatus(session.status) && session.status !== "finished") counts.activeNonDone += 1;
   }
   return counts;
 }
 
 /**
- * A Core's tasks bucketed into per-project count blocks, keyed by project id.
+ * A Core's sessions bucketed into per-project count blocks, keyed by project id.
  *
- * One `tasksList(coreId)` answers for every project on that Core, so a surface
+ * One `sessionRowsList(coreId)` answers for every project on that Core, so a surface
  * showing many of a Core's projects at once — the rail's pinned strip, the
  * project switcher — reads this once instead of asking per project. Projects
- * with no tasks are absent from the map; callers fall back to
- * {@link emptyTaskCounts}, which is what "this project has nothing running"
+ * with no sessions are absent from the map; callers fall back to
+ * {@link emptySessionCounts}, which is what "this project has nothing running"
  * looks like.
  */
-export function coreTaskCountsByProject(
-  tasks: readonly CoreLinkTaskSnapshot[],
-): Map<string, ProjectTaskCounts> {
-  const byProject = new Map<string, CoreLinkTaskSnapshot[]>();
-  for (const task of tasks) {
-    const bucket = byProject.get(task.projectId);
-    if (bucket) bucket.push(task);
-    else byProject.set(task.projectId, [task]);
+export function coreSessionCountsByProject(
+  sessions: readonly CoreLinkSessionRow[],
+): Map<string, ProjectSessionCounts> {
+  const byProject = new Map<string, CoreLinkSessionRow[]>();
+  for (const session of sessions) {
+    const bucket = byProject.get(session.projectId);
+    if (bucket) bucket.push(session);
+    else byProject.set(session.projectId, [session]);
   }
   return new Map(
-    [...byProject].map(([projectId, rows]) => [projectId, taskCountsFromCoreTasks(rows)]),
+    [...byProject].map(([projectId, rows]) => [projectId, sessionCountsFromCoreSessions(rows)]),
   );
 }
 
@@ -134,17 +134,17 @@ export function coreTaskCountsByProject(
  * Core state. One mapper for every caller: the project page, the rail's pinned
  * strip and Fleet must agree on what a remote project looks like.
  *
- * Task counts are the same kind of fact, and the project frame carries none of
+ * Session counts are the same kind of fact, and the project frame carries none of
  * them — but a Core-owned row that always reported zero is why activity dots
  * never moved for a Core's projects (issue 377). A caller that has already
- * read the Core's tasks passes the block from {@link coreTaskCountsByProject};
+ * read the Core's sessions passes the block from {@link coreSessionCountsByProject};
  * one that has not still gets zeros, so nothing here invents a status the
  * Core did not report.
  */
 export function projectRowFromSnapshot(
   snapshot: CoreLinkProjectSnapshot,
   presentation?: ProjectPresentation | null,
-  taskCounts?: ProjectTaskCounts | null,
+  sessionCounts?: ProjectSessionCounts | null,
 ): ProjectWithCounts {
   return {
     id: snapshot.projectId,
@@ -162,7 +162,7 @@ export function projectRowFromSnapshot(
     ...projectSettingsFromSnapshot(snapshot),
     createdAt: snapshot.updatedAt,
     updatedAt: snapshot.updatedAt,
-    taskCounts: taskCounts ?? emptyTaskCounts(),
+    sessionCounts: sessionCounts ?? emptySessionCounts(),
     preview: null,
     githubUrl: null,
     repoKey: null,
@@ -194,9 +194,9 @@ export type ProjectActivityState =
 export function getProjectActivity(
   project: ProjectWithCounts,
 ): ProjectActivityState {
-  if (project.taskCounts.interrupted > 0) return "interrupted";
-  if (project.taskCounts["needs-input"] > 0) return "needs-input";
-  if (project.taskCounts.running > 0) return "agent-running";
+  if (project.sessionCounts.interrupted > 0) return "interrupted";
+  if (project.sessionCounts["needs-input"] > 0) return "needs-input";
+  if (project.sessionCounts.running > 0) return "agent-running";
   return "offline";
 }
 

@@ -7,7 +7,7 @@ import { Btn } from "~/components/ui/Btn";
 import { ShimmerBar } from "~/components/ui/ShimmerBar";
 import { StatusDot, StatusPill } from "~/components/ui/StatusDot";
 import { ProjectStatusBadge } from "~/components/ui/ProjectStatusBadge";
-import { TASK_STATUSES } from "@actana/shared/domain";
+import { SESSION_STATUSES } from "@actana/shared/domain";
 import { useDismissableMenu } from "~/lib/use-dismissable-menu";
 import { getProjectActivity, isProjectActive, type ProjectWithCounts } from "~/shared/projects";
 import type { Group } from "~/db/schema";
@@ -40,10 +40,10 @@ export function ProjectCard({
   onTogglePin: (id: string) => void;
   onMoveToGroup: (groupId: string | null) => void | Promise<void>;
 }) {
-  const counts = project.taskCounts;
+  const counts = project.sessionCounts;
   const activity = getProjectActivity(project);
   const hasActivity = isProjectActive(activity);
-  const totalShown = TASK_STATUSES.reduce((a, s) => a + counts[s], 0);
+  const totalShown = SESSION_STATUSES.reduce((a, s) => a + counts[s], 0);
   const [hovered, setHovered] = useState(false);
   const [menu, setMenu] = useState<ProjectCardMenu>(null);
   // The bespoke ContextMenuPopover has no nested submenus — "Move to group"
@@ -201,12 +201,12 @@ export function ProjectCard({
         </div>
 
         <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
-          {TASK_STATUSES.map(
+          {SESSION_STATUSES.map(
             (s) => counts[s] > 0 && <StatusPill key={s} status={s} count={counts[s]} />
           )}
           {totalShown === 0 && (
             <span style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-faint)" }}>
-              no active tasks
+              no active sessions
             </span>
           )}
         </div>

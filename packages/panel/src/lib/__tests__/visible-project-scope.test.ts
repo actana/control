@@ -60,21 +60,21 @@ describe("the visible project scope", () => {
   });
 
   it("tells every reader of a scope at once that the operator has left it", () => {
-    // A project is read by two queries — its row and its task list — and each
+    // A project is read by two queries — its row and its session list — and each
     // unmounts in its own cleanup. The first one to go must not conclude the
     // operator has left while the other is still on screen (#381).
     const seen: string[] = [];
     const releaseRow = retainProjectScope("p-a", "core_1", reader("row", () => seen.push("row")));
-    const releaseTasks = retainProjectScope(
+    const releaseSessions = retainProjectScope(
       "p-a",
       "core_1",
-      reader("tasks", () => seen.push("tasks")),
+      reader("sessions", () => seen.push("sessions")),
     );
 
     releaseRow();
     expect(seen).toEqual([]);
-    releaseTasks();
-    expect(seen.sort()).toEqual(["row", "tasks"]);
+    releaseSessions();
+    expect(seen.sort()).toEqual(["row", "sessions"]);
   });
 
   it("holds one callback per key however often a reader remounts", () => {
@@ -82,9 +82,9 @@ describe("the visible project scope", () => {
     // fresh closure behind every time, and every one of them ran on the way
     // out — the same cancel, over and over, against the same key.
     let cancels = 0;
-    const board = retainProjectScope("p-a", "core_1", reader("tasks", () => (cancels += 1)));
+    const board = retainProjectScope("p-a", "core_1", reader("sessions", () => (cancels += 1)));
     for (let mount = 0; mount < 5; mount += 1) {
-      const pane = retainProjectScope("p-a", "core_1", reader("tasks", () => (cancels += 1)));
+      const pane = retainProjectScope("p-a", "core_1", reader("sessions", () => (cancels += 1)));
       pane();
     }
 

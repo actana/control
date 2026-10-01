@@ -1,5 +1,5 @@
 // Module-level cache of the user's default agent/model, kept in sync by
-// the settings query (mirrors the setApiToken pattern in api.ts). commandForTask
+// the settings query (mirrors the setApiToken pattern in api.ts). commandForSession
 // reads it to append `--model` to every new matching agent session, so the choice
 // in Settings → Defaults applies consistently to warm-pooled and cold spawns
 // alike without prop-drilling settings through the terminal store.

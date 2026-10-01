@@ -102,9 +102,9 @@ describe("the SDK client's Core client id (ADR 0024 D9)", () => {
     dial.answerLast("reclaim", { type: "error", message: "nope" });
 
     // The link is still a link: the next request goes out and is answered.
-    const found = durable.findByTask("task_1");
-    await vi.waitFor(() => expect(dial.last().framesOfType("findByTask")).toHaveLength(1));
-    dial.answerLast("findByTask", { type: "findByTaskResult", ptyId: "pty_1" });
+    const found = durable.findBySession("session_1");
+    await vi.waitFor(() => expect(dial.last().framesOfType("findBySession")).toHaveLength(1));
+    dial.answerLast("findBySession", { type: "findBySessionResult", ptyId: "pty_1" });
 
     await expect(found).resolves.toEqual({ ptyId: "pty_1" });
     // And nothing was reported as reclaimed, because nothing was.

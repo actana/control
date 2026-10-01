@@ -144,14 +144,14 @@ export const SETTLED_SESSION_STATUSES: ReadonlySet<string> = new Set([
 /**
  * Event kinds that may carry a status change for a Session.
  *
- * `task:updated` is the general one and says only that the row moved; the status
+ * `session:updated` is the general one and says only that the row moved; the status
  * itself is read back off the Core, which owns it. `session:finished` is
  * appended on the transition into `finished` and nowhere else (see the Core's
- * task writer), so it is the one kind whose meaning needs no round trip.
+ * session writer), so it is the one kind whose meaning needs no round trip.
  */
 const STATUS_BEARING_EVENT_KINDS: ReadonlySet<string> = new Set([
-  "task:updated",
-  "task:statusChanged",
+  "session:updated",
+  "session:statusChanged",
   "session:finished",
 ]);
 
@@ -163,7 +163,7 @@ const STATUS_BEARING_EVENT_KINDS: ReadonlySet<string> = new Set([
  * answer the Core already settled on — it does not retry a prompt, a keystroke
  * or a spawn, and it cannot make a Session look idle sooner than the Core says
  * it is. The reason it has to exist: `needs-input`, `interrupted` and
- * `terminated` reach this layer only as `task:updated`, and that event is
+ * `terminated` reach this layer only as `session:updated`, and that event is
  * appended once. Swallowing the read that failed on it leaves
  * {@link CoreSession.waitForIdle} waiting for a report that will not be made
  * again, and by design there is no deadline to end that wait.
@@ -215,15 +215,15 @@ export const CORE_LINK_LOST_GRACE_MS = 30_000;
 
 export type CoreSessionStartOptions = {
   /**
-   * The Project to start this Session in. Either this or {@link taskId}: with a
-   * `projectId` a Task row is created on the Core first, because a Session's
+   * The Project to start this Session in. Either this or {@link sessionId}: with a
+   * `projectId` a Session row is created on the Core first, because a Session's
    * status lives on that row and a spawn naming a row that does not exist
    * reports nothing back.
    */
   projectId?: string;
-  /** An existing Task to start a Session for. Either this or {@link projectId}. */
-  taskId?: string;
-  /** Title for the Task created from {@link projectId}. Ignored with a `taskId`. */
+  /** An existing Session to start a Session for. Either this or {@link projectId}. */
+  sessionId?: string;
+  /** Title for the Session created from {@link projectId}. Ignored with a `sessionId`. */
   title?: string;
   /**
    * The working directory on the **Core's** machine.
@@ -288,7 +288,7 @@ export type CoreSessionStartOptions = {
 
 export type CoreSessionAttachOptions = {
   /** The Session to join. It must have a live PTY; see {@link CoreSessionAttachError}. */
-  taskId: string;
+  sessionId: string;
   /** Screen width for the transcript this attachment renders. */
   cols?: number;
   /** Screen height. Same. */
@@ -390,7 +390,7 @@ export class CoreSessionAttachError extends Error {
  */
 export class CoreSessionTurnTimeoutError extends Error {
   /** The Session the wait was about. */
-  readonly taskId: string;
+  readonly sessionId: string;
   /** The deadline that expired, in ms — the caller's own, never a default here. */
   readonly timeoutMs: number;
   /** The delivery stamp this wait counted from, or 0 for an uncursored wait. */
@@ -402,7 +402,7 @@ export class CoreSessionTurnTimeoutError extends Error {
    * `afterEventId`?
    *
    * False is the loud half of the seeded-status invariant: a status seeded from
-   * the Task row carries event id 0 and can never satisfy a real cursor, so a
+   * the Session row carries event id 0 and can never satisfy a real cursor, so a
    * wait against a Session that is parked and reports nothing would otherwise
    * sit on that comparison forever. It is a fact off the event log — the id the
    * last status was learned at, against the id the delivery was stamped with —
@@ -410,7 +410,7 @@ export class CoreSessionTurnTimeoutError extends Error {
    *
    * **Read the name literally: it is about event ids, not about the Core having
    * been silent** (#486 review). Only a status carried *by* an event moves
-   * `lastStatusEventId` — a `session:finished`, or a `task:updated` that names
+   * `lastStatusEventId` — a `session:finished`, or a `session:updated` that names
    * the status it patched. A status this Session learned by *asking*
    * (`readStatus`, after an event that named none) is recorded with event id 0
    * on purpose, because a read answers "what is it now" and a wait is asking
@@ -422,7 +422,7 @@ export class CoreSessionTurnTimeoutError extends Error {
   readonly reportedSinceDelivery: boolean;
 
   constructor(opts: {
-    taskId: string;
+    sessionId: string;
     timeoutMs: number;
     afterEventId: number;
     lastStatus: string | null;
@@ -430,7 +430,7 @@ export class CoreSessionTurnTimeoutError extends Error {
   }) {
     super(turnTimeoutMessage(opts));
     this.name = "CoreSessionTurnTimeoutError";
-    this.taskId = opts.taskId;
+    this.sessionId = opts.sessionId;
     this.timeoutMs = opts.timeoutMs;
     this.afterEventId = opts.afterEventId;
     this.lastStatus = opts.lastStatus;
@@ -462,7 +462,7 @@ export class CoreSessionTurnTimeoutError extends Error {
  * itself from the fields above.
  */
 function turnTimeoutMessage(opts: {
-  taskId: string;
+  sessionId: string;
   timeoutMs: number;
   afterEventId: number;
   lastStatus: string | null;
@@ -470,7 +470,7 @@ function turnTimeoutMessage(opts: {
 }): string {
   if (opts.afterEventId > 0 && !opts.reportedSinceDelivery) {
     return (
-      `session ${opts.taskId} took the text, but no turn end was reported for it in the ` +
+      `session ${opts.sessionId} took the text, but no turn end was reported for it in the ` +
       `${opts.timeoutMs}ms after the delivery stamped at event ${opts.afterEventId}. Either the ` +
       `text started no turn — a carriage return that lands on a dialog rather than a composer ` +
       `submits nothing — or a turn is still running on a harness that reports nothing until it ` +
@@ -478,7 +478,7 @@ function turnTimeoutMessage(opts: {
       `delivered either way, so it must not be sent again`
     );
   }
-  return `session ${opts.taskId} was still ${opts.lastStatus ?? "unreported"} after ${opts.timeoutMs}ms`;
+  return `session ${opts.sessionId} was still ${opts.lastStatus ?? "unreported"} after ${opts.timeoutMs}ms`;
 }
 
 /**
@@ -511,7 +511,7 @@ function turnTimeoutMessage(opts: {
  */
 export class CoreSessionLinkLostError extends Error {
   /** The Session the wait was about. */
-  readonly taskId: string;
+  readonly sessionId: string;
   /** The delivery stamp this wait counted from, or 0 for an uncursored wait. */
   readonly afterEventId: number;
   /**
@@ -558,7 +558,7 @@ export class CoreSessionLinkLostError extends Error {
   readonly reason: string | null;
 
   constructor(opts: {
-    taskId: string;
+    sessionId: string;
     afterEventId: number;
     lastStatus: string | null;
     reportedSinceDelivery: boolean;
@@ -568,7 +568,7 @@ export class CoreSessionLinkLostError extends Error {
   }) {
     super(linkLostMessage(opts));
     this.name = "CoreSessionLinkLostError";
-    this.taskId = opts.taskId;
+    this.sessionId = opts.sessionId;
     this.afterEventId = opts.afterEventId;
     this.lastStatus = opts.lastStatus;
     this.reportedSinceDelivery = opts.reportedSinceDelivery;
@@ -592,7 +592,7 @@ export class CoreSessionLinkLostError extends Error {
  * whether its user has an `actana` on their path and adds that line itself.
  */
 function linkLostMessage(opts: {
-  taskId: string;
+  sessionId: string;
   lastStatus: string | null;
   graceMs: number;
   downMs: number;
@@ -605,7 +605,7 @@ function linkLostMessage(opts: {
       : "and this client does not reconnect";
   const because = opts.reason ? ` (${opts.reason})` : "";
   return (
-    `the link to the Core dropped while waiting for session ${opts.taskId} to end a turn${because}, ` +
+    `the link to the Core dropped while waiting for session ${opts.sessionId} to end a turn${because}, ` +
     `${stayedDown}. The turn's outcome is unknown: it may have ended while this side was deaf, and ` +
     `it may still be running — the Core is where that is known, and nothing here can stand in for ` +
     `it. This is not a report that the turn finished` +
@@ -624,15 +624,15 @@ function linkLostMessage(opts: {
  * when the caller is done, or those listeners outlive it on the client.
  */
 export class CoreSession {
-  /** The Task this Session belongs to. Its status is the Session's status. */
-  readonly taskId: string;
+  /** The Session this Session belongs to. Its status is the Session's status. */
+  readonly sessionId: string;
   /** The Core's id for this Session's PTY. */
   readonly ptyId: string;
   /**
    * The harness running in it, or `null` on a Session this process did not
    * start — {@link attach} joins a PTY that is already running, and the Core
    * publishes no harness for one. A caller that needs the name reads it off the
-   * Task row, which is where it lives.
+   * Session row, which is where it lives.
    */
   readonly harness: CoreLinkPtySpawnHarness | null;
   /**
@@ -707,16 +707,16 @@ export class CoreSession {
   /**
    * The Core's last reported status, or null before one has been *observed*.
    *
-   * Null rather than the status the Task carried when this Session started, and
+   * Null rather than the status the Session carried when this Session started, and
    * the distinction is what makes {@link waitForIdle} correct: a caller starting
-   * a Session on a Task that was already `finished` is waiting for the next turn
+   * a Session on a Session that was already `finished` is waiting for the next turn
    * to end, not being told about the last one. Only a status learned from an
    * event after {@link start} lands here.
    */
   private lastStatus: string | null = null;
   /**
    * The event id {@link lastStatus} was learned at, or 0 when it was not learned
-   * from an event — the status {@link attach} seeded from the Task row.
+   * from an event — the status {@link attach} seeded from the Session row.
    *
    * This is what makes a cursored wait possible (#289 A). "Has this Session
    * settled?" answers with whatever it is sitting at, including last turn's
@@ -759,7 +759,7 @@ export class CoreSession {
 
   private constructor(opts: {
     client: CoreClient;
-    taskId: string;
+    sessionId: string;
     ptyId: string;
     harness: CoreLinkPtySpawnHarness | null;
     command: string | null;
@@ -768,7 +768,7 @@ export class CoreSession {
     linkLostGraceMs: number;
   }) {
     this.client = opts.client;
-    this.taskId = opts.taskId;
+    this.sessionId = opts.sessionId;
     this.ptyId = opts.ptyId;
     this.harness = opts.harness;
     this.command = opts.command;
@@ -780,8 +780,8 @@ export class CoreSession {
   /**
    * Start a Session and return once the Core has one running.
    *
-   * What happens, in order: a Task row is created when the caller named a
-   * Project rather than a Task; the client is subscribed to the Core's event log
+   * What happens, in order: a Session row is created when the caller named a
+   * Project rather than a Session; the client is subscribed to the Core's event log
    * if nothing has done that yet; the PTY's byte stream is wired up *before* the
    * spawn goes out; and the spawn carries the prompt as `initialInput` for the
    * Core to deliver.
@@ -800,9 +800,9 @@ export class CoreSession {
    * installed on that machine.
    */
   static async start(client: CoreClient, opts: CoreSessionStartOptions): Promise<CoreSession> {
-    if (!opts.taskId && !opts.projectId) {
+    if (!opts.sessionId && !opts.projectId) {
       throw new CoreSessionStartError(
-        "CoreSession.start needs a taskId or a projectId to start a Session against",
+        "CoreSession.start needs a sessionId or a projectId to start a Session against",
       );
     }
     const cols = opts.cols ?? DEFAULT_COLS;
@@ -817,7 +817,7 @@ export class CoreSession {
       client.subscribeEvents();
     }
 
-    const taskId = opts.taskId ?? (await createTask(client, opts));
+    const sessionId = opts.sessionId ?? (await createSession(client, opts));
 
     // Held until the spawn answers with the id these belong to. Every PTY on a
     // single-connection Core arrives on this listener, so nothing can be routed
@@ -871,7 +871,7 @@ export class CoreSession {
     let spawned: { ptyId: string; hooksReportTurnStart: boolean };
     try {
       spawned = await client.spawn({
-        taskId,
+        sessionId,
         cwd: opts.cwd,
         command,
         agent: opts.harness,
@@ -901,7 +901,7 @@ export class CoreSession {
     ptyId = spawned.ptyId;
     session = new CoreSession({
       client,
-      taskId,
+      sessionId,
       ptyId: spawned.ptyId,
       harness: opts.harness,
       command,
@@ -934,7 +934,7 @@ export class CoreSession {
    *
    *   1. subscribe to the event log, if nothing has, so a status change that
    *      lands during the rest of this is heard rather than missed;
-   *   2. resolve the Task's live PTY — **once**, and every write and wait made
+   *   2. resolve the Session's live PTY — **once**, and every write and wait made
    *      through the returned Session uses that resolution, so there is no
    *      window between delivering text and starting to wait for it;
    *   3. wire the byte stream, the exit and the events **before** subscribing;
@@ -950,7 +950,7 @@ export class CoreSession {
    * stamp will not: 0 can never be greater than a real cursor, so a wait for the
    * turn a write starts cannot be answered by the turn before it.
    *
-   * Rejects with {@link CoreSessionAttachError} when the Task has no live PTY —
+   * Rejects with {@link CoreSessionAttachError} when the Session has no live PTY —
    * a harness that exited, or a Session id that is not one. **Only that.** A
    * link that blinked during the subscribe, the replay or the status read
    * rejects with an ordinary `Error`: the two are different next steps, and
@@ -962,10 +962,10 @@ export class CoreSession {
       client.subscribeEvents();
     }
 
-    const { ptyId } = await client.findByTask(opts.taskId);
+    const { ptyId } = await client.findBySession(opts.sessionId);
     if (ptyId === null) {
       throw new CoreSessionAttachError(
-        `session ${opts.taskId} has no harness running — there is nothing to attach a wait to`,
+        `session ${opts.sessionId} has no harness running — there is nothing to attach a wait to`,
       );
     }
 
@@ -974,9 +974,9 @@ export class CoreSession {
     const terminal = new TerminalScreen({ cols, rows, scrollback: opts.scrollback });
     const session = new CoreSession({
       client,
-      taskId: opts.taskId,
+      sessionId: opts.sessionId,
       ptyId,
-      // Three facts about a spawn, and this is not one. The Task row carries the
+      // Three facts about a spawn, and this is not one. The Session row carries the
       // harness for a caller that needs the name; the command and the turn-start
       // answer were the Core's answer to a `spawn` frame that happened before
       // this process was involved, and inventing either would be worse than null.
@@ -1035,7 +1035,7 @@ export class CoreSession {
       // case was decided above, before any of this ran.
       if (err instanceof CoreSessionAttachError) throw err;
       throw new Error(
-        `could not attach to session ${opts.taskId}: ${
+        `could not attach to session ${opts.sessionId}: ${
           err instanceof Error ? err.message : String(err)
         }`,
         { cause: err },
@@ -1090,7 +1090,7 @@ export class CoreSession {
    * window between them in which the Session could settle unobserved.
    *
    * `deliveryEventId` is 0 when the Core did not stamp — a write the PTY
-   * refused, a Core that predates the stamp, a PTY with no Task behind it. 0 is
+   * refused, a Core that predates the stamp, a PTY with no Session behind it. 0 is
    * not a cursor: a caller that waits from it is waiting with none.
    */
   deliver(text: string): Promise<{ ok: boolean; deliveryEventId: number }> {
@@ -1174,7 +1174,7 @@ export class CoreSession {
    * timer that used to make it here is what #191 deleted.
    *
    * Only statuses observed *after* this Session started count, so starting one
-   * on a Task that was already `finished` waits for this turn rather than
+   * on a Session that was already `finished` waits for this turn rather than
    * returning last turn's answer. An exit resolves it too — a harness that died
    * is not going to report anything else.
    *
@@ -1287,7 +1287,7 @@ export class CoreSession {
           // from the bytes (ADR 0033 D4).
           reject(
             new CoreSessionTurnTimeoutError({
-              taskId: this.taskId,
+              sessionId: this.sessionId,
               timeoutMs,
               afterEventId,
               lastStatus: this.lastStatus,
@@ -1524,7 +1524,7 @@ export class CoreSession {
     for (const waiter of [...this.idleWaiters]) {
       waiter.fail(
         new CoreSessionLinkLostError({
-          taskId: this.taskId,
+          sessionId: this.sessionId,
           afterEventId: waiter.afterEventId,
           lastStatus: this.lastStatus,
           reportedSinceDelivery: this.lastStatusEventId > waiter.afterEventId,
@@ -1554,7 +1554,7 @@ export class CoreSession {
 
   /** @internal — called by {@link start} for events held during the spawn. */
   private onCoreEvent(event: CoreLinkEvent): void {
-    if (event.taskId !== this.taskId) return;
+    if (event.sessionId !== this.sessionId) return;
     if (!STATUS_BEARING_EVENT_KINDS.has(event.kind)) return;
     // `session:finished` is appended on the transition into `finished` and on
     // nothing else, so it is the one kind that already says what happened.
@@ -1562,7 +1562,7 @@ export class CoreSession {
       this.noteStatus("finished", event.eventId);
       return;
     }
-    // A `task:updated` whose payload names the status the mutation **patched**
+    // A `session:updated` whose payload names the status the mutation **patched**
     // is a report about a turn, and it is exact: it needs no round trip, and it
     // cannot be confused with a rename or an archive of a Session that happens
     // to be sitting at a settled status. Anything else moves the last known
@@ -1578,7 +1578,7 @@ export class CoreSession {
   /**
    * Read this Session's status back off the Core.
    *
-   * The `task:updated` event says a row moved, not what it moved to, and the
+   * The `session:updated` event says a row moved, not what it moved to, and the
    * Core owns the answer — so it is asked. Coalesced, because a turn's worth of
    * hook events arrives in a burst and each one would otherwise be its own round
    * trip: a read already in flight is re-run once at the end rather than queued
@@ -1605,13 +1605,13 @@ export class CoreSession {
     let failed = false;
     try {
       const sessions = await this.client.sessionsList();
-      const mine = sessions.find((s: CoreLinkSessionSnapshot) => s.taskId === this.taskId);
+      const mine = sessions.find((s: CoreLinkSessionSnapshot) => s.sessionId === this.sessionId);
       if (mine) this.noteStatus(mine.status);
       this.statusReadRetriesLeft = STATUS_READ_RETRIES;
     } catch {
       // A read that failed is a link that dropped or a Core that is busy. It is
       // re-asked below rather than swallowed: on the transitions that reach this
-      // layer as a bare `task:updated` there is no later event to ask on, so a
+      // layer as a bare `session:updated` there is no later event to ask on, so a
       // dropped read is the difference between a caller learning the harness is
       // waiting for an answer and a caller waiting forever for one.
       failed = true;
@@ -1638,7 +1638,7 @@ export class CoreSession {
    */
   private async seedStatus(): Promise<void> {
     const sessions = await this.client.sessionsList();
-    const mine = sessions.find((s: CoreLinkSessionSnapshot) => s.taskId === this.taskId);
+    const mine = sessions.find((s: CoreLinkSessionSnapshot) => s.sessionId === this.sessionId);
     if (mine) this.noteStatus(mine.status, 0);
   }
 
@@ -1731,7 +1731,7 @@ function linkLostGraceFor(client: CoreClient, asked: number | undefined): number
 }
 
 /**
- * The status a `task:updated` event says its mutation **patched**, or null when
+ * The status a `session:updated` event says its mutation **patched**, or null when
  * the event does not say (#289 A).
  *
  * Null is not "no status": it is "this event did not report a turn". A Core that
@@ -1778,7 +1778,7 @@ export function harnessLaunchCommand(
 }
 
 /**
- * Create the Task a Session hangs off, in the Project the caller named.
+ * Create the Session a Session hangs off, in the Project the caller named.
  *
  * A Session's status is a column on this row: the Core's hook pipeline patches
  * it, the patch appends the event, and the event is what {@link
@@ -1787,11 +1787,11 @@ export function harnessLaunchCommand(
  * Core that will not create it (an unknown Project) fails the start here rather
  * than producing a Session nothing can observe.
  */
-async function createTask(client: CoreClient, opts: CoreSessionStartOptions): Promise<string> {
+async function createSession(client: CoreClient, opts: CoreSessionStartOptions): Promise<string> {
   const projectId = opts.projectId!;
   let created;
   try {
-    created = await client.tasksMutate({
+    created = await client.sessionsMutate({
       op: "create",
       projectId,
       title: opts.title ?? "SDK session",
@@ -1810,5 +1810,5 @@ async function createTask(client: CoreClient, opts: CoreSessionStartOptions): Pr
       `the Core has no project ${projectId} to start a Session in`,
     );
   }
-  return created.taskId;
+  return created.sessionId;
 }

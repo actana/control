@@ -38,7 +38,7 @@ import { startInProcessCore, waitFor, type InProcessCore } from "./in-process-co
 import type {
   CoreLinkProjectSnapshot,
   CoreLinkSessionSnapshot,
-  CoreLinkTaskSnapshot,
+  CoreLinkSessionRow,
 } from "@actana/sdk/core";
 
 /** `Ctrl-]`, the detach key. */
@@ -59,8 +59,8 @@ const PROJECT: CoreLinkProjectSnapshot = {
   updatedAt: 1_700_000_000_000,
 };
 
-const TASK: CoreLinkTaskSnapshot = {
-  taskId: "task_live",
+const SESSION: CoreLinkSessionRow = {
+  sessionId: "session_live",
   projectId: PROJECT.projectId,
   title: "rebuild the flaky auth test",
   titleManuallySet: false,
@@ -90,14 +90,14 @@ function livePtyCore() {
   const writes: string[] = [];
   let emit: ((event: unknown) => void) | null = null;
   let seq = 0;
-  const ptys = new Map<string, string>([["task_live", "pty_live"]]);
+  const ptys = new Map<string, string>([["session_live", "pty_live"]]);
 
   const core = {
     setEmitTarget: (cb: ((event: unknown) => void) | null) => {
       emit = cb;
     },
-    findByTask: (taskId: string) => ({ ptyId: ptys.get(taskId) ?? null }),
-    taskIdForPty: (ptyId: string) =>
+    findBySession: (sessionId: string) => ({ ptyId: ptys.get(sessionId) ?? null }),
+    sessionIdForPty: (ptyId: string) =>
       [...ptys.entries()].find(([, id]) => id === ptyId)?.[0] ?? null,
     replay: (ptyId: string) =>
       ptyId === "pty_live" ? { data: SCROLLBACK, nextSeq: 1 } : { data: "", nextSeq: 0 },
@@ -127,22 +127,22 @@ function livePtyCore() {
   };
 }
 
-/** Task and project reads, answered from memory. */
+/** Session and project reads, answered from memory. */
 function ports() {
   const sessions = (): CoreLinkSessionSnapshot[] => [
-    { taskId: TASK.taskId, ptyId: "pty_live", status: TASK.status, updatedAt: TASK.updatedAt },
+    { sessionId: SESSION.sessionId, ptyId: "pty_live", status: SESSION.status, updatedAt: SESSION.updatedAt },
   ];
   return {
     queryPort: {
       listProjects: () => [PROJECT],
-      listTasks: () => [TASK],
-      listArchivedTasks: () => [],
-      countArchivedTasks: () => 0,
-      getTask: (taskId: string) => (taskId === TASK.taskId ? TASK : null),
+      listSessionRows: () => [SESSION],
+      listArchivedSessions: () => [],
+      countArchivedSessions: () => 0,
+      getSession: (sessionId: string) => (sessionId === SESSION.sessionId ? SESSION : null),
     },
     mutationPort: {
       mutateProject: () => null,
-      mutateTask: () => null,
+      mutateSession: () => null,
       listSessions: sessions,
     },
   };
@@ -168,7 +168,7 @@ async function coreWithLiveSession(): Promise<ReturnType<typeof livePtyCore>> {
 }
 
 /** One `actana session attach`, dialling the Core for real, fully wired. */
-async function attach(argv: string[] = ["session", "attach", "task_live"]): Promise<{
+async function attach(argv: string[] = ["session", "attach", "session_live"]): Promise<{
   run: Promise<{ code: number; err: string[] }>;
   terminal: FakeTerminal;
 }> {
@@ -273,7 +273,7 @@ describe("two attaches on one Session, against a Core in this process", () => {
     // lock rather than finding a watcher holding it.
     const pty = await coreWithLiveSession();
 
-    const watcher = await attach(["session", "attach", "task_live", "--read-only"]);
+    const watcher = await attach(["session", "attach", "session_live", "--read-only"]);
     const driver = await attach();
 
     driver.terminal.type("typed by the driver");

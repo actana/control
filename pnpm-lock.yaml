@@ -40,8 +40,8 @@ importers:
         specifier: workspace:*
         version: link:packages/panel
       '@actana/sdk':
-        specifier: 0.5.0
-        version: 0.5.0(pg@8.23.0)
+        specifier: 0.6.0-next.0
+        version: 0.6.0-next.0(pg@8.23.0)
       '@actana/shared':
         specifier: workspace:*
         version: link:packages/shared
@@ -92,8 +92,8 @@ importers:
   packages/cli:
     dependencies:
       '@actana/sdk':
-        specifier: 0.5.0
-        version: 0.5.0(pg@8.23.0)
+        specifier: 0.6.0-next.0
+        version: 0.6.0-next.0(pg@8.23.0)
       selfsigned:
         specifier: ^5.5.0
         version: 5.5.0
@@ -123,8 +123,8 @@ importers:
   packages/core:
     dependencies:
       '@actana/sdk':
-        specifier: 0.5.0
-        version: 0.5.0(pg@8.23.0)
+        specifier: 0.6.0-next.0
+        version: 0.6.0-next.0(pg@8.23.0)
       '@actana/shared':
         specifier: workspace:*
         version: link:../shared
@@ -163,8 +163,8 @@ importers:
   packages/panel:
     dependencies:
       '@actana/sdk':
-        specifier: 0.5.0
-        version: 0.5.0(pg@8.23.0)
+        specifier: 0.6.0-next.0
+        version: 0.6.0-next.0(pg@8.23.0)
       '@actana/shared':
         specifier: workspace:*
         version: link:../shared
@@ -390,8 +390,8 @@ importers:
   packages/shared:
     dependencies:
       '@actana/sdk':
-        specifier: 0.5.0
-        version: 0.5.0(pg@8.23.0)
+        specifier: 0.6.0-next.0
+        version: 0.6.0-next.0(pg@8.23.0)
       '@peculiar/x509':
         specifier: ^1.14.2
         version: 1.14.3
@@ -414,8 +414,8 @@ importers:
 
 packages:
 
-  '@actana/sdk@0.5.0':
-    resolution: {integrity: sha512-1TlXis2ShMW8iOcB6zzZc24qakJXKudzPR9ghkN5OfdRNbbWbqwJW6KfvELGRgDaBlTLSI2Rkh42fl8YZfjBEg==}
+  '@actana/sdk@0.6.0-next.0':
+    resolution: {integrity: sha512-BjJWyeUadwRwwTOF9tJeGGBIh/wReSKHtC39w8SSkPXQVwTJ6pt+cW5P6N8/DKzg6OG2wKT0cFRXn5yCujazCg==}
     engines: {node: '>=24.0.0 <25'}
     peerDependencies:
       pg: ^8.11.0
@@ -3878,7 +3878,7 @@ packages:
 
 snapshots:
 
-  '@actana/sdk@0.5.0(pg@8.23.0)':
+  '@actana/sdk@0.6.0-next.0(pg@8.23.0)':
     dependencies:
       '@peculiar/x509': 1.14.2
       selfsigned: 5.5.0

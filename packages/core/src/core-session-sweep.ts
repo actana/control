@@ -10,13 +10,13 @@
 // working since eight hours before the daemon it belonged to even started.
 //
 // The Panel has had this sweep for its own rows since it had rows, and its
-// reasoning transfers word for word (`panel/src/server/services/tasks.ts`):
+// reasoning transfers word for word (`panel/src/server/services/sessions.ts`):
 //
 // > at that point no local PTYs exist, so any such status is an orphan of a
 // > previous run
 //
-// What did not transfer is the code: `sweepOrphanedActiveTasks` reads
-// `findActiveLocalTasks()`, which is local-scope rows only — and every Session
+// What did not transfer is the code: `sweepOrphanedActiveSessions` reads
+// `findActiveLocalSessions()`, which is local-scope rows only — and every Session
 // on a remote Core is Core-owned, so no Core-owned row was ever in scope for
 // any sweep anywhere. This is that sweep, on the side that owns the rows.
 //
@@ -25,8 +25,8 @@
 //  - It runs BEFORE any PTY of this process can exist, so "the row claims a
 //    live process" and "the process is from a previous run" are the same
 //    statement. There is no live Session it could take down.
-//  - It writes through {@link CoreTaskWriter} like every other status change on
-//    this Core, so each swept row appends the `task:updated` event a connected
+//  - It writes through {@link CoreSessionWriter} like every other status change on
+//    this Core, so each swept row appends the `session:updated` event a connected
 //    Panel re-renders from and a reconnecting one replays off its cursor. A
 //    sweep nobody is told about would leave the operator looking at the same
 //    wrong card until they refreshed.
@@ -37,15 +37,15 @@
 // the honest position. Nobody knows.
 
 import log from "@actana/shared/log";
-import type { CoreLinkTaskSnapshot } from "@actana/sdk/core";
-import type { CoreTaskWriter } from "./core-task-writer";
+import type { CoreLinkSessionRow } from "@actana/sdk/core";
+import type { CoreSessionWriter } from "./core-session-writer";
 
 /** The status a stranded Session settles on. See the note above. */
 const STRANDED_STATUS = "disconnected";
 
 export type CoreSessionSweepDeps = {
   /**
-   * Every row a PTY of the previous run left behind. `listBootSweepTasks` from
+   * Every row a PTY of the previous run left behind. `listBootSweepSessions` from
    * `core-query-store.ts` in the daemon; an array in tests.
    *
    * That is the rows claiming `running` / `needs-input`, plus the `ready` rows
@@ -55,9 +55,9 @@ export type CoreSessionSweepDeps = {
    * row with no `pty:spawn` behind it is not in the list and must not be: that
    * is a Session the operator has simply not started yet.
    */
-  listBootSweepTasks: () => CoreLinkTaskSnapshot[];
-  /** The one seam a task row changes through, events included. */
-  writer: CoreTaskWriter;
+  listBootSweepSessions: () => CoreLinkSessionRow[];
+  /** The one seam a session row changes through, events included. */
+  writer: CoreSessionWriter;
 };
 
 /**
@@ -71,21 +71,21 @@ export type CoreSessionSweepDeps = {
  * of the fleet's Sessions wedged.
  */
 export function sweepStrandedSessions(deps: CoreSessionSweepDeps): string[] {
-  const stranded = deps.listBootSweepTasks();
+  const stranded = deps.listBootSweepSessions();
   if (stranded.length === 0) return [];
 
   const settled: string[] = [];
-  for (const task of stranded) {
+  for (const session of stranded) {
     try {
       const updated = deps.writer.mutate({
         op: "update",
-        taskId: task.taskId,
+        sessionId: session.sessionId,
         status: STRANDED_STATUS,
       });
-      if (updated) settled.push(task.taskId);
+      if (updated) settled.push(session.sessionId);
     } catch (err) {
       log.warn("session-sweep.settle-failed", {
-        taskId: task.taskId,
+        sessionId: session.sessionId,
         error: String(err),
       });
     }
@@ -95,7 +95,7 @@ export function sweepStrandedSessions(deps: CoreSessionSweepDeps): string[] {
     log.info("session-sweep.settled", {
       count: settled.length,
       status: STRANDED_STATUS,
-      taskIds: settled,
+      sessionIds: settled,
     });
   }
   return settled;

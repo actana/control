@@ -256,7 +256,7 @@ function NotificationRow({
       : notification.coreId
     : null;
   const headline = `Session finished — ${notification.projectName}`;
-  const subtitle = notification.taskTitle;
+  const subtitle = notification.sessionTitle;
   const timestamp = notification.finishedAt;
   const openLabel = `Open ${subtitle}`;
 

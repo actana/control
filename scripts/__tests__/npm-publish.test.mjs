@@ -37,15 +37,23 @@ import {
   assertMonorepoKeepsTheGuard,
   assertPackedBin,
   assertPackedFiles,
-  assertPackedManifest,
+  assertPackedManifest as assertPackedManifestWith,
   assertPublishSet,
   betaVersion,
   binTargets,
   discoverPublishable,
   externalNames,
+  pinnedSdkVersion,
+  pinnedSdkVersionOf,
   publishOrder,
   workspaceManifests,
 } from "../lib/npm-packages.mjs";
+
+// The one npm SDK version this repository pins (#553). The CLI's dependency is held to
+// it, not to the train version.
+const SDK_PIN = "0.2.2";
+const assertPackedManifest = (packed, options = {}) =>
+  assertPackedManifestWith(packed, { sdkPin: SDK_PIN, ...options });
 
 const repoRoot = path.resolve(import.meta.dirname, "..", "..");
 
@@ -225,6 +233,27 @@ describe("the published manifest (#129 D12)", () => {
   // D13's lockstep where a consumer actually meets it. `workspace:*` in a
   // packed manifest means pnpm did not pack it and npm will refuse it; a
   // resolved-but-different version is worse, because it installs.
+  it("refuses a CLI whose SDK dependency differs from the pinned npm version, or is a range (#553)", () => {
+    expect(() =>
+      assertPackedManifest(packedCommand({ dependencies: { "@actana/sdk": "0.2.3" } })),
+    ).toThrow(/not on 0\.2\.2\. One SDK version across the repository/);
+    for (const range of ["^0.2.2", "~0.2.2", ">=0.2.2", "latest", "0.2.x"]) {
+      expect(() =>
+        assertPackedManifest(packedCommand({ dependencies: { "@actana/sdk": range } })),
+      ).toThrow(/One SDK version across the repository/);
+    }
+    // The train version is not the rule any more: a CLI on a different train
+    // than the SDK it pins is fine, a CLI off the pin is not.
+    expect(() =>
+      assertPackedManifest(packedCommand({ version: "0.5.0", dependencies: { "@actana/sdk": "0.6.0-next.0" } }), {
+        sdkPin: "0.6.0-next.0",
+      }),
+    ).not.toThrow();
+    expect(() =>
+      assertPackedManifest(packedCommand({ dependencies: { "@actana/sdk": "0.2.2" } }), { sdkPin: undefined }),
+    ).toThrow(/no pinned npm version was given/);
+  });
+
   it("refuses a published package pinned to another train's sibling", () => {
     expect(() =>
       assertPackedManifest(packedCommand({ dependencies: { "@actana/sdk": "workspace:*" } })),
@@ -291,6 +320,48 @@ describe("the published manifest (#129 D12)", () => {
     expect(() => assertPackedManifest(packed(), { version: "0.2.3" })).toThrow(
       /is not the version being released/,
     );
+  });
+});
+
+// ─── One SDK version across the repository (#553, ADR 0016 D13) ───────────────
+describe("the pinned npm SDK version", () => {
+  const entry = (relative, deps, extra = {}) => ({
+    relative,
+    manifest: { name: `@actana/${relative.split("/")[1] ?? "root"}`, dependencies: deps, ...extra },
+  });
+  const repo = (versions) => [
+    entry("package.json", { "@actana/sdk": versions.root }),
+    entry("packages/core/package.json", { "@actana/sdk": versions.core }),
+    entry("packages/cli/package.json", { "@actana/sdk": versions.cli }),
+  ];
+
+  it("is the one exact version every package agrees on", () => {
+    const same = "0.6.0-next.0";
+    expect(pinnedSdkVersion(repo({ root: same, core: same, cli: same }))).toBe(same);
+  });
+
+  it("refuses a package that pins a different version", () => {
+    expect(() => pinnedSdkVersion(repo({ root: "0.6.0-next.0", core: "0.6.0-next.0", cli: "0.5.0" }))).toThrow(
+      /these disagree.*packages\/cli\/package\.json pins 0\.5\.0/,
+    );
+  });
+
+  it.each(["^0.6.0", "~0.6.0", ">=0.6.0", "latest", "workspace:*", "0.6.x"])(
+    "refuses %s: a range or a link is not a pin",
+    (range) => {
+      expect(() => pinnedSdkVersion(repo({ root: "0.6.0-next.0", core: range, cli: "0.6.0-next.0" }))).toThrow(
+        /exact version.*packages\/core\/package\.json dependencies has/,
+      );
+    },
+  );
+
+  it("skips the SDK's own source and refuses a repo that pins nothing", () => {
+    expect(pinnedSdkVersion([...repo({ root: "0.6.0", core: "0.6.0", cli: "0.6.0" }), { relative: "packages/sdk/package.json", manifest: { name: "@actana/sdk", version: "0.5.0" } }])).toBe("0.6.0");
+    expect(() => pinnedSdkVersion([{ relative: "package.json", manifest: { name: "x" } }])).toThrow(/no pinned npm version/);
+  });
+
+  it("holds for this repository's own manifests", () => {
+    expect(pinnedSdkVersionOf(path.resolve(import.meta.dirname, "../.."))).toMatch(/^\d+\.\d+\.\d+/);
   });
 });
 
@@ -659,11 +730,12 @@ describe("packing both published packages for real", () => {
   // dependency on the SDK resolved to exactly it. `workspace:*` surviving the
   // pack would be a tarball npm rejects; a different version would be a CLI
   // installed against another train's SDK.
-  it("ships one version line, with the CLI pinned to this SDK", () => {
+  it("ships one version line, with the CLI pinned to the repo's one npm SDK", () => {
     const versions = new Set([...packs.values()].map(({ manifest }) => manifest.version));
     expect([...versions]).toHaveLength(1);
+    // The CLI's SDK is the one npm version the repo pins (#553), not the train's.
     const cli = pack("@actana/cli").manifest;
-    expect(cli.dependencies["@actana/sdk"]).toBe(pack("@actana/sdk").manifest.version);
+    expect(cli.dependencies["@actana/sdk"]).toBe(pinnedSdkVersionOf(path.resolve(import.meta.dirname, "../..")));
   });
 
   it("produces tarballs that pass every rule that applies to them", () => {

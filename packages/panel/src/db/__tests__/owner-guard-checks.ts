@@ -15,7 +15,7 @@ export const OWNERLESS_TABLES: Record<string, string> = {
   "drizzle.__drizzle_migrations": "the migrator's own bookkeeping (pg-migrate.ts); it holds no user data",
 };
 
-/** Where the Panel's repositories live (`tasks.repo.ts` and the rest); #567 ports them in place. */
+/** Where the Panel's repositories live (`sessions.repo.ts` and the rest); #567 ports them in place. */
 export const REPOSITORY_DIR = path.resolve(import.meta.dirname, "..", "..", "server", "repositories");
 /** The Panel's source root: nothing outside the repository folder may import the pg schema. */
 export const SOURCE_DIR = path.resolve(import.meta.dirname, "..", "..");
@@ -144,7 +144,7 @@ export function findUnscopedQueries(
     }
   }
 
-  // The relational API: `db.query.tasks.findMany({ where })` needs `ownedBy(` in its call.
+  // The relational API: `db.query.sessions.findMany({ where })` needs `ownedBy(` in its call.
   for (const m of text.matchAll(/\.query\.(\w+)\.(?:findMany|findFirst)\(/g)) {
     const table = byExport.get(m[1]);
     if (!table) continue;

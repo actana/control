@@ -222,7 +222,7 @@ describe("package boundaries", () => {
       });
 
       rig = startCoreRig({ authVerifier: (bearer) => verifyBearer(bearer, SECRET) });
-      rig.eventLog.appendEvent("task:created", "{}", { taskId: "t1" });
+      rig.eventLog.appendEvent("session:created", "{}", { sessionId: "t1" });
       const dial = rig.dialer();
       client = new DurableCoreClient({
         url: "wss://core.test:9444",

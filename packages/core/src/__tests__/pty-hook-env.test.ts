@@ -17,16 +17,16 @@ describe("PTY hook env", () => {
       buildSyntheticHookUrl(
         { apiUrl: "http://127.0.0.1:5173", token: "secret" },
         "codex",
-        "task 1",
+        "session 1",
       ),
-    ).toBe("http://127.0.0.1:5173/api/hooks/codex?taskId=task+1");
+    ).toBe("http://127.0.0.1:5173/api/hooks/codex?sessionId=session+1");
     expect(
       buildSyntheticHookUrl(
         { apiUrl: "http://127.0.0.1:5173", token: "secret" },
         "opencode",
-        "task 2",
+        "session 2",
       ),
-    ).toBe("http://127.0.0.1:5173/api/hooks/opencode?taskId=task+2");
+    ).toBe("http://127.0.0.1:5173/api/hooks/opencode?sessionId=session+2");
   });
 
   it("rejects renderer-style attacker and internal-network hook origins", () => {
@@ -38,7 +38,7 @@ describe("PTY hook env", () => {
       "http://192.168.1.1",
     ]) {
       expect(
-        buildSyntheticHookUrl({ apiUrl, token: "secret" }, "claude-code", "task"),
+        buildSyntheticHookUrl({ apiUrl, token: "secret" }, "claude-code", "session"),
       ).toBeNull();
     }
   });

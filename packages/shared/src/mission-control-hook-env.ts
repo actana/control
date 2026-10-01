@@ -53,7 +53,7 @@ export function hookEndpointSlug(agent: string | undefined): string {
 export function buildSyntheticHookUrl(
   mcEnv: PtyHookEnv,
   agent: string | undefined,
-  taskId: string,
+  sessionId: string,
 ): string | null {
   let base: URL;
   try {
@@ -67,6 +67,6 @@ export function buildSyntheticHookUrl(
   }
 
   const url = new URL(`/api/hooks/${hookEndpointSlug(agent)}`, base);
-  url.searchParams.set("taskId", taskId);
+  url.searchParams.set("sessionId", sessionId);
   return url.toString();
 }

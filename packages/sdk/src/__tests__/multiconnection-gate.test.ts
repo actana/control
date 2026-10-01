@@ -48,7 +48,7 @@ const SECRET = "gate-suite-secret-32-bytes-long-xx";
 const URL_A = "wss://core-a.test:9444";
 
 /** The gated frame these tests put on the wire. `release` had no call site under test. */
-const RELEASE: CoreLinkRequestFrame = { type: "release", reqId: "", taskId: "task_1" };
+const RELEASE: CoreLinkRequestFrame = { type: "release", reqId: "", sessionId: "session_1" };
 
 /**
  * One real frame per entry in the registry, so the gate is exercised for every
@@ -58,9 +58,9 @@ const RELEASE: CoreLinkRequestFrame = { type: "release", reqId: "", taskId: "tas
 const GATED_FRAMES: CoreLinkRequestFrame[] = [
   { type: "ptySubscribe", reqId: "", ptyId: "pty_1", catchUp: false },
   { type: "ptyUnsubscribe", reqId: "", ptyId: "pty_1" },
-  { type: "claim", reqId: "", taskId: "task_1" },
-  { type: "release", reqId: "", taskId: "task_1" },
-  { type: "forceTakeover", reqId: "", taskId: "task_1" },
+  { type: "claim", reqId: "", sessionId: "session_1" },
+  { type: "release", reqId: "", sessionId: "session_1" },
+  { type: "forceTakeover", reqId: "", sessionId: "session_1" },
   { type: "reclaim", reqId: "", clientId: "sdk-some-client" },
 ];
 
@@ -431,12 +431,12 @@ describe("the multiConnection gate on a durable Core client", () => {
       const announcing = coreThatAnnounces();
       const holder = clientOver(announcing.dialer().createSocket);
       await holder.connect();
-      await expect(holder.claim("task_1")).resolves.toEqual({ supported: true, granted: true });
+      await expect(holder.claim("session_1")).resolves.toEqual({ supported: true, granted: true });
 
       // A second client on the same Core, asking for a Session that is held.
       const contender = clientOver(announcing.dialer().createSocket);
       await contender.connect();
-      await expect(contender.claim("task_1")).resolves.toEqual({
+      await expect(contender.claim("session_1")).resolves.toEqual({
         supported: true,
         granted: false,
       });
@@ -446,7 +446,7 @@ describe("the multiConnection gate on a durable Core client", () => {
       const singleDial = coreThatDoesNot().dialer();
       const single = clientOver(singleDial.createSocket);
       await single.connect();
-      await expect(single.claim("task_1")).resolves.toEqual({
+      await expect(single.claim("session_1")).resolves.toEqual({
         supported: false,
         granted: false,
       });

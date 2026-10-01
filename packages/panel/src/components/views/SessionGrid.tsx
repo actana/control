@@ -36,12 +36,12 @@ import { isUserTerminalXtermFocused } from "~/lib/terminal-pane-helpers";
 import { useTerminals, type OpenTerminal } from "~/lib/terminal-store";
 import { isEditableTarget, useHotkey } from "~/lib/use-hotkey";
 import { useUserTerminals } from "~/lib/user-terminal-store";
-import { queryKeys, tasksCacheKey, useSettings, useTasks } from "~/queries";
+import { queryKeys, sessionsCacheKey, useSettings, useSessions } from "~/queries";
 import type { Harness } from "@actana/shared/domain";
 import { scopeKeyForProject } from "~/lib/scoped-project";
 import { GridLayoutQuickPicker } from "./GridLayoutQuickPicker";
 import { TerminalPane } from "./TerminalPane";
-import type { Task } from "~/db/schema";
+import type { Session } from "~/db/schema";
 
 // Grid layout is stored per scope key so each
 // project keeps its own rows, order, and sizing — the grid mirrors the single
@@ -146,7 +146,7 @@ function hiddenStorageKey(scopeKey: string): string {
   return `${GRID_HIDDEN_PREFIX}:${scopeKey}`;
 }
 
-function loadHiddenTaskIds(scopeKey: string): Set<string> {
+function loadHiddenSessionIds(scopeKey: string): Set<string> {
   if (typeof window === "undefined") return new Set();
   try {
     const raw = window.localStorage.getItem(hiddenStorageKey(scopeKey));
@@ -159,7 +159,7 @@ function loadHiddenTaskIds(scopeKey: string): Set<string> {
   }
 }
 
-function saveHiddenTaskIds(scopeKey: string, ids: ReadonlySet<string>): void {
+function saveHiddenSessionIds(scopeKey: string, ids: ReadonlySet<string>): void {
   if (typeof window === "undefined") return;
   try {
     if (ids.size === 0) {
@@ -182,7 +182,7 @@ function expandedStorageKey(scopeKey: string): string {
   return `${GRID_EXPANDED_PREFIX}:${scopeKey}`;
 }
 
-function loadExpandedTaskId(scopeKey: string): string | null {
+function loadExpandedSessionId(scopeKey: string): string | null {
   if (typeof window === "undefined") return null;
   try {
     const raw = window.localStorage.getItem(expandedStorageKey(scopeKey));
@@ -192,13 +192,13 @@ function loadExpandedTaskId(scopeKey: string): string | null {
   }
 }
 
-function saveExpandedTaskId(scopeKey: string, taskId: string | null): void {
+function saveExpandedSessionId(scopeKey: string, sessionId: string | null): void {
   if (typeof window === "undefined") return;
   try {
-    if (taskId === null) {
+    if (sessionId === null) {
       window.localStorage.removeItem(expandedStorageKey(scopeKey));
     } else {
-      window.localStorage.setItem(expandedStorageKey(scopeKey), taskId);
+      window.localStorage.setItem(expandedStorageKey(scopeKey), sessionId);
     }
   } catch {
     /* quota or disabled */
@@ -512,13 +512,13 @@ type GridCellProps = {
   /** Grid outer padding (0 in the flush ember layout) — the expanded cell
    *  insets by this to cover the grid content box exactly. */
   gridPadding: number;
-  onToggleExpanded: (taskId: string) => void;
+  onToggleExpanded: (sessionId: string) => void;
   onRequestClose: (session: OpenTerminal) => void;
-  onPtyReady: (taskId: string, ptyId: string | null, scopeKey: string) => void;
-  onHeaderPointerDown: (taskId: string, event: ReactPointerEvent<HTMLDivElement>) => void;
+  onPtyReady: (sessionId: string, ptyId: string | null, scopeKey: string) => void;
+  onHeaderPointerDown: (sessionId: string, event: ReactPointerEvent<HTMLDivElement>) => void;
   /** Toggle this cell's pinned flag (stable across renders); omit to hide the
    *  control. Pinned state itself is read live inside the pane. */
-  onTogglePin?: (taskId: string) => void;
+  onTogglePin?: (sessionId: string) => void;
   /** True while this session's pin toggle is in flight (disables the control). */
   pinBusy: boolean;
   /** True when this session is pinned — tints the cell frame so pinned panes
@@ -528,7 +528,7 @@ type GridCellProps = {
    *  Keys the overlay element so back-to-back attaches restart the animation. */
   flashNonce: number | null;
   /** Drop the pulse overlay once its animation finishes. */
-  onFlashDone: (taskId: string) => void;
+  onFlashDone: (sessionId: string) => void;
 };
 
 /** One grid cell (its terminal), memoized so a per-grid state change — moving
@@ -560,7 +560,7 @@ const GridCell = memo(function GridCell({
   return (
     <CardFrame
       data-grid-cell
-      data-task-id={session.taskId}
+      data-session-id={session.sessionId}
       data-pinned={isPinned ? "true" : undefined}
       aria-current={isNavSelected ? "true" : undefined}
       style={{
@@ -609,18 +609,18 @@ const GridCell = memo(function GridCell({
         {mounted && (
           <TerminalPane
             project={session.project}
-            task={session.task}
+            session={session.session}
             descriptor={session}
             isLast
             expanded={expanded}
-            onToggleExpanded={() => onToggleExpanded(session.taskId)}
+            onToggleExpanded={() => onToggleExpanded(session.sessionId)}
             onHide={() => onRequestClose(session)}
-            onPtyReady={(ptyId) => onPtyReady(session.taskId, ptyId, scopeKey)}
+            onPtyReady={(ptyId) => onPtyReady(session.sessionId, ptyId, scopeKey)}
             onHeaderPointerDown={
-              reorderEnabled ? (e) => onHeaderPointerDown(session.taskId, e) : undefined
+              reorderEnabled ? (e) => onHeaderPointerDown(session.sessionId, e) : undefined
             }
             headerGrabbing={isDragging}
-            onTogglePin={onTogglePin ? () => onTogglePin(session.taskId) : undefined}
+            onTogglePin={onTogglePin ? () => onTogglePin(session.sessionId) : undefined}
             pinBusy={pinBusy}
           />
         )}
@@ -630,7 +630,7 @@ const GridCell = memo(function GridCell({
           key={flashNonce}
           className="mc-cell-attach-flash"
           aria-hidden
-          onAnimationEnd={() => onFlashDone(session.taskId)}
+          onAnimationEnd={() => onFlashDone(session.sessionId)}
         />
       )}
     </CardFrame>
@@ -653,20 +653,20 @@ function HiddenSessionsBar({
 }: {
   sessions: OpenTerminal[];
   flush: boolean;
-  /** Which Core owns the sessions in this bar. Forwarded to the scoped-tasks
+  /** Which Core owns the sessions in this bar. Forwarded to the scoped-sessions
    *  query so the transport layer — not this component — picks the Core's link
    *  or the Panel's own rows. */
   coreId: string | null;
-  onRestore: (taskId: string) => void;
+  onRestore: (sessionId: string) => void;
   onRestoreAll: () => void;
 }) {
-  // Live task rows so titles/statuses keep updating while hidden (the store's
-  // task is a snapshot from open time). Every session in the bar belongs to
-  // the grid's scope, so one query covers all of them. `useTasks` reads the
+  // Live session rows so titles/statuses keep updating while hidden (the store's
+  // session is a snapshot from open time). Every session in the bar belongs to
+  // the grid's scope, so one query covers all of them. `useSessions` reads the
   // owning Core off the query key so this component doesn't branch on
   // `coreId`; picking the transport is the query layer's job (ADR-0005).
   const scopeProject = sessions[0]?.project;
-  const { data: liveTasks } = useTasks(scopeProject?.id ?? "", { coreId });
+  const { data: liveSessions } = useSessions(scopeProject?.id ?? "", { coreId });
 
   return (
     <div
@@ -696,13 +696,13 @@ function HiddenSessionsBar({
         }}
       >
         {sessions.map((session) => {
-          const live = liveTasks?.find((t) => t.id === session.taskId) ?? session.task;
+          const live = liveSessions?.find((t) => t.id === session.sessionId) ?? session.session;
           const icon = isSessionIcon(live.icon) ? live.icon : DEFAULT_SESSION_ICON;
           const harnessMeta = HARNESS_META[live.agent];
           const statusMeta = STATUS_META[live.status];
           return (
             <Tooltip
-              key={session.taskId}
+              key={session.sessionId}
               placement="top"
               content={
                 <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -747,7 +747,7 @@ function HiddenSessionsBar({
               <button
                 type="button"
                 className="mc-hidden-chip"
-                onClick={() => onRestore(session.taskId)}
+                onClick={() => onRestore(session.sessionId)}
                 aria-label={`Restore session ${live.title}`}
               >
                 <SessionIcon name={icon} size={12} strokeWidth={1.6} />
@@ -794,9 +794,9 @@ export function SessionGrid({
   coreId = null,
   emptyHeader,
   filter = "active",
-  pinnedTaskIds,
+  pinnedSessionIds,
   onTogglePinned,
-  pinningTaskIds,
+  pinningSessionIds,
 }: {
   scopeKey: string;
   /** Which Core owns the underlying sessions (Singular UI across Cores). Null
@@ -807,12 +807,12 @@ export function SessionGrid({
   /** Which scope the grid renders. "pinned" packs the grid down to the pinned
    *  sessions only (a view filter — the persisted layout is left untouched). */
   filter?: "active" | "pinned";
-  /** Live set of pinned task ids, used by the "pinned" filter. */
-  pinnedTaskIds?: ReadonlySet<string>;
+  /** Live set of pinned session ids, used by the "pinned" filter. */
+  pinnedSessionIds?: ReadonlySet<string>;
   /** Toggle a session's pinned flag from its grid cell header. */
-  onTogglePinned?: (taskId: string) => void;
-  /** Task ids with an in-flight pin toggle (disables the cell's pin control). */
-  pinningTaskIds?: ReadonlySet<string>;
+  onTogglePinned?: (sessionId: string) => void;
+  /** Session ids with an in-flight pin toggle (disables the cell's pin control). */
+  pinningSessionIds?: ReadonlySet<string>;
 }) {
   const {
     sessions,
@@ -822,8 +822,8 @@ export function SessionGrid({
     takeCloneInsertAfter,
     takeNewRowRequest,
     takeSessionIdRenames,
-    noteGridFocusedTask,
-    activeTaskIdFor,
+    noteGridFocusedSession,
+    activeSessionIdFor,
     consumeGridFocusRequest,
   } = useTerminals();
   const queryClient = useQueryClient();
@@ -837,30 +837,30 @@ export function SessionGrid({
   const gridPad = 0;
   // Persisted per scope so an expansion survives switching projects and back
   // (the scope-swap block reloads it; the reconcile effect prunes a stale id).
-  const [expandedTaskId, setExpandedTaskId] = useState<string | null>(() =>
-    loadExpandedTaskId(scopeKey),
+  const [expandedSessionId, setExpandedSessionId] = useState<string | null>(() =>
+    loadExpandedSessionId(scopeKey),
   );
-  // Task whose cell is momentarily spotlighted after a notification "Open".
-  const [focusedTaskId, setFocusedTaskId] = useState<string | null>(null);
+  // Session whose cell is momentarily spotlighted after a notification "Open".
+  const [focusedSessionId, setFocusedSessionId] = useState<string | null>(null);
   // Cell pulsing the "image landed here" flash after a screenshot attach. The
   // nonce keys the overlay so a repeat attach to the same cell replays it; the
   // overlay clears itself on animationend.
-  const [attachFlash, setAttachFlash] = useState<{ taskId: string; nonce: number } | null>(null);
-  const handleFlashDone = useCallback((taskId: string) => {
-    setAttachFlash((prev) => (prev?.taskId === taskId ? null : prev));
+  const [attachFlash, setAttachFlash] = useState<{ sessionId: string; nonce: number } | null>(null);
+  const handleFlashDone = useCallback((sessionId: string) => {
+    setAttachFlash((prev) => (prev?.sessionId === sessionId ? null : prev));
   }, []);
   // A focus request already pending when the grid mounts was posted from a
   // gridless surface (focus mode, single-panel view). It still gets consumed —
   // scroll + caret as usual — but its attach flash is stale by the time the
   // grid appears, so only requests raised after this nonce may pulse.
   const preMountFlashNonceRef = useRef(gridFocusRequest?.nonce ?? 0);
-  // Live mirror of `expandedTaskId` for the spotlight effect: reading the state
+  // Live mirror of `expandedSessionId` for the spotlight effect: reading the state
   // there would add it to the effect's deps, and the dep-change cleanup would
   // kill the in-flight focus poll on every expand/collapse.
-  const expandedTaskIdRef = useRef<string | null>(null);
-  expandedTaskIdRef.current = expandedTaskId;
+  const expandedSessionIdRef = useRef<string | null>(null);
+  expandedSessionIdRef.current = expandedSessionId;
   // Keyboard-navigation mode (Cmd/Ctrl+G): the selected cell, or null when off.
-  const [navTaskId, setNavTaskId] = useState<string | null>(null);
+  const [navSessionId, setNavSessionId] = useState<string | null>(null);
   const [pendingArchive, setPendingArchive] = useState<OpenTerminal | null>(null);
   const [archiving, setArchiving] = useState(false);
   // Sessions the user has hidden with Cmd/Ctrl+L (terminal.close). Their pane is
@@ -869,8 +869,8 @@ export function SessionGrid({
   // "hide session panel". Hidden sessions stay reachable in the restore bar
   // under the grid, and the set is persisted per scope so hides survive
   // leaving grid view and app restarts.
-  const [hiddenTaskIds, setHiddenTaskIds] = useState<ReadonlySet<string>>(() =>
-    loadHiddenTaskIds(scopeKey),
+  const [hiddenSessionIds, setHiddenSessionIds] = useState<ReadonlySet<string>>(() =>
+    loadHiddenSessionIds(scopeKey),
   );
   // The scope's sessions-per-row lock (null = auto). Owned by the header's
   // layout dropdown, persisted per scope; the grid re-reads it on the prefs
@@ -883,7 +883,7 @@ export function SessionGrid({
   // The most recently hidden session, restored when Cmd/Ctrl+L fires with no
   // visible session left to hide (every session hidden) — mirrors the single-
   // panel toggle where a second press brings the last hidden session back.
-  const lastHiddenTaskIdRef = useRef<string | null>(null);
+  const lastHiddenSessionIdRef = useRef<string | null>(null);
 
   // Every session that belongs to this scope, hidden or not — the source of
   // truth for what may be hidden/restored and for pruning stale hidden ids.
@@ -896,8 +896,8 @@ export function SessionGrid({
   // the single-panel view's scoping) — so switching projects shows a
   // different grid, and hidden sessions drop out of the layout entirely.
   const scopedSessions = useMemo(
-    () => allScopedSessions.filter((s) => !hiddenTaskIds.has(s.taskId)),
-    [allScopedSessions, hiddenTaskIds],
+    () => allScopedSessions.filter((s) => !hiddenSessionIds.has(s.sessionId)),
+    [allScopedSessions, hiddenSessionIds],
   );
 
   // The scope toggle's "Pinned" tab narrows the grid to pinned sessions. This is
@@ -907,8 +907,8 @@ export function SessionGrid({
   // "active" tab the predicate is a no-op so nothing about the grid changes.
   const isFiltered = filter === "pinned";
   const matchesFilter = useCallback(
-    (session: OpenTerminal) => !isFiltered || (pinnedTaskIds?.has(session.taskId) ?? false),
-    [isFiltered, pinnedTaskIds],
+    (session: OpenTerminal) => !isFiltered || (pinnedSessionIds?.has(session.sessionId) ?? false),
+    [isFiltered, pinnedSessionIds],
   );
   // The sessions the grid actually lays out and renders under the current tab.
   const renderSessions = useMemo(
@@ -922,8 +922,8 @@ export function SessionGrid({
   useEffect(() => {
     togglePinnedRef.current = onTogglePinned;
   }, [onTogglePinned]);
-  const handleTogglePin = useCallback((taskId: string) => {
-    togglePinnedRef.current?.(taskId);
+  const handleTogglePin = useCallback((sessionId: string) => {
+    togglePinnedRef.current?.(sessionId);
   }, []);
 
   // The hidden sessions, most recently hidden first (Set preserves insertion
@@ -931,22 +931,22 @@ export function SessionGrid({
   // Under the "pinned" filter, only pinned hidden sessions belong to the view,
   // so the restore bar stays consistent with the packed grid above it.
   const hiddenSessions = useMemo(() => {
-    if (hiddenTaskIds.size === 0) return [];
-    const byId = new Map(allScopedSessions.map((s) => [s.taskId, s]));
+    if (hiddenSessionIds.size === 0) return [];
+    const byId = new Map(allScopedSessions.map((s) => [s.sessionId, s]));
     const out: OpenTerminal[] = [];
-    for (const id of hiddenTaskIds) {
+    for (const id of hiddenSessionIds) {
       const session = byId.get(id);
       if (session && matchesFilter(session)) out.unshift(session);
     }
     return out;
-  }, [hiddenTaskIds, allScopedSessions, matchesFilter]);
+  }, [hiddenSessionIds, allScopedSessions, matchesFilter]);
 
   // Drop hidden ids whose session is gone (archived/closed elsewhere) so a hide
   // never lingers and the empty-state math stays honest.
   useEffect(() => {
-    setHiddenTaskIds((prev) => {
+    setHiddenSessionIds((prev) => {
       if (prev.size === 0) return prev;
-      const live = new Set(allScopedSessions.map((s) => s.taskId));
+      const live = new Set(allScopedSessions.map((s) => s.sessionId));
       let changed = false;
       const next = new Set<string>();
       for (const id of prev) {
@@ -960,14 +960,14 @@ export function SessionGrid({
   // Persist the hidden set whenever it changes, so hides survive leaving grid
   // view and app restarts (the scope-swap block reloads it per scope).
   useEffect(() => {
-    saveHiddenTaskIds(scopeKey, hiddenTaskIds);
-  }, [scopeKey, hiddenTaskIds]);
+    saveHiddenSessionIds(scopeKey, hiddenSessionIds);
+  }, [scopeKey, hiddenSessionIds]);
 
   // Persist the expanded cell whenever it changes, so an expansion survives
   // switching projects and back (the scope-swap block reloads it per scope).
   useEffect(() => {
-    saveExpandedTaskId(scopeKey, expandedTaskId);
-  }, [scopeKey, expandedTaskId]);
+    saveExpandedSessionId(scopeKey, expandedSessionId);
+  }, [scopeKey, expandedSessionId]);
 
   // The authored layout for the current scope. Reconciled against live sessions:
   // new sessions land in the current/new row, closed ones (and empty rows) are
@@ -984,11 +984,11 @@ export function SessionGrid({
   // switch when placing it in the layout.
   const prevScopeRef = useRef<string | null>(null);
   const prevIdsRef = useRef<Set<string>>(new Set());
-  // Task id of the cell that most recently held focus — the "current row" anchor
+  // Session id of the cell that most recently held focus — the "current row" anchor
   // a plain new session appends to. Tracked via a focusin listener because the
   // toolbar button steals focus on click (so document.activeElement is the
   // button, not a cell, by the time the session is created).
-  const lastFocusedTaskIdRef = useRef<string | null>(null);
+  const lastFocusedSessionIdRef = useRef<string | null>(null);
   // The layout currently painted on screen (kept in sync in the FLIP effect),
   // so drag math operates on exactly what the user sees and drops onto.
   const paintedLayoutRef = useRef<GridLayout>(layout);
@@ -1009,7 +1009,7 @@ export function SessionGrid({
   // Switch scopes during render (React's "adjust state when a prop changes"
   // pattern) so the previous project's rows never paint for the new one — which
   // would flash the wrong layout and, worse, carry the previous scope's
-  // expandedTaskId over, matching no new cell and hiding every cell for a frame.
+  // expandedSessionId over, matching no new cell and hiding every cell for a frame.
   // Each per-scope slice (layout, hidden set, column lock, expanded cell) is
   // reloaded from that scope's storage here; the reconcile effect below then
   // prunes/places against the new scope's live sessions.
@@ -1017,12 +1017,12 @@ export function SessionGrid({
   if (scopeSwapRef.current !== scopeKey) {
     scopeSwapRef.current = scopeKey;
     setLayout(loadGridLayout(scopeKey) ?? EMPTY_LAYOUT);
-    setHiddenTaskIds(loadHiddenTaskIds(scopeKey));
+    setHiddenSessionIds(loadHiddenSessionIds(scopeKey));
     setColumnLimit(loadGridColumnLimit(scopeKey));
     setQuickPickerOpen(false);
-    lastHiddenTaskIdRef.current = null;
-    setExpandedTaskId(loadExpandedTaskId(scopeKey));
-    setNavTaskId(null);
+    lastHiddenSessionIdRef.current = null;
+    setExpandedSessionId(loadExpandedSessionId(scopeKey));
+    setNavSessionId(null);
     setDragLayout(null);
     setDraggingId(null);
     dragLayoutRef.current = null;
@@ -1039,7 +1039,7 @@ export function SessionGrid({
   // FLIP effect would otherwise animate across every row.
   useLayoutEffect(() => {
     const renames = takeSessionIdRenames();
-    const liveIds = scopedSessions.map((s) => s.taskId);
+    const liveIds = scopedSessions.map((s) => s.sessionId);
     const idSet = new Set(liveIds);
     const scopeChanged = prevScopeRef.current !== scopeKey;
     // A scope switch isn't a create, so it never consumes a clone/new-row request.
@@ -1049,7 +1049,7 @@ export function SessionGrid({
       liveIds.some((id) => !prevIds.has(id) && !renames.some((r) => r.to === id));
     const cloneAfter = hasNewSession ? takeCloneInsertAfter() : null;
     const newRow = hasNewSession ? takeNewRowRequest() : false;
-    const anchor = lastFocusedTaskIdRef.current;
+    const anchor = lastFocusedSessionIdRef.current;
     prevScopeRef.current = scopeKey;
     prevIdsRef.current = new Set(liveIds);
 
@@ -1071,10 +1071,10 @@ export function SessionGrid({
       return next;
     });
 
-    // A session removed out from under a stale expandedTaskId must not leave the
+    // A session removed out from under a stale expandedSessionId must not leave the
     // grid with reorder/resize disabled while no cell is visibly expanded. (The
     // scope-swap above already cleared transient state on a project change.)
-    setExpandedTaskId((prev) => (prev && !idSet.has(prev) ? null : prev));
+    setExpandedSessionId((prev) => (prev && !idSet.has(prev) ? null : prev));
   }, [scopedSessions, scopeKey, columnLimit]);
 
   useEffect(() => () => cleanupDragRef.current?.(), []);
@@ -1107,7 +1107,7 @@ export function SessionGrid({
     if (scope !== scopeKey) return;
     // Harnesses never change over a session's life, so the open-time snapshot on
     // the store's session is safe to sort by.
-    const harnessById = new Map(allScopedSessions.map((s) => [s.taskId, s.task.agent]));
+    const harnessById = new Map(allScopedSessions.map((s) => [s.sessionId, s.session.agent]));
     setLayout((prev) => {
       const cells = prev.rows
         .flatMap((r) => r.cells)
@@ -1141,17 +1141,17 @@ export function SessionGrid({
     const onFocusIn = () => {
       const id = (
         document.activeElement?.closest("[data-grid-cell]") as HTMLElement | null
-      )?.getAttribute("data-task-id");
+      )?.getAttribute("data-session-id");
       if (id) {
-        lastFocusedTaskIdRef.current = id;
+        lastFocusedSessionIdRef.current = id;
         // Also surface it to the store so the project route can anchor a new
         // session beside this pane even after a toolbar-button click.
-        noteGridFocusedTask(id);
+        noteGridFocusedSession(id);
       }
     };
     el.addEventListener("focusin", onFocusIn);
     return () => el.removeEventListener("focusin", onFocusIn);
-  }, [noteGridFocusedTask]);
+  }, [noteGridFocusedSession]);
 
   // Spotlight a cell — either a notification's "Open" landing on a grid session,
   // or a freshly created/cloned session that should take the caret. Make it
@@ -1164,23 +1164,23 @@ export function SessionGrid({
     // without the claim a stale request would replay on mount and un-hide the
     // (possibly deliberately hidden) session it targeted.
     if (!consumeGridFocusRequest(gridFocusRequest.nonce)) return;
-    const { taskId } = gridFocusRequest;
+    const { sessionId } = gridFocusRequest;
     // The request may target a session hidden with Cmd/Ctrl+L (e.g. it finished
     // while hidden and the user clicked the notification's "Open") — restore it
     // first so there is a cell to spotlight. Setter + ref are stable, so this
     // adds no effect deps.
-    setHiddenTaskIds((prev) => {
-      if (!prev.has(taskId)) return prev;
+    setHiddenSessionIds((prev) => {
+      if (!prev.has(sessionId)) return prev;
       const next = new Set(prev);
-      next.delete(taskId);
+      next.delete(sessionId);
       return next;
     });
-    if (lastHiddenTaskIdRef.current === taskId) lastHiddenTaskIdRef.current = null;
+    if (lastHiddenSessionIdRef.current === sessionId) lastHiddenSessionIdRef.current = null;
     // A spotlight targets one session — end any keyboard-nav selection so its
     // dimming/ring doesn't fight the spotlight and Enter can't open a stale pick.
-    setNavTaskId(null);
-    setExpandedTaskId((prev) => (prev && prev !== taskId ? null : prev));
-    setFocusedTaskId(taskId);
+    setNavSessionId(null);
+    setExpandedSessionId((prev) => (prev && prev !== sessionId ? null : prev));
+    setFocusedSessionId(sessionId);
     // An attach-flagged request also pulses the cell: the static spotlight ring
     // is invisible when the target is already the focused cell — exactly the
     // click-to-attach case, which targets the active session. Skip the pulse
@@ -1190,9 +1190,9 @@ export function SessionGrid({
     if (
       gridFocusRequest.flash &&
       gridFocusRequest.nonce > preMountFlashNonceRef.current &&
-      expandedTaskIdRef.current !== taskId
+      expandedSessionIdRef.current !== sessionId
     ) {
-      setAttachFlash({ taskId, nonce: gridFocusRequest.nonce });
+      setAttachFlash({ sessionId, nonce: gridFocusRequest.nonce });
     }
 
     // A brand-new session's pane can mount a few frames late (progressive mount)
@@ -1202,7 +1202,7 @@ export function SessionGrid({
     // that single attempt is exactly why the clone didn't reliably take focus
     // once the grid held many sessions. Stop early if the user moves the caret
     // into a different cell so we never fight a deliberate click.
-    const selector = `[data-grid-cell][data-task-id="${CSS.escape(taskId)}"]`;
+    const selector = `[data-grid-cell][data-session-id="${CSS.escape(sessionId)}"]`;
     let scrolled = false;
     let focusedOnce = false;
     let attempts = 0;
@@ -1212,11 +1212,11 @@ export function SessionGrid({
       const active = document.activeElement;
       const activeId = (
         active instanceof HTMLElement ? active.closest("[data-grid-cell]") : null
-      )?.getAttribute("data-task-id");
+      )?.getAttribute("data-session-id");
       // Only after the caret has landed in the target once do we treat focus in
       // another cell as a deliberate move and back off — at the start it still
       // sits on the source pane the clone was triggered from, which is expected.
-      if (focusedOnce && activeId && activeId !== taskId) return;
+      if (focusedOnce && activeId && activeId !== sessionId) return;
       const cell = gridRef.current?.querySelector<HTMLElement>(selector);
       if (cell && !scrolled) {
         cell.scrollIntoView({ block: "nearest", behavior: "smooth" });
@@ -1230,7 +1230,7 @@ export function SessionGrid({
     poll = window.setTimeout(step, 0);
 
     const timer = window.setTimeout(
-      () => setFocusedTaskId((prev) => (prev === taskId ? null : prev)),
+      () => setFocusedSessionId((prev) => (prev === sessionId ? null : prev)),
       2200,
     );
     return () => {
@@ -1270,12 +1270,12 @@ export function SessionGrid({
   // confirming rather than silently killing a possibly-running agent.
   const shouldConfirmClose = useCallback(
     (session: OpenTerminal): boolean => {
-      const tasks = queryClient.getQueryData<Task[]>(
-        tasksCacheKey(session.project.id, session.coreId),
+      const sessions = queryClient.getQueryData<Session[]>(
+        sessionsCacheKey(session.project.id, session.coreId),
       );
-      if (!tasks) return true;
-      const live = tasks.find((t) => t.id === session.taskId);
-      return (live ?? session.task).status === "running";
+      if (!sessions) return true;
+      const live = sessions.find((t) => t.id === session.sessionId);
+      return (live ?? session.session).status === "running";
     },
     [queryClient],
   );
@@ -1283,9 +1283,9 @@ export function SessionGrid({
   // Move the caret into a grid cell's terminal (after the layout settles) so the
   // user can type in it straight away, mirroring a click. Only touches gridRef,
   // so it's stable and safe to call from any of the close/expand handlers.
-  const focusSessionTerminal = useCallback((taskId: string) => {
+  const focusSessionTerminal = useCallback((sessionId: string) => {
     requestAnimationFrame(() => {
-      const selector = `[data-grid-cell][data-task-id="${CSS.escape(taskId)}"]`;
+      const selector = `[data-grid-cell][data-session-id="${CSS.escape(sessionId)}"]`;
       gridRef.current
         ?.querySelector<HTMLElement>(selector)
         ?.querySelector<HTMLTextAreaElement>(".xterm-helper-textarea")
@@ -1293,18 +1293,18 @@ export function SessionGrid({
     });
   }, []);
 
-  // The session that should take over when `taskId`'s cell closes: its left/
+  // The session that should take over when `sessionId`'s cell closes: its left/
   // previous neighbour in the on-screen reading order (rows top-to-bottom, cells
   // left-to-right), falling back to the next cell when the first one is closed.
   // Read from the live DOM — which is rendered in exactly that order — before the
   // closing cell is removed, so the grid never lands on "nothing active".
-  const neighbourAfterClose = useCallback((taskId: string): string | null => {
+  const neighbourAfterClose = useCallback((sessionId: string): string | null => {
     const cells = gridRef.current?.querySelectorAll<HTMLElement>("[data-grid-cell]");
     if (!cells) return null;
     const ids = Array.from(cells)
-      .map((c) => c.getAttribute("data-task-id"))
+      .map((c) => c.getAttribute("data-session-id"))
       .filter((id): id is string => id !== null);
-    const idx = ids.indexOf(taskId);
+    const idx = ids.indexOf(sessionId);
     if (idx < 0) return null;
     return ids[idx - 1] ?? ids[idx + 1] ?? null;
   }, []);
@@ -1315,13 +1315,13 @@ export function SessionGrid({
   // single-panel view) and we move the caret into its terminal (for the grid).
   const archiveSession = useCallback(
     async (session: OpenTerminal) => {
-      const activateTaskId = neighbourAfterClose(session.taskId);
+      const activateSessionId = neighbourAfterClose(session.sessionId);
       try {
-        await archiveOpenSession(session, close, queryClient, { activateTaskId });
+        await archiveOpenSession(session, close, queryClient, { activateSessionId });
       } catch (e: unknown) {
         toast.error(e instanceof Error ? e.message : "Could not archive session");
       }
-      if (activateTaskId) focusSessionTerminal(activateTaskId);
+      if (activateSessionId) focusSessionTerminal(activateSessionId);
     },
     [close, queryClient, neighbourAfterClose, focusSessionTerminal],
   );
@@ -1331,14 +1331,14 @@ export function SessionGrid({
   // the agent.
   const requestClose = useCallback(
     (session: OpenTerminal) => {
-      if (expandedTaskId === session.taskId) setExpandedTaskId(null);
+      if (expandedSessionId === session.sessionId) setExpandedSessionId(null);
       if (shouldConfirmClose(session)) {
         setPendingArchive(session);
         return;
       }
       void archiveSession(session);
     },
-    [archiveSession, shouldConfirmClose, expandedTaskId],
+    [archiveSession, shouldConfirmClose, expandedSessionId],
   );
 
   const confirmArchive = useCallback(async () => {
@@ -1360,11 +1360,11 @@ export function SessionGrid({
   const handleCloseIntent = useCallback(() => {
     if (userTerminals.panelOpen && isUserTerminalXtermFocused()) return;
     const focusedCell = document.activeElement?.closest("[data-grid-cell]");
-    const taskId = focusedCell?.getAttribute("data-task-id") ?? expandedTaskId;
-    if (!taskId) return;
-    const session = scopedSessions.find((s) => s.taskId === taskId);
+    const sessionId = focusedCell?.getAttribute("data-session-id") ?? expandedSessionId;
+    if (!sessionId) return;
+    const session = scopedSessions.find((s) => s.sessionId === sessionId);
     if (session) requestClose(session);
-  }, [userTerminals.panelOpen, expandedTaskId, scopedSessions, requestClose]);
+  }, [userTerminals.panelOpen, expandedSessionId, scopedSessions, requestClose]);
 
   useHotkey("session.closeWindow", handleCloseIntent, {
     enabled: scopedSessions.length > 0,
@@ -1375,15 +1375,15 @@ export function SessionGrid({
   // put its pane back in the grid and hand it the caret so the restore feels
   // like switching to it, not just re-adding a cell.
   const restoreHiddenSession = useCallback(
-    (taskId: string) => {
-      setHiddenTaskIds((prev) => {
-        if (!prev.has(taskId)) return prev;
+    (sessionId: string) => {
+      setHiddenSessionIds((prev) => {
+        if (!prev.has(sessionId)) return prev;
         const next = new Set(prev);
-        next.delete(taskId);
+        next.delete(sessionId);
         return next;
       });
-      if (lastHiddenTaskIdRef.current === taskId) lastHiddenTaskIdRef.current = null;
-      focusSessionTerminal(taskId);
+      if (lastHiddenSessionIdRef.current === sessionId) lastHiddenSessionIdRef.current = null;
+      focusSessionTerminal(sessionId);
     },
     [focusSessionTerminal],
   );
@@ -1391,13 +1391,13 @@ export function SessionGrid({
   // Un-hide everything at once (the bar's "Restore all"), focusing the most
   // recently hidden session — the one the user is most likely coming back for.
   const restoreAllHidden = useCallback(() => {
-    const ids = Array.from(hiddenTaskIds);
+    const ids = Array.from(hiddenSessionIds);
     if (ids.length === 0) return;
-    const focusId = lastHiddenTaskIdRef.current ?? ids[ids.length - 1];
-    setHiddenTaskIds(new Set());
-    lastHiddenTaskIdRef.current = null;
+    const focusId = lastHiddenSessionIdRef.current ?? ids[ids.length - 1];
+    setHiddenSessionIds(new Set());
+    lastHiddenSessionIdRef.current = null;
     if (focusId) focusSessionTerminal(focusId);
-  }, [hiddenTaskIds, focusSessionTerminal]);
+  }, [hiddenSessionIds, focusSessionTerminal]);
 
   // Cmd/Ctrl+L (terminal.close) in grid view: hide the focused cell's session —
   // pull its pane out of the grid without archiving it (the PTY keeps running
@@ -1418,25 +1418,25 @@ export function SessionGrid({
     // must be visible in this scope (a stale ref from another project, or an
     // active id that is itself hidden, falls through to the next).
     const candidates = [
-      focusedCell?.getAttribute("data-task-id"),
-      expandedTaskId,
-      lastFocusedTaskIdRef.current,
-      activeTaskIdFor(scopeKey),
-      scopedSessions[0]?.taskId,
+      focusedCell?.getAttribute("data-session-id"),
+      expandedSessionId,
+      lastFocusedSessionIdRef.current,
+      activeSessionIdFor(scopeKey),
+      scopedSessions[0]?.sessionId,
     ];
-    const taskId = candidates.find(
-      (id): id is string => !!id && scopedSessions.some((s) => s.taskId === id),
+    const sessionId = candidates.find(
+      (id): id is string => !!id && scopedSessions.some((s) => s.sessionId === id),
     );
-    const target = taskId ? scopedSessions.find((s) => s.taskId === taskId) : undefined;
+    const target = sessionId ? scopedSessions.find((s) => s.sessionId === sessionId) : undefined;
     if (target) {
       // Hand focus to the hiding cell's neighbour (read before removal) so the
       // grid keeps a focused pane instead of going inert — mirrors archive.
-      const neighbour = neighbourAfterClose(target.taskId);
-      if (expandedTaskId === target.taskId) setExpandedTaskId(null);
-      lastHiddenTaskIdRef.current = target.taskId;
-      setHiddenTaskIds((prev) => {
+      const neighbour = neighbourAfterClose(target.sessionId);
+      if (expandedSessionId === target.sessionId) setExpandedSessionId(null);
+      lastHiddenSessionIdRef.current = target.sessionId;
+      setHiddenSessionIds((prev) => {
         const next = new Set(prev);
-        next.add(target.taskId);
+        next.add(target.sessionId);
         return next;
       });
       if (neighbour) focusSessionTerminal(neighbour);
@@ -1444,20 +1444,20 @@ export function SessionGrid({
     }
     // The ref only lives for this mount; after a reload (or view switch) fall
     // back to the most recently hidden id in the persisted set.
-    const remembered = lastHiddenTaskIdRef.current;
+    const remembered = lastHiddenSessionIdRef.current;
     const restore =
-      remembered && hiddenTaskIds.has(remembered)
+      remembered && hiddenSessionIds.has(remembered)
         ? remembered
-        : Array.from(hiddenTaskIds).at(-1);
+        : Array.from(hiddenSessionIds).at(-1);
     if (!restore) return;
     restoreHiddenSession(restore);
   }, [
     userTerminals.panelOpen,
-    expandedTaskId,
+    expandedSessionId,
     scopedSessions,
     scopeKey,
-    activeTaskIdFor,
-    hiddenTaskIds,
+    activeSessionIdFor,
+    hiddenSessionIds,
     neighbourAfterClose,
     focusSessionTerminal,
     restoreHiddenSession,
@@ -1479,7 +1479,7 @@ export function SessionGrid({
   // dropped and any fully-emptied row collapses — the same packing hiding a
   // session already relies on. The persisted layout above is unaffected.
   const sessionById = useMemo(
-    () => new Map(renderSessions.map((s) => [s.taskId, s])),
+    () => new Map(renderSessions.map((s) => [s.sessionId, s])),
     [renderSessions],
   );
   const { viewRows, hasUnplaced } = useMemo(() => {
@@ -1492,11 +1492,11 @@ export function SessionGrid({
             return session ? { session, fr: r.colSizes[ci] ?? 1 } : null;
           })
           .filter((c): c is { session: OpenTerminal; fr: number } => c !== null);
-        cells.forEach((c) => seen.add(c.session.taskId));
+        cells.forEach((c) => seen.add(c.session.sessionId));
         return { cells, fr: activeLayout.rowSizes[ri] ?? 1 };
       })
       .filter((r) => r.cells.length > 0);
-    const extras = renderSessions.filter((s) => !seen.has(s.taskId));
+    const extras = renderSessions.filter((s) => !seen.has(s.sessionId));
     if (extras.length > 0) {
       rows.push({ cells: extras.map((s) => ({ session: s, fr: 1 })), fr: 1 });
     }
@@ -1518,12 +1518,12 @@ export function SessionGrid({
   // back to the last-focused cell, then the first session.
   const cycleFocusedSession = useCallback(
     (delta: 1 | -1) => {
-      const ids = visibleSessions.map((s) => s.taskId);
+      const ids = visibleSessions.map((s) => s.sessionId);
       if (ids.length < 2) return;
       const focusedId =
         (document.activeElement?.closest("[data-grid-cell]") as HTMLElement | null)?.getAttribute(
-          "data-task-id",
-        ) ?? lastFocusedTaskIdRef.current;
+          "data-session-id",
+        ) ?? lastFocusedSessionIdRef.current;
       const curIdx = focusedId ? ids.indexOf(focusedId) : -1;
       const nextIdx =
         curIdx === -1
@@ -1535,9 +1535,9 @@ export function SessionGrid({
       if (!nextId || nextId === focusedId) return;
       // A cycle is a deliberate move: drop any keyboard-nav selection and collapse
       // an unrelated expanded cell so the target is actually on screen.
-      setNavTaskId(null);
-      setExpandedTaskId((prev) => (prev && prev !== nextId ? null : prev));
-      const selector = `[data-grid-cell][data-task-id="${CSS.escape(nextId)}"]`;
+      setNavSessionId(null);
+      setExpandedSessionId((prev) => (prev && prev !== nextId ? null : prev));
+      const selector = `[data-grid-cell][data-session-id="${CSS.escape(nextId)}"]`;
       requestAnimationFrame(() => {
         const cell = gridRef.current?.querySelector<HTMLElement>(selector);
         cell?.scrollIntoView({ block: "nearest", behavior: "smooth" });
@@ -1558,7 +1558,7 @@ export function SessionGrid({
   // picker's sort options. Snapshot agents are safe: they never change over a
   // session's life.
   const harnessesPresent = useMemo(() => {
-    const present = new Set(allScopedSessions.map((s) => s.task.agent));
+    const present = new Set(allScopedSessions.map((s) => s.session.agent));
     return (Object.keys(HARNESS_META) as Harness[]).filter((a) => present.has(a));
   }, [allScopedSessions]);
 
@@ -1588,11 +1588,11 @@ export function SessionGrid({
   // bounded: the grid paints instantly and cells stream in a few per frame.
   let panesSeen = 0;
   let deferredPaneCount = 0;
-  const mountedByTask = new Map<string, boolean>();
+  const mountedBySession = new Map<string, boolean>();
   for (const session of visibleSessions) {
     const mounted = panesSeen++ < paneMountBudget;
     if (!mounted) deferredPaneCount += 1;
-    mountedByTask.set(session.taskId, mounted);
+    mountedBySession.set(session.sessionId, mounted);
   }
   useEffect(() => {
     if (deferredPaneCount === 0) return;
@@ -1606,7 +1606,7 @@ export function SessionGrid({
   // pointermove doesn't re-render). x/y are the latest pointer coords; grabX/Y
   // is where inside the card the user grabbed it, so it stays under the hand.
   const dragVisualRef = useRef<{
-    taskId: string;
+    sessionId: string;
     x: number;
     y: number;
     grabX: number;
@@ -1618,7 +1618,7 @@ export function SessionGrid({
     const grid = gridRef.current;
     if (!v || !grid) return;
     const cell = grid.querySelector<HTMLElement>(
-      `[data-grid-cell][data-task-id="${CSS.escape(v.taskId)}"]`,
+      `[data-grid-cell][data-session-id="${CSS.escape(v.sessionId)}"]`,
     );
     if (!cell) return;
     const gridRect = grid.getBoundingClientRect();
@@ -1638,8 +1638,8 @@ export function SessionGrid({
   // rows animates too.
   const cellRectsRef = useRef<Map<string, DOMRect>>(new Map());
   const flipSigRef = useRef<string | null>(null);
-  const orderSig = viewRows.map((r) => r.cells.map((c) => c.session.taskId).join(",")).join("|");
-  const flipSig = `${expandedTaskId ?? ""}::${orderSig}`;
+  const orderSig = viewRows.map((r) => r.cells.map((c) => c.session.sessionId).join(",")).join("|");
+  const flipSig = `${expandedSessionId ?? ""}::${orderSig}`;
   // Everything that can move a cell's box: order/expand, the grid's pixel size,
   // the gap/pad, and the painted track weights. A background session status tick
   // re-renders the grid without touching any of these — when the signature is
@@ -1672,12 +1672,12 @@ export function SessionGrid({
     const grid = gridRef.current;
     const cells = grid?.querySelectorAll<HTMLElement>("[data-grid-cell]");
     if (!grid || !cells) return;
-    const heldId = dragVisualRef.current?.taskId ?? null;
+    const heldId = dragVisualRef.current?.sessionId ?? null;
     const gridRect = grid.getBoundingClientRect();
     const prevRects = cellRectsRef.current;
     const nextRects = new Map<string, DOMRect>();
     cells.forEach((cell) => {
-      const id = cell.getAttribute("data-task-id");
+      const id = cell.getAttribute("data-session-id");
       if (!id) return;
       if (id === heldId) {
         // The held card tracks the pointer, not its slot — store its true slot
@@ -1745,7 +1745,7 @@ export function SessionGrid({
   // packed subset would write geometry back against cells that aren't on screen.
   // So arranging happens in the Active tab (where the full layout lives); the
   // Pinned tab is a read-through view.
-  const reorderEnabled = !expandedTaskId && visibleSessions.length > 1 && !isFiltered;
+  const reorderEnabled = !expandedSessionId && visibleSessions.length > 1 && !isFiltered;
 
   // Pixel space the row-height tracks share, once outer padding + gaps are gone.
   const totalRowFr = layout.rowSizes.reduce((a, b) => a + b, 0) || 1;
@@ -1772,7 +1772,7 @@ export function SessionGrid({
     [gridSize.width, gridPad, gridGap],
   );
   const resizeEnabled =
-    !expandedTaskId &&
+    !expandedSessionId &&
     !dragLayout &&
     visibleSessions.length > 1 &&
     gridSize.width > 0 &&
@@ -1941,12 +1941,12 @@ export function SessionGrid({
   // Stable callback handed to the memoized GridCell so its memo holds across
   // per-grid renders — a session just toggles its own expand state.
   const toggleExpanded = useCallback(
-    (taskId: string) => {
-      setExpandedTaskId((prev) => (prev === taskId ? null : taskId));
+    (sessionId: string) => {
+      setExpandedSessionId((prev) => (prev === sessionId ? null : sessionId));
       // Clicking the expand/shrink button moved focus onto the button; hand it
       // straight back to the session's terminal (after the toggled layout
       // settles) so the user can keep typing without clicking back in.
-      focusSessionTerminal(taskId);
+      focusSessionTerminal(sessionId);
     },
     [focusSessionTerminal],
   );
@@ -1958,12 +1958,12 @@ export function SessionGrid({
   useEffect(() => {
     const onToggle = () => {
       const focusedCell = document.activeElement?.closest("[data-grid-cell]");
-      const taskId = focusedCell?.getAttribute("data-task-id") ?? expandedTaskId;
-      if (taskId && scopedSessions.some((s) => s.taskId === taskId)) toggleExpanded(taskId);
+      const sessionId = focusedCell?.getAttribute("data-session-id") ?? expandedSessionId;
+      if (sessionId && scopedSessions.some((s) => s.sessionId === sessionId)) toggleExpanded(sessionId);
     };
     window.addEventListener(GRID_EXPAND_TOGGLE_EVENT, onToggle);
     return () => window.removeEventListener(GRID_EXPAND_TOGGLE_EVENT, onToggle);
-  }, [expandedTaskId, scopedSessions, toggleExpanded]);
+  }, [expandedSessionId, scopedSessions, toggleExpanded]);
 
   // ── Keyboard grid navigation (Cmd/Ctrl+Shift+G) ────────────────────────────
   // Enter a selection mode where arrow keys move a highlight between cells and
@@ -1971,26 +1971,26 @@ export function SessionGrid({
   // Triggered by the dedicated, rebindable session.gridNavigate shortcut and
   // scoped to the grid. Keys are handled in the capture phase so the focused
   // xterm surface can't swallow the arrows/Enter first.
-  const navActive = navTaskId !== null;
+  const navActive = navSessionId !== null;
 
   // Human-readable position of the current selection, announced to assistive
   // tech via the live region in the render (updates on every move).
   const navLabel = useMemo(() => {
-    if (navTaskId === null) return "";
-    const idx = visibleSessions.findIndex((s) => s.taskId === navTaskId);
+    if (navSessionId === null) return "";
+    const idx = visibleSessions.findIndex((s) => s.sessionId === navSessionId);
     return idx < 0 ? "" : `Session ${idx + 1} of ${visibleSessions.length} selected`;
-  }, [navTaskId, visibleSessions]);
+  }, [navSessionId, visibleSessions]);
 
   const enterGridNav = useCallback(() => {
-    const ids = visibleSessions.map((s) => s.taskId);
+    const ids = visibleSessions.map((s) => s.sessionId);
     // Start on the cell that currently owns focus, else the first session. Focus
     // is left where it is — the capture listener intercepts nav keys, and keeping
     // the terminal focused keeps Cmd/Ctrl+W and cancel behaving normally.
     const originId = document.activeElement
       ?.closest("[data-grid-cell]")
-      ?.getAttribute("data-task-id");
+      ?.getAttribute("data-session-id");
     const startId = originId && ids.includes(originId) ? originId : ids[0] ?? null;
-    if (startId) setNavTaskId(startId);
+    if (startId) setNavSessionId(startId);
   }, [visibleSessions]);
 
   // Move the selection by on-screen geometry rather than index math: rows can
@@ -2000,13 +2000,13 @@ export function SessionGrid({
   // on the perpendicular axis (same row for left/right, same column for up/down);
   // with none in that direction the selection holds.
   const moveGridNav = useCallback((dir: "left" | "right" | "up" | "down") => {
-    setNavTaskId((current) => {
+    setNavSessionId((current) => {
       if (current === null) return current;
       const cells = gridRef.current?.querySelectorAll<HTMLElement>("[data-grid-cell]");
       if (!cells || cells.length === 0) return current;
       const boxes = Array.from(cells)
         .map((cell) => {
-          const id = cell.getAttribute("data-task-id");
+          const id = cell.getAttribute("data-session-id");
           return id
             ? {
                 id,
@@ -2038,7 +2038,7 @@ export function SessionGrid({
   }, []);
 
   const confirmGridNav = useCallback(() => {
-    setNavTaskId((current) => {
+    setNavSessionId((current) => {
       if (current) focusSessionTerminal(current);
       return null;
     });
@@ -2046,27 +2046,27 @@ export function SessionGrid({
 
   // Cancel leaves focus untouched (nav mode never moved it), so the terminal the
   // user was already in stays focused.
-  const cancelGridNav = useCallback(() => setNavTaskId(null), []);
+  const cancelGridNav = useCallback(() => setNavSessionId(null), []);
 
   // Leave nav mode if it goes stale: the selected session closed, the grid
   // collapsed to a single cell, or a cell was expanded to fill the grid.
   useEffect(() => {
-    if (navTaskId === null) return;
+    if (navSessionId === null) return;
     if (
-      expandedTaskId ||
+      expandedSessionId ||
       scopedSessions.length < 2 ||
-      !scopedSessions.some((s) => s.taskId === navTaskId)
+      !scopedSessions.some((s) => s.sessionId === navSessionId)
     ) {
-      setNavTaskId(null);
+      setNavSessionId(null);
     }
-  }, [navTaskId, expandedTaskId, scopedSessions]);
+  }, [navSessionId, expandedSessionId, scopedSessions]);
 
   // Any pointer interaction takes over from the keyboard — clicking a terminal
   // to type, grabbing a divider, hitting a toolbar button — so end nav mode.
   // Capture phase so it wins before the target's own pointer handlers run.
   useEffect(() => {
     if (!navActive) return;
-    const onPointerDown = () => setNavTaskId(null);
+    const onPointerDown = () => setNavSessionId(null);
     window.addEventListener("pointerdown", onPointerDown, true);
     return () => window.removeEventListener("pointerdown", onPointerDown, true);
   }, [navActive]);
@@ -2078,7 +2078,7 @@ export function SessionGrid({
   onNavKeyRef.current = (e: KeyboardEvent) => {
     // The trigger is the dedicated, rebindable session.gridNavigate shortcut.
     const trigger = matchBinding(e, bindings["session.gridNavigate"]);
-    if (navTaskId !== null) {
+    if (navSessionId !== null) {
       switch (e.key) {
         case "ArrowRight":
           e.preventDefault();
@@ -2121,7 +2121,7 @@ export function SessionGrid({
       }
       // Any other key ends nav mode and is left to reach its real target (a
       // hotkey like Cmd+N opening a dialog, or a keystroke resuming the terminal).
-      setNavTaskId(null);
+      setNavSessionId(null);
       return;
     }
     if (!trigger) return;
@@ -2139,7 +2139,7 @@ export function SessionGrid({
     // (e.g. a browser build's "find previous" on Cmd/Ctrl+Shift+G) acts on it.
     e.preventDefault();
     e.stopPropagation();
-    if (expandedTaskId || scopedSessions.length < 2) return;
+    if (expandedSessionId || scopedSessions.length < 2) return;
     enterGridNav();
   };
 
@@ -2151,7 +2151,7 @@ export function SessionGrid({
   }, [scopedSessions.length]);
 
   const startPointerReorder = useCallback(
-    (taskId: string, event: ReactPointerEvent<HTMLDivElement>) => {
+    (sessionId: string, event: ReactPointerEvent<HTMLDivElement>) => {
       if (event.button !== 0) return;
       cleanupDragRef.current?.();
 
@@ -2163,7 +2163,7 @@ export function SessionGrid({
 
       dragLayoutRef.current = cloneLayout(paintedLayoutRef.current);
       const drag: PointerDragState = {
-        id: taskId,
+        id: sessionId,
         pointerId: event.pointerId,
         startX: event.clientX,
         startY: event.clientY,
@@ -2178,7 +2178,7 @@ export function SessionGrid({
         // Operate on the layout that's actually painted, so DOM-read drop
         // targets and the moved structure always agree even mid-repaint.
         const base = paintedLayoutRef.current;
-        const src = findCell(base.rows, taskId);
+        const src = findCell(base.rows, sessionId);
         const target = resolveDropTarget(clientX, clientY);
         if (!src || !target) return;
         const next = moveCellInLayout(base, src.row, src.col, target.rowIndex, target.cellIndex);
@@ -2187,7 +2187,7 @@ export function SessionGrid({
         setDragLayout(next);
       };
 
-      const cellSelector = `[data-grid-cell][data-task-id="${CSS.escape(taskId)}"]`;
+      const cellSelector = `[data-grid-cell][data-session-id="${CSS.escape(sessionId)}"]`;
 
       const onPointerMove = (moveEvent: PointerEvent) => {
         if (moveEvent.pointerId !== drag.pointerId) return;
@@ -2195,7 +2195,7 @@ export function SessionGrid({
           const dist = Math.hypot(moveEvent.clientX - drag.startX, moveEvent.clientY - drag.startY);
           if (dist < DRAG_THRESHOLD_PX) return;
           drag.moved = true;
-          setDraggingId(taskId);
+          setDraggingId(sessionId);
           // Capture now so the drag keeps tracking even over xterm surfaces.
           try {
             handleEl.setPointerCapture(drag.pointerId);
@@ -2213,7 +2213,7 @@ export function SessionGrid({
               .forEach((a) => a.cancel());
             const rect = cell.getBoundingClientRect();
             dragVisualRef.current = {
-              taskId,
+              sessionId,
               x: moveEvent.clientX,
               y: moveEvent.clientY,
               grabX: drag.startX - rect.left,
@@ -2271,7 +2271,7 @@ export function SessionGrid({
         // pulled focus off the xterm surface) and a plain click on the header
         // bar — except clicks on a header button, which own their own behavior.
         if (drag.moved || !startedOnControl) {
-          focusSessionTerminal(taskId);
+          focusSessionTerminal(sessionId);
         }
       };
 
@@ -2398,19 +2398,19 @@ export function SessionGrid({
           >
             {row.cells.map(({ session }) => {
               const cellScopeKey = scopeKeyFor(session);
-              const isExpandedCell = expandedTaskId === session.taskId;
-              const isDragging = draggingId === session.taskId;
+              const isExpandedCell = expandedSessionId === session.sessionId;
+              const isDragging = draggingId === session.sessionId;
               return (
                 <GridCell
-                  key={`${session.taskId}:${cellScopeKey}`}
+                  key={`${session.sessionId}:${cellScopeKey}`}
                   session={session}
                   scopeKey={cellScopeKey}
-                  mounted={mountedByTask.get(session.taskId) ?? true}
+                  mounted={mountedBySession.get(session.sessionId) ?? true}
                   expanded={isExpandedCell}
-                  hidden={expandedTaskId !== null && !isExpandedCell}
+                  hidden={expandedSessionId !== null && !isExpandedCell}
                   isDragging={isDragging}
-                  isFocused={!isDragging && focusedTaskId === session.taskId}
-                  isNavSelected={navTaskId === session.taskId}
+                  isFocused={!isDragging && focusedSessionId === session.sessionId}
+                  isNavSelected={navSessionId === session.sessionId}
                   navActive={navActive}
                   reorderEnabled={reorderEnabled}
                   gridPadding={gridPad}
@@ -2419,10 +2419,10 @@ export function SessionGrid({
                   onPtyReady={setPtyId}
                   onHeaderPointerDown={startPointerReorder}
                   onTogglePin={onTogglePinned ? handleTogglePin : undefined}
-                  pinBusy={pinningTaskIds?.has(session.taskId) ?? false}
-                  isPinned={pinnedTaskIds?.has(session.taskId) ?? false}
+                  pinBusy={pinningSessionIds?.has(session.sessionId) ?? false}
+                  isPinned={pinnedSessionIds?.has(session.sessionId) ?? false}
                   flashNonce={
-                    attachFlash?.taskId === session.taskId ? attachFlash.nonce : null
+                    attachFlash?.sessionId === session.sessionId ? attachFlash.nonce : null
                   }
                   onFlashDone={handleFlashDone}
                 />

@@ -47,7 +47,7 @@ const MAX_BODY_BYTES = 1_000_000;
 const HOOK_PATH_PREFIX = "/api/hooks/";
 
 export type HookReceiverHandler = (
-  taskId: string,
+  sessionId: string,
   payload: HarnessHookBody,
   /**
    * The event named in the URL, for a payload whose body omits
@@ -119,7 +119,7 @@ function readBody(req: IncomingMessage): Promise<BodyResult> {
  * Start the receiver on an ephemeral loopback port. Resolves once it is
  * listening, so the spawn path can never hand a PTY a URL nothing answers on.
  *
- * `handler` is called with the task id from the query string and the parsed
+ * `handler` is called with the session id from the query string and the parsed
  * body; everything it decides (and every write it makes) is its business —
  * this module is the transport and the gate, nothing more.
  */
@@ -128,7 +128,7 @@ export async function startHarnessHookReceiver(
 ): Promise<HarnessHookReceiver> {
   const token = randomBytes(32).toString("hex");
   // The delivery number this receiver acks with. Per boot, monotonic, and
-  // deliberately not per task: what it answers is "this Core is taking hooks,
+  // deliberately not per session: what it answers is "this Core is taking hooks,
   // and this is the nth", which is the fact a lost POST cannot fake.
   let accepted = 0;
 
@@ -144,10 +144,10 @@ export async function startHarnessHookReceiver(
         unauthorized(res);
         return;
       }
-      const taskId = url.searchParams.get("taskId");
-      if (!taskId) {
+      const sessionId = url.searchParams.get("sessionId");
+      if (!sessionId) {
         res.writeHead(400, { "content-type": "application/json" });
-        res.end(JSON.stringify({ error: "taskId required" }));
+        res.end(JSON.stringify({ error: "sessionId required" }));
         return;
       }
       const body = await readBody(req);
@@ -184,7 +184,7 @@ export async function startHarnessHookReceiver(
         // none — the hook writer knows which event it installed each entry
         // for, so a harness that omits it from the body is still routable.
         const eventName = url.searchParams.get("hookEvent") ?? "";
-        const result = handler(taskId, payload, eventName);
+        const result = handler(sessionId, payload, eventName);
         if (!result.ok) {
           res.writeHead(404, { "content-type": "application/json" });
           res.end(JSON.stringify(result.body));

@@ -146,8 +146,8 @@ describe("CoreClient", () => {
     const { client: c, dial } = await connected(core);
 
     const [spawned, found, replayed] = await Promise.all([
-      c.spawn({ taskId: "t1", cwd: "/tmp", command: "claude", agent: "claude-code" }),
-      c.findByTask("t1"),
+      c.spawn({ sessionId: "t1", cwd: "/tmp", command: "claude", agent: "claude-code" }),
+      c.findBySession("t1"),
       c.replay("pty-1", 3),
     ]);
 
@@ -161,7 +161,7 @@ describe("CoreClient", () => {
     const asked = dial
       .last()
       .client.frames()
-      .filter((f) => f.type === "spawn" || f.type === "findByTask" || f.type === "replay")
+      .filter((f) => f.type === "spawn" || f.type === "findBySession" || f.type === "replay")
       .map((f) => f.reqId);
     expect(new Set(asked).size).toBe(3);
   });
@@ -176,8 +176,8 @@ describe("CoreClient", () => {
         mutateProject: () => {
           throw new Error("Folder not found");
         },
-        mutateTask: () => {
-          throw new Error("no such task");
+        mutateSession: () => {
+          throw new Error("no such session");
         },
         listSessions: () => [],
       },
@@ -185,11 +185,11 @@ describe("CoreClient", () => {
     const { client: c } = await connected(rig);
 
     const err = await c
-      .tasksMutate({ op: "update", taskId: "t1", title: "x" })
+      .sessionsMutate({ op: "update", sessionId: "t1", title: "x" })
       .then(() => null)
       .catch((e: unknown) => e);
     expect(err).toBeInstanceOf(CoreLinkRequestError);
-    expect((err as Error).message).toBe("no such task");
+    expect((err as Error).message).toBe("no such session");
     // No `code` on this frame, and none invented: a reader takes the code when
     // it is there and falls back to the message when it is not.
     expect((err as CoreLinkRequestError).code).toBeUndefined();
@@ -265,7 +265,7 @@ describe("CoreClient", () => {
     expect(dial.last().client.framesOfType("reclaim")[0]).toMatchObject({
       clientId: "sdk-fixed-id",
     });
-    expect(reclaimed).toHaveBeenCalledWith({ replaced: false, taskIds: [] });
+    expect(reclaimed).toHaveBeenCalledWith({ replaced: false, sessionIds: [] });
   });
 
   it("does not reconnect: a dropped socket is the end of a one-shot client", async () => {
@@ -332,7 +332,7 @@ describe("CoreClient", () => {
     await expect(c.ptySubscribe("pty-1")).resolves.toBeUndefined();
     // …and refuses the frame outright for a caller that asked without checking.
     await expect(
-      c.request({ type: "forceTakeover", reqId: "", taskId: "t1" }),
+      c.request({ type: "forceTakeover", reqId: "", sessionId: "t1" }),
     ).rejects.toThrow(/multiConnection capability/);
   });
 

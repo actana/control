@@ -80,7 +80,7 @@ function mockCore(): PtyCore {
     resize: () => true,
     kill: () => true,
     killLaunchProcesses: async () => ({ ptyCount: 0, ports: [] }),
-    findByTask: () => ({ ptyId: null }),
+    findBySession: () => ({ ptyId: null }),
     replay: () => ({ data: "", nextSeq: 0, from: 0 }),
     killAll: () => {},
   } as unknown as PtyCore;
@@ -183,8 +183,8 @@ describe("a revoked certificate never becomes a connection", () => {
   it("does not answer frames sent on it anyway", () => {
     start();
     const ws = connect({ certSerial: REVOKED_SERIAL });
-    ws.receive({ type: "findByTask", reqId: "a1", taskId: "t1" });
-    expect(ws.ofType("findByTaskResult")).toEqual([]);
+    ws.receive({ type: "findBySession", reqId: "a1", sessionId: "t1" });
+    expect(ws.ofType("findBySessionResult")).toEqual([]);
   });
 
   it("leaves an unrevoked client alone", () => {
@@ -232,8 +232,8 @@ describe("a revoked bearer never passes the auth frame", () => {
     start({ authVerifier: verifierFor(REVOKED_SERIAL) });
     const ws = connect({ certSerial: null });
     ws.receive({ type: "auth", reqId: "a1", bearer: "whatever" });
-    ws.receive({ type: "findByTask", reqId: "b1", taskId: "t1" });
-    expect(ws.ofType("findByTaskResult")).toEqual([]);
+    ws.receive({ type: "findBySession", reqId: "b1", sessionId: "t1" });
+    expect(ws.ofType("findBySessionResult")).toEqual([]);
   });
 
   it("lets an unrevoked pairing's bearer through", () => {
@@ -273,8 +273,8 @@ describe("a link a revoked client already holds", () => {
     rows[0] = client(LIVE_SERIAL, NOW);
     await revocations.refresh();
     server.closeRevoked();
-    ws.receive({ type: "findByTask", reqId: "a1", taskId: "t1" });
-    expect(ws.ofType("findByTaskResult")).toEqual([]);
+    ws.receive({ type: "findBySession", reqId: "a1", sessionId: "t1" });
+    expect(ws.ofType("findBySessionResult")).toEqual([]);
   });
 
   it("closes a link identified only by the bearer it authenticated with", async () => {
@@ -303,8 +303,8 @@ describe("a link a revoked client already holds", () => {
     expect(revoked.closed).toBe(true);
     expect(other.closed).toBe(false);
     expect(loopback.closed).toBe(false);
-    other.receive({ type: "findByTask", reqId: "b1", taskId: "t1" });
-    expect(other.ofType("findByTaskResult")).toHaveLength(1);
+    other.receive({ type: "findBySession", reqId: "b1", sessionId: "t1" });
+    expect(other.ofType("findBySessionResult")).toHaveLength(1);
   });
 
   it("closes every link that pairing holds, not just the first", async () => {

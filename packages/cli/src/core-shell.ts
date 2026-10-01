@@ -192,7 +192,7 @@ export async function runCoreShell(
     releaseTerminal();
     // An ending that was not the remote shell's own exit leaves a login shell
     // running on the Core with nothing attached to it. Nobody can reattach —
-    // the task id was random and is now gone — so it would sit there holding a
+    // the session id was random and is now gone — so it would sit there holding a
     // PTY until the Core restarted.
     if (end.kind === "signal" || end.kind === "link-error") await killQuietly(channel);
   } finally {

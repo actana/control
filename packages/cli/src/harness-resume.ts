@@ -1,11 +1,11 @@
 // How each harness is asked to pick a conversation back up (#129 D10, #160).
 //
-// `actana session resume <task>` starts a **new** PTY for a Task that already
+// `actana session resume <session>` starts a **new** PTY for a Session that already
 // has one behind it, and the only thing that makes it a resumption rather than
 // a fresh Session is the launch command: the harness's own session id, spelled
-// the way that harness spells it. The Core stores that id on the Task row
+// the way that harness spells it. The Core stores that id on the Session row
 // (`claudeSessionId`, written by the hook pipeline), so the CLI never invents
-// one — it reads the Task and asks for what is already there.
+// one — it reads the Session and asks for what is already there.
 //
 // A pure function, in its own module, for one reason: **the Core's allow-list
 // is the authority on what may be spawned** (`pty-spawn-policy.ts`), and the

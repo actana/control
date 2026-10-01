@@ -14,13 +14,13 @@
  */
 export const HOOK_URL_ENV = "AC_HOOK_URL";
 export const HOOK_TOKEN_ENV = "AC_HOOK_TOKEN";
-export const HOOK_TASK_ID_ENV = "AC_HOOK_TASK_ID";
+export const HOOK_SESSION_ID_ENV = "AC_HOOK_SESSION_ID";
 /**
  * The harness this PTY was spawned as. A hook file that every run of a
  * harness loads — Pi's extension is global (ADR 0039) — also loads in a run
  * an agent started from inside another harness's Session, which inherits
- * that Session's URL, token and task id. The writer compares this against
- * its own harness, so a nested run posts nothing into a task it is not.
+ * that Session's URL, token and session id. The writer compares this against
+ * its own harness, so a nested run posts nothing into a session it is not.
  */
 export const HOOK_HARNESS_ENV = "AC_HOOK_HARNESS";
 /**

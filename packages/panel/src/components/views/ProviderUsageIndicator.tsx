@@ -24,7 +24,7 @@ import { useProviderUsage, useSettings } from "~/queries";
  * each led by the same status dot as the chip — with per-window bars
  * (bar + % + reset), a one-line inline reason for erroring providers, refresh,
  * and a shortcut to Settings → Usage. Signed-out providers are omitted
- * everywhere (signing in is a Settings → Usage task, not live status).
+ * everywhere (signing in is a Settings → Usage session, not live status).
  * Renders nothing when the feature is off so the chrome stays uncluttered.
  */
 export function ProviderUsageIndicator() {
@@ -109,7 +109,7 @@ export function ProviderUsageIndicator() {
         }
       : collapsedFallback(providers, isLoading);
 
-  // Signed-out providers are a Settings → Usage task, not live status — both
+  // Signed-out providers are a Settings → Usage session, not live status — both
   // the chip dots and the popover cover only providers with something to
   // report (data, rate-limit, error).
   const visibleProviders = providers.filter((p) => p.status !== "unauthenticated");

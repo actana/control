@@ -711,7 +711,7 @@ export async function openCoreSession(credential, { command, timeoutMs = 30_000 
   let exit = null;
   const waiters = new Map();
   const listeners = new Set();
-  const taskId = `smoke-session-${crypto.randomBytes(6).toString("hex")}`;
+  const sessionId = `smoke-session-${crypto.randomBytes(6).toString("hex")}`;
 
   const answer = (reqId) =>
     new Promise((resolve, reject) => {
@@ -759,7 +759,7 @@ export async function openCoreSession(credential, { command, timeoutMs = 30_000 
   // before it: the server subscribes this connection before it answers.
   const spawned = await rpc({
     type: "spawn",
-    opts: { shellSession: true, taskId, cols: 200, rows: 50, ...(command ? { command } : {}) },
+    opts: { shellSession: true, sessionId, cols: 200, rows: 50, ...(command ? { command } : {}) },
   });
   if (spawned.type !== "spawned") {
     ws.close();
@@ -796,7 +796,7 @@ export async function openCoreSession(credential, { command, timeoutMs = 30_000 
 
   const session = {
     ptyId,
-    taskId,
+    sessionId,
     output: plain,
     /** Resolves with the exit frame when the Session's process exits. */
     exited: () => waitUntil(() => exit, "exit", timeoutMs),

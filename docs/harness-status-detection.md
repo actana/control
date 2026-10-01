@@ -4,7 +4,7 @@ How Actana Control knows whether a Session is **working**, **idle**, or
 **waiting on a human** — and how that answer reaches the card.
 
 The short version: **the Core detects, the Core writes, the Panel renders.** A
-Task lives on the Core that owns it (ADR 0004), the harness runs on that Core's
+Session lives on the Core that owns it (ADR 0004), the harness runs on that Core's
 machine, and its hooks report to that Core. Nothing in this path round-trips
 through the Panel; the Panel learns about a status change the same way it learns
 about everything else on a Core — as an Event replayed off its cursor.
@@ -17,7 +17,7 @@ about everything else on a Core — as an Event replayed off its cursor.
 | Hook file writers, per harness | `packages/core/src/harness-hooks.ts` |
 | The decisions (event → status) | `packages/shared/src/harness-hook-pipeline.ts` |
 | Subagent bookkeeping | `packages/shared/src/subagent-activity.ts` |
-| Status/title writes + events | `packages/core/src/core-task-writer.ts` |
+| Status/title writes + events | `packages/core/src/core-session-writer.ts` |
 | Title generation | `packages/core/src/core-title-generator.ts` |
 | PTY exit settle | `packages/core/src/pty-manager.ts` → `onSessionExit` |
 | Hook delivery misses | `packages/core/src/harness-hook-delivery.ts` |
@@ -27,7 +27,7 @@ about everything else on a Core — as an Event replayed off its cursor.
 | Relaunch reset | `packages/core/src/core-session-relaunch.ts` |
 
 The Panel keeps a hook endpoint (`POST /api/hooks/<slug>`) for its own remaining
-local task rows, running the same shared pipeline. A Core-owned Session never
+local session rows, running the same shared pipeline. A Core-owned Session never
 reaches it.
 
 ## Standard mechanism: harness lifecycle hooks
@@ -53,16 +53,16 @@ below): `ready` is not a resting place for a Session whose process is gone.
 \* `Stop` fires when the **foreground** turn ends — including while background
 subagents (Task tool harnesses) the turn launched are still running. Treating it
 as `finished` unconditionally dinged the operator mid-work. So the pipeline
-counts `SubagentStart`/`SubagentStop` per task (paired by the payload's
+counts `SubagentStart`/`SubagentStop` per session (paired by the payload's
 `agent_id`, whose `session_id` is the parent session's) and downgrades a `Stop`
 to `running` while any subagent is still active. A background subagent's
 completion re-invokes the main harness, and *that* turn's `Stop` — arriving with
 no active subagents left — lands as the real `finished`. Neither subagent event
-maps to a status on its own, but one arriving **moments after** a task finished
+maps to a status on its own, but one arriving **moments after** a session finished
 heals it back to `running` (a `Stop` won the race against the turn's own subagent
 lifecycle POST).
 
-A finished task is healed on **two conditions only**: a subagent tracked from
+A finished session is healed on **two conditions only**: a subagent tracked from
 that turn is still in flight, or the finish is younger than
 `FINISH_RACE_WINDOW_MS` (one second, inclusive). Everything else is one of
 Claude Code's **post-turn internal helpers**, whose subagent events carry the
@@ -75,11 +75,11 @@ for the whole TTL.
 **Of those two, the clock is what decides the raced-POST case.** Every
 hook-driven finish leaves the tracked set empty by construction — the `finished`
 mapping is downgraded to `running` whenever `hasActiveSubagents` is true, the
-drain's `finishQuietTask` runs only after an idle set, `sessionProcessExited`
+drain's `finishQuietSession` runs only after an idle set, `sessionProcessExited`
 clears the set first, and the Core's session backstop clears before it stamps
 the finish. The active-set condition therefore guards a `finished` written by one
-of the *other* status writers (a core-link task mutation through
-`CoreTaskWriter`, which clears nothing), not the race. Worth keeping — just not
+of the *other* status writers (a core-link session mutation through
+`CoreSessionWriter`, which clears nothing), not the race. Worth keeping — just not
 what protects in-turn work here.
 
 ### What the window measures, and what that costs
@@ -98,7 +98,7 @@ So a **retry-delayed in-turn `SubagentStart` is knowingly traded away**. One tha
 eats a `-m 3` timeout lands ~4s after a `Stop` that already wrote `finished`,
 finds an empty set and a 4s-old finish, and is dropped *and* never tracked; the
 card reads `finished` through a live fan-out, and no backstop corrects it (every
-backstop below fixes a task stuck on `running`; none fixes one stuck on
+backstop below fixes a session stuck on `running`; none fixes one stuck on
 `finished`). That residual is filed as **issue 440**.
 
 The window was 30 seconds until issue 385. That covered the retry tail
@@ -113,7 +113,7 @@ a payload discriminator, an emission timestamp, or the W1 status arbiter; issue
 440 sketches those.
 
 Backstops, so a `SubagentStop` that never arrives (lost POST, killed process) —
-or a healed `running` that no `Stop` will ever follow — cannot hold a task on
+or a healed `running` that no `Stop` will ever follow — cannot hold a session on
 `running` forever. The first three are armed **by a hook that arrived**; the
 fourth is armed by nothing, which is the point (issue 243):
 
@@ -123,7 +123,7 @@ fourth is armed by nothing, which is the point (issue 243):
   tracked set is idle — drained by real `SubagentStop`s or by expiry — a 3-minute
   drain grace starts: if the re-invoked main harness's own `Stop` lands the finish
   within it (the normal flow), the backstop's promotion is a no-op (it only fires
-  on tasks still `running`); if nothing follows, the backstop promotes to
+  on sessions still `running`); if nothing follows, the backstop promotes to
   `finished`. New subagent activity resets the grace; a new `UserPromptSubmit`
   disarms it.
 - Tracking is dropped outright when a new session id is captured, on
@@ -302,7 +302,7 @@ without a failure that says so.
 
 ### The session-id guard, and the one event it does not drop
 
-A hook is addressed by **task id**, read out of the PTY's own environment. The
+A hook is addressed by **session id**, read out of the PTY's own environment. The
 `session_id` in the payload is a second, weaker fact: the harness's own name for
 the conversation. The pipeline stores the first one it sees on a *capture* event
 (`UserPromptSubmit`, `SessionStart`, and their Cursor spellings) and, from then
@@ -313,7 +313,7 @@ a new id, because a new session id means a new harness process.
 
 **A turn end is the exception** (#390). `Stop` — and Cursor's `stop` and
 `afterAgentResponse` — claims nothing; it reports that a turn ended, on a PTY
-that is this task's whatever the harness calls its session. Two shapes produce
+that is this session's whatever the harness calls its session. Two shapes produce
 one under an unrecognised id: a **resume**, where the stored id belongs to a
 process that is gone and no further capture event is coming, and an **OpenCode
 child** whose `session.idle` leaked past the plugin's parent/child filter.
@@ -321,7 +321,7 @@ Dropping it was still an *ack* — `{ ok: true, ignored: "foreign-session" }` �
 the harness saw its hook accepted while the card sat on `running` and no
 `session:finished` ever fired.
 
-So a foreign turn end settles the task instead, on terms narrower than an owned
+So a foreign turn end settles the session instead, on terms narrower than an owned
 one's:
 
 - **The tracked subagents are dropped on entry**, with the recent-finish mark.
@@ -347,7 +347,7 @@ one's:
   an open question is moot, while here it is alive and may be blocked on exactly
   that question. A leaked child going idle would otherwise write `finished` over
   a parent waiting on a permission prompt, taking the pending-question overlay
-  with it. `ready` is out for #387's reason: `CoreTaskWriter` appends
+  with it. `ready` is out for #387's reason: `CoreSessionWriter` appends
   `session:finished` on that transition, and a Session titled "Waiting for
   initial prompt…" has no turn to end.
 - **The session id is not captured.** A `Stop` is not a capture event; adopting
@@ -360,7 +360,7 @@ The Core exposes a small **loopback HTTP** listener a hook's shell command can
 reach from the Core's own machine:
 
 ```
-POST http://127.0.0.1:<ephemeral>/api/hooks/<harness-slug>?taskId=<id>
+POST http://127.0.0.1:<ephemeral>/api/hooks/<harness-slug>?sessionId=<id>
 Authorization: Bearer <token>
 ```
 
@@ -581,7 +581,7 @@ sh -c 'curl -sS -m 3 -X POST \
   -H "Authorization: Bearer $AC_HOOK_TOKEN" \
   -H "Content-Type: application/json" \
   --data-binary @- \
-  "$AC_HOOK_URL/api/hooks/claude?taskId=$AC_HOOK_TASK_ID" || true'
+  "$AC_HOOK_URL/api/hooks/claude?sessionId=$AC_HOOK_SESSION_ID" || true'
 ```
 
 The harness pipes the hook payload (`hook_event_name`, `session_id`, `cwd`,
@@ -608,7 +608,7 @@ Both ends now account for it:
   refused connection means the Core is down.
 - What still could not be delivered is appended to `$AC_HOOK_MISS_LOG`
   (`<user-data-dir>/hook-misses.log`) as one tab-separated
-  `<iso8601> <taskId> <event> <curl exit>` line. Unset, the record goes to
+  `<iso8601> <sessionId> <event> <curl exit>` line. Unset, the record goes to
   `/dev/null` — a workspace opened by hand writes nowhere rather than failing.
 - The receiver counts the hooks it accepts and answers with that delivery
   number, so an ack is a fact rather than an empty 200.
@@ -630,16 +630,16 @@ cannot be written falls through to it.
 
 1. The receiver hands the payload to `CoreHarnessStatus`.
 2. That runs the shared pipeline, which decides the status.
-3. The write goes through `CoreTaskWriter` — the **one** seam every task-row
-   change uses, the Panel's `tasksMutate` frame included. It writes the Core's own
-   SQLite and appends the matching event (`task:updated`, plus `session:finished`
+3. The write goes through `CoreSessionWriter` — the **one** seam every session-row
+   change uses, the Panel's `sessionsMutate` frame included. It writes the Core's own
+   SQLite and appends the matching event (`session:updated`, plus `session:finished`
    on a transition into `finished`, which is what #20's notification routes on).
 4. A subscribed Panel receives that event live; a Panel that was away replays it
    off its `lastEventId` cursor. Either way the card re-renders with no manual
    refresh, and the Panel's own database is untouched.
 
-Cache invalidation on the Panel targets the **`coreId`-tagged** task bucket
-(`tasksCacheKey(projectId, coreId)`). A write path that invalidates the untagged
+Cache invalidation on the Panel targets the **`coreId`-tagged** session bucket
+(`sessionsCacheKey(projectId, coreId)`). A write path that invalidates the untagged
 key leaves a Core-owned card exactly as stale as before.
 
 ## Dead-process fallbacks
@@ -668,7 +668,7 @@ Sessions whose process is gone:
 
   It settles on a scale of its own: **`disconnected`, whatever the exit code**.
   `terminated` would say a turn was killed, and `finished` would say work
-  completed — `CoreTaskWriter` appends `session:finished` on exactly that
+  completed — `CoreSessionWriter` appends `session:finished` on exactly that
   transition, so a bare Session the operator closes with `/exit` would ring a
   completion ding for a turn that never ran. `disconnected` claims only that
   the process went away, which is the whole of what is known.
@@ -677,8 +677,8 @@ Sessions whose process is gone:
   this run. At that moment no PTY of this process exists, so every row still
   claiming `running` / `needs-input` is an orphan of the previous one: a Core's
   PTYs die with it, silently, with no exit callback and no `pty:exit`. Each is
-  written to `disconnected` through `CoreTaskWriter`, so the settle appends the
-  `task:updated` event a connected Panel re-renders from — a sweep nobody is
+  written to `disconnected` through `CoreSessionWriter`, so the settle appends the
+  `session:updated` event a connected Panel re-renders from — a sweep nobody is
   told about leaves the operator looking at the same wrong card.
 
   **Spawned `ready` rows are orphans too** (issue 387), for the same reason the
@@ -688,7 +688,7 @@ Sessions whose process is gone:
   not started — flipping a queue of unstarted work to `disconnected` on every
   restart would trade one wrong card for many. The discriminator is whether
   this Core ever spawned a *harness* for the row, read from the `pty:spawn` in
-  the event log (`queryStrandedReadyTasks`). The row cannot answer it: there is
+  the event log (`queryStrandedReadySessions`). The row cannot answer it: there is
   no "was started" column, and the harness session id is no help either, since
   Claude Code's `SessionStart` captures one before any turn. A `ready` row with
   no agent spawn behind it is left alone. The evidence is permanent — nothing
@@ -700,7 +700,7 @@ Sessions whose process is gone:
   recent work, and there is no undoing it.
 
   The quiet-Session backstop deliberately does **not** see these rows: it reads
-  the narrow `listActiveTasks`, and a bare Session waiting on its first prompt
+  the narrow `listActiveSessions`, and a bare Session waiting on its first prompt
   is allowed to sit silent for as long as the operator likes.
 
   `disconnected` rather than `finished` or `terminated`: it is the status the
@@ -729,14 +729,14 @@ Sessions whose process is gone:
   even if the history read below is wrong.
 
   "Never worked" is read from the event log, not the row: every status change
-  on a Core-owned row appends a `task:updated` carrying the status that was
-  *patched* (`queryTaskProvenNeverWorked`), and any status other than `ready` /
+  on a Core-owned row appends a `session:updated` carrying the status that was
+  *patched* (`querySessionProvenNeverWorked`), and any status other than `ready` /
   `disconnected` says a turn happened — including on a harness that goes
   straight from `ready` to `finished` without ever reporting `running`. A
   `finished` Session being reopened is being resumed, and keeps its card.
 
-  That read sees **only status-bearing `task:updated` events, and those start
-  at v0.4.0** (`2dd34a8`): before it the payload was `{taskId, projectId}` and
+  That read sees **only status-bearing `session:updated` events, and those start
+  at v0.4.0** (`2dd34a8`): before it the payload was `{sessionId, projectId}` and
   nothing else. Since `event_log` is never pruned, a Core upgraded from 0.3.x
   still holds status-less rows for Sessions that ran for hours, and their
   silence is indistinguishable from a Session that never ran a turn. So the
@@ -786,7 +786,7 @@ be reporting a status the Core never decided. What it can do is stop a quiet
 
 ```
 $ actana session start web "refactor the picker" --harness cursor-cli
-Started cursor-cli in web — session task_x, pty pty_x.
+Started cursor-cli in web — session session_x, pty pty_x.
 Note: cursor-cli does not report the start of a turn, so this session will not
 show as running until it stops. `--wait` and `session logs` are unaffected.
 ```
@@ -796,7 +796,7 @@ is `CoreSession.waitForIdle`, and `session logs` reads the Core's replay ring.
 
 ## Title generation
 
-Runs on the Core, for Core-owned rows. Task metadata is Core-owned, the harness
+Runs on the Core, for Core-owned rows. Session metadata is Core-owned, the harness
 binaries the generator shells out to in print mode exist only on the Core, and
 the prompt that triggers it arrives at the Core's own hook receiver — routing it
 back to the Panel and the title back again buys nothing.
@@ -838,7 +838,7 @@ only `process.env` and `fetch`, so it needs no dependency and no build step, and
 it follows the same three rules as the JSON writers: tagged
 `@actana-control-managed` so the next spawn replaces exactly what the last one
 wrote and never an operator's own plugin, carrying no secret (the URL, token and
-task id are read from the PTY's environment), and fail-soft in every direction —
+session id are read from the PTY's environment), and fail-soft in every direction —
 no environment means it does nothing, every POST swallows its own errors, and
 nothing it does is awaited by the harness.
 
@@ -921,7 +921,7 @@ otherwise look ready.
 The extension follows the same three rules as the other writers: tagged
 `@actana-control-managed` so the next spawn replaces exactly what the last one
 wrote and never an operator's neighbouring file, carrying no secret (URL,
-token and task id are read from the PTY's environment), and fail-soft — no
+token and session id are read from the PTY's environment), and fail-soft — no
 `AC_HOOK_URL`, or an `AC_HOOK_HARNESS` other than `pi`, means it registers no
 handlers, so neither a hand-run `pi` nor one an agent starts inside another
 harness's Session posts anything.

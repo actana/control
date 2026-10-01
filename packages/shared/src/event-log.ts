@@ -1,5 +1,5 @@
 // Monotonic per-Core event log — pure SQL helpers shared by the server
-// process (which records task/session/hook events) and the Core / PTY-manager
+// process (which records session/hook events) and the Core / PTY-manager
 // process (which records PTY lifecycle events and serves the reconnect replay).
 //
 // Both processes open their own connection to the same SQLite file
@@ -46,11 +46,11 @@ export function ensureEventsTable(sqlite: EventLogSqlite): void {
       ts INTEGER NOT NULL,
       kind TEXT NOT NULL,
       pty_id TEXT,
-      task_id TEXT,
+      session_id TEXT,
       payload TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS event_log_kind_idx ON event_log(kind);
-    CREATE INDEX IF NOT EXISTS event_log_task_idx ON event_log(task_id);
+    CREATE INDEX IF NOT EXISTS event_log_session_idx ON event_log(session_id);
     CREATE INDEX IF NOT EXISTS event_log_pty_idx ON event_log(pty_id);
   `);
 }
@@ -60,8 +60,8 @@ export function ensureEventsTable(sqlite: EventLogSqlite): void {
 export type AppendEventOptions = {
   /** The PTY this event belongs to, if any (PTY spawn/exit, pty:data). */
   ptyId?: string | null;
-  /** The Task this event belongs to, if any (task status, session finish). */
-  taskId?: string | null;
+  /** The Session this event belongs to, if any (session status, session finish). */
+  sessionId?: string | null;
 };
 
 /**
@@ -69,7 +69,7 @@ export type AppendEventOptions = {
  *
  * `payload` is the already-serialized JSON string of the event-specific body
  * (the caller owns the shape so this module stays shape-agnostic). The `kind`
- * is a stable string like `task:updated` / `pty:exit` / `session:finished` —
+ * is a stable string like `session:updated` / `pty:exit` / `session:finished` —
  * see {@link CoreLinkEvent} for how it's carried over the core-link.
  *
  * Returns the new monotonic `eventId` (starts at 1). Never returns 0.
@@ -81,12 +81,12 @@ export function appendEvent(
   opts: AppendEventOptions = {},
 ): number {
   const result = sqlite.prepare(
-    "INSERT INTO event_log (ts, kind, pty_id, task_id, payload) VALUES (?, ?, ?, ?, ?)",
+    "INSERT INTO event_log (ts, kind, pty_id, session_id, payload) VALUES (?, ?, ?, ?, ?)",
   ).run(
     Date.now(),
     kind,
     opts.ptyId ?? null,
-    opts.taskId ?? null,
+    opts.sessionId ?? null,
     payload,
   );
   // lastInsertRowid is `number | bigint` depending on the id magnitude; coerce
@@ -110,7 +110,7 @@ type EventLogRow = {
   ts: number;
   kind: string;
   pty_id: string | null;
-  task_id: string | null;
+  session_id: string | null;
   payload: string;
 };
 
@@ -127,14 +127,14 @@ export function readEventTail(
   limit = 1_000,
 ): CoreLinkEvent[] {
   const rows = sqlite.prepare(
-    "SELECT event_id, ts, kind, pty_id, task_id, payload FROM event_log WHERE event_id > ? ORDER BY event_id ASC LIMIT ?",
+    "SELECT event_id, ts, kind, pty_id, session_id, payload FROM event_log WHERE event_id > ? ORDER BY event_id ASC LIMIT ?",
   ).all(afterEventId, limit) as EventLogRow[];
   return rows.map((r) => ({
     eventId: r.event_id,
     ts: r.ts,
     kind: r.kind,
     ptyId: r.pty_id,
-    taskId: r.task_id,
+    sessionId: r.session_id,
     payload: r.payload,
   }));
 }

@@ -44,7 +44,7 @@ export type NormalizedFinish = {
   sessionId: string;
   projectId: string;
   projectName: string;
-  taskTitle: string;
+  sessionTitle: string;
 };
 
 export function dedupKey(n: {
@@ -102,7 +102,7 @@ export function normalizeSessionFinishedEvent(
     const projectId = typeof e.projectId === "string" ? e.projectId : "";
     if (!sessionId || !projectId) return null;
     const projectName = typeof e.projectName === "string" ? e.projectName : "Project";
-    const taskTitle = typeof e.taskTitle === "string" ? e.taskTitle : "Session";
+    const sessionTitle = typeof e.sessionTitle === "string" ? e.sessionTitle : "Session";
     return {
       coreId: null,
       coreAlias: null,
@@ -113,7 +113,7 @@ export function normalizeSessionFinishedEvent(
       sessionId,
       projectId,
       projectName,
-      taskTitle,
+      sessionTitle,
     };
   }
   const msg = raw as { coreId?: unknown; event?: unknown } | null;
@@ -129,15 +129,15 @@ export function normalizeSessionFinishedEvent(
   const sessionId =
     typeof payload.id === "string" && payload.id
       ? payload.id
-      : typeof event.taskId === "string"
-        ? event.taskId
+      : typeof event.sessionId === "string"
+        ? event.sessionId
         : "";
   const projectId = typeof payload.projectId === "string" ? payload.projectId : "";
   if (!sessionId || !projectId) return null;
   const projectName =
     typeof payload.projectName === "string" ? payload.projectName : "Project";
-  const taskTitle =
-    typeof payload.taskTitle === "string" ? payload.taskTitle : "Session";
+  const sessionTitle =
+    typeof payload.sessionTitle === "string" ? payload.sessionTitle : "Session";
   return {
     coreId: msg.coreId,
     coreAlias,
@@ -146,7 +146,7 @@ export function normalizeSessionFinishedEvent(
     sessionId,
     projectId,
     projectName,
-    taskTitle,
+    sessionTitle,
   };
 }
 
@@ -174,10 +174,10 @@ function finishedAtFrom(ts: unknown): number | null {
   return ts > Date.now() ? null : ts;
 }
 
-type RemoteDeletionKind = "task" | "project";
+type RemoteDeletionKind = "session" | "project";
 
 function classifyRemoteDeletion(kind: string): RemoteDeletionKind | null {
-  if (kind === "task:deleted") return "task";
+  if (kind === "session:deleted") return "session";
   if (kind === "project:deleted") return "project";
   return null;
 }
@@ -304,7 +304,7 @@ export function useSessionFinishNotifications() {
         id: finish.sessionId,
         projectId: finish.projectId,
         projectName: finish.projectName,
-        taskTitle: finish.taskTitle,
+        sessionTitle: finish.sessionTitle,
         // The event's own time when it carries one: a finish replayed at 09:00
         // happened at 02:00, and the list is ordered and capped on this.
         finishedAt: finish.finishedAt ?? Date.now(),
@@ -394,7 +394,7 @@ export function useSessionFinishNotifications() {
                     textOverflow: "ellipsis",
                   }}
                 >
-                  {finish.taskTitle}
+                  {finish.sessionTitle}
                 </div>
               </div>
               <McToastActions>
@@ -421,7 +421,7 @@ export function useSessionFinishNotifications() {
           {
             tag: `session-finished-${finish.coreId}-${finish.sessionId}`,
             title: toastTitle,
-            body: finish.taskTitle,
+            body: finish.sessionTitle,
           },
           { onClick: goToProject },
         );
@@ -432,13 +432,13 @@ export function useSessionFinishNotifications() {
 
   const handler = useCallback(
     (e: ServerEvent) => {
-      if (e.type === "task:deleted") {
-        const taskId = String(e.id ?? "");
+      if (e.type === "session:deleted") {
+        const sessionId = String(e.id ?? "");
         const projectId = typeof e.projectId === "string" ? e.projectId : undefined;
-        if (taskId) {
+        if (sessionId) {
           pruneNotifications({
-            type: "task",
-            taskId,
+            type: "session",
+            sessionId,
             projectId,
             coreId: null,
           });
@@ -497,16 +497,16 @@ export function useSessionFinishNotifications() {
         } catch {
           return;
         }
-        if (deletion === "task") {
-          const taskId =
+        if (deletion === "session") {
+          const sessionId =
             typeof payload.id === "string" && payload.id
               ? payload.id
-              : typeof msg.event.taskId === "string"
-                ? msg.event.taskId
+              : typeof msg.event.sessionId === "string"
+                ? msg.event.sessionId
                 : "";
           const projectId = typeof payload.projectId === "string" ? payload.projectId : undefined;
-          if (taskId) {
-            pruneNotifications({ type: "task", taskId, projectId, coreId: msg.coreId });
+          if (sessionId) {
+            pruneNotifications({ type: "session", sessionId, projectId, coreId: msg.coreId });
           }
           return;
         }

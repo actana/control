@@ -1,8 +1,8 @@
-import type { TaskStatus } from "@actana/shared/domain";
+import type { SessionStatus } from "@actana/shared/domain";
 
 export const PINNED_PROJECT_STATUS_DOT_LIMIT = 4;
 
-export type PinnedProjectStatusDot = Extract<TaskStatus, "running" | "finished">;
+export type PinnedProjectStatusDot = Extract<SessionStatus, "running" | "finished">;
 
 const STATUS_DOT_PRECEDENCE = [
   "running",
@@ -10,7 +10,7 @@ const STATUS_DOT_PRECEDENCE = [
 ] as const satisfies readonly PinnedProjectStatusDot[];
 
 export function getPinnedProjectStatusDots(
-  counts: Pick<Record<TaskStatus, number>, PinnedProjectStatusDot>
+  counts: Pick<Record<SessionStatus, number>, PinnedProjectStatusDot>
 ): PinnedProjectStatusDot[] {
   const dots: PinnedProjectStatusDot[] = [];
 

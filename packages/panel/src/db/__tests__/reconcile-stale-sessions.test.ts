@@ -2,11 +2,11 @@ import Database from "better-sqlite3";
 import { describe, it, expect } from "vitest";
 import { reconcileStaleSessionsOnBoot } from "../client";
 
-// Minimal slice of the tasks schema the reconciliation touches.
+// Minimal slice of the sessions schema the reconciliation touches.
 function freshDb(): Database.Database {
   const db = new Database(":memory:");
   db.exec(`
-    CREATE TABLE tasks (
+    CREATE TABLE sessions (
       id TEXT PRIMARY KEY,
       status TEXT NOT NULL,
       updated_at INTEGER NOT NULL
@@ -16,15 +16,15 @@ function freshDb(): Database.Database {
 }
 
 function seed(db: Database.Database, id: string, status: string) {
-  db.prepare("INSERT INTO tasks (id, status, updated_at) VALUES (?, ?, 0)").run(id, status);
+  db.prepare("INSERT INTO sessions (id, status, updated_at) VALUES (?, ?, 0)").run(id, status);
 }
 
 function statusOf(db: Database.Database, id: string): string {
-  return (db.prepare("SELECT status FROM tasks WHERE id = ?").get(id) as { status: string }).status;
+  return (db.prepare("SELECT status FROM sessions WHERE id = ?").get(id) as { status: string }).status;
 }
 
 describe("reconcileStaleSessionsOnBoot", () => {
-  it("resets running and needs-input tasks to disconnected (their PTYs died with the app)", () => {
+  it("resets running and needs-input sessions to disconnected (their PTYs died with the app)", () => {
     const db = freshDb();
     seed(db, "run", "running");
     seed(db, "blocked", "needs-input");
@@ -56,7 +56,7 @@ describe("reconcileStaleSessionsOnBoot", () => {
 
     reconcileStaleSessionsOnBoot(db);
 
-    const updatedAt = (db.prepare("SELECT updated_at FROM tasks WHERE id = 'blocked'").get() as {
+    const updatedAt = (db.prepare("SELECT updated_at FROM sessions WHERE id = 'blocked'").get() as {
       updated_at: number;
     }).updated_at;
     expect(updatedAt).toBeGreaterThan(0);

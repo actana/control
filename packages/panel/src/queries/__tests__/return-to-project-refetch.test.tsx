@@ -30,7 +30,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ReactNode } from "react";
-import type { CoreLinkTaskSnapshot } from "@actana/sdk/core";
+import type { CoreLinkSessionRow } from "@actana/sdk/core";
 
 const CORE_ID = "core-a";
 const PROJECT_ID = "project-1";
@@ -38,8 +38,8 @@ const PROJECT_ID = "project-1";
 const h = vi.hoisted(() => ({
   /** What the Core would answer right now. Mutated by the tests. */
   status: "running",
-  listTasksCalls: 0,
-  /** One entry per held `listTasks`, oldest first, while `hold` is set. */
+  listSessionRowsCalls: 0,
+  /** One entry per held `listSessionRows`, oldest first, while `hold` is set. */
   inFlight: [] as { settle: () => void }[],
   hold: false,
 }));
@@ -49,22 +49,22 @@ vi.mock("~/lib/panel-bridge", () => ({
     watchCore: () => () => {},
     onEvent: () => () => {},
     onConnectionChange: () => () => {},
-    listTasks: async () => {
-      h.listTasksCalls += 1;
+    listSessionRows: async () => {
+      h.listSessionRowsCalls += 1;
       if (h.hold) await new Promise<void>((resolve) => h.inFlight.push({ settle: resolve }));
-      return { tasks: [snapshot(h.status)], archivedCount: 0 };
+      return { sessions: [snapshot(h.status)], archivedCount: 0 };
     },
   }),
 }));
 
-const { useTasks, tasksCacheKey } = await import("~/queries");
+const { useSessions, sessionsCacheKey } = await import("~/queries");
 const { __resetProjectScopesForTests } = await import("~/lib/visible-project-scope");
 
-function snapshot(status: string): CoreLinkTaskSnapshot {
+function snapshot(status: string): CoreLinkSessionRow {
   return {
-    taskId: "task-1",
+    sessionId: "session-1",
     projectId: PROJECT_ID,
-    title: "task-1",
+    title: "session-1",
     titleManuallySet: false,
     claudeSessionId: null,
     agent: "claude-code",
@@ -73,7 +73,7 @@ function snapshot(status: string): CoreLinkTaskSnapshot {
     archived: false,
     icon: null,
     updatedAt: Date.now(),
-  } as unknown as CoreLinkTaskSnapshot;
+  } as unknown as CoreLinkSessionRow;
 }
 
 /** Exactly the client `getRouter()` builds — see `src/router.tsx`. */
@@ -96,7 +96,7 @@ function wrapperFor(client: QueryClient) {
 }
 
 const renderBoard = (wrapper: ReturnType<typeof wrapperFor>) =>
-  renderHook(() => useTasks(PROJECT_ID, { coreId: CORE_ID }), { wrapper });
+  renderHook(() => useSessions(PROJECT_ID, { coreId: CORE_ID }), { wrapper });
 
 /** Let a mount-triggered refetch start, run and paint. */
 async function settle(): Promise<void> {
@@ -109,7 +109,7 @@ describe("returning to a project reads the Session's current status (issue 484)"
   beforeEach(() => {
     __resetProjectScopesForTests();
     h.status = "running";
-    h.listTasksCalls = 0;
+    h.listSessionRowsCalls = 0;
     h.inFlight = [];
     h.hold = false;
   });
@@ -135,14 +135,14 @@ describe("returning to a project reads the Session's current status (issue 484)"
     await settle();
 
     expect(again.result.current.data?.[0]?.status).toBe("finished");
-    expect(h.listTasksCalls).toBe(2);
+    expect(h.listSessionRowsCalls).toBe(2);
   });
 
   it("re-reads when the tab is refocused, with the client default off", async () => {
     const client = makeClient();
     const board = renderBoard(wrapperFor(client));
     await waitFor(() => expect(board.result.current.data?.[0]?.status).toBe("running"));
-    expect(h.listTasksCalls).toBe(1);
+    expect(h.listSessionRowsCalls).toBe(1);
 
     // Backgrounded, finished while hidden, refocused. The tab never unmounted,
     // so nothing above the query gets a chance to ask on its behalf.
@@ -154,7 +154,7 @@ describe("returning to a project reads the Session's current status (issue 484)"
     });
 
     await waitFor(() => expect(board.result.current.data?.[0]?.status).toBe("finished"));
-    expect(h.listTasksCalls).toBeGreaterThan(1);
+    expect(h.listSessionRowsCalls).toBeGreaterThan(1);
   });
 
   it("still re-reads when the leave cancelled a read in flight (#381 is not the cause)", async () => {
@@ -167,7 +167,7 @@ describe("returning to a project reads the Session's current status (issue 484)"
     // leaves — which is precisely when the scope guard cancels.
     h.hold = true;
     await act(async () => {
-      void client.invalidateQueries({ queryKey: tasksCacheKey(PROJECT_ID, CORE_ID) });
+      void client.invalidateQueries({ queryKey: sessionsCacheKey(PROJECT_ID, CORE_ID) });
       await new Promise((resolve) => setTimeout(resolve, 10));
     });
     await waitFor(() => expect(h.inFlight.length).toBe(1));

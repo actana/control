@@ -242,7 +242,7 @@ function makeProject(
     createdAt: 1_000,
     updatedAt: 1_000,
     coreId: null,
-    taskCounts: {
+    sessionCounts: {
       ready: 0,
       running: 0,
       "needs-input": 0,

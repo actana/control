@@ -10,7 +10,7 @@ export type TotalsRow = {
 };
 
 // Every summary read below aggregates token_usage_rollup (pre-summed per
-// project/task/local-day) rather than scanning token_usage, which keeps these
+// project/session/local-day) rather than scanning token_usage, which keeps these
 // sub-millisecond even at ~1M raw rows. The rollup is kept equal to the raw
 // table by the ingest transaction and ON DELETE CASCADE (see ensureSchema).
 
@@ -96,7 +96,7 @@ export function selectTotalsPerDaySince(sinceMs: number): PerDayRow[] {
 }
 
 export type PerSessionRow = TotalsRow & {
-  taskId: string;
+  sessionId: string;
   title: string;
   projectId: string;
   projectName: string;
@@ -110,7 +110,7 @@ export function selectTotalsPerSession(): PerSessionRow[] {
   const rows = getSqlite()
     .prepare(
       `SELECT
-         r.task_id AS taskId,
+         r.session_id AS sessionId,
          t.title AS title,
          t.project_id AS projectId,
          p.name AS projectName,
@@ -120,9 +120,9 @@ export function selectTotalsPerSession(): PerSessionRow[] {
          COALESCE(SUM(r.cache_creation_tokens), 0) AS cacheCreationTokens,
          COALESCE(SUM(r.cache_read_tokens), 0) AS cacheReadTokens
        FROM token_usage_rollup r
-       INNER JOIN tasks t ON t.id = r.task_id
+       INNER JOIN sessions t ON t.id = r.session_id
        INNER JOIN projects p ON p.id = t.project_id
-       GROUP BY r.task_id
+       GROUP BY r.session_id
        ORDER BY (
          SUM(r.input_tokens) + SUM(r.output_tokens)
            + SUM(r.cache_creation_tokens) + SUM(r.cache_read_tokens)
@@ -131,7 +131,7 @@ export function selectTotalsPerSession(): PerSessionRow[] {
     )
     .all(PER_SESSION_LIMIT) as (PerSessionRow & { lastTs: number | null })[];
   return rows.map((r) => ({
-    taskId: r.taskId,
+    sessionId: r.sessionId,
     title: r.title,
     projectId: r.projectId,
     projectName: r.projectName,
@@ -160,7 +160,7 @@ export function findAllSessionOffsets(): SessionOffsetRow[] {
 
 export type TokenUsageIngestRow = {
   id: string;
-  taskId: string;
+  sessionId: string;
   projectId: string;
   claudeSessionId: string;
   messageUuid: string;
@@ -191,7 +191,7 @@ export function ingestTokenUsageTx(
     rows: TokenUsageIngestRow[];
     sessionOffset: {
       claudeSessionId: string;
-      taskId: string;
+      sessionId: string;
       projectId: string;
       byteOffset: number;
     };
@@ -201,31 +201,31 @@ export function ingestTokenUsageTx(
   const sqlite = getSqlite();
   const insertUsage = sqlite.prepare(
     `INSERT OR IGNORE INTO token_usage (
-      id, task_id, project_id, claude_session_id, message_uuid, model,
+      id, session_id, project_id, claude_session_id, message_uuid, model,
       input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens, ts
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   );
   const upsertOffset = sqlite.prepare(
     `INSERT INTO token_usage_session_offsets
-       (claude_session_id, task_id, project_id, byte_offset, updated_at)
+       (claude_session_id, session_id, project_id, byte_offset, updated_at)
      VALUES (?, ?, ?, ?, ?)
      ON CONFLICT(claude_session_id) DO UPDATE SET
-       task_id = excluded.task_id,
+       session_id = excluded.session_id,
        project_id = excluded.project_id,
        byte_offset = excluded.byte_offset,
        updated_at = excluded.updated_at`
   );
-  // Fold each newly-inserted row into its (project, task, local day) rollup
+  // Fold each newly-inserted row into its (project, session, local day) rollup
   // bucket. The day expression and the accumulation must match the backfill and
   // the read queries exactly so the rollup stays equal to the raw aggregate.
   const upsertRollup = sqlite.prepare(
     `INSERT INTO token_usage_rollup (
-       project_id, task_id, day,
+       project_id, session_id, day,
        input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens, last_ts
      ) VALUES (
        ?, ?, strftime('%Y-%m-%d', ? / 1000, 'unixepoch', 'localtime'), ?, ?, ?, ?, ?
      )
-     ON CONFLICT(project_id, task_id, day) DO UPDATE SET
+     ON CONFLICT(project_id, session_id, day) DO UPDATE SET
        input_tokens = input_tokens + excluded.input_tokens,
        output_tokens = output_tokens + excluded.output_tokens,
        cache_creation_tokens = cache_creation_tokens + excluded.cache_creation_tokens,
@@ -239,7 +239,7 @@ export function ingestTokenUsageTx(
       for (const r of rows) {
         const result = insertUsage.run(
           r.id,
-          r.taskId,
+          r.sessionId,
           r.projectId,
           r.claudeSessionId,
           r.messageUuid,
@@ -257,7 +257,7 @@ export function ingestTokenUsageTx(
           inserted += 1;
           upsertRollup.run(
             r.projectId,
-            r.taskId,
+            r.sessionId,
             r.ts,
             r.inputTokens,
             r.outputTokens,
@@ -269,7 +269,7 @@ export function ingestTokenUsageTx(
       }
       upsertOffset.run(
         sessionOffset.claudeSessionId,
-        sessionOffset.taskId,
+        sessionOffset.sessionId,
         sessionOffset.projectId,
         sessionOffset.byteOffset,
         now,

@@ -38,12 +38,12 @@ export function ApiSettingsPage() {
             monoSize={11}
           />
         </Field>
-        <Field label="Example: mark a task finished">
+        <Field label="Example: mark a session finished">
           <CodeBlock
-            value={`curl -H "Authorization: Bearer $TOKEN" \\\n  -X POST ${baseUrl}/api/tasks/$TASK_ID/status \\\n  -d '{"status":"finished","preview":"All tests passing"}'`}
+            value={`curl -H "Authorization: Bearer $TOKEN" \\\n  -X POST ${baseUrl}/api/sessions/$SESSION_ID/status \\\n  -d '{"status":"finished","preview":"All tests passing"}'`}
             onCopy={() =>
               copy(
-                `curl -H "Authorization: Bearer $TOKEN" -X POST ${baseUrl}/api/tasks/$TASK_ID/status -d '{"status":"finished","preview":"All tests passing"}'`,
+                `curl -H "Authorization: Bearer $TOKEN" -X POST ${baseUrl}/api/sessions/$SESSION_ID/status -d '{"status":"finished","preview":"All tests passing"}'`,
                 "curl",
               )
             }

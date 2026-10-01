@@ -85,7 +85,7 @@ export interface CoreLinkClientLike {
    * the Core rewrites the lock table in place and appends no event, so this is
    * how a reconnected Panel learns it is still holding what it was holding.
    */
-  onReclaimed(cb: (msg: { replaced: boolean; taskIds: string[] }) => void): () => void;
+  onReclaimed(cb: (msg: { replaced: boolean; sessionIds: string[] }) => void): () => void;
   close(): void;
 }
 

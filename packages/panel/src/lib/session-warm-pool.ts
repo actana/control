@@ -1,15 +1,15 @@
-import type { Task } from "~/db/schema";
+import type { Session } from "~/db/schema";
 import type { Harness } from "@actana/shared/domain";
 import type { ScopedProject } from "~/lib/scoped-project";
 import { harnessLaunchesWithSkipPermissions } from "@actana/shared/harnesses";
 import { newClientId } from "@actana/shared/client-id";
 import { newSessionId } from "~/lib/harness-command";
-import { buildOptimisticTask } from "~/lib/optimistic-task";
-import { commandForTask } from "~/lib/terminal-store";
+import { buildOptimisticSession } from "~/lib/optimistic-session";
+import { commandForSession } from "~/lib/terminal-store";
 import { getCorePtyBridge } from "~/lib/panel-bridge";
 import { api } from "~/lib/api";
 import { getTerminalColorScheme } from "~/lib/terminal-options";
-import { TITLE_WAITING } from "~/lib/task-sentinels";
+import { TITLE_WAITING } from "~/lib/session-sentinels";
 import { DEFAULT_PTY_COLS, DEFAULT_PTY_ROWS } from "~/shared/pty-size";
 
 export type SessionCreatePayload = {
@@ -21,9 +21,9 @@ export type SessionWarmSlot = {
   signature: string;
   /** The Core the warm PTY is running on. */
   coreId: string;
-  clientTaskId: string;
+  clientSessionId: string;
   ptyId: string;
-  draftTask: Task;
+  draftSession: Session;
   payload: SessionCreatePayload;
 };
 
@@ -54,14 +54,14 @@ export function sessionCreateSignature(
   ].join("\0");
 }
 
-function buildDraftTask(
-  clientTaskId: string,
+function buildDraftSession(
+  clientSessionId: string,
   project: ScopedProject,
   payload: SessionCreatePayload,
   claudeSessionId: string | null,
-): Task {
-  return buildOptimisticTask({
-    id: clientTaskId,
+): Session {
+  return buildOptimisticSession({
+    id: clientSessionId,
     projectId: project.id,
     agent: payload.agent,
     claudeSessionId,
@@ -142,9 +142,9 @@ export async function prepareSessionWarmSlot(input: {
     const usesPersistedSession =
       input.payload.agent === "claude-code" || input.payload.agent === "cursor-cli";
     const claudeSessionId = usesPersistedSession ? newSessionId() : null;
-    const clientTaskId = newClientId("t");
-    const draftTask = buildDraftTask(
-      clientTaskId,
+    const clientSessionId = newClientId("t");
+    const draftSession = buildDraftSession(
+      clientSessionId,
       input.project,
       input.payload,
       claudeSessionId,
@@ -152,16 +152,16 @@ export async function prepareSessionWarmSlot(input: {
 
     try {
       const { ptyId } = await pty.spawn({
-        taskId: clientTaskId,
+        sessionId: clientSessionId,
         cwd: input.project.path,
-        command: commandForTask(draftTask),
+        command: commandForSession(draftSession),
         cols: DEFAULT_PTY_COLS,
         rows: DEFAULT_PTY_ROWS,
-        agent: draftTask.agent,
+        agent: draftSession.agent,
         // Same helper the start command was built from — the spawn policy
         // checks the argv against this declared intent, so a divergence here
         // means no session spawns at all (issue 22).
-        dangerouslySkipPermissions: harnessLaunchesWithSkipPermissions(draftTask.agent),
+        dangerouslySkipPermissions: harnessLaunchesWithSkipPermissions(draftSession.agent),
         missionControlTheme: getTerminalColorScheme(),
       });
       if (generation !== warmGeneration) {
@@ -172,9 +172,9 @@ export async function prepareSessionWarmSlot(input: {
       const slot: SessionWarmSlot = {
         signature,
         coreId,
-        clientTaskId,
+        clientSessionId,
         ptyId,
-        draftTask,
+        draftSession,
         payload: input.payload,
       };
       warmSlot = slot;
@@ -197,19 +197,19 @@ export function replenishSessionWarmSlot(input: {
   void prepareSessionWarmSlot(input);
 }
 
-/** Persist a claimed warm slot task row using the ids the PTY was already started with. */
-export async function persistWarmSlotTask(
+/** Persist a claimed warm slot session row using the ids the PTY was already started with. */
+export async function persistWarmSlotSession(
   projectId: string,
   slot: SessionWarmSlot,
-): Promise<Task> {
-  const { task } = await api.createTaskInternal(projectId, {
-    id: slot.clientTaskId,
+): Promise<Session> {
+  const { session } = await api.createSessionInternal(projectId, {
+    id: slot.clientSessionId,
     title: TITLE_WAITING,
     agent: slot.payload.agent,
-    claudeSessionId: slot.draftTask.claudeSessionId,
+    claudeSessionId: slot.draftSession.claudeSessionId,
     claudeBareSession:
       slot.payload.agent === "claude-code" ? slot.payload.bareSession : undefined,
     claudeSkipPermissions: harnessLaunchesWithSkipPermissions(slot.payload.agent),
   });
-  return task;
+  return session;
 }

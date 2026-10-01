@@ -17,7 +17,7 @@ import type { PanelLinkServerFrame } from "~/shared/panel-link";
 
 class FakeCoreLink implements CoreLinkClientLike {
   answers: (frame: CoreLinkRequestFrame) => CoreLinkResponseFrame | Promise<CoreLinkResponseFrame> =
-    (frame) => ({ type: "tasksListResult", reqId: frameReqId(frame), tasks: [], archivedCount: 0 });
+    (frame) => ({ type: "sessionRowsListResult", reqId: frameReqId(frame), sessions: [], archivedCount: 0 });
   readonly sent: CoreLinkRequestFrame[] = [];
   private data?: (msg: { ptyId: string; data: string; seq: number }) => void;
   private exit?: (msg: { ptyId: string; exitCode: number; signal?: number }) => void;
@@ -83,13 +83,13 @@ class FakeCoreLink implements CoreLinkClientLike {
   canSendMultiConnectionFrames() {
     return this.multiConnection;
   }
-  private reclaimed?: (msg: { replaced: boolean; taskIds: string[] }) => void;
-  onReclaimed(cb: (msg: { replaced: boolean; taskIds: string[] }) => void) {
+  private reclaimed?: (msg: { replaced: boolean; sessionIds: string[] }) => void;
+  onReclaimed(cb: (msg: { replaced: boolean; sessionIds: string[] }) => void) {
     this.reclaimed = cb;
     return () => {};
   }
-  pushReclaimed(taskIds: string[]) {
-    this.reclaimed?.({ replaced: true, taskIds });
+  pushReclaimed(sessionIds: string[]) {
+    this.reclaimed?.({ replaced: true, sessionIds });
   }
   close() {}
 
@@ -110,8 +110,8 @@ class FakeCoreLink implements CoreLinkClientLike {
  * would be a fixture that quietly opts out of the path under test. A test that
  * cares about age passes its own.
  */
-function event(eventId: number, kind = "task:statusChanged", ts = Date.now()): CoreLinkEvent {
-  return { eventId, ts, kind, ptyId: null, taskId: "t1", payload: "{}" };
+function event(eventId: number, kind = "session:statusChanged", ts = Date.now()): CoreLinkEvent {
+  return { eventId, ts, kind, ptyId: null, sessionId: "t1", payload: "{}" };
 }
 
 function frameReqId(frame: CoreLinkRequestFrame): string {
@@ -230,7 +230,7 @@ describe("panel-link router · fan-out", () => {
     await session.receive({
       t: "core",
       coreId: "core_a",
-      frame: { type: "tasksList", reqId: "q1" },
+      frame: { type: "sessionRowsList", reqId: "q1" },
     });
     await session.receive({
       t: "core",
@@ -238,7 +238,7 @@ describe("panel-link router · fan-out", () => {
       frame: { type: "projectsList", reqId: "q2" },
     });
 
-    expect(source.links.get("core_a")!.sent.map((f) => f.type)).toEqual(["tasksList"]);
+    expect(source.links.get("core_a")!.sent.map((f) => f.type)).toEqual(["sessionRowsList"]);
     expect(source.links.get("core_b")!.sent.map((f) => f.type)).toEqual(["projectsList"]);
   });
 
@@ -248,7 +248,7 @@ describe("panel-link router · fan-out", () => {
     await session.receive({
       t: "core",
       coreId: "core_gone",
-      frame: { type: "tasksList", reqId: "q3" },
+      frame: { type: "sessionRowsList", reqId: "q3" },
     });
 
     expect(tab.coreFrames("core_gone")).toEqual([
@@ -266,7 +266,7 @@ describe("panel-link router · fan-out", () => {
     await session.receive({
       t: "core",
       coreId: "core_a",
-      frame: { type: "tasksList", reqId: "q4" },
+      frame: { type: "sessionRowsList", reqId: "q4" },
     });
 
     expect(tab.coreFrames("core_a")).toEqual([
@@ -436,7 +436,7 @@ describe("panel-link router · replay from a tab's cursor", () => {
     subscribe(fresh.session, "core_a", 0);
 
     // 30 minutes is "the operator stepped away"; an overnight backlog is not a
-    // notice, it is a list, and `tasksList` is where a list belongs.
+    // notice, it is a list, and `sessionRowsList` is where a list belongs.
     expect(fresh.tab.eventIds("core_a")).toEqual([2]);
   });
 
@@ -564,7 +564,7 @@ describe("panel-link router · a Core that needs updating", () => {
     await session.receive({
       t: "core",
       coreId: "core_a",
-      frame: { type: "tasksList", reqId: "q1" },
+      frame: { type: "sessionRowsList", reqId: "q1" },
     });
 
     expect(link.sent).toEqual([]);
@@ -603,10 +603,10 @@ describe("panel-link router · a Core that needs updating", () => {
     await session.receive({
       t: "core",
       coreId: "core_b",
-      frame: { type: "tasksList", reqId: "q2" },
+      frame: { type: "sessionRowsList", reqId: "q2" },
     });
 
-    expect(link.sent.map((f) => f.type)).toEqual(["tasksList"]);
+    expect(link.sent.map((f) => f.type)).toEqual(["sessionRowsList"]);
   });
 
   it("stays gated while its link flaps — a drop is not news about its protocol", async () => {
@@ -619,7 +619,7 @@ describe("panel-link router · a Core that needs updating", () => {
     await session.receive({
       t: "core",
       coreId: "core_a",
-      frame: { type: "tasksList", reqId: "q5" },
+      frame: { type: "sessionRowsList", reqId: "q5" },
     });
 
     expect(link.sent).toEqual([]);
@@ -634,10 +634,10 @@ describe("panel-link router · a Core that needs updating", () => {
     await session.receive({
       t: "core",
       coreId: "core_a",
-      frame: { type: "tasksList", reqId: "q3" },
+      frame: { type: "sessionRowsList", reqId: "q3" },
     });
 
-    expect(link.sent.map((f) => f.type)).toEqual(["tasksList"]);
+    expect(link.sent.map((f) => f.type)).toEqual(["sessionRowsList"]);
   });
 
   it("suppresses a Core already needing an update when a tab attaches", async () => {
@@ -648,7 +648,7 @@ describe("panel-link router · a Core that needs updating", () => {
     await session.receive({
       t: "core",
       coreId: "core_a",
-      frame: { type: "tasksList", reqId: "q4" },
+      frame: { type: "sessionRowsList", reqId: "q4" },
     });
 
     expect(link.sent).toEqual([]);

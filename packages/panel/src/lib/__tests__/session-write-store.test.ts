@@ -25,7 +25,7 @@ type Handlers = {
 
 function fakeBridge() {
   const handlers: Handlers = {};
-  const drives: Array<{ taskId: string; take: boolean }> = [];
+  const drives: Array<{ sessionId: string; take: boolean }> = [];
   // The pane count the real link client keeps, and the answer the store asks it
   // for (issue 186). A fake that said "last pane" to every release would pass a
   // test the product fails, so this one counts.
@@ -39,18 +39,18 @@ function fakeBridge() {
       handlers.drive = cb;
       return () => {};
     },
-    driveSession: (_coreId: string, taskId: string, opts?: { take?: boolean }) => {
-      drives.push({ taskId, take: opts?.take === true });
-      if (opts?.take !== true) panes.set(taskId, (panes.get(taskId) ?? 0) + 1);
+    driveSession: (_coreId: string, sessionId: string, opts?: { take?: boolean }) => {
+      drives.push({ sessionId, take: opts?.take === true });
+      if (opts?.take !== true) panes.set(sessionId, (panes.get(sessionId) ?? 0) + 1);
     },
-    releaseSessionDrive: (_coreId: string, taskId: string) => {
-      drives.push({ taskId, take: false });
-      const open = panes.get(taskId) ?? 0;
+    releaseSessionDrive: (_coreId: string, sessionId: string) => {
+      drives.push({ sessionId, take: false });
+      const open = panes.get(sessionId) ?? 0;
       if (open > 1) {
-        panes.set(taskId, open - 1);
+        panes.set(sessionId, open - 1);
         return false;
       }
-      panes.delete(taskId);
+      panes.delete(sessionId);
       return true;
     },
   } as unknown as PanelBridge;
@@ -68,7 +68,7 @@ afterEach(() => {
 });
 
 const CORE = "core_a";
-const TASK = "task_1";
+const SESSION = "session_1";
 
 describe("the browser's session write state", () => {
   it("opens writable on a Session it has heard nothing about", () => {
@@ -76,20 +76,20 @@ describe("the browser's session write state", () => {
     // The same optimism the Core has: an unlocked Session is writable by
     // anybody, and a pane that opened read-only waiting for permission would
     // render every Session on a single-connection Core as locked forever.
-    expect(readSessionWriteState(CORE, TASK).access).toEqual({ writable: true });
+    expect(readSessionWriteState(CORE, SESSION).access).toEqual({ writable: true });
   });
 
   it("goes read-only the moment the lock says another client holds it", () => {
     const { handlers } = fakeBridge();
-    readSessionWriteState(CORE, TASK);
+    readSessionWriteState(CORE, SESSION);
 
     handlers.lock?.({
       coreId: CORE,
-      taskId: TASK,
+      sessionId: SESSION,
       lock: { supported: true, writable: false, state: "held-by-another" },
     });
 
-    expect(readSessionWriteState(CORE, TASK).access).toEqual({
+    expect(readSessionWriteState(CORE, SESSION).access).toEqual({
       writable: false,
       reason: "held-by-another-client",
     });
@@ -97,13 +97,13 @@ describe("the browser's session write state", () => {
 
   it("goes read-only for the other reason when another tab takes the keyboard", () => {
     const { handlers } = fakeBridge();
-    readSessionWriteState(CORE, TASK);
-    handlers.drive?.({ coreId: CORE, taskId: TASK, driving: true, reason: "watch" });
-    expect(readSessionWriteState(CORE, TASK).access).toEqual({ writable: true });
+    readSessionWriteState(CORE, SESSION);
+    handlers.drive?.({ coreId: CORE, sessionId: SESSION, driving: true, reason: "watch" });
+    expect(readSessionWriteState(CORE, SESSION).access).toEqual({ writable: true });
 
-    handlers.drive?.({ coreId: CORE, taskId: TASK, driving: false, reason: "handover" });
+    handlers.drive?.({ coreId: CORE, sessionId: SESSION, driving: false, reason: "handover" });
 
-    expect(readSessionWriteState(CORE, TASK).access).toEqual({
+    expect(readSessionWriteState(CORE, SESSION).access).toEqual({
       writable: false,
       reason: "driven-in-another-tab",
     });
@@ -111,16 +111,16 @@ describe("the browser's session write state", () => {
 
   it("keeps the two facts apart — a drive answer does not overwrite the lock", () => {
     const { handlers } = fakeBridge();
-    readSessionWriteState(CORE, TASK);
+    readSessionWriteState(CORE, SESSION);
     handlers.lock?.({
       coreId: CORE,
-      taskId: TASK,
+      sessionId: SESSION,
       lock: { supported: true, writable: true, state: "held-by-you" },
     });
 
-    handlers.drive?.({ coreId: CORE, taskId: TASK, driving: false, reason: "handover" });
+    handlers.drive?.({ coreId: CORE, sessionId: SESSION, driving: false, reason: "handover" });
 
-    const state = readSessionWriteState(CORE, TASK);
+    const state = readSessionWriteState(CORE, SESSION);
     expect(state.lock.state).toBe("held-by-you");
     expect(state.drive).toBe("following");
   });
@@ -131,32 +131,32 @@ describe("the browser's session write state", () => {
     onSessionDriveHandover(seen);
 
     // A pane simply being told where it stands is not an event worth a sentence.
-    handlers.drive?.({ coreId: CORE, taskId: TASK, driving: false, reason: "watch" });
+    handlers.drive?.({ coreId: CORE, sessionId: SESSION, driving: false, reason: "watch" });
     expect(seen).not.toHaveBeenCalled();
 
-    handlers.drive?.({ coreId: CORE, taskId: TASK, driving: false, reason: "handover" });
-    expect(seen).toHaveBeenCalledWith({ coreId: CORE, taskId: TASK });
+    handlers.drive?.({ coreId: CORE, sessionId: SESSION, driving: false, reason: "handover" });
+    expect(seen).toHaveBeenCalledWith({ coreId: CORE, sessionId: SESSION });
 
     // Losing the lock to another Core client is a different event and must not
     // arrive on this channel — the two have different copy.
     handlers.lock?.({
       coreId: CORE,
-      taskId: TASK,
+      sessionId: SESSION,
       lock: { supported: true, writable: false, state: "held-by-another" },
     });
     expect(seen).toHaveBeenCalledTimes(1);
   });
 
-  it("keeps two Cores' Sessions apart even when their task ids collide", () => {
+  it("keeps two Cores' Sessions apart even when their session ids collide", () => {
     const { handlers } = fakeBridge();
     handlers.lock?.({
       coreId: "core_a",
-      taskId: TASK,
+      sessionId: SESSION,
       lock: { supported: true, writable: false, state: "held-by-another" },
     });
 
-    expect(readSessionWriteState("core_a", TASK).access.writable).toBe(false);
-    expect(readSessionWriteState("core_b", TASK).access.writable).toBe(true);
+    expect(readSessionWriteState("core_a", SESSION).access.writable).toBe(false);
+    expect(readSessionWriteState("core_b", SESSION).access.writable).toBe(true);
   });
 });
 
@@ -164,14 +164,14 @@ describe("the drive gestures", () => {
   it("announces a pane without asking for the keyboard, and asks when told to", () => {
     const { drives } = fakeBridge();
 
-    watchSessionDrive(CORE, TASK);
-    takeSessionDrive(CORE, TASK);
+    watchSessionDrive(CORE, SESSION);
+    takeSessionDrive(CORE, SESSION);
 
     // First-come on mount; the explicit gesture is the only thing that moves a
     // keyboard off another tab of this Panel.
     expect(drives).toEqual([
-      { taskId: TASK, take: false },
-      { taskId: TASK, take: true },
+      { sessionId: SESSION, take: false },
+      { sessionId: SESSION, take: true },
     ]);
   });
 
@@ -180,36 +180,36 @@ describe("the drive gestures", () => {
 
     // Two panes in this tab, one Session — a split view, or the same Session
     // opened twice. The drive is the *tab's*, so both panes read one answer.
-    watchSessionDrive(CORE, TASK);
-    watchSessionDrive(CORE, TASK);
-    handlers.drive?.({ coreId: CORE, taskId: TASK, driving: true, reason: "watch" });
+    watchSessionDrive(CORE, SESSION);
+    watchSessionDrive(CORE, SESSION);
+    handlers.drive?.({ coreId: CORE, sessionId: SESSION, driving: true, reason: "watch" });
 
-    releaseSessionDrive(CORE, TASK);
+    releaseSessionDrive(CORE, SESSION);
 
     // The tab still has the Session on screen and the service still has it
     // driving. Reading `none` here is what let the surviving pane keep a
     // writable surface after the drive had gone somewhere else — issue 186's
     // silent dual write, seen from the browser.
-    expect(readSessionWriteState(CORE, TASK).drive).toBe("driving");
-    expect(readSessionWriteState(CORE, TASK).access.writable).toBe(true);
+    expect(readSessionWriteState(CORE, SESSION).drive).toBe("driving");
+    expect(readSessionWriteState(CORE, SESSION).access.writable).toBe(true);
   });
 
   it("clears the tab's answer when the last pane on the Session closes", () => {
     const { handlers } = fakeBridge();
 
-    watchSessionDrive(CORE, TASK);
-    watchSessionDrive(CORE, TASK);
-    handlers.drive?.({ coreId: CORE, taskId: TASK, driving: true, reason: "watch" });
-    releaseSessionDrive(CORE, TASK);
-    releaseSessionDrive(CORE, TASK);
+    watchSessionDrive(CORE, SESSION);
+    watchSessionDrive(CORE, SESSION);
+    handlers.drive?.({ coreId: CORE, sessionId: SESSION, driving: true, reason: "watch" });
+    releaseSessionDrive(CORE, SESSION);
+    releaseSessionDrive(CORE, SESSION);
 
-    expect(readSessionWriteState(CORE, TASK).drive).toBe("none");
+    expect(readSessionWriteState(CORE, SESSION).drive).toBe("none");
   });
 
   it("does nothing for a pane with no Core to address", () => {
     const { drives } = fakeBridge();
-    watchSessionDrive(null, TASK);
-    releaseSessionDrive(null, TASK);
+    watchSessionDrive(null, SESSION);
+    releaseSessionDrive(null, SESSION);
     expect(drives).toEqual([]);
   });
 });
@@ -234,9 +234,9 @@ describe("the drive gestures", () => {
 function driveArbiter() {
   const drivers = new Map<string, string>();
   return {
-    want(taskId: string, tabId: string, take: boolean): boolean {
-      if (take || !drivers.has(taskId)) drivers.set(taskId, tabId);
-      return drivers.get(taskId) === tabId;
+    want(sessionId: string, tabId: string, take: boolean): boolean {
+      if (take || !drivers.has(sessionId)) drivers.set(sessionId, tabId);
+      return drivers.get(sessionId) === tabId;
     },
   };
 }
@@ -259,9 +259,9 @@ function deferredBridge(opts: { arbiter?: ReturnType<typeof driveArbiter>; tabId
       handlers.drive = cb;
       return () => {};
     },
-    driveSession: (coreId: string, taskId: string, o?: { take?: boolean }) => {
-      const driving = arbiter.want(taskId, tabId, o?.take === true);
-      queued.push(() => handlers.drive?.({ coreId, taskId, driving, reason: "watch" }));
+    driveSession: (coreId: string, sessionId: string, o?: { take?: boolean }) => {
+      const driving = arbiter.want(sessionId, tabId, o?.take === true);
+      queued.push(() => handlers.drive?.({ coreId, sessionId, driving, reason: "watch" }));
     },
     releaseSessionDrive: () => true,
   } as unknown as PanelBridge;
@@ -275,9 +275,9 @@ describe("the optimistic window on an unanswered drive", () => {
     vi.useFakeTimers();
     deferredBridge();
 
-    watchSessionDrive(CORE, TASK);
+    watchSessionDrive(CORE, SESSION);
 
-    const state = readSessionWriteState(CORE, TASK);
+    const state = readSessionWriteState(CORE, SESSION);
     // Writable, because a solo tab that opened read-only and waited would be a
     // pane the operator cannot type into for no reason at all — and `pending`
     // rather than `none`, because this tab *has* asked. The two are different
@@ -291,11 +291,11 @@ describe("the optimistic window on an unanswered drive", () => {
   it("stops typing on the guess when the window closes unanswered", () => {
     vi.useFakeTimers();
     deferredBridge();
-    watchSessionDrive(CORE, TASK);
+    watchSessionDrive(CORE, SESSION);
 
     vi.advanceTimersByTime(OPTIMISTIC_DRIVE_WINDOW_MS);
 
-    const state = readSessionWriteState(CORE, TASK);
+    const state = readSessionWriteState(CORE, SESSION);
     // The bound. Before it, an answer that never came left the pane writable
     // forever, next to another tab in exactly the same state.
     expect(state.access).toEqual({ writable: false, reason: "awaiting-drive" });
@@ -306,10 +306,10 @@ describe("the optimistic window on an unanswered drive", () => {
   it("is short — the pane is still writable a beat before the window closes", () => {
     vi.useFakeTimers();
     deferredBridge();
-    watchSessionDrive(CORE, TASK);
+    watchSessionDrive(CORE, SESSION);
 
     vi.advanceTimersByTime(OPTIMISTIC_DRIVE_WINDOW_MS - 1);
-    expect(readSessionWriteState(CORE, TASK).access).toEqual({ writable: true });
+    expect(readSessionWriteState(CORE, SESSION).access).toEqual({ writable: true });
     // A round trip to the Panel's own service, not to a Core: a window this
     // long is one no pane on a healthy link ever reaches the end of.
     expect(OPTIMISTIC_DRIVE_WINDOW_MS).toBeLessThanOrEqual(2_000);
@@ -318,108 +318,108 @@ describe("the optimistic window on an unanswered drive", () => {
   it("settles on the answer and stops guessing", () => {
     vi.useFakeTimers();
     const { flush } = deferredBridge();
-    watchSessionDrive(CORE, TASK);
+    watchSessionDrive(CORE, SESSION);
 
     flush();
 
-    expect(readSessionWriteState(CORE, TASK).drive).toBe("driving");
-    expect(readSessionWriteState(CORE, TASK).optimistic).toBe(false);
+    expect(readSessionWriteState(CORE, SESSION).drive).toBe("driving");
+    expect(readSessionWriteState(CORE, SESSION).optimistic).toBe(false);
     // And the window it opened does not fire over the settled answer later.
     vi.advanceTimersByTime(OPTIMISTIC_DRIVE_WINDOW_MS * 4);
-    expect(readSessionWriteState(CORE, TASK).access).toEqual({ writable: true });
+    expect(readSessionWriteState(CORE, SESSION).access).toEqual({ writable: true });
   });
 
   it("believes an answer that arrives after the window closed", () => {
     vi.useFakeTimers();
     const { flush } = deferredBridge();
-    watchSessionDrive(CORE, TASK);
+    watchSessionDrive(CORE, SESSION);
     vi.advanceTimersByTime(OPTIMISTIC_DRIVE_WINDOW_MS);
-    expect(readSessionWriteState(CORE, TASK).access.writable).toBe(false);
+    expect(readSessionWriteState(CORE, SESSION).access.writable).toBe(false);
 
     flush();
 
     // Closing the window withdraws a guess; it does not decide the question.
-    expect(readSessionWriteState(CORE, TASK).access).toEqual({ writable: true });
-    expect(readSessionWriteState(CORE, TASK).drive).toBe("driving");
+    expect(readSessionWriteState(CORE, SESSION).access).toEqual({ writable: true });
+    expect(readSessionWriteState(CORE, SESSION).drive).toBe("driving");
   });
 
   it("does not reopen a window for a second pane of a tab that already asked", () => {
     vi.useFakeTimers();
     const { flush } = deferredBridge();
-    watchSessionDrive(CORE, TASK);
+    watchSessionDrive(CORE, SESSION);
     flush();
 
     // A split view, or the same Session opened twice in one tab. The link
     // client announces only the first pane, so there is nothing to wait for.
-    watchSessionDrive(CORE, TASK);
+    watchSessionDrive(CORE, SESSION);
 
-    expect(readSessionWriteState(CORE, TASK).drive).toBe("driving");
-    expect(readSessionWriteState(CORE, TASK).optimistic).toBe(false);
+    expect(readSessionWriteState(CORE, SESSION).drive).toBe("driving");
+    expect(readSessionWriteState(CORE, SESSION).optimistic).toBe(false);
   });
 
   it("does not hand the keyboard to a tab on its own say-so when it asks for it", () => {
     vi.useFakeTimers();
     const arbiter = driveArbiter();
     const first = deferredBridge({ arbiter, tabId: "tab_1" });
-    watchSessionDrive(CORE, TASK);
+    watchSessionDrive(CORE, SESSION);
     first.flush();
     // Now the second tab, against the same arbiter: it is following, because
     // the first one asked first.
     __resetSessionWriteStoreForTests();
     const second = deferredBridge({ arbiter, tabId: "tab_2" });
-    watchSessionDrive(CORE, TASK);
+    watchSessionDrive(CORE, SESSION);
     second.flush();
-    expect(readSessionWriteState(CORE, TASK).access).toEqual({
+    expect(readSessionWriteState(CORE, SESSION).access).toEqual({
       writable: false,
       reason: "driven-in-another-tab",
     });
 
-    takeSessionDrive(CORE, TASK);
+    takeSessionDrive(CORE, SESSION);
 
     // The gesture is sent, and the pane waits: the tab it is taking from still
     // believes it is driving until the service says otherwise, and typing here
     // in the meantime is the dual write the whole store exists to prevent.
-    const state = readSessionWriteState(CORE, TASK);
+    const state = readSessionWriteState(CORE, SESSION);
     expect(state.drive).toBe("pending");
     expect(state.access).toEqual({ writable: false, reason: "awaiting-drive" });
 
     second.flush();
-    expect(readSessionWriteState(CORE, TASK).access).toEqual({ writable: true });
+    expect(readSessionWriteState(CORE, SESSION).access).toEqual({ writable: true });
   });
 
   it("stops waiting when the last pane on the Session closes", () => {
     vi.useFakeTimers();
     deferredBridge();
-    watchSessionDrive(CORE, TASK);
+    watchSessionDrive(CORE, SESSION);
 
-    releaseSessionDrive(CORE, TASK);
+    releaseSessionDrive(CORE, SESSION);
 
     // Back to "nobody asked", and no window left running over it.
-    expect(readSessionWriteState(CORE, TASK).drive).toBe("none");
+    expect(readSessionWriteState(CORE, SESSION).drive).toBe("none");
     vi.advanceTimersByTime(OPTIMISTIC_DRIVE_WINDOW_MS * 2);
-    expect(readSessionWriteState(CORE, TASK).drive).toBe("none");
+    expect(readSessionWriteState(CORE, SESSION).drive).toBe("none");
   });
 
   it("keeps the guess across a lock answer, which says nothing about the drive", () => {
     vi.useFakeTimers();
     const { handlers } = deferredBridge();
-    watchSessionDrive(CORE, TASK);
+    watchSessionDrive(CORE, SESSION);
 
     handlers.lock?.({
       coreId: CORE,
-      taskId: TASK,
+      sessionId: SESSION,
       lock: { supported: true, writable: true, state: "unlocked" },
     });
 
-    expect(readSessionWriteState(CORE, TASK).optimistic).toBe(true);
+    expect(readSessionWriteState(CORE, SESSION).optimistic).toBe(true);
     // …and the lock still wins when it says no. A pane that may not write at
     // all is told about the client holding the Session, not about a drive.
     handlers.lock?.({
       coreId: CORE,
-      taskId: TASK,
+      sessionId: SESSION,
       lock: { supported: true, writable: false, state: "held-by-another" },
     });
-    expect(readSessionWriteState(CORE, TASK).access).toEqual({
+    expect(readSessionWriteState(CORE, SESSION).access).toEqual({
       writable: false,
       reason: "held-by-another-client",
     });
@@ -441,11 +441,11 @@ describe("two tabs on one Session", () => {
   ): { duringWindow: SessionWriteAccess; settled: SessionWriteAccess } {
     __resetSessionWriteStoreForTests();
     const { flush } = deferredBridge({ arbiter, tabId });
-    watchSessionDrive(CORE, TASK);
-    const duringWindow = readSessionWriteState(CORE, TASK).access;
+    watchSessionDrive(CORE, SESSION);
+    const duringWindow = readSessionWriteState(CORE, SESSION).access;
     if (opts.answer) flush();
     else vi.advanceTimersByTime(OPTIMISTIC_DRIVE_WINDOW_MS);
-    return { duringWindow, settled: readSessionWriteState(CORE, TASK).access };
+    return { duringWindow, settled: readSessionWriteState(CORE, SESSION).access };
   }
 
   it("leaves at most one of them writable once the drive is known", () => {

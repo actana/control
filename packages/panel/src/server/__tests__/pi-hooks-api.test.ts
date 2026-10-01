@@ -9,9 +9,9 @@ process.env.AC_USER_DATA_DIR = tmpRoot;
 const { handleApiRequest } = await import("../api-router");
 const { getOrCreateApiToken } = await import("../services/settings");
 const { createProject } = await import("../services/projects");
-const { createTask, getTask } = await import("../services/tasks");
+const { createSession, getSession } = await import("../services/sessions");
 const { getDb } = await import("~/db/client");
-const { projects, tasks, groups, appSettings } = await import("~/db/schema");
+const { projects, sessions, groups, appSettings } = await import("~/db/schema");
 
 const LOOPBACK_HEADERS = { origin: "http://127.0.0.1:5173" };
 /** Shape Pi's extension posts from ctx.sessionManager.getSessionId(). */
@@ -29,29 +29,29 @@ function authed(input: string, init: RequestInit = {}): Request {
 }
 
 describe("Pi hook API (ADO #4986)", () => {
-  let taskId = "";
+  let sessionId = "";
 
   beforeEach(() => {
     const db = getDb();
-    db.delete(tasks).run();
+    db.delete(sessions).run();
     db.delete(projects).run();
     db.delete(groups).run();
     db.delete(appSettings).run();
 
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mc-pi-hooks-proj-"));
     const project = createProject({ name: "pi-hooks", path: dir });
-    const task = createTask({
+    const session = createSession({
       projectId: project.id,
       title: "Waiting for initial prompt...",
       agent: "pi",
       claudeSessionId: null,
     });
-    taskId = task.id;
+    sessionId = session.id;
   });
 
   function postHook(body: Record<string, unknown>): Promise<Response | null> {
     return handleApiRequest(
-      authed(`/api/hooks/pi?taskId=${encodeURIComponent(taskId)}`, {
+      authed(`/api/hooks/pi?sessionId=${encodeURIComponent(sessionId)}`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(body),
@@ -68,8 +68,8 @@ describe("Pi hook API (ADO #4986)", () => {
 
     expect(res?.status).toBe(200);
     await expect(res?.json()).resolves.toEqual({ ok: true, ignored: "SessionStart" });
-    expect(getTask(taskId)?.claudeSessionId).toBe(PI_SESSION);
-    expect(getTask(taskId)?.status).toBe("ready");
+    expect(getSession(sessionId)?.claudeSessionId).toBe(PI_SESSION);
+    expect(getSession(sessionId)?.status).toBe("ready");
   });
 
   it("keeps the UUID after a full turn so relaunch can use pi --session", async () => {
@@ -84,7 +84,7 @@ describe("Pi hook API (ADO #4986)", () => {
       prompt: "say hello",
     });
     expect(running?.status).toBe(200);
-    expect(getTask(taskId)).toMatchObject({
+    expect(getSession(sessionId)).toMatchObject({
       claudeSessionId: PI_SESSION,
       status: "running",
     });
@@ -94,7 +94,7 @@ describe("Pi hook API (ADO #4986)", () => {
       session_id: PI_SESSION,
     });
     expect(stop?.status).toBe(200);
-    expect(getTask(taskId)).toMatchObject({
+    expect(getSession(sessionId)).toMatchObject({
       claudeSessionId: PI_SESSION,
       status: "finished",
     });

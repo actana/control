@@ -49,7 +49,7 @@ describe("the pane's terminal input wiring", () => {
 
     // `ensurePty`'s real sequence on a reload whose recorded pty is gone: wire
     // against the descriptor's pty, find the replay empty, fall through to
-    // `findByTask`, wire again against the live one.
+    // `findBySession`, wire again against the live one.
     attach(wiring, term, "pty_stale", writes);
     attach(wiring, term, "pty_live", writes);
 

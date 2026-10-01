@@ -10,7 +10,7 @@ import { queryKeys } from "~/queries";
  * The stream is fire-and-forget: no cursor, no `Last-Event-ID`, no replay
  * buffer behind `/api/events`. A Session that finishes while the socket is
  * down — a backgrounded tab whose connection the browser or a proxy reaped, a
- * Panel restart, a sleeping laptop — emits its `task:updated` into a stream
+ * Panel restart, a sleeping laptop — emits its `session:updated` into a stream
  * nobody is reading, and nothing ever mentions it again. The row keeps the last
  * status this tab happened to hear (issue 484, symptom W2).
  *
@@ -20,7 +20,7 @@ import { queryKeys } from "~/queries";
  *
  * `["projects"]` is a prefix, not an exact key, so one invalidation reaches the
  * projects list, every project row (Panel-owned and Core-tagged alike) and
- * every task-list bucket under them — see `queryKeys` and `tasksCacheKey`. The
+ * every session-list bucket under them — see `queryKeys` and `sessionsCacheKey`. The
  * archived buckets sit deliberately outside that tree, so they are named.
  */
 export function useEventStreamReconcile(): void {
@@ -29,7 +29,7 @@ export function useEventStreamReconcile(): void {
     useCallback(() => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.projects });
       void queryClient.invalidateQueries({ queryKey: queryKeys.groups });
-      void queryClient.invalidateQueries({ queryKey: queryKeys.coreArchivedTasksAll });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.coreArchivedSessionsAll });
     }, [queryClient]),
   );
 }

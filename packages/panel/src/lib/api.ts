@@ -1,5 +1,5 @@
-import type { Group, Project, ProjectPresentation, Task, UserTerminal } from "~/db/schema";
-import type { Harness, TaskStatus } from "@actana/shared/domain";
+import type { Group, Project, ProjectPresentation, Session, UserTerminal } from "~/db/schema";
+import type { Harness, SessionStatus } from "@actana/shared/domain";
 import type { ProjectPathStatus, ProjectWithCounts } from "~/shared/projects";
 import type { CoreListResponse, CoreWithDial } from "~/shared/cores";
 import type { CorePairingIdentityResponse } from "~/shared/core-pairing";
@@ -350,21 +350,21 @@ export const api = {
   deleteGroup: (id: string) =>
     req<void>(`/api/groups/${id}`, { method: "DELETE" }),
 
-  listTasks: (projectId: string) =>
-    req<{ tasks: Task[] }>(`/api/projects/${projectId}/tasks`),
-  getTask: (id: string) => req<{ task: Task }>(`/api/tasks/${id}`),
-  getTaskQuestion: (id: string) =>
-    req<{ question: PendingQuestion | null }>(`/api/tasks/${id}/question`),
-  archiveTask: (id: string) =>
-    req<{ task: Task }>(`/api/tasks/${id}/archive`, { method: "POST" }),
-  restoreTask: (id: string) =>
-    req<{ task: Task }>(`/api/tasks/${id}/restore`, { method: "POST" }),
-  updateTaskStatus: (id: string, body: { status?: TaskStatus; preview?: string; lines?: number; prompt?: string }) =>
-    req<{ task: Task }>(`/api/tasks/${id}/status`, {
+  listSessionRows: (projectId: string) =>
+    req<{ sessions: Session[] }>(`/api/projects/${projectId}/sessions`),
+  getSession: (id: string) => req<{ session: Session }>(`/api/sessions/${id}`),
+  getSessionQuestion: (id: string) =>
+    req<{ question: PendingQuestion | null }>(`/api/sessions/${id}/question`),
+  archiveSession: (id: string) =>
+    req<{ session: Session }>(`/api/sessions/${id}/archive`, { method: "POST" }),
+  restoreSession: (id: string) =>
+    req<{ session: Session }>(`/api/sessions/${id}/restore`, { method: "POST" }),
+  updateSessionStatus: (id: string, body: { status?: SessionStatus; preview?: string; lines?: number; prompt?: string }) =>
+    req<{ session: Session }>(`/api/sessions/${id}/status`, {
       method: "POST",
       body: JSON.stringify(body),
     }),
-  createTaskInternal: (
+  createSessionInternal: (
     projectId: string,
     body: {
       id?: string;
@@ -375,11 +375,11 @@ export const api = {
       claudeBareSession?: boolean;
     },
   ) =>
-    req<{ task: Task }>(`/api/projects/${projectId}/tasks`, {
+    req<{ session: Session }>(`/api/projects/${projectId}/sessions`, {
       method: "POST",
       body: JSON.stringify(body),
     }),
-  updateTask: (
+  updateSession: (
     id: string,
     body: {
       title?: string;
@@ -389,13 +389,13 @@ export const api = {
       claudeBareSession?: boolean;
     }
   ) =>
-    req<{ task: Task }>(`/api/tasks/${id}`, {
+    req<{ session: Session }>(`/api/sessions/${id}`, {
       method: "PATCH",
       body: JSON.stringify(body),
     }),
-  deleteTask: async (id: string) => {
-    await req<void>(`/api/tasks/${id}`, { method: "DELETE" });
-    pruneStoredSessionFinishNotifications({ type: "task", taskId: id });
+  deleteSession: async (id: string) => {
+    await req<void>(`/api/sessions/${id}`, { method: "DELETE" });
+    pruneStoredSessionFinishNotifications({ type: "session", sessionId: id });
   },
 
   // The Panel's only terminal rows (issue 266). Every terminal the Panel opens

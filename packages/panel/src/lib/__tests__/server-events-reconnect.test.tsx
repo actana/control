@@ -3,7 +3,7 @@
 // The SSE channel after a gap (issue 484, symptom W2 — suspect 2).
 //
 // `/api/events` is fire-and-forget: the server keeps no event log, sends no
-// `id:` lines, and the client sends no `Last-Event-ID`. So a `task:updated`
+// `id:` lines, and the client sends no `Last-Event-ID`. So a `session:updated`
 // emitted while the socket is down is not delayed, it is gone — a backgrounded
 // tab whose connection a browser or proxy reaped comes back believing whatever
 // it last heard, which for a Session that finished in the gap is `running`.
@@ -115,7 +115,7 @@ describe("a reconnected SSE stream reconciles the gap it left (issue 484)", () =
     expect(reconnected).toHaveBeenCalledTimes(1);
 
     // The events that follow are ordinary traffic, not further gaps.
-    act(() => second.onmessage?.({ data: JSON.stringify({ type: "task:updated" }) }));
+    act(() => second.onmessage?.({ data: JSON.stringify({ type: "session:updated" }) }));
     expect(reconnected).toHaveBeenCalledTimes(1);
   });
 
@@ -160,11 +160,11 @@ describe("a reconnected SSE stream reconciles the gap it left (issue 484)", () =
 
     const keys = invalidate.mock.calls.map(([filters]) => filters?.queryKey);
     // `["projects"]` is a prefix: it reaches the list, every project row and
-    // every task bucket beneath them. The archived buckets sit outside that
+    // every session bucket beneath them. The archived buckets sit outside that
     // tree by design (ADR 0019), so they are named separately.
     expect(keys).toContainEqual(["projects"]);
     expect(keys).toContainEqual(["groups"]);
-    expect(keys).toContainEqual(["core-archived-tasks"]);
+    expect(keys).toContainEqual(["core-archived-sessions"]);
   });
 
   it("tells a subscriber nothing once it has unsubscribed", async () => {

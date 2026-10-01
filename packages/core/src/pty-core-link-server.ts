@@ -11,7 +11,7 @@
 // the CLI, an SDK automation. Each gets its own {@link ActiveConnection} — its
 // own auth state, event cursor, poll loop, heartbeat and PTY subscription set —
 // and a new connection never closes an existing one. `PtyCore` state (PTYs,
-// tasks, the event log) is untouched by a connection arriving or leaving. When
+// sessions, the event log) is untouched by a connection arriving or leaving. When
 // the last connection goes, `core.setEmitTarget(null)` stops output delivery —
 // the PTY buffer retains everything for replay on reconnect.
 //
@@ -20,12 +20,12 @@
 // `exit` only after asking for that `ptyId` — see {@link PtySubscription}.
 //
 // Every Session has at most one writer (issue 144, ADR 0024 D3–D7, D10). The
-// `claim` / `release` / `forceTakeover` frames name a Session by `taskId`, the
+// `claim` / `release` / `forceTakeover` frames name a Session by `sessionId`, the
 // {@link SessionLockTable} records which connection holds it, and the
-// mutation frames this server serves — `write`, `kill`, and every `tasksMutate`
+// mutation frames this server serves — `write`, `kill`, and every `sessionsMutate`
 // addressed at a Session — are refused when *another* connection holds it. The
 // gate is here, on the client-facing frames, and nowhere else: `PtyCore.kill`
-// has callers inside the Core (the PTY exit paths, the task writer) that are
+// has callers inside the Core (the PTY exit paths, the session writer) that are
 // nobody's client, and a gate down there would have the Core refuse itself.
 //
 // That lock state is **published, not discovered by failing** (issue 145, ADR
@@ -72,16 +72,16 @@ import {
   type CoreLinkServerFrame,
   type CoreLinkProjectSnapshot,
   type CoreLinkSessionSnapshot,
-  type CoreLinkTaskMutation,
-  type CoreLinkTaskSnapshot,
+  type CoreLinkSessionMutation,
+  type CoreLinkSessionRow,
   type CoreLinkLaunchProcessKillResult,
 } from "@actana/sdk/core";
 // Re-export the snapshot types so tests / callers can import them from the
 // server module alongside {@link CoreQueryPort} (the per-Core navigation
 // query port, issue 07).
-export type { CoreLinkProjectSnapshot, CoreLinkTaskSnapshot };
+export type { CoreLinkProjectSnapshot, CoreLinkSessionRow };
 import type { PtyCore, PtyCoreEvent } from "./pty-manager";
-import { CoreTaskWriter } from "./core-task-writer";
+import { CoreSessionWriter } from "./core-session-writer";
 import { SessionLockTable } from "./session-lock-table";
 
 /**
@@ -95,7 +95,7 @@ export interface EventLogPort {
   appendEvent(
     kind: string,
     payload: string,
-    opts?: { ptyId?: string | null; taskId?: string | null },
+    opts?: { ptyId?: string | null; sessionId?: string | null },
   ): number;
   /** Read every event with eventId > afterEventId, ascending. */
   readEventTail(afterEventId: number, limit?: number): CoreLinkEvent[];
@@ -112,11 +112,11 @@ export interface EventLogPort {
 }
 
 /**
- * Read-only access to the Core's project + task tables for the per-Core
+ * Read-only access to the Core's project + session tables for the per-Core
  * navigation + Fleet view (issue 07, ADR 0001). The Core is the single
- * source of truth for projects and tasks; the Panel holds none. The
- * `projectsList` / `tasksList` core-link frames delegate to this port so the
- * Panel can render a Core's projects/tasks as live snapshots without a
+ * source of truth for projects and sessions; the Panel holds none. The
+ * `projectsList` / `sessionRowsList` core-link frames delegate to this port so the
+ * Panel can render a Core's projects/sessions as live snapshots without a
  * separate HTTP round-trip per item — and without the Panel ever persisting
  * them.
  *
@@ -129,38 +129,38 @@ export interface CoreQueryPort {
   /** Every project on this Core, as a flattened snapshot. */
   listProjects(): CoreLinkProjectSnapshot[];
   /**
-   * Every active task on this Core (optionally filtered to one project). The
-   * Core omits archived tasks — the Fleet view is for active work, and the
+   * Every active session on this Core (optionally filtered to one project). The
+   * Core omits archived sessions — the Fleet view is for active work, and the
    * Panel caches nothing, so archived rows never cross the active path. There
    * is no argument that changes this; the Archived view has its own frame.
    */
-  listTasks(projectId?: string): CoreLinkTaskSnapshot[];
+  listSessionRows(projectId?: string): CoreLinkSessionRow[];
   /**
-   * Every archived task on this Core (optionally filtered to one project) —
-   * the exact mirror of `listTasks`, answering the `archivedTasksList` frame.
-   * A separate method rather than a flag on `listTasks`, so no argument to the
+   * Every archived session on this Core (optionally filtered to one project) —
+   * the exact mirror of `listSessionRows`, answering the `archivedSessionRowsList` frame.
+   * A separate method rather than a flag on `listSessionRows`, so no argument to the
    * active path can make it return an archived row (issue 62, ADR 0019).
    */
-  listArchivedTasks(projectId?: string): CoreLinkTaskSnapshot[];
+  listArchivedSessions(projectId?: string): CoreLinkSessionRow[];
   /**
-   * How many archived tasks the same scope holds. Rides the `tasksList`
+   * How many archived sessions the same scope holds. Rides the `sessionRowsList`
    * answer so the Panel can gate and label its Archived tab continuously
    * without fetching a single archived row (ADR 0019).
    */
-  countArchivedTasks(projectId?: string): number;
+  countArchivedSessions(projectId?: string): number;
   /**
-   * One task by id, or `null` when this Core has no such row. Unlike
-   * `listTasks` an archived row still answers — a caller asking by id wants
+   * One session by id, or `null` when this Core has no such row. Unlike
+   * `listSessionRows` an archived row still answers — a caller asking by id wants
    * that row's facts, not a browse of active work. The server reads it to
-   * learn a task's status *before* a mutation lands, which is what tells a
+   * learn a session's status *before* a mutation lands, which is what tells a
    * genuine finish from a re-patch of an already-finished Session (issue 20).
    */
-  getTask(taskId: string): CoreLinkTaskSnapshot | null;
+  getSession(sessionId: string): CoreLinkSessionRow | null;
 }
 
 /**
- * Read-write access to the Core's projects + tasks tables for the
- * `projectsMutate` / `tasksMutate` / `sessionsList` core-link frames (issue
+ * Read-write access to the Core's projects + sessions tables for the
+ * `projectsMutate` / `sessionsMutate` / `sessionsList` core-link frames (issue
  * 04, ADR 0004). The Core process owns the write path against its SQLite;
  * on a remote VM no sibling stateful server runs, so mutations go through
  * this port directly. Path validation for projects lives on the Core (a
@@ -170,7 +170,7 @@ export interface CoreQueryPort {
  *
  * The real implementation (core-mutation-store.ts) opens the
  * shared SQLite read-write; tests inject an in-memory fake. When omitted,
- * `projectsMutate` / `tasksMutate` return `null` and `sessionsList` returns
+ * `projectsMutate` / `sessionsMutate` return `null` and `sessionsList` returns
  * `[]` — the same "PTY-only Core is a valid Core" backward compat the
  * query port has.
  */
@@ -279,14 +279,14 @@ export interface CoreMutationPort {
    */
   mutateProject(mutation: CoreLinkProjectMutation): CoreLinkProjectSnapshot | null;
   /**
-   * Create / update a task. Returns the resulting snapshot on success;
+   * Create / update a session. Returns the resulting snapshot on success;
    * `null` when `update` targeted a missing row.
    */
-  mutateTask(mutation: CoreLinkTaskMutation): CoreLinkTaskSnapshot | null;
+  mutateSession(mutation: CoreLinkSessionMutation): CoreLinkSessionRow | null;
   /**
    * Every active session on this Core (optionally filtered to one
-   * project). A session is a task-plus-optional-live-PTY: `ptyId` is set
-   * when the Core's PTY core currently has a running PTY for that task,
+   * project). A session is a session-plus-optional-live-PTY: `ptyId` is set
+   * when the Core's PTY core currently has a running PTY for that session,
    * `null` otherwise. The Panel uses this to know which sessions it can
    * reattach to on reconnect.
    */
@@ -358,39 +358,39 @@ export type PtyCoreLinkServerOptions = {
    */
   authVerifier?: AuthVerifier;
   /**
-   * Read-only project + task snapshots for the `projectsList` / `tasksList`
+   * Read-only project + session snapshots for the `projectsList` / `sessionRowsList`
    * frames (issue 07). When omitted, both frames answer with empty results
    * (a PTY-only Core is still a valid Core).
    */
   queryPort?: CoreQueryPort;
   /**
-   * Read-write access to project/task rows for the `projectsMutate` /
-   * `tasksMutate` / `sessionsList` frames (issue 04, ADR 0004). When omitted,
-   * `projectsMutate`/`tasksMutate` return `{ project: null }` /
-   * `{ task: null }` and `sessionsList` returns `[]` — matching the pre-04
+   * Read-write access to project/session rows for the `projectsMutate` /
+   * `sessionsMutate` / `sessionsList` frames (issue 04, ADR 0004). When omitted,
+   * `projectsMutate`/`sessionsMutate` return `{ project: null }` /
+   * `{ session: null }` and `sessionsList` returns `[]` — matching the pre-04
    * stubs so a PTY-only Core (or a test) still round-trips the frames.
    */
   mutationPort?: CoreMutationPort;
   /**
-   * The Core's task-write seam (issue 84). The Core process passes the one it
+   * The Core's session-write seam (issue 84). The Core process passes the one it
    * also gives its hook receiver and PTY-exit path, so a Panel-driven write
    * and a hook-driven one are literally the same code on the same ports.
    * Omitted (tests, a PTY-only Core), one is built from the ports above.
    */
-  taskWriter?: CoreTaskWriter;
+  sessionWriter?: CoreSessionWriter;
   /**
    * Takes a prompt the Panel captured from the terminal for a harness whose
    * hooks do not report one (issue 84). Omitted, the `harnessPrompt` frame is
    * answered `accepted: false` — a Core with no title generator is still a
    * valid Core.
    */
-  promptPort?: { submitted(taskId: string, prompt: string): void };
+  promptPort?: { submitted(sessionId: string, prompt: string): void };
   /**
    * An agent PTY was spawned for this Session (issue 387, review finding 2).
    * Optional: a Core without it simply never resets a relaunched Session's
    * card. See `core-session-relaunch.ts` for what the port does with it.
    */
-  relaunchPort?: { agentSpawned(taskId: string): void };
+  relaunchPort?: { agentSpawned(sessionId: string): void };
   /**
    * Snapshot of this Core's CLI availability (issue 11). When omitted, the
    * `agentsAvailabilityList` frame answers with an empty map — the Panel's
@@ -647,6 +647,26 @@ const HEARTBEAT_TIMEOUT_MS = 45_000;
 const PTY_HOLD_LIMIT_BYTES = 100_000;
 
 /**
+ * True unless `frame` addresses a Session and carries no `sessionId` string for
+ * it: the keyed frames, and a `sessionsMutate` that is not a `create`.
+ */
+function namesItsSession(frame: CoreLinkRequestFrame): boolean {
+  const named = (id: unknown): boolean => typeof id === "string" && id.length > 0;
+  switch (frame.type) {
+    case "claim":
+    case "release":
+    case "forceTakeover":
+    case "findBySession":
+    case "harnessPrompt":
+      return named(frame.sessionId);
+    case "sessionsMutate":
+      return frame.mutation?.op === "create" || named((frame.mutation as { sessionId?: unknown })?.sessionId);
+    default:
+      return true;
+  }
+}
+
+/**
  * Hosts the loopback core-link WebSocket server. One instance per Core
  * process. The server outlives individual Panel connections — PTY state is
  * retained in the `PtyCore` across disconnects/reconnects.
@@ -668,20 +688,20 @@ export class PtyCoreLinkServer {
   private readonly installPort: HarnessInstallPort | null;
   private readonly directoryPort: CoreDirectoryPort | null;
   private readonly execPort: CoreExecPort | null;
-  private readonly promptPort: { submitted(taskId: string, prompt: string): void } | null;
-  private readonly relaunchPort: { agentSpawned(taskId: string): void } | null;
+  private readonly promptPort: { submitted(sessionId: string, prompt: string): void } | null;
+  private readonly relaunchPort: { agentSpawned(sessionId: string): void } | null;
   private readonly protocolVersion: string;
   private readonly announceMultiConnection: boolean;
   private readonly announceFiles: boolean;
   /** This Core's revoked pairings, or null when it has no pairing surface. */
   private readonly revocation: CoreRevocations | null;
   /**
-   * The one seam every task-row change goes through — the Panel's
-   * `tasksMutate` frame below and the Core's own writers (hook receiver, PTY
+   * The one seam every session-row change goes through — the Panel's
+   * `sessionsMutate` frame below and the Core's own writers (hook receiver, PTY
    * exit, title generator) alike, so a row never moves without the event that
    * describes it (issue 84).
    */
-  private readonly taskWriter: CoreTaskWriter;
+  private readonly sessionWriter: CoreSessionWriter;
   /**
    * Every core-link connection this Core is currently serving, keyed by its
    * socket (issue 141, ADR 0024 D1). Insertion-ordered, so fan-out reaches
@@ -748,9 +768,9 @@ export class PtyCoreLinkServer {
     this.relaunchPort = opts.relaunchPort ?? null;
     this.protocolVersion = opts.protocolVersion ?? CORE_LINK_PROTOCOL_VERSION;
     this.announceMultiConnection = opts.announceMultiConnection ?? true;
-    this.taskWriter =
-      opts.taskWriter ??
-      new CoreTaskWriter({
+    this.sessionWriter =
+      opts.sessionWriter ??
+      new CoreSessionWriter({
         mutationPort: this.mutationPort,
         queryPort: this.queryPort,
         eventLog: this.eventLog,
@@ -897,14 +917,14 @@ export class PtyCoreLinkServer {
     // lock it holds has to go with it either way.
     const released = this.sessionLocks.releaseAll(conn);
     if (released.length > 0) {
-      log.info("core-link.session-lock.released-on-drop", { taskIds: released });
+      log.info("core-link.session-lock.released-on-drop", { sessionIds: released });
     }
     // A drop is one of the three ways a lock ends (D7), so it publishes like
     // the other two (D8): one `session:lockChanged` per Session, after the
     // sweep, so the log says `locked: false` because the table does. A client
     // waiting for a Session a vanished holder was sitting on has no other way to
     // learn it is claimable — nobody sent a frame for it to be answered by.
-    for (const taskId of released) this.recordSessionLockChange(taskId, "released");
+    for (const sessionId of released) this.recordSessionLockChange(sessionId, "released");
     // Guard on identity, not presence: a socket that was already replaced in
     // the map must not evict its successor.
     if (this.connections.get(ws) === conn) this.connections.delete(ws);
@@ -959,16 +979,16 @@ export class PtyCoreLinkServer {
   private reclaimFor(
     conn: ActiveConnection,
     clientId: string,
-  ): { replaced: boolean; taskIds: string[] } {
+  ): { replaced: boolean; sessionIds: string[] } {
     conn.clientId = clientId;
     const predecessors: ActiveConnection[] = [];
     for (const other of this.connections.values()) {
       if (other !== conn && other.clientId === clientId) predecessors.push(other);
     }
     // Locks first, in one rewrite each — see above.
-    const taskIds: string[] = [];
+    const sessionIds: string[] = [];
     for (const predecessor of predecessors) {
-      taskIds.push(...this.sessionLocks.transferAll(predecessor, conn));
+      sessionIds.push(...this.sessionLocks.transferAll(predecessor, conn));
     }
     // Then the socket. `dropConnection` is called rather than left to the close
     // handler so the registry is correct the moment this frame is answered: a
@@ -986,10 +1006,10 @@ export class PtyCoreLinkServer {
     if (predecessors.length > 0) {
       log.info("core-link.client-id.reclaimed", {
         replaced: predecessors.length,
-        taskIds,
+        sessionIds,
       });
     }
-    return { replaced: predecessors.length > 0, taskIds };
+    return { replaced: predecessors.length > 0, sessionIds };
   }
 
   /**
@@ -1151,7 +1171,7 @@ export class PtyCoreLinkServer {
     if (!this.eventLog) return;
     const kind = PROJECT_MUTATION_EVENT_KINDS[mutation.op];
     const payload = JSON.stringify({ projectId: project.projectId });
-    this.eventLog.appendEvent(kind, payload, { taskId: null, ptyId: null });
+    this.eventLog.appendEvent(kind, payload, { sessionId: null, ptyId: null });
   }
 
 
@@ -1162,10 +1182,10 @@ export class PtyCoreLinkServer {
    * when replaying the event tail — and render it with the distinct "VM shell"
    * surface instead of reattaching as an agent workspace.
    */
-  private recordPtySpawn(ptyId: string, taskId: string, shellSession = false): void {
+  private recordPtySpawn(ptyId: string, sessionId: string, shellSession = false): void {
     if (!this.eventLog) return;
-    const payload = JSON.stringify({ ptyId, taskId, shellSession });
-    this.eventLog.appendEvent("pty:spawn", payload, { ptyId, taskId });
+    const payload = JSON.stringify({ ptyId, sessionId, shellSession });
+    this.eventLog.appendEvent("pty:spawn", payload, { ptyId, sessionId });
   }
 
   /**
@@ -1266,6 +1286,15 @@ export class PtyCoreLinkServer {
       }
       return;
     }
+    // The codec reads `type` and `reqId` and nothing else, so a 0.17 client's
+    // `{ type: "claim", taskId }` parses and would be served against `undefined`
+    // — a granted claim on nobody. The Task-to-Session rename is a hard cut with
+    // no `taskId` alias (#556): a frame that addresses a Session without naming
+    // one by `sessionId` is refused here, before any port sees it.
+    if (!namesItsSession(frame)) {
+      this.send(ws, { type: "error", reqId: frame.reqId, message: "invalid frame" });
+      return;
+    }
     try {
       await this.dispatch(conn, frame);
     } catch (err) {
@@ -1309,7 +1338,7 @@ export class PtyCoreLinkServer {
    * to land — "that Session is gone" — and those two arrive on different frames:
    * a Session this Core no longer has answers with the ordinary
    * `writeResult { ok: false }` / `killResult { ok: false }` /
-   * `tasksMutateResult { task: null }` it always did. One of them is worth
+   * `sessionsMutateResult { session: null }` it always did. One of them is worth
    * retrying after a claim; the other never is.
    *
    * An **unlocked** Session is not refused. That is D11's compatibility promise
@@ -1321,9 +1350,9 @@ export class PtyCoreLinkServer {
   private refuseLockedSession(
     conn: ActiveConnection,
     reqId: string,
-    taskId: string | null | undefined,
+    sessionId: string | null | undefined,
   ): boolean {
-    if (this.sessionLocks.mayMutate(taskId, conn)) return false;
+    if (this.sessionLocks.mayMutate(sessionId, conn)) return false;
     this.send(conn.ws, {
       type: "error",
       reqId,
@@ -1337,15 +1366,15 @@ export class PtyCoreLinkServer {
    * The same refusal for a frame that names a `ptyId` rather than a Session —
    * `write` and `kill`.
    *
-   * The `ptyId` is resolved to the Task it was spawned for, because that is what
-   * a lock is keyed by: a Session is its Task, and keying on the process would
+   * The `ptyId` is resolved to the Session it was spawned for, because that is what
+   * a lock is keyed by: a Session is its Session, and keying on the process would
    * give one Session as many locks as it has had PTYs. A `ptyId` this Core has
    * no PTY for resolves to null and is **not** refused — there is no Session
    * there to be holding, and the call below is about to answer `ok: false`,
    * which is precisely the "that Session is gone" answer the caller needs.
    */
   private refuseLockedPty(conn: ActiveConnection, reqId: string, ptyId: string): boolean {
-    return this.refuseLockedSession(conn, reqId, this.core.taskIdForPty(ptyId));
+    return this.refuseLockedSession(conn, reqId, this.core.sessionIdForPty(ptyId));
   }
 
   /**
@@ -1369,12 +1398,12 @@ export class PtyCoreLinkServer {
    * the client it has no lock table (D11), and publishing state for a table it
    * says it does not have would be the same Core answering two ways.
    */
-  private withPublishedLock<T extends { taskId: string; lock?: CoreLinkSessionLock }>(
+  private withPublishedLock<T extends { sessionId: string; lock?: CoreLinkSessionLock }>(
     conn: ActiveConnection,
     rows: T[],
   ): T[] {
     if (!this.announceMultiConnection) return rows;
-    return rows.map((row) => ({ ...row, lock: this.sessionLocks.stateFor(row.taskId, conn) }));
+    return rows.map((row) => ({ ...row, lock: this.sessionLocks.stateFor(row.sessionId, conn) }));
   }
 
   /**
@@ -1382,7 +1411,7 @@ export class PtyCoreLinkServer {
    * learns of it without asking (issue 145, ADR 0024 D8).
    *
    * A **dedicated kind**, on the precedent ADR 0022 set for
-   * `project:appearanceChanged`: widening `task:updated` to carry lock state
+   * `project:appearanceChanged`: widening `session:updated` to carry lock state
    * would stop that frame documenting what changed, and a reconnecting client
    * replaying a tail could not tell a takeover it must react to from a title
    * edit it can ignore — which is the generic-field-patch failure ADR 0017 and
@@ -1397,17 +1426,17 @@ export class PtyCoreLinkServer {
    * transition, so the log cannot drift from the state it describes.
    */
   private recordSessionLockChange(
-    taskId: string,
+    sessionId: string,
     transition: CoreLinkSessionLockTransition,
   ): void {
     if (!this.announceMultiConnection || !this.eventLog) return;
     const payload: CoreLinkSessionLockChangedPayload = {
-      taskId,
+      sessionId,
       transition,
-      locked: this.sessionLocks.holderOf(taskId) !== null,
+      locked: this.sessionLocks.holderOf(sessionId) !== null,
     };
     this.eventLog.appendEvent(SESSION_LOCK_CHANGED_EVENT_KIND, JSON.stringify(payload), {
-      taskId,
+      sessionId,
       ptyId: null,
     });
   }
@@ -1415,10 +1444,10 @@ export class PtyCoreLinkServer {
   /**
    * Stamp an accepted write in the event log and hand back the id (#289 A).
    *
-   * **The Task id is the whole point.** A wait is per Session, and the cursor it
+   * **The Session id is the whole point.** A wait is per Session, and the cursor it
    * counts from has to sit in the same log as the status events it is counting
-   * against — so a PTY this Core cannot name a Task for is not stamped at all,
-   * and answers 0. That is honest rather than convenient: a cursor with no Task
+   * against — so a PTY this Core cannot name a Session for is not stamped at all,
+   * and answers 0. That is honest rather than convenient: a cursor with no Session
    * on it could never be compared with anything, and a client reading 0 falls
    * back to waiting with no cursor rather than waiting on a fiction.
    *
@@ -1427,15 +1456,15 @@ export class PtyCoreLinkServer {
    */
   private recordSessionDelivery(ptyId: string, data: string): number {
     if (!this.eventLog) return 0;
-    const taskId = this.core.taskIdForPty(ptyId);
-    if (!taskId) return 0;
+    const sessionId = this.core.sessionIdForPty(ptyId);
+    if (!sessionId) return 0;
     const payload: CoreLinkSessionDeliveredPayload = {
-      taskId,
+      sessionId,
       ptyId,
       characters: data.length,
     };
     return this.eventLog.appendEvent(SESSION_DELIVERED_EVENT_KIND, JSON.stringify(payload), {
-      taskId,
+      sessionId,
       ptyId,
     });
   }
@@ -1444,8 +1473,8 @@ export class PtyCoreLinkServer {
     const ws = conn.ws;
     switch (frame.type) {
       case "spawn": {
-        // Gated on the `taskId` the spawn names, which D4 does not enumerate —
-        // it lists `write`, `kill` and every task mutation. Gated anyway,
+        // Gated on the `sessionId` the spawn names, which D4 does not enumerate —
+        // it lists `write`, `kill` and every session mutation. Gated anyway,
         // because a `spawn` naming a Session another connection holds starts a
         // *second* process on the Session that connection is driving, which is
         // the interference D4 exists to prevent rather than a new one: two
@@ -1455,16 +1484,16 @@ export class PtyCoreLinkServer {
         // The reading `resize` got does not transfer. A Reader has a real use
         // for a resize — it is painting the scrollback into a viewport of its
         // own — and no use at all for a spawn it may not then type into: the
-        // lock is keyed by `taskId` for every PTY kind, so the very next `write`
+        // lock is keyed by `sessionId` for every PTY kind, so the very next `write`
         // to the PTY this frame would create comes back `session-locked`. A
         // refusal here is the same answer, one round trip earlier and legible.
         //
         // A Session nobody holds is still spawned for anybody, so D5's window
         // is untouched: a creator spawns without claiming exactly as before, and
-        // `tasksMutate`'s `create` — which names no existing Session — keeps its
-        // own carve-out. Only a `taskId` **another** connection holds is
+        // `sessionsMutate`'s `create` — which names no existing Session — keeps its
+        // own carve-out. Only a `sessionId` **another** connection holds is
         // refused.
-        if (this.refuseLockedSession(conn, frame.reqId, frame.opts.taskId)) return;
+        if (this.refuseLockedSession(conn, frame.reqId, frame.opts.sessionId)) return;
         try {
           const { ptyId, hooksReportTurnStart } = await this.core.spawn(frame.opts);
           // `shellSession` is the VM Shell Session discriminant (issue 06):
@@ -1483,14 +1512,14 @@ export class PtyCoreLinkServer {
           // scrollback to reconcile them against. Any other connection that
           // wants this PTY still has to ask.
           conn.subscribePty(ptyId, false);
-          this.recordPtySpawn(ptyId, frame.opts.taskId, shellSession);
+          this.recordPtySpawn(ptyId, frame.opts.sessionId, shellSession);
           // A harness is alive for this Session again. If its row settled
           // while it had never run a turn — the bare Session issue 387 sweeps
           // — the card is now wrong in the other direction, and nothing else
           // will correct it: no hook fires until the first prompt. The port
           // decides; a shell spawn never asks (issue 387, review finding 2).
           if (frame.opts.shellSession !== true && frame.opts.agent) {
-            this.relaunchPort?.agentSpawned(frame.opts.taskId);
+            this.relaunchPort?.agentSpawned(frame.opts.sessionId);
           }
           // `hooksReportTurnStart` is what lets the Panel arm its
           // terminal-input fallback on reality rather than on the harness
@@ -1523,7 +1552,7 @@ export class PtyCoreLinkServer {
       }
       case "resize": {
         // Deliberately not gated. D4 names the mutations the lock covers —
-        // `write`, `kill`, and every task mutation addressed at the Session —
+        // `write`, `kill`, and every session mutation addressed at the Session —
         // and a resize is none of them: it is how a client tells the PTY the
         // size of the viewport it is painting into, and every Reader has one.
         // A Reader whose resize were refused would render the Session's
@@ -1537,7 +1566,7 @@ export class PtyCoreLinkServer {
       case "kill": {
         // The client-facing kill, and the only one that is gated. `PtyCore.kill`
         // keeps answering its callers inside the Core — the PTY exit paths, the
-        // task writer — which hold no lock and are nobody's client.
+        // session writer — which hold no lock and are nobody's client.
         if (this.refuseLockedPty(conn, frame.reqId, frame.ptyId)) return;
         const ok = this.core.kill(frame.ptyId);
         this.send(ws, { type: "killResult", reqId: frame.reqId, ok });
@@ -1549,42 +1578,42 @@ export class PtyCoreLinkServer {
         // that already holds the Session is idempotent and changes nothing, and
         // an event for it would be a lock change nobody made — the same reason
         // `recordProjectMutation` appends only for a mutation that landed.
-        const alreadyHeld = this.sessionLocks.isHeldBy(frame.taskId, conn);
-        const { granted } = this.sessionLocks.claim(frame.taskId, conn);
+        const alreadyHeld = this.sessionLocks.isHeldBy(frame.sessionId, conn);
+        const { granted } = this.sessionLocks.claim(frame.sessionId, conn);
         // A denied claim leaves the holder untouched, so there is nothing to
         // publish; the caller reads `granted: false` and the watchers were never
         // wrong about anything.
-        if (granted && !alreadyHeld) this.recordSessionLockChange(frame.taskId, "claimed");
+        if (granted && !alreadyHeld) this.recordSessionLockChange(frame.sessionId, "claimed");
         this.send(ws, {
           type: "claimResult",
           reqId: frame.reqId,
-          taskId: frame.taskId,
+          sessionId: frame.sessionId,
           granted,
         });
         return;
       }
       case "release": {
-        const released = this.sessionLocks.release(frame.taskId, conn);
+        const released = this.sessionLocks.release(frame.sessionId, conn);
         // Only a release that actually released something. A stale client
         // releasing a lock it already lost is talking about the past, and
         // publishing it would announce a transition that did not happen — to
         // watchers, indistinguishable from the holder having just let go.
-        if (released) this.recordSessionLockChange(frame.taskId, "released");
+        if (released) this.recordSessionLockChange(frame.sessionId, "released");
         this.send(ws, {
           type: "releaseResult",
           reqId: frame.reqId,
-          taskId: frame.taskId,
+          sessionId: frame.sessionId,
           released,
         });
         return;
       }
       case "forceTakeover": {
-        const { takenFrom } = this.sessionLocks.forceTakeover(frame.taskId, conn);
+        const { takenFrom } = this.sessionLocks.forceTakeover(frame.sessionId, conn);
         if (takenFrom === "another-connection") {
           // Worth a line in the Core's log even though nothing failed: this is
           // the one lock transition an operator did not agree to, and the
           // loser's in-flight keystrokes are gone (ADR 0024, known risks).
-          log.info("core-link.session-lock.force-takeover", { taskId: frame.taskId });
+          log.info("core-link.session-lock.force-takeover", { sessionId: frame.sessionId });
         }
         // Published in the vocabulary of the lock, not of the frame: a takeover
         // of a Session nobody held is a `claimed`, because nobody was evicted
@@ -1598,14 +1627,14 @@ export class PtyCoreLinkServer {
         // nothing.
         if (takenFrom !== "this-connection") {
           this.recordSessionLockChange(
-            frame.taskId,
+            frame.sessionId,
             takenFrom === "nobody" ? "claimed" : "taken-over",
           );
         }
         this.send(ws, {
           type: "forceTakeoverResult",
           reqId: frame.reqId,
-          taskId: frame.taskId,
+          sessionId: frame.sessionId,
           takenFrom,
         });
         return;
@@ -1616,15 +1645,15 @@ export class PtyCoreLinkServer {
         // as `undefined` would match each other and reap in turn — which is
         // the one way a frame this permissive can misfire.
         const clientId = typeof frame.clientId === "string" ? frame.clientId : "";
-        const { replaced, taskIds } = clientId
+        const { replaced, sessionIds } = clientId
           ? this.reclaimFor(conn, clientId)
-          : { replaced: false, taskIds: [] as string[] };
+          : { replaced: false, sessionIds: [] as string[] };
         this.send(ws, {
           type: "reclaimResult",
           reqId: frame.reqId,
           clientId,
           replaced,
-          taskIds,
+          sessionIds,
         });
         return;
       }
@@ -1645,9 +1674,9 @@ export class PtyCoreLinkServer {
         });
         return;
       }
-      case "findByTask": {
-        const { ptyId } = this.core.findByTask(frame.taskId);
-        this.send(ws, { type: "findByTaskResult", reqId: frame.reqId, ptyId });
+      case "findBySession": {
+        const { ptyId } = this.core.findBySession(frame.sessionId);
+        this.send(ws, { type: "findBySessionResult", reqId: frame.reqId, ptyId });
         return;
       }
       case "replay": {
@@ -1703,41 +1732,41 @@ export class PtyCoreLinkServer {
         this.handleAuth(conn, frame);
         return;
       }
-      // ─── Task / project / session / hook ops (issue 02 schema + issue 07
-      // wiring). Task + project ops delegate to the CoreQueryPort so the
+      // ─── Session / project / session / hook ops (issue 02 schema + issue 07
+      // wiring). Session + project ops delegate to the CoreQueryPort so the
       // Panel renders live snapshots with no Panel-side persistence. When no
       // queryPort is configured (a PTY-only Core, or tests), both answer
       // with empty results so the Panel can round-trip them without errors.
-      case "tasksList": {
+      case "sessionRowsList": {
         // Stamped with this connection's own lock state (issue 145, D8). This
         // is the frame a Panel hydrates its Fleet view from, so it is where a
         // Reader's terminal is decided to be read-only — before a keystroke,
         // which is the whole of what "published, not discovered by failing"
         // buys over the refusal that would otherwise be the first news of it.
-        const tasks = this.withPublishedLock(
+        const sessions = this.withPublishedLock(
           conn,
-          this.queryPort ? this.queryPort.listTasks(frame.projectId) : [],
+          this.queryPort ? this.queryPort.listSessionRows(frame.projectId) : [],
         );
         // The count of archived rows, never the rows — see ADR 0019. It rides
         // this answer because the Panel needs it continuously (to gate and
         // label the Archived tab), while the rows are wanted only when that
-        // view is open, over `archivedTasksList`.
+        // view is open, over `archivedSessionRowsList`.
         const archivedCount = this.queryPort
-          ? this.queryPort.countArchivedTasks(frame.projectId)
+          ? this.queryPort.countArchivedSessions(frame.projectId)
           : 0;
-        this.send(ws, { type: "tasksListResult", reqId: frame.reqId, tasks, archivedCount });
+        this.send(ws, { type: "sessionRowsListResult", reqId: frame.reqId, sessions, archivedCount });
         return;
       }
-      case "archivedTasksList": {
+      case "archivedSessionRowsList": {
         // Archived rows carry it too. A Session is claimable whatever its
-        // archived flag says — the lock is keyed by `taskId` and knows nothing
+        // archived flag says — the lock is keyed by `sessionId` and knows nothing
         // about the column — so a snapshot that omitted it here would be the one
         // list where "can I write to this" went unanswered.
-        const tasks = this.withPublishedLock(
+        const sessions = this.withPublishedLock(
           conn,
-          this.queryPort ? this.queryPort.listArchivedTasks(frame.projectId) : [],
+          this.queryPort ? this.queryPort.listArchivedSessions(frame.projectId) : [],
         );
-        this.send(ws, { type: "archivedTasksListResult", reqId: frame.reqId, tasks });
+        this.send(ws, { type: "archivedSessionRowsListResult", reqId: frame.reqId, sessions });
         return;
       }
       case "projectsList": {
@@ -1745,33 +1774,33 @@ export class PtyCoreLinkServer {
         this.send(ws, { type: "projectsListResult", reqId: frame.reqId, projects });
         return;
       }
-      case "tasksMutate": {
-        // "Every task mutation addressed at that Session" (D4). An `update` or
-        // a `delete` names a taskId and is therefore addressed at one; a
+      case "sessionsMutate": {
+        // "Every session mutation addressed at that Session" (D4). An `update` or
+        // a `delete` names a sessionId and is therefore addressed at one; a
         // `create` names no existing Session and so has none to be refused by —
         // an automation holding one Session must still be able to start another.
         if (
           frame.mutation.op !== "create" &&
-          this.refuseLockedSession(conn, frame.reqId, frame.mutation.taskId)
+          this.refuseLockedSession(conn, frame.reqId, frame.mutation.sessionId)
         ) {
           return;
         }
         if (!this.mutationPort) {
-          this.send(ws, { type: "tasksMutateResult", reqId: frame.reqId, task: null });
+          this.send(ws, { type: "sessionsMutateResult", reqId: frame.reqId, session: null });
           return;
         }
         try {
           // The Panel's write and the Core's own writes (hooks, PTY exit, the
           // title generator) share one seam, so the row and the events that
           // describe it never come apart (issue 84).
-          const task = this.taskWriter.mutate(frame.mutation);
+          const session = this.sessionWriter.mutate(frame.mutation);
           // The answer to a mutation is a Session snapshot like any other, so
           // it carries the lock like any other — including the `create` that
           // just made this Session, which comes back `unlocked` and says so.
           // That is D5 on the wire: the creator got no privilege, and the client
           // reads that rather than assuming either way.
-          const [stamped] = task ? this.withPublishedLock(conn, [task]) : [null];
-          this.send(ws, { type: "tasksMutateResult", reqId: frame.reqId, task: stamped });
+          const [stamped] = session ? this.withPublishedLock(conn, [session]) : [null];
+          this.send(ws, { type: "sessionsMutateResult", reqId: frame.reqId, session: stamped });
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
           this.send(ws, { type: "error", reqId: frame.reqId, message });
@@ -1779,20 +1808,20 @@ export class PtyCoreLinkServer {
         return;
       }
       case "harnessPrompt": {
-        // A task mutation addressed at a Session, so D4 covers it: the prompt
-        // reaches the title generator, which writes the task row's title
-        // through the same `taskWriter` a gated `tasksMutate` uses. The frame
-        // reads like telemetry and lands as a write, and "every task mutation
+        // A session mutation addressed at a Session, so D4 covers it: the prompt
+        // reaches the title generator, which writes the session row's title
+        // through the same `sessionWriter` a gated `sessionsMutate` uses. The frame
+        // reads like telemetry and lands as a write, and "every session mutation
         // addressed at that Session" is decided by where it lands. Small in
         // consequence — the generator leaves a real or operator-set title alone
         // — but a connection holding nothing must not rename a Session another
         // connection is driving.
-        if (this.refuseLockedSession(conn, frame.reqId, frame.taskId)) return;
+        if (this.refuseLockedSession(conn, frame.reqId, frame.sessionId)) return;
         // The Panel read this off the terminal because the harness's hooks
         // will not report it. Nothing is patched here; the Core decides on
         // its own whether the Session wants naming.
-        const accepted = Boolean(this.promptPort && frame.taskId && frame.prompt?.trim());
-        if (accepted) this.promptPort!.submitted(frame.taskId, frame.prompt);
+        const accepted = Boolean(this.promptPort && frame.sessionId && frame.prompt?.trim());
+        if (accepted) this.promptPort!.submitted(frame.sessionId, frame.prompt);
         this.send(ws, { type: "harnessPromptResult", reqId: frame.reqId, accepted });
         return;
       }
@@ -1814,7 +1843,7 @@ export class PtyCoreLinkServer {
       case "sessionsList": {
         // The frame `actana session ls` reads (D8): a list of Sessions, each
         // saying whether this client may write to it. Same stamp, same rule as
-        // `tasksList` — a CLI and a Panel asking about one Session are asking
+        // `sessionRowsList` — a CLI and a Panel asking about one Session are asking
         // the same question and must not get different vocabularies for it.
         const sessions = this.withPublishedLock(
           conn,
@@ -1978,7 +2007,7 @@ export class PtyCoreLinkServer {
     try {
       this.eventLog?.appendEvent(HARNESS_INSTALL_FAILED_EVENT_KIND, JSON.stringify(payload), {
         ptyId: null,
-        taskId: null,
+        sessionId: null,
       });
     } catch (err) {
       log.warn("core-link.harness-install.append-failed", {

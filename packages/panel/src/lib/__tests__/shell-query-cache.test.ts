@@ -51,7 +51,7 @@ function makeProject(overrides: Partial<ProjectWithCounts> = {}): ProjectWithCou
     defaultGridView: false,
     createdAt: 1,
     updatedAt: 1,
-    taskCounts: {
+    sessionCounts: {
       ready: 0,
       running: 0,
       "needs-input": 0,

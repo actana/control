@@ -39,8 +39,8 @@ import {
   type CoreLinkResponseFrame,
   type CoreLinkSessionSnapshot,
   type CoreLinkSessionTakenFrom,
-  type CoreLinkTaskMutation,
-  type CoreLinkTaskSnapshot,
+  type CoreLinkSessionMutation,
+  type CoreLinkSessionRow,
 } from "./core-link-frames.ts";
 import {
   CoreLinkTransport,
@@ -113,7 +113,7 @@ export const MULTI_CONNECTION_ONLY_FRAME_TYPES: ReadonlySet<CoreLinkRequestFrame
  * `session-locked` is its first value and the reason this class exists: a
  * mutation refused because another Core client holds that Session throws,
  * whereas a mutation aimed at a Session this Core no longer has resolves
- * (`ok: false` / `task: null`). One of the two is worth retrying after a claim
+ * (`ok: false` / `session: null`). One of the two is worth retrying after a claim
  * and the other never is, and telling them apart is the caller's whole job.
  */
 export class CoreLinkRequestError extends Error {
@@ -363,7 +363,7 @@ export class CoreClient {
   private readonly disconnectedListeners = new Set<(msg: { error?: string }) => void>();
   private readonly establishedListeners = new Set<() => void>();
   private readonly reclaimedListeners = new Set<
-    (msg: { replaced: boolean; taskIds: string[] }) => void
+    (msg: { replaced: boolean; sessionIds: string[] }) => void
   >();
 
   constructor(opts: CoreClientOptions) {
@@ -929,7 +929,7 @@ export class CoreClient {
    * Present this client's Core client id, so the Core closes the socket this
    * connection replaces and moves its Session locks here (ADR 0024 D9).
    *
-   * The answer is not discarded, though (issue 147). `taskIds` names the Sessions
+   * The answer is not discarded, though (issue 147). `sessionIds` names the Sessions
    * whose locks came across, and that is a fact no layer above can derive: this
    * connection did not claim them, the Core logged no event for the transfer —
    * the locks moved in place, which is exactly the atomicity D9 needs — so until
@@ -946,11 +946,11 @@ export class CoreClient {
     if (!this.canSendMultiConnectionFrames()) return;
     void this.rpc({ type: "reclaim", reqId: "", clientId: this.clientId })
       .then((result) => {
-        const answer = result as { replaced?: boolean; taskIds?: string[] } | undefined;
+        const answer = result as { replaced?: boolean; sessionIds?: string[] } | undefined;
         if (!answer) return;
         const msg = {
           replaced: answer.replaced === true,
-          taskIds: Array.isArray(answer.taskIds) ? answer.taskIds : [],
+          sessionIds: Array.isArray(answer.sessionIds) ? answer.sessionIds : [],
         };
         for (const cb of this.reclaimedListeners) {
           try {
@@ -998,7 +998,7 @@ export class CoreClient {
   }
 
   /**
-   * Domain events off the Core's monotonic log — task status, hooks, session
+   * Domain events off the Core's monotonic log — session status, hooks, session
    * finish, PTY lifecycle. A one-shot client receives only what arrives while it
    * is connected; the cursor, the replay and the dedupe that make a *gap*
    * recoverable are {@link DurableCoreClient}'s.
@@ -1115,11 +1115,11 @@ export class CoreClient {
    * 0024 D9, issue 147 is its consumer).
    *
    * Fires only on a Core that announces `multiConnection`, because only such a
-   * Core is sent the frame at all. `taskIds` is often empty and an empty list
+   * Core is sent the frame at all. `sessionIds` is often empty and an empty list
    * never means the id was unknown — it means this client held nothing when its
    * previous socket went quiet, which is the ordinary case.
    */
-  onReclaimed(cb: (msg: { replaced: boolean; taskIds: string[] }) => void): Unsubscribe {
+  onReclaimed(cb: (msg: { replaced: boolean; sessionIds: string[] }) => void): Unsubscribe {
     this.reclaimedListeners.add(cb);
     return () => this.reclaimedListeners.delete(cb);
   }
@@ -1183,7 +1183,7 @@ export class CoreClient {
    * The same frame `write` sends with one field set, and the same answer with
    * one field read: `deliveryEventId` is the cursor a turn-end wait counts from,
    * and it is 0 when the Core did not stamp — an older Core, a write the PTY
-   * refused, a PTY with no Task behind it. A caller that got 0 has no cursor and
+   * refused, a PTY with no Session behind it. A caller that got 0 has no cursor and
    * must not invent one; what it has is the ordinary `ok`.
    *
    * {@link write} is this without the stamp, and stays the one every keystroke
@@ -1219,8 +1219,8 @@ export class CoreClient {
     }) as Promise<CoreLinkLaunchProcessKillResult>;
   }
 
-  findByTask(taskId: string): Promise<{ ptyId: string | null }> {
-    return this.rpc({ type: "findByTask", reqId: "", taskId }) as Promise<{ ptyId: string | null }>;
+  findBySession(sessionId: string): Promise<{ ptyId: string | null }> {
+    return this.rpc({ type: "findBySession", reqId: "", sessionId }) as Promise<{ ptyId: string | null }>;
   }
 
   /**
@@ -1288,11 +1288,11 @@ export class CoreClient {
    * same makes a single-connection Core look permanently locked to an operator
    * who is in fact its only client.
    */
-  claim(taskId: string): Promise<{ supported: boolean; granted: boolean }> {
+  claim(sessionId: string): Promise<{ supported: boolean; granted: boolean }> {
     if (!this.canSendMultiConnectionFrames()) {
       return Promise.resolve({ supported: false, granted: false });
     }
-    return this.rpc({ type: "claim", reqId: "", taskId }).then((granted) => ({
+    return this.rpc({ type: "claim", reqId: "", sessionId }).then((granted) => ({
       supported: true,
       granted: granted === true,
     }));
@@ -1307,11 +1307,11 @@ export class CoreClient {
    * {@link claim}: nothing goes on the wire to a Core with no lock table, and
    * `supported: false` says there was never a lock to give back.
    */
-  release(taskId: string): Promise<{ supported: boolean; released: boolean }> {
+  release(sessionId: string): Promise<{ supported: boolean; released: boolean }> {
     if (!this.canSendMultiConnectionFrames()) {
       return Promise.resolve({ supported: false, released: false });
     }
-    return this.rpc({ type: "release", reqId: "", taskId }).then((released) => ({
+    return this.rpc({ type: "release", reqId: "", sessionId }).then((released) => ({
       supported: true,
       released: released === true,
     }));
@@ -1331,12 +1331,12 @@ export class CoreClient {
    * take.
    */
   forceTakeover(
-    taskId: string,
+    sessionId: string,
   ): Promise<{ supported: boolean; takenFrom: CoreLinkSessionTakenFrom }> {
     if (!this.canSendMultiConnectionFrames()) {
       return Promise.resolve({ supported: false, takenFrom: "nobody" });
     }
-    return this.rpc({ type: "forceTakeover", reqId: "", taskId }).then((takenFrom) => ({
+    return this.rpc({ type: "forceTakeover", reqId: "", sessionId }).then((takenFrom) => ({
       supported: true,
       takenFrom: (takenFrom ?? "nobody") as CoreLinkSessionTakenFrom,
     }));
@@ -1352,28 +1352,28 @@ export class CoreClient {
   }
 
   /**
-   * List every active (non-archived) task on this Core, optionally filtered to
+   * List every active (non-archived) session on this Core, optionally filtered to
    * one project.
    *
    * `archivedCount` is how many archived rows the same scope holds — a scalar,
-   * never the rows (ADR 0019). Use {@link archivedTasksList} for those.
+   * never the rows (ADR 0019). Use {@link archivedSessionRowsList} for those.
    */
-  tasksList(projectId?: string): Promise<{ tasks: CoreLinkTaskSnapshot[]; archivedCount: number }> {
-    return this.rpc({ type: "tasksList", reqId: "", projectId }) as Promise<{
-      tasks: CoreLinkTaskSnapshot[];
+  sessionRowsList(projectId?: string): Promise<{ sessions: CoreLinkSessionRow[]; archivedCount: number }> {
+    return this.rpc({ type: "sessionRowsList", reqId: "", projectId }) as Promise<{
+      sessions: CoreLinkSessionRow[];
       archivedCount: number;
     }>;
   }
 
   /**
-   * List every archived task on this Core, optionally filtered to one project
-   * (ADR 0019) — a separate frame from {@link tasksList}, so an active answer
+   * List every archived session on this Core, optionally filtered to one project
+   * (ADR 0019) — a separate frame from {@link sessionRowsList}, so an active answer
    * stays free of archived rows by construction rather than by what a caller
    * remembers to pass.
    */
-  archivedTasksList(projectId?: string): Promise<CoreLinkTaskSnapshot[]> {
-    return this.rpc({ type: "archivedTasksList", reqId: "", projectId }) as Promise<
-      CoreLinkTaskSnapshot[]
+  archivedSessionRowsList(projectId?: string): Promise<CoreLinkSessionRow[]> {
+    return this.rpc({ type: "archivedSessionRowsList", reqId: "", projectId }) as Promise<
+      CoreLinkSessionRow[]
     >;
   }
 
@@ -1389,16 +1389,16 @@ export class CoreClient {
     >;
   }
 
-  /** Create / update / delete a task. Returns `null` when it targets a missing row. */
-  tasksMutate(mutation: CoreLinkTaskMutation): Promise<CoreLinkTaskSnapshot | null> {
-    return this.rpc({ type: "tasksMutate", reqId: "", mutation }) as Promise<
-      CoreLinkTaskSnapshot | null
+  /** Create / update / delete a session. Returns `null` when it targets a missing row. */
+  sessionsMutate(mutation: CoreLinkSessionMutation): Promise<CoreLinkSessionRow | null> {
+    return this.rpc({ type: "sessionsMutate", reqId: "", mutation }) as Promise<
+      CoreLinkSessionRow | null
     >;
   }
 
   /**
    * List every active session on this Core (optionally filtered to one project).
-   * A session's `ptyId` is set when the Core has a live PTY for that task — which
+   * A session's `ptyId` is set when the Core has a live PTY for that session — which
    * is how a client knows what it can reattach to.
    */
   sessionsList(projectId?: string): Promise<CoreLinkSessionSnapshot[]> {
@@ -1500,21 +1500,21 @@ export function unwrapResponse(msg: CoreLinkResponseFrame): unknown {
       return msg.ok;
     case "killLaunchProcessesResult":
       return msg.result;
-    case "findByTaskResult":
+    case "findBySessionResult":
       return { ptyId: msg.ptyId };
     case "replayResult":
       return { data: msg.data, nextSeq: msg.nextSeq, from: msg.from };
     // The active list answers with rows *and* the archived count (ADR 0019), so
-    // unwrapping to `msg.tasks` alone would drop a required field of the frame.
+    // unwrapping to `msg.sessions` alone would drop a required field of the frame.
     // The archived list carries rows only.
-    case "tasksListResult":
-      return { tasks: msg.tasks, archivedCount: msg.archivedCount };
-    case "archivedTasksListResult":
-      return msg.tasks;
+    case "sessionRowsListResult":
+      return { sessions: msg.sessions, archivedCount: msg.archivedCount };
+    case "archivedSessionRowsListResult":
+      return msg.sessions;
     case "projectsListResult":
       return msg.projects;
-    case "tasksMutateResult":
-      return msg.task;
+    case "sessionsMutateResult":
+      return msg.session;
     case "projectsMutateResult":
       return msg.project;
     case "sessionsListResult":
@@ -1535,7 +1535,7 @@ export function unwrapResponse(msg: CoreLinkResponseFrame): unknown {
     case "ptyUnsubscribeAck":
       return { ptyId: msg.ptyId, subscribed: msg.subscribed };
     // The Session lock's three answers unwrap to the one field each carries
-    // beyond the taskId the caller already passed in (issue 144). A denied claim
+    // beyond the sessionId the caller already passed in (issue 144). A denied claim
     // comes back here as `false` rather than as a rejection — it is an answer,
     // not a failure, and only a *mutation* refused for the lock throws (that is
     // an `error` frame, below, carrying `session-locked`).
@@ -1546,12 +1546,12 @@ export function unwrapResponse(msg: CoreLinkResponseFrame): unknown {
     case "forceTakeoverResult":
       return msg.takenFrom;
     // Both fields, because both are reporting a caller cannot derive (issue 146).
-    // `taskIds` in particular is the set of Sessions whose locks came across with
+    // `sessionIds` in particular is the set of Sessions whose locks came across with
     // this connection, and a lock register is its consumer: after a reconnect
     // those Sessions are held-by-you again, and nothing else on the link would
     // say so until the next snapshot.
     case "reclaimResult":
-      return { replaced: msg.replaced, taskIds: msg.taskIds };
+      return { replaced: msg.replaced, sessionIds: msg.sessionIds };
     // The code rides the rejection rather than being dropped at the boundary
     // (issue 144): a caller can already tell "locked" (throws) from "gone"
     // (resolves), and this is what lets it tell "locked" from any other error

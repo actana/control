@@ -39,7 +39,7 @@ function depsFor(overrides: Partial<SpawnPolicyDeps> = {}): SpawnPolicyDeps {
 
 function spawnReq(overrides: Record<string, unknown> = {}): SpawnRequest {
   return {
-    taskId: "t1",
+    sessionId: "t1",
     cwd: PROJECT_ROOT,
     command: "claude --resume 00000000-0000-4000-8000-000000000000",
     agent: "claude-code",
@@ -645,7 +645,7 @@ describe("resolveSpawnPlan — shell env integration", () => {
 describe("resolveSpawnPlan — shell terminals", () => {
   it("requires the explicit shell:true flag when no agent is set", () => {
     expectRejected(
-      { taskId: "t", cwd: PROJECT_ROOT, command: "pnpm dev" },
+      { sessionId: "t", cwd: PROJECT_ROOT, command: "pnpm dev" },
       depsFor(),
       "missing-agent-or-shell-flag",
     );
@@ -653,7 +653,7 @@ describe("resolveSpawnPlan — shell terminals", () => {
 
   it("accepts an opted-in user-shell spawn at the project root", () => {
     const plan = resolveSpawnPlan(
-      { taskId: "t", cwd: PROJECT_ROOT, command: "pnpm dev", shell: true },
+      { sessionId: "t", cwd: PROJECT_ROOT, command: "pnpm dev", shell: true },
       depsFor(),
     );
     expect(plan.mode).toBe("shell");
@@ -664,7 +664,7 @@ describe("resolveSpawnPlan — shell terminals", () => {
 
   it("accepts an empty command in shell mode (just open the shell prompt)", () => {
     const plan = resolveSpawnPlan(
-      { taskId: "t", cwd: PROJECT_ROOT, command: "", shell: true },
+      { sessionId: "t", cwd: PROJECT_ROOT, command: "", shell: true },
       depsFor(),
     );
     if (plan.mode !== "shell") throw new Error("wrong mode");
@@ -673,7 +673,7 @@ describe("resolveSpawnPlan — shell terminals", () => {
 
   it("rejects when both agent and shell:true are set", () => {
     expectRejected(
-      { taskId: "t", cwd: PROJECT_ROOT, command: "claude", agent: "claude-code", shell: true },
+      { sessionId: "t", cwd: PROJECT_ROOT, command: "claude", agent: "claude-code", shell: true },
       depsFor(),
       "shell-with-agent",
     );
@@ -753,7 +753,7 @@ describe("resolveSpawnPlan — home shell roots (dashboard home terminals)", () 
 
   it("accepts a shell terminal started in an allowed home root", () => {
     const plan = resolveSpawnPlan(
-      { taskId: "t", cwd: HOME_DIR, command: "", shell: true, home: true },
+      { sessionId: "t", cwd: HOME_DIR, command: "", shell: true, home: true },
       depsFor({ homeShellRoots: () => [HOME_DIR] }),
     );
     expect(plan.mode).toBe("shell");
@@ -764,7 +764,7 @@ describe("resolveSpawnPlan — home shell roots (dashboard home terminals)", () 
   it("accepts a subdirectory of the home root", () => {
     expect(() =>
       resolveSpawnPlan(
-        { taskId: "t", cwd: path.join(HOME_DIR, "Downloads"), command: "", shell: true, home: true },
+        { sessionId: "t", cwd: path.join(HOME_DIR, "Downloads"), command: "", shell: true, home: true },
         depsFor({ homeShellRoots: () => [HOME_DIR] }),
       ),
     ).not.toThrow();
@@ -774,7 +774,7 @@ describe("resolveSpawnPlan — home shell roots (dashboard home terminals)", () 
     // The allowance is opt-in: without homeShellRoots a shell at ~ is still
     // confined to project roots, exactly like before this feature.
     expectRejected(
-      { taskId: "t", cwd: HOME_DIR, command: "", shell: true },
+      { sessionId: "t", cwd: HOME_DIR, command: "", shell: true },
       depsFor(),
       "cwd-outside-project-roots",
     );
@@ -792,7 +792,7 @@ describe("resolveSpawnPlan — home shell roots (dashboard home terminals)", () 
 
   it("realpaths home roots so a symlinked home cwd can't escape", () => {
     expectRejected(
-      { taskId: "t", cwd: path.join(HOME_DIR, "evil-link"), command: "", shell: true, home: true },
+      { sessionId: "t", cwd: path.join(HOME_DIR, "evil-link"), command: "", shell: true, home: true },
       depsFor({
         homeShellRoots: () => [HOME_DIR],
         realpath: (p) => (p === path.join(HOME_DIR, "evil-link") ? "/etc" : p),
@@ -854,7 +854,7 @@ describe("resolveSpawnPlan — VM shell sessions (shellSession: true)", () => {
     // No project roots registered, cwd empty — a VM shell doesn't belong to a
     // project, so the project-root check must be skipped entirely.
     const plan = resolveSpawnPlan(
-      { taskId: "vm1", cwd: "", command: "", shellSession: true },
+      { sessionId: "vm1", cwd: "", command: "", shellSession: true },
       depsFor({ projectRoots: () => [] }),
     );
     expect(plan.mode).toBe("shell-session");
@@ -865,7 +865,7 @@ describe("resolveSpawnPlan — VM shell sessions (shellSession: true)", () => {
 
   it("accepts a shellSession spawn with a starting command", () => {
     const plan = resolveSpawnPlan(
-      { taskId: "vm2", cwd: "", command: "htop", shellSession: true },
+      { sessionId: "vm2", cwd: "", command: "htop", shellSession: true },
       depsFor({ projectRoots: () => [] }),
     );
     if (plan.mode !== "shell-session") throw new Error("wrong mode");
@@ -878,7 +878,7 @@ describe("resolveSpawnPlan — VM shell sessions (shellSession: true)", () => {
     // os.homedir() before calling resolveSpawnPlan, so the plan's cwd is the
     // real home path on the Core machine — never a renderer-supplied path.
     const plan = resolveSpawnPlan(
-      { taskId: "vm3", cwd: VM_HOME, command: "", shellSession: true },
+      { sessionId: "vm3", cwd: VM_HOME, command: "", shellSession: true },
       depsFor({ projectRoots: () => [PROJECT_ROOT], homeShellRoots: () => [] }),
     );
     if (plan.mode !== "shell-session") throw new Error("wrong mode");
@@ -890,7 +890,7 @@ describe("resolveSpawnPlan — VM shell sessions (shellSession: true)", () => {
     // here — the VM shell is the SSH-equivalent escape hatch and is gated by
     // core-link auth, not project-root containment.
     const plan = resolveSpawnPlan(
-      { taskId: "vm4", cwd: "/etc", command: "", shellSession: true },
+      { sessionId: "vm4", cwd: "/etc", command: "", shellSession: true },
       depsFor({ projectRoots: () => [PROJECT_ROOT] }),
     );
     expect(plan.mode).toBe("shell-session");
@@ -899,7 +899,7 @@ describe("resolveSpawnPlan — VM shell sessions (shellSession: true)", () => {
   it("rejects setting both shellSession: true and agent", () => {
     expectRejected(
       {
-        taskId: "vm5",
+        sessionId: "vm5",
         cwd: "",
         command: "claude",
         agent: "claude-code",
@@ -913,7 +913,7 @@ describe("resolveSpawnPlan — VM shell sessions (shellSession: true)", () => {
   it("rejects setting both shellSession: true and shell: true", () => {
     expectRejected(
       {
-        taskId: "vm6",
+        sessionId: "vm6",
         cwd: "",
         command: "",
         shell: true,
@@ -930,7 +930,7 @@ describe("resolveSpawnPlan — VM shell sessions (shellSession: true)", () => {
     // login shell verbatim (mirrors `shell: true` mode); the policy gates on
     // core-link auth, not command content. A `;` is the user's own shell.
     const plan = resolveSpawnPlan(
-      { taskId: "vm7", cwd: "", command: "ls; echo done", shellSession: true },
+      { sessionId: "vm7", cwd: "", command: "ls; echo done", shellSession: true },
       depsFor(),
     );
     if (plan.mode !== "shell-session") throw new Error("wrong mode");
@@ -942,7 +942,7 @@ describe("resolveSpawnPlan — VM shell sessions (shellSession: true)", () => {
     // a different concept and must not piggyback on it. Even with no
     // homeShellRoots, the shellSession is accepted.
     const plan = resolveSpawnPlan(
-      { taskId: "vm8", cwd: "", command: "", shellSession: true },
+      { sessionId: "vm8", cwd: "", command: "", shellSession: true },
       depsFor({ homeShellRoots: undefined }),
     );
     expect(plan.mode).toBe("shell-session");

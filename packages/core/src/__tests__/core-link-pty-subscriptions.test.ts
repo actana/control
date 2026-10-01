@@ -83,7 +83,7 @@ function fakeEventLog() {
         kind,
         payload,
         ptyId: opts?.ptyId ?? null,
-        taskId: opts?.taskId ?? null,
+        sessionId: opts?.sessionId ?? null,
       });
       return eventId;
     },
@@ -113,7 +113,7 @@ function mockCore() {
     resize: () => true,
     kill: () => true,
     killLaunchProcesses: async () => ({ ptyCount: 0, ports: [] }),
-    findByTask: () => ({ ptyId: null }),
+    findBySession: () => ({ ptyId: null }),
     replay: (ptyId: string, sinceSeq?: number) => {
       replayCalls.push({ ptyId, sinceSeq });
       const all = chunks.get(ptyId) ?? [];
@@ -264,7 +264,7 @@ describe("PTY output fans out per connection, by subscription (issue 142)", () =
       spawner.receive({
         type: "spawn",
         reqId: "sp1",
-        opts: { taskId: "t1", cwd: "/tmp", command: "sh", agent: "claude-code" },
+        opts: { sessionId: "t1", cwd: "/tmp", command: "sh", agent: "claude-code" },
       });
       await new Promise((resolve) => setTimeout(resolve, 0));
       const ptyId = spawner.ofType<{ ptyId: string }>("spawned")[0]?.ptyId;
@@ -307,11 +307,11 @@ describe("PTY output fans out per connection, by subscription (issue 142)", () =
       log.port.appendEvent(
         "session:promptAbandoned",
         JSON.stringify({
-          taskId: "t1",
+          sessionId: "t1",
           ptyId: "pty-1",
           reason: "the harness exited before the prompt was delivered",
         }),
-        { taskId: "t1", ptyId: "pty-1" },
+        { sessionId: "t1", ptyId: "pty-1" },
       );
       core.emitExit("pty-1", 0);
 
@@ -348,8 +348,8 @@ describe("PTY output fans out per connection, by subscription (issue 142)", () =
 
       log.port.appendEvent(
         "session:promptAbandoned",
-        JSON.stringify({ taskId: "t1", ptyId: "pty-1", reason: "gone" }),
-        { taskId: "t1", ptyId: "pty-1" },
+        JSON.stringify({ sessionId: "t1", ptyId: "pty-1", reason: "gone" }),
+        { sessionId: "t1", ptyId: "pty-1" },
       );
       core.emitExit("pty-1", 0);
 

@@ -1,13 +1,13 @@
 import type {
-  CoreLinkTaskMutation,
-  CoreLinkTaskSnapshot,
+  CoreLinkSessionMutation,
+  CoreLinkSessionRow,
 } from "@actana/shared/sdk-link-frames";
-import { isTaskStatus } from "@actana/shared/domain";
+import { isSessionStatus } from "@actana/shared/domain";
 import { getPanelBridge } from "~/lib/panel-bridge";
 import { api } from "~/lib/api";
 
 /**
- * Route a task mutation to whichever Core owns the row (ADR 0005).
+ * Route a session mutation to whichever Core owns the row (ADR 0005).
  *
  * For a Core-owned row there is one transport: the mutation is a frame on this
  * tab's panel link, addressed to a `coreId`, and the Core that answers is
@@ -26,29 +26,29 @@ import { api } from "~/lib/api";
  * `claudeSessionId`, `status`, and `archived`. Keep it that way — a caller
  * that names a field this arm quietly drops believes it wrote.
  */
-export async function mutateTaskForCore(
+export async function mutateSessionForCore(
   coreId: string | null | undefined,
-  mutation: CoreLinkTaskMutation,
-): Promise<CoreLinkTaskSnapshot | null> {
-  if (!coreId) return mutatePanelLocalTask(mutation);
+  mutation: CoreLinkSessionMutation,
+): Promise<CoreLinkSessionRow | null> {
+  if (!coreId) return mutatePanelLocalSession(mutation);
   const bridge = getPanelBridge();
-  if (!bridge) throw new Error("Not connected to the Panel — cannot mutate task");
-  return bridge.mutateTask(coreId, mutation);
+  if (!bridge) throw new Error("Not connected to the Panel — cannot mutate session");
+  return bridge.mutateSession(coreId, mutation);
 }
 
-async function mutatePanelLocalTask(
-  mutation: CoreLinkTaskMutation,
-): Promise<CoreLinkTaskSnapshot | null> {
+async function mutatePanelLocalSession(
+  mutation: CoreLinkSessionMutation,
+): Promise<CoreLinkSessionRow | null> {
   if (mutation.op === "delete") {
     // The DELETE route answers 204 with no body, so there is no row to echo
     // back the way the Core's delete does. Every delete caller awaits the
     // promise and ignores the value, so null is the honest answer rather than
     // a fabricated snapshot or an extra GET to fetch a row about to vanish.
-    await api.deleteTask(mutation.taskId);
+    await api.deleteSession(mutation.sessionId);
     return null;
   }
   if (mutation.op !== "update") {
-    throw new Error(`cannot ${mutation.op} a task that no Core owns`);
+    throw new Error(`cannot ${mutation.op} a session that no Core owns`);
   }
   // Every column the PATCH route accepts, so a frame that reaches this arm
   // writes what the same frame would have written on a Core. A field silently
@@ -67,7 +67,7 @@ async function mutatePanelLocalTask(
   // Neither `status` nor `archived` is a column the PATCH route accepts, and
   // each has its own endpoint for the same reason: the status route clears the
   // pending question and emits `session:finished` on a finish, archive/restore
-  // clear the question and emit `task:archived`/`task:restored`. Apply the
+  // clear the question and emit `session:archived`/`session:restored`. Apply the
   // plain columns first, then status, then archived, so the returned snapshot
   // carries every leg. A patch that has other work to do skips the PATCH round
   // trip; an otherwise-empty mutation still goes through it, so a no-op
@@ -76,32 +76,32 @@ async function mutatePanelLocalTask(
   // The frame's status is a free-form string (a Core's vocabulary is its own);
   // the Panel's own route accepts only the statuses it knows, so a word it
   // doesn't recognize is dropped rather than sent for a 400.
-  const status = isTaskStatus(mutation.status) ? mutation.status : undefined;
-  let task =
+  const status = isSessionStatus(mutation.status) ? mutation.status : undefined;
+  let session =
     Object.keys(patch).length > 0 || (status === undefined && mutation.archived === undefined)
-      ? (await api.updateTask(mutation.taskId, patch)).task
+      ? (await api.updateSession(mutation.sessionId, patch)).session
       : null;
   if (status !== undefined) {
-    task = (await api.updateTaskStatus(mutation.taskId, { status })).task;
+    session = (await api.updateSessionStatus(mutation.sessionId, { status })).session;
   }
   if (mutation.archived !== undefined) {
     const flipped = mutation.archived
-      ? await api.archiveTask(mutation.taskId)
-      : await api.restoreTask(mutation.taskId);
-    task = flipped.task;
+      ? await api.archiveSession(mutation.sessionId)
+      : await api.restoreSession(mutation.sessionId);
+    session = flipped.session;
   }
-  if (!task) return null;
+  if (!session) return null;
   return {
-    taskId: task.id,
-    projectId: task.projectId,
-    title: task.title,
-    titleManuallySet: task.titleManuallySet,
-    claudeSessionId: task.claudeSessionId,
-    icon: task.icon,
-    agent: task.agent,
-    status: task.status,
-    archived: task.archived,
-    pinned: task.pinned,
-    updatedAt: task.updatedAt,
+    sessionId: session.id,
+    projectId: session.projectId,
+    title: session.title,
+    titleManuallySet: session.titleManuallySet,
+    claudeSessionId: session.claudeSessionId,
+    icon: session.icon,
+    agent: session.agent,
+    status: session.status,
+    archived: session.archived,
+    pinned: session.pinned,
+    updatedAt: session.updatedAt,
   };
 }

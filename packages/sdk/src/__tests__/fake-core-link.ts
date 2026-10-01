@@ -182,11 +182,11 @@ export function makeMockPtyCore(): PtyCore & { emitEvent: (e: PtyCoreEvent) => v
     kill: vi.fn(() => true),
     killLaunchProcesses: vi.fn(async () => ({ ptyCount: 0, ports: [] })),
     killPtysUnderPath: vi.fn(async () => ({ ptyCount: 0 })),
-    findByTask: vi.fn(() => ({ ptyId: "pty-1" })),
+    findBySession: vi.fn(() => ({ ptyId: "pty-1" })),
     // Which Session a `write`/`kill` would touch — the lookup the Core's
     // Session-lock gate resolves a ptyId through. Null: nothing here claims a
     // Session, so every one it touches is unlocked and served.
-    taskIdForPty: vi.fn(() => null),
+    sessionIdForPty: vi.fn(() => null),
     replay: vi.fn(() => ({ data: "scrollback", nextSeq: 7 })),
     killAll: vi.fn(),
     _emit: null,
@@ -205,7 +205,7 @@ export class FakeEventLog implements EventLogPort {
   appendEvent(
     kind: string,
     payload: string,
-    opts: { ptyId?: string | null; taskId?: string | null } = {},
+    opts: { ptyId?: string | null; sessionId?: string | null } = {},
   ): number {
     const eventId = ++this.seq;
     this.events.push({
@@ -213,7 +213,7 @@ export class FakeEventLog implements EventLogPort {
       ts: 1_700_000_000_000 + eventId,
       kind,
       ptyId: opts.ptyId ?? null,
-      taskId: opts.taskId ?? null,
+      sessionId: opts.sessionId ?? null,
       payload,
     });
     return eventId;

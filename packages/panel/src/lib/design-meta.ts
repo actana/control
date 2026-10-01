@@ -1,5 +1,5 @@
 import { HARNESS_REGISTRY } from "@actana/shared/harnesses";
-import { STATUS_SELECTION_PRIORITY, TASK_STATUS_META, type Harness, type TaskStatus } from "@actana/shared/domain";
+import { STATUS_SELECTION_PRIORITY, SESSION_STATUS_META, type Harness, type SessionStatus } from "@actana/shared/domain";
 
 export { STATUS_SELECTION_PRIORITY } from "@actana/shared/domain";
 
@@ -12,26 +12,26 @@ export const HARNESS_META: Record<Harness, { label: string; color: string; glyph
 };
 
 export const STATUS_META: Record<
-  TaskStatus,
+  SessionStatus,
   { label: string; color: string; dot: boolean; shimmer: boolean }
 > = {
-  ready: TASK_STATUS_META.ready,
-  running: TASK_STATUS_META.running,
-  "needs-input": TASK_STATUS_META["needs-input"],
-  interrupted: TASK_STATUS_META.interrupted,
-  finished: TASK_STATUS_META.finished,
-  terminated: TASK_STATUS_META.terminated,
-  disconnected: TASK_STATUS_META.disconnected,
+  ready: SESSION_STATUS_META.ready,
+  running: SESSION_STATUS_META.running,
+  "needs-input": SESSION_STATUS_META["needs-input"],
+  interrupted: SESSION_STATUS_META.interrupted,
+  finished: SESSION_STATUS_META.finished,
+  terminated: SESSION_STATUS_META.terminated,
+  disconnected: SESSION_STATUS_META.disconnected,
 };
 
 // Order used to pick the "next most attention-worthy" session — e.g. when
 // cycling into a closed panel via Cmd+Shift+]/[ or after closing the active
 // session. Distinct from display order: running outranks ready because a live
 // agent matters more than a queued one.
-/** Pick the highest-priority task per `STATUS_SELECTION_PRIORITY`. */
-export function pickByPriority<T extends { status: TaskStatus }>(tasks: T[]): T | undefined {
+/** Pick the highest-priority session per `STATUS_SELECTION_PRIORITY`. */
+export function pickByPriority<T extends { status: SessionStatus }>(sessions: T[]): T | undefined {
   for (const status of STATUS_SELECTION_PRIORITY) {
-    const found = tasks.find((t) => t.status === status);
+    const found = sessions.find((t) => t.status === status);
     if (found) return found;
   }
   return undefined;
@@ -41,7 +41,7 @@ export const DUPLICATE_ACTIVE_SESSION_EVENT = "mc:duplicate-active-session";
 
 /** Dispatched when Cmd+W archives the focused agent session (TerminalPanel). */
 export const ARCHIVE_ACTIVE_SESSION_EVENT = "mc:archive-active-session";
-export type ArchiveActiveSessionEventDetail = { taskId: string };
+export type ArchiveActiveSessionEventDetail = { sessionId: string };
 
 /** Dispatched when Cmd+K (terminal.expandToggle) fires while a bottom user TTY has focus. */
 export const CLEAR_USER_TERMINAL_EVENT = "mc:clear-user-terminal";

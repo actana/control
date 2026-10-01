@@ -1,7 +1,7 @@
 import { STATUS_META } from "~/lib/design-meta";
-import type { TaskStatus } from "@actana/shared/domain";
+import type { SessionStatus } from "@actana/shared/domain";
 
-export function StatusDot({ status, size = 6 }: { status: TaskStatus; size?: number }) {
+export function StatusDot({ status, size = 6 }: { status: SessionStatus; size?: number }) {
   const meta = STATUS_META[status];
   if (!meta || !meta.dot) return null;
   return (
@@ -20,7 +20,7 @@ export function StatusDot({ status, size = 6 }: { status: TaskStatus; size?: num
   );
 }
 
-export function StatusPill({ status, count }: { status: TaskStatus; count?: number }) {
+export function StatusPill({ status, count }: { status: SessionStatus; count?: number }) {
   const meta = STATUS_META[status];
   return (
     <span

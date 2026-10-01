@@ -3,7 +3,7 @@ import {
   attachTerminalKeyHandler,
   setTerminalReadOnly,
   stripTerminalSelectionFormatting,
-  terminalExitTaskStatus,
+  terminalExitSessionStatus,
   wireTerminalFileDrop,
 } from "../terminal-pane-helpers";
 import { PROJECT_PATH_DRAG_MIME } from "../project-path-drag";
@@ -69,14 +69,14 @@ describe("stripTerminalSelectionFormatting", () => {
   });
 });
 
-describe("terminalExitTaskStatus", () => {
+describe("terminalExitSessionStatus", () => {
   it("marks a clean agent exit as finished", () => {
-    expect(terminalExitTaskStatus(0)).toBe("finished");
+    expect(terminalExitSessionStatus(0)).toBe("finished");
   });
 
   it("marks failed or unknown exits as terminated", () => {
-    expect(terminalExitTaskStatus(1)).toBe("terminated");
-    expect(terminalExitTaskStatus(undefined)).toBe("terminated");
+    expect(terminalExitSessionStatus(1)).toBe("terminated");
+    expect(terminalExitSessionStatus(undefined)).toBe("terminated");
   });
 });
 

@@ -25,7 +25,7 @@ export type CorePtyBridge = {
    * it as the trigger to name an unnamed Session, which is the only way a
    * Core-owned Cursor Session gets a title at all.
    */
-  submitPrompt: (taskId: string, prompt: string) => Promise<boolean>;
+  submitPrompt: (sessionId: string, prompt: string) => Promise<boolean>;
   write: (ptyId: string, data: string) => Promise<boolean>;
   resize: (ptyId: string, cols: number, rows: number) => Promise<boolean>;
   kill: (ptyId: string) => Promise<boolean>;
@@ -47,7 +47,7 @@ export type CorePtyBridge = {
   subscribe: (ptyId: string, opts?: { catchUp?: boolean }) => Promise<void>;
   /** Stop receiving one pty's output. Idempotent, like {@link subscribe}. */
   unsubscribe: (ptyId: string) => Promise<void>;
-  findByTask: (taskId: string) => Promise<{ ptyId: string | null }>;
+  findBySession: (sessionId: string) => Promise<{ ptyId: string | null }>;
   onData: (cb: (msg: { ptyId: string; data: string; seq: number }) => void) => () => void;
   onExit: (
     cb: (msg: { ptyId: string; exitCode: number; signal?: number }) => void,
@@ -100,11 +100,11 @@ function createCorePtyBridge(link: PanelLinkClient, coreId: string): CorePtyBrid
       // signal at all.
       return { ptyId, hooksReportTurnStart: hooksReportTurnStart === true };
     },
-    submitPrompt: async (taskId, prompt) =>
+    submitPrompt: async (sessionId, prompt) =>
       (
         await link.request<Answer<"harnessPromptResult">>(coreId, {
           type: "harnessPrompt",
-          taskId,
+          sessionId,
           prompt,
         })
       ).accepted,
@@ -128,10 +128,10 @@ function createCorePtyBridge(link: PanelLinkClient, coreId: string): CorePtyBrid
     // live somewhere that sees the link come back and re-ask.
     subscribe: (ptyId, opts) => link.ptySubscribe(coreId, ptyId, opts),
     unsubscribe: (ptyId) => link.ptyUnsubscribe(coreId, ptyId),
-    findByTask: async (taskId) => {
-      const result = await link.request<Answer<"findByTaskResult">>(coreId, {
-        type: "findByTask",
-        taskId,
+    findBySession: async (sessionId) => {
+      const result = await link.request<Answer<"findBySessionResult">>(coreId, {
+        type: "findBySession",
+        sessionId,
       });
       return { ptyId: result.ptyId };
     },

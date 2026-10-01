@@ -1,28 +1,28 @@
 import {
   STATUS_DISPLAY_ORDER,
-  TASK_STATUSES,
-  type TaskStatus,
+  SESSION_STATUSES,
+  type SessionStatus,
 } from "@actana/shared/domain";
 
-type DisplayTask = {
-  status: TaskStatus;
+type DisplaySession = {
+  status: SessionStatus;
   createdAt: number;
   updatedAt: number;
 };
 
-type PinnableDisplayTask = DisplayTask & {
+type PinnableDisplaySession = DisplaySession & {
   pinned: boolean;
 };
 
-function byMostRecentActivity<T extends DisplayTask>(a: T, b: T): number {
+function byMostRecentActivity<T extends DisplaySession>(a: T, b: T): number {
   return b.updatedAt - a.updatedAt || b.createdAt - a.createdAt;
 }
 
-function statusDisplayRank(status: TaskStatus): number {
+function statusDisplayRank(status: SessionStatus): number {
   return STATUS_DISPLAY_ORDER.indexOf(status);
 }
 
-function byPinnedListOrder<T extends DisplayTask>(a: T, b: T): number {
+function byPinnedListOrder<T extends DisplaySession>(a: T, b: T): number {
   const rankDelta = statusDisplayRank(a.status) - statusDisplayRank(b.status);
   if (rankDelta !== 0) return rankDelta;
   if (a.status === "finished" || b.status === "finished") {
@@ -31,18 +31,18 @@ function byPinnedListOrder<T extends DisplayTask>(a: T, b: T): number {
   return 0;
 }
 
-export function groupTasksByStatusForDisplay<T extends DisplayTask>(
-  tasks: readonly T[],
-): Record<TaskStatus, T[]> {
-  const grouped = TASK_STATUSES.reduce(
+export function groupSessionsByStatusForDisplay<T extends DisplaySession>(
+  sessions: readonly T[],
+): Record<SessionStatus, T[]> {
+  const grouped = SESSION_STATUSES.reduce(
     (acc, status) => {
       acc[status] = [];
       return acc;
     },
-    {} as Record<TaskStatus, T[]>,
+    {} as Record<SessionStatus, T[]>,
   );
 
-  for (const task of tasks) grouped[task.status].push(task);
+  for (const session of sessions) grouped[session.status].push(session);
 
   grouped.finished.sort(byMostRecentActivity);
 
@@ -55,17 +55,17 @@ export function groupTasksByStatusForDisplay<T extends DisplayTask>(
  * DB (interrupted, running, …), but the archived tab is parked history — it
  * must never re-surface Interrupted / Running / Ready / etc. columns.
  */
-export function groupArchivedTasksForDisplay<T extends DisplayTask>(
-  tasks: readonly T[],
-): Record<TaskStatus, T[]> {
-  const grouped = TASK_STATUSES.reduce(
+export function groupArchivedSessionsForDisplay<T extends DisplaySession>(
+  sessions: readonly T[],
+): Record<SessionStatus, T[]> {
+  const grouped = SESSION_STATUSES.reduce(
     (acc, status) => {
       acc[status] = [];
       return acc;
     },
-    {} as Record<TaskStatus, T[]>,
+    {} as Record<SessionStatus, T[]>,
   );
-  grouped.finished = [...tasks].sort(byMostRecentActivity);
+  grouped.finished = [...sessions].sort(byMostRecentActivity);
   return grouped;
 }
 
@@ -73,18 +73,18 @@ export function groupArchivedTasksForDisplay<T extends DisplayTask>(
  * Active-tab list view: peel pinned sessions into their own top section, then
  * group the remaining (unpinned) sessions by status as usual.
  */
-export function groupActiveListTasksForDisplay<T extends PinnableDisplayTask>(
-  tasks: readonly T[],
-): { pinned: T[]; byStatus: Record<TaskStatus, T[]> } {
+export function groupActiveListSessionsForDisplay<T extends PinnableDisplaySession>(
+  sessions: readonly T[],
+): { pinned: T[]; byStatus: Record<SessionStatus, T[]> } {
   const pinned: T[] = [];
   const unpinned: T[] = [];
-  for (const task of tasks) {
-    if (task.pinned) pinned.push(task);
-    else unpinned.push(task);
+  for (const session of sessions) {
+    if (session.pinned) pinned.push(session);
+    else unpinned.push(session);
   }
   pinned.sort(byPinnedListOrder);
   return {
     pinned,
-    byStatus: groupTasksByStatusForDisplay(unpinned),
+    byStatus: groupSessionsByStatusForDisplay(unpinned),
   };
 }
