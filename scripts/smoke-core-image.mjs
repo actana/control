@@ -16,15 +16,30 @@
 //
 // The legs, in order:
 //
-//   • the built image's config carries tini + entrypoint, USER 1000:1000,
-//     and the daemon runs with no-new-privs (no setuid helper in the image);
-//   • a plain `docker run` — no privileges, no host mounts — boots the daemon
-//     and mints an identity on the empty volume, printing no credential at all;
+//   • the built image's config carries tini + entrypoint, starts as root (the
+//     entrypoint's one step), and has no HOME and no identity variables baked in;
+//   • a `docker run` with exactly the capability set compose gives the Core
+//     (cap-drop ALL, SETUID and SETGID, no-new-privileges) boots the daemon and
+//     mints an identity on the empty volume, printing no credential at all;
 //   • tini is PID 1 and the daemon is a child of PID 1 (D14), read out of /proc;
+//   • the privilege model (#559), read out of /proc and compared line for line:
+//     the daemon's node process is `actana` (1001) with CAP_SETUID and CAP_SETGID
+//     as its inheritable, permitted, effective, ambient and bounding sets and
+//     no-new-privs; no process at all is root (tini, PID 1, is actana too, so it
+//     can forward SIGTERM: `docker stop` exits 0 and the daemon logs its shutdown;
+//     it reaps orphans); a planted `actana` in the home never runs; a Session — opened over the
+//     core-link the way a client opens one — is `core` (1000) with no capability
+//     in any set but the bounding set, and so is a `core exec` child; a Session
+//     cannot read the state, `setuid` back, or signal the daemon; its terminal
+//     works; and a Session that ignores HUP and TERM dies when it is stopped;
+//   • the entrypoint refuses to start as 1000 or 1001, with a bounding set that is
+//     not exactly SETUID and SETGID, and with a state volume of the wrong owner or
+//     mode, without repairing it;
+//   • no setuid, setgid or file capability anywhere in the image, no sudo;
 //   • the lifecycle verbs the image owns refuse, and each names its Docker
 //     equivalent rather than just saying no (D16);
-//   • `docker compose exec core actana pair new` mints a one-time code
-//     inside the container, and a real Panel — booted as the deployable it is —
+//   • `docker exec -u actana core actana pair new` mints a one-time code
+//     inside the container (as `core` it cannot), and a real Panel — booted as the deployable it is —
 //     checks the CA fingerprint, spends the code in "Add Core", and the panel
 //     link reports the Core connected;
 //   • `docker restart` is a no-op for pairing: same identity, still no
@@ -59,7 +74,18 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 import { parseArgs, stringFlag } from "./lib/cli.mjs";
-import { LISTENING_SENTINEL, makeDie, pickFreePort } from "./lib/core-smoke.mjs";
+import {
+  FILE_CAPABILITY_SCAN,
+  LISTENING_SENTINEL,
+  checkProcessStatus,
+  credentialFromMaterial,
+  makeDie,
+  openCoreSession,
+  pickFreePort,
+  checkNoRootProcesses,
+  checkRootOwnedDirs,
+  pathFromEnviron,
+} from "./lib/core-smoke.mjs";
 import {
   PANEL_SESSION_COOKIE,
   PanelLink,
@@ -69,12 +95,15 @@ import {
 } from "./lib/panel-e2e.mjs";
 import {
   CORE_APP_ROOT,
+  CORE_DAEMON_CAPS,
+  CORE_DAEMON_USER,
   CORE_HOME,
   CORE_HOOK_DROP_DIR,
   CORE_STATE_DATA_DIR,
   CORE_STATE_DIR,
   CORE_STATE_MATERIAL_FILE,
   CORE_REFUSED_VERBS,
+  CORE_SESSION_USER,
   repoRoot,
 } from "./lib/panel-image.mjs";
 import { ensurePanelDatabase } from "./lib/postgres-fixture.mjs";
@@ -121,9 +150,27 @@ function docker(dockerArgs, { allowFailure = false } = {}) {
 }
 
 /**
+ * The capability flags the reference compose gives the Core (`cap_drop: ALL`,
+ * `cap_add: SETUID SETGID`, `no-new-privileges`), as `docker run` spells them.
+ * The smoke boots the Core with exactly these and nothing more, and a test
+ * holds the list to the compose file.
+ */
+/** Where the root entrypoint lives: a root-owned directory of its own. */
+const ENTRYPOINT_PATH = "/usr/libexec/actana/core-entrypoint.sh";
+
+const COMPOSE_CORE_FLAGS = [
+  "--cap-drop",
+  "ALL",
+  ...CORE_DAEMON_CAPS.flatMap((cap) => ["--cap-add", cap]),
+  "--security-opt",
+  "no-new-privileges:true",
+];
+
+/**
  * A Core container on a fresh named volume, booted the way the reference
- * compose boots one: no privileges, no host paths, two volumes (home and state, #559), and the public
- * host and port as environment.
+ * compose boots one: the compose capability set and nothing else, no host paths,
+ * two volumes (home and state, #559), and the public host and port as
+ * environment.
  *
  * `ACTANA_PORT` is set rather than left at 8443 so the published port and the
  * port inside agree — a pairing hands the Panel this Core's own
@@ -161,7 +208,13 @@ async function bootCore(name, { port } = {}) {
       const result = docker(["logs", "--tail", tail, containerName], { allowFailure: true });
       return `${result.stdout ?? ""}${result.stderr ?? ""}`.trim();
     },
-    exec: (argv, options) => docker(["exec", containerName, ...argv], options),
+    /**
+     * `docker exec`, as `core` unless `options.user` says otherwise: a plain
+     * `docker exec` is root with no DAC override (#559, D3), and the legs that
+     * mean a Session's view say `core` out loud rather than lean on a default.
+     */
+    exec: (argv, { user = CORE_SESSION_USER.name, ...options } = {}) =>
+      docker(["exec", "-u", user, containerName, ...argv], options),
     start: () => {
       docker([
         "run",
@@ -170,6 +223,7 @@ async function bootCore(name, { port } = {}) {
         containerName,
         "--restart",
         "unless-stopped",
+        ...COMPOSE_CORE_FLAGS,
         "--publish",
         `127.0.0.1:${port}:${port}`,
         "--env",
@@ -312,9 +366,10 @@ function formatProcesses(processes) {
  * assertions below compare across a restart and across a destroyed volume.
  */
 function readIdentity(container) {
-  const read = container.exec(["cat", MATERIAL_FILE], { allowFailure: true });
+  // As the daemon's own user: the state is 0700 actana, which is the point.
+  const read = container.exec(["cat", MATERIAL_FILE], { user: CORE_DAEMON_USER.name, allowFailure: true });
   if (read.status !== 0) {
-    die(`no material at ${MATERIAL_FILE} in ${container.name}:\n${container.logs()}`);
+    die(`no material at ${MATERIAL_FILE} in ${container.name}:\n${read.stderr}\n${container.logs()}`);
   }
   let material;
   try {
@@ -339,7 +394,11 @@ function readIdentity(container) {
  * lines it puts on stdout are the contract this parses.
  */
 function pairNew(container, label) {
-  const run = container.exec(["actana", "pair", "new", "--label", label], { allowFailure: true });
+  // `-u actana`: pairing reads the identity from disk, and only the daemon's user can (D7).
+  const run = container.exec(["actana", "pair", "new", "--label", label], {
+    user: CORE_DAEMON_USER.name,
+    allowFailure: true,
+  });
   if (run.status !== 0) {
     die(`\`actana pair new\` in ${container.name} exited ${run.status}:\n${run.stdout}${run.stderr}`);
   }
@@ -381,25 +440,37 @@ if (!args["skip-build"]) {
 
 // D14, on the built bytes: a Dockerfile line saying tini is the entrypoint is
 // not evidence that the image carries it, and this is exactly the kind of
-// clause a "simplify the Dockerfile" edit drops. #558: USER is numeric so
-// runAsNonRoot accepts the image; no setuid binary.
+// clause a "simplify the Dockerfile" edit drops. #559: the image starts as root
+// for the entrypoint's one step, and carries neither a HOME nor the identity of
+// `core` in its environment (a `docker exec -u core` CLI must not believe it is
+// the daemon).
 log("verifying the built image's entrypoint and identity …");
 const config = JSON.parse(docker(["image", "inspect", "--format", "{{json .Config}}", image]).stdout);
-if ((config?.Entrypoint ?? []).join(" ") !== "/usr/bin/tini -- /usr/local/bin/core-entrypoint.sh") {
-  die(
-    `${image} entrypoint is ${JSON.stringify(config?.Entrypoint)}, ` +
-      `expected ["/usr/bin/tini","--","/usr/local/bin/core-entrypoint.sh"]`,
-  );
+// The entrypoint is the script; it execs tini after the switch, so tini is PID 1
+// as the daemon's user (checked below on the running container).
+if ((config?.Entrypoint ?? []).join(" ") !== ENTRYPOINT_PATH) {
+  die(`${image} entrypoint is ${JSON.stringify(config?.Entrypoint)}, expected [${JSON.stringify(ENTRYPOINT_PATH)}]`);
 }
-if ((config?.Cmd ?? []).join(" ") !== "actana daemon") {
-  die(`${image} cmd is ${JSON.stringify(config?.Cmd)}, expected ["actana","daemon"]`);
+// The image PATH has no directory `core` can write (a Session's planted `actana` would
+// otherwise run for `docker exec -u actana … actana pair new`, or as root for a plain exec).
+{
+  const imagePath = (config?.Env ?? []).find((e) => e.startsWith("PATH="))?.slice(5) ?? "";
+  if (!imagePath.startsWith("/opt/actana/bin:") || /\/home\/|\.local/.test(imagePath)) {
+    die(`${image} PATH is ${JSON.stringify(imagePath)}: it must start with /opt/actana/bin and name no directory under the home`);
+  }
 }
-if (config?.User !== "1000:1000") {
-  die(`${image} runs as ${JSON.stringify(config?.User)}, expected 1000:1000`);
+// An absolute path: a PATH lookup after the switch would find a Session's planted `actana`.
+if ((config?.Cmd ?? []).join(" ") !== "/opt/actana/bin/actana daemon") {
+  die(`${image} cmd is ${JSON.stringify(config?.Cmd)}, expected ["/opt/actana/bin/actana","daemon"]`);
 }
-const homeEnv = (config?.Env ?? []).find((e) => e.startsWith("HOME="));
-if (homeEnv !== `HOME=${CORE_HOME}`) {
-  die(`${image} HOME is ${JSON.stringify(homeEnv)}, expected HOME=${CORE_HOME}`);
+if (config?.User !== "0:0") {
+  die(`${image} starts as ${JSON.stringify(config?.User)}, expected "0:0" (the entrypoint's switch)`);
+}
+for (const baked of (config?.Env ?? []).filter((e) => /^(HOME|AC_CORE_HOME|AC_CORE_UID|AC_CORE_GID)=/.test(e))) {
+  die(`${image} bakes ${baked}; HOME is set by the runtime per user and the daemon's identity by the entrypoint`);
+}
+if (config?.WorkingDir !== "/") {
+  die(`${image} WORKDIR is ${JSON.stringify(config?.WorkingDir)}, expected "/" (root has no DAC override in ${CORE_HOME})`);
 }
 
 // ─── Boot 1: an empty volume mints an identity ───────────────────────────────
@@ -430,20 +501,39 @@ function assertNoCredentialInLogs(what) {
   }
 }
 
-// D12 — the identity is pinned by number, because a uid that exists nowhere on
-// the host makes every bind-mounted repo unreadable to the operator who owns it.
-const identity = core.exec(["id", "-u"]).stdout.trim() + ":" + core.exec(["id", "-g"]).stdout.trim();
-if (identity !== "1000:1000") die(`the Core runs as ${identity}, expected 1000:1000`);
+// D12 and #559 — both users are pinned by number, because a uid that exists
+// nowhere on the host makes every bind-mounted repo unreadable to the operator
+// who owns it, and because the privilege model compares them.
+for (const user of [CORE_SESSION_USER, CORE_DAEMON_USER]) {
+  const numbers = core.exec(["sh", "-c", "printf %s:%s \"$(id -u)\" \"$(id -g)\""], { user: user.name }).stdout.trim();
+  if (numbers !== `${user.uid}:${user.gid}`) die(`${user.name} is ${numbers}, expected ${user.uid}:${user.gid}`);
+}
+// HOME is the runtime's, per user: no ENV baked it.
+for (const user of [CORE_SESSION_USER, CORE_DAEMON_USER]) {
+  const wanted = user === CORE_SESSION_USER ? CORE_HOME : CORE_STATE_DIR;
+  const home = core.exec(["sh", "-c", "printf %s \"$HOME\""], { user: user.name }).stdout.trim();
+  if (home !== wanted) die(`HOME for ${user.name} is ${JSON.stringify(home)}, expected ${wanted}`);
+}
 
-// Exec defaults to image USER — not root.
-const execUser = core.exec(["id", "-un"]).stdout.trim();
-if (execUser !== "core") {
-  die(`docker exec without -u ran as ${JSON.stringify(execUser)}, expected core`);
+// D3 — a plain `docker exec` is root, and that root has no DAC override: it
+// reads neither the home nor the state. What an operator types is `-u core` or
+// `-u actana`, and the compose file says so.
+const rootExec = docker(["exec", core.name, "sh", "-c", "id -u; cat /proc/self/status"]).stdout;
+if (rootExec.split("\n")[0] !== "0") die(`docker exec without -u is not root:\n${rootExec}`);
+const rootCaps = rootExec.match(/^CapEff:\s+([0-9a-f]+)$/m)?.[1];
+if (rootCaps !== "00000000000000c0") {
+  die(`a plain docker exec holds CapEff=${rootCaps}, expected only SETUID and SETGID (00000000000000c0)`);
 }
-const home = core.exec(["sh", "-c", "printf %s \"$HOME\""]).stdout.trim();
-if (home !== CORE_HOME) {
-  die(`HOME is ${JSON.stringify(home)}, expected ${CORE_HOME}`);
+for (const unreadable of [CORE_HOME, MATERIAL_FILE, `${CORE_STATE_DIR}/data/missioncontrol.db`]) {
+  const read = docker(["exec", core.name, "sh", "-c", `ls ${unreadable} 2>&1 >/dev/null || cat ${unreadable} 2>&1 >/dev/null`], {
+    allowFailure: true,
+  });
+  const text = `${read.stdout}${read.stderr}`;
+  if (!/Permission denied/.test(text)) {
+    die(`root without a DAC override read ${unreadable} through a plain docker exec:\n${text}`);
+  }
 }
+log("a plain docker exec is root with CAP_SETUID and CAP_SETGID only: it reads neither the home nor the state");
 
 // #558 — sudo is gone from the image, not merely deconfigured.
 if (core.exec(["sh", "-c", "command -v sudo"], { allowFailure: true }).status === 0) {
@@ -467,35 +557,105 @@ if ((setuidLeft.stdout ?? "").trim()) {
 }
 log("sudo binary, sudoers.d/core, setuid wrap and setuid/setgid bits are absent");
 
-// A mistaken `docker run -u 0` must not boot the daemon as root.
-const rootBoot = docker(["run", "--rm", "-u", "0", image], { allowFailure: true });
-if (rootBoot.status === 0) {
-  die("image started successfully as uid 0 — entrypoint must refuse root");
+// #559 — no file capabilities either: a file capability or a setuid bit is how a
+// Session would turn the daemon's two capabilities into more. `getcap -r /` is
+// not in the image, so the scan reads the `security.capability` xattr of every
+// file itself, after proving on a planted file that it can see one.
+const fileCaps = docker(["run", "--rm", "-u", "0", "--entrypoint", "python3", image, "-c", FILE_CAPABILITY_SCAN], {
+  allowFailure: true,
+});
+if (fileCaps.status !== 0) {
+  die(`the file-capability scan could not run (exit ${fileCaps.status}), so it proves nothing:\n${fileCaps.stdout}${fileCaps.stderr}`);
 }
-if (!`${rootBoot.stderr}${rootBoot.stdout}`.includes("refusing to start as root")) {
-  die(`uid 0 boot did not refuse clearly:\n${rootBoot.stderr}${rootBoot.stdout}`);
+if ((fileCaps.stdout ?? "").trim()) {
+  die(`image has file capabilities (the equivalent of a non-empty \`getcap -r /\`):\n${fileCaps.stdout}`);
 }
-log("entrypoint refuses to start as uid 0");
+log("no file capability anywhere in the image (getcap -r / is empty)");
 
-for (const owned of [CORE_HOME, `${CORE_HOME}/shared`, CORE_STATE_DIR, CORE_STATE_DATA_DIR]) {
-  const owner = core.exec(["stat", "-c", "%u:%g", owned]).stdout.trim();
-  if (owner !== "1000:1000") die(`${owned} is owned by ${owner}, expected 1000:1000`);
+// #559 — the entrypoint does one thing as root and cannot do it as anybody
+// else: a run as `core` or as `actana` (a `user:` in compose, `docker run -u`)
+// stops with a sentence, and boots no daemon.
+for (const user of [CORE_SESSION_USER, CORE_DAEMON_USER]) {
+  const refused = docker(["run", "--rm", "-u", String(user.uid), ...COMPOSE_CORE_FLAGS, image], { allowFailure: true });
+  const said = `${refused.stderr}${refused.stdout}`;
+  if (refused.status === 0) die(`the image started as uid ${user.uid}; the entrypoint must refuse it`);
+  if (!said.includes(`must start as root (uid 0), not uid ${user.uid}`)) {
+    die(`a start as uid ${user.uid} did not refuse clearly (exit ${refused.status}):\n${said}`);
+  }
+  if (said.includes(LISTENING_SENTINEL)) die(`a start as uid ${user.uid} booted the daemon:\n${said}`);
 }
-log("home, shared and daemon state are owned by core");
+log("the entrypoint refuses to start as core (1000) or as actana (1001)");
+
+// The bounding set must be exactly the compose one: `setpriv` cannot narrow it
+// without CAP_SETPCAP, so a wider set (a bare `docker run`'s default) is refused
+// with the number named, and no daemon boots.
+const wideBoot = docker(["run", "--rm", image], { allowFailure: true });
+const wideSaid = `${wideBoot.stderr}${wideBoot.stdout}`;
+if (wideBoot.status === 0 || !/the bounding set is [0-9a-f]+, expected 00000000000000c0/.test(wideSaid) || wideSaid.includes(LISTENING_SENTINEL)) {
+  die(`a start with docker's default capabilities was not refused for its bounding set (exit ${wideBoot.status}):\n${wideSaid}`);
+}
+log("the entrypoint refuses a bounding set that is not exactly SETUID and SETGID");
+
+// A state volume with the wrong owner or the wrong mode is a failure and is never
+// repaired here, not even with a `chown -R`: the entrypoint says so and nothing changes.
+for (const [label, seed, said] of [
+  ["owner", `chown -R 0:0 ${CORE_STATE_DIR}`, `${CORE_STATE_DIR} is 0:0 700 (uid:gid mode), expected 1001:1001 700`],
+  ["mode", `chown -R 1001:1001 ${CORE_STATE_DIR} && chmod 0755 ${CORE_STATE_DIR}`, `${CORE_STATE_DIR} is 1001:1001 755 (uid:gid mode), expected 1001:1001 700`],
+]) {
+  const wrongState = `actana-core-smoke-wrong${label}-${suffix}`;
+  docker(["volume", "create", wrongState]);
+  teardown.push(() => docker(["volume", "rm", "-f", wrongState], { allowFailure: true }));
+  const seedWrong = docker(
+    ["run", "--rm", "-u", "0", "--entrypoint", "sh", "--volume", `${wrongState}:${CORE_STATE_DIR}`, image, "-c", `mkdir -p ${CORE_STATE_DIR}/data && ${seed}`],
+    { allowFailure: true },
+  );
+  if (seedWrong.status !== 0) die(`seeding a state volume with the wrong ${label} failed:\n${seedWrong.stderr}${seedWrong.stdout}`);
+  const before = docker(["run", "--rm", "-u", "0", "--entrypoint", "stat", "--volume", `${wrongState}:${CORE_STATE_DIR}`, image, "-c", "%u:%g %a", CORE_STATE_DIR, `${CORE_STATE_DIR}/data`]).stdout;
+  const wrongBoot = docker(["run", "--rm", ...COMPOSE_CORE_FLAGS, "--volume", `${wrongState}:${CORE_STATE_DIR}`, image], { allowFailure: true });
+  const wrongSaid = `${wrongBoot.stderr}${wrongBoot.stdout}`;
+  if (wrongBoot.status === 0 || !wrongSaid.includes(said) || wrongSaid.includes(LISTENING_SENTINEL)) {
+    die(`a state volume with the wrong ${label} did not stop the entrypoint with it named (exit ${wrongBoot.status}):\n${wrongSaid}`);
+  }
+  const after = docker(["run", "--rm", "-u", "0", "--entrypoint", "stat", "--volume", `${wrongState}:${CORE_STATE_DIR}`, image, "-c", "%u:%g %a", CORE_STATE_DIR, `${CORE_STATE_DIR}/data`]).stdout;
+  if (after !== before) die(`the entrypoint changed a state volume it refused (${label}): ${before.trim()} -> ${after.trim()}`);
+}
+log("a state volume with the wrong owner or the wrong mode stops the entrypoint, which repairs nothing");
+
+for (const [owned, want, user] of [
+  [CORE_HOME, "1000:1000", CORE_SESSION_USER.name],
+  [`${CORE_HOME}/shared`, "1000:1000", CORE_SESSION_USER.name],
+  [CORE_STATE_DIR, "1001:1001", CORE_DAEMON_USER.name],
+  // Inside the 0700 directory: only its owner can look.
+  [CORE_STATE_DATA_DIR, "1001:1001", CORE_DAEMON_USER.name],
+]) {
+  const owner = core.exec(["stat", "-c", "%u:%g", owned], { user }).stdout.trim();
+  if (owner !== want) die(`${owned} is owned by ${owner}, expected ${want}`);
+}
+log("the home and shared are owned by core (1000:1000), the daemon state by actana (1001:1001)");
 
 // #559 — the daemon's state is in its own directory on its own volume, and the
 // home volume holds none of it. A directory that is a mount point of its own is
 // what makes "the core-home volume has no identity" true of a copy of the volume.
-const stateMode = core.exec(["stat", "-c", "%a", CORE_STATE_DIR]).stdout.trim();
-if (stateMode !== "700") die(`${CORE_STATE_DIR} is mode ${stateMode}, expected 700`);
+const stateStat = core.exec(["stat", "-c", "%u:%g %a", CORE_STATE_DIR]).stdout.trim();
+if (stateStat !== "1001:1001 700") die(`${CORE_STATE_DIR} is ${stateStat}, expected 1001:1001 700`);
 const mounts = core.exec(["cat", "/proc/self/mountinfo"]).stdout;
 if (!mounts.split("\n").some((line) => line.split(" ")[4] === CORE_STATE_DIR)) {
   die(`${CORE_STATE_DIR} is not a mount point of its own:\n${mounts}`);
 }
 for (const kept of [MATERIAL_FILE, `${CORE_STATE_DATA_DIR}/missioncontrol.db`]) {
-  if (core.exec(["test", "-f", kept], { allowFailure: true }).status !== 0) {
+  // As the daemon's user: it is the only one that can see them.
+  if (core.exec(["test", "-f", kept], { user: CORE_DAEMON_USER.name, allowFailure: true }).status !== 0) {
     die(`${kept} is missing — the daemon's state is not under ${CORE_STATE_DIR}\n${core.logs()}`);
   }
+  // A Session's user cannot read it: this is what the whole change is for.
+  const denied = core.exec(["cat", kept], { allowFailure: true });
+  if (denied.status === 0 || !/Permission denied/.test(denied.stderr)) {
+    die(`core could read ${kept} (exit ${denied.status}):\n${denied.stdout.slice(0, 200)}${denied.stderr}`);
+  }
+}
+const listed = core.exec(["ls", CORE_STATE_DIR], { allowFailure: true });
+if (listed.status === 0 || !/Permission denied/.test(listed.stderr)) {
+  die(`core could list ${CORE_STATE_DIR} (exit ${listed.status}):\n${listed.stdout}${listed.stderr}`);
 }
 /** Daemon state found under the core home, which must be nothing. */
 function stateInHome(container) {
@@ -579,38 +739,229 @@ if (!daemon) {
 }
 log(`tini is PID 1 and the daemon (pid ${daemon.pid}) is its child`);
 
-// #558 — privilege state on the daemon (never held root caps; no-new-privs).
-const status = core.exec(["cat", `/proc/${daemon.pid}/status`]).stdout;
-const uidLine = status.match(/^Uid:\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s*$/m);
-const gidLine = status.match(/^Gid:\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s*$/m);
-const groupsLine = status.match(/^Groups:\s*(.*?)\s*$/m);
-const capPrm = status.match(/^CapPrm:\s+([0-9a-fA-F]+)\s*$/m)?.[1];
-const capEff = status.match(/^CapEff:\s+([0-9a-fA-F]+)\s*$/m)?.[1];
-const capBnd = status.match(/^CapBnd:\s+([0-9a-fA-F]+)\s*$/m)?.[1];
-const capInh = status.match(/^CapInh:\s+([0-9a-fA-F]+)\s*$/m)?.[1];
-const capAmb = status.match(/^CapAmb:\s+([0-9a-fA-F]+)\s*$/m)?.[1];
-const noNewPrivs = status.match(/^NoNewPrivs:\s+(\d+)\s*$/m)?.[1];
-if (!uidLine || uidLine.slice(1).some((v) => v !== "1000")) {
-  die(`daemon Uid is not all 1000:\n${status}`);
-}
-if (!gidLine || gidLine.slice(1).some((v) => v !== "1000")) {
-  die(`daemon Gid is not all 1000:\n${status}`);
-}
-const groups = (groupsLine?.[1] ?? "").trim().split(/\s+/).filter(Boolean);
-if (groups.length !== 1 || groups[0] !== "1000") {
-  die(`daemon Groups is ${JSON.stringify(groupsLine?.[1])}, expected only 1000`);
-}
-const zeroCap = (hex) => hex && /^0+$/.test(hex);
-if (!zeroCap(capPrm) || !zeroCap(capEff) || !zeroCap(capInh) || !zeroCap(capAmb)) {
+// ─── #559: the privilege model, read off /proc ──────────────────────────────
+
+// What the kernel says about the daemon's node process, compared line for line
+// (`checkProcessStatus` in lib/core-smoke.mjs). The daemon is `actana` with
+// CAP_SETUID and CAP_SETGID as its inheritable, permitted, effective, ambient and
+// bounding sets and nothing else, no supplementary group, and no-new-privs. Not
+// "no capability looks wrong": a third capability, a lost ambient one or a root
+// group all fail here, and so does `setpriv` doing something other than what the
+// entrypoint says. This is the line the whole change stands on, and it is the
+// node pid (not the launcher shell that `exec`ed into it) that is read.
+const daemonStatus = core.exec(["cat", `/proc/${daemon.pid}/status`]).stdout;
+const daemonProblems = checkProcessStatus(daemonStatus, "daemon");
+if (daemonProblems.length > 0) {
   die(
-    `daemon capabilities not cleared: CapPrm=${capPrm} CapEff=${capEff} ` +
-      `CapInh=${capInh} CapAmb=${capAmb}`,
+    `the daemon's node process (pid ${daemon.pid}) is not exactly ${CORE_DAEMON_USER.name} ` +
+      `with ${CORE_DAEMON_CAPS.join(" and ")} and no-new-privs:\n  ${daemonProblems.join("\n  ")}\n` +
+      `--- /proc/${daemon.pid}/status ---\n${daemonStatus}`,
   );
 }
-if (noNewPrivs !== "1") {
-  die(`daemon NoNewPrivs is ${JSON.stringify(noNewPrivs)}, expected 1`);
+log(
+  `the daemon (pid ${daemon.pid}) is uid/gid ${CORE_DAEMON_USER.uid}, no groups, ` +
+    `CapInh/CapPrm/CapEff/CapAmb/CapBnd 00000000000000c0 (${CORE_DAEMON_CAPS.join(" + ")}), NoNewPrivs 1`,
+);
+
+// And nothing in the container is root, tini included: it is uid 1001 so that it
+// can signal and reap the daemon, and the entrypoint's `exec` left no root shell
+// behind. The scan runs in a root exec, whose own shell is the one root process
+// it must see (a scan that cannot see a root process proves nothing), and reads
+// every pid's real and effective ids, uid and gid.
+const everyStatus = docker([
+  "exec",
+  core.name,
+  "sh",
+  "-c",
+  'printf "@@SELF %s\\n" "$$"; for p in /proc/[0-9]*; do printf "@@%s\\n" "${p#/proc/}"; cat "$p/status" 2>/dev/null; done',
+]).stdout;
+const scanSelf = Number(everyStatus.match(/^@@SELF (\d+)$/m)?.[1]);
+const statuses = everyStatus
+  .split("\n@@")
+  .filter((block) => /^\d+\n/.test(block.replace(/^@@/, "")))
+  .map((block) => block.replace(/^@@/, ""))
+  .map((block) => ({ pid: Number(block.split("\n")[0]), status: block.split("\n").slice(1).join("\n") }));
+const rootProblems = checkNoRootProcesses(statuses, scanSelf);
+if (rootProblems.length > 0) {
+  die(`the root-process scan failed:\n  ${rootProblems.join("\n  ")}\n${formatProcesses(processTable(core))}`);
 }
-log("daemon uids/gids/groups/caps/NoNewPrivs look clean");
+// PID 1 is tini, as the daemon's user, with the daemon's capabilities.
+const initStatus = core.exec(["cat", "/proc/1/status"]).stdout;
+const initProblems = checkProcessStatus(initStatus, "daemon");
+if (initProblems.length > 0) {
+  die(`PID 1 (tini) is not exactly ${CORE_DAEMON_USER.name} with ${CORE_DAEMON_CAPS.join(" and ")}:\n  ${initProblems.join("\n  ")}\n${initStatus}`);
+}
+log("no process of the container runs as root; tini (PID 1) is actana with the same two ambient capabilities")
+
+// What runs as root, and what the daemon runs, cannot be swapped by a Session: the
+// entrypoint (root, holding CAP_SETUID until its `exec`) lives in a root-owned
+// directory of its own, and every directory on the daemon's own PATH — read back from
+// its environment, not assumed — is root-owned and not writable. (The Node tarball once
+// left /usr/local owned by uid 1000.) Read as `core`, the user who would do the swapping.
+{
+  const environ = core.exec(["cat", `/proc/${daemon.pid}/environ`], { user: CORE_DAEMON_USER.name, allowFailure: true });
+  if (environ.status !== 0) die(`could not read the daemon's environment (pid ${daemon.pid}): ${environ.stderr}`);
+  const daemonPath = pathFromEnviron(environ.stdout);
+  if (!daemonPath || daemonPath.length === 0) die("the daemon's environment has no PATH");
+  const dirs = [path.posix.dirname(ENTRYPOINT_PATH), ...daemonPath];
+  const stat = core.exec(["sh", "-c", 'for d in "$@"; do [ -d "$d" ] && stat -L -c "%n\t%u:%g\t%a" "$d"; done; true', "sh", ...dirs]);
+  const seen = stat.stdout.split("\n").filter(Boolean).map((line) => {
+    const [dir, owner, mode] = line.split("\t");
+    return { path: dir, owner, mode };
+  });
+  const problems = checkRootOwnedDirs(seen);
+  if (!seen.some((d) => d.path === path.posix.dirname(ENTRYPOINT_PATH))) problems.push("the entrypoint's directory was not read");
+  if (problems.length > 0) die(`a directory root or the daemon executes from is not root-owned and closed:\n  ${problems.join("\n  ")}\nPATH ${daemonPath.join(":")}`);
+  const beside = core.exec(["sh", "-c", `touch ${path.posix.dirname(ENTRYPOINT_PATH)}/planted 2>&1`], { allowFailure: true });
+  if (beside.status === 0) die(`core created a file beside the root entrypoint in ${path.posix.dirname(ENTRYPOINT_PATH)}`);
+  const swap = core.exec(["sh", "-c", `printf x >> ${ENTRYPOINT_PATH} 2>&1`], { allowFailure: true });
+  if (swap.status === 0) die(`core wrote to the root entrypoint ${ENTRYPOINT_PATH}`);
+  log(`the entrypoint's directory and the daemon's ${daemonPath.length} PATH entries are root-owned and closed to core, which cannot create or change a file there`);
+}
+
+// ─── A Session, as a client opens one ───────────────────────────────────────
+
+// The credential a client holds: built, as `core-smoke.mjs` does for every smoke,
+// from the identity the daemon wrote. Read as `actana` — the state is 0700 — and
+// kept on the host only for the life of this run.
+const credentialDir = fs.mkdtempSync(path.join(os.tmpdir(), "ac-core-image-credential-"));
+teardown.push(() => fs.rmSync(credentialDir, { recursive: true, force: true }));
+const materialCopy = path.join(credentialDir, "material.json");
+fs.writeFileSync(
+  materialCopy,
+  core.exec(["cat", MATERIAL_FILE], { user: CORE_DAEMON_USER.name }).stdout,
+  { mode: 0o600 },
+);
+const credential = credentialFromMaterial(materialCopy, core.endpoint);
+
+log("opening a Session over the core-link …");
+const shell = await openCoreSession(credential).catch((err) => die(`could not open a Session: ${err.message}\n${core.logs()}`));
+teardown.push(() => shell.close());
+await shell.prepare().catch((err) => die(`the Session's shell never answered: ${err.message}`));
+
+/** Run a script in the Session, or die with everything the Session printed. */
+async function inSession(script, what) {
+  try {
+    return await shell.run(script);
+  } catch (err) {
+    return die(`${what}: ${err.message}`);
+  }
+}
+
+// What the kernel says about the Session itself (`$$`, the login shell the PTY
+// started) and about a process it starts: `core`, no capability in any set but the
+// bounding set, no supplementary group, no-new-privs.
+for (const [label, pidExpr] of [["the Session's shell", "$$"], ["a process the Session starts", "self"]]) {
+  const read = await inSession(`cat /proc/${pidExpr}/status`, `reading ${label}`);
+  const problems = checkProcessStatus(read.output, "session");
+  if (read.status !== 0 || problems.length > 0) {
+    die(`${label} is not exactly ${CORE_SESSION_USER.name} with no capabilities:\n  ${problems.join("\n  ")}\n${read.output}`);
+  }
+}
+log(`a Session is uid/gid ${CORE_SESSION_USER.uid}, no groups, CapInh/CapPrm/CapEff/CapAmb 0, CapBnd 00000000000000c0, NoNewPrivs 1`);
+
+const who = await inSession('id -un; printf "%s\\n" "$HOME"', "asking who the Session is");
+if (who.output !== `${CORE_SESSION_USER.name}\n${CORE_HOME}`) {
+  die(`the Session is ${JSON.stringify(who.output)}, expected ${CORE_SESSION_USER.name} with HOME=${CORE_HOME}`);
+}
+// The daemon's environment does not reach a Session: none of its AC_ variables
+// (but the hook ones) and nothing that points into its state.
+const leaked = await inSession("env | grep -E '^AC_|/var/lib/actana' | grep -v '^AC_HOOK_'; true", "reading the Session's environment");
+if (leaked.output.trim()) die(`the Session inherited the daemon's environment:\n${leaked.output}`);
+
+// A Session cannot read what the daemon holds, cannot become the daemon, and
+// cannot signal it: the three things the two capabilities would otherwise allow.
+const readState = await inSession(`cat ${MATERIAL_FILE}`, "reading the daemon's state from a Session");
+if (readState.status === 0 || !/Permission denied/.test(readState.output)) {
+  die(`a Session read the daemon's identity (exit ${readState.status}):\n${readState.output.slice(0, 200)}`);
+}
+const becomeActana = await inSession(
+  `setpriv --reuid=${CORE_DAEMON_USER.uid} --regid=${CORE_DAEMON_USER.gid} --clear-groups true`,
+  "trying to become the daemon's user from a Session",
+);
+if (becomeActana.status === 0 || !/not permitted/i.test(becomeActana.output)) {
+  die(`a Session switched to uid ${CORE_DAEMON_USER.uid} (exit ${becomeActana.status}): the capabilities are not gone:\n${becomeActana.output}`);
+}
+const signalDaemon = await inSession(`kill -0 ${daemon.pid}`, "signalling the daemon from a Session");
+if (signalDaemon.status === 0 || !/not permitted/i.test(signalDaemon.output)) {
+  die(`a Session could signal the daemon (pid ${daemon.pid}), exit ${signalDaemon.status}:\n${signalDaemon.output}`);
+}
+log("a Session cannot read the daemon's state, setuid to its user, or signal it");
+
+// The terminal is usable although the pty slave was made by the daemon (`actana`)
+// and the Session is another uid: its standard fds work, so do `stty` and
+// `/dev/tty`, and a tool that makes a pty of its own does too. (`ls -l` of the
+// slave is printed for whoever reads the log; it is not what is asserted.)
+const tty = await inSession("tty", "asking for the Session's tty");
+if (tty.status !== 0 || !/^\/dev\/pts\/\d+$/.test(tty.output)) {
+  die(`the Session has no usable tty (exit ${tty.status}): ${JSON.stringify(tty.output)}`);
+}
+const slave = await inSession("ls -l $(tty)", "listing the Session's tty");
+log(`the Session's tty is ${tty.output}: ${slave.output.trim()}`);
+for (const [what, script, expect] of [
+  ["stty size", "stty size", /^\d+ \d+$/],
+  ["a write to /dev/tty", "echo reached-the-terminal > /dev/tty && echo ok", /^ok$/m],
+  ["script(1) on a pty of its own", "script -qec tty /dev/null", /\/dev\/pts\/\d+/],
+]) {
+  const result = await inSession(script, what);
+  if (result.status !== 0 || !expect.test(result.output)) {
+    die(`${what} failed in the Session (exit ${result.status}): ${JSON.stringify(result.output)}`);
+  }
+}
+log("the Session's terminal works: tty, stty, /dev/tty and script(1)");
+
+// The two daemon operations that used to run in the daemon: both are `core`'s.
+const madeName = `smoke-made-${suffix}`;
+const created = await shell.request({ type: "dirCreate", parent: CORE_HOME, name: madeName });
+if (created.type !== "dirCreateResult" || created.path !== `${CORE_HOME}/${madeName}`) {
+  die(`dirCreate in the home answered ${JSON.stringify(created)}`);
+}
+const madeOwner = core.exec(["stat", "-c", "%u:%g", `${CORE_HOME}/${madeName}`]).stdout.trim();
+if (madeOwner !== `${CORE_SESSION_USER.uid}:${CORE_SESSION_USER.gid}`) {
+  die(`the folder the picker made is owned by ${madeOwner}, expected core (${CORE_SESSION_USER.uid}:${CORE_SESSION_USER.gid}): it was made by the daemon`);
+}
+const refusedCreate = await shell.request({ type: "dirCreate", parent: "/tmp", name: madeName });
+if (refusedCreate.type !== "error" || !/only creates folders inside its home/.test(refusedCreate.message ?? "")) {
+  die(`dirCreate outside the home was not refused by the helper: ${JSON.stringify(refusedCreate)}`);
+}
+log("the folder picker's new folder is made by core, and refused outside the home");
+
+// `actana core exec` is a child of the daemon as well, and it too is `core`.
+const exec = core.exec(["actana", "core", "exec", "--", "cat", "/proc/self/status"], { allowFailure: true });
+if (exec.status !== 0) die(`\`actana core exec\` exited ${exec.status}:\n${exec.stdout}${exec.stderr}\n${core.logs()}`);
+const execProblems = checkProcessStatus(exec.stdout, "session");
+if (execProblems.length > 0) {
+  die(`a \`core exec\` child is not exactly ${CORE_SESSION_USER.name} with no capabilities:\n  ${execProblems.join("\n  ")}\n${exec.stdout}`);
+}
+const execState = core.exec(["actana", "core", "exec", "--", "cat", MATERIAL_FILE], { allowFailure: true });
+if (execState.status === 0 || !/Permission denied/.test(`${execState.stdout}${execState.stderr}`)) {
+  die(`a \`core exec\` child read the daemon's identity (exit ${execState.status}):\n${execState.stdout.slice(0, 200)}${execState.stderr}`);
+}
+log("a `core exec` child is core with no capabilities, and cannot read the state either");
+
+// Stop: a Session whose own process ignores HUP and TERM. The daemon is another
+// uid with no CAP_KILL, so the stop is a SIGKILL sent as core (`killAsCore`),
+// 1.5 s after the master is closed. Alive before the stop, gone after it.
+log("stopping a Session that ignores HUP and TERM …");
+const stuck = await openCoreSession(credential, {
+  command: "trap '' HUP TERM; echo STOPPID=$$; while :; do sleep 1; done",
+}).catch((err) => die(`could not open the Session to stop: ${err.message}`));
+teardown.push(() => stuck.close());
+const stuckPid = Number((await stuck.waitFor(/STOPPID=(\d+)/, "the stuck Session's pid").catch((err) => die(err.message)))[1]);
+if (core.exec(["test", "-d", `/proc/${stuckPid}`], { allowFailure: true }).status !== 0) {
+  die(`the stuck Session (pid ${stuckPid}) is not running before it is stopped`);
+}
+const killed = await stuck.kill();
+if (killed.type !== "killResult" || killed.ok !== true) die(`the core-link did not accept the stop: ${JSON.stringify(killed)}`);
+await pollUntil(
+  `Session pid ${stuckPid}, which ignores HUP and TERM, to die after the stop`,
+  20_000,
+  async () => (core.exec(["test", "-d", `/proc/${stuckPid}`], { allowFailure: true }).status !== 0 ? true : null),
+  { pollMs: 250 },
+).catch((err) => die(`${err.message} — a stuck Session survives its stop (killAsCore did not reach it):\n${stuck.output()}`));
+log(`the stuck Session (pid ${stuckPid}) is gone after the stop`);
+stuck.close();
+shell.close();
 
 // Prep as root one-shot with the compose capability set (CHOWN + DAC_OVERRIDE)
 // plus a hostile PATH and CORE_HOME — must leave /etc root-owned and home
@@ -683,7 +1034,7 @@ for (const expected of [
   "0:0 /etc",
   `1000:1000 ${CORE_HOME}`,
   `1000:1000 ${CORE_HOME}/shared`,
-  `1000:1000 ${CORE_STATE_DIR}`,
+  `${CORE_DAEMON_USER.uid}:${CORE_DAEMON_USER.gid} ${CORE_STATE_DIR}`,
 ]) {
   if (!hostileLines.has(expected)) {
     die(`hostile prep missing exact ownership line ${JSON.stringify(expected)}:\n${hostileOut}`);
@@ -695,12 +1046,78 @@ const fakeLog = core.exec(["sh", "-c", `cat ${marker} 2>/dev/null || true`], {
 if (/FAKE_STAT_RAN_AS_0/.test(fakeLog)) {
   die("fake ~/.local/bin/stat ran as root during prep — PATH was not pinned");
 }
-log("hostile PATH/CORE_HOME prep (compose caps) left /etc 0:0 and home 1000:1000");
+log("hostile PATH/CORE_HOME prep (compose caps) left /etc 0:0, the home 1000:1000 and the state 1001:1001");
 
+// A Session plants an `actana` in its own ~/.local/bin — first on the image PATH —
+// and opens the home to others (`chmod o+x ~`, which is core's to do and which a
+// bind-mounted home may have from the host anyway). The entrypoint starts the daemon
+// by absolute path and gives it a PATH without that directory, so the fake must
+// never run, as 1001 or as anyone. First prove the trap is armed: the daemon's
+// user can reach the fake, or "it never ran" would mean nothing.
+const fakeActanaLog = `${CORE_HOME}/.local/share/actana/fake-actana.log`;
+core.exec([
+  "sh",
+  "-c",
+  [
+    `mkdir -p ${CORE_HOME}/.local/bin ${CORE_HOME}/.local/share/actana`,
+    `printf '%s\\n' '#!/bin/sh' 'echo FAKE_ACTANA_RAN_AS_$(/usr/bin/id -u) >> ${fakeActanaLog}' 'exec /opt/actana/bin/actana "$@"' > ${CORE_HOME}/.local/bin/actana`,
+    `chmod +x ${CORE_HOME}/.local/bin/actana`,
+    `chmod o+rx ${CORE_HOME} ${CORE_HOME}/.local ${CORE_HOME}/.local/bin ${CORE_HOME}/.local/share ${CORE_HOME}/.local/share/actana`,
+    `chmod o+w ${CORE_HOME}/.local/share/actana`,
+    `rm -f ${fakeActanaLog}`,
+  ].join(" && "),
+]);
+const armed = core.exec(["sh", "-c", `test -x ${CORE_HOME}/.local/bin/actana && test -r ${CORE_HOME}/.local/bin/actana`], {
+  user: CORE_DAEMON_USER.name,
+  allowFailure: true,
+});
+if (armed.status !== 0) die("the planted actana is not reachable by the daemon's user, so the leg proves nothing");
+
+// `docker stop` — and then a start with the fake in place. tini is PID 1 as the
+// daemon's user, so it can forward SIGTERM: the daemon's own shutdown handler
+// runs (it logs `core.shutdown`), the exit status is 0, and nothing waits out the
+// grace period for a SIGKILL. A root tini without CAP_KILL would get EPERM, exit,
+// and take the container down without the daemon ever hearing of it.
+log("stopping the container: the daemon must hear SIGTERM and exit 0 …");
+const stopStarted = Date.now();
+docker(["stop", "--time", "30", core.name]);
+const stopMs = Date.now() - stopStarted;
+const stopExit = docker(["inspect", "--format", "{{.State.ExitCode}}", core.name]).stdout.trim();
+const stopLogs = core.logs("all");
+if (stopExit !== "0") die(`docker stop ended the Core with exit ${stopExit}, expected 0 (137 is a SIGKILL after the grace period):\n${core.logs()}`);
+if (stopMs >= 25_000) die(`docker stop took ${stopMs} ms: the daemon did not stop on SIGTERM`);
+if (!/core\.shutdown.*SIGTERM/.test(stopLogs)) {
+  die(`the daemon never logged its shutdown (core.shutdown, SIGTERM): tini did not forward the signal:\n${core.logs()}`);
+}
+log(`docker stop: exit 0 in ${stopMs} ms, and the daemon logged its shutdown`);
+docker(["start", core.name]);
+await waitForCoreLink(core);
 // Restart the default boot (no -u 0): entrypoint must not invoke prep, so the
 // fake stat on the volume PATH cannot run as root on restart either.
 docker(["restart", core.name]);
 await waitForCoreLink(core);
+if (!isRunning(core)) die("the Core is not running after the restarts");
+log("the Core restarted with a planted actana in the home's .local/bin (the check that it never ran is after the pairing leg)");
+
+// tini reaps what is reparented to it: a process orphaned by its Session is
+// adopted by PID 1 (tini, not the daemon), and once it exits it is gone, not a zombie.
+{
+  const reaper = await openCoreSession(credentialFromMaterial(materialCopy, core.endpoint)).catch((err) => die(`could not open a Session: ${err.message}`));
+  await reaper.prepare().catch((err) => die(`the Session's shell never answered: ${err.message}`));
+  const orphaned = await reaper.run("sh -c '(sleep 3 & echo ORPHAN=$!); exit 0'").catch((err) => die(`could not orphan a process: ${err.message}`));
+  const orphan = Number(orphaned.output.match(/ORPHAN=(\d+)/)?.[1]);
+  if (!Number.isInteger(orphan) || orphan <= 1) die(`no orphan pid was printed:\n${orphaned.output}`);
+  const parent = () =>
+    core.exec(["sh", "-c", `sed -e 's/.*) //' /proc/${orphan}/stat 2>/dev/null | cut -d' ' -f2`], { allowFailure: true }).stdout.trim();
+  await pollUntil(`orphan ${orphan} to be adopted by PID 1`, 3_000, async () => (parent() === "1" ? true : null), { pollMs: 100 }).catch(() =>
+    die(`orphan ${orphan}'s parent is ${JSON.stringify(parent())}, expected 1 (tini)`),
+  );
+  await pollUntil(`orphan ${orphan} to be reaped`, 10_000, async () => (core.exec(["test", "-e", `/proc/${orphan}`], { allowFailure: true }).status !== 0 ? true : null), {
+    pollMs: 250,
+  }).catch(() => die(`orphan ${orphan} is still in /proc after it exited (state ${core.exec(["sh", "-c", `sed -e 's/.*) //' /proc/${orphan}/stat | cut -c1`], { allowFailure: true }).stdout.trim()}): tini is not reaping`));
+  reaper.close();
+  log(`orphan ${orphan} was adopted by PID 1 and reaped (no zombie)`);
+}
 const fakeAfterRestart = core.exec(["sh", "-c", `cat ${marker} 2>/dev/null || true`], {
   allowFailure: true,
 }).stdout;
@@ -754,6 +1171,29 @@ function assertSharedOwned(volumeName, label) {
     die(`${label}: shared ownership is ${JSON.stringify(line)}, expected 1000:1000`);
   }
 }
+
+// #559 — a state volume that arrived root-owned is handed to `actana`, mount
+// point only, by the same one-shot: the owner the entrypoint then demands.
+log("verifying core-init hands a root-owned state volume to actana …");
+const repairState = `actana-core-smoke-repairstate-${suffix}`;
+docker(["volume", "create", repairState]);
+teardown.push(() => docker(["volume", "rm", "-f", repairState], { allowFailure: true }));
+docker(["run", "--rm", "-u", "0", "--entrypoint", "sh", "--volume", `${repairState}:${CORE_STATE_DIR}`, image, "-c", `chown 0:0 ${CORE_STATE_DIR}`]);
+const repairRun = docker(
+  [
+    "run", "--rm", "-u", "0", ...coreInitCaps, "--entrypoint", "/usr/local/libexec/core-fs-prep.sh",
+    "--volume", `${repairState}:${CORE_STATE_DIR}`, image,
+  ],
+  { allowFailure: true },
+);
+if (repairRun.status !== 0) die(`core-init on a root-owned state volume failed:\n${repairRun.stderr}${repairRun.stdout}`);
+const repaired = docker(
+  ["run", "--rm", "-u", "0", "--entrypoint", "stat", "--volume", `${repairState}:${CORE_STATE_DIR}`, image, "-c", "%u:%g %a", CORE_STATE_DIR],
+).stdout.trim();
+if (repaired !== `${CORE_DAEMON_USER.uid}:${CORE_DAEMON_USER.gid} 700`) {
+  die(`core-init left the state volume ${repaired}, expected ${CORE_DAEMON_USER.uid}:${CORE_DAEMON_USER.gid} 700`);
+}
+log("core-init handed the state volume to actana (1001:1001, 0700)");
 
 // Fresh named volume with noble-style 0750 home (HOME_MODE) that already has
 // shared seeded — prep must still be able to search inside and exit 0.
@@ -856,19 +1296,26 @@ fs.writeFileSync(
     "    network_mode: none",
     "    volumes:",
     `      - ${scratchHome}:${CORE_HOME}`,
+    `      - state:${CORE_STATE_DIR}`,
     `      - ${scratchRepos}:${CORE_HOME}/repos`,
     '    restart: "no"',
     "  core:",
     `    image: ${image}`,
     "    environment:",
     "      ACTANA_PUBLIC_HOST: core",
+    // The shipped shape: root only for the entrypoint's switch, then the two capabilities.
+    "    cap_drop: [ALL]",
+    `    cap_add: [${CORE_DAEMON_CAPS.join(", ")}]`,
     "    volumes:",
     `      - ${scratchHome}:${CORE_HOME}`,
+    `      - state:${CORE_STATE_DIR}`,
     `      - ${scratchRepos}:${CORE_HOME}/repos`,
     "    depends_on:",
     "      core-init:",
     "        condition: service_completed_successfully",
     "    security_opt: [no-new-privileges:true]",
+    "volumes:",
+    "  state:",
   ].join("\n") + "\n",
 );
 const up551 = spawnSync(
@@ -913,13 +1360,40 @@ if (reposOwner.stdout.trim() !== "1000:1000") {
 }
 const writeProbe = spawnSync(
   "docker",
-  ["compose", "-f", compose551, "exec", "-T", "core", "touch", `${CORE_HOME}/repos/.actana-write-ok`],
+  ["compose", "-f", compose551, "exec", "-T", "-u", CORE_SESSION_USER.name, "core", "touch", `${CORE_HOME}/repos/.actana-write-ok`],
   { encoding: "utf8" },
 );
 if (writeProbe.status !== 0) {
   die(`core could not write repos after core-init:\n${writeProbe.stderr}${writeProbe.stdout}`);
 }
 log("core-init repaired a missing root-owned repos bind mount; core can write");
+
+// The same compose project, with the state volume core-init mounted and the
+// shipped capability set, is a Core that really came up: its PID 1 (tini, as the
+// daemon's user) and the daemon under it carry exactly the two capabilities.
+const composeStatus = (pidExpr) =>
+  spawnSync(
+    "docker",
+    ["compose", "-f", compose551, "exec", "-T", "-u", CORE_DAEMON_USER.name, "core", "sh", "-c", pidExpr],
+    { encoding: "utf8" },
+  );
+const composeInit = composeStatus("cat /proc/1/status");
+const composeInitProblems = checkProcessStatus(composeInit.stdout ?? "", "daemon");
+if (composeInit.status !== 0 || composeInitProblems.length > 0) {
+  die(`PID 1 of a compose-started Core is not exactly actana with the two capabilities:\n  ${composeInitProblems.join("\n  ")}\n${composeInit.stdout}${composeInit.stderr}`);
+}
+const composeDaemon = composeStatus(
+  'for p in /proc/[0-9]*; do read -r _ comm rest < "$p/stat"; case "$(readlink "$p/exe")" in */node) echo "@@${p#/proc/}"; cat "$p/status";; esac; done',
+);
+const composeDaemonStatus = (composeDaemon.stdout ?? "").split("@@").filter(Boolean).map((b) => b.split("\n").slice(1).join("\n"));
+if (composeDaemon.status !== 0 || composeDaemonStatus.length === 0) {
+  die(`a compose-started Core has no node process to read:\n${composeDaemon.stdout}${composeDaemon.stderr}`);
+}
+for (const status of composeDaemonStatus) {
+  const problems = checkProcessStatus(status, "daemon");
+  if (problems.length > 0) die(`a compose-started Core's node process is not exactly actana with the two capabilities:\n  ${problems.join("\n  ")}\n${status}`);
+}
+log("a Core started by compose, with the shipped capability set, runs tini and the daemon as actana with the two ambient capabilities")
 
 if (target) {
   // A cross-architecture tarball surfaces as `exec format error` at first boot
@@ -1037,6 +1511,33 @@ if (!/^actana \d+\.\d+\.\d+/.test((version.stdout ?? "").trim())) {
 }
 log("`actana core ls` answers in the image, from the same binary as `actana --version`");
 
+// The reference compose file, as Docker itself resolves it (no image needed): the
+// Core service has exactly the capability set `COMPOSE_CORE_FLAGS` boots with,
+// no `user:`, and the two state volumes — so the flags above are the shipped ones.
+{
+  const resolved = spawnSync(
+    "docker",
+    ["compose", "-f", path.join(repoRoot, "deploy", "docker-compose.yml"), "config", "--format", "json"],
+    { encoding: "utf8", env: { ...process.env, AC_PANEL_DB_PASSWORD: "smoke-not-a-secret" } },
+  );
+  if (resolved.status !== 0) die(`docker compose config exited ${resolved.status}:\n${resolved.stderr}`);
+  const service = JSON.parse(resolved.stdout).services?.core;
+  const sorted = (list) => [...(list ?? [])].sort();
+  if (!service) die("the reference compose file has no core service");
+  if (service.user) die(`the compose Core sets user ${JSON.stringify(service.user)}; the entrypoint refuses any`);
+  if (sorted(service.cap_drop).join() !== "ALL" || sorted(service.cap_add).join() !== [...CORE_DAEMON_CAPS].sort().join()) {
+    die(`the compose Core has cap_drop ${JSON.stringify(service.cap_drop)} and cap_add ${JSON.stringify(service.cap_add)}`);
+  }
+  if (!(service.security_opt ?? []).includes("no-new-privileges:true")) {
+    die(`the compose Core lost no-new-privileges: ${JSON.stringify(service.security_opt)}`);
+  }
+  const mounted = (service.volumes ?? []).map((v) => `${v.source}:${v.target}`);
+  for (const want of [`core-home:${CORE_HOME}`, `core-state:${CORE_STATE_DIR}`]) {
+    if (!mounted.includes(want)) die(`the compose Core does not mount ${want}: ${JSON.stringify(mounted)}`);
+  }
+  log("docker compose resolves the Core with cap_drop ALL, cap_add SETUID SETGID, no-new-privileges, no user, home and state volumes");
+}
+
 // ─── A Panel pairs with it ───────────────────────────────────────────────────
 
 const panelEntry = path.resolve(
@@ -1068,6 +1569,12 @@ if (!panel.client.jar.get(PANEL_SESSION_COOKIE)) die("setup issued no session co
 // The operator's two steps, in order: mint a code on the Core, then check the
 // fingerprint the Panel is presented against the one the Core printed before
 // the code goes anywhere.
+// A Session's user cannot pair: it would need the CA key (D7). It fails, and
+// prints no code.
+const pairAsCore = core.exec(["actana", "pair", "new", "--label", "smoke-as-core"], { allowFailure: true });
+if (pairAsCore.status === 0 || /Pairing code/.test(pairAsCore.stdout)) {
+  die(`\`actana pair new\` as core minted a code (exit ${pairAsCore.status}):\n${pairAsCore.stdout}${pairAsCore.stderr}`);
+}
 const enrollment = pairNew(core, "smoke-panel");
 const inspected = await panel.client.post("/api/cores/pairing/inspect", {
   address: `127.0.0.1:${core.port}`,
@@ -1104,9 +1611,20 @@ if (typeof coreId !== "string" || !coreId) {
 await assertConnects("the first pairing");
 log(`the Panel is paired with ${coreId} over the core-link`);
 
+// The planted actana (home open to others, first on a Session's PATH) must not have
+// run at any point of this smoke: not as the daemon at three starts, not as actana
+// for \`pair new\` through the image PATH, not as root, not as core. Checked here, after
+// the legs that look \`actana\` up by name, and the fake is removed.
+const fakeActanaRan = core.exec(["sh", "-c", `cat ${fakeActanaLog} 2>/dev/null || true`], { allowFailure: true }).stdout;
+if (fakeActanaRan.trim()) {
+  die(`a Session's planted ~/.local/bin/actana ran (${fakeActanaRan.trim()}): \`actana\` was found through a directory a Session writes`);
+}
+core.exec(["rm", "-f", `${CORE_HOME}/.local/bin/actana`, fakeActanaLog]);
+log("the planted actana never ran, through three starts, pairing and every `actana` the smoke typed; removed");
+
 // #559 — the pairing store is written beside the material, in the state
 // directory, and not in the home.
-if (core.exec(["test", "-f", `${CORE_STATE_DIR}/config/pairing.json`], { allowFailure: true }).status !== 0) {
+if (core.exec(["test", "-f", `${CORE_STATE_DIR}/config/pairing.json`], { user: CORE_DAEMON_USER.name, allowFailure: true }).status !== 0) {
   die(`a pairing left no ${CORE_STATE_DIR}/config/pairing.json\n${core.logs()}`);
 }
 const strayAfterPairing = stateInHome(core);
@@ -1217,7 +1735,8 @@ const stale = await pollUntil(
 log(`the Panel reports the old pairing as ${stale.state}: \`down -v\` unpaired it`);
 
 log(
-  "PASS — the Core image boots unprivileged, emits no credential, pairs a Panel by code, " +
-    "survives restart, unpairs on down -v",
+  "PASS — the Core image runs its daemon as actana with exactly CAP_SETUID and CAP_SETGID, " +
+    "Sessions as core with none, emits no credential, pairs a Panel by code, survives restart, " +
+    "unpairs on down -v",
 );
 process.exit(0);

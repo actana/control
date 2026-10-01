@@ -722,15 +722,25 @@ knows its Operator. That last step is the whole "all state in one directory"
 claim stated as a test. Run it locally with `pnpm panel:image:smoke`.
 
 **Core** — [`scripts/smoke-core-image.mjs`](../scripts/smoke-core-image.mjs)
-boots the image with a plain `docker run` — nothing privileged, no host cgroup,
-two volumes (home and state) — and then pairs a real Panel with it end to end. Along the way it
-proves what a *build* can get wrong (the identity is `core` at 1000:1000,
-`tini` is PID 1 with the daemon as its child, and the Core tree in `/opt/actana` is the
-*architecture-matched* one) and what the *contract* can get wrong: the
+boots the image with exactly the capability set compose gives the Core (`cap_drop: ALL`,
+`SETUID` and `SETGID`, `no-new-privileges`), no host cgroup, two volumes (home and state) — and then
+pairs a real Panel with it end to end. Along the way it proves what a *build* can get wrong (the
+daemon is `actana` at 1001:1001 holding exactly `CAP_SETUID` and `CAP_SETGID` as ambient capabilities
+and `NoNewPrivs`, read line for line from `/proc/<pid>/status` of the daemon's node process; a
+Session started over the core-link is `core` at 1000:1000 with no capability in any set but the
+container's bounding set; no process of the container is root, `tini` (PID 1) included, which runs as
+`actana`; `docker stop` exits 0 and the daemon logs its shutdown; there is no setuid bit and no file
+capability; `tini` is PID 1 with the daemon as its child, and the Core tree in `/opt/actana` is
+the *architecture-matched* one) and what the *contract* can get wrong: a Session cannot read the
+state, switch to the daemon's user or signal the daemon, its terminal works, a Session that ignores
+`HUP` and `TERM` dies when it is stopped, the entrypoint refuses to start as `core` or `actana`, the
 lifecycle verbs refuse and name their Docker equivalent, the daemon's state is in
 `/var/lib/actana` on a volume of its own and the home holds none of it, a hook miss a Session
 appends to its drop box is read by the daemon, `docker restart` is a
 no-op for pairing, and destroying the state volume is the one thing that unpairs.
+
+On a draft pull request the image jobs pass in about ten seconds without building anything, so the
+smoke above runs only once the pull request is marked ready.
 
 It replaced `panel-e2e-core-in-a-box`, which needed `--privileged` and the host
 cgroup to boot a systemd fixture and asserted against bytes no operator ever

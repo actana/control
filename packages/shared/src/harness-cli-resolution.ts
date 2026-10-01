@@ -53,7 +53,28 @@ export function resolveHarnessCommandMeetingVersion(
   platform: NodeJS.Platform = os.platform(),
   opts?: { fresh?: boolean },
 ): { binary: string; check: HarnessVersionCheck } | null {
-  const candidates = resolveAllHarnessCommandsOnPath(command, env, platform);
+  return pickHarnessCandidateMeetingVersion(
+    resolveAllHarnessCommandsOnPath(command, env, platform),
+    requirement,
+    env,
+    platform,
+    opts,
+  );
+}
+
+/**
+ * The version-picking half of {@link resolveHarnessCommandMeetingVersion}, for
+ * candidates somebody else found. In the container the daemon cannot look inside
+ * `core`'s home, so `core` lists the PATH matches (`core-home-ops`, `resolveCommand`)
+ * and the daemon only runs the version probes, which already start as `core`.
+ */
+export function pickHarnessCandidateMeetingVersion(
+  candidates: readonly string[],
+  requirement: HarnessCliVersionRequirement,
+  env: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform = os.platform(),
+  opts?: { fresh?: boolean },
+): { binary: string; check: HarnessVersionCheck } | null {
   if (candidates.length === 0) return null;
 
   let fallback: { binary: string; check: HarnessVersionCheck } | null = null;

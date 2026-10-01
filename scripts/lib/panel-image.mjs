@@ -85,6 +85,24 @@ export const CORE_APP_ROOT = "/opt/actana";
 export const CORE_HOME = "/home/core";
 
 /**
+ * The two users of the Core image (#559, ADR 0041 D11). `core` is who every
+ * Session runs as, `actana` is the daemon. Copies of the numbers in
+ * `deploy/core.Dockerfile` and `deploy/core-entrypoint.sh`, read by the image
+ * smoke, which cannot import anything; a test holds the three together.
+ */
+export const CORE_SESSION_USER = Object.freeze({ name: "core", uid: 1000, gid: 1000 });
+export const CORE_DAEMON_USER = Object.freeze({ name: "actana", uid: 1001, gid: 1001 });
+
+/**
+ * The daemon's whole capability set, in compose's spelling and as the kernel
+ * prints it: CAP_SETGID is bit 6 and CAP_SETUID bit 7, so 0xc0. Nothing else, in
+ * any set: a third capability here is a change to the privilege model.
+ */
+export const CORE_DAEMON_CAPS = Object.freeze(["SETUID", "SETGID"]);
+export const CORE_DAEMON_CAP_MASK = "00000000000000c0";
+export const CORE_NO_CAP_MASK = "0000000000000000";
+
+/**
  * Where the daemon keeps what only it may hold (#559): its own volume, not the
  * home. A copy of `CORE_STATE_DIR` and friends in
  * `packages/shared/src/actana-container-contract.ts`, and deliberately a copy
@@ -274,7 +292,8 @@ export function secondCoreBlock(text) {
  * Extract services and top-level volumes from the reference compose file.
  * Understands exactly the shape we write: two-space indents, `services:` and
  * `volumes:` at the top level, scalar keys such as `image:` and `restart:`,
- * and list-form `ports:` / `volumes:` / `environment:` under each service.
+ * and list-form `ports:` / `volumes:` / `environment:` / `cap_drop:` /
+ * `cap_add:` / `security_opt:` under each service.
  *
  * Scalars land in `scalars` as well, unparsed. That is what lets a test say
  * `privileged` is absent — a key nobody models cannot be asserted missing.
@@ -306,12 +325,28 @@ export function composeFacts(text) {
 
     if (indent === 2) {
       service = body.replace(/:$/, "");
-      services[service] = { image: null, ports: [], volumes: [], environment: [], scalars: {} };
+      services[service] = {
+        image: null,
+        ports: [],
+        volumes: [],
+        environment: [],
+        cap_drop: [],
+        cap_add: [],
+        security_opt: [],
+        scalars: {},
+      };
       field = null;
     } else if (indent === 4 && service) {
       const [key, ...rest] = body.split(":");
       const value = rest.join(":").trim();
-      if (key === "ports" || key === "volumes" || key === "environment") {
+      if (
+        key === "ports" ||
+        key === "volumes" ||
+        key === "environment" ||
+        key === "cap_drop" ||
+        key === "cap_add" ||
+        key === "security_opt"
+      ) {
         field = key;
       } else {
         // Everything else this file uses is a scalar. `image` keeps its own

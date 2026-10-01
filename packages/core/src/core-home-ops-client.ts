@@ -298,3 +298,29 @@ export function listDirectoryViaCore(
 ): Promise<CoreLinkDirListing> {
   return coreHomeOp({ op: "dirList", path: requested?.trim() ? requested : null }, options);
 }
+
+/** The folder picker's new folder, made by the user whose folder it is. Resolves to its path. */
+export async function createDirectoryViaCore(
+  parent: string,
+  name: string,
+  options: CoreHomeOpsOptions = {},
+): Promise<string> {
+  return (await coreHomeOp({ op: "createDirectory", parent, name }, options)).path;
+}
+
+/**
+ * Every executable match for a Harness CLI on `searchPath`, found by `core`: the
+ * Harness CLIs are in `~/.local/bin`, which the daemon cannot read. The daemon
+ * still picks among them by version (its probes start as `core` already).
+ */
+export async function resolveCommandViaCore(
+  command: string,
+  searchPath: string | null,
+  options: CoreHomeOpsOptions = {},
+): Promise<string[]> {
+  const answer = await coreHomeOp({ op: "resolveCommand", command, path: searchPath }, options);
+  const candidates = (answer as { candidates?: unknown } | null)?.candidates;
+  // An answer that is not a list of paths finds nothing (the policy says binary-not-found)
+  // rather than a TypeError in the middle of a spawn.
+  return Array.isArray(candidates) ? candidates.filter((c): c is string => typeof c === "string" && c.length > 0) : [];
+}
