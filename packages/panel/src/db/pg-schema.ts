@@ -1,6 +1,7 @@
 import { sql } from "drizzle-orm";
 import {
   bigint,
+  boolean,
   check,
   customType,
   index,
@@ -8,6 +9,7 @@ import {
   pgTable,
   text,
   unique,
+  uniqueIndex,
 } from "drizzle-orm/pg-core";
 
 /**
@@ -179,4 +181,39 @@ export const taskStatusHistory = pgTable(
     changedAt: epochMs("changed_at").notNull(),
   },
   (t) => [index("task_status_history_task_idx").on(t.taskId, t.seq)],
+);
+
+/**
+ * An Agent (#569): a named harness plus its settings on one Core. The settings
+ * are a model name and `flags`, ids from a closed set per harness that the
+ * service checks (`shared/agents.ts`). There is no command, args, script or
+ * environment column on purpose: a user-typed command would be a way into the
+ * Core, and a platform key must never ride into an Agent. `tasks.agent` is a
+ * plain reference to `id`, with no foreign key (#568). Deleting a Core deletes
+ * its Agents.
+ */
+export const agents = pgTable(
+  "agents",
+  {
+    id: text("id").primaryKey(),
+    ownerId: integer("owner_id")
+      .notNull()
+      .references(() => operator.id, { onDelete: "cascade" }),
+    coreId: text("core_id")
+      .notNull()
+      .references(() => cores.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    harness: text("harness").notNull(),
+    model: text("model"),
+    flags: text("flags").array().notNull().default(sql`'{}'::text[]`),
+    isDefault: boolean("is_default").notNull().default(false),
+    createdAt: epochMs("created_at").notNull(),
+    updatedAt: epochMs("updated_at").notNull(),
+  },
+  (t) => [
+    check("agents_harness_check", sql`${t.harness} in ('claude-code', 'codex', 'cursor-cli', 'opencode', 'pi')`),
+    unique("agents_core_name_unique").on(t.coreId, t.name),
+    uniqueIndex("agents_default_per_harness").on(t.coreId, t.harness).where(sql`${t.isDefault}`),
+    index("agents_owner_core_idx").on(t.ownerId, t.coreId),
+  ],
 );
