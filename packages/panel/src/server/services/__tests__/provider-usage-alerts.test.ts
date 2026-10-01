@@ -30,7 +30,7 @@ describe("Copilot usage URL", () => {
     _resetProviderUsageCacheForTests();
   });
 
-  it("asks api.github.com when no enterprise host is configured", async () => {
+  it("regression guard: asks api.github.com when no enterprise host is configured", async () => {
     expect(await copilotUrl(null)).toBe("https://api.github.com/copilot_internal/user");
   });
 
@@ -47,7 +47,7 @@ describe("decodeXmlAttribute", () => {
     expect(decodeXmlAttribute("&amp;quot;")).toBe("&quot;");
   });
 
-  it("decodes each entity once", () => {
+  it("regression guard: decodes each entity once", () => {
     expect(decodeXmlAttribute("&quot;a&quot; &lt;b&gt; &apos;c&apos; &amp;")).toBe(`"a" <b> 'c' &`);
   });
 });

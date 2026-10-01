@@ -12,17 +12,40 @@ describe("formatPathForTerminalPaste", () => {
     expect(formatPathForTerminalPaste("/Users/dev/project")).toBe("/Users/dev/project");
   });
 
-  it("quotes paths with spaces and escapes embedded quotes", () => {
+  it("single-quotes paths with spaces and leaves double quotes literal", () => {
     expect(formatPathForTerminalPaste('/Users/dev/my "app"')).toBe(
-      '"/Users/dev/my \\"app\\""'
+      `'/Users/dev/my "app"'`,
     );
+  });
+
+  it("escapes an embedded single quote the POSIX way", () => {
+    expect(formatPathForTerminalPaste("/tmp/a'b")).toBe(`'/tmp/a'\\''b'`);
+  });
+});
+
+describe("formatPathForTerminalPaste shell metacharacters", () => {
+  it("single-quotes a path with dollar-paren so the shell cannot expand it", () => {
+    expect(formatPathForTerminalPaste("/srv/$(id)")).toBe("'/srv/$(id)'");
+  });
+
+  it("single-quotes a path with a backtick so the shell cannot expand it", () => {
+    expect(formatPathForTerminalPaste("/srv/`id`")).toBe("'/srv/`id`'");
+  });
+
+  it("single-quotes a path with a semicolon so it stays one word", () => {
+    expect(formatPathForTerminalPaste("/srv/a;id")).toBe("'/srv/a;id'");
+  });
+
+  it("refuses a path with a control character (write nothing)", () => {
+    expect(formatPathForTerminalPaste("/srv/a\u0015;id\r")).toBeNull();
+    expect(formatPathForTerminalPaste("/srv/a\nid")).toBeNull();
   });
 });
 
 describe("formatPathForTerminalPaste backslashes", () => {
-  it("escapes a backslash so a trailing one cannot swallow the closing quote", () => {
-    expect(formatPathForTerminalPaste("/tmp/a b\\")).toBe('"/tmp/a b\\\\"');
-    expect(formatPathForTerminalPaste('/tmp/a\\"b')).toBe('"/tmp/a\\\\\\"b"');
+  it("single-quotes a path with a backslash so a trailing one cannot swallow a quote", () => {
+    expect(formatPathForTerminalPaste("/tmp/a b\\")).toBe("'/tmp/a b\\'");
+    expect(formatPathForTerminalPaste('/tmp/a\\"b')).toBe(`'/tmp/a\\"b'`);
   });
 });
 

@@ -197,8 +197,8 @@ describe("wireTerminalFileDrop", () => {
     await flushPromises();
 
     expect(event.preventDefault).toHaveBeenCalledOnce();
-    // Quoted: the path has a space, and the shell on the other end is real.
-    expect(write).toHaveBeenCalledWith('"/srv/checkout a" ');
+    // Single-quoted: the path has a space, and the shell on the other end is real.
+    expect(write).toHaveBeenCalledWith("'/srv/checkout a' ");
     expect(onFocus).toHaveBeenCalledOnce();
   });
 

@@ -115,8 +115,10 @@ export function wireTerminalFileDrop(opts: {
   const onDrop = (e: DragEvent) => {
     const projectPath = readProjectPathFromDragEvent(e);
     if (!projectPath) return;
+    const pasted = formatPathForTerminalPaste(projectPath);
+    if (!pasted) return;
     e.preventDefault();
-    void write(formatPathForTerminalPaste(projectPath) + " ");
+    void write(pasted + " ");
     onFocus();
   };
   host.addEventListener("dragover", onDragOver);
