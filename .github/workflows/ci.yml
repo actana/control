@@ -817,6 +817,7 @@ jobs:
           src/db/__tests__/pg-boot.test.ts
           src/db/__tests__/pg.test.ts
           src/db/__tests__/test-db.test.ts
+          src/server/__tests__/task-claim.test.ts
       # Most of these files pin `env: {}` and stay on PGlite on purpose, so the
       # total says little. What this job is for are the tests that name a real
       # server ("real server" in their title); at least two must have passed.
