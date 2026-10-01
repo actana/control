@@ -83,6 +83,7 @@ export type { CoreLinkProjectSnapshot, CoreLinkSessionRow };
 import type { PtyCore, PtyCoreEvent } from "./pty-manager";
 import { CoreSessionWriter } from "./core-session-writer";
 import { SessionLockTable } from "./session-lock-table";
+import type { CoreSharedCapability } from "./shared-capability";
 
 /**
  * The slice of the event-log store the server needs. The real implementation
@@ -460,6 +461,13 @@ export type PtyCoreLinkServerOptions = {
    */
   announceFiles?: boolean;
   /**
+   * Announce `ready.shared` (#561): this Core keeps a Shared folder and feeds
+   * `shared:changed` events into the event log. Absent means the Core predates it.
+   * A function is read each time a `ready` frame is built, so the announcement can
+   * follow a watcher that comes up after the server does.
+   */
+  shared?: CoreSharedCapability | (() => CoreSharedCapability | null);
+  /**
    * The Core's pre-auth surface: which paths this server may answer on a
    * connection that presented no client certificate (#282).
    *
@@ -693,6 +701,7 @@ export class PtyCoreLinkServer {
   private readonly protocolVersion: string;
   private readonly announceMultiConnection: boolean;
   private readonly announceFiles: boolean;
+  private readonly shared: () => CoreSharedCapability | null;
   /** This Core's revoked pairings, or null when it has no pairing surface. */
   private readonly revocation: CoreRevocations | null;
   /**
@@ -741,6 +750,8 @@ export class PtyCoreLinkServer {
     // them: one https.Server answering a WebSocket upgrade and the `/v1/…`
     // routes, never two listeners (#165 F2, ADR 0028).
     this.announceFiles = opts.announceFiles ?? Boolean(opts.httpRoutes);
+    const shared = opts.shared;
+    this.shared = typeof shared === "function" ? shared : () => shared ?? null;
     this.revocation = opts.revocation ?? null;
     this.server = create({
       port: opts.port,
@@ -825,6 +836,7 @@ export class PtyCoreLinkServer {
       // it either. A Core that omits the field has no file surface — not a
       // stale one, and not one to mark needs-update.
       ...(this.announceFiles ? { files: { version: 1 as const } } : {}),
+      ...this.sharedAnnouncement(),
     });
 
     // Start the live-event push poll for this connection. It stays silent
@@ -2213,6 +2225,12 @@ export class PtyCoreLinkServer {
    * `seq`/replay window can re-deliver. Anything that advances durable state on
    * the strength of the send having landed must use {@link sendResult} instead.
    */
+  /** `{ shared }` for the `ready` frame being built now, or nothing. */
+  private sharedAnnouncement(): { shared?: CoreSharedCapability } {
+    const shared = this.shared();
+    return shared ? { shared } : {};
+  }
+
   private send(ws: WebSocketLike, frame: CoreLinkServerFrame): void {
     this.sendResult(ws, frame);
   }
