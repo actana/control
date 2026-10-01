@@ -1,4 +1,6 @@
 import { randomBytes } from "node:crypto";
+import { drizzle as drizzleNodePg } from "drizzle-orm/node-postgres";
+import type { PgDatabase, PgQueryResultHKT } from "drizzle-orm/pg-core";
 import pg from "pg";
 import { bundledPanelMigrations } from "./pg-migrations-bundle";
 import { runMigrations, type MigrateClient, type MigrateSource, type Migration } from "./pg-migrate";
@@ -24,6 +26,8 @@ export interface TestPool extends MigrateSource {
 
 export interface TestDb {
   pool: TestPool;
+  /** The same database through drizzle, for the repositories (`installPanelDb`). */
+  db: PgDatabase<PgQueryResultHKT>;
   kind: "pglite" | "postgres";
   /** Close the pool and, on a real server, drop the database. Safe to call twice. */
   close(): Promise<void>;
@@ -124,11 +128,12 @@ export async function createTestDb(options: CreateTestDbOptions = {}): Promise<T
       await real.close();
       throw err;
     }
-    return { pool: real.pool, kind: "postgres", close: real.close };
+    return { pool: real.pool, db: drizzleNodePg(real.pool), kind: "postgres", close: real.close };
   }
 
   // Loaded here so a run against a real server never pays for the WebAssembly.
   const { PGlite } = await import("@electric-sql/pglite");
+  const { drizzle: drizzlePglite } = await import("drizzle-orm/pglite");
   const db = new PGlite();
   const pool = pglitePool(db);
   let closed = false;
@@ -144,5 +149,5 @@ export async function createTestDb(options: CreateTestDbOptions = {}): Promise<T
     await close();
     throw err;
   }
-  return { pool, kind: "pglite", close };
+  return { pool, db: drizzlePglite(db), kind: "pglite", close };
 }

@@ -38,13 +38,13 @@ describe("bootPanelDatabase", { timeout: 30_000 }, () => {
     const { db, pool } = await poolOver();
     await bootPanelDatabase(env, () => pool);
     const count = () => db.pool.query('select count(*)::int as n from "drizzle"."__drizzle_migrations"');
-    expect((await count()).rows[0].n).toBe(1);
-    expect(log).toHaveBeenCalledWith("[panel] database migrations applied: 0000_baseline");
+    expect((await count()).rows[0].n).toBe(bundledPanelMigrations().length);
+    expect(log).toHaveBeenCalledWith(`[panel] database migrations applied: ${bundledPanelMigrations().map((m) => m.tag).join(", ")}`);
 
     await closePanelDatabase();
     log.mockClear();
     await bootPanelDatabase(env, () => pool);
-    expect((await count()).rows[0].n).toBe(1);
+    expect((await count()).rows[0].n).toBe(bundledPanelMigrations().length);
     expect(log).not.toHaveBeenCalled();
     expect(getPanelPool()).toBe(pool);
   });
@@ -86,9 +86,9 @@ describe("bootPanelDatabase", { timeout: 30_000 }, () => {
     expect(db.kind).toBe("pglite");
   });
 
-  it("is what the server entry hands bin/panel.mjs as connectPanelDatabase", () => {
+  it("is what the server entry hands bin/panel.mjs as connectPanelDatabase, through the boot that dials the Cores", () => {
     const entry = readFileSync(path.resolve(import.meta.dirname, "..", "..", "server.ts"), "utf8");
-    expect(entry).toContain('export { bootPanelDatabase as connectPanelDatabase } from "~/db/pg-boot";');
+    expect(entry).toContain('export { bootPanel as connectPanelDatabase } from "~/server/panel-boot";');
     expect(bundledPanelMigrations()).not.toHaveLength(0);
   });
 });

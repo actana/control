@@ -8,7 +8,7 @@ import { resolvePanelDataDir } from "../panel-data-dir";
  * cert/key, and bearer that came out of a pairing with a Core.
  *
  * The threat this answers is the one from the spec: "a casual copy of my
- * database doesn't leak fleet credentials." A `panel.db` lifted off a backup,
+ * database doesn't leak fleet credentials." A database dump lifted off a backup,
  * a snapshot, or a mounted volume is inert without the key, and the key is a
  * separate file (or an environment variable, so it need not live next to the
  * data at all — ADR 0011).

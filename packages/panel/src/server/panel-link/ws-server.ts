@@ -36,15 +36,25 @@ export function attachPanelLink(server: Server): PanelLinkRouter {
 
   server.on("upgrade", (request, socket, head) => {
     if (!isPanelLinkUpgrade(request)) return;
-    const rejection = rejectUpgrade(request);
-    if (rejection) {
-      socket.write(rejection);
+    // The session lives in Postgres, so the gate is asynchronous. A gate that
+    // fails to answer refuses the upgrade; it never lets one through.
+    void (async () => {
+      const rejection = await rejectUpgrade(request);
+      if (rejection) {
+        socket.write(rejection);
+        socket.destroy();
+        return;
+      }
+      const clientId = readClientId(request);
+      wss.handleUpgrade(request, socket as Duplex, head, (ws) => {
+        bindPanelLinkSocket(router, ws, clientId);
+      });
+    })().catch((err: unknown) => {
+      console.error(
+        `[panel-link] upgrade refused, the session check failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      socket.write(httpRefusal(503, "the Panel could not check your session — try again"));
       socket.destroy();
-      return;
-    }
-    const clientId = readClientId(request);
-    wss.handleUpgrade(request, socket as Duplex, head, (ws) => {
-      bindPanelLinkSocket(router, ws, clientId);
     });
   });
 
@@ -67,12 +77,12 @@ function isPanelLinkUpgrade(request: IncomingMessage): boolean {
  * its client treats a 401 as "go log in", not as a network blip to retry
  * forever.
  */
-function rejectUpgrade(request: IncomingMessage): string | null {
+async function rejectUpgrade(request: IncomingMessage): Promise<string | null> {
   const version = readVersion(request);
   if (version !== PANEL_LINK_PROTOCOL_VERSION) {
     return httpRefusal(400, "panel-link version mismatch — reload the Panel");
   }
-  const auth = requireOperatorSession(asWebRequest(request));
+  const auth = await requireOperatorSession(asWebRequest(request));
   if (!auth.ok) return httpRefusal(401, "unauthorized");
   return null;
 }
@@ -126,7 +136,7 @@ function asWebRequest(request: IncomingMessage): Request {
 }
 
 function httpRefusal(status: number, message: string): string {
-  const reason = status === 401 ? "Unauthorized" : "Bad Request";
+  const reason = status === 401 ? "Unauthorized" : status === 503 ? "Service Unavailable" : "Bad Request";
   return (
     `HTTP/1.1 ${status} ${reason}\r\n` +
     "content-type: text/plain; charset=utf-8\r\n" +

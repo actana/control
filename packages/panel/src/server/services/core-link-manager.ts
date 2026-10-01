@@ -101,11 +101,11 @@ export type CoreCursor = {
 
 export type CoreLinkManagerOptions = {
   createClient?: (core: Core, secrets: CoreSecrets, cursor: CoreCursor) => CoreLinkClientLike;
-  listCores?: () => Core[];
-  resolveCore?: (coreId: string) => Core | null;
-  resolveSecrets?: (coreId: string) => CoreSecrets | null;
-  resolveCursor?: (coreId: string) => number;
-  advanceCursor?: (coreId: string, lastEventId: number) => void;
+  listCores?: () => Promise<Core[]>;
+  resolveCore?: (coreId: string) => Promise<Core | null>;
+  resolveSecrets?: (coreId: string) => Promise<CoreSecrets | null>;
+  resolveCursor?: (coreId: string) => Promise<number>;
+  advanceCursor?: (coreId: string, lastEventId: number) => Promise<void>;
 };
 
 const RECONNECT_INITIAL_MS = 1_000;
@@ -140,6 +140,8 @@ function unreachable(coreId: string, lastSeenAt: number | null, detail?: string)
 
 export class CoreLinkManager {
   private readonly managed = new Map<string, Managed>();
+  /** Dials in flight, by Core: a second `dial` joins the first, and `hangup` cancels it. */
+  private readonly dialing = new Map<string, Promise<void>>();
   private readonly statusListeners = new Set<(status: CoreDialStatus) => void>();
   private readonly clientListeners = new Set<(coreId: string, client: CoreLinkClientLike) => void>();
   private readonly createClient: NonNullable<CoreLinkManagerOptions["createClient"]>;
@@ -159,8 +161,9 @@ export class CoreLinkManager {
   }
 
   /** Bring up a link to every registered Core. Idempotent — safe to call again. */
-  start(): void {
-    for (const core of this.listCores()) this.dial(core.id);
+  async start(): Promise<void> {
+    const cores = await this.listCores();
+    await Promise.all(cores.map((core) => this.dial(core.id)));
   }
 
   /**
@@ -168,13 +171,32 @@ export class CoreLinkManager {
    * a client at all — unreadable credentials, a socket that wouldn't construct
    * — is retried, so a fixed key file or a re-registration doesn't need a
    * process restart to take effect.
+   *
+   * The registry is in Postgres, so reading it is a round trip: the returned
+   * promise settles once the link is constructed (not connected). A second
+   * call while one is in flight joins it, and `hangup` cancels it, so a Core
+   * removed mid-dial is never dialed.
    */
-  dial(coreId: string): void {
-    if (this.managed.get(coreId)?.client) return;
-    const core = this.resolveCore(coreId);
+  dial(coreId: string): Promise<void> {
+    if (this.managed.get(coreId)?.client) return Promise.resolve();
+    const inFlight = this.dialing.get(coreId);
+    if (inFlight) return inFlight;
+    const attempt: Promise<void> = this.connect(coreId, () => this.dialing.get(coreId) === attempt).finally(
+      () => {
+        if (this.dialing.get(coreId) === attempt) this.dialing.delete(coreId);
+      },
+    );
+    this.dialing.set(coreId, attempt);
+    return attempt;
+  }
+
+  private async connect(coreId: string, current: () => boolean): Promise<void> {
+    const core = await this.resolveCore(coreId);
     if (!core) return;
 
-    const secrets = this.resolveSecrets(coreId);
+    const secrets = await this.resolveSecrets(coreId);
+    // The Core may have been removed while the registry was read.
+    if (!current()) return;
     if (!secrets?.bearer) {
       // Either the sealed blob wouldn't open (a data directory restored without
       // its key file) or it was never written. Retrying the socket cannot fix
@@ -189,13 +211,26 @@ export class CoreLinkManager {
       return;
     }
 
+    // The client reads its cursor synchronously (a `localStorage`-shaped store),
+    // so it is read once here and kept; writes go to the registry as they land.
+    let position = await this.resolveCursor(coreId);
+    if (!current()) return;
+
     this.set(coreId, { coreId, state: "connecting", lastSeenAt: this.lastSeenAt(coreId) });
 
     let client: CoreLinkClientLike;
     try {
       client = this.createClient(core, secrets, {
-        read: () => this.resolveCursor(coreId),
-        write: (lastEventId) => this.advanceCursor(coreId, lastEventId),
+        read: () => position,
+        write: (lastEventId) => {
+          position = Math.max(position, lastEventId);
+          // Forward-only in the registry, so writes settling out of order are harmless.
+          void this.advanceCursor(coreId, lastEventId).catch((err: unknown) => {
+            console.error(
+              `[panel] core ${coreId}: could not save the replay cursor: ${err instanceof Error ? err.message : String(err)}`,
+            );
+          });
+        },
       });
     } catch (err) {
       this.set(
@@ -249,6 +284,7 @@ export class CoreLinkManager {
 
   /** Drop a Core's link and forget its status — called when a Core is removed. */
   hangup(coreId: string): void {
+    this.dialing.delete(coreId);
     const managed = this.managed.get(coreId);
     if (!managed) return;
     this.managed.delete(coreId);
@@ -295,6 +331,7 @@ export class CoreLinkManager {
   dispose(): void {
     for (const managed of this.managed.values()) managed.client?.close();
     this.managed.clear();
+    this.dialing.clear();
     this.statusListeners.clear();
     this.clientListeners.clear();
   }

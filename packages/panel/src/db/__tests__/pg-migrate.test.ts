@@ -45,23 +45,23 @@ describe("parseMigrations", () => {
 });
 
 describe("the bundled Postgres migrations", () => {
-  it("are the baseline alone, and every SQL file on disk is in the journal", () => {
+  it("are the baseline and the panel.db tables, and every SQL file on disk is in the journal", () => {
     const dir = path.resolve(import.meta.dirname, "..", "pg-migrations");
     const onDisk = readdirSync(dir).filter((f) => f.endsWith(".sql")).map((f) => f.replace(/\.sql$/, ""));
     expect(bundledPanelMigrations().map((m) => m.tag)).toEqual(onDisk.sort());
-    expect(onDisk).toEqual(["0000_baseline"]);
+    expect(onDisk).toEqual(["0000_baseline", "0001_panel_db_tables"]);
   });
 });
 
 describe("runMigrations on PGlite", { timeout: 30_000 }, () => {
-  it("applies the baseline once and a second run is a no-op", async () => {
+  it("applies the bundled migrations once and a second run is a no-op", async () => {
     const db = await make();
     const migrations = bundledPanelMigrations();
-    expect(await runMigrations(db.pool, migrations)).toEqual(["0000_baseline"]);
+    expect(await runMigrations(db.pool, migrations)).toEqual(["0000_baseline", "0001_panel_db_tables"]);
     expect(await runMigrations(db.pool, migrations)).toEqual([]);
     const { rows } = await db.pool.query('select hash, created_at from "drizzle"."__drizzle_migrations"');
-    expect(rows).toHaveLength(1);
-    expect(rows[0].hash).toBe(migrations[0].hash);
+    expect(rows).toHaveLength(2);
+    expect(rows.map((r) => r.hash)).toEqual(migrations.map((m) => m.hash));
     expect(Number(rows[0].created_at)).toBe(migrations[0].folderMillis);
   });
 

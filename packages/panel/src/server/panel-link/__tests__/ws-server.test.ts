@@ -1,4 +1,5 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { closePanelTestDb, openPanelTestDb } from "../../__tests__/_panel-test-db";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -18,7 +19,7 @@ process.env.AC_PANEL_DATA_DIR = path.join(tmpRoot, "panel");
 
 const { attachPanelLink, bindPanelLinkSocket } = await import("../ws-server");
 type PanelLinkServerSocket = import("../ws-server").PanelLinkServerSocket;
-const { closePanelDb } = await import("../../panel-db");
+const testDb = await openPanelTestDb();
 const { operatorSessionCookie } = await import("../../__tests__/_operator-session");
 const { PANEL_LINK_PATH, PANEL_LINK_PROTOCOL_VERSION, PANEL_LINK_VERSION_PARAM } = await import(
   "~/shared/panel-link"
@@ -31,7 +32,7 @@ const port = (server.address() as { port: number }).port;
 
 afterAll(async () => {
   await new Promise<void>((resolve) => server.close(() => resolve()));
-  closePanelDb();
+  await closePanelTestDb(testDb);
   fs.rmSync(tmpRoot, { recursive: true, force: true });
 });
 
@@ -62,11 +63,11 @@ describe("the panel-link endpoint", () => {
   });
 
   it("accepts the Operator's own session cookie", async () => {
-    await expect(dial({ cookie: operatorSessionCookie() })).resolves.toBe("open");
+    await expect(dial({ cookie: (await operatorSessionCookie()) })).resolves.toBe("open");
   });
 
   it("refuses a browser built against a protocol version it doesn't speak", async () => {
-    await expect(dial({ cookie: operatorSessionCookie() }, 999)).resolves.toBe("http 400");
+    await expect(dial({ cookie: (await operatorSessionCookie()) }, 999)).resolves.toBe("http 400");
   });
 
   it("leaves other upgrade paths to whoever else is listening", async () => {
@@ -171,7 +172,7 @@ describe("the panel-link sweep", () => {
     vi.useRealTimers();
   });
 
-  it("terminates a connection that stops answering, and the session lets go", () => {
+  it("terminates a connection that stops answering, and the session lets go", async () => {
     const ws = new FakeUpgradedSocket();
     const session = bindPanelLinkSocket(router, ws);
     ws.receive(subscribe("core_a"));
@@ -188,7 +189,7 @@ describe("the panel-link sweep", () => {
     expect(session.watches("core_a")).toBe(false);
   });
 
-  it("never reaps a quiet-but-healthy connection, however long it stays quiet", () => {
+  it("never reaps a quiet-but-healthy connection, however long it stays quiet", async () => {
     const ws = new FakeUpgradedSocket({ autoPong: true });
     const session = bindPanelLinkSocket(router, ws);
     ws.receive(subscribe("core_a"));
@@ -202,7 +203,7 @@ describe("the panel-link sweep", () => {
     expect(session.watches("core_a")).toBe(true);
   });
 
-  it("takes a connection's own frames as proof of life", () => {
+  it("takes a connection's own frames as proof of life", async () => {
     const ws = new FakeUpgradedSocket();
     bindPanelLinkSocket(router, ws);
 
@@ -214,7 +215,7 @@ describe("the panel-link sweep", () => {
     expect(ws.terminated).toBe(0);
   });
 
-  it("reaps one tab's connection without touching any other tab's", () => {
+  it("reaps one tab's connection without touching any other tab's", async () => {
     // Binding order matters: the healthy connections sit either side of the
     // dead one. A sweep carrying the core link's "am I the current connection?"
     // guard would reap both of them and spare the newest — the Panel holds one
@@ -237,7 +238,7 @@ describe("the panel-link sweep", () => {
     expect(lastSession.watches("core_a")).toBe(true);
   });
 
-  it("stops sweeping the moment its own socket closes", () => {
+  it("stops sweeping the moment its own socket closes", async () => {
     const ws = new FakeUpgradedSocket({ autoPong: true });
     bindPanelLinkSocket(router, ws);
     vi.advanceTimersByTime(31_000);
@@ -250,7 +251,7 @@ describe("the panel-link sweep", () => {
     expect(ws.pings).toBe(pingsWhenClosed);
   });
 
-  it("carries a socket that cannot ping rather than throwing at it", () => {
+  it("carries a socket that cannot ping rather than throwing at it", async () => {
     const ws = new FakeUpgradedSocket({ ping: false });
     const session = bindPanelLinkSocket(router, ws);
     ws.receive(subscribe("core_a"));

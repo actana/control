@@ -8,6 +8,13 @@
       "when": 1790800767886,
       "tag": "0000_baseline",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1790828848155,
+      "tag": "0001_panel_db_tables",
+      "breakpoints": true
     }
   ]
 }

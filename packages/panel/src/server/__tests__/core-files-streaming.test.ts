@@ -29,6 +29,7 @@
 // one machine's disk to make a claim about another machine's heap. The routes
 // themselves are exercised for real, against a real filesystem, next door.
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
+import { closePanelTestDb, openPanelTestDb } from "./_panel-test-db";
 import * as fs from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import * as os from "node:os";
@@ -44,7 +45,7 @@ process.env.AC_USER_DATA_DIR = path.join(tmpRoot, "app");
 process.env.AC_PANEL_DATA_DIR = path.join(tmpRoot, "panel");
 
 const { handleApiRequest } = await import("../api-router");
-const { closePanelDb, getPanelDb } = await import("../panel-db");
+const testDb = await openPanelTestDb();
 const { operatorSessionCookie } = await import("./_operator-session");
 const { coreLinkManager, resetCoreLinkManagerForTests } = await import(
   "../services/core-link-manager"
@@ -168,21 +169,21 @@ async function pairSinkCore(): Promise<string> {
   // controller makes once a code has been redeemed. There is no `POST
   // /api/cores` to paste a blob at any more (#287); the cookie is asked for
   // first because the registry row's foreign key points at the Operator.
-  operatorSessionCookie();
-  const registered = registerCoreFromCredential({
+  (await operatorSessionCookie());
+  const registered = (await registerCoreFromCredential({
     endpoint: `wss://127.0.0.1:${port}`,
     label: "stream-vm",
     caCert: material.ca.cert,
     clientCert: material.client.cert,
     clientKey: material.client.key,
     bearer: signBearer({ coreId: "core_stream", exp: Date.now() + 600_000 }, BEARER_SECRET),
-  });
-  coreLinkManager().dial(registered.id);
+  }));
+  await coreLinkManager().dial(registered.id);
   await vi.waitFor(
     async () => {
       const list = (await (
         await handleApiRequest(
-          new Request(`${ORIGIN}/api/cores`, { headers: { cookie: operatorSessionCookie() } }),
+          new Request(`${ORIGIN}/api/cores`, { headers: { cookie: (await operatorSessionCookie()) } }),
         )
       )!.json()) as { cores: { id: string; dial: { state: string; files?: unknown } }[] };
       const core = list.cores.find((c) => c.id === registered.id);
@@ -195,17 +196,18 @@ async function pairSinkCore(): Promise<string> {
 }
 
 /** A PUT whose body this test drives chunk by chunk. */
-function putStreamed(
+async function putStreamed(
   coreId: string,
   filePath: string,
   body: ReadableStream<Uint8Array>,
 ): Promise<Response> {
+  const cookie = await operatorSessionCookie();
   return handleApiRequest(
     new Request(
       `${ORIGIN}/api/cores/${coreId}/projects/${PROJECT_ID}/files?path=${encodeURIComponent(filePath)}`,
       {
         method: "PUT",
-        headers: { cookie: operatorSessionCookie(), "content-type": "application/octet-stream" },
+        headers: { cookie, "content-type": "application/octet-stream" },
         body,
         // Mandatory for a stream body, and the same flag `bin/panel.mjs` sets
         // when it turns the operator's socket into a `Request`.
@@ -215,17 +217,16 @@ function putStreamed(
   ) as Promise<Response>;
 }
 
-afterEach(() => {
+afterEach(async () => {
   resetCoreLinkManagerForTests();
   resetCoreFilesSendersForTests();
   for (const server of running.splice(0)) server.close();
-  const db = getPanelDb();
-  db.prepare("DELETE FROM core_secrets").run();
-  db.prepare("DELETE FROM cores").run();
+  await testDb.pool.query("delete from core_secrets");
+  await testDb.pool.query("delete from cores");
 });
 
-afterAll(() => {
-  closePanelDb();
+afterAll(async () => {
+  await closePanelTestDb(testDb);
   fs.rmSync(tmpRoot, { recursive: true, force: true });
 });
 

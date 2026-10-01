@@ -43,8 +43,8 @@ function withSessionCookie(request: Request, response: Response, token: string):
   return response;
 }
 
-function publicOperator(): { name: string } | null {
-  const operator = getOperator();
+async function publicOperator(): Promise<{ name: string } | null> {
+  const operator = await getOperator();
   return operator ? { name: operator.name } : null;
 }
 
@@ -52,22 +52,22 @@ function publicOperator(): { name: string } | null {
  * The one endpoint a browser may call before it has anything: it tells the
  * login page whether this Panel is still on its first boot.
  */
-export function state(request: Request): Response {
-  const { needsSetup, session } = readPanelAuthState(request);
+export async function state(request: Request): Promise<Response> {
+  const { needsSetup, session } = await readPanelAuthState(request);
   return json({
     needsSetup,
     authenticated: session !== null,
-    operator: session ? publicOperator() : null,
+    operator: session ? await publicOperator() : null,
   });
 }
 
 /** First boot: create the single Operator and log this browser in. */
 export async function setup(request: Request): Promise<Response> {
-  if (operatorExists()) return jsonError(HTTP_CONFLICT, "an Operator already exists");
+  if (await operatorExists()) return jsonError(HTTP_CONFLICT, "an Operator already exists");
   const body = await readBody(request);
   let operator;
   try {
-    operator = createOperator({ name: body.name, password: body.password });
+    operator = await createOperator({ name: body.name, password: body.password });
   } catch (err) {
     if (err instanceof OperatorExistsError) {
       return jsonError(HTTP_CONFLICT, "an Operator already exists");
@@ -75,28 +75,28 @@ export async function setup(request: Request): Promise<Response> {
     if (err instanceof PasswordPolicyError) return jsonError(HTTP_BAD_REQUEST, err.message);
     throw err;
   }
-  const { token } = createPanelSession();
+  const { token } = await createPanelSession();
   return withSessionCookie(request, json({ operator: { name: operator.name } }), token);
 }
 
 export async function login(request: Request): Promise<Response> {
-  if (!operatorExists()) return jsonError(HTTP_CONFLICT, "setup required");
+  if (!(await operatorExists())) return jsonError(HTTP_CONFLICT, "setup required");
   // Checked before the body is hashed: verifying a password is deliberately
   // expensive, so a throttled caller must not get to spend it.
   const allowed = loginAttemptAllowed();
   if (!allowed.ok) return allowed.response;
 
   const body = await readBody(request);
-  if (!verifyOperatorPassword(body.password)) {
+  if (!(await verifyOperatorPassword(body.password))) {
     recordLoginFailure();
     return jsonError(HTTP_UNAUTHORIZED, "incorrect password");
   }
-  const { token } = createPanelSession();
-  return withSessionCookie(request, json({ operator: publicOperator() }), token);
+  const { token } = await createPanelSession();
+  return withSessionCookie(request, json({ operator: await publicOperator() }), token);
 }
 
-export function logout(request: Request): Response {
-  revokePanelSession(readSessionCookie(request));
+export async function logout(request: Request): Promise<Response> {
+  await revokePanelSession(readSessionCookie(request));
   const response = json({ ok: true });
   response.headers.append("set-cookie", clearedSessionCookieHeader(request));
   return response;
@@ -108,20 +108,20 @@ export function logout(request: Request): Response {
  * loss. The caller gets a fresh session so the tab they did it from survives.
  */
 export async function changePassword(request: Request): Promise<Response> {
-  const auth = requireOperatorSession(request);
+  const auth = await requireOperatorSession(request);
   if (!auth.ok) return auth.response;
 
   const body = await readBody(request);
-  if (!verifyOperatorPassword(body.currentPassword)) {
+  if (!(await verifyOperatorPassword(body.currentPassword))) {
     return jsonError(HTTP_UNAUTHORIZED, "incorrect password");
   }
   try {
-    setOperatorPassword(body.newPassword);
+    await setOperatorPassword(body.newPassword);
   } catch (err) {
     if (err instanceof PasswordPolicyError) return jsonError(HTTP_BAD_REQUEST, err.message);
     throw err;
   }
-  revokeAllPanelSessions();
-  const { token } = createPanelSession();
+  await revokeAllPanelSessions();
+  const { token } = await createPanelSession();
   return withSessionCookie(request, json({ ok: true }), token);
 }
