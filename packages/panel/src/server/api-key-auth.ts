@@ -84,3 +84,23 @@ export async function authenticateApiRequest(
   }
   return { ok: true, principal: { kind: "api-key", ...key } };
 }
+
+/**
+ * The gate for a surface that is for API keys alone (`/mcp`, #573). There is no
+ * session fallback: no key, a key that is not `ak_…`-shaped, an unknown or a
+ * revoked one is a 401, so an Operator's cookie in the same request is never
+ * looked at and a tool can never run as anyone but the key's owner.
+ */
+export async function authenticateApiKeyOnly(
+  request: Request,
+): Promise<{ ok: true; principal: Extract<ApiPrincipal, { kind: "api-key" }> } | { ok: false; response: Response }> {
+  const presented = presentedApiKey(request);
+  const key = presented === null ? null : await authenticateApiKey(presented);
+  if (!key) {
+    return {
+      ok: false,
+      response: jsonError(HTTP_UNAUTHORIZED, "unauthorized", { "www-authenticate": 'Bearer realm="actana"' }),
+    };
+  }
+  return { ok: true, principal: { kind: "api-key", ...key } };
+}

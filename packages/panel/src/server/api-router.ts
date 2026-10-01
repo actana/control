@@ -26,6 +26,7 @@ import * as coreFilesController from "./controllers/core-files.controller";
 import * as updateCheckController from "./controllers/update-check.controller";
 import * as tasksController from "./controllers/tasks.controller";
 import * as v1Controller from "./controllers/v1.controller";
+import { handleMcpRequest, MCP_PATH } from "./mcp";
 import { OPERATOR_ID } from "./services/operator";
 import * as webhooksController from "./controllers/webhooks.controller";
 
@@ -197,12 +198,17 @@ export async function handleApiRequest(request: Request): Promise<Response | nul
   const { pathname } = url;
   const method = request.method.toUpperCase();
 
-  if (!pathname.startsWith("/api/")) return null;
+  if (pathname !== MCP_PATH && !pathname.startsWith("/api/")) return null;
   const requestId = requestHeaderId(request, REQUEST_ID_HEADER) ?? randomUUID();
   const correlationId = requestHeaderId(request, CORRELATION_ID_HEADER) ?? requestId;
 
   if (pathname === "/api/healthz" && method === "GET") {
     return applyRequestHeaders(await healthController.read(), requestId, correlationId);
+  }
+
+  // The MCP server (#573) is outside `/api/` and is judged by its own key-only gate, never the session's.
+  if (pathname === MCP_PATH) {
+    return applyRequestHeaders(await handleMcpRequest(request), requestId, correlationId);
   }
 
   const response = await protectedDispatch(request, url, method, pathname);
