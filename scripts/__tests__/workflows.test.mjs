@@ -6,7 +6,7 @@
 // file added next year — or `stale.yml` quietly restored — fails here instead
 // of being noticed by whoever happens to look.
 //
-// **D34's count is now six entry points**, and every revision was deliberate:
+// **D34's count is now seven entry points**, and every revision was deliberate:
 //
 //   ci.yml           gates every pull request, and publishes the train's image
 //                    on every push to `beta/**` (ADR 0023 D41)
@@ -23,6 +23,9 @@
 //                    cut — the moving `vx.y.z-beta` tag, a prerelease GitHub
 //                    Release, three tarballs, `SHA256SUMS` and `install.sh`
 //                    (ADR 0036 D9, D10, amending 0016 D34 in its turn)
+//   codeql.yml       the seventh: CodeQL code scanning on every pull request and
+//                    on the integration branches, in a file of its own so
+//                    `ci.yml`'s jobs and required checks are untouched (#599)
 //
 // `beta-release.yml` is an entry point rather than a third mode of
 // `release.yml`, and ADR 0036 D9 records the refactor that would merge them as
@@ -59,6 +62,7 @@ import * as path from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { CORE_TARGETS } from "../lib/core-tarball.mjs";
+import { POSTGRES_IMAGE } from "../lib/postgres-image.mjs";
 
 const repoRoot = path.resolve(import.meta.dirname, "..", "..");
 const workflowDir = path.join(repoRoot, ".github/workflows");
@@ -81,10 +85,11 @@ const code = (block) =>
     .join("\n");
 
 describe("the workflow inventory (ADR 0016 D34)", () => {
-  it("is six entry points plus one reusable workflow — nothing else", () => {
+  it("is seven entry points plus one reusable workflow — nothing else", () => {
     expect(fs.readdirSync(workflowDir).sort()).toEqual([
       "beta-release.yml",
       "ci.yml",
+      "codeql.yml",
       "container-image.yml",
       "housekeeping.yml",
       "landing.yml",
@@ -2096,5 +2101,63 @@ describe("the promotion runs the promoted commit's own release workflow (#326)",
     expect(code(promote), "promote.yml does not name the recovery").toContain(
       "When a promotion half-runs",
     );
+  });
+});
+
+// The Panel's real-Postgres job (#567, ADR 0041 D19). PGlite runs the Panel's db
+// tests in `Unit Tests`; this one runs them against a server, which is the only
+// place the migration lock and `createTestDb`'s real-server path execute. What
+// a green run cannot show is that these things hold, so they are pinned here.
+describe("the real-Postgres job (#567, ADR 0041 D19)", () => {
+  const ci = read("ci.yml");
+  const job = code(jobBlock(ci, "panel-postgres"));
+
+  it("runs Postgres from the image the compose file pins, by the same digest", () => {
+    expect(job).toContain(`image: ${POSTGRES_IMAGE}\n`);
+    const compose = fs.readFileSync(path.join(repoRoot, "deploy/docker-compose.yml"), "utf8");
+    expect(compose).toContain(`image: ${POSTGRES_IMAGE}\n`);
+    expect(job).toMatch(/image: postgres:\d+\.\d+-[a-z]+@sha256:[0-9a-f]{64}\n/);
+  });
+
+  it("waits for Postgres on TCP before the tests start", () => {
+    expect(job).toContain('--health-cmd "pg_isready -h 127.0.0.1 -U panel -d panel"');
+  });
+
+  it("hands the tests the server through AC_TEST_DATABASE_URL, on the loopback", () => {
+    expect(job).toMatch(/AC_TEST_DATABASE_URL: postgres:\/\/panel:[^@\s]+@127\.0\.0\.1:5432\/postgres\n/);
+  });
+
+  it("runs only the Panel's db test files, in one worker, and builds nothing", () => {
+    const run = job.slice(job.indexOf("- name: Panel DB tests against Postgres"));
+    expect(run).toContain("working-directory: packages/panel");
+    expect(run).toContain("vitest run --maxWorkers=1");
+    for (const file of ["pg-migrate", "pg-boot", "pg", "test-db"]) {
+      expect(run, file).toContain(`src/db/__tests__/${file}.test.ts`);
+    }
+    expect(job).not.toMatch(/\b(?:build|typecheck|docker|pnpm test|pnpm -r)\b/);
+    expect(job).not.toContain("needs:");
+  });
+
+  it("fails when a real-server test was skipped, instead of passing without it", () => {
+    const check = job.slice(job.indexOf("- name: The real-server tests ran, and none was skipped"));
+    expect(check).toContain("real server");
+    expect(check).toContain("numPendingTests > 0");
+    expect(check).toContain("real.length < 2");
+    expect(job).toContain("--reporter=json --outputFile=");
+  });
+
+  it("has no job-level `if:`, so it runs on pull requests and on feat and beta pushes like the others", () => {
+    expect(job).not.toMatch(/^ {4}if:/m);
+  });
+
+  // The change that makes this job required (adds its name to `docs/rulesets/*.json`) must remove or invert this
+  // test in the same change: it fails as soon as any ruleset file names the job. `Unit Tests` is required on main
+  // and beta, so leaving it would block every pull request.
+  it("is not required by any ruleset yet: making it required is the owner's call", () => {
+    const name = job.match(/^ {4}name: (.+)$/m)[1];
+    const dir = path.join(repoRoot, "docs/rulesets");
+    for (const file of fs.readdirSync(dir).filter((f) => f.endsWith(".json"))) {
+      expect(fs.readFileSync(path.join(dir, file), "utf8"), file).not.toContain(name);
+    }
   });
 });

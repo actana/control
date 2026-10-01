@@ -80,6 +80,33 @@ describe("the helper bundle as a process", () => {
     expect(listing.entries.map((e) => e.name)).toEqual(["repos"]);
   });
 
+  it("makes a folder and finds a CLI end to end, as a process", async () => {
+    const bin = path.join(home, ".local", "bin");
+    fs.mkdirSync(bin, { recursive: true });
+    fs.writeFileSync(path.join(bin, "claude"), "#!/bin/sh\n", { mode: 0o755 });
+    await expect(coreHomeOp({ op: "createDirectory", parent: home, name: "made" }, options())).resolves.toEqual({
+      path: path.join(home, "made"),
+    });
+    expect(fs.statSync(path.join(home, "made")).isDirectory()).toBe(true);
+    await expect(coreHomeOp({ op: "resolveCommand", command: "claude", path: bin }, options())).resolves.toEqual({
+      candidates: [path.join(bin, "claude")],
+    });
+  });
+
+  it("refuses a new folder outside the home with the operator's sentence on stdout and the failure on stderr, and makes nothing", () => {
+    const r = runBundle(JSON.stringify({ op: "createDirectory", parent: outside, name: "x" }));
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain("core-home-ops: failed: This Core only creates folders inside its home");
+    expect(JSON.parse(r.stdout)).toMatchObject({ ok: false, code: "failed" });
+    expect(fs.readdirSync(outside)).toEqual([]);
+  });
+
+  it("refuses a command that is a path with exit 2 and the reason on stderr", () => {
+    const r = runBundle(JSON.stringify({ op: "resolveCommand", command: "/bin/sh", path: null }));
+    expect(r.status).toBe(2);
+    expect(r.stderr).toContain("refused (bad-field)");
+  });
+
   it("answers with exactly one JSON line on stdout", () => {
     fs.mkdirSync(path.join(home, ".claude"));
     const r = runBundle(JSON.stringify({ op: "ensureOrchestrationSkill" }));

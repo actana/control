@@ -35,7 +35,9 @@
 // and there is nothing to confine against.
 
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
+import { resolveAllHarnessCommandsOnPath } from "@actana/shared/harness-cli-resolution";
 import { registryPaths } from "@actana/shared/blob-registry";
 import { wireLocalCore, type LocalCoreWiring } from "@actana/shared/local-core-wiring";
 import { piAgentDir } from "@actana/shared/pi-agent-dir";
@@ -43,7 +45,7 @@ import { ensureStatuslineTap, statuslineTapPath } from "@actana/shared/statuslin
 import type { SkillInstallEntry } from "@actana/shared/orchestration-skill-install";
 import type { CoreLinkDirListing } from "@actana/sdk/core";
 import { hookWritePaths, installHarnessHooks, type HookInstallResult } from "./harness-hooks";
-import { listDirectory } from "./directory-browse";
+import { createDirectory, listDirectory } from "./directory-browse";
 import { installOrchestrationSkills, orchestrationSkillFolders } from "./orchestration-skill";
 
 /** The only operations the helper will run. A name not in this list is refused. */
@@ -56,6 +58,8 @@ export const CORE_HOME_OPERATIONS = [
   "spawnPathFacts",
   "resolveExecCwd",
   "dirList",
+  "createDirectory",
+  "resolveCommand",
 ] as const;
 
 export type CoreHomeOperation = (typeof CORE_HOME_OPERATIONS)[number];
@@ -75,7 +79,10 @@ export type CoreHomeOpRequest =
   | { op: "wireLocalCore"; label: string; credential: RegistrationCredential }
   | { op: "spawnPathFacts"; cwd: string; roots: string[] }
   | { op: "resolveExecCwd"; cwd: string | null }
-  | { op: "dirList"; path: string | null };
+  | { op: "dirList"; path: string | null }
+  | { op: "createDirectory"; parent: string; name: string }
+  /** `path` is the PATH to search; null is the helper's own (core's). */
+  | { op: "resolveCommand"; command: string; path: string | null };
 
 export type RegistrationCredential = {
   endpoint: string;
@@ -103,6 +110,9 @@ export type CoreHomeOpResult = {
   spawnPathFacts: SpawnPathFacts;
   resolveExecCwd: { cwd: string };
   dirList: CoreLinkDirListing;
+  createDirectory: { path: string };
+  /** Every executable match, in search order; the caller picks by version. */
+  resolveCommand: { candidates: string[] };
 };
 
 /** Where and as whom the operations run. */
@@ -139,6 +149,9 @@ export class CoreHomeOpFailedError extends Error {
 const MAX_PATH_LENGTH = 4096;
 const MAX_ROOTS = 256;
 const MAX_CREDENTIAL_FIELD = 64 * 1024;
+/** A filename is at most 255 bytes on every filesystem the image uses. */
+const MAX_NAME_LENGTH = 255;
+const MAX_SEARCH_PATH_LENGTH = 16 * 1024;
 
 function refuse(code: CoreHomeOpRefusedError["code"], message: string): never {
   throw new CoreHomeOpRefusedError(code, message);
@@ -228,6 +241,21 @@ export function parseCoreHomeOpRequest(raw: unknown): CoreHomeOpRequest {
     case "dirList":
       noExtraFields(raw, ["path"]);
       return { op: "dirList", path: optionalStr(raw.path, "path") };
+    case "createDirectory":
+      noExtraFields(raw, ["parent", "name"]);
+      return { op: "createDirectory", parent: str(raw.parent, "parent"), name: str(raw.name, "name", MAX_NAME_LENGTH) };
+    case "resolveCommand": {
+      noExtraFields(raw, ["command", "path"]);
+      const command = str(raw.command, "command", 32);
+      // A bare name, never a path: the lookup is a search of PATH, and a name with
+      // a separator would make it a probe of any file the helper can see.
+      if (!/^[a-z][a-z0-9-]*$/.test(command)) refuse("bad-field", "command is not a bare command name");
+      return {
+        op: "resolveCommand",
+        command,
+        path: raw.path === null || raw.path === undefined ? null : str(raw.path, "path", MAX_SEARCH_PATH_LENGTH),
+      };
+    }
   }
 }
 
@@ -336,7 +364,7 @@ function realpathOrNull(p: string): string | null {
 }
 
 /** The operations that need no `await`. */
-export type SyncRequest = Exclude<CoreHomeOpRequest, { op: "dirList" }>;
+export type SyncRequest = Exclude<CoreHomeOpRequest, { op: "dirList" | "createDirectory" }>;
 
 /**
  * Run one operation that needs no `await`. Throws {@link CoreHomeOpRefusedError}
@@ -351,7 +379,15 @@ export function handleCoreHomeOpSync(request: SyncRequest, ctx: CoreHomeOpContex
 export function handleCoreHomeOpSync(request: CoreHomeOpRequest, ctx: CoreHomeOpContext): unknown {
   switch (request.op) {
     case "dirList":
-      throw new Error("dirList is async: use handleCoreHomeOp");
+    case "createDirectory":
+      throw new Error(`${request.op} is async: use handleCoreHomeOp`);
+    case "resolveCommand": {
+      // A search of PATH is a read, so it is not confined to the home: the CLIs
+      // are in `~/.local/bin` and in `/usr/local/bin`. What it can see is what
+      // `core` can see, and it answers with paths only.
+      const env = request.path === null ? ctx.env : { ...ctx.env, PATH: request.path };
+      return { candidates: resolveAllHarnessCommandsOnPath(request.command, env, os.platform()) };
+    }
     case "installHarnessHooks": {
       const cwd = confine(request.cwd, ctx, "cwd");
       if (request.piAgentDir !== null) {
@@ -421,6 +457,15 @@ export async function handleCoreHomeOp<Op extends CoreHomeOperation>(
   ctx: CoreHomeOpContext,
 ): Promise<CoreHomeOpResult[Op]>;
 export async function handleCoreHomeOp(request: CoreHomeOpRequest, ctx: CoreHomeOpContext): Promise<unknown> {
+  if (request.op === "createDirectory") {
+    const parent = confined(request.parent, ctx);
+    if (parent === null) throw new CoreHomeOpFailedError("This Core only creates folders inside its home");
+    try {
+      return { path: await createDirectory(parent, request.name) };
+    } catch (err) {
+      throw new CoreHomeOpFailedError(err instanceof Error ? err.message : String(err));
+    }
+  }
   if (request.op !== "dirList") return handleCoreHomeOpSync(request as SyncRequest, ctx);
   const raw = request.path !== null && request.path.trim() ? request.path : ctx.home;
   const dir = confined(raw, ctx);

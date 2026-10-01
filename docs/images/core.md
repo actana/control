@@ -18,7 +18,7 @@ brings this image up beside a Panel on one network:
 
 ```bash
 docker compose up -d
-docker compose exec core actana pair new     # a code and a CA fingerprint
+docker compose exec -u actana core actana pair new   # a code and a CA fingerprint
 ```
 
 Then open the Panel and give **Add Core** the address `core:8443` and that code,
@@ -60,10 +60,9 @@ out of your coding CLIs on every `docker compose up`.
 (CA, certificates, bearer secret, Core ID) in `config/material.json`, the pairings beside it, the
 SQLite database and the update-check caches in `data/`, and, reserved for the Shared folder's key,
 `shared/`. It is a volume of its own so that the home — the place Sessions work in — never holds
-the Core's keys, and a copy of it carries none. Today the daemon still runs as `core`, so the
-directory is owned by `core` (1000:1000) and **a Session, which runs as `core`, can still read it**
-until the daemon gets its own user (a later change). Today the volume keeps the keys out of the home
-volume and out of a copy of it, not out of a Session's reach.
+the Core's keys, and a copy of it carries none. It is owned by `actana` (1001:1001), the user the
+daemon runs as, and **a Session, which runs as `core`, cannot read it**: not the identity, not the
+database, not the pairings. That is why pairing is `docker compose exec -u actana core actana pair new`.
 
 `docker compose down -v` destroys both and with them the pairing. Nothing else does — restarts,
 upgrades and host changes keep it, and so does losing `core-home` alone: the Core is still the
@@ -86,8 +85,8 @@ a LAN address from outside it. Name both:
 One certificate covers both, and each client is paired to the one it can reach:
 
 ```bash
-docker compose exec core actana pair new --label panel  --public-host core
-docker compose exec core actana pair new --label laptop --public-host 192.168.1.20
+docker compose exec -u actana core actana pair new --label panel  --public-host core
+docker compose exec -u actana core actana pair new --label laptop --public-host 192.168.1.20
 ```
 
 `--public-host` picks from the configured list and can never add to it: an address that is not on
@@ -107,7 +106,7 @@ Panel paired before the edit still trusts this Core. What differs is whether it 
   it. Point it at the new address, or pair it again:
 
   ```bash
-  docker compose exec core actana pair new --label my-panel
+  docker compose exec -u actana core actana pair new --label my-panel
   ```
 
 Reordering the list is a replacement of sorts: the first entry is the endpoint a code hands back
@@ -124,7 +123,7 @@ Install them into the volume instead, where they persist across image upgrades a
 place:
 
 ```bash
-docker compose exec core actana harnesses install claude-code
+docker compose exec -u core core actana harnesses install claude-code
 ```
 
 ## What is inside
@@ -138,20 +137,39 @@ that `npm install` on a project with a native addon can actually invoke node-gyp
 (uid 1000, gid 1000) has **no sudo** — system packages are baked into the image, and an agent
 cannot install more at run time.
 
-The container image `USER` is numeric `1000:1000` (the `core` account), so
-`docker exec` / `docker compose exec` stay non-root and Kubernetes
-`runAsNonRoot` accepts the image. There is **no setuid/setgid bit left** on
-any file in the image (stripped as the last root build step), and `core`
-cannot become root. Named volumes are seeded `core:core` in the image. A host
+Two users run in the container. **`actana`** (uid 1001, gid 1001, no login shell) is the daemon:
+the entrypoint is the container's `ENTRYPOINT` and starts as root for one step only. It checks that
+the bounding set is exactly `CAP_SETUID` and `CAP_SETGID` (what compose's `cap_drop: ALL` +
+`cap_add: SETUID, SETGID` leaves; it refuses any other, because `setpriv` cannot narrow it without
+`CAP_SETPCAP`) and that `/var/lib/actana` is `actana:actana` mode `0700` (it fails, and never
+repairs, otherwise). It then `exec`s `setpriv` to `actana`, with `CAP_SETUID` and `CAP_SETGID` as
+the only inheritable and ambient capabilities and `no-new-privs`, and that `exec`s **`tini`**, which
+runs the daemon by absolute path (`/opt/actana/bin/actana daemon`). So `tini` is still PID 1, but
+as `actana` with the same two capabilities: it can forward `SIGTERM` to the daemon, so `docker stop`
+runs the daemon's shutdown (a root `tini` without `CAP_KILL` could not signal a uid-1001 process).
+Those two capabilities are what let the daemon start every Session as **`core`**, with no
+capabilities of its own. After the switch **no process of the container is root**. There is **no
+setuid/setgid bit and no file capability** on any file in the image (stripped as the last root build
+step, and scanned for by the smoke). What `actana` can do with `CAP_SETUID`: switch to any uid,
+root included. That root has only those two capabilities, no DAC override, and under `no-new-privs`
+cannot gain more; it owns what root owns in the container's writable layer, which is why the daemon
+is not run as anything it does not need to be and why a Session (`core`) has neither capability.
+`core` cannot become `actana` or root. The image `USER` is `0:0` for the entrypoint's step, and so a
+plain `docker exec` is root — a root with no DAC override, which reads neither `/home/core` nor
+`/var/lib/actana`. Use
+`docker exec -u core` for a Session's view of the machine (a shell — `bash -l`, so that the home's `~/.local/bin` is on its PATH — and `actana harnesses install`) and
+`docker exec -u actana` for `actana pair`. Named volumes are seeded in the image: the home
+`core:core`, the state `actana:actana`. A host
 bind mount that Docker created as root is repaired by a separate root one-shot
 (`core-init` in compose, or `docker run -u 0 --entrypoint
 /usr/local/libexec/core-fs-prep.sh …`) that only chowns mount points — never
 recursively, and never following a symlink. Compose gives that one-shot
 `CHOWN` (to retarget ownership) and `DAC_OVERRIDE` (noble seeds `~/` as
 `0750`, so without it uid 0 cannot search or `mkdir` under the home), keeps
-`no-new-privileges` and `network_mode: none`, then exits. The main entrypoint
-refuses uid 0, sets `HOME=/home/core`, and applies `no-new-privs` before
-exec'ing the daemon.
+`no-new-privileges` and `network_mode: none`, then exits; it also hands the state mount point to
+`actana`. The main entrypoint refuses any uid but 0, because the switch to `actana` is the one thing
+it does, and refuses a bounding set that is not exactly the two capabilities, so a bare `docker run`
+needs `--cap-drop ALL --cap-add SETUID --cap-add SETGID`.
 
 A system Node 24, taken from nodejs.org and SHA-256 verified against that release's own
 `SHASUMS256.txt`, for `npm i -g` work. The daemon does not use it — it runs the Node bundled inside
@@ -173,9 +191,9 @@ Prep fails hard if `~/shared` is a symlink or a non-directory: `core` can make t
 `compose up` fail by replacing that path. That is intentional — the one-shot will not follow
 or repair through a symlink.
 
-Overriding `user:` on the main Core service is **not** supported — npm's prefix points into
-`/home/core`, and `user: "0"` would make every `docker compose exec` root. Prep runs only in the
-one-shot init service.
+Overriding `user:` on the main Core service is **not** supported — the entrypoint must start as root
+to switch to `actana`, and refuses `user: "1000"` or `user: "1001"` with a message. Prep runs only in
+the one-shot init service.
 
 Without compose, run the prep one-shot once before the main container:
 

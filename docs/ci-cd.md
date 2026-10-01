@@ -5,10 +5,11 @@ checks, labels) lives in [`REPO_SETUP.md`](REPO_SETUP.md).
 
 ## At a glance
 
-**Six entry points and one reusable workflow** ([ADR
+**Seven entry points and one reusable workflow** ([ADR
 0023](adr/0023-release-trains-and-digest-promotion.md), amending [ADR
 0016](adr/0016-the-0-1-0-shape.md) D34; the sixth is [ADR
-0036](adr/0036-the-beta-release-channel.md) D9, amending D34 again):
+0036](adr/0036-the-beta-release-channel.md) D9, amending D34 again, and the
+seventh is `codeql.yml`, [#599](https://github.com/actana/control/issues/599)):
 
 | Workflow | Trigger | Produces |
 | --- | --- | --- |
@@ -18,6 +19,7 @@ checks, labels) lives in [`REPO_SETUP.md`](REPO_SETUP.md).
 | [`promote.yml`](../.github/workflows/promote.yml) | dispatch, naming a train | the human pause, the digest verification, the fast-forward of `main`, the `vx.y.z` tag, the release line, retiring the promoted train |
 | [`release.yml`](../.github/workflows/release.yml) | a dispatch and only a dispatch: `promote.yml` dispatches it **at `vx.y.z`**, or a person does — **not** a `v*` tag, and no longer a `workflow_call` (D40, as amended by [#326](https://github.com/actana/control/issues/326)) | Core tarballs + checksums, `:<version>`, `:latest` when it is the highest version, the GitHub Release |
 | [`beta-release.yml`](../.github/workflows/beta-release.yml) | dispatch, naming a train | a beta cut: the moving `vx.y.z-beta` tag, a prerelease Release, three Core tarballs + `SHA256SUMS`, `install.sh` and the CLI tarball as assets, `x.y.z-beta` in `panel` / `core`. Never `latest` |
+| [`codeql.yml`](../.github/workflows/codeql.yml) | every PR, and push to `beta/**` and `feat/x.y.z` (the same two filters as `ci.yml`) | nothing published. CodeQL code scanning for JavaScript and TypeScript, uploaded to the Security tab. **Owner step, not done by the workflow:** the `Analyze (javascript-typescript)` job passes whether or not it finds an alert, so it only proves the scan ran. What fails on a finding is the code-scanning results check, **`CodeQL`**, or a ruleset's **Require code scanning results** rule with a threshold of high or critical; make that required, and `Analyze` alongside it if wanted |
 | [`housekeeping.yml`](../.github/workflows/housekeeping.yml) | daily cron | stale labels / closures, and the issue that says no train is open |
 | [`housekeeping.yml`](../.github/workflows/housekeeping.yml) | weekly cron | a `NODE_VERSION` bump PR, the `-dev` tag sweep, the four Docker Hub pages, and an issue for anything the release detector, the dev-tree audit or the Harness canary found |
 | [`landing.yml`](../.github/workflows/landing.yml) | push to `main` under `landing/**`, or dispatch | `landing/` uploaded to Bunny Edge Storage and the pull zone purged — the page at control.actana.ai |
@@ -205,7 +207,7 @@ holds the table of names.
 | `Conventions` | runs | `if: github.event_name == 'pull_request' \|\| (github.event_name == 'push' && startsWith(github.ref, 'refs/heads/feat/'))` |
 | `Resolve PR image mode` | runs, and decides `build` with `push=false` | the same `if:` |
 | `Panel image`, `Core image` | run: the real build and smoke, amd64 only, on the pushed commit | the same `if:`, `needs: pr-image-mode` |
-| `Promotion gate`, `Typecheck`, `Unit Tests`, `Lint`, `Dependency Audit`, `Secret Scan`, `E2E — Panel service seam`, `Smoke — Core release tarball`, `E2E — installer` | run | no job-level `if:`, so they run on every event |
+| `Promotion gate`, `Typecheck`, `Unit Tests`, `Lint`, `Dependency Audit`, `Secret Scan`, `E2E — Panel service seam`, `Panel DB tests — real Postgres` (not a required check), `Smoke — Core release tarball`, `E2E — installer` | run | no job-level `if:`, so they run on every event |
 | `Train rules` | does not run | `if: github.event_name == 'pull_request'` |
 | `Train versions`, `Resolve train tags`, `Panel image (train)`, `Core image (train)` | do not run | `if: startsWith(github.ref, 'refs/heads/beta/')` |
 
@@ -720,15 +722,25 @@ knows its Operator. That last step is the whole "all state in one directory"
 claim stated as a test. Run it locally with `pnpm panel:image:smoke`.
 
 **Core** — [`scripts/smoke-core-image.mjs`](../scripts/smoke-core-image.mjs)
-boots the image with a plain `docker run` — nothing privileged, no host cgroup,
-two volumes (home and state) — and then pairs a real Panel with it end to end. Along the way it
-proves what a *build* can get wrong (the identity is `core` at 1000:1000,
-`tini` is PID 1 with the daemon as its child, and the Core tree in `/opt/actana` is the
-*architecture-matched* one) and what the *contract* can get wrong: the
+boots the image with exactly the capability set compose gives the Core (`cap_drop: ALL`,
+`SETUID` and `SETGID`, `no-new-privileges`), no host cgroup, two volumes (home and state) — and then
+pairs a real Panel with it end to end. Along the way it proves what a *build* can get wrong (the
+daemon is `actana` at 1001:1001 holding exactly `CAP_SETUID` and `CAP_SETGID` as ambient capabilities
+and `NoNewPrivs`, read line for line from `/proc/<pid>/status` of the daemon's node process; a
+Session started over the core-link is `core` at 1000:1000 with no capability in any set but the
+container's bounding set; no process of the container is root, `tini` (PID 1) included, which runs as
+`actana`; `docker stop` exits 0 and the daemon logs its shutdown; there is no setuid bit and no file
+capability; `tini` is PID 1 with the daemon as its child, and the Core tree in `/opt/actana` is
+the *architecture-matched* one) and what the *contract* can get wrong: a Session cannot read the
+state, switch to the daemon's user or signal the daemon, its terminal works, a Session that ignores
+`HUP` and `TERM` dies when it is stopped, the entrypoint refuses to start as `core` or `actana`, the
 lifecycle verbs refuse and name their Docker equivalent, the daemon's state is in
 `/var/lib/actana` on a volume of its own and the home holds none of it, a hook miss a Session
 appends to its drop box is read by the daemon, `docker restart` is a
 no-op for pairing, and destroying the state volume is the one thing that unpairs.
+
+On a draft pull request the image jobs pass in about ten seconds without building anything, so the
+smoke above runs only once the pull request is marked ready.
 
 It replaced `panel-e2e-core-in-a-box`, which needed `--privileged` and the host
 cgroup to boot a systemd fixture and asserted against bytes no operator ever
