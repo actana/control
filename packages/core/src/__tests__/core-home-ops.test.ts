@@ -64,11 +64,13 @@ describe("request validation: known operations only", () => {
   it("lists exactly the operations the plan names", () => {
     expect([...CORE_HOME_OPERATIONS].sort()).toEqual(
       [
+        "createDirectory",
         "dirList",
         "ensureClaudeShiftEnterBinding",
         "ensureOrchestrationSkill",
         "ensureStatuslineTap",
         "installHarnessHooks",
+        "resolveCommand",
         "resolveExecCwd",
         "spawnPathFacts",
         "wireLocalCore",
@@ -106,6 +108,16 @@ describe("request validation: known operations only", () => {
     ["an enormous path", { op: "ensureStatuslineTap", cwd: `/${"a".repeat(5000)}` }],
     ["a harness that is a path", { op: "installHarnessHooks", harness: "../x", cwd: "/x", piAgentDir: null }],
     ["too many roots", { op: "spawnPathFacts", cwd: "/x", roots: Array.from({ length: 300 }, (_, i) => `/r${i}`) }],
+    ["a folder name that is empty", { op: "createDirectory", parent: "/h", name: "" }],
+    ["a folder name with a NUL", { op: "createDirectory", parent: "/h", name: "a\0b" }],
+    ["a folder name that is not a string", { op: "createDirectory", parent: "/h", name: 4 }],
+    ["a folder name far past any filename", { op: "createDirectory", parent: "/h", name: "a".repeat(300) }],
+    ["no parent", { op: "createDirectory", name: "x" }],
+    ["a command that is a path", { op: "resolveCommand", command: "/tmp/evil", path: null }],
+    ["a command with a separator", { op: "resolveCommand", command: "../claude", path: null }],
+    ["a command with a space", { op: "resolveCommand", command: "claude --version", path: null }],
+    ["a PATH with a NUL", { op: "resolveCommand", command: "claude", path: "/a\0:/b" }],
+    ["a PATH that is not a string", { op: "resolveCommand", command: "claude", path: ["/a"] }],
     ["a credential that is not an object", { op: "wireLocalCore", label: "a", credential: "x" }],
   ])("refuses %s as bad-field", (_name, raw) => {
     expect(["bad-field", "bad-request"]).toContain(refusal(() => parseCoreHomeOpRequest(raw)).code);
@@ -121,6 +133,9 @@ describe("request validation: known operations only", () => {
       { op: "spawnPathFacts", cwd: "/h/w", roots: ["/h/w"] },
       { op: "resolveExecCwd", cwd: null },
       { op: "dirList", path: null },
+      { op: "createDirectory", parent: "/h/w", name: "new" },
+      { op: "resolveCommand", command: "claude", path: "/h/.local/bin:/usr/bin" },
+      { op: "resolveCommand", command: "claude", path: null },
     ];
     for (const request of requests) expect(parseCoreHomeOpRequest(request)).toEqual(request);
   });
@@ -386,5 +401,94 @@ describe("operations", () => {
 
   it("does not run the async operation synchronously", () => {
     expect(() => handleCoreHomeOpSync({ op: "dirList", path: null } as never, ctx)).toThrow(/async/);
+  });
+});
+
+describe("createDirectory: the picker's new folder, made by core", () => {
+  const create = (parent: string, name: string) =>
+    handleCoreHomeOp({ op: "createDirectory", parent, name }, ctx);
+
+  it("makes one folder inside the home and answers with its path", async () => {
+    fs.mkdirSync(path.join(home, "repos"));
+    const made = await create(path.join(home, "repos"), "warehouse");
+    expect(made).toEqual({ path: path.join(home, "repos", "warehouse") });
+    expect(fs.statSync(made.path).isDirectory()).toBe(true);
+  });
+
+  it("keeps the operator's sentences for a bad name, a missing parent and a name that exists", async () => {
+    fs.mkdirSync(path.join(home, "taken"));
+    await expect(create(home, "a/b")).rejects.toThrow(new CoreHomeOpFailedError("Invalid folder name"));
+    await expect(create(home, ".hidden")).rejects.toThrow("Invalid folder name");
+    await expect(create(path.join(home, "nope"), "x")).rejects.toThrow("Location not found");
+    await expect(create(home, "taken")).rejects.toThrow("Something with that name already exists here");
+  });
+
+  it("makes nothing outside the home: an absolute path, `..`, a link out and a dangling link", async () => {
+    const sentence = "This Core only creates folders inside its home";
+    await expect(create(outside, "x")).rejects.toThrow(sentence);
+    await expect(create(path.join(home, "..", "outside"), "x")).rejects.toThrow(sentence);
+    fs.symlinkSync(outside, path.join(home, "link"));
+    await expect(create(path.join(home, "link"), "x")).rejects.toThrow(sentence);
+    fs.symlinkSync(path.join(outside, "gone"), path.join(home, "dangling"));
+    await expect(create(path.join(home, "dangling"), "x")).rejects.toThrow(sentence);
+    await expect(create("relative/dir", "x")).rejects.toThrow(sentence);
+    expect(fs.readdirSync(outside)).toEqual([]);
+    expect(fs.existsSync(path.join(base, "gone"))).toBe(false);
+  });
+
+  it("is not confined outside the container (roots null), as before", async () => {
+    const made = await handleCoreHomeOp({ op: "createDirectory", parent: outside, name: "x" }, { ...ctx, roots: null });
+    expect(made.path).toBe(path.join(outside, "x"));
+  });
+
+  it("is async: the sync entry refuses it", () => {
+    expect(() => handleCoreHomeOpSync({ op: "createDirectory", parent: home, name: "x" } as never, ctx)).toThrow(/async/);
+  });
+});
+
+describe("resolveCommand: where a Harness CLI is, looked up by core", () => {
+  const exe = (dir: string, name: string, mode = 0o755) => {
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, name);
+    fs.writeFileSync(file, "#!/bin/sh\n", { mode });
+    fs.chmodSync(file, mode);
+    return file;
+  };
+  const resolve = (command: string, pathValue: string | null) =>
+    handleCoreHomeOpSync({ op: "resolveCommand", command, path: pathValue }, ctx);
+
+  it("lists every executable match on the given PATH, in PATH order", () => {
+    const local = exe(path.join(home, ".local", "bin"), "claude");
+    const system = exe(path.join(outside, "bin"), "claude");
+    expect(resolve("claude", [path.dirname(local), path.dirname(system)].join(":"))).toEqual({ candidates: [local, system] });
+  });
+
+  it("finds a binary in a directory outside the home: a PATH lookup is a read, not a write, so it is not confined", () => {
+    const system = exe(path.join(outside, "bin"), "claude");
+    expect(resolve("claude", path.dirname(system))).toEqual({ candidates: [system] });
+  });
+
+  it("skips a file that is not executable and a directory of that name", () => {
+    exe(path.join(home, "a"), "claude", 0o644);
+    fs.mkdirSync(path.join(home, "b", "claude"), { recursive: true });
+    expect(resolve("claude", `${path.join(home, "a")}:${path.join(home, "b")}`)).toEqual({ candidates: [] });
+  });
+
+  it("reads the helper's own PATH when the request carries none", () => {
+    const local = exe(path.join(home, ".local", "bin"), "claude");
+    const there = handleCoreHomeOpSync(
+      { op: "resolveCommand", command: "claude", path: null },
+      { ...ctx, env: { HOME: home, PATH: path.dirname(local) } },
+    );
+    expect(there).toEqual({ candidates: [local] });
+  });
+
+  it("follows the Harness's alias list, as the daemon's own lookup did", () => {
+    const agent = exe(path.join(outside, "bin"), "agent");
+    expect(resolve("cursor-agent", path.dirname(agent)).candidates).toEqual([agent]);
+  });
+
+  it("finds nothing for a command that is not there", () => {
+    expect(resolve("claude", outside)).toEqual({ candidates: [] });
   });
 });

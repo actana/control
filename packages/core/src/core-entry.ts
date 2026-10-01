@@ -80,7 +80,6 @@ import {
 import { createPairing } from "@actana/sdk/pairing/server";
 import { pairingStorePath } from "@actana/sdk/pairing/stores/json-file";
 import { corePairingStore } from "./core-pairing-store";
-import { createDirectory } from "./directory-browse";
 import { runCoreExec } from "./core-exec";
 import { coreHome } from "./core-identity";
 import { configureProjectRootsDb } from "./project-roots";
@@ -144,7 +143,7 @@ import log from "@actana/shared/log";
 import { bootstrapCoreDb } from "./core-db-bootstrap";
 import { HarnessAvailabilityStore } from "@actana/shared/harness-availability-store";
 import { HarnessSkillWatcher } from "./harness-skill-watcher";
-import { ensureOrchestrationSkillViaCore, listDirectoryViaCore } from "./core-home-ops-client";
+import { createDirectoryViaCore, ensureOrchestrationSkillViaCore, listDirectoryViaCore } from "./core-home-ops-client";
 import { HarnessInstallService } from "./harness-install-service";
 import { daemonHarnessSystem } from "./core-harness-system";
 import { legacyEnvRefusal, plaintextExposureRefusal } from "./core-boot-refusals";
@@ -518,7 +517,7 @@ async function startCore(): Promise<void> {
     // validates every listing.
     directoryPort: {
       list: (requestedPath) => listDirectoryViaCore(requestedPath),
-      create: (parent, name) => createDirectory(parent, name),
+      create: (parent, name) => createDirectoryViaCore(parent, name),
     },
     // Issue 266: `actana core exec` runs one command here, non-interactively.
     // It grants nothing `core shell` does not already grant — same credential,
