@@ -192,7 +192,9 @@ describe("no raw shell command", () => {
 });
 
 describe("platform model keys", () => {
-  const KEY = "sk-platform-0123456789abcdef-NEVER-FOR-AGENTS";
+  // Built at run time: a literal key-shaped string in the source would trip `scripts/scan-secrets.mjs`.
+  const fake = (prefix: string, length: number) => prefix + "x1Y2".repeat(length).slice(0, length);
+  const KEY = fake("sk-", 40);
 
   it("never reach an Agent: not in a row, a listing, a resolution or a refusal, with a key in the Panel's environment", async () => {
     vi.stubEnv("ANTHROPIC_API_KEY", KEY);
@@ -206,7 +208,7 @@ describe("platform model keys", () => {
       await listAgentsForCore(A, "core-1", deps),
       (await testDb.pool.query("select * from agents")).rows,
     ];
-    expect(JSON.stringify(seen)).not.toContain("sk-platform");
+    expect(JSON.stringify(seen)).not.toContain(KEY);
     expect(Object.keys(await resolveAgent(A, made.id, deps)).sort()).toEqual(["agentId", "coreId", "flags", "harness", "model"]);
   });
 
@@ -220,7 +222,8 @@ describe("platform model keys", () => {
   });
 
   it("is refused as a model when it merely looks like a provider key", async () => {
-    for (const model of ["sk-ant-api03-abcdefghijklmnop", "sk-proj-abcdefghijklmnopqrstuvwx", "AIzaSyA-abcdefghijklmnopqrstuvwxyz0123456", "ghp_abcdefghijklmnopqrstuvwxyz0123456789", "hf_abcdefghijklmnopqrstuvwxyz"]) {
+    const models = [fake("sk-ant-api03-", 20), fake("sk-proj-", 24), fake("AIza", 35), fake("ghp_", 36), fake("hf_", 26)];
+    for (const model of models) {
       await expect(createAgent(A, { coreId: "core-1", name: "n", harness: "claude-code", model }, deps)).rejects.toThrow(/platform key/);
     }
   });
