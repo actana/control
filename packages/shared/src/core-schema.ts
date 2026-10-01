@@ -92,6 +92,7 @@ const SESSION_COLUMNS: ReadonlySet<string> = new Set([
   "claude_session_id",
   "claude_skip_permissions",
   "claude_bare_session",
+  "prompt_block_version",
   "created_at",
   "updated_at",
 ]);
@@ -118,6 +119,8 @@ export function ensureCoreSchema(sqlite: Database.Database): void {
       claude_session_id TEXT,
       claude_skip_permissions INTEGER NOT NULL DEFAULT 0,
       claude_bare_session INTEGER NOT NULL DEFAULT 0,
+      -- The Core's standard prompt block version this Session was handed (ADR 0026); NULL when none was.
+      prompt_block_version INTEGER,
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL
     );

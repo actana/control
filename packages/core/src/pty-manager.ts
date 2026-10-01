@@ -51,6 +51,7 @@ import {
 import { applyHarnessPtyEnv } from "@actana/shared/harness-pty-env";
 import { acquireSpawnSlot, SPAWN_SETTLE_MS } from "./pty-spawn-queue";
 import { HarnessPromptDelivery, type PromptDeliveryEvent } from "./harness-prompt-delivery";
+import { appendPromptBlock, PROMPT_BLOCK_VERSION } from "./prompt-standard-block";
 
 function sanitizeEnv(): Record<string, string> {
   const out = sanitizedProcessEnv();
@@ -176,6 +177,7 @@ function reportPromptDelivered(
     characters: number;
     waitedMs: number;
     composerObserved: boolean;
+    promptBlockVersion: number | null;
   },
 ): void {
   if (!info.sessionId) return;
@@ -279,6 +281,8 @@ export type PtyCoreDeps = {
     waitedMs: number;
     /** Was a composer seen, or did the quiet gap vouch for it? See issue 395. */
     composerObserved: boolean;
+    /** The standard block version the prompt carried, or null when it carried none. */
+    promptBlockVersion: number | null;
   }) => void;
   /**
    * This Session's harness is still talking (issue 243). Not a status and not
@@ -866,10 +870,17 @@ export class PtyCore {
     // answers whatever dialog is in the way, and sends the carriage return as
     // its own keystroke once the paste has settled. The client sent a string
     // and nothing else, whether it was a Panel, the CLI or an SDK automation.
-    const initialInput =
+    //
+    // The standard block (ADR 0026, issue 563) is appended here, once, to the
+    // sanitised text: this is the one string `HarnessPromptDelivery` types, and
+    // it re-types that same string when a harness swallows it, so a resend
+    // cannot carry a second block. The starting prompt is turn 1.
+    const userInput =
       plan.mode === "agent" && !opts.shell && !opts.shellSession
         ? sanitizeInitialInput(opts.initialInput)
         : undefined;
+    const initialInput =
+      userInput && opts.sessionId ? appendPromptBlock(userInput, { sessionId: opts.sessionId, turn: 1 }) : userInput;
     const promptDelivery =
       initialInput && plan.mode === "agent"
         ? new HarnessPromptDelivery({
@@ -941,6 +952,9 @@ export class PtyCore {
                   // matched a composer marker or typed on the quiet gap, and no
                   // client can work that out from the outside (issue 395).
                   composerObserved: event.composerObserved,
+                  // The block this prompt carried, so the Session row can say
+                  // which wording the harness was given (issue 563).
+                  promptBlockVersion: initialInput !== userInput ? PROMPT_BLOCK_VERSION : null,
                 });
               }
               // A dialog's label is harness output, so it goes through the same

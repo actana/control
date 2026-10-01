@@ -1,0 +1,56 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`the block at delivery > claude-code is typed the user's text, then the block, once 1`] = `
+{
+  "harness": "claude-code",
+  "writes": [
+    "fix the bug and add a test [Actana standard block v1] Your workspace is your home directory (~); go into a subfolder only when this prompt says so. ~/shared is shared with the operator and syncs within seconds. When this turn is done, write your report to ~/shared/sessions/t-abc/report-1.md and make its last line exactly ACT-REPORT-END. Never use sudo.",
+    "
+",
+  ],
+}
+`;
+
+exports[`the block at delivery > codex is typed the user's text, then the block, once 1`] = `
+{
+  "harness": "codex",
+  "writes": [
+    "fix the bug and add a test [Actana standard block v1] Your workspace is your home directory (~); go into a subfolder only when this prompt says so. ~/shared is shared with the operator and syncs within seconds. When this turn is done, write your report to ~/shared/sessions/t-abc/report-1.md and make its last line exactly ACT-REPORT-END. Never use sudo.",
+    "
+",
+  ],
+}
+`;
+
+exports[`the block at delivery > cursor-cli is typed the user's text, then the block, once 1`] = `
+{
+  "harness": "cursor-cli",
+  "writes": [
+    "fix the bug and add a test [Actana standard block v1] Your workspace is your home directory (~); go into a subfolder only when this prompt says so. ~/shared is shared with the operator and syncs within seconds. When this turn is done, write your report to ~/shared/sessions/t-abc/report-1.md and make its last line exactly ACT-REPORT-END. Never use sudo.",
+    "
+",
+  ],
+}
+`;
+
+exports[`the block at delivery > opencode is typed the user's text, then the block, once 1`] = `
+{
+  "harness": "opencode",
+  "writes": [
+    "fix the bug and add a test [Actana standard block v1] Your workspace is your home directory (~); go into a subfolder only when this prompt says so. ~/shared is shared with the operator and syncs within seconds. When this turn is done, write your report to ~/shared/sessions/t-abc/report-1.md and make its last line exactly ACT-REPORT-END. Never use sudo.",
+    "
+",
+  ],
+}
+`;
+
+exports[`the block at delivery > pi is typed the user's text, then the block, once 1`] = `
+{
+  "harness": "pi",
+  "writes": [
+    "fix the bug and add a test [Actana standard block v1] Your workspace is your home directory (~); go into a subfolder only when this prompt says so. ~/shared is shared with the operator and syncs within seconds. When this turn is done, write your report to ~/shared/sessions/t-abc/report-1.md and make its last line exactly ACT-REPORT-END. Never use sudo.",
+    "
+",
+  ],
+}
+`;

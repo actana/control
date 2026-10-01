@@ -22,6 +22,7 @@ import {
   createSession as createSessionSql,
   deleteSession as deleteSessionSql,
   querySessions as querySessionsSql,
+  recordPromptBlockVersion as recordPromptBlockVersionSql,
   updateSession as updateSessionSql,
   type CoreMutationSqlite,
   type CoreSessionMutation,
@@ -105,6 +106,11 @@ export const coreMutationStore: CoreMutationPort = {
     return querySessionsSql(conn, livePtyProbe);
   },
 };
+
+/** Record which standard prompt block version a Session was handed (issue 563). */
+export function recordPromptBlockVersion(sessionId: string, version: number): void {
+  recordPromptBlockVersionSql(ensureConnection() as unknown as CoreMutationSqlite, sessionId, version);
+}
 
 /** Close the connection. Called on Core shutdown. */
 export function disposeCoreMutationStore(): void {
