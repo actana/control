@@ -1,7 +1,7 @@
 import { asc, eq, lt } from "drizzle-orm";
 import { ownedBy } from "~/db/owner";
 import { panelDb } from "~/db/panel-db-handle";
-import { coreSecrets, cores } from "~/db/pg-schema";
+import { coreSecrets, coreSharedFolders, cores } from "~/db/pg-schema";
 
 export type CoreRow = typeof cores.$inferSelect;
 
@@ -41,6 +41,7 @@ export async function findCoreByEndpoint(ownerId: number, endpoint: string): Pro
 export async function insertCoreWithSecrets(
   row: CoreRow,
   sealed: Uint8Array,
+  opts: { pendingSharedFolder?: boolean } = {},
 ): Promise<boolean> {
   return panelDb().transaction(async (tx) => {
     const inserted = await tx
@@ -52,6 +53,17 @@ export async function insertCoreWithSecrets(
     await tx
       .insert(coreSecrets)
       .values({ coreId: row.id, ownerId: row.ownerId, sealed, updatedAt: row.updatedAt });
+    // In the same transaction, so a Core paired from the Panel is never visible without its pending
+    // folder: a Core with no row reads as one registered before 0.5.0, which is not asked for storage.
+    if (opts.pendingSharedFolder) {
+      await tx.insert(coreSharedFolders).values({
+        coreId: row.id,
+        ownerId: row.ownerId,
+        state: "pending",
+        s3Prefix: "",
+        updatedAt: row.updatedAt,
+      });
+    }
     return true;
   });
 }

@@ -155,6 +155,10 @@ export async function getCore(id: string, ownerId = OPERATOR_ID): Promise<Core |
  * forever with no way to fix it but a manual delete. Either the Core is
  * registered and dialable, or nothing happened.
  *
+ * `pendingSharedFolder` is set by a pairing made from the Panel (#564): the Core is registered with its
+ * Shared folder pending, in the same transaction, and its pairing is not finished until the folder is
+ * attached. The CLI's pairing never sets it.
+ *
  * `label` is the Panel's alias for the *machine* and is passed explicitly by a
  * caller that has one — pairing does, because the label it sent the Core names
  * this Panel rather than the machine, and letting that come back round as the
@@ -162,7 +166,7 @@ export async function getCore(id: string, ownerId = OPERATOR_ID): Promise<Core |
  */
 export async function registerCoreFromCredential(
   credential: CoreCredential,
-  opts: { label?: string; ownerId?: number } = {},
+  opts: { label?: string; ownerId?: number; pendingSharedFolder?: boolean } = {},
 ): Promise<Core> {
   if (
     !credential.caCert.trim() ||
@@ -217,6 +221,7 @@ export async function registerCoreFromCredential(
       updatedAt: now,
     },
     sealed,
+    { pendingSharedFolder: opts.pendingSharedFolder === true },
   );
   if (!created) throw new CoreRegistryError(`A Core at ${endpoint} is already registered.`);
 
