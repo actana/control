@@ -247,6 +247,15 @@ export class SharedFolders {
       if (status.state === "error" && status.code === "already-attached") {
         // Mounted somewhere this Panel did not record: let go (the Core copies S3 into its folder and keeps it),
         // then attach to this Core's own folder, so the row names where the Core really is.
+        // A Core whose key has run out refuses to detach ("push credentials, then detach"), and one unpaired while
+        // it was unreachable is exactly that: give it this key first.
+        const fresh = await send({ type: "sharedCredentials", reqId: reqId(), credentials, expiresAt });
+        if (fresh.state !== "attached") {
+          throw new SharedFolderError(
+            `The Core is attached to a Shared folder this Panel did not set up and would not take a new key: ${describe(fresh)}.`,
+            "core-refused",
+          );
+        }
         const letGoStatus = await send({ type: "sharedDetach", reqId: reqId(), keepLocalCopy: true });
         if (letGoStatus.state !== "detached") {
           throw new SharedFolderError(

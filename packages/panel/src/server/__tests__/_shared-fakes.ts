@@ -87,6 +87,8 @@ export class FakeCoreLink implements SharedLink {
   attached = false;
   key: { accessKeyId: string; secretAccessKey: string; sessionToken: string; expiresAt: string } | null = null;
   capability: { version: 1 } | null = { version: 1 };
+  /** The key it holds has run out: a detach is refused until a new key is pushed, as the Core's sync does. */
+  expired = false;
   /** Throw this many requests before answering. */
   failures = 0;
   /** Answer the next request with this status instead. */
@@ -116,11 +118,15 @@ export class FakeCoreLink implements SharedLink {
     }
     if (frame.type === "sharedCredentials") {
       if (!this.attached) return reply({ state: "error", code: "not-attached", message: "not attached" });
+      this.expired = false;
       this.key = { ...frame.credentials, expiresAt: frame.expiresAt };
       return reply({ state: "attached", expiresAt: frame.expiresAt });
     }
     if (frame.type === "sharedDetach") {
       if (!this.attached) return reply({ state: "error", code: "not-attached", message: "not attached" });
+      if (this.expired) {
+        return reply({ state: "error", code: "mount-failed", message: "the key has expired, so S3 cannot be copied: push credentials, then detach" });
+      }
       this.attached = false;
       this.key = null;
       return reply({ state: "detached", keptLocalCopy: true });
