@@ -795,7 +795,7 @@ async function startCore(): Promise<void> {
   serverOpts.httpRoutes = pairing ? composeCoreHttpRoutes(auditPairingRoutes(pairing.redeem), fileRoutes) : fileRoutes;
   serverOpts.announceFiles = shouldAnnounceFiles(fileRoutes);
   // A function, so a watcher that comes up after the server is announced to the next connection.
-  serverOpts.shared = () => announceShared(sharedSync.attached, sharedFolder.capability);
+  serverOpts.shared = () => announceShared(sharedSync.attached, sharedFolder.capability, sharedSync.keyIsolated);
   serverOpts.sharedPort = sharedSync;
   // What the mTLS gate is allowed to serve without a client certificate. Absent
   // unless pairing is mounted, and absent means the handshake keeps refusing

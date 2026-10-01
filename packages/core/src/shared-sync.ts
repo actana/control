@@ -38,7 +38,9 @@ import * as path from "node:path";
 import type { CoreLinkRequestFrame, CoreLinkSharedMountStatus } from "@actana/sdk/core";
 import { CoreSharedError, createS3CoreShared, type CoreShared } from "@actana/sdk/shared";
 import log from "@actana/shared/log";
+import { coreIdentity } from "./core-identity";
 import { createSharedKeyStore, normalizePrefix, type SharedAttachment, type SharedKeyStore } from "./shared-key-store";
+import { isEventPath } from "./shared-folder-feed";
 import type { SharedHome } from "./shared-home-io";
 
 /** Between passes. A push, an attach and a detach run one at once. */
@@ -74,6 +76,12 @@ export type SharedSyncOptions = {
   /** Test seam: the S3 client for an attachment, given the provider of the current key. */
   createShared?: (attachment: SharedAttachment, credentials: KeyProvider) => CoreShared;
   fetch?: typeof fetch;
+  /**
+   * Whether the key file is out of the Sessions' reach: true when the daemon and `core` are different
+   * users (the container). Defaults to that fact. On an install with one user it is false and the Core
+   * never reports the folder as key-isolated.
+   */
+  keyIsolated?: boolean;
 };
 
 type KeyProvider = { get(): Promise<{ accessKeyId: string; secretAccessKey: string; sessionToken: string; expiresAt: Date }> };
@@ -81,6 +89,8 @@ type KeyProvider = { get(): Promise<{ accessKeyId: string; secretAccessKey: stri
 export type SharedSync = {
   /** True once a controller has attached this Core, until it detaches. */
   readonly attached: boolean;
+  /** True only when no Session can read the key file: two users (ADR 0041 D33). */
+  readonly keyIsolated: boolean;
   /** Handle one of the three Shared-folder frames the controller sends. */
   handle(frame: CoreLinkRequestFrame): Promise<CoreLinkSharedMountStatus>;
   /** One pass, now. Passes never overlap: one asked for during another runs after it. */
@@ -101,6 +111,7 @@ export function createSharedSync(options: SharedSyncOptions): SharedSync {
   const maxBytes = options.maxFileBytes ?? MAX_SYNC_FILE_BYTES;
   const statePath = path.join(options.stateDir, SYNC_STATE_FILE);
   const home = options.home;
+  const keyIsolated = options.keyIsolated ?? coreIdentity(process.env) !== null;
 
   let current: SharedAttachment | null = store.load();
   let timer: NodeJS.Timeout | null = null;
@@ -109,6 +120,8 @@ export function createSharedSync(options: SharedSyncOptions): SharedSync {
   let again = false;
   let readOnlyLogged = false;
   const tooBig = new Set<string>();
+  const badRemote = new Set<string>();
+  let attaching = false;
 
   // The provider reads `current` on every request, so a key pushed while a request is
   // being made is used by the next one and does not touch the one in flight.
@@ -174,9 +187,16 @@ export function createSharedSync(options: SharedSyncOptions): SharedSync {
 
     const shared = clientFor(attachment);
     const state = loadState();
-    const localFiles = await home.list();
-    if (localFiles === null) return { ...report, skipped: "no-folder" };
-    const local = new Map<string, Side>(localFiles.map((f) => [f.path, { size: f.size, mtime: f.mtime }]));
+    const listing = await home.list();
+    if (listing === null) return { ...report, skipped: "no-folder" };
+    const local = new Map<string, Side & { mode: number }>(
+      listing.files.map((f) => [f.path, { size: f.size, mtime: f.mtime, mode: f.mode }]),
+    );
+    // A folder the listing could not read is unknown, not empty: nothing under it is decided this
+    // pass, so a file that is there but unseen is never taken for a deleted one (and deleted in S3).
+    const unreadable = listing.unreadable;
+    const isUnreadable = (p: string): boolean => unreadable.some((u) => u === "" || p === u || p.startsWith(`${u}/`));
+    if (unreadable.length > 0) log.warn("shared-sync.unreadable-folders", { folders: unreadable.slice(0, 20), count: unreadable.length });
 
     const remote = await listRemote(shared);
     const paths = [...new Set([...local.keys(), ...remote.keys(), ...Object.keys(state.base)])].sort();
@@ -184,6 +204,7 @@ export function createSharedSync(options: SharedSyncOptions): SharedSync {
     const uploaded = new Map<string, number>();
 
     for (const p of paths) {
+      if (isUnreadable(p)) continue;
       const l = local.get(p);
       const r = remote.get(p);
       const b = state.base[p];
@@ -202,7 +223,7 @@ export function createSharedSync(options: SharedSyncOptions): SharedSync {
         if (state.pending.includes(p)) {
           // A download of this path was cut short: what is on disk may be half a file, so it
           // must not be uploaded. The remote copy decides.
-          if (r) await download(p, r);
+          if (r) await download(p, r, l, true);
           else state.pending = state.pending.filter((x) => x !== p);
           continue;
         }
@@ -213,18 +234,18 @@ export function createSharedSync(options: SharedSyncOptions): SharedSync {
           } else if (lChanged && !rChanged) {
             if (mode === "sync") await upload(p, l);
           } else if (!lChanged && rChanged) {
-            await download(p, r);
+            await download(p, r, l);
           } else if (mode === "sync" && l.mtime > r.mtime) {
             log.info("shared-sync.conflict", { path: p, kept: "local" });
             await upload(p, l);
           } else if (mode === "sync") {
             log.info("shared-sync.conflict", { path: p, kept: "remote" });
-            await download(p, r);
+            await download(p, r, l);
           }
           // In "pull" a file `core` changed and S3 changed too is left as `core` has it.
         } else if (l && !r) {
           if (b && !lChanged) {
-            if (mode === "sync") {
+            if (mode === "sync" && (await unchangedSince(p, l))) {
               await home.remove(p);
               delete state.base[p];
               report.deletedLocal.push(p);
@@ -238,7 +259,7 @@ export function createSharedSync(options: SharedSyncOptions): SharedSync {
             delete state.base[p];
             report.deletedRemote.push(p);
           } else {
-            await download(p, r);
+            await download(p, r, l);
           }
         } else {
           delete state.base[p];
@@ -281,13 +302,22 @@ export function createSharedSync(options: SharedSyncOptions): SharedSync {
       report.uploaded.push(p);
     }
 
-    async function download(p: string, r: Side): Promise<void> {
+    /** The file is as the listing said, a moment ago: a change made during the pass is not overwritten or deleted. */
+    async function unchangedSince(p: string, l: Side | undefined): Promise<boolean> {
+      const now = await home.stat(p);
+      const same = l ? !!now && now.size === l.size && now.mtime === l.mtime : now === null;
+      if (!same) log.info("shared-sync.changed-during-pass", { path: p });
+      return same;
+    }
+
+    async function download(p: string, r: Side, l: (Side & { mode: number }) | undefined, force = false): Promise<void> {
       const file = await shared.get(p);
+      if (!force && !(await unchangedSince(p, l))) return;
       if (!state.pending.includes(p)) {
         state.pending.push(p);
         saveState(state);
       }
-      const written = await home.write(p, Buffer.from(file.body), r.mtime);
+      const written = await home.write(p, Buffer.from(file.body), r.mtime, l?.mode);
       state.pending = state.pending.filter((x) => x !== p);
       state.base[p] = { lSize: written.size, lMtime: written.mtime, rSize: r.size, rMtime: r.mtime };
       report.downloaded.push(p);
@@ -299,6 +329,14 @@ export function createSharedSync(options: SharedSyncOptions): SharedSync {
     const remote = new Map<string, Side>();
     for (const change of changes) {
       if (change.kind !== "file" || change.deleted) continue;
+      // A key that is no path in the folder (a backslash, a `..`) cannot be mirrored; it is skipped, once.
+      if (!isEventPath(change.path)) {
+        if (!badRemote.has(change.path)) {
+          badRemote.add(change.path);
+          log.warn("shared-sync.remote-path-skipped", { count: badRemote.size });
+        }
+        continue;
+      }
       remote.set(change.path, { size: change.size ?? 0, mtime: change.modifiedAt?.getTime() ?? 0 });
     }
     return remote;
@@ -345,7 +383,7 @@ export function createSharedSync(options: SharedSyncOptions): SharedSync {
   async function handle(frame: CoreLinkRequestFrame): Promise<CoreLinkSharedMountStatus> {
     switch (frame.type) {
       case "sharedAttach": {
-        if (current) return refused("already-attached", "this Core is already attached; push credentials instead");
+        if (current || attaching) return refused("already-attached", "this Core is already attached; push credentials instead");
         const expiresAt = Date.parse(frame.expiresAt);
         const prefix = normalizePrefix(frame.prefix);
         if (!prefix) return refused("invalid-frame", "prefix must be a relative path inside the bucket");
@@ -362,11 +400,13 @@ export function createSharedSync(options: SharedSyncOptions): SharedSync {
         };
         // The key must work before it is kept: a bad one is reported to the controller now.
         const saved = current;
+        attaching = true;
         current = attachment;
         try {
           await clientFor(attachment).list("");
         } catch (err) {
           current = saved;
+          attaching = false;
           const code = err instanceof CoreSharedError ? err.code : "unavailable";
           return refused("mount-failed", `the store did not accept the key (${code})`);
         }
@@ -374,8 +414,15 @@ export function createSharedSync(options: SharedSyncOptions): SharedSync {
           store.save(attachment);
         } catch (err) {
           current = saved;
+          attaching = false;
           log.error("shared-sync.key-not-saved", { error: err instanceof Error ? err.message : String(err) });
           return refused("mount-failed", "the Core could not store the key");
+        }
+        attaching = false;
+        if (!keyIsolated) {
+          log.warn("shared-sync.key-not-isolated", {
+            why: "the daemon and the Sessions are one user here, so a Session can read the key file in the daemon's data directory",
+          });
         }
         stopped = false;
         schedule();
@@ -383,6 +430,7 @@ export function createSharedSync(options: SharedSyncOptions): SharedSync {
         return { state: "attached", expiresAt: iso(expiresAt) };
       }
       case "sharedCredentials": {
+        if (attaching) return refused("mount-failed", "an attach is in progress");
         if (!current) return refused("not-attached", "this Core is not attached");
         const expiresAt = Date.parse(frame.expiresAt);
         if (!Number.isFinite(expiresAt) || expiresAt <= now()) return refused("invalid-frame", "expiresAt is not in the future");
@@ -406,6 +454,7 @@ export function createSharedSync(options: SharedSyncOptions): SharedSync {
         return { state: "attached", expiresAt: iso(expiresAt) };
       }
       case "sharedDetach": {
+        if (attaching) return refused("mount-failed", "an attach is in progress");
         if (!current) return refused("not-attached", "this Core is not attached");
         // Wait for a pass in flight, then copy what is in S3 into the folder.
         while (running) await running;
@@ -437,6 +486,7 @@ export function createSharedSync(options: SharedSyncOptions): SharedSync {
     get attached() {
       return current !== null;
     },
+    keyIsolated,
     handle,
     pass: () => pass(),
     async idle() {

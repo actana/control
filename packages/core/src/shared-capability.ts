@@ -13,7 +13,16 @@
 export type CoreSharedBackend = "local" | "s3";
 
 /** `ready.shared`. */
-export type CoreSharedCapability = { version: 1; backend: CoreSharedBackend };
+export type CoreSharedCapability = {
+  version: 1;
+  backend: CoreSharedBackend;
+  /**
+   * Present, and `true`, only when the S3 key is out of every Session's reach: the daemon and `core`
+   * are different users (ADR 0041 D33). Absent on an install with one user, where a Session can read
+   * the daemon's data directory and so the key. The Core never reports isolation it does not have.
+   */
+  keyIsolated?: true;
+};
 
 /**
  * What this Core announces: `local` until a controller has attached it to S3
@@ -29,6 +38,11 @@ export function sharedCapability(backend: CoreSharedBackend = "local"): CoreShar
  * (the sync works whether or not the watcher is up), otherwise whatever the folder's
  * watcher announces, which is `local` or nothing.
  */
-export function announceShared(attached: boolean, watcher: CoreSharedCapability | null): CoreSharedCapability | null {
-  return attached ? sharedCapability("s3") : watcher;
+export function announceShared(
+  attached: boolean,
+  watcher: CoreSharedCapability | null,
+  keyIsolated = false,
+): CoreSharedCapability | null {
+  if (!attached) return watcher;
+  return keyIsolated ? { ...sharedCapability("s3"), keyIsolated: true } : sharedCapability("s3");
 }

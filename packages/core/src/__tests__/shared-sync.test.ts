@@ -3,9 +3,9 @@ import * as os from "node:os";
 import * as path from "node:path";
 import type { CoreLinkRequestFrame, CoreLinkSharedMountStatus } from "@actana/sdk/core";
 import { createS3CoreShared, CoreSharedError } from "@actana/sdk/shared";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { announceShared, sharedCapability } from "../shared-capability";
-import { createSharedHome } from "../shared-home-io";
+import { buildSharedHome, createSharedHome } from "../shared-home-io";
 import { createSharedKeyStore } from "../shared-key-store";
 import { createSharedSync, SYNC_STATE_FILE, type SharedSync } from "../shared-sync";
 import { FakeS3, type FakeKey } from "./shared-s3-fake";
@@ -432,5 +432,142 @@ describe("the SDK error codes this relies on", () => {
     t += 2 * HOUR;
     await expect(client(a).list("")).rejects.toBeInstanceOf(CoreSharedError);
     await expect(client(a).list("")).rejects.toMatchObject({ code: "expired" });
+  });
+});
+
+// ─── The review of #631 ──────────────────────────────────────────────────────
+
+const isRoot = process.getuid?.() === 0;
+
+describe("a folder the listing could not read is not a folder of deleted files (R1)", () => {
+  it.skipIf(isRoot)("does not delete in S3 what is under a directory it cannot open, and goes on with the rest", async () => {
+    writeLocal("open/a.txt", "a");
+    writeLocal("locked/b.txt", "b");
+    writeLocal("locked/deep/c.txt", "c");
+    await attach();
+    expect([...s3.objects.keys()].sort()).toEqual(["cores/core-a/locked/b.txt", "cores/core-a/locked/deep/c.txt", "cores/core-a/open/a.txt"]);
+
+    const output: string[] = [];
+    vi.spyOn(console, "warn").mockImplementation((...args: unknown[]) => void output.push(args.map((a) => (typeof a === "string" ? a : JSON.stringify(a))).join(" ")));
+    fs.chmodSync(path.join(folder, "locked"), 0o000);
+    try {
+      writeLocal("open/new.txt", "new");
+      const report = await sync.pass();
+      // Nothing under `locked` was deleted in S3, and the readable part still synced.
+      expect(report.deletedRemote).toEqual([]);
+      expect(s3.requests.filter((r) => r.method === "DELETE")).toEqual([]);
+      expect(s3.text("cores/core-a/locked/b.txt")).toBe("b");
+      expect(s3.text("cores/core-a/locked/deep/c.txt")).toBe("c");
+      expect(s3.text("cores/core-a/open/new.txt")).toBe("new");
+      expect(output.join("\n")).toContain("shared-sync.unreadable-folders");
+      // And not downloaded over, either: S3 changes under it wait.
+      s3.seed("cores/core-a/locked/b.txt", "changed in S3", t + 5_000);
+      t += 10_000;
+      expect((await sync.pass()).downloaded).toEqual([]);
+    } finally {
+      fs.chmodSync(path.join(folder, "locked"), 0o755);
+      vi.restoreAllMocks();
+    }
+    // Readable again: the files were never gone, so the next pass takes the change from S3.
+    await sync.pass();
+    expect(readLocal("locked/b.txt")).toBe("changed in S3");
+    expect(s3.text("cores/core-a/locked/deep/c.txt")).toBe("c");
+  });
+
+  it("treats a skipped line as an unreadable folder, and a listing that never ended as a failure", async () => {
+    const lines = (...l: unknown[]) => Buffer.from(l.map((x) => JSON.stringify(x)).join("\n") + "\n");
+    const top = lines({ type: "entry", path: "shared", kind: "directory", size: 0, mtime: 1, mode: 0o755 });
+    const home = (list: Buffer) =>
+      buildSharedHome(async (request) => ({ status: 200, headers: {}, body: request.op === "list" && request.path === "" ? top : list }));
+    const seen = await home(
+      lines(
+        { type: "entry", path: "shared/a.txt", kind: "file", size: 1, mtime: 1, mode: 0o644 },
+        { type: "skipped", path: "shared/locked", code: "unreadable-directory", message: "EACCES" },
+        { type: "done", entries: 1, skipped: 1, bytes: 1 },
+      ),
+    ).list();
+    expect(seen?.unreadable).toEqual(["locked"]);
+    expect(seen?.files.map((f) => f.path)).toEqual(["a.txt"]);
+    await expect(
+      home(lines({ type: "entry", path: "shared/a.txt", kind: "file", size: 1, mtime: 1, mode: 0o644 })).list(),
+    ).rejects.toThrow(/did not finish/);
+  });
+});
+
+describe("a Core on one user does not claim a key nobody can read (R2)", () => {
+  it("announces keyIsolated only when the daemon and core are different users", () => {
+    const local = sharedCapability("local");
+    expect(announceShared(true, local, true)).toEqual({ version: 1, backend: "s3", keyIsolated: true });
+    expect(announceShared(true, local, false)).toEqual({ version: 1, backend: "s3" });
+    expect(announceShared(true, local)).toEqual({ version: 1, backend: "s3" });
+    expect(announceShared(false, local, true)).toEqual(local);
+  });
+
+  it("is not isolated when there is one user, says so in its log on attach, and still syncs", async () => {
+    expect(sync.keyIsolated).toBe(false);
+    const output: string[] = [];
+    vi.spyOn(console, "warn").mockImplementation((...args: unknown[]) => void output.push(args.map((a) => (typeof a === "string" ? a : JSON.stringify(a))).join(" ")));
+    writeLocal("a.txt", "a");
+    expect(await attach()).toMatchObject({ state: "attached" });
+    expect(output.join("\n")).toContain("shared-sync.key-not-isolated");
+    expect(s3.text("cores/core-a/a.txt")).toBe("a");
+    vi.restoreAllMocks();
+  });
+
+  it("is isolated when told the users differ", () => {
+    const two = createSharedSync({ stateDir, home: createSharedHome({ home: homeDir, identityEnv: {} }), keyIsolated: true });
+    expect(two.keyIsolated).toBe(true);
+  });
+});
+
+describe("remarks of the review", () => {
+  it("does not overwrite a file changed locally while the pass was downloading", async () => {
+    writeLocal("a.txt", "v0", 1_000);
+    await attach();
+    s3.seed("cores/core-a/a.txt", "from S3", t + 5_000);
+    t += 10_000;
+    const held = s3.hold((r) => r.method === "GET" && r.key.endsWith("a.txt"));
+    const pass = sync.pass();
+    await held.reached;
+    writeLocal("a.txt", "edited meanwhile", 9_000);
+    held.release();
+    await pass;
+    expect(readLocal("a.txt")).toBe("edited meanwhile");
+  });
+
+  it("keeps a file's mode when a change comes down", async () => {
+    writeLocal("run.sh", "#!/bin/sh\n", 1_000);
+    fs.chmodSync(path.join(folder, "run.sh"), 0o755);
+    await attach();
+    s3.seed("cores/core-a/run.sh", "#!/bin/sh\necho changed\n", t + 5_000);
+    t += 10_000;
+    await sync.pass();
+    expect(readLocal("run.sh")).toContain("changed");
+    expect(fs.statSync(path.join(folder, "run.sh")).mode & 0o777).toBe(0o755);
+  });
+
+  it("refuses a push that arrives while an attach is still proving its key, and keeps nothing of it", async () => {
+    const k = newKey();
+    const held = s3.hold((r) => r.method === "GET" && r.key === "");
+    const attaching = sync.handle(attachFrame(k));
+    await held.reached;
+    expect(await sync.handle(credsFrame(newKey()))).toMatchObject({ state: "error", code: "mount-failed" });
+    expect(createSharedKeyStore(stateDir).load()).toBeNull();
+    held.release();
+    expect(await attaching).toMatchObject({ state: "attached" });
+    await sync.idle();
+  });
+
+  it("skips a key in S3 that is no path in the folder, once, and syncs the rest", async () => {
+    const output: string[] = [];
+    vi.spyOn(console, "warn").mockImplementation((...args: unknown[]) => void output.push(args.map((a) => (typeof a === "string" ? a : JSON.stringify(a))).join(" ")));
+    s3.seed("cores/core-a/bad\\name.txt", "x");
+    s3.seed("cores/core-a/good.txt", "g");
+    await attach();
+    const report = await sync.pass();
+    vi.restoreAllMocks();
+    expect(report.failed).toEqual([]);
+    expect(readLocal("good.txt")).toBe("g");
+    expect(output.filter((l) => l.includes("remote-path-skipped")).length).toBe(1);
   });
 });

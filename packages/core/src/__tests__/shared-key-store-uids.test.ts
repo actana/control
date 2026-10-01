@@ -66,7 +66,7 @@ describe.skipIf(!isRoot || !SETPRIV)("the Shared folder's key, as two users", ()
           const { createSharedSync } = require(${JSON.stringify(path.resolve(__dirname, "../shared-sync.ts"))});
           const sync = createSharedSync({
             stateDir: process.argv[2],
-            home: { list: async () => [], read: async () => Buffer.alloc(0), write: async () => ({ size: 0, mtime: 0 }), remove: async () => {} },
+            home: { list: async () => ({ files: [], unreadable: [] }), stat: async () => null, read: async () => Buffer.alloc(0), write: async () => ({ size: 0, mtime: 0 }), remove: async () => {} },
             createShared: () => ({ list: async () => [], watch: async () => ({ changes: [], cursor: "" }), get: async () => { throw new Error("none"); }, put: async () => {}, rm: async () => {} }),
           });
           sync.handle({

@@ -26,15 +26,27 @@ import { runFilesOp, type FilesOpRequest, type FilesOut } from "./files-ops";
 import { isEventPath } from "./shared-folder-feed";
 
 /** One regular file in the Shared folder, by its path inside it. */
-export type LocalFile = { path: string; size: number; mtime: number };
+export type LocalFile = { path: string; size: number; mtime: number; mode: number };
+
+/** What a listing could and could not see. */
+export type LocalListing = {
+  files: LocalFile[];
+  /**
+   * Folders (by path inside the Shared folder, `""` for the folder itself) the listing could not read or
+   * walk. Nothing under one of them is known, so it is not "gone": the sync leaves that subtree alone.
+   */
+  unreadable: string[];
+};
 
 /** What the sync needs of the folder. A test swaps it for one on a plain directory. */
 export type SharedHome = {
   /** Every regular file under `~/shared`, or null when the folder is not there (or is not a folder). */
-  list(): Promise<LocalFile[] | null>;
+  list(): Promise<LocalListing | null>;
+  /** One file as it is now, or null when it is not a regular file there. */
+  stat(rel: string): Promise<LocalFile | null>;
   read(rel: string): Promise<Buffer>;
   /** Write one file, creating its parents, and set its mtime. Answers what is on disk now. */
-  write(rel: string, data: Buffer, mtimeMs: number): Promise<{ size: number; mtime: number }>;
+  write(rel: string, data: Buffer, mtimeMs: number, mode?: number): Promise<{ size: number; mtime: number }>;
   /** Delete one file. One that is already gone is fine. */
   remove(rel: string): Promise<void>;
 };
@@ -95,17 +107,32 @@ export function buildSharedHome(transport: Transport): SharedHome {
       if (answer.status === 404) return null;
       if (answer.status !== 200) throw new SharedHomeError(`listing the Shared folder failed (${answer.status})`);
       const files: LocalFile[] = [];
+      const unreadable: string[] = [];
+      let complete = false;
       for (const line of ndjson(answer.body)) {
         if (line.type === "error") throw new SharedHomeError(`listing the Shared folder failed: ${String(line.message)}`);
-        if (line.type !== "entry" || line.kind !== "file") continue;
-        const full = line.path;
-        if (typeof full !== "string" || !full.startsWith(`${FOLDER}/`)) continue;
-        const rel = full.slice(FOLDER.length + 1);
-        const { size, mtime } = line;
-        if (!isEventPath(rel) || typeof size !== "number" || typeof mtime !== "number") continue;
-        files.push({ path: rel, size, mtime });
+        if (line.type === "done") complete = true;
+        if (line.type === "skipped" && typeof line.path === "string") {
+          // A directory the helper could not open or walk: what is under it is unknown, not deleted.
+          if (line.path === FOLDER) unreadable.push("");
+          else if (line.path.startsWith(`${FOLDER}/`)) unreadable.push(line.path.slice(FOLDER.length + 1));
+          else unreadable.push("");
+          continue;
+        }
+        const file = fileOf(line);
+        if (file) files.push(file);
       }
-      return files;
+      // A listing that did not end is a listing that stopped early: the rest is unknown.
+      if (!complete) throw new SharedHomeError("listing the Shared folder did not finish");
+      return { files, unreadable };
+    },
+
+    async stat(rel) {
+      const answer = await transport({ op: "list", path: target(rel), headOnly: false, depth: 1 }, null);
+      if (answer.status === 404) return null;
+      if (answer.status !== 200) throw new SharedHomeError(`looking at ${rel} failed (${answer.status})`);
+      const entry = ndjson(answer.body).find((line) => line.type === "entry" && line.path === `${FOLDER}/${rel}`);
+      return entry ? fileOf(entry) : null;
     },
 
     async read(rel) {
@@ -114,9 +141,9 @@ export function buildSharedHome(transport: Transport): SharedHome {
       return answer.body;
     },
 
-    async write(rel, data, mtimeMs) {
+    async write(rel, data, mtimeMs, mode = 0o644) {
       const answer = await transport(
-        { op: "write", path: target(rel), tar: false, contentLength: data.length, fileMode: 0o644, fileMtime: mtimeMs },
+        { op: "write", path: target(rel), tar: false, contentLength: data.length, fileMode: mode, fileMtime: mtimeMs },
         data,
       );
       if (answer.status !== 200) throw new SharedHomeError(`writing ${rel} failed (${answer.status})`);
@@ -135,6 +162,17 @@ export function buildSharedHome(transport: Transport): SharedHome {
       if (answer.status !== 200 && answer.status !== 404) throw new SharedHomeError(`deleting ${rel} failed (${answer.status})`);
     },
   };
+}
+
+/** A listing line as a regular file in the Shared folder, or null. */
+function fileOf(line: Record<string, unknown>): LocalFile | null {
+  if (line.type !== "entry" || line.kind !== "file") return null;
+  const full = line.path;
+  if (typeof full !== "string" || !full.startsWith(`${FOLDER}/`)) return null;
+  const rel = full.slice(FOLDER.length + 1);
+  const { size, mtime, mode } = line;
+  if (!isEventPath(rel) || typeof size !== "number" || typeof mtime !== "number") return null;
+  return { path: rel, size, mtime, mode: typeof mode === "number" ? mode & 0o777 : 0o644 };
 }
 
 function ndjson(body: Buffer): Array<Record<string, unknown>> {

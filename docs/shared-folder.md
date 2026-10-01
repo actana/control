@@ -75,14 +75,14 @@ rows; the log's existing replay limit applies to them like to any event.
 
 Issue [#562](https://github.com/actana/control/issues/562), the second half of the Shared folder.
 [ADR 0041](adr/0041-the-0-5-0-core-model.md) D33 says who runs it: **the daemon user `actana`**, by the owner's ruling of
-2026-10-01, which amends D25 (it said `core`). So no key is ever readable by `core`. Still no FUSE, no rclone, no AWS
+2026-10-01, which amends D25 (it said `core`). So, **in the container, where the daemon and `core` are two users**, no key is ever readable by `core` (see *Where the key is not isolated*). Still no FUSE, no rclone, no AWS
 SDK, and the daemon keeps exactly `CAP_SETUID` and `CAP_SETGID`.
 
 ```
 controller ──sharedAttach / sharedCredentials / sharedDetach──▶ core-link (mTLS + Bearer)
                                                                    │  answered by sharedStatus
                                                                    ▼
-daemon (actana) ── shared-sync.ts ── key: /var/lib/actana/shared-key.json (0600, dir 0700, actana's)
+daemon (actana) ── shared-sync.ts ── key: <state dir>/shared-key.json (0600, dir 0700, actana's)
       │                │
       │                └── @actana/sdk/shared (S3 mode)  ──▶  S3 prefix of this Core, nothing else
       ▼
@@ -100,7 +100,7 @@ asCore ─▶ core-files-op.cjs (as core) ──▶ ~/shared      list / read / 
 ### The key
 
 The controller pushes a **1-hour** key limited to this Core's prefix, about 15 minutes before the last one ends. The
-daemon keeps one file, in `/var/lib/actana` (the state directory of D24), made 0600 and renamed into place, so a reader
+daemon keeps one file, `shared-key.json`, in its data directory (`AC_USER_DATA_DIR`, `/var/lib/actana/data` in the container, under the state directory of D24), made 0600 and renamed into place, so a reader
 never sees half of it. There is **no long-lived key on the Core**, none in a config, an environment variable or an
 argument, and none in `core`'s home. The helper that touches `~/shared` is started with an environment `asCore` builds
 and is sent a request and file bytes, never the key.
@@ -117,6 +117,17 @@ alone, and the next request uses the new key.
 An invalid frame is also answered with a `sharedStatus`, not a bare `error`. A frame is never logged, and an error
 message never carries any part of one.
 
+### Where the key is not isolated
+
+The guarantee that no Session can read the key holds **only where the daemon and `core` are two users**, which is the
+container (`deploy/core-entrypoint.sh` sets the `AC_CORE_*` identity). On an install with **one user** (`actana setup` on
+metal) the daemon and the Sessions are the same uid, so a Session can read the key file in the daemon's data directory, as it
+can everything else the daemon keeps there. Nothing in this PR can change that without a second user. The sync still works
+there, with a key valid for an hour and limited to the Core's own prefix, and the Core is plain about it:
+`ready.shared` carries `keyIsolated: true` **only** when the users differ, and never otherwise; the daemon logs
+`shared-sync.key-not-isolated` when it takes a key; and a client that wants the guarantee must read that field and not
+assume it (`shared-sync.test.ts › a Core on one user does not claim a key nobody can read`).
+
 ### What a pass does
 
 Every 15 s, and at once after an attach or a push, the sync lists `~/shared` (through the helper) and the prefix in S3 and
@@ -130,6 +141,12 @@ compares each path with what the last pass left behind.
 | gone, unchanged there | | delete there |
 | unchanged here, gone there | | delete here |
 | gone here, changed there | | the change wins: it comes back |
+
+A folder the listing could not read (a `chmod 000`, a failed `opendir`) is **unknown, not empty**: nothing under it is
+decided in that pass (no upload, download or delete there), a listing that did not reach its closing `done` line stops the
+pass, and the rest of the folder syncs as usual. Before a download overwrites a file, or a deletion removes one, the file is
+looked at again, and one that changed since the listing waits for the next pass. A download keeps the mode of the file it
+replaces.
 
 A path never seen before is "changed" on each side it exists on, so the first pass copies and never deletes. A download
 is written in place, so it is noted in the sync's state first: a crash leaves the path marked, and the next pass takes the

@@ -337,7 +337,7 @@ and is actana/client#10's to extend. The code for a path outside the home stays 
 [#562](https://github.com/actana/control/issues/562) puts the Shared folder in S3. The owner ruled on 2026-10-01
 (option A) who runs the sync, which D25 had said. The owner may change it by amending this record.
 
-**D33 — The Shared folder's sync runs as `actana`, so no key is ever readable by `core`. This amends D25.** D25 said
+**D33 — The Shared folder's sync runs as `actana`, so in the container no key is ever readable by `core`. This amends D25.** D25 said
 the Shared folder is a userland sync run as `core`. It is run by the daemon user `actana` instead, because the
 controller pushes the Core a short-lived S3 key (1 hour, limited to the Core's own prefix), and issue 562 requires that
 no key on the Core is readable by `core`. The daemon stores the key in `/var/lib/actana` (D24; the file mode 0600, the
@@ -348,7 +348,11 @@ any config, environment or argument `core` can read. Still no FUSE and no new ca
 enforce; the daemon never opens a path in `~`. The sync does not follow a symlink. When the key has expired (no
 controller for more than an hour) the sync stops uploading and recovers on the next push. Unpair copies what is in S3
 into the local folder and then stops syncing, so the folder keeps its contents. Deleting the S3 prefix of a deleted
-Core is the controller's (#564). The change feed of D5 and D6 is unchanged: what the sync writes into `~/shared` is
+Core is the controller's (#564). **The limit:** this holds where the daemon and `core` are two users, the container. On a single-user install
+(`actana setup` on metal) they are one uid, a Session can read the key file in the daemon's data directory, and no decision
+here can change that. The Core does not paper over it: it reports the folder as key-isolated (`ready.shared.keyIsolated`) only
+when the users differ, and logs `shared-sync.key-not-isolated` when it takes a key otherwise. The owner's ruling that the sync
+runs as `actana` where there are two users is unchanged. The change feed of D5 and D6 is unchanged: what the sync writes into `~/shared` is
 seen by the watcher of #561 and becomes a `shared:changed` event like any other write.
 
 ## Consequences
