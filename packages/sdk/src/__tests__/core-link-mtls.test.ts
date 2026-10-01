@@ -171,7 +171,7 @@ describe("Core client over mTLS", () => {
     expect(info.compatible).toBe(true);
     expect(client.isAuthenticated()).toBe(true);
     await expect(
-      client.spawn({ taskId: "t1", cwd: "/tmp", command: "claude", agent: "claude-code" }),
+      client.spawn({ sessionId: "t1", cwd: "/tmp", command: "claude", agent: "claude-code" }),
     ).resolves.toEqual({ ptyId: "pty-1", hooksReportTurnStart: false });
   }, 20_000);
 

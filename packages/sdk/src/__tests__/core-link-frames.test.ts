@@ -19,7 +19,7 @@ describe("core-link-frames", () => {
         type: "spawn",
         reqId: "r1",
         opts: {
-          taskId: "t1",
+          sessionId: "t1",
           cwd: "/tmp",
           command: "claude",
           agent: "claude-code",
@@ -29,13 +29,13 @@ describe("core-link-frames", () => {
       expect(parsed).toEqual(frame);
     });
 
-    it("parses write/resize/kill/replay/findByTask frames", () => {
+    it("parses write/resize/kill/replay/findBySession frames", () => {
       const frames: CoreLinkRequestFrame[] = [
         { type: "write", reqId: "r1", ptyId: "p1", data: "ls\n" },
         { type: "resize", reqId: "r2", ptyId: "p1", cols: 120, rows: 40 },
         { type: "kill", reqId: "r3", ptyId: "p1" },
         { type: "replay", reqId: "r4", ptyId: "p1" },
-        { type: "findByTask", reqId: "r5", taskId: "t1" },
+        { type: "findBySession", reqId: "r5", sessionId: "t1" },
         {
           type: "killLaunchProcesses",
           reqId: "r7",
@@ -70,19 +70,19 @@ describe("core-link-frames", () => {
       expect(parsed).toEqual(frame);
     });
 
-    it("parses task/session/hook op frames", () => {
+    it("parses session/session/hook op frames", () => {
       const frames: CoreLinkRequestFrame[] = [
-        { type: "tasksList", reqId: "r1", projectId: "p1" },
-        { type: "tasksList", reqId: "r2" },
-        { type: "archivedTasksList", reqId: "r8", projectId: "p1" },
-        { type: "archivedTasksList", reqId: "r9" },
+        { type: "sessionRowsList", reqId: "r1", projectId: "p1" },
+        { type: "sessionRowsList", reqId: "r2" },
+        { type: "archivedSessionRowsList", reqId: "r8", projectId: "p1" },
+        { type: "archivedSessionRowsList", reqId: "r9" },
         {
-          type: "tasksMutate",
+          type: "sessionsMutate",
           reqId: "r3",
-          mutation: { op: "update", taskId: "t1", status: "running" },
+          mutation: { op: "update", sessionId: "t1", status: "running" },
         },
         { type: "sessionsList", reqId: "r4", projectId: "p1" },
-        { type: "hooksOp", reqId: "r5", hook: { op: "list", taskId: "t1" } },
+        { type: "hooksOp", reqId: "r5", hook: { op: "list", sessionId: "t1" } },
         { type: "hooksOp", reqId: "r6", hook: { op: "enable", hookId: "h1" } },
         { type: "projectsList", reqId: "r7" },
       ];
@@ -96,7 +96,7 @@ describe("core-link-frames", () => {
       const frame: CoreLinkRequestFrame = {
         type: "spawn",
         reqId: "r1",
-        opts: { shellSession: true, taskId: "vm1" },
+        opts: { shellSession: true, sessionId: "vm1" },
       };
       const parsed = parseCoreLinkRequestFrame(JSON.stringify(frame));
       expect(parsed).toEqual(frame);
@@ -106,7 +106,7 @@ describe("core-link-frames", () => {
       const frame: CoreLinkRequestFrame = {
         type: "spawn",
         reqId: "r2",
-        opts: { shellSession: true, taskId: "vm2", command: "htop" },
+        opts: { shellSession: true, sessionId: "vm2", command: "htop" },
       };
       const parsed = parseCoreLinkRequestFrame(JSON.stringify(frame));
       expect(parsed).toEqual(frame);
@@ -197,9 +197,9 @@ describe("core-link-frames", () => {
       const event: CoreLinkEvent = {
         eventId: 7,
         ts: 1_700_000_000_000,
-        kind: "task:updated",
+        kind: "session:updated",
         ptyId: null,
-        taskId: "t1",
+        sessionId: "t1",
         payload: '{"status":"running"}',
       };
       const frame: CoreLinkServerFrame = { type: "event", event };
@@ -216,13 +216,13 @@ describe("core-link-frames", () => {
       expect(parsed).toEqual(frame);
     });
 
-    it("round-trips a tasksListResult response", () => {
+    it("round-trips a sessionRowsListResult response", () => {
       const frame: CoreLinkServerFrame = {
-        type: "tasksListResult",
+        type: "sessionRowsListResult",
         reqId: "r1",
-        tasks: [
+        sessions: [
           {
-            taskId: "t1",
+            sessionId: "t1",
             projectId: "p1",
             title: "fix bug",
             titleManuallySet: false,
@@ -241,13 +241,13 @@ describe("core-link-frames", () => {
       expect(parsed).toEqual(frame);
     });
 
-    it("round-trips an archivedTasksListResult response", () => {
+    it("round-trips an archivedSessionRowsListResult response", () => {
       const frame: CoreLinkServerFrame = {
-        type: "archivedTasksListResult",
+        type: "archivedSessionRowsListResult",
         reqId: "r1",
-        tasks: [
+        sessions: [
           {
-            taskId: "t1",
+            sessionId: "t1",
             projectId: "p1",
             title: "old work",
             titleManuallySet: false,
@@ -430,8 +430,8 @@ describe("core-link-frames", () => {
     // the `exec` frame (issue 266) and 0.17.0 is the stamped write (issue
     // 289), both frames rather than ready capabilities and so neither the
     // additive case D11 carves out.
-    it("is 0.17.0 — moved for the `exec` frame (#266) and the stamped write (#289), never for multiConnection, which is a ready capability no Core is marked needs-update for (ADR 0024 D11, issue 143)", () => {
-      expect(CORE_LINK_PROTOCOL_VERSION).toBe("0.17.0");
+    it("is 0.18.0 — moved for the `exec` frame (#266) and the stamped write (#289), never for multiConnection, which is a ready capability no Core is marked needs-update for (ADR 0024 D11, issue 143)", () => {
+      expect(CORE_LINK_PROTOCOL_VERSION).toBe("0.18.0");
     });
 
     it("leaves a Core that announces no multiConnection capability fully compatible — absence is a supported state, not drift", () => {

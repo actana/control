@@ -61,7 +61,7 @@ const session = await CoreSession.start(client, {
   prompt,
   dangerouslySkipPermissions: process.env.ACTANA_SKIP_PERMISSIONS === "1",
 });
-console.log(`session ${session.taskId} running on pty ${session.ptyId}`);
+console.log(`session ${session.sessionId} running on pty ${session.ptyId}`);
 
 session.onStatus((status) => console.log(`  status → ${status}`));
 

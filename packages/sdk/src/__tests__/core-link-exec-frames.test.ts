@@ -103,15 +103,15 @@ describe("output past the bound is a named refusal, not a short result", () => {
 describe("the protocol version moved for this frame", () => {
   // The reason is in the test name, so whoever reads this failing after a
   // future bump gets the reason rather than the number.
-  it("is 0.17.0 — moved for `exec` (#266) and again for the stamped write (#289), neither being a ready capability (ADR 0024 D11)", () => {
-    expect(CORE_LINK_PROTOCOL_VERSION).toBe("0.17.0");
+  it("is 0.18.0 — moved for `exec` (#266) and again for the stamped write (#289), neither being a ready capability (ADR 0024 D11)", () => {
+    expect(CORE_LINK_PROTOCOL_VERSION).toBe("0.18.0");
   });
 
   it("marks a Core still on 0.15.0 as incompatible, which is the whole point of moving it", () => {
     // Version-locked, not degraded: the operator is told to update one of the
     // two, once, rather than meeting a per-verb refusal later.
     expect(coreLinkProtocolCompatible("0.15.0")).toBe(false);
-    expect(coreLinkProtocolCompatible("0.17.0")).toBe(true);
+    expect(coreLinkProtocolCompatible("0.18.0")).toBe(true);
   });
 
   it("still ignores patch, so a fix that touches no frame grounds no fleet", () => {
@@ -131,6 +131,6 @@ describe("the protocol version moved for this frame", () => {
       serializeCoreLinkFrame({ type: "ready", version: CORE_LINK_PROTOCOL_VERSION }),
     ) as Record<string, unknown>;
     expect("exec" in ready).toBe(false);
-    expect(ready.version).toBe("0.17.0");
+    expect(ready.version).toBe("0.18.0");
   });
 });

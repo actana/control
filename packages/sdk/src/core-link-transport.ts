@@ -533,7 +533,7 @@ function parseEvent(raw: unknown): CoreLinkEvent | null {
     ts: typeof e.ts === "number" ? e.ts : 0,
     kind: typeof e.kind === "string" ? e.kind : "",
     ptyId: typeof e.ptyId === "string" ? e.ptyId : null,
-    taskId: typeof e.taskId === "string" ? e.taskId : null,
+    sessionId: typeof e.sessionId === "string" ? e.sessionId : null,
     payload: typeof e.payload === "string" ? e.payload : "{}",
   };
 }
