@@ -1300,15 +1300,11 @@ needs an actor that bypasses the `beta/*` ruleset — the repository owner does;
 Four things this has to get right, because nothing checks any of them until far
 too late:
 
-- **`--no-verify` on that push, or the hooks off for the cut.**
-  `.husky/pre-push` does not know the `beta/*` class: its line 9 matches the
-  branch against the naming convention alone, without the `beta/x.y.z`
-  exemption that [`ci.yml`](../.github/workflows/ci.yml) carries at line 167
-  for exactly this branch class (D1). So the hook refuses the push and hints
-  `git branch -m`, which is the wrong thing to do to a train — the branch name
-  *is* the version. You only meet this if you took `CONTRIBUTING.md`'s advice
-  and ran `git config core.hooksPath .husky`, which you should have. Tracked
-  as #269; when the hook learns the class, drop the `--no-verify`.
+- **The `pre-push` hook accepts the train.** It runs the same
+  `scripts/check-conventions.sh branch` rule as [`ci.yml`](../.github/workflows/ci.yml),
+  which carries the `beta/x.y.z` exemption for exactly this branch class (D1), so
+  the cut's push needs no `--no-verify` (#269, #614). The hook still lints every
+  commit in the push — the cut's message included.
 - **The diff is only the cut.** `git diff origin/main beta/x.y.z` is exactly
   those six manifests, `install.sh`'s stamp, and seven lines.
 - **The line stamp.** [ADR 0036](adr/0036-the-beta-release-channel.md) D1 gives
@@ -2315,14 +2311,13 @@ pnpm core:tarball           # the Core image bakes this in, so build it first
 pnpm core:image:smoke       # builds deploy/core.Dockerfile, then pairs a Panel with it
 ```
 
-Commit conventions, without installing anything permanently:
+Commit conventions — the same script the hooks and the `Conventions` job run
+(commitlint is a pinned root devDependency, so `pnpm install` is all it needs):
 
 ```bash
 base=origin/beta/0.2.0          # the branch you targeted — the open train, not main
-d=$(mktemp -d) && cp commitlint.config.mjs "$d"
-(cd "$d" && npm init -y >/dev/null && npm install @commitlint/cli @commitlint/config-conventional)
-"$d"/node_modules/.bin/commitlint --config "$d"/commitlint.config.mjs \
-  --cwd "$PWD" --from "$(git merge-base "$base" HEAD)" --to HEAD --verbose
+sh scripts/check-conventions.sh range "$(git merge-base "$base" HEAD)" HEAD
+sh scripts/check-conventions.sh branch "$(git branch --show-current)"
 ```
 
 `--from` is the merge-base with **the branch this pull request targets**, which
@@ -2333,11 +2328,12 @@ bounce you for somebody else's message. The merge-base is also what the
 `Conventions` job passes: it reads `github.event.pull_request.base.sha`, which
 is that same commit.
 
-The detour through a temp directory is not ceremony: this is a pnpm workspace,
-and the root `package.json` declares `workspace:*` dependencies that npm
-refuses to parse (`EUNSUPPORTEDPROTOCOL`). Installing outside the checkout —
-with the config copied alongside, so `extends` still resolves — is what the
-`Conventions` job itself does.
+The `Conventions` job installs commitlint into `RUNNER_TEMP`, beside a copy of
+the config, because this is a pnpm workspace whose root `package.json` declares
+`workspace:*` dependencies that npm refuses to parse (`EUNSUPPORTEDPROTOCOL`),
+and that job has no reason to run a full `pnpm install`. It installs the version
+the root `package.json` pins and points the script at it with `COMMITLINT_BIN`
+and `COMMITLINT_CONFIG`.
 
 ## Notes for forks
 

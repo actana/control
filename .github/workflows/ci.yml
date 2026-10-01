@@ -129,7 +129,11 @@ jobs:
           cp commitlint.config.mjs "$RUNNER_TEMP/commitlint/"
           cd "$RUNNER_TEMP/commitlint"
           npm init -y >/dev/null
-          npm install --silent @commitlint/cli @commitlint/config-conventional
+          # The versions the repo pins in package.json, so CI and a developer's
+          # hook run the same commitlint.
+          cli="$(node -p "require('$GITHUB_WORKSPACE/package.json').devDependencies['@commitlint/cli']")"
+          conv="$(node -p "require('$GITHUB_WORKSPACE/package.json').devDependencies['@commitlint/config-conventional']")"
+          npm install --silent "@commitlint/cli@$cli" "@commitlint/config-conventional@$conv"
 
       # Held in a shell variable and piped, never interpolated into the script
       # — a PR title is attacker-controlled text.
@@ -144,18 +148,20 @@ jobs:
       - name: Lint the PR title
         if: ${{ github.event_name == 'pull_request' && !(github.base_ref == 'main' && startsWith(github.head_ref, 'beta/')) }}
         env:
+          COMMITLINT_BIN: ${{ runner.temp }}/commitlint/node_modules/.bin/commitlint
+          COMMITLINT_CONFIG: ${{ runner.temp }}/commitlint/commitlint.config.mjs
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           set -euo pipefail
           title="$(gh api "repos/$REPO/pulls/$PR_NUMBER" --jq .title)"
-          printf '%s' "$title" | "$RUNNER_TEMP/commitlint/node_modules/.bin/commitlint" \
-            --config "$RUNNER_TEMP/commitlint/commitlint.config.mjs" \
-            --cwd "$GITHUB_WORKSPACE" --verbose
+          printf '%s' "$title" | sh scripts/check-conventions.sh message -
 
       - name: Lint commits in PR
         env:
+          COMMITLINT_BIN: ${{ runner.temp }}/commitlint/node_modules/.bin/commitlint
+          COMMITLINT_CONFIG: ${{ runner.temp }}/commitlint/commitlint.config.mjs
           EVENT_NAME: ${{ github.event_name }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
@@ -163,19 +169,17 @@ jobs:
           AFTER_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
-          lint=("$RUNNER_TEMP/commitlint/node_modules/.bin/commitlint" \
-            --config "$RUNNER_TEMP/commitlint/commitlint.config.mjs" \
-            --cwd "$GITHUB_WORKSPACE" --verbose)
+          lint=(sh scripts/check-conventions.sh)
           if [[ "$EVENT_NAME" == "pull_request" ]]; then
-            "${lint[@]}" --from "$BASE_SHA" --to "$HEAD_SHA"
+            "${lint[@]}" range "$BASE_SHA" "$HEAD_SHA"
           # A push to an integration branch (#584): the commits it brought. A
           # new branch has an all-zero `before`, and a forced one can name a
           # commit that is no longer here; both have no range to lint, so the
           # tip alone is read rather than the branch's whole history.
           elif [[ "$BEFORE_SHA" =~ ^0+$ ]] || ! git cat-file -e "${BEFORE_SHA}^{commit}" 2>/dev/null; then
-            "${lint[@]}" --last
+            "${lint[@]}" last
           else
-            "${lint[@]}" --from "$BEFORE_SHA" --to "$AFTER_SHA"
+            "${lint[@]}" range "$BEFORE_SHA" "$AFTER_SHA"
           fi
 
       - name: Check branch name
@@ -184,49 +188,9 @@ jobs:
           BRANCH: ${{ github.head_ref || github.ref_name }}
         run: |
           set -euo pipefail
-          # Allowed: <type>/<kebab-case-description>
-          # Examples: feat/proj-123-oauth-device-flow, fix/header-crash, release/v1.4.0
-          PATTERN='^(feat|feature|fix|bugfix|hotfix|release|chore|docs|refactor|perf|test|ci|revert)\/[a-z0-9]+([._-][a-z0-9]+)*$'
-
-          # Bots name their own branches and cannot be asked to stop. Dependabot
-          # opens `dependabot/npm_and_yarn/<dep>-<version>`; without this the
-          # convention check fails on every dependency PR forever, which trains
-          # everyone to ignore a red check. Their *commit messages* are still
-          # linted by the step above — that is the part that reaches main.
-          if echo "$BRANCH" | grep -qE '^(dependabot|renovate)/'; then
-            echo "✅ Branch name '$BRANCH' is bot-generated — convention not enforced."
-            exit 0
-          fi
-
-          # The train (ADR 0023 D1, D3, D46). A promotion pull request's head
-          # *is* `beta/x.y.z`, which is a branch class the convention above does
-          # not know about — without this every promotion fails a required check
-          # and the train can never reach `main`. The shape is asserted rather
-          # than waved through: `beta/` plus a bare `x.y.z`, optionally followed
-          # by a `-fN` sub-beta suffix (D46) — and nothing else.
-          #
-          # `-fN` and not `.N`: a fourth dot is not semver, and `0.4.5.1` would
-          # be refused by npm, by the version-agreement checker and by the
-          # publish rehearsal alike. `0.4.5-f1` is a legal prerelease of the
-          # same line, which is the whole reason the suffix has that shape.
-          # This widening is exactly `-f` plus digits — no other prerelease
-          # identifier is a train name.
-          if echo "$BRANCH" | grep -qE '^beta/[0-9]+\.[0-9]+\.[0-9]+(-f[0-9]+)?$'; then
-            echo "✅ Branch name '$BRANCH' is a release train (ADR 0023 D1, D46)."
-            exit 0
-          fi
-
-          if echo "$BRANCH" | grep -qE "$PATTERN"; then
-            echo "✅ Branch name '$BRANCH' is valid."
-          else
-            echo "❌ Branch name '$BRANCH' violates the convention."
-            echo ""
-            echo "Expected: <type>/<kebab-case-description>"
-            echo "Types: feat|feature|fix|bugfix|hotfix|release|chore|docs|refactor|perf|test|ci|revert"
-            echo "Examples: feat/proj-123-oauth-device-flow, fix/header-crash, release/v1.4.0"
-            echo "Rules: lowercase only; words separated by hyphens; no consecutive/leading/trailing separators."
-            exit 1
-          fi
+          # The rule — types, the bot and train exemptions — is in the script the
+          # local pre-push hook runs too (#614).
+          sh scripts/check-conventions.sh branch "$BRANCH"
 
   # The branch model, enforced (ADR 0023 D1, D3, D19, D21, D26, D31).
   #
