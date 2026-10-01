@@ -5,8 +5,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 // listened to it: a failed sync was reported to the caller and, separately, as
 // an unhandled rejection.
 
-vi.mock("../repositories/tasks.repo", () => ({
-  findTasksWithClaudeSessionId: () => {
+vi.mock("../repositories/sessions.repo", () => ({
+  findSessionsWithClaudeSessionId: () => {
     throw new Error("db unavailable");
   },
 }));

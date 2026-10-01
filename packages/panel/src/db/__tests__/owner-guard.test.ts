@@ -30,7 +30,7 @@ import {
  */
 
 const operator = pgTable("operator", { id: integer("id").primaryKey() });
-const owned = pgTable("tasks", {
+const owned = pgTable("sessions", {
   id: integer("id").primaryKey(),
   ownerId: integer("owner_id")
     .notNull()
@@ -73,7 +73,7 @@ describe("the migrated database", { timeout: 30_000 }, () => {
   it("passes a table with a not-null owner_id that references operator.id", async () => {
     const pool = await migrate(
       operatorSql,
-      "CREATE TABLE tasks (id integer PRIMARY KEY, owner_id integer NOT NULL REFERENCES operator (id))",
+      "CREATE TABLE sessions (id integer PRIMARY KEY, owner_id integer NOT NULL REFERENCES operator (id))",
     );
     expect(await checkDatabaseTables(pool)).toEqual([]);
   });
@@ -138,76 +138,76 @@ describe("checkSchemaTables on an operator table of another schema", () => {
 });
 
 describe("findUnscopedQueries", () => {
-  const tables = ownerScopedTables({ operator, tasks: owned });
-  const scan = (source: string) => findUnscopedQueries(source, tables, "tasks-repo.ts");
+  const tables = ownerScopedTables({ operator, sessions: owned });
+  const scan = (source: string) => findUnscopedQueries(source, tables, "sessions-repo.ts");
 
-  it("knows tasks is owner-scoped and the operator is not", () => {
-    expect(tables).toEqual([{ exportName: "tasks", sqlName: "tasks" }]);
+  it("knows sessions is owner-scoped and the operator is not", () => {
+    expect(tables).toEqual([{ exportName: "sessions", sqlName: "sessions" }]);
   });
 
   it("passes queries that carry the owner", () => {
     expect(
       scan(`
-        const rows = await db.select().from(tasks).where(ownedBy(tasks, owner, eq(tasks.id, id)));
-        await db.update(tasks).set({ title }).where(ownedBy(tasks, owner, eq(tasks.id, id)));
-        await db.delete(tasks).where(ownedBy(tasks, owner));
-        await db.insert(tasks).values({ ownerId: owner, title });
-        await pool.query("SELECT * FROM tasks WHERE owner_id = $1", [owner]);
+        const rows = await db.select().from(sessions).where(ownedBy(sessions, owner, eq(sessions.id, id)));
+        await db.update(sessions).set({ title }).where(ownedBy(sessions, owner, eq(sessions.id, id)));
+        await db.delete(sessions).where(ownedBy(sessions, owner));
+        await db.insert(sessions).values({ ownerId: owner, title });
+        await pool.query("SELECT * FROM sessions WHERE owner_id = $1", [owner]);
       `),
     ).toEqual([]);
   });
 
-  it("fails a select, update and delete on tasks without the owner", () => {
+  it("fails a select, update and delete on sessions without the owner", () => {
     const faults = scan(`
-      const a = await db.select().from(tasks).where(eq(tasks.id, id));
-      await db.update(tasks).set({ title }).where(eq(tasks.id, id));
-      await db.delete(tasks).where(eq(tasks.id, id));
+      const a = await db.select().from(sessions).where(eq(sessions.id, id));
+      await db.update(sessions).set({ title }).where(eq(sessions.id, id));
+      await db.delete(sessions).where(eq(sessions.id, id));
     `);
     expect(faults).toEqual([
-      "tasks-repo.ts:2 queries tasks without ownedBy()",
-      "tasks-repo.ts:3 queries tasks without ownedBy()",
-      "tasks-repo.ts:4 queries tasks without ownedBy()",
+      "sessions-repo.ts:2 queries sessions without ownedBy()",
+      "sessions-repo.ts:3 queries sessions without ownedBy()",
+      "sessions-repo.ts:4 queries sessions without ownedBy()",
     ]);
   });
 
   it("fails an insert without ownerId, and raw SQL without owner_id", () => {
-    expect(scan(`await db.insert(tasks).values({ title });`)).toEqual([
-      "tasks-repo.ts:1 inserts into tasks without ownerId",
+    expect(scan(`await db.insert(sessions).values({ title });`)).toEqual([
+      "sessions-repo.ts:1 inserts into sessions without ownerId",
     ]);
-    expect(scan('await pool.query("DELETE FROM tasks WHERE id = $1", [id]);')).toEqual([
-      "tasks-repo.ts:1 raw SQL on tasks without owner_id",
+    expect(scan('await pool.query("DELETE FROM sessions WHERE id = $1", [id]);')).toEqual([
+      "sessions-repo.ts:1 raw SQL on sessions without owner_id",
     ]);
   });
 
   it("wants the owner for each owner-scoped table a join names", () => {
     expect(
-      scan(`await db.select().from(tasks).innerJoin(tasks, eq(tasks.id, x)).where(ownedBy(tasks, owner));`),
-    ).toEqual(["tasks-repo.ts:1 queries tasks, tasks without ownedBy()"]);
+      scan(`await db.select().from(sessions).innerJoin(sessions, eq(sessions.id, x)).where(ownedBy(sessions, owner));`),
+    ).toEqual(["sessions-repo.ts:1 queries sessions, sessions without ownedBy()"]);
   });
 
   it("fails the relational API, a sql template and a count over the table without the owner", () => {
-    expect(scan("await db.query.tasks.findMany({ where: eq(tasks.id, id) });")).toEqual([
-      "tasks-repo.ts:1 queries tasks without ownedBy()",
+    expect(scan("await db.query.sessions.findMany({ where: eq(sessions.id, id) });")).toEqual([
+      "sessions-repo.ts:1 queries sessions without ownedBy()",
     ]);
-    expect(scan("await db.execute(sql`select * from ${tasks} where id = ${id}`);")).toEqual([
-      "tasks-repo.ts:1 sql template over tasks without the owner",
+    expect(scan("await db.execute(sql`select * from ${sessions} where id = ${id}`);")).toEqual([
+      "sessions-repo.ts:1 sql template over sessions without the owner",
     ]);
-    expect(scan("const n = await db.$count(tasks);")).toEqual(["tasks-repo.ts:1 queries tasks without ownedBy()"]);
+    expect(scan("const n = await db.$count(sessions);")).toEqual(["sessions-repo.ts:1 queries sessions without ownedBy()"]);
   });
 
   it("passes the same three forms once they carry the owner", () => {
     expect(
       scan(`
-        await db.query.tasks.findMany({ where: ownedBy(tasks, owner, eq(tasks.id, id)) });
-        await db.execute(sql\`select * from \${tasks} where \${tasks.ownerId} = \${owner}\`);
-        const n = await db.$count(tasks, ownedBy(tasks, owner));
+        await db.query.sessions.findMany({ where: ownedBy(sessions, owner, eq(sessions.id, id)) });
+        await db.execute(sql\`select * from \${sessions} where \${sessions.ownerId} = \${owner}\`);
+        const n = await db.$count(sessions, ownedBy(sessions, owner));
       `),
     ).toEqual([]);
   });
 
   it("does not take a comment's word for it", () => {
-    expect(scan("await db.select().from(tasks)\n  // ownedBy(tasks, owner)\n  /* ownedBy( */;")).toEqual([
-      "tasks-repo.ts:1 queries tasks without ownedBy()",
+    expect(scan("await db.select().from(sessions)\n  // ownedBy(sessions, owner)\n  /* ownedBy( */;")).toEqual([
+      "sessions-repo.ts:1 queries sessions without ownedBy()",
     ]);
   });
 });
@@ -226,11 +226,11 @@ describe("scanRepositories", () => {
     }
     return dir;
   };
-  const tables = ownerScopedTables({ operator, tasks: owned });
+  const tables = ownerScopedTables({ operator, sessions: owned });
 
   it("finds nothing in the Panel's repositories today, and reads the folder they are really in", () => {
     expect(REPOSITORY_DIR.endsWith(path.join("packages", "panel", "src", "server", "repositories"))).toBe(true);
-    expect(repositoryFiles().map((f) => path.basename(f))).toContain("tasks.repo.ts");
+    expect(repositoryFiles().map((f) => path.basename(f))).toContain("sessions.repo.ts");
     expect(scanRepositories(ownerScopedTables(panelSchema))).toEqual([]);
   });
 
@@ -250,36 +250,36 @@ describe("scanRepositories", () => {
 
   it("fails a planted service that imports pg-schema, and allows the repository folder and tests", () => {
     const root = repoDir({
-      "server/repositories/tasks.repo.ts": 'import { tasks } from "~/db/pg-schema";',
-      "server/services/taskService.ts": 'import { tasks } from "~/db/pg-schema";',
+      "server/repositories/sessions.repo.ts": 'import { sessions } from "~/db/pg-schema";',
+      "server/services/sessionService.ts": 'import { sessions } from "~/db/pg-schema";',
       "server/routes/lazy.ts": 'const s = await import("../../db/pg-schema");',
-      "server/services/__tests__/taskService.test.ts": 'import { tasks } from "~/db/pg-schema";',
+      "server/services/__tests__/sessionService.test.ts": 'import { sessions } from "~/db/pg-schema";',
       "server/services/ok.ts": 'import { x } from "~/db/schema";',
     });
     expect(
       pgSchemaImportsOutsideRepositories(root, path.join(root, "server", "repositories"), path.join(root, "db", "pg-schema.ts")).sort(),
     ).toEqual([
       path.join("server", "routes", "lazy.ts") + " imports pg-schema outside the repository folder",
-      path.join("server", "services", "taskService.ts") + " imports pg-schema outside the repository folder",
+      path.join("server", "services", "sessionService.ts") + " imports pg-schema outside the repository folder",
     ]);
   });
 
   it("fails a planted repository file, in a nested folder, and skips its tests", () => {
     const dir = repoDir({
-      "good.ts": `export const a = () => db.select().from(tasks).where(ownedBy(tasks, owner));`,
-      "nested/planted.ts": `export const b = () => db.select().from(tasks);`,
-      "__tests__/planted.test.ts": `db.select().from(tasks);`,
+      "good.ts": `export const a = () => db.select().from(sessions).where(ownedBy(sessions, owner));`,
+      "nested/planted.ts": `export const b = () => db.select().from(sessions);`,
+      "__tests__/planted.test.ts": `db.select().from(sessions);`,
     });
-    expect(scanRepositories(tables, dir)).toEqual([path.join("nested", "planted.ts") + ":1 queries tasks without ownedBy()"]);
+    expect(scanRepositories(tables, dir)).toEqual([path.join("nested", "planted.ts") + ":1 queries sessions without ownedBy()"]);
   });
 });
 
 describe("ownedBy", () => {
   const dialect = new PgDialect();
   it("is the owner column equal to the owner, and more conditions after it", () => {
-    expect(dialect.sqlToQuery(ownedBy(owned, 7))).toMatchObject({ sql: '"tasks"."owner_id" = $1', params: [7] });
+    expect(dialect.sqlToQuery(ownedBy(owned, 7))).toMatchObject({ sql: '"sessions"."owner_id" = $1', params: [7] });
     expect(dialect.sqlToQuery(ownedBy(owned, 7, eq(owned.id, 3), undefined))).toMatchObject({
-      sql: '("tasks"."owner_id" = $1 and "tasks"."id" = $2)',
+      sql: '("sessions"."owner_id" = $1 and "sessions"."id" = $2)',
       params: [7, 3],
     });
   });
