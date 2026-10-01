@@ -303,13 +303,12 @@ describe("the redeem route", () => {
     });
   });
 
-  // The SDK's store charges an attempt when a code is *claimed*, before the code
-  // is compared, and 0.4.5 charged only a mismatch. Control cannot restore that
-  // from a store override: the route calls the store once before it compares and
-  // never says how the compare went, and the store has no refund. So the current
-  // behaviour is pinned here, as a known gap (actana/client#14), and these are
-  // the tests that should be flipped when the SDK charges on mismatch only.
-  describe("attempt cap (known gap, actana/client#14)", () => {
+  // 0.4.5 charged an attempt only on a mismatch. SDK 0.5.0 charged when a code was
+  // *claimed*, before it was compared, and these tests pinned that as a known gap
+  // (actana/client#14). SDK 0.6.0-next.0 closes it: the store has `releaseAttempt`,
+  // the route refunds the claim once the code compares equal, and the cap is back
+  // to 0.4.5's. The tests are flipped to say so.
+  describe("attempt cap (actana/client#14, closed in SDK 0.6.0-next.0)", () => {
     it("still pairs on the right code after three wrong ones", async () => {
       const { post, body, openSession, wrongOf } = await start();
       const { sessionId, code } = await openSession();
@@ -317,22 +316,22 @@ describe("the redeem route", () => {
       expect((await post("10.0.0.1", body(sessionId, code))).status).toBe(200);
     });
 
-    it("refuses the right code after four wrong ones: 0.4.5 allowed the fifth guess, the SDK does not", async () => {
+    it("allows the fifth guess, as 0.4.5 did: four wrong ones do not use up the right code", async () => {
       const { post, body, openSession, wrongOf, attemptsOf } = await start();
       const { sessionId, code } = await openSession();
       for (let i = 0; i < 4; i += 1) await post("10.0.0.1", body(sessionId, wrongOf(code)));
       expect(await attemptsOf(sessionId)).toBe(4);
 
-      expect((await post("10.0.0.1", body(sessionId, code))).status).toBe(403);
+      expect((await post("10.0.0.1", body(sessionId, code))).status).toBe(200);
     });
 
-    it("charges an attempt for the right code with a bad CSR: 0.4.5 did not", async () => {
+    it("does not charge an attempt for the right code with a bad CSR, as 0.4.5 did not", async () => {
       const { post, body, openSession, attemptsOf } = await start();
       const { sessionId, code } = await openSession();
 
       expect((await post("10.0.0.1", body(sessionId, code, "-----BEGIN CERTIFICATE REQUEST-----\nAAAA\n-----END CERTIFICATE REQUEST-----"))).status).toBe(400);
 
-      expect(await attemptsOf(sessionId)).toBe(1);
+      expect(await attemptsOf(sessionId)).toBe(0);
     });
   });
 });
