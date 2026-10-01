@@ -25,6 +25,7 @@ import * as coresController from "./controllers/cores.controller";
 import * as coreFilesController from "./controllers/core-files.controller";
 import * as updateCheckController from "./controllers/update-check.controller";
 import * as tasksController from "./controllers/tasks.controller";
+import * as v1Controller from "./controllers/v1.controller";
 import { OPERATOR_ID } from "./services/operator";
 import * as webhooksController from "./controllers/webhooks.controller";
 
@@ -46,6 +47,14 @@ const TASK_PATH = /^\/api\/tasks\/([^/]+)$/;
 const TASK_STATUS_PATH = /^\/api\/tasks\/([^/]+)\/status$/;
 const TASK_COMMENTS_PATH = /^\/api\/tasks\/([^/]+)\/comments$/;
 const CORE_AGENTS_PATH = /^\/api\/cores\/([^/]+)\/agents$/;
+// Public REST API (#572 PR 2). Versioned under `/api/v1` so the session-cookie
+// routes above stay their own path; a key never reaches those.
+const V1_CORE_PATH = /^\/api\/v1\/cores\/([^/]+)$/;
+const V1_CORE_AGENTS_PATH = /^\/api\/v1\/cores\/([^/]+)\/agents$/;
+const V1_AGENT_PATH = /^\/api\/v1\/agents\/([^/]+)$/;
+const V1_TASK_PATH = /^\/api\/v1\/tasks\/([^/]+)$/;
+const V1_TASK_STATUS_PATH = /^\/api\/v1\/tasks\/([^/]+)\/status$/;
+const V1_TASK_COMMENTS_PATH = /^\/api\/v1\/tasks\/([^/]+)\/comments$/;
 const SESSION_PATH = /^\/api\/sessions\/([^/]+)$/;
 const SESSION_STATUS_PATH = /^\/api\/sessions\/([^/]+)\/status$/;
 const SESSION_QUESTION_PATH = /^\/api\/sessions\/([^/]+)\/question$/;
@@ -220,6 +229,39 @@ async function dispatch(
   if (pathname === "/api/cores") {
     if (method === "GET") return coresController.list(principal!);
   }
+
+  // Public REST API under /api/v1 (#572 PR 2). Key auth (and the session when
+  // no key is presented); every call runs as the principal's owner. Matched
+  // before the unversioned session routes so `/api/v1/tasks` is never read as
+  // an unknown `/api/…` leaf.
+  if (pathname === "/api/v1/cores") {
+    if (method === "GET") return v1Controller.listCoresV1(principal!);
+  }
+  let m = pathname.match(V1_CORE_AGENTS_PATH);
+  if (m && method === "GET") return v1Controller.listCoreAgentsV1(principal!, decode(m[1]));
+  m = pathname.match(V1_CORE_PATH);
+  if (m && method === "GET") return v1Controller.getCoreV1(decode(m[1]), principal!);
+  if (pathname === "/api/v1/agents") {
+    if (method === "GET") return v1Controller.listAgentsV1(principal!);
+    if (method === "POST") return v1Controller.createAgentV1(principal!, request);
+  }
+  m = pathname.match(V1_AGENT_PATH);
+  if (m) {
+    if (method === "GET") return v1Controller.getAgentV1(principal!, decode(m[1]));
+    if (method === "DELETE") return v1Controller.deleteAgentV1(principal!, decode(m[1]));
+  }
+  if (pathname === "/api/v1/tasks") {
+    if (method === "GET") return v1Controller.listTasksV1(principal!);
+    if (method === "POST") return v1Controller.createTaskV1(principal!, request);
+  }
+  m = pathname.match(V1_TASK_STATUS_PATH);
+  if (m && method === "POST") return v1Controller.setTaskStatusV1(principal!, decode(m[1]), request);
+  m = pathname.match(V1_TASK_COMMENTS_PATH);
+  if (m && method === "GET") return v1Controller.listTaskCommentsV1(principal!, decode(m[1]));
+  if (m && method === "POST") return v1Controller.addTaskCommentV1(principal!, decode(m[1]), request);
+  m = pathname.match(V1_TASK_PATH);
+  if (m && method === "GET") return v1Controller.getTaskV1(principal!, decode(m[1]));
+
   // API keys (#572). The Operator's session creates, lists and revokes them; a
   // key never does, because these routes are not in API_KEY_ROUTES.
   if (pathname === "/api/api-keys") {
@@ -233,7 +275,7 @@ async function dispatch(
     if (method === "GET") return webhooksController.list();
     if (method === "POST") return webhooksController.create(request);
   }
-  let m = pathname.match(WEBHOOK_PING_PATH);
+  m = pathname.match(WEBHOOK_PING_PATH);
   if (m && method === "POST") return webhooksController.ping(decode(m[1]));
   m = pathname.match(WEBHOOK_DELIVERIES_PATH);
   if (m && method === "GET") return webhooksController.deliveries(decode(m[1]));

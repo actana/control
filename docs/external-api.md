@@ -1,7 +1,8 @@
 # The HTTP surfaces
 
-Actana Control has three HTTP surfaces, and none is a public integration API.
-This page says what they are, so nobody has to guess from a port number.
+Actana Control has a public Panel integration API under `/api/v1`, plus the
+Panel's own browser routes and the Core's loopback/file surfaces. This page
+says what they are, so nobody has to guess from a port number.
 
 > **History.** The root README used to document a Core API of
 > `POST /api/projects/:id/sessions` and `POST /api/sessions/:id/status`, guarded by a
@@ -314,12 +315,41 @@ transfer-in-progress` in particular reaches the operator with the Core's own
 sentence, which names the transfer holding the Project and when it started —
 "busy" without those two facts is not something anybody can act on.
 
+## The Panel's public REST API (`/api/v1`)
+
+The Panel serves a versioned public integration API for Cores, Agents, Tasks
+and comments ([#572](https://github.com/actana/control/issues/572)). It is
+separate from the browser's session-cookie routes.
+
+| Property | Value |
+| --- | --- |
+| Prefix | `/api/v1` |
+| Auth | `Authorization: Bearer ak_…` — an API key the Operator creates in Settings › API & integrations |
+| Who it runs as | the key's owner, every time; a presented key never falls back to the Operator's session cookie |
+| Scope | all of the owner's Cores by default, or chosen ones; outside the scope is `403`, a revoked key is `401` |
+| Description | OpenAPI 3 at [`packages/panel/src/server/openapi/v1.json`](../packages/panel/src/server/openapi/v1.json) |
+
+| Area | Routes |
+| --- | --- |
+| Cores | `GET /api/v1/cores`, `GET /api/v1/cores/:id` |
+| Agents | `GET/POST /api/v1/agents`, `GET/DELETE /api/v1/agents/:id`, `GET /api/v1/cores/:id/agents` |
+| Tasks | `GET/POST /api/v1/tasks`, `GET /api/v1/tasks/:id`, `POST /api/v1/tasks/:id/status` |
+| Comments | `GET/POST /api/v1/tasks/:id/comments` |
+
+Status moves go through the Tasks service. A key client may only ask for the
+operator moves `assigned` and `draft` (the dispatcher and the result watcher
+own the rest). API keys themselves are managed only with the Operator's
+session (`POST/GET /api/api-keys`, `POST /api/api-keys/:id/revoke`).
+
 ## The Panel's own routes
 
-The Panel's `/api/*` surface exists to serve its own browser tab. It is
-authenticated by the Operator's session cookie, which the browser attaches on
-its own ([ADR 0011](adr/0011-operator-identity-and-panel-auth.md)) — there is no
-bearer-token mode and no versioning promise. Harnesses never call it.
+The Panel's unversioned `/api/*` surface (outside `/api/v1`) exists to serve
+its own browser tab. It is authenticated by the Operator's session cookie,
+which the browser attaches on its own
+([ADR 0011](adr/0011-operator-identity-and-panel-auth.md)). Harnesses never
+call it. A key presented on these routes is refused with `403` unless the
+route is on the short key allowlist (the two unversioned Cores GETs that PR 1
+of #572 proved the gate on).
 
 Session **reads and writes do not appear here**: they travel
 over the panel link as core-link frames, because each Core owns that state
