@@ -8,6 +8,7 @@ import {
   ensureClaudeShiftEnterBindingViaCore,
   ensureStatuslineTapViaCore,
   installHarnessHooksViaCore,
+  resolveCommandViaCore,
   spawnPathFactsViaCore,
   CoreHomeOpRefusedError,
   type SpawnPathFacts,
@@ -16,6 +17,7 @@ import { PtyOutputBatcher } from "./pty-output-batch";
 import { PtyOutputActivityWatcher, type PtyOutputActivityKind } from "./pty-output-activity";
 import { sliceReplayWindow, type PtyReplayWindow } from "./pty-replay-window";
 import {
+  pickHarnessCandidateMeetingVersion,
   resolveHarnessCommandMeetingVersion,
   resolveHarnessCommandOnPath,
 } from "@actana/shared/harness-cli-resolution";
@@ -28,6 +30,7 @@ import { loadProjectRoots } from "./project-roots";
 import { MAX_TCP_PORT } from "@actana/shared/tcp-port";
 import { shortId } from "@actana/shared/short-id";
 import {
+  HARNESS_BINARIES,
   reconcileHookTrustFlag,
   resolveSpawnPlan,
   SpawnPolicyError,
@@ -687,14 +690,39 @@ export class PtyCore {
           })
         : { cwdOk: false, realpaths: {} }
       : undefined;
+    // The CLI lookup is the same kind of question: `~/.local/bin` is core's, so in
+    // the container core lists the matches and the daemon picks by version.
+    const lookupEnv = pathFacts ? sanitizedProcessEnv() : null;
+    const agentBinary =
+      pathFacts?.cwdOk && spawnReq.shell !== true && typeof spawnReq.agent === "string" && Object.hasOwn(HARNESS_BINARIES, spawnReq.agent)
+        ? HARNESS_BINARIES[spawnReq.agent as keyof typeof HARNESS_BINARIES]
+        : null;
+    const found: { name: string; candidates: string[] } | null =
+      agentBinary && lookupEnv
+        ? {
+            name: agentBinary,
+            candidates: await resolveCommandViaCore(agentBinary, lookupEnv.PATH ?? null).catch((err: unknown) => {
+              // A PATH the helper will not take finds nothing: the policy says binary-not-found.
+              if (!(err instanceof CoreHomeOpRefusedError)) throw err;
+              log.warn("pty.spawn.command-lookup-refused", { command: agentBinary, error: err.message });
+              return [];
+            }),
+          }
+        : null;
     try {
       plan = resolveSpawnPlan(spawnReq, {
         ...(pathFacts ? policyPathDeps(pathFacts, spawnReq.cwd ?? "") : {}),
         projectRoots: () => projectRoots,
         homeShellRoots: () => [coreHome()],
         resolveCommand: (name) => {
-          const env = sanitizedProcessEnv();
+          const env = lookupEnv ?? sanitizedProcessEnv();
           const requirement = HARNESS_CLI_CONFIG_BY_COMMAND[name];
+          if (lookupEnv) {
+            // Container mode: only what core found, and nothing the daemon looks up itself.
+            const candidates = found?.name === name ? found.candidates : [];
+            if (requirement) return pickHarnessCandidateMeetingVersion(candidates, requirement, env, platform)?.binary ?? null;
+            return candidates[0] ?? null;
+          }
           if (requirement) {
             return resolveHarnessCommandMeetingVersion(name, requirement, env, platform)?.binary ?? null;
           }

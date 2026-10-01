@@ -23,12 +23,11 @@ SHARED=/home/core/shared
 WORKSPACE=/home/core/repos
 CORE_UID=1000
 CORE_GID=1000
-# The daemon's state volume (#559). Owned by the user the daemon runs as, which
-# is still core, so the same numbers; they are separate variables so that the
-# change to a daemon user of its own touches this pair and not the home above.
+# The daemon's state volume (#559). Owned by `actana`, the user the daemon runs
+# as (1001:1001), not by `core`: a Session must not be able to read it.
 STATE=/var/lib/actana
-STATE_UID=1000
-STATE_GID=1000
+STATE_UID=1001
+STATE_GID=1001
 
 fail() {
   echo "core-fs-prep: error: $*" >&2

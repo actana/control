@@ -33,6 +33,8 @@ const HELPER_ONLY = [
   "ensureOrchestrationSkill",
   "installOrchestrationSkills",
   "listDirectory",
+  "createDirectory",
+  "resolveAllHarnessCommandsOnPath",
   "wireLocalCore",
   "registryPaths",
 ];
@@ -111,8 +113,14 @@ describe("the daemon-side modules do not touch core's home", () => {
 
   it("the daemon still reaches each thing through the client", () => {
     const wired: Record<string, string[]> = {
-      "pty-manager.ts": ["ensureClaudeShiftEnterBindingViaCore", "ensureStatuslineTapViaCore", "installHarnessHooksViaCore", "spawnPathFactsViaCore"],
-      "core-entry.ts": ["ensureOrchestrationSkillViaCore", "listDirectoryViaCore"],
+      "pty-manager.ts": [
+        "ensureClaudeShiftEnterBindingViaCore",
+        "ensureStatuslineTapViaCore",
+        "installHarnessHooksViaCore",
+        "resolveCommandViaCore",
+        "spawnPathFactsViaCore",
+      ],
+      "core-entry.ts": ["createDirectoryViaCore", "ensureOrchestrationSkillViaCore", "listDirectoryViaCore"],
       "core-exec.ts": ["resolveExecCwdViaCore"],
       "core-self-register.ts": ["wireLocalCoreViaCore"],
     };
