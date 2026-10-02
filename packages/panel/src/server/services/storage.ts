@@ -292,7 +292,8 @@ export function coreFolderPrefix(prefix: string, coreId: string): string {
 export type StorageIssuerOptions = { fetch?: typeof fetch; now?: () => number };
 
 /**
- * The SDK's key issuer for this owner. **The only place the master key is unsealed.** It goes into the
+ * The SDK's key issuer for this owner. **One of two places the master key is unsealed; the other is {@link storageJwks},
+ * which keeps only the public half.** It goes into the
  * issuer's closure and nowhere else; the issuer returns the four fields of a Core's key and never the
  * key it signs with.
  */

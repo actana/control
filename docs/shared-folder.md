@@ -207,7 +207,7 @@ POST /api/cores/:id/delete {confirmPrefix} ──▶ prefix typed exactly ──
 
 | File | What it is |
 |---|---|
-| `packages/panel/src/server/services/storage.ts` | the config, backends (SeaweedFS default, STS, Supabase, R2), and the only place the master key is unsealed (into the SDK issuer) |
+| `packages/panel/src/server/services/storage.ts` | the config, backends (SeaweedFS default, STS, Supabase, R2), and the two places the master key is unsealed: `storageKeyIssuer` (into the SDK issuer) and `storageJwks` (public half only) |
 | `packages/panel/src/server/services/shared-folders.ts` | test, finish pairing, push, rotation, detach, delete, Settings per-Core rows |
 | `packages/panel/src/server/repositories/{storage,core-shared-folders}.repo.ts` | `storage_config`, `core_shared_folders` (migrations `0006`, `0007`) |
 | `packages/panel/src/components/views/SharedFolderStep.tsx` | step 4 of the pairing wizard |
@@ -271,7 +271,7 @@ browser ──/api/cores/:id/shared/files/…──▶ Panel (session owner, pat
 | `POST /mkdir` · `PUT /upload?path=` | a folder · one file, counted against the upload limit as it streams in |
 | `POST /rename` · `POST /move` · `POST /delete` | the root is refused; a folder moves, renames and deletes with its contents |
 
-- **No key reaches the browser.** The master key has one reader, `storageKeyIssuer`. A Core's 1-hour key stays in the Panel's memory,
+- **No key reaches the browser.** The master key has two readers: `storageKeyIssuer`, and `storageJwks`, which returns only the public half for `/.well-known/jwks.json`. A Core's 1-hour key stays in the Panel's memory,
   limited to `<prefix>/<core id>/`, and is replaced six minutes before it ends. The one credential-bearing thing a browser receives is
   the download URL, which the SDK signs for one object and which ends in five minutes.
 - **Who may ask** is decided on every call from the database: the session's owner must own the Core and the Core must have a finished
