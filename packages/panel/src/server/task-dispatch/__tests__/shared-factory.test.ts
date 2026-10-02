@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import type { CoreShared } from "@actana/sdk/shared";
 import { SharedChangeFeed, createSharedFactory } from "../shared-factory";
+import { SharedFilesUnavailableError } from "../../services/core-s3-shared";
+import { StorageNotConfiguredError } from "../../services/storage";
 import { launchCommand } from "../session-starter";
 import { buildTaskPrompt } from "../task-prompt";
 import { taskTimeoutMs, TASK_TIMEOUT_ENV } from "../index";
@@ -24,6 +26,26 @@ describe("which CoreShared the watcher reads through", () => {
     expect(await createSharedFactory({ throughCore })("core_1")).toEqual(fake("core"));
     expect(await createSharedFactory({ s3: null, throughCore })("core_2")).toEqual(fake("core"));
     expect(throughCore).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("falling back to the through-the-Core mode", () => {
+  it("falls back when storage is not configured, and for a Core with no Shared folder yet", async () => {
+    for (const err of [new StorageNotConfiguredError(), new SharedFilesUnavailableError("no folder")]) {
+      const throughCore = vi.fn(async () => fake("core"));
+      const sharedFor = createSharedFactory({ s3: async () => Promise.reject(err), throughCore });
+
+      expect(await sharedFor("core_1")).toEqual(fake("core"));
+      expect(throughCore).toHaveBeenCalledWith("core_1");
+    }
+  });
+
+  it("does not hide any other failure of the S3 mode behind the Core", async () => {
+    const throughCore = vi.fn(async () => fake("core"));
+    const sharedFor = createSharedFactory({ s3: async () => Promise.reject(new Error("the issuer is down")), throughCore });
+
+    await expect(sharedFor("core_1")).rejects.toThrow("the issuer is down");
+    expect(throughCore).not.toHaveBeenCalled();
   });
 });
 

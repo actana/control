@@ -9,18 +9,22 @@ import {
 import { getCore, getCoreSecrets } from "../services/cores";
 import { coreLinkManager, type CoreLinkManager } from "../services/core-link-manager";
 import { filesFetchFor } from "../services/core-files-proxy";
+import { coreS3Shared, SharedFilesUnavailableError, type CoreS3Shared } from "../services/core-s3-shared";
+import { StorageNotConfiguredError } from "../services/storage";
 
 /**
  * Which `CoreShared` the result watcher reads a Core's Shared folder through
  * (#570), chosen in ONE place.
  *
  * - **S3 mode**, when the Panel has storage configured: the object store is read
- *   directly, so a result is seen while the Core is paused. It needs the Panel's
- *   storage settings and the key issuer, which wait on #562 and #566; neither
- *   exists in the Panel yet, so nothing passes `s3` today and this seam is all
- *   that is built.
+ *   directly with the per-Core mode and server-held key the Files tab uses
+ *   ({@link createS3Factory}), so a result is seen while the Core is paused, and
+ *   the Panel's own `fail.md` is written there too.
  * - **Through-the-Core mode** otherwise: the Core's Files API and its
- *   `shared:changed` events. It works only while the Core is up.
+ *   `shared:changed` events. It works only while the Core is up. It is the
+ *   fallback when storage is not configured, and for a Core that has no Shared
+ *   folder in storage (paired before it): nothing syncs that Core's results to S3,
+ *   so its own Files API is the only place to look.
  *
  * The watcher is written on the `CoreShared` interface and cannot tell which it has.
  */
@@ -34,7 +38,39 @@ export type SharedFactoryDeps = {
 export type SharedFor = (coreId: string) => Promise<CoreShared>;
 
 export function createSharedFactory(deps: SharedFactoryDeps): SharedFor {
-  return async (coreId) => (deps.s3 ? deps.s3(coreId) : deps.throughCore(coreId));
+  return async (coreId) => {
+    if (deps.s3) {
+      try {
+        return await deps.s3(coreId);
+      } catch (err) {
+        if (!(err instanceof StorageNotConfiguredError || err instanceof SharedFilesUnavailableError)) throw err;
+      }
+    }
+    return deps.throughCore(coreId);
+  };
+}
+
+/**
+ * The S3 mode for a Core, built the way the Files tab builds it (`CoreS3Shared`). The Core and its folder are checked
+ * when this is asked for, so a Core with no folder or a Panel with no storage says so at once; after that every call
+ * asks for the Core's key again, so a Task that runs longer than a key lives never reads with an ended one.
+ */
+export function createS3Factory(ownerId: number, modes: CoreS3Shared = coreS3Shared()): (coreId: string) => Promise<CoreShared> {
+  return async (coreId) => {
+    await modes.open(ownerId, coreId);
+    return lazyShared(async () => ({ ...(await modes.open(ownerId, coreId)).shared, folderScoped: true }), true);
+  };
+}
+
+/**
+ * A handle that says its changes are found by listing the one folder asked about, not by `watch`. In the SDK's S3 mode
+ * `watch` lists every key under the Core's prefix and diffs it, which is the whole Shared folder on every call; the
+ * result watcher needs only `tasks/<id>/`, so it lists that when this is set.
+ */
+export type FolderScopedShared = CoreShared & { readonly folderScoped?: boolean };
+
+export function isFolderScoped(shared: CoreShared): boolean {
+  return (shared as FolderScopedShared).folderScoped === true;
 }
 
 const MAX_BUFFERED_EVENTS = 10_000;
@@ -117,16 +153,26 @@ export function createThroughCoreFactory(
  * is not reachable (or no longer registered) yet: it is still watched, every read fails and says why, and the
  * timeout ends the Task, instead of the Task having nothing watching it.
  */
-export function lazyShared(resolve: () => Promise<CoreShared>): CoreShared {
+export function lazyShared(resolve: () => Promise<FolderScopedShared>, scopedFromStart = false): FolderScopedShared {
+  // What the last call resolved to says how this handle is read; `scopedFromStart` is what it is read as before any call.
+  let scoped = scopedFromStart;
+  const current = async (): Promise<CoreShared> => {
+    const found = await resolve();
+    scoped = isFolderScoped(found);
+    return found;
+  };
   return {
-    list: async (path) => (await resolve()).list(path),
-    get: async (path) => (await resolve()).get(path),
-    put: async (path, body) => (await resolve()).put(path, body),
-    mkdir: async (path) => (await resolve()).mkdir(path),
-    rm: async (path) => (await resolve()).rm(path),
-    move: async (from, to) => (await resolve()).move(from, to),
-    upload: async (destination, entries) => (await resolve()).upload(destination, entries),
-    watch: async (since) => (await resolve()).watch(since),
-    signedUrl: async (path, options) => (await resolve()).signedUrl(path, options),
+    get folderScoped() {
+      return scoped;
+    },
+    list: async (path) => (await current()).list(path),
+    get: async (path) => (await current()).get(path),
+    put: async (path, body) => (await current()).put(path, body),
+    mkdir: async (path) => (await current()).mkdir(path),
+    rm: async (path) => (await current()).rm(path),
+    move: async (from, to) => (await current()).move(from, to),
+    upload: async (destination, entries) => (await current()).upload(destination, entries),
+    watch: async (since) => (await current()).watch(since),
+    signedUrl: async (path, options) => (await current()).signedUrl(path, options),
   };
 }

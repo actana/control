@@ -1,10 +1,12 @@
 import { OPERATOR_ID } from "../services/operator";
 import { TaskDispatcher } from "./dispatcher";
 import { ResultWatcher, DEFAULT_TASK_TIMEOUT_MS } from "./result-watcher";
-import { SharedChangeFeed, createSharedFactory, createThroughCoreFactory, type SharedFactoryDeps } from "./shared-factory";
+import { SharedChangeFeed, createS3Factory, createSharedFactory, createThroughCoreFactory, type SharedFactoryDeps } from "./shared-factory";
 import { startSessionOnCore } from "./session-starter";
 import { coreLinkManager } from "../services/core-link-manager";
-import { consoleDispatchLog } from "./types";
+import type { CoreS3Shared } from "../services/core-s3-shared";
+import { consoleDispatchLog, type Clock, type DispatchLog, type SessionStarter } from "./types";
+import type { AgentLookup } from "./dispatcher";
 
 /**
  * Starting and stopping the dispatch loop with the Panel (#570). `bootPanel` calls
@@ -13,6 +15,9 @@ import { consoleDispatchLog } from "./types";
  *
  * `AC_PANEL_TASK_TIMEOUT_MINUTES` sets how long a Task may run with no result
  * before the Panel writes `fail.md` (default 60).
+ *
+ * The result files are read in S3 with the Core's server-held key whenever storage is configured, so a result is seen
+ * while the Core is paused; the through-the-Core mode is the fallback when it is not.
  */
 
 export const TASK_TIMEOUT_ENV = "AC_PANEL_TASK_TIMEOUT_MINUTES";
@@ -24,16 +29,46 @@ export function taskTimeoutMs(env: NodeJS.ProcessEnv = process.env): number {
 
 let running: { dispatcher: TaskDispatcher; detachFeed: () => void } | null = null;
 
-export function startTaskDispatch(opts: { s3?: SharedFactoryDeps["s3"]; env?: NodeJS.ProcessEnv } = {}): void {
+/** What `bootPanel` leaves alone; a test hands in fakes for the Core, the clock and the object store. */
+export type StartTaskDispatchOptions = {
+  env?: NodeJS.ProcessEnv;
+  /** The S3 mode for a Core. The Files tab's per-Core mode over the Panel's storage settings by default. */
+  s3?: SharedFactoryDeps["s3"];
+  modes?: CoreS3Shared;
+  throughCore?: SharedFactoryDeps["throughCore"];
+  startSession?: SessionStarter;
+  agents?: AgentLookup;
+  now?: Clock;
+  pollMs?: number;
+  watchPollMs?: number;
+  exitGraceMs?: number;
+  log?: DispatchLog;
+};
+
+export function startTaskDispatch(opts: StartTaskDispatchOptions = {}): void {
   if (running) return;
   const feed = new SharedChangeFeed();
   const detachFeed = feed.attach(coreLinkManager());
-  const watcher = new ResultWatcher({ ownerId: OPERATOR_ID, timeoutMs: taskTimeoutMs(opts.env) });
+  const watcher = new ResultWatcher({
+    ownerId: OPERATOR_ID,
+    timeoutMs: taskTimeoutMs(opts.env),
+    ...(opts.now ? { now: opts.now } : {}),
+    ...(opts.watchPollMs ? { pollMs: opts.watchPollMs } : {}),
+    ...(opts.exitGraceMs !== undefined ? { exitGraceMs: opts.exitGraceMs } : {}),
+    ...(opts.log ? { log: opts.log } : {}),
+  });
   const dispatcher = new TaskDispatcher({
     ownerId: OPERATOR_ID,
-    startSession: startSessionOnCore,
-    sharedFor: createSharedFactory({ s3: opts.s3 ?? null, throughCore: createThroughCoreFactory(feed, OPERATOR_ID) }),
+    startSession: opts.startSession ?? startSessionOnCore,
+    sharedFor: createSharedFactory({
+      s3: opts.s3 ?? createS3Factory(OPERATOR_ID, opts.modes),
+      throughCore: opts.throughCore ?? createThroughCoreFactory(feed, OPERATOR_ID),
+    }),
     watcher,
+    ...(opts.agents ? { agents: opts.agents } : {}),
+    ...(opts.now ? { now: opts.now } : {}),
+    ...(opts.pollMs ? { pollMs: opts.pollMs } : {}),
+    ...(opts.log ? { log: opts.log } : {}),
   });
   running = { dispatcher, detachFeed };
   dispatcher.start();

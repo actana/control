@@ -970,6 +970,22 @@ jobs:
             console.log(`${r.numPassedTests} passed, ${r.numFailedTests} failed, ${r.numPendingTests} skipped of ${r.numTotalTests}`);
             if (r.numFailedTests > 0 || r.numPendingTests > 0 || all.length < 4) process.exit(1);
           ' "$RUNNER_TEMP/panel-files-sw.json"
+      # The Task result watcher (#570) against the same server, with the Core unreachable: a result file written with the
+      # Core's own key moves the Task, and the Panel's fail.md lands in that Core's folder in the bucket.
+      - name: Run the Panel's Task result watcher against SeaweedFS
+        working-directory: packages/panel
+        run: >-
+          pnpm exec vitest run --maxWorkers=1 --reporter=verbose
+          --reporter=json --outputFile=${{ runner.temp }}/panel-task-watch-sw.json
+          src/server/__tests__/task-watch-seaweedfs.test.ts
+      - name: Every Task watcher test ran against the real server, none was skipped
+        run: |
+          node -e '
+            const r = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+            const all = r.testResults.flatMap((f) => f.assertionResults);
+            console.log(`${r.numPassedTests} passed, ${r.numFailedTests} failed, ${r.numPendingTests} skipped of ${r.numTotalTests}`);
+            if (r.numFailedTests > 0 || r.numPendingTests > 0 || all.length < 2) process.exit(1);
+          ' "$RUNNER_TEMP/panel-task-watch-sw.json"
       - name: SeaweedFS log
         if: failure()
         run: docker logs seaweedfs || true
