@@ -135,14 +135,9 @@ import { formatActanaStatus, summarizeHealth, type ActanaStatusReport } from "./
 import { runActanaUninstall } from "./actana-uninstall.ts";
 import { runActanaUpdate } from "./actana-update.ts";
 import { parseArgs } from "./cli-args.ts";
+import { runClient } from "@actana/cli";
 import { registryPaths } from "./blob-registry.ts";
-import { runCoreCommand } from "./core-command.ts";
 import { runPairCommand } from "./actana-pair.ts";
-import { runHarnessCommand } from "./harness-command.ts";
-import { runEventsCommand } from "./events-command.ts";
-import { runSessionCommand } from "./session-command.ts";
-import { CORE_BLOB_ENV } from "./core-resolution.ts";
-import { ensureOrchestrationSkillQuietly } from "./orchestration-skill.ts";
 import { EXIT_OK, EXIT_UNIMPLEMENTED, EXIT_USAGE } from "./exit-codes.ts";
 import { runActanaInstall } from "./actana-install.ts";
 import type { ActanaCliDeps } from "./cli-deps.ts";
@@ -168,8 +163,16 @@ export const CLI_VERSION: string = manifest.version;
  */
 const RESERVED_NOUNS: Record<string, string> = {};
 
-/** The nouns that talk to a Core. Never refused in a container. */
-const CLIENT_NOUNS = ["core", "harness", "events", "session"] as const;
+/**
+ * The nouns the published `@actana/cli` answers: they talk to a Core, and are
+ * never refused in a container. `search` is the general CLI's too, and is left
+ * out on purpose — it is not part of this release, so `actana search` is an
+ * unknown command here exactly as it was before the client half moved (#580).
+ */
+const CLIENT_NOUNS = ["core", "harness", "events", "session", "files", "shared"] as const;
+
+/** The environment variable that names a Core's blob, or a path to it (single-Core mode). */
+const CORE_BLOB_ENV = "ACTANA_CORE_BLOB";
 
 
 /** Default core-link port. Matches the port the docs and install script use. */
@@ -189,6 +192,8 @@ Cores this machine can reach
   harness    The coding agents a Core can run: ls, install, skills
   events     Follow a Core's event log: tail
   session    Start, ls, logs, resume, attach, kill and send to Sessions on one
+  files      ls, get, put, rm — in a Core's home folder
+  shared     ls, get, put, rm, mkdir, watch — a Core's Shared folder
 
 This machine's own Core
   install    Fetch a release, verify it, install the Core and start it
@@ -1657,44 +1662,10 @@ export async function runActanaCli(deps: ActanaCliDeps): Promise<number> {
   // dishonesty #288 exists to end — the Core installs a skill that teaches
   // these verbs onto the machine it is itself running on.
   if ((CLIENT_NOUNS as readonly string[]).includes(head)) {
-    if (args.missingValue) {
-      deps.err(`actana: ${args.missingValue} needs a value.`);
-      return EXIT_USAGE;
-    }
-    if (args.unknown.length > 0) {
-      deps.err(`actana: unknown flag ${args.unknown[0]}.`);
-      deps.err("`actana --help` lists the flags this build knows.");
-      return EXIT_USAGE;
-    }
-
-    // ADR 0031 D6: there is no npm lifecycle hook to install the product's own
-    // skill from — this package has no `postinstall`, `preinstall` or `prepare`
-    // and gains none — so "installed with the CLI" is delivered here instead,
-    // in front of the first noun the operator runs. It is a no-op when the
-    // copies are current, it writes nothing on a machine where no Harness has a
-    // directory of its own, and it cannot fail: nothing it does reaches the
-    // exit code or either output stream.
-    //
-    // `actana harness skills` is the one verb it does not run in front of: that
-    // verb does the same work and reports it, and an ensure that had already
-    // repaired the copy would leave the explicit path with nothing to say but
-    // "current" — a repair verb that can never report a repair.
-    if (!(head === "harness" && args.positionals[1] === "skills")) {
-      ensureOrchestrationSkillQuietly(deps.home);
-    }
-
-    const paths = registryPaths(deps.env, deps.home);
-
-    switch (head) {
-      case "core":
-        return runCoreCommand(deps, args, paths);
-      case "harness":
-        return runHarnessCommand(deps, args, paths);
-      case "events":
-        return runEventsCommand(deps, args, paths);
-      default:
-        return runSessionCommand(deps, args, paths);
-    }
+    // Flag validation, the quiet skill install in front of the first noun, and
+    // the verbs themselves are the published CLI's (#580). This package binds its
+    // ports in `actana-cli-entry.ts` and keeps only what is the machine's.
+    return runClient(deps.argv, deps);
   }
 
   // Checked before the machine-side dispatch, not inside each verb: the answer

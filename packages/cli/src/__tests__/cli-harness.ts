@@ -9,6 +9,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import type { ClientDeps } from "@actana/cli";
 import { runActanaCli } from "../actana-cli.ts";
 import {
   readCurrentCore,
@@ -116,6 +117,10 @@ export type RunOptions = {
   openShell?: OpenCoreShellFn;
   /** What `session attach` gets back, or a throw. */
   openAttach?: OpenSessionAttachFn;
+  /** What `files` gets back, or a throw. */
+  openFiles?: ClientDeps["openFiles"];
+  /** What `shared` and `session start --shared` get back, or a throw. */
+  openShared?: ClientDeps["openShared"];
 };
 
 /**
@@ -358,6 +363,16 @@ export function makeCliFixture(): CliFixture {
           opts.openAttach ??
           (async () => {
             throw new Error("this test did not expect to attach to a session");
+          }),
+        openFiles:
+          opts.openFiles ??
+          (async () => {
+            throw new Error("this test did not expect to open a home folder");
+          }),
+        openShared:
+          opts.openShared ??
+          (async () => {
+            throw new Error("this test did not expect to open a Shared folder");
           }),
         // `actana` is one program, so its deps bag has one shape (#288). A
         // suite about the client nouns still has to fill the machine half; it

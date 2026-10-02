@@ -174,6 +174,8 @@ export type ClientHalf = Pick<
   | "terminal"
   | "openShell"
   | "openAttach"
+  | "openFiles"
+  | "openShared"
 >;
 
 /** The client half, filled with fakes that refuse to reach a Core. */
@@ -200,5 +202,7 @@ export function stubClientHalf(
     terminal: nonInteractiveTerminal(),
     openShell: refuse("open a shell"),
     openAttach: refuse("attach to a session"),
+    openFiles: refuse("open a home folder"),
+    openShared: refuse("open a Shared folder"),
   };
 }
