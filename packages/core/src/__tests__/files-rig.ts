@@ -1,4 +1,4 @@
-// A real Core file surface, on a real socket, for the `project.files.*` suites
+// A real Core file surface, on a real socket, for the `client.files.*` suites
 // (#167).
 //
 // **Real HTTP against the Core's own handler**, not a stand-in. The SDK's other
@@ -40,24 +40,21 @@ export type FilesRig = {
   baseUrl: string;
   host: string;
   port: number;
-  /** The Project's root on disk. */
+  /** The home folder on disk. */
   root: string;
-  projectId: string;
   /** Every request the server took, in order — how "it did not retry" is proven. */
   requests: { method: string; url: string }[];
   close(): Promise<void>;
 };
 
 export type FilesRigOptions = {
-  projectId?: string;
-  /** Files to seed the Project with. `dir/` keys make empty directories. */
+  /** Files to seed the home with. `dir/` keys make empty directories. */
   seed?: Record<string, string | { content?: string; mode?: number }>;
   authVerifier?: FilesAuthVerifier;
 };
 
 /** Stand up a Core file surface on loopback. */
 export async function startFilesRig(opts: FilesRigOptions = {}): Promise<FilesRig> {
-  const projectId = opts.projectId ?? "proj_1";
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "actana-sdk-files-")));
   roots.push(root);
   writeTree(root, opts.seed ?? {});
@@ -94,7 +91,6 @@ export async function startFilesRig(opts: FilesRigOptions = {}): Promise<FilesRi
     host: "127.0.0.1",
     port,
     root,
-    projectId,
     requests,
     close: () =>
       new Promise<void>((resolve) => {
