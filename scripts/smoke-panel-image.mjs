@@ -285,19 +285,40 @@ if (dataFiles.some((name) => name.startsWith("missioncontrol.db"))) {
 }
 log("the data volume holds no panel.db and no missioncontrol.db");
 
-// better-sqlite3 still ships in the image for the provider-usage readers of
-// other apps' SQLite files until those move to node:sqlite (#567's next PR),
-// and is the native module compiled in the build stage against a different
-// Node and glibc (ADR 0016 D20, D25). Load it directly. An absolute node:
-// `docker exec` does not go through ENTRYPOINT, and /nodejs/bin is not on PATH.
-docker([
+// The Panel no longer depends on the compiled SQLite module (ADR 0041 D20): it
+// reads other apps' SQLite files through the built-in node:sqlite. This proves
+// only that the module cannot be resolved from the Panel's directory. The Core's
+// own copy can still sit in the deployed tree (the deploy installs the root
+// manifest's @actana/core), so it does not prove the bytes are absent. An absolute node: `docker
+// exec` does not go through ENTRYPOINT, and /nodejs/bin is not on PATH.
+const resolved = docker(
+  ["exec", containerName, PANEL_NODE_BIN, "-e", `require.resolve("better-sqlite3")`],
+  { allowFailure: true },
+);
+if (resolved.status === 0) die("better-sqlite3 is still resolvable from the Panel in the image");
+if (!resolved.stderr.includes("MODULE_NOT_FOUND")) {
+  die(`resolving better-sqlite3 failed for the wrong reason:\n${resolved.stderr}`);
+}
+log("better-sqlite3 is not resolvable from the Panel (its files may remain under the Core's copy)");
+
+// node:sqlite loads and runs under the distroless runtime. Whatever Node prints
+// for a bare load is Node's, not the Panel's (the Panel's own loader drops the
+// experimental-feature warning), so the log check is on the Panel container.
+const builtin = docker([
   "exec",
   containerName,
   PANEL_NODE_BIN,
   "-e",
-  `require("better-sqlite3")(":memory:").prepare("select 1").get()`,
+  `const { DatabaseSync } = require("node:sqlite");` +
+    `const db = new DatabaseSync(":memory:");` +
+    `console.log(db.prepare("select 1 as one").get().one)`,
 ]);
-log("better-sqlite3 still loads under the distroless runtime");
+if (builtin.stdout.trim() !== "1") die(`node:sqlite select 1 printed ${JSON.stringify(builtin.stdout)}`);
+const panelLogs = docker(["logs", containerName]);
+if (/ExperimentalWarning|experimental feature/i.test(panelLogs.stdout + panelLogs.stderr)) {
+  die(`the Panel's logs carry an experimental-feature warning:\n${panelLogs.stdout}${panelLogs.stderr}`);
+}
+log("node:sqlite loads under the distroless runtime; the Panel's logs carry no experimental warning");
 
 // Recreate: destroy the container (the upgrade motion — the image is
 // replaceable), keep the volume (the state is not).

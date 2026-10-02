@@ -682,8 +682,8 @@ one.** A fork PR with a green image check and no image behind it is working
 correctly.
 
 **PR images are amd64 only** (D35). Everything an operator deploys is
-multi-arch and built natively; the arch-specific failure is almost always the
-`better-sqlite3` build, which the amd64 leg already exercises. Emulation is
+multi-arch and built natively; the arch-specific failure is almost always a
+native build (`node-pty`, the Core's `better-sqlite3`), which the amd64 leg already exercises. Emulation is
 acceptable for a developer poking at a change and is not acceptable for
 `beta-x.y.z`, `x.y.z` or `latest`.
 
@@ -702,8 +702,8 @@ release repository under either reading.
 
 Every published image is a multi-arch manifest over `amd64` and `arm64`, and
 each architecture is built on a **native runner** of its own kind. Neither
-image could be cross-built honestly: the Panel compiles `better-sqlite3` during
-its build, and the Core bakes in the Core tarball for that architecture.
+image could be cross-built honestly: the Panel image's build stage compiles the
+workspace's native modules, and the Core bakes in the Core tarball for that architecture.
 Emulating either under QEMU is both slow and a test of the wrong machine.
 
 The PR build is `amd64` only. Paying for a second runner on every PR buys

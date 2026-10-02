@@ -16,7 +16,7 @@ export { nodeRequestToFetch } from "./node-http-bridge";
 /**
  * Vite plugin that mounts the MissionControl `/api/*` Web-fetch handler
  * as a Connect middleware. Lazy-imports the handler so Vite's SSR
- * boundary keeps better-sqlite3 / native bindings on the Node side.
+ * boundary keeps native bindings on the Node side.
  */
 export function missionControlApi(): Plugin {
   return {

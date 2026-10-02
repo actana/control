@@ -33,6 +33,7 @@ import {
 } from "./credentials";
 import { getCodexUsage } from "./codex-usage";
 import { getCursorUsage } from "./cursor-usage";
+import { cellText, openReadOnlySqlite } from "./sqlite-readonly";
 import {
   detailWindow,
   httpGet,
@@ -999,8 +1000,7 @@ async function fetchOpenCodeGo(): Promise<ProviderUsageSnapshot> {
     return unauth("opencodego", "no local OpenCode Go database (~/.local/share/opencode/opencode.db)");
   }
   try {
-    const { default: Database } = await import("better-sqlite3");
-    const db = new Database(dbPath, { readonly: true, fileMustExist: true, timeout: 250 });
+    const db = openReadOnlySqlite(dbPath);
     try {
       const rows = db
         .prepare(
@@ -1446,15 +1446,13 @@ async function fetchWindsurf(): Promise<ProviderUsageSnapshot> {
     return unauth("windsurf", "no local Windsurf state.vscdb (web plan-status endpoint is protobuf-only, not ported)");
   }
   try {
-    const { default: Database } = await import("better-sqlite3");
-    const db = new Database(dbPath, { readonly: true, fileMustExist: true, timeout: 250 });
+    const db = openReadOnlySqlite(dbPath);
     let raw: string | null = null;
     try {
       const row = db
         .prepare("SELECT value FROM ItemTable WHERE key = 'windsurf.settings.cachedPlanInfo' LIMIT 1")
         .get() as { value?: unknown } | undefined;
-      if (typeof row?.value === "string") raw = row.value;
-      else if (Buffer.isBuffer(row?.value)) raw = row.value.toString("utf8");
+      raw = cellText(row?.value);
     } finally {
       db.close();
     }

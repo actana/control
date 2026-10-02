@@ -36,7 +36,7 @@ name: Container image
 # the same commit (D11).
 #
 # Each architecture builds natively on a runner of its own kind. The Panel
-# image compiles better-sqlite3 during the build and the Core image bakes in a
+# image compiles the workspace's native modules during the build and the Core image bakes in a
 # per-architecture Core tarball — emulating either under QEMU is slow and
 # proves the wrong machine.
 #

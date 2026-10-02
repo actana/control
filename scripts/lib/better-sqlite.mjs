@@ -2,9 +2,10 @@ import { spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
 import path from "node:path";
 
-// Module resolution walks up from this file, so the installed better-sqlite3 is
-// found regardless of where the importing script lives.
-const requireFromHere = createRequire(import.meta.url);
+// better-sqlite3 belongs to the Core (and its shared helpers); the Panel and the
+// workspace root no longer depend on it (ADR 0041 D20). Resolve it the way the
+// Core does, from packages/core, regardless of where the importing script lives.
+const requireFromHere = createRequire(new URL("../../packages/core/package.json", import.meta.url));
 const betterSqlitePackageJson = requireFromHere.resolve("better-sqlite3/package.json");
 
 /** Root of the installed better-sqlite3 package. */
