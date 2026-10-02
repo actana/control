@@ -24,11 +24,24 @@ import {
   installOrchestrationSkill,
   type SkillInstallEntry,
 } from "@actana/shared/orchestration-skill-install";
-import {
-  ORCHESTRATION_SKILL_MARKER,
-  ORCHESTRATION_SKILL_FILES,
-  ORCHESTRATION_SKILL_NAMES,
-} from "@actana/cli";
+import type * as ActanaCli from "@actana/cli";
+
+/**
+ * The published payload, loaded the first time something asks for it.
+ *
+ * The root of `@actana/cli` is the whole client, and it brings `ws` and the Core-link code with it. The
+ * `core-home-ops` helper bundle imports this module and is a short-lived process per request, started with
+ * no `node_modules` of its own to count on, and most of its operations never touch the skill. A top-level
+ * import would load all of that for every one of them (and fail where `ws` is not beside the bundle), so
+ * the payload is required at the call that needs it. Still one source: the same root export the client
+ * nouns install from, never a copy.
+ */
+let published: typeof ActanaCli | undefined;
+function payload(): typeof ActanaCli {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  published ??= require("@actana/cli") as typeof ActanaCli;
+  return published;
+}
 
 /**
  * Write or repair every copy on this machine, and log what happened.
@@ -77,7 +90,7 @@ export function ensureOrchestrationSkill(homeDir: string): SkillInstallEntry[] {
 export function orchestrationSkillFolders(homeDir: string): string[] {
   const targets = withPiHomeMarkersResolved(HARNESS_SKILL_TARGETS, sanitizedProcessEnv(), homeDir);
   return targets.flatMap((target) =>
-    ORCHESTRATION_SKILL_NAMES.map((name) =>
+    payload().ORCHESTRATION_SKILL_NAMES.map((name) =>
       // An absolute skillDir stays absolute, as the installer's own `homePath` has it.
       path.isAbsolute(target.skillDir)
         ? path.join(target.skillDir, name)
@@ -97,6 +110,7 @@ export function installOrchestrationSkills(homeDir: string): SkillInstallEntry[]
   // process env (login-shell overlay included), never frozen from
   // `process.env` at module load in the shared table (#518 part 3).
   const targets = withPiHomeMarkersResolved(HARNESS_SKILL_TARGETS, sanitizedProcessEnv(), homeDir);
+  const { ORCHESTRATION_SKILL_NAMES, ORCHESTRATION_SKILL_MARKER, ORCHESTRATION_SKILL_FILES } = payload();
   return ORCHESTRATION_SKILL_NAMES.flatMap((skillName) =>
     installOrchestrationSkill({
       home: homeDir,
