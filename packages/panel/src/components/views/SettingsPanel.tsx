@@ -18,6 +18,7 @@ import { AppearanceSettingsPage } from "./AppearanceSettingsPage";
 import { TermsSettingsPage } from "./TermsSettingsPage";
 import { UsageSettingsPage } from "./UsageSettingsPage";
 import { StorageSettingsPage } from "./StorageSettingsPage";
+import { ApiSettingsPage } from "./ApiSettingsPage";
 
 // Single source of truth for settings panel ids lives in ./settings-panel-ids
 // (a dependency-free module) so eager importers don't pin this whole panel into
@@ -90,6 +91,7 @@ export function SettingsPanel({
     { id: "providers", label: "Providers", icon: "grid" },
     { id: "usage", label: "Usage", icon: "chart" },
     { id: "storage", label: "Storage", icon: "folder" },
+    { id: "api", label: "API & integrations", icon: "external-link" },
     { id: "terminal", label: "Terminal", icon: "terminal" },
     { id: "interface", label: "Interface", icon: "eye" },
     { id: "appearance", label: "Appearance", icon: "sun" },
@@ -296,6 +298,8 @@ export function SettingsPanel({
             <UsageSettingsPage />
           ) : activePanel === "storage" ? (
             <StorageSettingsPage />
+          ) : activePanel === "api" ? (
+            <ApiSettingsPage />
           ) : activePanel === "terminal" ? (
             <TerminalSettingsPage />
           ) : activePanel === "interface" ? (

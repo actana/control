@@ -1,7 +1,7 @@
 import { z } from "zod";
-import { json, noContent, parseJsonBody, rethrowUnlessDomain } from "./_helpers";
+import { forbidden, json, noContent, parseJsonBody, rethrowUnlessDomain } from "./_helpers";
 import { HTTP_CREATED } from "~/shared/http-status";
-import { OPERATOR_ID } from "../services/operator";
+import type { ApiPrincipal } from "../api-key-auth";
 import {
   createWebhook,
   deleteWebhook,
@@ -11,8 +11,11 @@ import {
 } from "../services/webhooks";
 
 /**
- * Webhooks (#574): create, list, delete and ping. Session-only for this PR;
- * no UI. The plaintext signing secret is returned once from create.
+ * Webhooks (#574): create, list, delete and ping for Settings › API &
+ * integrations (screen 09). Only the Operator's session manages them. The list
+ * includes each hook's newest delivery so the page can show last delivery
+ * without a second round-trip. The plaintext signing secret is returned once
+ * from create.
  */
 
 const createBody = z.object({
@@ -23,41 +26,56 @@ const createBody = z.object({
 
 const NO_STORE = { "cache-control": "no-store" };
 
-export async function create(request: Request): Promise<Response> {
+function requireSession(principal: ApiPrincipal): Response | null {
+  if (principal.kind !== "session") return forbidden("only the Operator manages webhooks");
+  return null;
+}
+
+export async function create(principal: ApiPrincipal, request: Request): Promise<Response> {
+  const denied = requireSession(principal);
+  if (denied) return denied;
   const body = await parseJsonBody(request, createBody);
   if (!body.ok) return body.response;
   try {
-    const { webhook, secret } = await createWebhook(OPERATOR_ID, body.data);
+    const { webhook, secret } = await createWebhook(principal.ownerId, body.data);
     return json({ webhook, secret }, { status: HTTP_CREATED, headers: NO_STORE });
   } catch (err) {
     return rethrowUnlessDomain(err);
   }
 }
 
-export async function list(): Promise<Response> {
-  return json({ webhooks: await listWebhooks(OPERATOR_ID) }, { headers: NO_STORE });
+export async function list(principal: ApiPrincipal): Promise<Response> {
+  const denied = requireSession(principal);
+  if (denied) return denied;
+  return json({ webhooks: await listWebhooks(principal.ownerId) }, { headers: NO_STORE });
 }
 
-export async function remove(id: string): Promise<Response> {
+export async function remove(principal: ApiPrincipal, id: string): Promise<Response> {
+  const denied = requireSession(principal);
+  if (denied) return denied;
   try {
-    await deleteWebhook(OPERATOR_ID, id);
+    await deleteWebhook(principal.ownerId, id);
     return noContent();
   } catch (err) {
     return rethrowUnlessDomain(err);
   }
 }
 
-export async function ping(id: string): Promise<Response> {
+export async function ping(principal: ApiPrincipal, id: string): Promise<Response> {
+  const denied = requireSession(principal);
+  if (denied) return denied;
   try {
-    return json(await pingWebhook(OPERATOR_ID, id), { headers: NO_STORE });
+    return json(await pingWebhook(principal.ownerId, id), { headers: NO_STORE });
   } catch (err) {
     return rethrowUnlessDomain(err);
   }
 }
 
-export async function deliveries(id: string): Promise<Response> {
+export async function deliveries(principal: ApiPrincipal, id: string): Promise<Response> {
+  const denied = requireSession(principal);
+  if (denied) return denied;
   try {
-    return json({ deliveries: await listWebhookDeliveries(OPERATOR_ID, id) }, { headers: NO_STORE });
+    return json({ deliveries: await listWebhookDeliveries(principal.ownerId, id) }, { headers: NO_STORE });
   } catch (err) {
     return rethrowUnlessDomain(err);
   }

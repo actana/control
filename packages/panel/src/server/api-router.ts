@@ -303,17 +303,18 @@ async function dispatch(
   }
   const revokeMatch = pathname.match(API_KEY_REVOKE_PATH);
   if (revokeMatch && method === "POST") return apiKeysController.revoke(principal!, decode(revokeMatch[1]));
-  // Webhooks (#574): signed Task event delivery. No UI in this PR.
+  // Webhooks (#574): signed Task event delivery. Session only; list includes
+  // each hook's newest delivery for Settings › API & integrations (screen 09).
   if (pathname === "/api/webhooks") {
-    if (method === "GET") return webhooksController.list();
-    if (method === "POST") return webhooksController.create(request);
+    if (method === "GET") return webhooksController.list(principal!);
+    if (method === "POST") return webhooksController.create(principal!, request);
   }
   m = pathname.match(WEBHOOK_PING_PATH);
-  if (m && method === "POST") return webhooksController.ping(decode(m[1]));
+  if (m && method === "POST") return webhooksController.ping(principal!, decode(m[1]));
   m = pathname.match(WEBHOOK_DELIVERIES_PATH);
-  if (m && method === "GET") return webhooksController.deliveries(decode(m[1]));
+  if (m && method === "GET") return webhooksController.deliveries(principal!, decode(m[1]));
   m = pathname.match(WEBHOOK_PATH);
-  if (m && method === "DELETE") return webhooksController.remove(decode(m[1]));
+  if (m && method === "DELETE") return webhooksController.remove(principal!, decode(m[1]));
   // The Shared-folder storage config (#564, #566): the key is write-only, so there is a GET without it and a PUT.
   if (pathname === "/api/storage") {
     if (method === "GET") return storageController.read();
