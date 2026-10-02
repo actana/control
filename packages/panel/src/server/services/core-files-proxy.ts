@@ -48,9 +48,9 @@ import { HTTP_CLIENT_CLOSED_REQUEST } from "~/shared/http-status";
 
 /** Everything the pipe needs about one Core, resolved once per request. */
 export type CoreFilesTarget = {
-  /** `…/v1/projects/:projectId/files?path=…` — the read and write route. */
+  /** `…/v1/files?path=…` — the read and write route. */
   fileUrl(path: string): string;
-  /** `…/v1/projects/:projectId/files/list?path=…&depth=…&sha256=…` */
+  /** `…/v1/files/list?path=…&depth=…&sha256=…` */
   listUrl(opts: { path?: string; depth?: number; sha256?: boolean }): string;
   /** The bearer the core link presents, as an `authorization` header, or `{}`. */
   authHeaders(): Record<string, string>;
@@ -75,7 +75,7 @@ export type CoreFilesResolution =
  * words that a caller who needs them subclasses. This is that caller, and the
  * reason to take the SDK's copy is #218: the SDK and the Core had drifted to
  * two different listing URLs, and the fix was a contract test pinning them
- * together. A third hand-rolled `/v1/projects/${id}/files` in the Panel would
+ * together. A third hand-rolled `/v1/files` in the Panel would
  * be a third thing to keep in that agreement — and the one furthest from the
  * test.
  *
@@ -106,7 +106,9 @@ class CoreFileRoutes extends CoreFiles {
  */
 export async function resolveCoreFilesTarget(
   coreId: string,
-  projectId: string,
+  // The Panel's own route still carries a project id in its path; a Core has none and the
+  // SDK's Files client no longer takes one (@actana/sdk 0.6.0-next.4), so it is not used.
+  _projectId: string,
   deps: {
     getCore?: typeof getCore;
     getCoreSecrets?: typeof getCoreSecrets;
@@ -151,7 +153,6 @@ export async function resolveCoreFilesTarget(
 
   const fetch = filesFetchFor(coreId, secrets, makeFetch);
   const routes = new CoreFileRoutes({
-    projectId,
     baseUrl: httpsBaseUrlFor(core.endpoint),
     bearer: secrets.bearer,
     // Already gated above, and the SDK's own gate would be a second answer to
