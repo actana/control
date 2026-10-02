@@ -4,10 +4,13 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { closePanelTestDb, openPanelTestDb, resetPanelState } from "./_panel-test-db";
+import { FakeClock, FakeCoreLink, fakeSts, settle } from "./_shared-fakes";
+import { FakeS3 } from "./_shared-s3-fake";
 
 /**
- * The storage config and its master key (#564): the key goes in through one write-only route, is sealed at
- * rest, and comes out of nowhere: not a route, not a log line, not an error message.
+ * The storage config and its master key (#564 / #566): the key goes in through one write-only route, is sealed at
+ * rest, and comes out of nowhere: not a route, not a log line, not an error message. Rotate re-issues Core keys;
+ * Settings › Storage test-connection uses the same isolation probe as pairing, against a fake S3 here.
  */
 
 const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ac-storage-config-test-"));
@@ -17,8 +20,16 @@ process.env.AC_PANEL_DATA_DIR = path.join(tmpRoot, "panel");
 const { handleApiRequest } = await import("../api-router");
 const testDb = await openPanelTestDb();
 const { operatorSessionCookie, resetOperatorSessionForTests } = await import("./_operator-session");
+const { registerCoreFromCredential } = await import("../services/cores");
+const { SharedFolders, resetSharedFoldersForTests, sharedFolders } = await import("../services/shared-folders");
+const { storageKeyIssuer } = await import("../services/storage");
 
 const ORIGIN = "http://panel.example.test";
+const BUCKET = "actana-shared";
+const PREFIX = "cores";
+
+const masterPair = generateKeyPairSync("rsa", { modulusLength: 2048 });
+const MASTER_PEM = masterPair.privateKey.export({ type: "pkcs8", format: "pem" }).toString();
 
 function pem(): string {
   return generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKey.export({ type: "pkcs8", format: "pem" }).toString();
@@ -45,17 +56,41 @@ async function call(pathname: string, init: { method?: string; json?: unknown } 
 const CONFIG = {
   backend: "seaweedfs",
   endpoint: "http://seaweedfs:8333",
-  bucket: "actana-shared",
+  bucket: BUCKET,
   prefix: "cores/",
   oidcIssuer: "https://panel.example.test",
   keyId: "k1",
 };
 
 let logged: string[];
+let clock: FakeClock;
+let s3: FakeS3;
+let link: FakeCoreLink;
+let online: { value: boolean };
+let coreN = 0;
 
 beforeEach(() => {
   resetOperatorSessionForTests();
   logged = [];
+  clock = new FakeClock();
+  s3 = new FakeS3(BUCKET);
+  s3.clock = clock.now;
+  link = new FakeCoreLink();
+  online = { value: true };
+  const sts = fakeSts({ s3, masterPublic: masterPair.publicKey, prefix: PREFIX, clock });
+  resetSharedFoldersForTests(
+    new SharedFolders({
+      link: () => (online.value ? link : null),
+      isConnected: () => online.value,
+      issuer: (ownerId) => storageKeyIssuer(ownerId, { fetch: sts.fetch, now: clock.now }),
+      now: clock.now,
+      setTimer: clock.setTimer,
+      clearTimer: clock.clearTimer,
+      retryDelaysMs: [5_000],
+      requestTimeoutMs: 1_000,
+      fetch: s3.fetch,
+    }),
+  );
   for (const method of ["log", "info", "warn", "error", "debug"] as const) {
     vi.spyOn(console, method).mockImplementation((...args: unknown[]) => {
       logged.push(args.map((a) => (typeof a === "string" ? a : JSON.stringify(a, Object.getOwnPropertyNames(Object(a))))).join(" "));
@@ -64,6 +99,7 @@ beforeEach(() => {
 });
 afterEach(async () => {
   vi.restoreAllMocks();
+  resetSharedFoldersForTests(null);
   await resetPanelState(testDb);
 });
 afterAll(async () => {
@@ -71,6 +107,15 @@ afterAll(async () => {
   fs.rmSync(tmpRoot, { recursive: true, force: true });
 });
 
+async function attachedCore(): Promise<string> {
+  coreN += 1;
+  const core = await registerCoreFromCredential(
+    { endpoint: `wss://core-storage-${coreN}.test:7777`, caCert: "ca", clientCert: "cert", clientKey: "key", bearer: "b" },
+    { label: `storage core ${coreN}`, pendingSharedFolder: true },
+  );
+  await sharedFolders().finishPairing(core.id);
+  return core.id;
+}
 describe("the storage config", () => {
   it("is empty until it is set", async () => {
     const { storage } = await (await call("/api/storage")).json();
@@ -92,7 +137,7 @@ describe("the storage config", () => {
   });
 
   it("refuses a backend this Panel cannot issue keys for", async () => {
-    const res = await call("/api/storage", { method: "PUT", json: { ...CONFIG, backend: "r2", masterKey: pem() } });
+    const res = await call("/api/storage", { method: "PUT", json: { ...CONFIG, backend: "nope", masterKey: pem() } });
     expect(res.status).toBe(400);
   });
 });
@@ -127,7 +172,25 @@ describe("the master key", () => {
     const { storage } = await (await call("/api/storage")).json();
     expect(storage).toMatchObject({ configured: true, masterKeySet: true, bucket: "other-bucket" });
     expect(Object.keys(storage).sort()).toEqual(
-      ["backend", "bucket", "configured", "endpoint", "keyId", "masterKeySet", "oidcAudience", "oidcIssuer", "prefix", "region", "updatedAt"],
+      [
+        "accountId",
+        "anonKey",
+        "backend",
+        "bucket",
+        "configured",
+        "endpoint",
+        "keyId",
+        "masterKeyRotatedAt",
+        "masterKeySet",
+        "oidcAudience",
+        "oidcIssuer",
+        "parentAccessKeyId",
+        "prefix",
+        "region",
+        "roleArn",
+        "updatedAt",
+        "uploadSizeLimitBytes",
+      ].sort(),
     );
   });
 
@@ -172,5 +235,116 @@ describe("the master key", () => {
     expect(text).not.toContain("hunter2");
     const ec = generateKeyPairSync("ec", { namedCurve: "P-256" }).privateKey.export({ type: "pkcs8", format: "pem" }).toString();
     expect((await call("/api/storage", { method: "PUT", json: { ...CONFIG, masterKey: ec } })).status).toBe(400);
+  });
+
+  it("records when it was rotated, and an edit without a key does not move that time", async () => {
+    const first = pem();
+    await call("/api/storage", { method: "PUT", json: { ...CONFIG, masterKey: first } });
+    const { storage: afterSet } = await (await call("/api/storage")).json();
+    expect(afterSet.masterKeyRotatedAt).toEqual(expect.any(Number));
+    const rotatedAt = afterSet.masterKeyRotatedAt as number;
+    await call("/api/storage", { method: "PUT", json: { ...CONFIG, bucket: "actana-shared-2" } });
+    const { storage: afterEdit } = await (await call("/api/storage")).json();
+    expect(afterEdit.masterKeyRotatedAt).toBe(rotatedAt);
+    expect(afterEdit.bucket).toBe("actana-shared-2");
+    await new Promise((r) => setTimeout(r, 5));
+    await call("/api/storage", { method: "PUT", json: { ...CONFIG, masterKey: pem() } });
+    const { storage: afterRotate } = await (await call("/api/storage")).json();
+    expect(afterRotate.masterKeyRotatedAt).toBeGreaterThan(rotatedAt);
+  });
+
+  it("stores the upload size limit and defaults it to 512 MiB", async () => {
+    await call("/api/storage", { method: "PUT", json: { ...CONFIG, masterKey: pem() } });
+    const { storage } = await (await call("/api/storage")).json();
+    expect(storage.uploadSizeLimitBytes).toBe(512 * 1024 * 1024);
+    await call("/api/storage", { method: "PUT", json: { ...CONFIG, uploadSizeLimitBytes: 64 * 1024 * 1024 } });
+    const { storage: next } = await (await call("/api/storage")).json();
+    expect(next.uploadSizeLimitBytes).toBe(64 * 1024 * 1024);
+  });
+
+  it("accepts the STS, Supabase and R2 backends with their master material shapes", async () => {
+    for (const [backend, masterKey, extra] of [
+      ["sts", JSON.stringify({ accessKeyId: "AKIAEXAMPLE", secretAccessKey: "secret" }), { roleArn: "arn:aws:iam::1:role/r" }],
+      ["r2", "cf-api-token-example", { accountId: "acct", parentAccessKeyId: "parent" }],
+      ["supabase", JSON.stringify({ serviceRoleKey: "srk", jwtSecret: "jwt" }), { anonKey: "anon" }],
+    ] as const) {
+      const res = await call("/api/storage", {
+        method: "PUT",
+        json: { ...CONFIG, backend, masterKey, oidcIssuer: undefined, keyId: undefined, ...extra },
+      });
+      expect(res.status, backend).toBe(200);
+      const { storage } = await res.json();
+      expect(storage.backend).toBe(backend);
+      expect(storage.masterKeySet).toBe(true);
+      expect(JSON.stringify(storage)).not.toMatch(/AKIAEXAMPLE|secret|cf-api-token|srk|jwt/);
+    }
+  });
+
+  it("refuses a backend change that carries no new master material", async () => {
+    expect((await call("/api/storage", { method: "PUT", json: { ...CONFIG, masterKey: MASTER_PEM } })).status).toBe(200);
+    const res = await call("/api/storage", {
+      method: "PUT",
+      json: {
+        ...CONFIG,
+        backend: "sts",
+        roleArn: "arn:aws:iam::1:role/r",
+        oidcIssuer: undefined,
+        keyId: undefined,
+      },
+    });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toMatch(/backend.*master key/i);
+    const { storage } = await (await call("/api/storage")).json();
+    expect(storage.backend).toBe("seaweedfs");
+  });
+});
+
+describe("rotate re-issues Core keys", () => {
+  it("a PUT with a master key pushes sharedCredentials; a PUT without one does not", async () => {
+    expect((await call("/api/storage", { method: "PUT", json: { ...CONFIG, masterKey: MASTER_PEM } })).status).toBe(200);
+    await attachedCore();
+    expect(link.ofType("sharedAttach")).toHaveLength(1);
+    link.frames.length = 0;
+
+    expect((await call("/api/storage", { method: "PUT", json: { ...CONFIG, masterKey: MASTER_PEM } })).status).toBe(200);
+    await settle();
+    expect(link.ofType("sharedCredentials")).toHaveLength(1);
+    expect(link.ofType("sharedAttach")).toHaveLength(0);
+    link.frames.length = 0;
+
+    expect((await call("/api/storage", { method: "PUT", json: { ...CONFIG, bucket: "actana-shared" } })).status).toBe(200);
+    await settle();
+    expect(link.ofType("sharedCredentials")).toHaveLength(0);
+    expect(link.frames).toEqual([]);
+  });
+});
+
+describe("per-Core rows and test connection", () => {
+  it("GET /api/storage lists each Core's folder size and key expiry from listStorageCores", async () => {
+    expect((await call("/api/storage", { method: "PUT", json: { ...CONFIG, masterKey: MASTER_PEM } })).status).toBe(200);
+    const coreId = await attachedCore();
+    s3.seed(`${PREFIX}/${coreId}/note.txt`, "hello-size");
+    const { cores } = await (await call("/api/storage")).json();
+    expect(cores).toEqual([
+      expect.objectContaining({
+        coreId,
+        label: expect.stringMatching(/^storage core /),
+        prefix: `${PREFIX}/${coreId}/`,
+        sizeBytes: 10,
+        keyExpiresAt: expect.any(Number),
+        state: "attached",
+        offline: false,
+      }),
+    ]);
+  });
+
+  it("POST /api/storage/test proves isolation on the fake S3 without a registered Core", async () => {
+    expect((await call("/api/storage", { method: "PUT", json: { ...CONFIG, masterKey: MASTER_PEM } })).status).toBe(200);
+    const res = await call("/api/storage/test", { method: "POST", json: {} });
+    expect(res.status).toBe(200);
+    const { result } = await res.json();
+    expect(result).toMatchObject({ read: true, write: true, listOwn: true, reachOther: false });
+    expect(result.folder).toMatch(new RegExp(`^${PREFIX}/probe_`));
+    expect([...s3.objects.keys()].every((k) => !k.includes(".panel-probe-"))).toBe(true);
   });
 });

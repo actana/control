@@ -392,7 +392,19 @@ export const storageConfig = pgTable("storage_config", {
   oidcIssuer: text("oidc_issuer").notNull(),
   oidcAudience: text("oidc_audience").notNull(),
   keyId: text("key_id").notNull(),
+  /** STS AssumeRole ARN when backend is `sts`; empty otherwise. */
+  roleArn: text("role_arn").notNull().default(""),
+  /** Cloudflare account id when backend is `r2`; empty otherwise. */
+  accountId: text("account_id").notNull().default(""),
+  /** Parent R2 S3 access key id when backend is `r2`; empty otherwise. */
+  parentAccessKeyId: text("parent_access_key_id").notNull().default(""),
+  /** Supabase anon key when backend is `supabase`; empty otherwise. Public, not sealed. */
+  anonKey: text("anon_key").notNull().default(""),
   masterKeySealed: bytea("master_key_sealed"),
+  /** When the sealed master key was last written (rotate or first set). */
+  masterKeyRotatedAt: epochMs("master_key_rotated_at"),
+  /** Max upload bytes from the Panel Files tab and the SDK (#565 Storage settings). */
+  uploadSizeLimitBytes: bigint("upload_size_limit_bytes", { mode: "number" }).notNull().default(536870912),
   updatedAt: epochMs("updated_at").notNull(),
 });
 

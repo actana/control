@@ -47,7 +47,13 @@ const STORAGE_EMPTY: StorageConfigView = {
   oidcIssuer: null,
   oidcAudience: null,
   keyId: null,
+  roleArn: null,
+  accountId: null,
+  parentAccessKeyId: null,
+  anonKey: null,
   masterKeySet: false,
+  masterKeyRotatedAt: null,
+  uploadSizeLimitBytes: null,
   updatedAt: null,
 };
 const STORAGE_SET: StorageConfigView = {
@@ -62,6 +68,8 @@ const STORAGE_SET: StorageConfigView = {
   oidcAudience: "actana-shared",
   keyId: "k1",
   masterKeySet: true,
+  masterKeyRotatedAt: 1,
+  uploadSizeLimitBytes: 512 * 1024 * 1024,
   updatedAt: 1,
 };
 const PASSED = { folder: "cores/core_new/", expiresAt: 1_790_000_000_000, read: true, write: true, listOwn: true, reachOther: false };
@@ -70,7 +78,7 @@ let CORES: CoreWithDial[] = [];
 
 const api = {
   listCores: vi.fn(async () => ({ cores: CORES })),
-  getStorage: vi.fn(async () => ({ storage: STORAGE_SET })),
+  getStorage: vi.fn(async () => ({ storage: STORAGE_SET, cores: [] })),
   putStorage: vi.fn(async (_body: unknown) => ({ storage: STORAGE_SET })),
   testSharedFolder: vi.fn(async () => ({ result: PASSED })),
   finishCorePairing: vi.fn(async (): Promise<{ core: CoreWithDial }> => ({ core: core({ sharedFolder: { state: "attached", prefix: "cores/core_new/", keyExpiresAt: 1, error: null } }) })),
@@ -115,7 +123,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   CORES = [core()];
   api.listCores.mockImplementation(async () => ({ cores: CORES }));
-  api.getStorage.mockImplementation(async () => ({ storage: STORAGE_SET }));
+  api.getStorage.mockImplementation(async () => ({ storage: STORAGE_SET, cores: [] }));
   api.putStorage.mockImplementation(async () => ({ storage: STORAGE_SET }));
   api.testSharedFolder.mockImplementation(async () => ({ result: PASSED }));
 });
@@ -177,7 +185,7 @@ describe("pairing step 4: the Shared folder", () => {
   });
 
   it("takes the master key through a write-only box: never filled, sent once, then dropped from the page", async () => {
-    api.getStorage.mockImplementation(async () => ({ storage: STORAGE_EMPTY }));
+    api.getStorage.mockImplementation(async () => ({ storage: STORAGE_EMPTY, cores: [] }));
     await openSettings();
     const box = screen.getByLabelText("Master key") as HTMLInputElement;
     expect(box.type).toBe("password");
