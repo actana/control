@@ -388,8 +388,8 @@ request. The Panel validates the path itself (no `..`, no absolute path, not the
 any key is issued. **The upload limit is stored (PR 640):** each request reads it from Storage settings (D39, default
 512 MiB); the 100 MB constant `DEFAULT_UPLOAD_LIMIT_BYTES` applies only when no limit is stored (storage not set up yet). Task attachments
 use the same stored limit. **Where this meets earlier clauses:** ADR 0030's "dumb pipe" (the Panel streams the Core's
-workspace file bytes through with nothing buffered and no path validated) is about the Core's Files API (D30) and is not
-changed here; it is not true of the Shared folder, where the Panel buffers uploads, validates paths and reads S3 on its own.
+workspace file bytes through with nothing buffered and no path validated) was about the Core's Files API (D30); the Panel's
+route for it was removed by #580 (see the note on ADR 0030), and it is not true of the Shared folder, where the Panel buffers uploads, validates paths and reads S3 on its own.
 D6 says the Shared folder is mounted from S3 with short-lived keys; the Panel does not mount it, it reaches the same
 prefix as a client of S3, with its own key and not the Core's (D33).
 

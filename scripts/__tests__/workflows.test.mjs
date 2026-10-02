@@ -1539,7 +1539,7 @@ describe("sub-beta trains (ADR 0023 D46)", () => {
 
   it("accepts a sub-beta as a base, and asserts the tree against the line", () => {
     // The clause that keeps D3 untouched: the suffix names the branch, so the
-    // six manifests and the installer stamp on `beta/0.4.5-f1` still say
+    // five manifests and the installer stamp on `beta/0.4.5-f1` still say
     // `0.4.5`. Asserting `$version` here would demand a version no cut writes
     // and fail every pull request into a sub-beta.
     expect(rules).toContain('"$version" =~ ^[0-9]+\\.[0-9]+\\.[0-9]+(-f[0-9]+)?$');

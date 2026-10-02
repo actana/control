@@ -1,8 +1,8 @@
 name: Release
 
 # Everything a release publishes: the three Core tarballs and their
-# SHA256SUMS, the Panel and Core images, and the GitHub Release. One file rather than five, because they are one event (ADR 0016
-# D34).
+# SHA256SUMS, the Panel and Core images, and the GitHub Release. One file rather
+# than five, because they are one event (ADR 0016 D34).
 #
 #   resolve ─┬─ tarball ──────── installer-e2e ─┐
 #            │                                  │

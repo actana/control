@@ -49,11 +49,18 @@ const RETIRED = [
   ["GET", "/v1/projects/p1/files/list?path=shared"],
   ["PUT", "/v1/projects/whatever/files?path=shared%2Fnew.txt"],
   ["DELETE", "/v1/projects/p1/files?path=a.txt"],
+] as const;
+
+// REGRESSION GUARDS, not fixes: these two were never part of the alias (the base's `parseRoute` gave
+// them no route either) and pass on the base. They hold the line that a delete-shaped or
+// folder-shaped address is not grown back under a Project-looking path.
+const NEVER_ALIASED = [
   ["POST", "/v1/projects/p1/files/folder?path=x"],
   ["POST", "/v1/projects/p1/files/move"],
 ] as const;
 
 describe("the retired /v1/projects/:id/files addresses", () => {
+  // REGRESSION GUARD (passes on the base): the control that keeps the refusals below meaningful.
   it("still serves the home at /v1/files, which is what the published SDK builds", async () => {
     expect(await call("GET", "/v1/files?path=a.txt")).toEqual({ status: 200, text: "from the home" });
     expect((await call("GET", "/v1/files/list?path=shared")).status).toBe(200);
@@ -63,6 +70,10 @@ describe("the retired /v1/projects/:id/files addresses", () => {
     const res = await call(method, url, method === "PUT" ? "written through the old address" : undefined);
 
     expect(res.status).toBe(404);
+  });
+
+  it.each(NEVER_ALIASED)("regression guard, passes on the base: %s %s was never served", async (method, url) => {
+    expect((await call(method, url)).status).toBe(404);
   });
 
   it("writes nothing, deletes nothing and creates nothing through them", async () => {

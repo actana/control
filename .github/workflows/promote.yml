@@ -374,9 +374,9 @@ jobs:
       #
       # `version` above is the train's own branch name with `beta/` cut off it,
       # and until this step nothing on the push path ever compared that name to
-      # the six manifests inside the commit: `Train rules` does exactly this
+      # the five manifests inside the commit: `Train rules` does exactly this
       # comparison and runs on `pull_request` only, so the cut commit — the one
-      # commit whose entire purpose is writing six versions — reached here
+      # commit whose entire purpose is writing five versions — reached here
       # unasserted. `ci.yml`'s `Train versions` now covers the push; this covers
       # the promotion, which is the moment the name becomes `vx.y.z`.
       #
@@ -491,7 +491,7 @@ jobs:
 
           # The revision label says which commit these bytes came from. It says
           # nothing about what version they think they are, and that silence is
-          # the gap: an image whose six manifests say `9.9.9` promoted to
+          # the gap: an image whose five manifests say `9.9.9` promoted to
           # `x.y.z` and to `latest` with this job green, because the only thing
           # compared was a SHA (ADR 0037 D4).
           #
@@ -1268,7 +1268,7 @@ jobs:
             echo "proposed* — is kept honest without a workflow that invents a number."
             echo ""
             echo "**The procedure is [\`docs/ci-cd.md\` § \"Cutting a train\"](https://github.com/${GH_REPO}/blob/main/docs/ci-cd.md#cutting-a-train).**"
-            echo "It is six manifests, one commit, one push, and the version in the branch name is"
+            echo "It is five manifests, one commit, one push, and the version in the branch name is"
             echo "the decision being made — the next release may be a patch, a minor or a major, and"
             echo "only a person knows which."
             echo ""

@@ -104,7 +104,7 @@ on:
       version:
         description: >-
           The version these bytes must self-report (e.g. 0.4.1, 0.4.1-beta,
-          v0.4.1). A build asserts the checked-out tree's six manifests carry
+          v0.4.1). A build asserts the checked-out tree's five manifests carry
           its line before building, and `promote`/`verify` assert the published
           digest's `org.opencontainers.image.version` label equals that line
           (ADR 0037 D4). Empty skips both, and every caller publishing a
@@ -338,7 +338,7 @@ jobs:
       #
       # `inputs.version` is empty on the pull request path, and the step still
       # runs: a PR's tree carries the train's version, which is not a claim
-      # about anything, but the six manifests still have to agree *with each
+      # about anything, but the five manifests still have to agree *with each
       # other* for the label to mean anything at all. So the root manifest
       # stands in as the expected value and the other five are compared to it.
       - name: Read the version these bytes carry
@@ -430,7 +430,7 @@ jobs:
 
       # D16's assertion says the bytes came from the right *commit*. It says
       # nothing about what version those bytes think they are, and until this
-      # step that was the whole of the story: an image whose six manifests say
+      # step that was the whole of the story: an image whose five manifests say
       # `9.9.9` promoted cleanly to `x.y.z` and to `latest`, because the only
       # thing compared was a SHA (ADR 0037 D4).
       #

@@ -205,7 +205,7 @@ There is only ever one. If you find two, a hotfix is in flight — see
 
 **A train can publish.** Beside the `beta-x.y.z` images every merge republishes,
 a person can dispatch `beta-release.yml` to cut a beta — a prerelease at
-`x.y.z-beta` with the three Core tarballs, their checksums, the CLI and the
+`x.y.z-beta` with the three Core tarballs, their checksums and the
 matching image tags, so the train is installable rather than only pullable ([ADR
 0036](docs/adr/0036-the-beta-release-channel.md)). Merging your pull request does
 not cut one; asking does.

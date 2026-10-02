@@ -10,7 +10,7 @@ import { createCoreFilesFetch, type CoreFilesFetch } from "@actana/sdk/core";
  *
  * `createCoreFilesFetch` builds an undici `Agent` on first use and an `Agent`
  * *is* a connection pool. One per request would mean a fresh TLS handshake for
- * every listing a Files view refreshes, and would leave the pools behind to be
+ * every request the Shared-folder dispatch makes, and would leave the pools behind to be
  * collected — which is a slow leak rather than an error, and therefore the kind
  * that survives review.
  *

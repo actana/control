@@ -63,7 +63,7 @@ BASE_URL="${ACTANA_BASE_URL:-}"
 
 # ─── the line this copy installs (ADR 0036 D1) ───────────────────────────────
 #
-# The one value a cut writes into this file, alongside the six manifests
+# The one value a cut writes into this file, alongside the five manifests
 # (docs/ci-cd.md § "Cutting a train"). It is a **line** — `x.y.z` — and not a
 # channel: `resolve_version` below turns it into either that line's release or
 # that line's beta, which is what makes the same bytes correct on a train,

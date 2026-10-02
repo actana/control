@@ -352,9 +352,7 @@ export async function startPanelService({
   port,
   secretsKey,
   /**
-   * Extra environment for this Panel — `NODE_OPTIONS` in particular, which is
-   * how the file-drop leg gives the service a memory limit small enough that
-   * pushing a gigabyte through it means something (#169).
+   * Extra environment for this Panel (the database URL of the leg).
    */
   extra = {},
   timeoutMs = 60_000,

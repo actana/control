@@ -1,6 +1,7 @@
 // The Panel's `/api/cores/:coreId/projects/:projectId/files` route is retired (#580 T-404, the
-// leftover of #560). A Core has no Projects, the Panel's UI has none, and the only caller left was
-// the in-repo sdk's suites, which are deleted. A route the Panel no longer takes is refused the
+// leftover of #560). A Core has no Projects and the Panel's UI has none. The callers it had were the
+// in-repo sdk's suites and the deployed e2e script `scripts/e2e-panel-smoke.mjs`, whose files leg
+// now asserts this same refusal against the built service. A route the Panel no longer takes is refused the
 // way ADR 0041 D27 says: a 404 `not found` from the router, with nothing resolved and nothing
 // sent to any Core. (Before, the same request resolved a Core and answered `no-such-core` here.)
 import { afterAll, describe, expect, it } from "vitest";
