@@ -38,12 +38,8 @@ function canned(request: CoreHomeOpRequest): unknown {
       return [];
     case "wireLocalCore":
       return { name: "core-01", selected: true, keptSelection: null };
-    case "createDirectory":
-      return { path: `${request.parent}/${request.name}` };
     case "resolveCommand":
       return { candidates: [`/home/core/.local/bin/${request.command}`] };
-    case "dirList":
-      return { path: "/home/core", parent: null, home: "/home/core", roots: [], entries: [], truncated: false };
     default:
       return null;
   }

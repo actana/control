@@ -20,7 +20,6 @@
 import { spawn } from "node:child_process";
 import * as path from "node:path";
 import log from "@actana/shared/log";
-import type { CoreLinkDirListing } from "@actana/sdk/core";
 import type { SkillInstallEntry } from "@actana/shared/orchestration-skill-install";
 import {
   asCore,
@@ -53,7 +52,7 @@ export type { SpawnPathFacts } from "./core-home-ops";
 export const CORE_HOME_OPS_BUNDLE = "core-home-ops.cjs";
 /** A helper that has not answered by now is stuck; nothing it does is this slow. */
 export const HELPER_TIMEOUT_MS = 15_000;
-/** A directory listing is the largest answer; this is far above it. */
+/** The most an answer may carry; far above any real one. */
 const MAX_ANSWER_BYTES = 16 * 1024 * 1024;
 const STDERR_EXCERPT = 500;
 /** `MAX_ROOTS` of the operations module, which refuses more. */
@@ -289,23 +288,6 @@ export async function resolveExecCwdViaCore(
   // Blank is "this Core's home", and is said as null: the helper takes no empty strings.
   const { cwd } = await coreHomeOp({ op: "resolveExecCwd", cwd: requested?.trim() ? requested : null }, options);
   return cwd;
-}
-
-/** The folder picker's listing, read by the user whose folders they are. */
-export function listDirectoryViaCore(
-  requested: string | null | undefined,
-  options: CoreHomeOpsOptions = {},
-): Promise<CoreLinkDirListing> {
-  return coreHomeOp({ op: "dirList", path: requested?.trim() ? requested : null }, options);
-}
-
-/** The folder picker's new folder, made by the user whose folder it is. Resolves to its path. */
-export async function createDirectoryViaCore(
-  parent: string,
-  name: string,
-  options: CoreHomeOpsOptions = {},
-): Promise<string> {
-  return (await coreHomeOp({ op: "createDirectory", parent, name }, options)).path;
 }
 
 /**

@@ -13,7 +13,6 @@ import {
   type EventLogPort,
   type CoreMutationPort,
 } from "@actana/core/pty-core-link-server";
-import { createDirectory, listDirectory } from "@actana/core/directory-browse";
 import { generateCertMaterial } from "@actana/shared/core-cert-material";
 import { signBearer, verifyBearer } from "@actana/shared/core-link-bearer";
 import type { PtyCore } from "@actana/core/pty-manager";
@@ -23,7 +22,7 @@ import type { PanelLinkClientFrame, PanelLinkServerFrame } from "~/shared/panel-
 
 /**
  * The write path, end to end: a browser tab starts a
- * session, pins and renames and re-icons things, and browses folders — all as
+ * session, pins and renames and re-icons things — all as
  * frames on one panel link, across the router, down a real mTLS core-link, to
  * a Core that owns the rows and the disk.
  *
@@ -287,21 +286,12 @@ function mutationPort(): CoreMutationPort {
 }
 
 type CoreCredential = Parameters<typeof registerCoreFromCredential>[0];
-type CoreFixture = { server: PtyCoreLinkServer; credential: CoreCredential; disk: string };
-
-/** The folder tree this Core owns — the one the picker will walk. */
-function coreDisk(): string {
-  const home = fs.realpathSync(fs.mkdtempSync(path.join(tmpRoot, "vm-home-")));
-  fs.mkdirSync(path.join(home, "Documents"));
-  fs.mkdirSync(path.join(home, "projects", "warehouse"), { recursive: true });
-  fs.mkdirSync(path.join(home, ".hidden"));
-  return home;
-}
+type CoreFixture = { server: PtyCoreLinkServer; credential: CoreCredential };
 
 /**
  * Cert material is generated once for the file. Every Core here presents the
  * same CA and accepts the same client cert; what makes them distinct Cores is
- * the port they listen on and the disk they own. Regenerating keys per test is
+ * the port they listen on. Regenerating keys per test is
  * seconds of CPU that prove nothing this suite is about.
  */
 let sharedMaterial: Awaited<ReturnType<typeof generateCertMaterial>> | null = null;
@@ -313,14 +303,9 @@ async function certMaterial() {
 async function startCore(label: string): Promise<CoreFixture> {
   const material = await certMaterial();
   const bound = { port: await freePort() };
-  const disk = coreDisk();
   const server = new PtyCoreLinkServer(mockCore(), {
     eventLog: eventLog(),
     mutationPort: mutationPort(),
-    directoryPort: {
-      list: (requested) => listDirectory(requested, { home: disk }),
-      create: (parent, name) => createDirectory(parent, name),
-    },
     port: bound.port,
     host: "127.0.0.1",
     createServer: tlsCreateServer(bound),
@@ -340,7 +325,7 @@ async function startCore(label: string): Promise<CoreFixture> {
     clientKey: material.client.key,
     bearer: signBearer({ coreId: "core_fixture", exp: Date.now() + 600_000 }, BEARER_SECRET),
   };
-  return { server, credential, disk };
+  return { server, credential };
 }
 
 const running: PtyCoreLinkServer[] = [];
@@ -517,74 +502,16 @@ describe("writing to a Core from the browser", () => {
   });
 });
 
-describe("browsing the Core's filesystem from the browser", () => {
-  it("lists the Core's home when the tab names no path", async () => {
-    const { coreId, core } = await pair();
+describe("the folder picker's frames, retired with Projects (#555)", () => {
+  it.each([
+    [{ type: "dirList", path: null }],
+    [{ type: "dirCreate", parent: "/home/core", name: "atlas" }],
+  ])("reaches the browser as the Core's refusal by name for %j", async (frame) => {
+    const { coreId } = await pair();
     const tab = await openTab();
 
-    const answer = await tab.ask(coreId, { type: "dirList", path: null });
+    const answer = await tab.ask(coreId, frame);
 
-    expect(answer.type).toBe("dirListResult");
-    const listing = answer.listing as { path: string; entries: Array<{ name: string }> };
-    expect(listing.path).toBe(core.disk);
-    // The VM's own folders — dotfolders stay out of the picker.
-    expect(listing.entries.map((e) => e.name)).toEqual(["Documents", "projects"]);
-  });
-
-  it("drills into a folder on that machine", async () => {
-    const { coreId, core } = await pair();
-    const tab = await openTab();
-
-    const answer = await tab.ask(coreId, {
-      type: "dirList",
-      path: path.join(core.disk, "projects"),
-    });
-
-    const listing = answer.listing as { entries: Array<{ name: string }>; parent: string };
-    expect(listing.entries.map((e) => e.name)).toEqual(["warehouse"]);
-    expect(listing.parent).toBe(core.disk);
-  });
-
-  it("creates a folder on that machine, then finds it in the next listing", async () => {
-    const { coreId, core } = await pair();
-    const tab = await openTab();
-    const parent = path.join(core.disk, "projects");
-
-    const created = await tab.ask(coreId, { type: "dirCreate", parent, name: "atlas" });
-    expect(created).toMatchObject({
-      type: "dirCreateResult",
-      path: path.join(parent, "atlas"),
-    });
-
-    const listing = (await tab.ask(coreId, { type: "dirList", path: parent })).listing as {
-      entries: Array<{ name: string }>;
-    };
-    expect(listing.entries.map((e) => e.name)).toEqual(["atlas", "warehouse"]);
-  });
-
-  it("says why a listing failed, in words meant for the operator", async () => {
-    const { coreId, core } = await pair();
-    const tab = await openTab();
-
-    const answer = await tab.ask(coreId, {
-      type: "dirList",
-      path: path.join(core.disk, "nowhere"),
-    });
-
-    expect(answer).toMatchObject({ type: "error", message: "Folder not found" });
-  });
-
-  it("refuses a folder name that would escape the parent", async () => {
-    const { coreId, core } = await pair();
-    const tab = await openTab();
-
-    const answer = await tab.ask(coreId, {
-      type: "dirCreate",
-      parent: path.join(core.disk, "projects"),
-      name: "../escaped",
-    });
-
-    expect(answer).toMatchObject({ type: "error", message: "Invalid folder name" });
-    expect(fs.existsSync(path.join(core.disk, "escaped"))).toBe(false);
+    expect(answer).toMatchObject({ type: "error", message: `unhandled frame type: ${frame.type}` });
   });
 });

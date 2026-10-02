@@ -73,32 +73,14 @@ describe("the helper bundle as a process", () => {
     });
   });
 
-  it("does an async operation end to end through the client", async () => {
-    fs.mkdirSync(path.join(home, "repos"));
-    const listing = await coreHomeOp({ op: "dirList", path: null }, options());
-    expect(listing.path).toBe(home);
-    expect(listing.entries.map((e) => e.name)).toEqual(["repos"]);
-  });
-
-  it("makes a folder and finds a CLI end to end, as a process", async () => {
+  it("reads a directory and finds a CLI end to end, as a process", async () => {
     const bin = path.join(home, ".local", "bin");
     fs.mkdirSync(bin, { recursive: true });
     fs.writeFileSync(path.join(bin, "claude"), "#!/bin/sh\n", { mode: 0o755 });
-    await expect(coreHomeOp({ op: "createDirectory", parent: home, name: "made" }, options())).resolves.toEqual({
-      path: path.join(home, "made"),
-    });
-    expect(fs.statSync(path.join(home, "made")).isDirectory()).toBe(true);
+    await expect(coreHomeOp({ op: "resolveExecCwd", cwd: null }, options())).resolves.toEqual({ cwd: home });
     await expect(coreHomeOp({ op: "resolveCommand", command: "claude", path: bin }, options())).resolves.toEqual({
       candidates: [path.join(bin, "claude")],
     });
-  });
-
-  it("refuses a new folder outside the home with the operator's sentence on stdout and the failure on stderr, and makes nothing", () => {
-    const r = runBundle(JSON.stringify({ op: "createDirectory", parent: outside, name: "x" }));
-    expect(r.status).toBe(1);
-    expect(r.stderr).toContain("core-home-ops: failed: This Core only creates folders inside its home");
-    expect(JSON.parse(r.stdout)).toMatchObject({ ok: false, code: "failed" });
-    expect(fs.readdirSync(outside)).toEqual([]);
   });
 
   it("refuses a command that is a path with exit 2 and the reason on stderr", () => {
@@ -136,13 +118,14 @@ describe("the helper bundle as a process", () => {
   });
 
   it("surfaces an operation failure with the operator's sentence", async () => {
-    await expect(coreHomeOp({ op: "dirList", path: path.join(home, "nope") }, options())).rejects.toThrow(
-      new CoreHomeOpFailedError("Folder not found"),
+    const nope = path.join(home, "nope");
+    await expect(coreHomeOp({ op: "resolveExecCwd", cwd: nope }, options())).rejects.toThrow(
+      new CoreHomeOpFailedError(`No such directory on this Core: ${nope}`),
     );
   });
 
   it("refuses to run when it is started with the daemon's environment", () => {
-    const r = runBundle(JSON.stringify({ op: "dirList", path: null }), {
+    const r = runBundle(JSON.stringify({ op: "resolveExecCwd", cwd: null }), {
       HOME: home,
       PATH: process.env.PATH ?? "",
       AC_USER_DATA_DIR: "/var/lib/actana/data",

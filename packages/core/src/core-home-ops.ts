@@ -2,9 +2,8 @@
 //
 // In the container the daemon is `actana`, and `core`'s home is 0750 core:core:
 // every short read or write the daemon used to make there (a hook file in the
-// workspace, `~/.claude/settings.json`, the skill folders, the registry blob, a
-// directory listing) would fail with EACCES, and widening the home's
-// permissions is the wrong fix. So each one is a *request* here, and the code
+// workspace, `~/.claude/settings.json`, the skill folders, the registry blob)
+// would fail with EACCES, and widening the home's permissions is the wrong fix. So each one is a *request* here, and the code
 // that touches the disk runs in a short-lived process started through `asCore`
 // (`core-home-ops-client.ts` starts it, `core-home-ops-main.ts` is its entry).
 //
@@ -43,9 +42,7 @@ import { wireLocalCore, type LocalCoreWiring } from "@actana/shared/local-core-w
 import { piAgentDir } from "@actana/shared/pi-agent-dir";
 import { ensureStatuslineTap, statuslineTapPath } from "@actana/shared/statusline-tap";
 import type { SkillInstallEntry } from "@actana/shared/orchestration-skill-install";
-import type { CoreLinkDirListing } from "@actana/sdk/core";
 import { hookWritePaths, installHarnessHooks, type HookInstallResult } from "./harness-hooks";
-import { createDirectory, listDirectory } from "./directory-browse";
 import { installOrchestrationSkills, orchestrationSkillFolders } from "./orchestration-skill";
 
 /** The only operations the helper will run. A name not in this list is refused. */
@@ -57,8 +54,6 @@ export const CORE_HOME_OPERATIONS = [
   "wireLocalCore",
   "spawnPathFacts",
   "resolveExecCwd",
-  "dirList",
-  "createDirectory",
   "resolveCommand",
 ] as const;
 
@@ -79,8 +74,6 @@ export type CoreHomeOpRequest =
   | { op: "wireLocalCore"; label: string; credential: RegistrationCredential }
   | { op: "spawnPathFacts"; cwd: string; roots: string[] }
   | { op: "resolveExecCwd"; cwd: string | null }
-  | { op: "dirList"; path: string | null }
-  | { op: "createDirectory"; parent: string; name: string }
   /** `path` is the PATH to search; null is the helper's own (core's). */
   | { op: "resolveCommand"; command: string; path: string | null };
 
@@ -109,8 +102,6 @@ export type CoreHomeOpResult = {
   wireLocalCore: LocalCoreWiring;
   spawnPathFacts: SpawnPathFacts;
   resolveExecCwd: { cwd: string };
-  dirList: CoreLinkDirListing;
-  createDirectory: { path: string };
   /** Every executable match, in search order; the caller picks by version. */
   resolveCommand: { candidates: string[] };
 };
@@ -149,8 +140,6 @@ export class CoreHomeOpFailedError extends Error {
 const MAX_PATH_LENGTH = 4096;
 const MAX_ROOTS = 256;
 const MAX_CREDENTIAL_FIELD = 64 * 1024;
-/** A filename is at most 255 bytes on every filesystem the image uses. */
-const MAX_NAME_LENGTH = 255;
 const MAX_SEARCH_PATH_LENGTH = 16 * 1024;
 
 function refuse(code: CoreHomeOpRefusedError["code"], message: string): never {
@@ -238,12 +227,6 @@ export function parseCoreHomeOpRequest(raw: unknown): CoreHomeOpRequest {
     case "resolveExecCwd":
       noExtraFields(raw, ["cwd"]);
       return { op: "resolveExecCwd", cwd: optionalStr(raw.cwd, "cwd") };
-    case "dirList":
-      noExtraFields(raw, ["path"]);
-      return { op: "dirList", path: optionalStr(raw.path, "path") };
-    case "createDirectory":
-      noExtraFields(raw, ["parent", "name"]);
-      return { op: "createDirectory", parent: str(raw.parent, "parent"), name: str(raw.name, "name", MAX_NAME_LENGTH) };
     case "resolveCommand": {
       noExtraFields(raw, ["command", "path"]);
       const command = str(raw.command, "command", 32);
@@ -363,24 +346,19 @@ function realpathOrNull(p: string): string | null {
   }
 }
 
-/** The operations that need no `await`. */
-export type SyncRequest = Exclude<CoreHomeOpRequest, { op: "dirList" | "createDirectory" }>;
 
 /**
  * Run one operation that needs no `await`. Throws {@link CoreHomeOpRefusedError}
  * for a request that must not be run (nothing was done) and
  * {@link CoreHomeOpFailedError} for one that ran and could not finish.
  */
-export function handleCoreHomeOpSync<Op extends SyncRequest["op"]>(
+export function handleCoreHomeOpSync<Op extends CoreHomeOperation>(
   request: Extract<CoreHomeOpRequest, { op: Op }>,
   ctx: CoreHomeOpContext,
 ): CoreHomeOpResult[Op];
-export function handleCoreHomeOpSync(request: SyncRequest, ctx: CoreHomeOpContext): CoreHomeOpResult[SyncRequest["op"]];
+export function handleCoreHomeOpSync(request: CoreHomeOpRequest, ctx: CoreHomeOpContext): CoreHomeOpResult[CoreHomeOperation];
 export function handleCoreHomeOpSync(request: CoreHomeOpRequest, ctx: CoreHomeOpContext): unknown {
   switch (request.op) {
-    case "dirList":
-    case "createDirectory":
-      throw new Error(`${request.op} is async: use handleCoreHomeOp`);
     case "resolveCommand": {
       // A search of PATH is a read, so it is not confined to the home: the CLIs
       // are in `~/.local/bin` and in `/usr/local/bin`. What it can see is what
@@ -451,31 +429,11 @@ export function handleCoreHomeOpSync(request: CoreHomeOpRequest, ctx: CoreHomeOp
   }
 }
 
-/** {@link handleCoreHomeOpSync}, plus the one operation that is async. */
+/** {@link handleCoreHomeOpSync}, as a promise: the helper's entry and the in-process client both `await` it. */
 export async function handleCoreHomeOp<Op extends CoreHomeOperation>(
   request: Extract<CoreHomeOpRequest, { op: Op }>,
   ctx: CoreHomeOpContext,
 ): Promise<CoreHomeOpResult[Op]>;
 export async function handleCoreHomeOp(request: CoreHomeOpRequest, ctx: CoreHomeOpContext): Promise<unknown> {
-  if (request.op === "createDirectory") {
-    const parent = confined(request.parent, ctx);
-    if (parent === null) throw new CoreHomeOpFailedError("This Core only creates folders inside its home");
-    try {
-      return { path: await createDirectory(parent, request.name) };
-    } catch (err) {
-      throw new CoreHomeOpFailedError(err instanceof Error ? err.message : String(err));
-    }
-  }
-  if (request.op !== "dirList") return handleCoreHomeOpSync(request as SyncRequest, ctx);
-  const raw = request.path !== null && request.path.trim() ? request.path : ctx.home;
-  const dir = confined(raw, ctx);
-  if (dir === null) throw new CoreHomeOpFailedError("This Core only lists folders inside its home");
-  try {
-    const listing = await listDirectory(dir, { home: ctx.home });
-    // The folder picker's "up" stops at the confinement root.
-    const atRoot = ctx.roots?.some((r) => listing.path === r || listing.path === fs.realpathSync(r));
-    return atRoot ? { ...listing, parent: null } : listing;
-  } catch (err) {
-    throw new CoreHomeOpFailedError(err instanceof Error ? err.message : String(err));
-  }
+  return handleCoreHomeOpSync(request, ctx);
 }

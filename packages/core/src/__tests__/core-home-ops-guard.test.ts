@@ -16,9 +16,9 @@ const SRC = path.resolve(__dirname, "..");
 
 /**
  * The daemon's side: the modules that used to call `fs` on core's home, and the
- * client they call the helper through. Not `directory-browse.ts`,
- * `harness-hooks*.ts`, `orchestration-skill.ts` or `core-home-ops.ts`: those are
- * the helper's code, and run in the helper (or in process outside the container).
+ * client they call the helper through. Not `harness-hooks*.ts`, `orchestration-skill.ts` or
+ * `core-home-ops.ts`: those are the helper's code, and run in the helper (or in process
+ * outside the container).
  */
 const DAEMON_SIDE = ["pty-manager.ts", "core-entry.ts", "core-exec.ts", "core-self-register.ts", "core-home-ops-client.ts"];
 
@@ -32,8 +32,6 @@ const HELPER_ONLY = [
   "installManagedStatusLine",
   "ensureOrchestrationSkill",
   "installOrchestrationSkills",
-  "listDirectory",
-  "createDirectory",
   "resolveAllHarnessCommandsOnPath",
   "wireLocalCore",
   "registryPaths",
@@ -120,7 +118,7 @@ describe("the daemon-side modules do not touch core's home", () => {
         "resolveCommandViaCore",
         "spawnPathFactsViaCore",
       ],
-      "core-entry.ts": ["createDirectoryViaCore", "ensureOrchestrationSkillViaCore", "listDirectoryViaCore"],
+      "core-entry.ts": ["ensureOrchestrationSkillViaCore"],
       "core-exec.ts": ["resolveExecCwdViaCore"],
       "core-self-register.ts": ["wireLocalCoreViaCore"],
     };

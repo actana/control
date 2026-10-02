@@ -38,7 +38,6 @@ import { PairingError, type PairingFailure } from "@actana/sdk/pairing";
 import type { CoreRegistrationBlob } from "@actana/sdk/pairing";
 import type { OpenSessionGateway, SessionGateway, StartedSession } from "@actana/cli";
 import type {
-  CoreLinkDirListing,
   CoreLinkEvent,
   CoreLinkHarnessAvailabilityMap,
   CoreLinkRequestFrame,
@@ -411,8 +410,7 @@ export type FakeCore = {
 
 export type FakeCoreOptions = {
   availability?: CoreLinkHarnessAvailabilityMap;
-  listing?: CoreLinkDirListing;
-  /** Answer `request` yourself — for `dirList` / `harnessInstall` shapes. */
+  /** Answer `request` yourself — for `harnessInstall` shapes. */
   respond?: (frame: CoreLinkRequestFrame) => CoreLinkResponseFrame | Promise<CoreLinkResponseFrame>;
 };
 
@@ -460,13 +458,6 @@ export function fakeCore(opts: FakeCoreOptions = {}): FakeCore {
     request: async (frame) => {
       state.requests.push(frame);
       if (opts.respond) return opts.respond(frame);
-      if (frame.type === "dirList") {
-        return {
-          type: "dirListResult",
-          reqId: "r",
-          listing: opts.listing ?? emptyListing(),
-        };
-      }
       return { type: "error", reqId: "r", message: `fake Core has no answer for ${frame.type}` };
     },
     agentsAvailabilityList: async () => opts.availability ?? {},
@@ -730,8 +721,3 @@ export function sentinelBlobText(endpoint = "wss://core.test:9444", label = "the
     "utf8",
   ).toString("base64");
 }
-
-function emptyListing(): CoreLinkDirListing {
-  return { path: "/", parent: null, home: "/root", roots: [], entries: [], truncated: false };
-}
-

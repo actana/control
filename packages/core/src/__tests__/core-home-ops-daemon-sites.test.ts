@@ -13,9 +13,7 @@ import { decodeRegistrationBlob } from "@actana/shared/registration-blob";
 import { registerSelfWithLocalCli } from "../core-self-register";
 import {
   configureCoreHomeOps,
-  createDirectoryViaCore,
   ensureOrchestrationSkillViaCore,
-  listDirectoryViaCore,
   resolveCommandViaCore,
 } from "../core-home-ops-client";
 import { runCoreExec } from "../core-exec";
@@ -144,55 +142,6 @@ describe("core exec's cwd", () => {
     });
     await expect(runCoreExec({ command: "pwd", args: [], cwd: "  " })).rejects.toThrow("No such directory on this Core: /home/core");
     expect(requests).toEqual([{ op: "resolveExecCwd", cwd: null }]);
-  });
-});
-
-describe("the folder picker", () => {
-  it("lists through the helper in the container, confined to core's home", async () => {
-    inContainer();
-    fs.mkdirSync(path.join(coreHome, "repos"));
-    configureCoreHomeOps(inProcessHelper(coreHome).options);
-    const listing = await listDirectoryViaCore(null);
-    expect(listing.path).toBe(coreHome);
-    expect(listing.entries.map((e) => e.name)).toEqual(["repos"]);
-    // A blank path is the home, as it always was, and is never an empty string on the wire.
-    expect((await listDirectoryViaCore("")).path).toBe(coreHome);
-    await expect(listDirectoryViaCore(base)).rejects.toThrow("only lists folders inside its home");
-  });
-});
-
-describe("the folder picker's new folder", () => {
-  it("is a request to the helper in the container, and the daemon makes nothing", async () => {
-    inContainer();
-    const helper = cannedHelper();
-    configureCoreHomeOps(helper.options);
-    const made = await createDirectoryViaCore(path.join(coreHome, "repos"), "warehouse");
-    expect(made).toBe(path.join(coreHome, "repos", "warehouse"));
-    expect(helper.requests.map((r) => r.request)).toEqual([{ op: "createDirectory", parent: path.join(coreHome, "repos"), name: "warehouse" }]);
-    expect(fs.readdirSync(coreHome)).toEqual([]);
-  });
-
-  it("lands in core's home when the helper does its work, and refuses a parent outside it", async () => {
-    inContainer();
-    configureCoreHomeOps(inProcessHelper(coreHome).options);
-    await expect(createDirectoryViaCore(coreHome, "warehouse")).resolves.toBe(path.join(coreHome, "warehouse"));
-    expect(fs.statSync(path.join(coreHome, "warehouse")).isDirectory()).toBe(true);
-    await expect(createDirectoryViaCore(base, "elsewhere")).rejects.toThrow("This Core only creates folders inside its home");
-    expect(fs.existsSync(path.join(base, "elsewhere"))).toBe(false);
-  });
-
-  it("passes the operator's sentence through as the error message", async () => {
-    inContainer();
-    configureCoreHomeOps(inProcessHelper(coreHome).options);
-    await expect(createDirectoryViaCore(coreHome, "a/b")).rejects.toThrow("Invalid folder name");
-    await expect(createDirectoryViaCore(path.join(coreHome, "nope"), "x")).rejects.toThrow("Location not found");
-  });
-
-  it("is made in this process outside the container, exactly as before", async () => {
-    const requests: string[] = [];
-    configureCoreHomeOps({ run: async (_s, input) => (requests.push(input), { status: 0, stdout: "{}", stderr: "" }) });
-    await expect(createDirectoryViaCore(base, "plain")).resolves.toBe(path.join(base, "plain"));
-    expect(requests).toEqual([]);
   });
 });
 
