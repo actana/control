@@ -8,8 +8,8 @@
 // `PtyCoreLinkServer` on a real `wss://` port, the real `openSessionGateway`,
 // and nothing faked between them except the machine they would otherwise be on.
 //
-// The Core here holds **Sessions this CLI did not start** — a session list, a
-// project list, and a PTY that was already running when the command was typed.
+// The Core here holds **Sessions this CLI did not start** — a session list and
+// a PTY that was already running when the command was typed.
 // That is not scene-setting: it is the ticket's criterion. Nothing about having
 // started a Session is remembered locally, so `ls`, `logs`, `send` and `kill`
 // have nothing to recognise and work on any Session on the Core.
@@ -34,12 +34,6 @@
 // suite's contribution to it: the manager below is the live PTY that `logs`,
 // `send` and `kill` reach, and every other suite takes the default that throws.
 
-// SKIPPED, and why. `actana session start <project>` names a project and the SDK
-// it is built on spawns in a cwd; a 0.5.0 Core has no Projects, starts every
-// Session in its home, and refuses both by name (ADR 0041 D1, D2;
-// actana/control#555), so none of the starts below can happen. The client half
-// is actana/client issue 10; when the CLI stops sending them this suite comes
-// back with the project argument gone.
 import { describe, it, expect, afterEach } from "vitest";
 import type {
   CoreLinkSessionSnapshot,
@@ -68,47 +62,9 @@ import {
   type InProcessCore,
 } from "./in-process-core.ts";
 
-/**
- * The Project row this in-repo CLI's fixtures still hand it. The published SDK
- * dropped `CoreLinkProjectSnapshot` and the row's `projectId` in 0.6.0-next.2; the
- * CLI here still speaks Projects until it is rewritten (actana/control#580), so the
- * fixtures name them locally. Nothing here reaches the wire typed.
- */
-type ProjectSnapshot = {
-  projectId: string;
-  name: string;
-  path: string;
-  icon: string;
-  iconColor: string;
-  pinned: boolean;
-  rememberHarnessSettings: boolean;
-  savedHarness: string | null;
-  savedSkipPermissions: boolean;
-  savedBareSession: boolean;
-  defaultGridView: boolean;
-  updatedAt: number;
-};
-type ProjectSessionRow = CoreLinkSessionRow & { projectId: string };
-
-const PROJECT: ProjectSnapshot = {
-  projectId: "proj_web",
-  name: "web",
-  path: "/home/core/projects/web",
-  icon: "WE",
-  iconColor: "#123456",
-  pinned: false,
-  rememberHarnessSettings: false,
-  savedHarness: null,
-  savedSkipPermissions: false,
-  savedBareSession: false,
-  defaultGridView: false,
-  updatedAt: 1_700_000_000_000,
-};
-
-function session(overrides: Partial<ProjectSessionRow> = {}): ProjectSessionRow {
+function session(overrides: Partial<CoreLinkSessionRow> = {}): CoreLinkSessionRow {
   return {
     sessionId: "session_live",
-    projectId: PROJECT.projectId,
     title: "rebuild the flaky auth test",
     titleManuallySet: false,
     claudeSessionId: "00000000-0000-4000-8000-000000000000",
@@ -218,7 +174,7 @@ function livePtyCore(
   };
 }
 
-/** Session and project reads, answered from memory. */
+/** Session reads, answered from memory. */
 function ports(sessionRows: CoreLinkSessionRow[], live: (sessionId: string) => string | null) {
   /**
    * How many `sessionsList` frames this Core has answered.
@@ -248,14 +204,12 @@ function ports(sessionRows: CoreLinkSessionRow[], live: (sessionId: string) => s
   return {
     sessionListReads: () => sessionListReads,
     queryPort: {
-      listProjects: () => [PROJECT],
       listSessionRows: () => sessionRows.filter((row) => !row.archived),
       listArchivedSessions: () => sessionRows.filter((row) => row.archived),
       countArchivedSessions: () => sessionRows.filter((row) => row.archived).length,
       getSession: (sessionId: string) => sessionRows.find((row) => row.sessionId === sessionId) ?? null,
     },
     mutationPort: {
-      mutateProject: () => null,
       mutateSession: () => null,
       listSessions: sessions,
     },
@@ -407,7 +361,7 @@ async function coreWithSessions(
     // status it lands on is the status the row already had.
     eventLog.appendEvent(
       "session:updated",
-      JSON.stringify({ sessionId, projectId: PROJECT.projectId, status }),
+      JSON.stringify({ sessionId, status }),
       { sessionId },
     );
   };
@@ -428,7 +382,7 @@ function withCore() {
   return { sessions: openSessionGateway };
 }
 
-describe.skip("actana session, against a Core in this process", () => {
+describe("actana session, against a Core in this process", () => {
   it("lists the Sessions the Core holds, with the live one marked", async () => {
     await coreWithSessions();
 
@@ -443,7 +397,8 @@ describe.skip("actana session, against a Core in this process", () => {
     // Joined off the Session rows: `sessionsList` carries neither, and a listing
     // that showed only ids would be unreadable.
     expect(live.title).toBe("rebuild the flaky auth test");
-    expect(live.project).toBe("web");
+    // A 0.5.0 Core has no Projects, so a listing row has no project to show: the column is gone, not blank.
+    expect(live).not.toHaveProperty("project");
     expect(live.harness).toBe("claude-code");
     expect(rows.find((row) => row.sessionId === "session_done")!.live).toBe(false);
   }, 30_000);
