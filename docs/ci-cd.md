@@ -762,6 +762,34 @@ which is written down here rather than discovered:
   checklist](core-macos-prerelease-checklist.md) is the rest of it, and it is a
   **release gate** — see "Cutting a release" below.
 
+### What the Core tarball carries of `@actana/cli` and `@actana/sdk` (#580 T-405)
+
+`actana` in the tarball is `app/actana-cli.cjs`: the Core's own verbs plus the client nouns of the
+published `@actana/cli`, inlined by esbuild, with `@actana/sdk` inlined into it and into
+`app/core-entry.cjs`. Only `ws`, `undici` and `selfsigned` are resolved at run time by the CLI (the daemon
+also resolves `node-pty` and `better-sqlite3`), from `app/node_modules`. Three checks keep that honest, none of them a literal:
+
+- **Pinned.** `scripts/build-core-tarball.mjs` refuses to build unless `@actana/cli` is pinned to one
+  exact version in `packages/cli` and `packages/core`, `@actana/sdk` to one exact version in all five
+  manifests, `node_modules` holds those versions, and the source map of each staged bundle names them
+  (`inlinedPackageVersions`, `assertPackageVersionAgreement` in `scripts/lib/core-tarball.mjs`). The
+  tarball smoke makes the same comparison on the extracted bytes.
+- **Protocol.** `core-manifest.json` takes `protocolVersion` from the installed SDK's
+  `dist/core/link-frames.js`; the build and the smoke fail if either bundle carries another one, and
+  the smoke fails if `actana --version` states another.
+- **Offline.** [`scripts/smoke-core-tarball.mjs`](../scripts/smoke-core-tarball.mjs) runs the
+  launcher's `--version`, `harness skills`, `session ls`, `session start --await-prompt`, `events
+  tail`, `files ls` and `shared ls` against the Core it just booted, with
+  [`scripts/lib/no-network-preload.cjs`](../scripts/lib/no-network-preload.cjs) refusing every
+  connection that leaves the machine, and fails on any attempt (loopback is the Core). `harness
+  skills` loads the skill payload at start-up, which is what a CommonJS bundle once crashed on;
+  `packages/cli/src/__tests__/cjs-bundle.test.ts` runs the same bundle under plain `node`.
+
+The Core image smoke then runs the same verbs inside the image as `core` (`session ls`, `session start
+--await-prompt`, `events tail`, `files ls`, `shared ls`, `harness skills`, `--version`), without the network
+guard. `session start` is accepted either way: the Core's `pty:spawn rejected` refusal on a PATH without
+the harness, or a started Session, which the smoke kills.
+
 ## The installer e2e, and why it is one job on two triggers
 
 There is **one** installer e2e — `scripts/e2e-actana-setup-linux.mjs` — and it

@@ -108,6 +108,7 @@ import {
   repoRoot,
 } from "./lib/panel-image.mjs";
 import { ensurePanelDatabase } from "./lib/postgres-fixture.mjs";
+import { classifySessionStart } from "./lib/tarball-offline.mjs";
 
 const die = makeDie("core-image-smoke");
 const log = (message) => console.log(`[core-image-smoke] ${message}`);
@@ -975,6 +976,55 @@ if (execState.status === 0 || !/Permission denied/.test(`${execState.stdout}${ex
   die(`a \`core exec\` child read the daemon's identity (exit ${execState.status}):\n${execState.stdout.slice(0, 200)}${execState.stderr}`);
 }
 log("a `core exec` child is core with no capabilities, and cannot read the state either");
+
+// The tarball's bundled `actana` inside the image (#580 T-405): the client nouns are the pinned,
+// inlined `@actana/cli`, and the image is where an operator meets them. As `core`, against the Core
+// this container runs and registered with itself, the verbs must answer. Offline is proven on the
+// tarball itself (`scripts/smoke-core-tarball.mjs`, with the network refused); here the point is that the
+// same bytes work installed under /opt/actana as the unprivileged user.
+const cliSessions = core.exec(["actana", "session", "ls", "--json"], { allowFailure: true });
+let cliSessionRows = null;
+try {
+  cliSessionRows = JSON.parse(cliSessions.stdout || "null");
+} catch {
+  /* reported below */
+}
+if (cliSessions.status !== 0 || !Array.isArray(cliSessionRows)) {
+  die(`\`actana session ls --json\` in the image exited ${cliSessions.status}:\n${cliSessions.stdout}${cliSessions.stderr}\n${core.logs()}`);
+}
+for (const verb of [["files", "ls"], ["shared", "ls"], ["harness", "skills", "--json"]]) {
+  const answer = core.exec(["actana", ...verb], { allowFailure: true });
+  if (answer.status !== 0) {
+    die(`\`actana ${verb.join(" ")}\` in the image exited ${answer.status}:\n${answer.stdout}${answer.stderr}\n${core.logs()}`);
+  }
+}
+const cliVersion = core.exec(["actana", "--version"], { allowFailure: true });
+if (cliVersion.status !== 0 || !/core-link protocol \d+\.\d+\.\d+/.test(cliVersion.stdout)) {
+  die(`\`actana --version\` in the image did not state a core-link protocol: ${cliVersion.stdout}${cliVersion.stderr}`);
+}
+// The two verbs that need a session of their own. `session start --await-prompt` reaches the Core: with no
+// harness in the image the Core refuses (`pty:spawn rejected`), and a Session that did start is killed.
+const cliStart = core.exec(["actana", "session", "start", "--await-prompt", "hello"], { allowFailure: true });
+const cliStartOutcome = classifySessionStart(cliStart);
+if (cliStartOutcome.kind === "unexpected") {
+  die(`\`actana session start --await-prompt\` in the image did not reach the Core: ${cliStartOutcome.why}\n${cliStart.stdout}${cliStart.stderr}\n${core.logs()}`);
+}
+if (cliStartOutcome.kind === "started") core.exec(["actana", "session", "kill", cliStartOutcome.id], { allowFailure: true });
+// `events tail` follows forever, so it runs under `timeout`: the first line must be an event (exit 124 is the timeout).
+const cliEvents = core.exec(["timeout", "10", "actana", "events", "tail", "--json", "--since", "start"], { allowFailure: true });
+let firstEvent = null;
+try {
+  firstEvent = JSON.parse(cliEvents.stdout.split("\n")[0] || "null");
+} catch {
+  /* reported below */
+}
+if (typeof firstEvent?.eventId !== "number") {
+  die(`\`actana events tail\` in the image streamed no event (exit ${cliEvents.status}):\n${cliEvents.stdout.slice(0, 300)}${cliEvents.stderr}\n${core.logs()}`);
+}
+log(
+  "the bundled actana answers in the image as core: session ls, session start --await-prompt, events tail, " +
+    "files ls, shared ls, harness skills, --version",
+);
 
 // Stop: a Session whose own process ignores HUP and TERM. The daemon is another
 // uid with no CAP_KILL, so the stop is a SIGKILL sent as core (`killAsCore`),
