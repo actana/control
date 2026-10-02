@@ -23,5 +23,6 @@ export function taskAttachmentPath(taskId: string, rel: string): string {
 
 /** The line a comment (or the Task) carries per attachment, as the harness sees the file from its home. */
 export function attachmentNote(taskId: string, rels: readonly string[]): string {
-  return [`Attached files, in ~/shared/${taskFolder(taskId)}${ATTACHMENTS_DIR}/:`, ...rels.map((r) => `- ${r}`)].join("\n");
+  // The files are in storage when the Task is assigned; the Core copies its folder from there, a few seconds later at most.
+  return [`Attached files, in ~/shared/${taskFolder(taskId)}${ATTACHMENTS_DIR}/ (the Core copies its Shared folder from storage, so they may take a few seconds to appear):`, ...rels.map((r) => `- ${r}`)].join("\n");
 }

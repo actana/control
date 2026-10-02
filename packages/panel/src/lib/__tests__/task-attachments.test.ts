@@ -25,7 +25,7 @@ describe("attachment paths", () => {
   });
 
   it("are named in the note a comment carries, from the harness's home", () => {
-    expect(attachmentNote("task_1", ["a.txt", "d/b.txt"])).toBe("Attached files, in ~/shared/tasks/task_1/attachments/:\n- a.txt\n- d/b.txt");
+    expect(attachmentNote("task_1", ["a.txt", "d/b.txt"])).toBe("Attached files, in ~/shared/tasks/task_1/attachments/ (the Core copies its Shared folder from storage, so they may take a few seconds to appear):\n- a.txt\n- d/b.txt");
   });
 });
 
