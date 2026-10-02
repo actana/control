@@ -137,8 +137,20 @@ describe("pairing step 4: the Shared folder", () => {
     expect(screen.queryByLabelText("Core address")).toBeNull();
   });
 
-  it("keeps Finish disabled until a test passed, and again after any field is edited", async () => {
+  it("keeps Finish disabled until a test passed, and again after any field is edited on first-time setup", async () => {
+    api.getStorage.mockImplementation(async () => ({ storage: STORAGE_EMPTY, cores: [] }));
     await openSettings();
+    for (const [label, v] of [
+      ["S3 endpoint", "http://s3:8333"],
+      ["Bucket", "actana-shared"],
+      ["OIDC issuer", "https://p"],
+      ["Key id", "k1"],
+      ["Master key", MASTER],
+    ] as const) {
+      await act(async () => {
+        type(label, v);
+      });
+    }
     expect(button("Connect and finish pairing").disabled).toBe(true);
 
     await click("Test connection");
@@ -151,6 +163,50 @@ describe("pairing step 4: the Shared folder", () => {
     expect(button("Connect and finish pairing").disabled).toBe(true);
     expect(document.querySelector("[data-connection]")).toBeNull();
     expect(api.finishCorePairing).not.toHaveBeenCalled();
+  });
+
+  it("with a stored R2 config: shows it read-only, tests without a storage write, and never shows the key", async () => {
+    const R2: StorageConfigView = {
+      ...STORAGE_EMPTY,
+      configured: true,
+      backend: "r2",
+      endpoint: "https://abc.r2.cloudflarestorage.com",
+      bucket: "actana-shared",
+      prefix: "cores",
+      accountId: "acct",
+      parentAccessKeyId: "AKIA",
+      masterKeySet: true,
+      masterKeyRotatedAt: 1,
+      uploadSizeLimitBytes: 512 * 1024 * 1024,
+      updatedAt: 1,
+    };
+    api.getStorage.mockImplementation(async () => ({ storage: R2, cores: [] }));
+    await openSettings();
+
+    const step = document.querySelector('[data-step="shared-folder"]')!;
+    expect(step.getAttribute("data-storage")).toBe("configured");
+    expect((screen.getByLabelText("Backend") as HTMLInputElement).value).toBe("Cloudflare R2");
+    expect((screen.getByLabelText("S3 endpoint") as HTMLInputElement).value).toBe(
+      "https://abc.r2.cloudflarestorage.com",
+    );
+    expect((screen.getByLabelText("Bucket") as HTMLInputElement).value).toBe("actana-shared");
+    expect((screen.getByLabelText("Prefix") as HTMLInputElement).value).toBe("cores");
+    expect((screen.getByLabelText("S3 endpoint") as HTMLInputElement).disabled).toBe(true);
+    expect(screen.queryByLabelText("Master key")).toBeNull();
+    expect(screen.queryByLabelText("OIDC issuer")).toBeNull();
+    expect(document.body.innerHTML).not.toMatch(/masterKey|api[_-]?token|secret/i);
+    // The view never carries the key; the page must not invent one.
+    expect(JSON.stringify(R2)).not.toMatch(/BEGIN |secretAccessKey|apiToken/i);
+
+    await click("Test connection");
+    expect(api.putStorage).not.toHaveBeenCalled();
+    expect(api.testSharedFolder).toHaveBeenCalledWith("core_new");
+    expect(document.querySelector('[data-connection="passed"]')).not.toBeNull();
+    expect(button("Connect and finish pairing").disabled).toBe(false);
+
+    await click("Connect and finish pairing");
+    expect(api.putStorage).not.toHaveBeenCalled();
+    expect(api.finishCorePairing).toHaveBeenCalledWith("core_new");
   });
 
   it("does not let a failed test through: a key that reaches another Core's folder is a FAILED, not a pass", async () => {
@@ -210,9 +266,18 @@ describe("pairing step 4: the Shared folder", () => {
     expect(api.putStorage.mock.calls[1]![0]).not.toHaveProperty("masterKey");
   });
 
-  it("says plainly that the master key stays in the Panel", async () => {
+  it("says plainly that the master key stays in the Panel on first-time setup", async () => {
+    api.getStorage.mockImplementation(async () => ({ storage: STORAGE_EMPTY, cores: [] }));
     await openSettings();
     expect(document.body.textContent).toMatch(/never sends it to a Core/);
+  });
+
+  it("with stored seaweedfs config does not rewrite storage on Test connection", async () => {
+    await openSettings();
+    expect(document.querySelector('[data-storage="configured"]')).not.toBeNull();
+    await click("Test connection");
+    expect(api.putStorage).not.toHaveBeenCalled();
+    expect(api.testSharedFolder).toHaveBeenCalledWith("core_new");
   });
 });
 

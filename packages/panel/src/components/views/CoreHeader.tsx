@@ -34,7 +34,7 @@ export function CoreHeader({
   onToggleTerminal: () => void;
   terminalOpen: boolean;
 }) {
-  const pill = corePillParts(core.dial);
+  const pill = corePillParts(core.dial, core.sharedFolder, core.dial.coreVersion);
   const hue = coreHue(core.id);
   const online = core.dial.state === "connected";
   return (

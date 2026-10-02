@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { CoreWithDial } from "~/shared/cores";
+import type { CoreSharedFolder, CoreWithDial } from "~/shared/cores";
 import {
   coreActivity,
   coreForHotkey,
@@ -60,14 +60,39 @@ describe("the Cores rail", () => {
 });
 
 describe("the status pill", () => {
+  const folder = (state: CoreSharedFolder["state"]): CoreSharedFolder => ({
+    state,
+    prefix: state === "pending" ? null : "cores/a/",
+    keyExpiresAt: state === "attached" ? 1 : null,
+    error: state === "error" ? "push failed" : null,
+  });
+
   it("says online for a connected Core and offline for any Core that is not reachable", () => {
     expect(corePillParts(core("a", "a").dial).link).toBe("online");
     expect(corePillParts(core("a", "a", "unreachable").dial).link).toBe("offline");
   });
 
-  it("carries the version only when the Core reported one", () => {
+  it("carries the connected version when passed in, and falls back to the dial", () => {
     expect(corePillParts(core("a", "a").dial).version).toBeNull();
+    expect(corePillParts(core("a", "a").dial, undefined, "0.5.0").version).toBe("0.5.0");
     const dial = { ...core("a", "a", "needs-update").dial, coreVersion: "0.4.2" };
     expect(corePillParts(dial).version).toBe("0.4.2");
+  });
+
+  it("names the Shared folder as attached, pending, failed, or none", () => {
+    expect(corePillParts(core("a", "a").dial).shared).toBe("shared —");
+    expect(corePillParts(core("a", "a").dial, undefined).shared).toBe("shared —");
+    expect(corePillParts(core("a", "a").dial, folder("attached")).shared).toBe("shared attached");
+    expect(corePillParts(core("a", "a").dial, folder("pending")).shared).toBe("shared pending");
+    expect(corePillParts(core("a", "a").dial, folder("error")).shared).toBe("shared failed");
+  });
+
+  it("reads online · version · Shared folder together for a connected Core", () => {
+    const dial = { ...core("a", "a").dial, coreVersion: "0.5.0" };
+    expect(corePillParts(dial, folder("attached"), "0.5.0")).toEqual({
+      link: "online",
+      version: "0.5.0",
+      shared: "shared attached",
+    });
   });
 });

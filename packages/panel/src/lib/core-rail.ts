@@ -1,5 +1,5 @@
 import type { SessionStatus } from "@actana/shared/domain";
-import { coreOrder, type CoreWithDial } from "~/shared/cores";
+import { coreOrder, type CoreSharedFolder, type CoreWithDial } from "~/shared/cores";
 import { CORE_SLOT_COUNT } from "~/lib/keybindings/match";
 
 // The rail lists Cores, nothing else (0.5.0 proposal, screen 01/02). These are
@@ -75,14 +75,32 @@ export function coreHue(coreId: string): number {
   return h % 360;
 }
 
-/** The status pill's words, left to right: link state, version (when the Core told us), Shared folder. */
-export function corePillParts(dial: CoreWithDial["dial"]): { link: CoreLinkLabel; version: string | null; shared: string } {
+/**
+ * The status pill's words, left to right: link state · version · Shared folder (#560).
+ * `sharedFolder` and `version` are passed in: the dial alone does not carry the folder
+ * row, and a connected Core's version is stamped onto the dial from its `ready` frame.
+ */
+export function corePillParts(
+  dial: CoreWithDial["dial"],
+  sharedFolder?: CoreSharedFolder | null,
+  version?: string | null,
+): { link: CoreLinkLabel; version: string | null; shared: string } {
   return {
     link: coreLinkLabel(dial),
-    // Only a `needs-update` dial carries the Core's version today; a connected
-    // Core's version has no source on the dial yet, so it is left out, not guessed.
-    version: dial.coreVersion ?? null,
-    // The Shared folder (#557/#565) has no state to read yet.
-    shared: "shared —",
+    version: version ?? dial.coreVersion ?? null,
+    shared: sharedFolderLabel(sharedFolder),
   };
+}
+
+/** Compact Shared-folder clause for the pill: attached, pending, failed, or none. */
+export function sharedFolderLabel(sharedFolder?: CoreSharedFolder | null): string {
+  if (!sharedFolder) return "shared —";
+  switch (sharedFolder.state) {
+    case "attached":
+      return "shared attached";
+    case "pending":
+      return "shared pending";
+    case "error":
+      return "shared failed";
+  }
 }

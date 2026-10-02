@@ -144,6 +144,12 @@ type Managed = {
    * last. It is cleared on the next `ready` — which is where it is learnt.
    */
   files: CoreLinkFilesCapability | null;
+  /**
+   * The core-link protocol version from this link's last `ready` frame (#560
+   * status pill). Held beside the status like `files`, so a connected Core's
+   * dial carries the version the pill shows, not only a `needs-update` dial.
+   */
+  coreVersion: string | null;
 };
 
 function unreachable(coreId: string, lastSeenAt: number | null, detail?: string): CoreDialStatus {
@@ -263,6 +269,7 @@ export class CoreLinkManager {
       // downgraded out of it stops — either way the next status push carries the
       // current answer rather than the one this link came up with.
       managed.files = files ?? null;
+      managed.coreVersion = version;
       if (managed.drift) {
         this.set(coreId, this.needsUpdateStatus(coreId, managed.drift));
       } else if (managed.status.state === "needs-update") {
@@ -363,9 +370,14 @@ export class CoreLinkManager {
    */
   private set(coreId: string, status: CoreDialStatus): void {
     const managed = this.managed.get(coreId);
-    const stamped: CoreDialStatus = { ...status, files: managed?.files ?? null };
+    const coreVersion = status.coreVersion ?? managed?.coreVersion ?? null;
+    const stamped: CoreDialStatus = {
+      ...status,
+      files: managed?.files ?? null,
+      ...(coreVersion != null ? { coreVersion } : {}),
+    };
     if (managed) managed.status = stamped;
-    else this.managed.set(coreId, { client: null, status: stamped, drift: null, files: null });
+    else this.managed.set(coreId, { client: null, status: stamped, drift: null, files: null, coreVersion: null });
     for (const cb of this.statusListeners) cb(stamped);
   }
 
