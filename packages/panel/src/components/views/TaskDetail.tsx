@@ -14,6 +14,8 @@ import { queryKeys, useCoreAgents, useTask } from "~/queries";
 import { FINISHED_TASK_STATUSES } from "~/shared/tasks";
 import { taskFolderPath } from "~/shared/shared-files";
 import type { TaskCommentDto } from "~/shared/task-wire";
+import { TaskAttachments } from "~/components/views/TaskAttachments";
+import type { TaskAttachment } from "~/lib/task-attachments";
 
 const KIND_COLOR: Record<TaskCommentDto["authorKind"], string> = {
   system: "var(--border)",
@@ -48,12 +50,14 @@ export function TaskDetail({ taskId, onClose, focusComposer = false }: { taskId:
   const comments = data?.comments ?? [];
   const { data: agents = [] } = useCoreAgents(task?.coreId ?? "");
   const [draft, setDraft] = useState("");
+  const [attachments, setAttachments] = useState<TaskAttachment[]>([]);
 
   const refresh = () => queryClient.invalidateQueries({ queryKey: queryKeys.tasks });
   const comment = useMutation({
-    mutationFn: (reassign: boolean) => api.commentOnTask(taskId, { body: draft, reassign }),
+    mutationFn: (reassign: boolean) => api.commentOnTask(taskId, { body: draft, reassign }, ...(attachments.length > 0 ? [attachments] : [])),
     onSuccess: async () => {
       setDraft("");
+      setAttachments([]);
       await refresh();
     },
   });
@@ -66,7 +70,8 @@ export function TaskDetail({ taskId, onClose, focusComposer = false }: { taskId:
   const core = cores.find((c) => c.id === task?.coreId);
   const agent = agents.find((a) => a.id === task?.agent);
   const resultFiles = [...new Set(comments.filter((c) => c.authorKind === "agent" && c.sourceFile).map((c) => c.sourceFile as string))];
-  const hasBody = draft.trim().length > 0;
+  // A file is a comment on its own: the server names it in the comment.
+  const hasBody = draft.trim().length > 0 || attachments.length > 0;
 
   return (
     <aside
@@ -147,7 +152,9 @@ export function TaskDetail({ taskId, onClose, focusComposer = false }: { taskId:
           </section>
           <section aria-label="Composer" style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             <MarkdownField value={draft} onChange={setDraft} ariaLabel="Comment" toolbar={false} minRows={6} autoFocus={focusComposer} placeholder={agent ? `@${agent.name} · markdown supported` : "markdown supported"} />
-            <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
+              <TaskAttachments items={attachments} onChange={setAttachments} folder={false} />
+              <div style={{ display: "flex", gap: 8 }}>
               <Btn
                 variant="frame"
                 icon="refresh"
@@ -160,6 +167,7 @@ export function TaskDetail({ taskId, onClose, focusComposer = false }: { taskId:
               <Btn variant="primary" icon="pencil" disabled={!hasBody || comment.isPending} onClick={() => comment.mutate(false)}>
                 Comment
               </Btn>
+              </div>
             </div>
             <FormErrorBox error={message(comment.error) ?? message(move.error)} />
           </section>
