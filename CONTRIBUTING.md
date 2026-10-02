@@ -11,7 +11,7 @@ Actana Control is two programs that talk over one WebSocket:
 - The **Panel** (`packages/panel`) — the self-hosted web service you deploy.
   It owns the Core registry and terminates every core-link. It holds no Session state; Tasks live in its Postgres.
 - The **Core** (`packages/core`) — the daemon installed on each machine
-  you want to run harnesses on. It owns everything task-shaped: PTYs, SQLite, the
+  you want to run harnesses on. It owns everything Session-shaped: PTYs, SQLite, the
   event log. There are no Projects: a Session starts in the Core's home.
 - the SDK is not in this repository: the core-link wire protocol and the Core client are the
   published `@actana/sdk`, released from actana/client, and the Core and the Panel import its frames
