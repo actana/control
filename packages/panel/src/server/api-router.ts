@@ -127,7 +127,10 @@ function getSetCookieHeaders(headers: Headers): string[] {
 // The Panel's entire anonymous surface: the three calls a browser needs before
 // it has a session. Everything else requires the Operator's session cookie.
 // Adding an entry here is the *only* way a route can be reached without a
-// session, which makes auth-bypass regressions a one-grep review surface.
+// session through `dispatch`, which makes auth-bypass regressions a one-grep
+// review surface. Two answers are given before the gate instead, in
+// `handleApiRequest`: `/api/healthz` and the token signer's public key set at
+// `/.well-known/jwks.json` (#566). Look for both when reviewing the anonymous surface.
 // Exported so __tests__/api-auth.test.ts can snapshot the list and fail CI on
 // any addition.
 export const ANONYMOUS_ROUTES: ReadonlyArray<{ method: string; pathname: string }> = [

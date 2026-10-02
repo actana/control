@@ -151,6 +151,12 @@ This is the compose deploy for #566. Remaining caveats:
   list, read or write machine B's prefix; Settings › Storage test-connection
   uses the same probe. In that job SeaweedFS reads the Panel's key set from the
   Panel's own `/.well-known/jwks.json` route.
+- **Rotating the master key.** SeaweedFS does not read the JWKS `Cache-Control`: it keeps the key set for about an
+  hour and refetches only when a token carries a Key id it does not know. Rotate with a **new Key id** in Settings ›
+  Storage and SeaweedFS picks the new key up at once. Rotate under the **same Key id** and it keeps verifying against the
+  old key for up to an hour, so the key re-issue that Rotate triggers fails until then.
+- **No live compose run yet.** The default `http://panel:7420` URLs are tested as text, and CI has SeaweedFS fetch the
+  Panel's route in-process; a `docker compose --profile seaweedfs up` with SeaweedFS fetching `panel:7420` has not been run.
 - **Container hardening.** The entrypoint runs as root to hand a file to the
   `seaweed` user, and the service has no `cap_drop`. Dropping all capabilities
   but CHOWN, SETUID, SETGID, DAC_OVERRIDE and FOWNER should work; it needs a live run.
