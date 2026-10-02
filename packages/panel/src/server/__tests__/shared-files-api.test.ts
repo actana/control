@@ -241,8 +241,8 @@ describe("paths from the browser are never trusted", () => {
     expect(s3.objects.size).toBe(0);
   });
 
-  it("refuses the root for rename, move and delete, and a name that is a path", async () => {
-    const { s3 } = rig();
+  it("refuses the root for rename, move and delete, and a name that is a path, before a key is issued", async () => {
+    const { s3, sts } = rig();
     const a = await attachedCore();
     s3.seed(`${PREFIX}/${a}/f.txt`, "x");
     expect((await call(files(a, "delete"), { method: "POST", json: { path: "" } })).status).toBe(400);
@@ -252,6 +252,7 @@ describe("paths from the browser are never trusted", () => {
       expect((await call(files(a, "rename"), { method: "POST", json: { path: "f.txt", name } })).status).toBe(400);
     }
     expect(s3.text(`${PREFIX}/${a}/f.txt`)).toBe("x");
+    expect(sts.issued).toHaveLength(0);
   });
 });
 
@@ -341,8 +342,8 @@ describe("previews", () => {
 });
 
 describe("uploads", () => {
-  it("refuses a file over the limit from its declared length, writing nothing and asking S3 for nothing", async () => {
-    const { s3 } = rig();
+  it("refuses a file over the limit from its declared length, before a key is issued: nothing written, S3 asked for nothing", async () => {
+    const { s3, sts } = rig();
     const a = await attachedCore();
     const res = await call(files(a, "upload", q("big.bin")), {
       method: "PUT",
@@ -351,6 +352,7 @@ describe("uploads", () => {
     });
     expect(res.status).toBe(413);
     expect(res.headers.get("x-upload-limit")).toBe(String(LIMIT));
+    expect(sts.issued).toHaveLength(0);
     expect(s3.objects.size).toBe(0);
     expect(s3.requests.filter((r) => r.method === "PUT")).toHaveLength(0);
   });
