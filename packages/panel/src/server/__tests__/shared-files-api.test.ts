@@ -25,7 +25,7 @@ const { operatorSessionCookie, resetOperatorSessionForTests } = await import("./
 const { registerCoreFromCredential } = await import("../services/cores");
 const { saveStorageConfig, storageKeyIssuer } = await import("../services/storage");
 const { DEFAULT_UPLOAD_LIMIT_BYTES } = await import("~/shared/shared-files");
-const { SharedFiles, resetSharedFilesForTests } = await import("../services/shared-files");
+const { SharedFiles, sharedFiles, resetSharedFilesForTests } = await import("../services/shared-files");
 const { updateSharedFolder } = await import("../repositories/core-shared-folders.repo");
 
 const ORIGIN = "http://panel.example.test";
@@ -394,7 +394,7 @@ describe("the upload limit is the one stored in Storage settings", () => {
     expect(s3.objects.size).toBe(0);
   });
 
-  it("keeps a sane default of 100 MB when no limit is stored", async () => {
+  it("regression guard: keeps a sane default of 100 MB when no limit is stored", async () => {
     rig();
     const a = await attachedCore();
     await testDb.pool.query("delete from storage_config");
@@ -436,6 +436,19 @@ describe("uploads", () => {
     const res = await call(files(a, "upload", q("big.bin")), { method: "PUT", body: stream });
     expect(res.status).toBe(413);
     expect(s3.objects.size).toBe(0);
+  });
+
+  it("holds the bytes once: a body that is not the length it declares is refused, and nothing is written", async () => {
+    const { s3 } = rig();
+    const a = await attachedCore();
+    const body = (size: number) => new Blob([new Uint8Array(size)]).stream() as ReadableStream<Uint8Array>;
+    const service = sharedFiles();
+
+    await expect(service.upload(1, a, "long.bin", body(20), 10)).rejects.toThrow("longer than its declared length");
+    await expect(service.upload(1, a, "short.bin", body(10), 20)).rejects.toThrow("shorter than its declared length");
+    expect(s3.objects.size).toBe(0);
+    await expect(service.upload(1, a, "ok.bin", body(10), 10)).resolves.toMatchObject({ size: 10 });
+    expect(s3.objects.get(`${PREFIX}/${a}/ok.bin`)?.bytes.byteLength).toBe(10);
   });
 
   it("takes a file exactly at the limit", async () => {

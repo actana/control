@@ -58,8 +58,19 @@ export function createSharedFactory(deps: SharedFactoryDeps): SharedFor {
 export function createS3Factory(ownerId: number, modes: CoreS3Shared = coreS3Shared()): (coreId: string) => Promise<CoreShared> {
   return async (coreId) => {
     await modes.open(ownerId, coreId);
-    return lazyShared(async () => (await modes.open(ownerId, coreId)).shared);
+    return lazyShared(async () => ({ ...(await modes.open(ownerId, coreId)).shared, folderScoped: true }), true);
   };
+}
+
+/**
+ * A handle that says its changes are found by listing the one folder asked about, not by `watch`. In the SDK's S3 mode
+ * `watch` lists every key under the Core's prefix and diffs it, which is the whole Shared folder on every call; the
+ * result watcher needs only `tasks/<id>/`, so it lists that when this is set.
+ */
+export type FolderScopedShared = CoreShared & { readonly folderScoped?: boolean };
+
+export function isFolderScoped(shared: CoreShared): boolean {
+  return (shared as FolderScopedShared).folderScoped === true;
 }
 
 const MAX_BUFFERED_EVENTS = 10_000;
@@ -142,16 +153,26 @@ export function createThroughCoreFactory(
  * is not reachable (or no longer registered) yet: it is still watched, every read fails and says why, and the
  * timeout ends the Task, instead of the Task having nothing watching it.
  */
-export function lazyShared(resolve: () => Promise<CoreShared>): CoreShared {
+export function lazyShared(resolve: () => Promise<FolderScopedShared>, scopedFromStart = false): FolderScopedShared {
+  // What the last call resolved to says how this handle is read; `scopedFromStart` is what it is read as before any call.
+  let scoped = scopedFromStart;
+  const current = async (): Promise<CoreShared> => {
+    const found = await resolve();
+    scoped = isFolderScoped(found);
+    return found;
+  };
   return {
-    list: async (path) => (await resolve()).list(path),
-    get: async (path) => (await resolve()).get(path),
-    put: async (path, body) => (await resolve()).put(path, body),
-    mkdir: async (path) => (await resolve()).mkdir(path),
-    rm: async (path) => (await resolve()).rm(path),
-    move: async (from, to) => (await resolve()).move(from, to),
-    upload: async (destination, entries) => (await resolve()).upload(destination, entries),
-    watch: async (since) => (await resolve()).watch(since),
-    signedUrl: async (path, options) => (await resolve()).signedUrl(path, options),
+    get folderScoped() {
+      return scoped;
+    },
+    list: async (path) => (await current()).list(path),
+    get: async (path) => (await current()).get(path),
+    put: async (path, body) => (await current()).put(path, body),
+    mkdir: async (path) => (await current()).mkdir(path),
+    rm: async (path) => (await current()).rm(path),
+    move: async (from, to) => (await current()).move(from, to),
+    upload: async (destination, entries) => (await current()).upload(destination, entries),
+    watch: async (since) => (await current()).watch(since),
+    signedUrl: async (path, options) => (await current()).signedUrl(path, options),
   };
 }

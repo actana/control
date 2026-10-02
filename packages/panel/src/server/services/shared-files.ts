@@ -277,7 +277,7 @@ export class SharedFiles {
     }
     // Resolve the Core before reading a byte: an owner with no such Core is refused without a read.
     const held = await this.open(ownerId, coreId);
-    const bytes = await readLimited(body, limit);
+    const bytes = await readLimited(body, limit, declaredLength);
     try {
       await held.shared.put(path, bytes);
     } catch (err) {
@@ -328,10 +328,14 @@ function toEntry(e: SharedEntry): SharedFileEntry {
   };
 }
 
-/** Read a stream into one array, refusing as soon as it has gone over `limit`. */
-export async function readLimited(stream: ReadableStream<Uint8Array> | null, limit: number): Promise<Uint8Array> {
+/**
+ * Read a stream into one array, refusing as soon as it has gone over `limit`. The bytes are held once: into an array of
+ * the declared length when there is one (a body that is longer or shorter than it says is refused), otherwise into one
+ * that doubles up to the limit, and what is returned is a view of it, never a second copy.
+ */
+export async function readLimited(stream: ReadableStream<Uint8Array> | null, limit: number, declaredLength: number | null = null): Promise<Uint8Array> {
   if (!stream) return new Uint8Array();
-  const chunks: Uint8Array[] = [];
+  let buffer = new Uint8Array(declaredLength !== null ? declaredLength : Math.min(limit, 64 * 1024));
   let total = 0;
   const reader = stream.getReader();
   try {
@@ -343,18 +347,22 @@ export async function readLimited(stream: ReadableStream<Uint8Array> | null, lim
         await reader.cancel().catch(() => undefined);
         throw new PayloadTooLargeError(limit);
       }
-      chunks.push(value);
+      if (total > buffer.byteLength) {
+        if (declaredLength !== null) {
+          await reader.cancel().catch(() => undefined);
+          throw new ValidationError("The body is longer than its declared length.");
+        }
+        const grown = new Uint8Array(Math.min(limit, Math.max(total, buffer.byteLength * 2)));
+        grown.set(buffer.subarray(0, total - value.byteLength));
+        buffer = grown;
+      }
+      buffer.set(value, total - value.byteLength);
     }
   } finally {
     reader.releaseLock();
   }
-  const out = new Uint8Array(total);
-  let at = 0;
-  for (const c of chunks) {
-    out.set(c, at);
-    at += c.byteLength;
-  }
-  return out;
+  if (declaredLength !== null && total !== declaredLength) throw new ValidationError("The body is shorter than its declared length.");
+  return buffer.subarray(0, total);
 }
 
 let singleton: SharedFiles | null = null;

@@ -221,4 +221,21 @@ describe("the Core is unreachable and a result file in S3 still moves the Task",
     expect(sts.issued.length).toBeGreaterThan(issuedAtDispatch);
     expect(log.errors).toEqual([]);
   });
+
+  it("asks the store about the Task's own folder only, however much else the Shared folder holds", async () => {
+    const coreId = await attachedCore();
+    const { clock, s3, core } = await rig(coreId);
+    for (let i = 0; i < 25; i += 1) s3.seed(`${PREFIX}/${coreId}/notes/file-${i}.md`, "x", 1);
+    s3.seed(`${PREFIX}/${coreId}/readme.md`, "x", 1);
+    const task = await assign(clock);
+    await waitFor("the Session to start", async () => core.starts.length, (count) => count === 1);
+    // Several ticks with nothing there, then the result.
+    await waitFor("some ticks", async () => s3.requests.length, (count) => count >= 3);
+    s3.seed(`${PREFIX}/${coreId}/tasks/${task.id}/success.md`, report("fine"), clock.now() + 1_000);
+    await waitFor("the Task to be done", async () => (await getTask(OWNER, task.id)).status, (status) => status === "done");
+
+    const outside = s3.requests.filter((r) => !r.key.startsWith(`${PREFIX}/${coreId}/tasks/${task.id}/`));
+    expect(outside).toEqual([]);
+    expect(s3.requests.length).toBeGreaterThanOrEqual(3);
+  });
 });

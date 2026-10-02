@@ -159,12 +159,14 @@ export class TaskDispatcher {
           await failTaskDispatch(this.ownerId, task.id, "this Task was running when the Panel stopped, and has no Core to look for its result on", this.now());
           continue;
         }
+        // The Core's Shared folder as it is now, when it can be reached; otherwise a handle that asks again on each use.
+        const shared = await this.sharedFor(coreId).catch(() => lazyShared(() => this.sharedFor(coreId)));
         this.watcher.track({
           taskId: task.id,
           attempt: task.attemptCount,
           dispatchedAt: task.dispatchedAt ?? this.now(),
           coreId,
-          shared: lazyShared(() => this.sharedFor(coreId)),
+          shared,
           authorName: agent?.name ?? "agent",
         });
         adopted += 1;
