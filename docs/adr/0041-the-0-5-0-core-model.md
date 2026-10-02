@@ -28,8 +28,9 @@
 > ("Landed by" #565, #569, #570, #563 and client#8, #564, #566, #572–#574 and #567). The audit found that tickets of
 > the train settled in merged code questions this record still lists as open, so this amendment writes down what the
 > merged code does and nothing else; it decides nothing new. It settles the Open items on the Files tab, the shape of
-> an Agent and how a Task is dispatched, the Report contract, and where Remembered session settings live (the code
-> answers it; no owner ruling does), and it marks D14 and D20 as now true. It says where the code and an earlier clause
+> an Agent and how a Task is dispatched, and the Report contract, and it marks D14 and D20 as now true of the Panel's code and
+> dependency lists (D41 says what that leaves out). On where Remembered session settings live it only records what the code does
+> (D42); that question stays open for the owner. It says where the code and an earlier clause
 > disagree: D12 (D38) and the "dumb pipe" of ADR 0030 (D34). Nothing in D1–D33 is changed; D12, D14 and D20 each gain a pointer.
 
 > **On the number.** This record takes **0041**, the next free number after
@@ -453,8 +454,7 @@ folder is attached; a delete empties only that Core's S3 prefix.** The config li
 `core_secrets` (ADR 0011), write-only, with one reader: the SDK issuer's closure; no route, log line, error or frame carries it. A Core registered from the Panel stays
 `pending` in `core_shared_folders` until `sharedAttach` succeeds. The pairing wizard's last step tests the folder (own folder
 reachable, another Core's not), then finishes; finishing without storage is a 409 and the Core is sent nothing. The Panel pushes each
-Core a fresh key over the core-link before the current one ends (at the SDK's refresh point, 15 minutes early), retries after 5 and 15
-seconds on failure and shows the error on the Core. **Unpair** (`DELETE /api/cores/:id`) sends `sharedDetach`: the Core keeps `~/shared`,
+Core a fresh key over the core-link before the current one ends (at the SDK's refresh point, 15 minutes early), retries after 5 seconds, 15 seconds, 60 seconds and then every 300 seconds, the last delay repeating for as long as the push keeps failing (`RETRY_DELAYS_MS`), and shows the error on the Core. **Unpair** (`DELETE /api/cores/:id`) sends `sharedDetach`: the Core keeps `~/shared`,
 the row is forgotten and the S3 prefix is left, which is D13. **Delete** (`POST /api/cores/:id/delete`, with the exact `<prefix>/<core id>/`
 typed back) removes the Core row and empties only that prefix, and only after the Core answered `detached` or `not-attached`, or its key ran out;
 otherwise it is a 409 and nothing is removed, since a Core still syncing would delete its own `~/shared` once the objects were gone.
@@ -510,8 +510,9 @@ API-key principal. It differs from screen 09: the key prefix is `ak_`, not `actk
 **D41 — D14 and D20 are now true.** PR 639 moved the `missioncontrol.db` tables (`sessions`, `terminal_logs`, `home_terminals`, `app_settings`, `token_usage`,
 `token_usage_rollup`, `token_usage_session_offsets`, `event_log`) to Postgres and deleted `db/client.ts`, the schema bootstrap and the legacy SQL migrations, so no Panel
 state is in a SQLite file. `pg-schema.ts` holds no Projects table. PR 643 moved the three provider-usage readers (Cursor's `state.vscdb`, OpenCode Go's `opencode.db`,
-Windsurf's `state.vscdb`) to `node:sqlite`, read-only with a 250 ms busy timeout, and removed `better-sqlite3` and its types from the Panel's and the root's `package.json`.
-**What this does not say:** `better-sqlite3` is still used by the Core and is declared as a `devDependency` of `packages/shared` (PR 643 added the declaration), which D20
+Windsurf's `state.vscdb`) to `node:sqlite`, read-only with a 250 ms busy timeout, and removed `better-sqlite3` and its types from the dependency lists of the Panel's and the root's `package.json`. The root manifest still names it in the
+`native:node:rebuild` script and in the build allow-list (`package.json:53`, `:95`).
+**What this does not say:** the Panel's image is not shown to be free of it. The deploy installs the Core, so the Core's compiled copy may still sit in the image's tree, and the build stage still compiles it. The image smoke proves only that `better-sqlite3` cannot be resolved from the Panel (its own log line says the files "may remain under the Core's copy"), and whether the deploy should stop installing the Core is undecided. Also, `better-sqlite3` is still used by the Core and is declared as a `devDependency` of `packages/shared` (PR 643 added the declaration), which D20
 (about the Panel) allows; `packages/panel/src/server/repositories/_sql.ts` still imports a type from `drizzle-orm/sqlite-core`, for a helper nothing uses. **Where the record and the
 pull requests disagree on the count:** the intro to D14–D23 and the Consequences say #567 is seven pull requests; PR 639 calls itself "5 of 7" and PR 643 "6 of 6".
 
