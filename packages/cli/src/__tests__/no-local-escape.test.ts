@@ -404,9 +404,11 @@ describe("the command is `actana` (#129 D8)", () => {
       readFileSync(path.resolve(SRC, "..", "package.json"), "utf8"),
     ) as { name: string; bin: Record<string, string>; description: string };
 
-    // #288 D6: the name stays. A rename costs every existing install and buys a
-    // manifest field we can rewrite — so the field is what was rewritten.
-    expect(manifest.name).toBe("@actana/cli");
+    // #580: the name `@actana/cli` belongs to the published client CLI this
+    // package now depends on, so the built-in one is `@actana/core-cli` and is
+    // never published. The command it puts on the Core's PATH is still `actana`.
+    expect(manifest.name).toBe("@actana/core-cli");
+    expect((manifest as { private?: boolean }).private).toBe(true);
     // And the description no longer calls this "the `actana` command's client
     // half", because that stopped being true the day #288 landed. There is one
     // half.

@@ -55,7 +55,7 @@ export const STAGES = [
   { id: "root", label: "root suite", kind: "root" },
   { id: "sdk", label: "packages/sdk", kind: "package", pkg: "@actana/sdk", dir: "sdk" },
   { id: "shared", label: "packages/shared", kind: "package", pkg: "@actana/shared", dir: "shared" },
-  { id: "cli", label: "packages/cli", kind: "package", pkg: "@actana/cli", dir: "cli" },
+  { id: "cli", label: "packages/cli", kind: "package", pkg: "@actana/core-cli", dir: "cli" },
   { id: "core", label: "packages/core", kind: "package", pkg: "@actana/core", dir: "core" },
   { id: "panel", label: "packages/panel", kind: "package", pkg: "@actana/panel", dir: "panel" },
 ];

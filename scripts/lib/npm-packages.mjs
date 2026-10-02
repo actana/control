@@ -127,7 +127,7 @@ import * as path from "node:path";
  * The packages D13 publishes to npm. Everything else in the workspace is
  * `private: true` and stays that way.
  */
-export const PUBLISHABLE = ["@actana/sdk", "@actana/cli"];
+export const PUBLISHABLE = ["@actana/sdk"];
 
 /** D12's floor, quoted. A published package declares exactly this. */
 export const PUBLISHED_ENGINES = ">=22";

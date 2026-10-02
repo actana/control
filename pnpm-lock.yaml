@@ -30,12 +30,12 @@ importers:
 
   .:
     dependencies:
-      '@actana/cli':
-        specifier: workspace:*
-        version: link:packages/cli
       '@actana/core':
         specifier: workspace:*
         version: link:packages/core
+      '@actana/core-cli':
+        specifier: workspace:*
+        version: link:packages/cli
       '@actana/panel':
         specifier: workspace:*
         version: link:packages/panel
