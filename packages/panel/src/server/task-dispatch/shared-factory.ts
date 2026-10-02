@@ -9,18 +9,22 @@ import {
 import { getCore, getCoreSecrets } from "../services/cores";
 import { coreLinkManager, type CoreLinkManager } from "../services/core-link-manager";
 import { filesFetchFor } from "../services/core-files-proxy";
+import { coreS3Shared, SharedFilesUnavailableError, type CoreS3Shared } from "../services/core-s3-shared";
+import { StorageNotConfiguredError } from "../services/storage";
 
 /**
  * Which `CoreShared` the result watcher reads a Core's Shared folder through
  * (#570), chosen in ONE place.
  *
  * - **S3 mode**, when the Panel has storage configured: the object store is read
- *   directly, so a result is seen while the Core is paused. It needs the Panel's
- *   storage settings and the key issuer, which wait on #562 and #566; neither
- *   exists in the Panel yet, so nothing passes `s3` today and this seam is all
- *   that is built.
+ *   directly with the per-Core mode and server-held key the Files tab uses
+ *   ({@link createS3Factory}), so a result is seen while the Core is paused, and
+ *   the Panel's own `fail.md` is written there too.
  * - **Through-the-Core mode** otherwise: the Core's Files API and its
- *   `shared:changed` events. It works only while the Core is up.
+ *   `shared:changed` events. It works only while the Core is up. It is the
+ *   fallback when storage is not configured, and for a Core that has no Shared
+ *   folder in storage (paired before it): nothing syncs that Core's results to S3,
+ *   so its own Files API is the only place to look.
  *
  * The watcher is written on the `CoreShared` interface and cannot tell which it has.
  */
@@ -34,7 +38,28 @@ export type SharedFactoryDeps = {
 export type SharedFor = (coreId: string) => Promise<CoreShared>;
 
 export function createSharedFactory(deps: SharedFactoryDeps): SharedFor {
-  return async (coreId) => (deps.s3 ? deps.s3(coreId) : deps.throughCore(coreId));
+  return async (coreId) => {
+    if (deps.s3) {
+      try {
+        return await deps.s3(coreId);
+      } catch (err) {
+        if (!(err instanceof StorageNotConfiguredError || err instanceof SharedFilesUnavailableError)) throw err;
+      }
+    }
+    return deps.throughCore(coreId);
+  };
+}
+
+/**
+ * The S3 mode for a Core, built the way the Files tab builds it (`CoreS3Shared`). The Core and its folder are checked
+ * when this is asked for, so a Core with no folder or a Panel with no storage says so at once; after that every call
+ * asks for the Core's key again, so a Task that runs longer than a key lives never reads with an ended one.
+ */
+export function createS3Factory(ownerId: number, modes: CoreS3Shared = coreS3Shared()): (coreId: string) => Promise<CoreShared> {
+  return async (coreId) => {
+    await modes.open(ownerId, coreId);
+    return lazyShared(async () => (await modes.open(ownerId, coreId)).shared);
+  };
 }
 
 const MAX_BUFFERED_EVENTS = 10_000;

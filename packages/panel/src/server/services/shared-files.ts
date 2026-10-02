@@ -1,9 +1,6 @@
-import { createS3CoreShared, CoreSharedError, type CoreShared, type SharedEntry } from "@actana/sdk/shared";
-import type { SharedKey, SharedKeyIssuer } from "@actana/sdk/shared-key";
+import { CoreSharedError, type CoreShared, type SharedEntry } from "@actana/sdk/shared";
 import { ConflictError, DomainError, NotFoundError, ValidationError } from "../errors";
-import { findSharedFolder } from "../repositories/core-shared-folders.repo";
-import { getCore } from "./cores";
-import { getStorageConfig, storageKeyIssuer, type StorageTarget } from "./storage";
+import { coreS3Shared, CoreS3Shared, SharedFilesUnavailableError, type CoreS3Deps, type HeldCoreShared } from "./core-s3-shared";
 import {
   baseName,
   checkEntryName,
@@ -41,7 +38,6 @@ import {
  */
 
 export const DOWNLOAD_URL_SECONDS = 300;
-const KEY_MIN_LEFT_MS = 6 * 60_000;
 const COUNT_FOLDERS_MAX = 200;
 const COUNT_CONCURRENCY = 8;
 const SEARCH_MAX = 200;
@@ -55,41 +51,13 @@ export class PayloadTooLargeError extends DomainError {
   }
 }
 
-/** This Core has no Shared folder the tab could read: not paired from a Panel with storage, or not finished. */
-export class SharedFilesUnavailableError extends ConflictError {
-  readonly code = "no-shared-folder";
-  constructor(message: string) {
-    super(message);
-    this.name = "SharedFilesUnavailableError";
-  }
-}
+export { SharedFilesUnavailableError };
 
-export type SharedFilesDeps = {
-  issuer: (ownerId: number) => Promise<{ issuer: SharedKeyIssuer; target: StorageTarget }>;
-  s3: (opts: { target: StorageTarget; folder: string; key: SharedKey; fetch?: typeof fetch }) => CoreShared;
-  now: () => number;
-  fetch?: typeof fetch;
+export type SharedFilesDeps = Partial<CoreS3Deps> & {
+  /** The per-Core S3 mode. The Panel's own by default, which the Task watcher shares; a test hands in one over a fake S3. */
+  modes?: CoreS3Shared;
   uploadLimitBytes: number;
 };
-
-function defaultDeps(): SharedFilesDeps {
-  return {
-    issuer: (ownerId) => storageKeyIssuer(ownerId),
-    s3: ({ target, folder, key, fetch }) =>
-      createS3CoreShared({
-        endpoint: target.endpoint,
-        bucket: target.bucket,
-        prefix: folder.replace(/\/+$/, ""),
-        region: target.region,
-        credentials: { get: async () => key },
-        ...(fetch ? { fetch } : {}),
-      }),
-    now: Date.now,
-    uploadLimitBytes: DEFAULT_UPLOAD_LIMIT_BYTES,
-  };
-}
-
-const BACKEND_LABEL: Record<string, string> = { seaweedfs: "SeaweedFS" };
 
 /** A path a browser sent, checked here first. Throws a 400; returns it unchanged when it is good. */
 export function cleanPath(raw: unknown, want: "file" | "folder" | "either" = "either"): string {
@@ -128,14 +96,16 @@ function mapError(err: unknown): never {
   }
 }
 
-type Held = { shared: CoreShared; folder: string; expiresAt: number; backend: string };
+type Held = HeldCoreShared;
 
 export class SharedFiles {
-  private readonly deps: SharedFilesDeps;
-  private readonly held = new Map<string, Held>();
+  private readonly deps: { now: () => number; uploadLimitBytes: number };
+  private readonly modes: CoreS3Shared;
 
   constructor(deps: Partial<SharedFilesDeps> = {}) {
-    this.deps = { ...defaultDeps(), ...deps };
+    // A test that hands in its own issuer, S3 or fetch gets a mode of its own; otherwise the Panel's shared one.
+    this.modes = deps.modes ?? (deps.issuer || deps.s3 || deps.fetch ? new CoreS3Shared(deps) : coreS3Shared());
+    this.deps = { now: deps.now ?? Date.now, uploadLimitBytes: deps.uploadLimitBytes ?? DEFAULT_UPLOAD_LIMIT_BYTES };
   }
 
   get uploadLimitBytes(): number {
@@ -143,32 +113,8 @@ export class SharedFiles {
   }
 
   /** The S3 client for this owner's Core, from a live key. Throws when the owner has no such Core or it has no folder. */
-  private async open(ownerId: number, coreId: string): Promise<Held> {
-    // Who may ask is decided on every call, from the database: a cached key is never a licence. A Core that was
-    // deleted or unpaired, or an owner that is not the Core's, gets nothing from a client built earlier.
-    if (!(await getCore(coreId, ownerId))) throw new NotFoundError("no such Core");
-    const row = await findSharedFolder(ownerId, coreId);
-    if (!row || row.state === "pending" || !row.s3Prefix) {
-      throw new SharedFilesUnavailableError("This Core has no Shared folder yet: finish its pairing with storage first.");
-    }
-    const folder = row.s3Prefix;
-    // The folder must be this Core's own, whatever the row says (the same rule the delete applies).
-    if (!folder.endsWith(`/${coreId}/`)) throw new ValidationError("The stored folder is not this Core's folder.");
-
-    const cacheKey = `${ownerId}:${coreId}`;
-    const cached = this.held.get(cacheKey);
-    if (cached && cached.folder === folder && cached.expiresAt - this.deps.now() > KEY_MIN_LEFT_MS) return cached;
-
-    const { issuer, target } = await this.deps.issuer(ownerId);
-    const key = await issuer.issue(coreId);
-    const held: Held = {
-      shared: this.deps.s3({ target, folder, key, fetch: this.deps.fetch }),
-      folder,
-      expiresAt: key.expiresAt.getTime(),
-      backend: BACKEND_LABEL[(await getStorageConfig(ownerId)).backend ?? ""] ?? "S3",
-    };
-    this.held.set(cacheKey, held);
-    return held;
+  private open(ownerId: number, coreId: string): Promise<Held> {
+    return this.modes.open(ownerId, coreId);
   }
 
   private async run<T>(ownerId: number, coreId: string, fn: (shared: CoreShared, held: Held) => Promise<T>): Promise<T> {
