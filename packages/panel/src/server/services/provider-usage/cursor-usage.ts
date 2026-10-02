@@ -6,10 +6,10 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import Database from "better-sqlite3";
 import type { ProviderUsageSnapshot } from "~/shared/provider-usage";
 import { emptyProviderSnapshot } from "~/shared/provider-usage";
 import { normalizeCursorUsagePayload } from "~/shared/provider-usage-normalize";
+import { cellText, openReadOnlySqlite } from "./sqlite-readonly";
 
 const USAGE_SUMMARY_URL = "https://cursor.com/api/usage-summary";
 const REQUEST_TIMEOUT_MS = 8_000;
@@ -67,18 +67,14 @@ function userIdFromAccessToken(accessToken: string): string | null {
 function readAccessTokenFromVscdb(dbPath: string): string | null {
   try {
     if (!fs.existsSync(dbPath)) return null;
-    const db = new Database(dbPath, { readonly: true, fileMustExist: true, timeout: 250 });
+    const db = openReadOnlySqlite(dbPath);
     try {
       const row = db
         .prepare("SELECT value FROM ItemTable WHERE key = ? LIMIT 1")
         .get("cursorAuth/accessToken") as { value?: unknown } | undefined;
       if (!row) return null;
-      if (typeof row.value === "string" && row.value.trim()) return row.value.trim();
-      if (Buffer.isBuffer(row.value)) {
-        const s = row.value.toString("utf8").trim();
-        return s || null;
-      }
-      return null;
+      const s = cellText(row.value)?.trim();
+      return s || null;
     } finally {
       db.close();
     }

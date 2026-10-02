@@ -35,7 +35,7 @@ project's glossary, and reviewers use its terms.
 
 - TanStack Start (file-based React routes + server file routes for `/api/*`)
 - Vite 7 + Tailwind v4
-- SQLite (`better-sqlite3`) + Drizzle ORM
+- Postgres (`pg`) + Drizzle ORM
 - `node-pty` + `@xterm/xterm` + `@xterm/addon-fit`
 - Server-Sent Events for live updates (no socket.io / Redis)
 
@@ -91,9 +91,11 @@ pnpm build          # Core bundle first, then the Panel — that order matters
 pnpm dev            # Panel dev server
 ```
 
-The native dependencies (`better-sqlite3`, `node-pty`) are compiled during
-install, against the standard Node ABI — there is no second runtime to rebuild
-for. `pnpm dev`, `pnpm test` and `pnpm db:*` each ensure `better-sqlite3`
+The native dependencies (`node-pty`, and the Core's `better-sqlite3`) are
+compiled during install, against the standard Node ABI — there is no second
+runtime to rebuild for. The Panel itself has no native addon: it keeps its state
+in Postgres and reads other tools' SQLite files with the built-in `node:sqlite`.
+`pnpm dev`, `pnpm test` and `pnpm db:*` each ensure the Core's `better-sqlite3`
 matches the current Node before they run; if it goes stale after a Node
 upgrade, `pnpm native:node:rebuild`.
 

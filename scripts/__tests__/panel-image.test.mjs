@@ -103,7 +103,7 @@ describe("Dockerfile", () => {
     const ciNode = readRepoFile(".github/workflows/ci.yml").match(/node-version:\s*(\S+)/)?.[1];
     expect(ciNode).toBeTruthy();
     const build = dockerfile.froms.find(({ alias }) => alias === "build");
-    // trixie, not bookworm: a better-sqlite3 built against the older glibc
+    // trixie, not bookworm: a native module built against the older glibc
     // happens to load on the newer one, and the reverse does not. D25 removes
     // the reliance on that asymmetry rather than documenting it.
     expect(build.image).toBe(`node:${ciNode}-trixie`);
@@ -208,6 +208,14 @@ describe("Dockerfile", () => {
     expect(smoke).toContain("select count(*) from panel_sessions where owner_id = 1");
     expect(smoke).not.toContain('"/panel.db"');
     expect(smoke).not.toContain("sqlite_master");
+  });
+
+  it("has the smoke prove better-sqlite3 is out of the image and node:sqlite loads quietly", () => {
+    const smoke = readRepoFile("scripts/smoke-panel-image.mjs");
+    expect(smoke).toContain('require.resolve("better-sqlite3")');
+    expect(smoke).toContain('require("node:sqlite")');
+    expect(smoke).toContain("the Panel's logs carry an experimental-feature warning");
+    expect(smoke).not.toContain("still loads");
   });
 
   it("installs the pinned pnpm from package.json's packageManager field", () => {

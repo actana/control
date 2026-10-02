@@ -1441,8 +1441,8 @@ jobs:
   #
   # amd64 only (D35): the train and release builds cover arm64 natively, and
   # paying for a second runner on every PR buys little — the two legs share a
-  # Dockerfile, and arch-specific breakage is almost always in better-sqlite3's
-  # native build, which this leg already exercises. Emulation on Apple silicon
+  # Dockerfile, and arch-specific breakage is almost always in a native build
+  # (node-pty, the Core's better-sqlite3), which this leg already exercises. Emulation on Apple silicon
   # is acceptable for a developer poking at a change; it is not acceptable for
   # anything an operator deploys.
   #
