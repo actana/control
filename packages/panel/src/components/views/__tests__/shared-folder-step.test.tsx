@@ -195,8 +195,6 @@ describe("pairing step 4: the Shared folder", () => {
     expect(screen.queryByLabelText("Master key")).toBeNull();
     expect(screen.queryByLabelText("OIDC issuer")).toBeNull();
     expect(document.body.innerHTML).not.toMatch(/masterKey|api[_-]?token|secret/i);
-    // The view never carries the key; the page must not invent one.
-    expect(JSON.stringify(R2)).not.toMatch(/BEGIN |secretAccessKey|apiToken/i);
 
     await click("Test connection");
     expect(api.putStorage).not.toHaveBeenCalled();
@@ -207,6 +205,24 @@ describe("pairing step 4: the Shared folder", () => {
     await click("Connect and finish pairing");
     expect(api.putStorage).not.toHaveBeenCalled();
     expect(api.finishCorePairing).toHaveBeenCalledWith("core_new");
+  });
+
+  it("when getStorage fails: no Master key box, Test disabled, and putStorage is never called", async () => {
+    api.getStorage.mockRejectedValue(new ApiError("storage list timed out", 503, {}));
+    await openSettings();
+
+    expect(document.querySelector('[data-storage="unread"]')).not.toBeNull();
+    expect(screen.queryByLabelText("Master key")).toBeNull();
+    expect(screen.queryByLabelText("OIDC issuer")).toBeNull();
+    expect(button("Test connection").disabled).toBe(true);
+    expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
+    expect(screen.getByRole("alert").textContent).toContain("storage list timed out");
+
+    await act(async () => {
+      fireEvent.click(button("Test connection"));
+    });
+    expect(api.putStorage).not.toHaveBeenCalled();
+    expect(api.testSharedFolder).not.toHaveBeenCalled();
   });
 
   it("does not let a failed test through: a key that reaches another Core's folder is a FAILED, not a pass", async () => {

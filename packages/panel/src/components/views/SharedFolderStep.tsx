@@ -23,6 +23,10 @@ import type { CoreWithDial } from "~/shared/cores";
  * **When storage is not configured**, this is first-time setup: SeaweedFS fields plus a write-only master key, saved on
  * Test connection, then the same probe and finish.
  *
+ * **A failed GET of the storage config is not "not configured".** Until the read succeeds, Test connection stays
+ * disabled and there is no Master key box, so a transient failure cannot lead to putStorage overwriting a stored
+ * backend. Retry reloads the config.
+ *
  * **The master key is write-only.** On first-time setup the box is a password field that is empty on every render: the
  * Panel's answer says only whether a key is set, so there is nothing to fill it with. What is typed goes out in the one
  * request that saves the config and is dropped from this component's state as soon as that request returns. The Core is
@@ -41,6 +45,8 @@ const BACKEND_LABELS: Record<StorageBackendKind, string> = {
 };
 
 type Fields = typeof DEFAULTS;
+/** Outcome of GET /api/storage: unknown until it succeeds (ok) or fails (failed). */
+type StorageLoad = "loading" | "ok" | "failed";
 
 export function SharedFolderStep({
   core,
@@ -52,9 +58,9 @@ export function SharedFolderStep({
   const [fields, setFields] = useState<Fields>(DEFAULTS);
   const [masterKey, setMasterKey] = useState("");
   const [masterKeySet, setMasterKeySet] = useState(false);
-  /** Stored config from Settings › Storage: read-only path, no putStorage. */
+  /** Set only after a successful getStorage when storage.configured is true. */
   const [stored, setStored] = useState<StorageConfigView | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [storageLoad, setStorageLoad] = useState<StorageLoad>("loading");
   const [testing, setTesting] = useState(false);
   const [finishing, setFinishing] = useState(false);
   const [result, setResult] = useState<SharedConnectionResult | null>(null);
@@ -62,36 +68,56 @@ export function SharedFolderStep({
   // Edits after a passed test invalidate it: Finish belongs to the fields that were tested.
   const [tested, setTested] = useState(false);
 
+  const applyStorage = (storage: StorageConfigView) => {
+    setMasterKeySet(storage.masterKeySet);
+    if (storage.configured) {
+      setStored(storage);
+      setFields({
+        endpoint: storage.endpoint ?? "",
+        bucket: storage.bucket ?? "",
+        prefix: storage.prefix ?? "cores",
+        oidcIssuer: storage.oidcIssuer ?? "",
+        oidcAudience: storage.oidcAudience ?? DEFAULTS.oidcAudience,
+        keyId: storage.keyId ?? "",
+      });
+    } else {
+      setStored(null);
+      setFields(DEFAULTS);
+    }
+    setStorageLoad("ok");
+  };
+
+  const loadStorage = async () => {
+    setStorageLoad("loading");
+    setError(null);
+    setStored(null);
+    setMasterKeySet(false);
+    setFields(DEFAULTS);
+    setTested(false);
+    setResult(null);
+    try {
+      const { storage } = await api.getStorage();
+      applyStorage(storage);
+    } catch (err) {
+      setStorageLoad("failed");
+      setError(messageOf(err));
+    }
+  };
+
   useEffect(() => {
     let alive = true;
+    setStorageLoad("loading");
     api
       .getStorage()
       .then(({ storage }) => {
         if (!alive) return;
-        setMasterKeySet(storage.masterKeySet);
-        if (storage.configured) {
-          setStored(storage);
-          setFields({
-            endpoint: storage.endpoint ?? "",
-            bucket: storage.bucket ?? "",
-            prefix: storage.prefix ?? "cores",
-            oidcIssuer: storage.oidcIssuer ?? "",
-            oidcAudience: storage.oidcAudience ?? DEFAULTS.oidcAudience,
-            keyId: storage.keyId ?? "",
-          });
-        } else if (storage.endpoint) {
-          setFields({
-            endpoint: storage.endpoint ?? "",
-            bucket: storage.bucket ?? "",
-            prefix: storage.prefix ?? "cores",
-            oidcIssuer: storage.oidcIssuer ?? "",
-            oidcAudience: storage.oidcAudience ?? DEFAULTS.oidcAudience,
-            keyId: storage.keyId ?? "",
-          });
-        }
+        applyStorage(storage);
       })
-      .catch((err: unknown) => alive && setError(messageOf(err)))
-      .finally(() => alive && setLoading(false));
+      .catch((err: unknown) => {
+        if (!alive) return;
+        setStorageLoad("failed");
+        setError(messageOf(err));
+      });
     return () => {
       alive = false;
     };
@@ -103,17 +129,21 @@ export function SharedFolderStep({
     setResult(null);
   };
 
-  const configured = stored !== null;
-  const ready = configured
-    ? true
-    : fields.endpoint.trim() !== "" &&
-      fields.bucket.trim() !== "" &&
-      fields.prefix.trim() !== "" &&
-      fields.oidcIssuer.trim() !== "" &&
-      fields.keyId.trim() !== "" &&
-      (masterKeySet || masterKey.trim() !== "");
+  const configured = storageLoad === "ok" && stored !== null;
+  const firstTime = storageLoad === "ok" && stored === null;
+  const ready =
+    storageLoad === "ok" &&
+    (configured
+      ? true
+      : fields.endpoint.trim() !== "" &&
+        fields.bucket.trim() !== "" &&
+        fields.prefix.trim() !== "" &&
+        fields.oidcIssuer.trim() !== "" &&
+        fields.keyId.trim() !== "" &&
+        (masterKeySet || masterKey.trim() !== ""));
 
   const handleTest = async () => {
+    if (storageLoad !== "ok") return;
     setTesting(true);
     setError(null);
     setResult(null);
@@ -158,16 +188,18 @@ export function SharedFolderStep({
     }
   };
 
-  const busy = loading || testing || finishing;
+  const busy = storageLoad === "loading" || testing || finishing;
   const passed = result !== null && tested;
   const backendLabel =
     configured && stored.backend ? BACKEND_LABELS[stored.backend] : BACKEND_LABELS.seaweedfs;
   const folderPrefix = configured ? (stored.prefix ?? fields.prefix) : fields.prefix;
+  const storageAttr =
+    storageLoad === "failed" ? "unread" : configured ? "configured" : storageLoad === "ok" ? "first-time" : "loading";
 
   return (
     <div
       data-step="shared-folder"
-      data-storage={configured ? "configured" : "first-time"}
+      data-storage={storageAttr}
       style={{
         padding: "14px 16px",
         background: "var(--surface-0)",
@@ -188,45 +220,49 @@ export function SharedFolderStep({
         {configured ? (
           <>
             {" "}
-            Storage is already set in Settings; this step only proves this Core's folder and attaches it.
+            Storage is already set; change it in Settings › Storage. This step only proves this Core's folder and attaches it.
           </>
         ) : null}
       </div>
 
-      <TextField label="Backend" value={backendLabel} onChange={() => {}} disabled mono />
-      <TextField
-        label="S3 endpoint"
-        value={configured ? (stored.endpoint ?? "") : fields.endpoint}
-        onChange={configured ? () => {} : edit("endpoint")}
-        placeholder="https://s3.panel.internal:8333"
-        mono
-        disabled={busy || configured}
-        spellCheck={false}
-        autoComplete="off"
-      />
-      <TextField
-        label="Bucket"
-        value={configured ? (stored.bucket ?? "") : fields.bucket}
-        onChange={configured ? () => {} : edit("bucket")}
-        placeholder="actana-shared"
-        mono
-        disabled={busy || configured}
-        spellCheck={false}
-        autoComplete="off"
-      />
-      <TextField
-        label="Prefix"
-        value={configured ? (stored.prefix ?? "") : fields.prefix}
-        onChange={configured ? () => {} : edit("prefix")}
-        placeholder="cores/"
-        mono
-        disabled={busy || configured}
-        spellCheck={false}
-        autoComplete="off"
-      />
-      <TextField label="This Core's folder" value={derivedFolder(folderPrefix, core.id)} onChange={() => {}} disabled mono />
+      {storageLoad !== "failed" && (
+        <>
+          <TextField label="Backend" value={backendLabel} onChange={() => {}} disabled mono />
+          <TextField
+            label="S3 endpoint"
+            value={configured ? (stored.endpoint ?? "") : fields.endpoint}
+            onChange={configured || !firstTime ? () => {} : edit("endpoint")}
+            placeholder="https://s3.panel.internal:8333"
+            mono
+            disabled={busy || configured || !firstTime}
+            spellCheck={false}
+            autoComplete="off"
+          />
+          <TextField
+            label="Bucket"
+            value={configured ? (stored.bucket ?? "") : fields.bucket}
+            onChange={configured || !firstTime ? () => {} : edit("bucket")}
+            placeholder="actana-shared"
+            mono
+            disabled={busy || configured || !firstTime}
+            spellCheck={false}
+            autoComplete="off"
+          />
+          <TextField
+            label="Prefix"
+            value={configured ? (stored.prefix ?? "") : fields.prefix}
+            onChange={configured || !firstTime ? () => {} : edit("prefix")}
+            placeholder="cores/"
+            mono
+            disabled={busy || configured || !firstTime}
+            spellCheck={false}
+            autoComplete="off"
+          />
+          <TextField label="This Core's folder" value={derivedFolder(folderPrefix, core.id)} onChange={() => {}} disabled mono />
+        </>
+      )}
 
-      {!configured && (
+      {firstTime && (
         <>
           <TextField
             label="OIDC issuer"
@@ -276,7 +312,12 @@ export function SharedFolderStep({
         </>
       )}
 
-      <div style={{ display: "flex", justifyContent: "flex-end" }}>
+      <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+        {storageLoad === "failed" && (
+          <Btn variant="frame" size="md" onClick={() => void loadStorage()} disabled={busy}>
+            Retry
+          </Btn>
+        )}
         <Btn variant="frame" size="md" onClick={() => void handleTest()} disabled={busy || !ready}>
           {testing ? "Testing…" : "Test connection"}
         </Btn>

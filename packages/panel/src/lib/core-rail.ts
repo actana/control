@@ -76,18 +76,17 @@ export function coreHue(coreId: string): number {
 }
 
 /**
- * The status pill's words, left to right: link state · version · Shared folder (#560).
- * `sharedFolder` and `version` are passed in: the dial alone does not carry the folder
- * row, and a connected Core's version is stamped onto the dial from its `ready` frame.
+ * The status pill's words, left to right: link state, core-link protocol version, Shared folder (#560).
+ * `sharedFolder` is passed in: the dial alone does not carry the folder row. `dial.coreVersion` is the
+ * core-link protocol version from the Core's last `ready` frame (not the release line).
  */
 export function corePillParts(
   dial: CoreWithDial["dial"],
   sharedFolder?: CoreSharedFolder | null,
-  version?: string | null,
 ): { link: CoreLinkLabel; version: string | null; shared: string } {
   return {
     link: coreLinkLabel(dial),
-    version: version ?? dial.coreVersion ?? null,
+    version: dial.coreVersion ?? null,
     shared: sharedFolderLabel(sharedFolder),
   };
 }

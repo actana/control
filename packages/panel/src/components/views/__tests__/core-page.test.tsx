@@ -154,6 +154,35 @@ describe("CorePage", () => {
     expect(document.querySelector("[data-core-pill]")!.textContent).toContain("offline");
   });
 
+  it("passes Shared folder attached and the core-link protocol version into the pill", async () => {
+    cores = [
+      {
+        ...core("a", "alpha"),
+        dial: { coreId: "a", state: "connected", lastSeenAt: 1, coreVersion: "0.19.0" },
+        sharedFolder: { state: "attached", prefix: "cores/a/", keyExpiresAt: 1, error: null },
+      },
+    ];
+    await mount("sessions");
+    const pill = document.querySelector("[data-core-pill]")!;
+    expect(pill.textContent).toContain("online 0.19.0");
+    expect(pill.textContent).toContain("shared attached");
+    expect(pill.querySelector('[title="Core link protocol version"]')).not.toBeNull();
+  });
+
+  it("passes Shared folder failed into the pill when the folder state is error", async () => {
+    cores = [
+      {
+        ...core("a", "alpha"),
+        dial: { coreId: "a", state: "connected", lastSeenAt: 1, coreVersion: "0.19.0" },
+        sharedFolder: { state: "error", prefix: "cores/a/", keyExpiresAt: 1, error: "push failed" },
+      },
+    ];
+    await mount("sessions");
+    const pill = document.querySelector("[data-core-pill]")!;
+    expect(pill.textContent).toContain("shared failed");
+    expect(pill.textContent).toContain("0.19.0");
+  });
+
   it("switches Core through the switcher", async () => {
     cores = [core("a", "alpha"), core("b", "bravo")];
     const router = await mount("sessions");

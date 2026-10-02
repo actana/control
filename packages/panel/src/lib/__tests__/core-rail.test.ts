@@ -72,11 +72,10 @@ describe("the status pill", () => {
     expect(corePillParts(core("a", "a", "unreachable").dial).link).toBe("offline");
   });
 
-  it("carries the connected version when passed in, and falls back to the dial", () => {
+  it("carries the core-link protocol version from the dial when the Core reported one", () => {
     expect(corePillParts(core("a", "a").dial).version).toBeNull();
-    expect(corePillParts(core("a", "a").dial, undefined, "0.5.0").version).toBe("0.5.0");
-    const dial = { ...core("a", "a", "needs-update").dial, coreVersion: "0.4.2" };
-    expect(corePillParts(dial).version).toBe("0.4.2");
+    const dial = { ...core("a", "a").dial, coreVersion: "0.19.0" };
+    expect(corePillParts(dial).version).toBe("0.19.0");
   });
 
   it("names the Shared folder as attached, pending, failed, or none", () => {
@@ -87,11 +86,11 @@ describe("the status pill", () => {
     expect(corePillParts(core("a", "a").dial, folder("error")).shared).toBe("shared failed");
   });
 
-  it("reads online · version · Shared folder together for a connected Core", () => {
-    const dial = { ...core("a", "a").dial, coreVersion: "0.5.0" };
-    expect(corePillParts(dial, folder("attached"), "0.5.0")).toEqual({
+  it("reads online, protocol version and Shared folder together for a connected Core", () => {
+    const dial = { ...core("a", "a").dial, coreVersion: "0.19.0" };
+    expect(corePillParts(dial, folder("attached"))).toEqual({
       link: "online",
-      version: "0.5.0",
+      version: "0.19.0",
       shared: "shared attached",
     });
   });
