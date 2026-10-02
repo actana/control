@@ -24,7 +24,8 @@ const testDb = await openPanelTestDb();
 const { operatorSessionCookie, resetOperatorSessionForTests } = await import("./_operator-session");
 const { registerCoreFromCredential } = await import("../services/cores");
 const { saveStorageConfig, storageKeyIssuer } = await import("../services/storage");
-const { SharedFiles, resetSharedFilesForTests } = await import("../services/shared-files");
+const { DEFAULT_UPLOAD_LIMIT_BYTES } = await import("~/shared/shared-files");
+const { SharedFiles, sharedFiles, resetSharedFilesForTests } = await import("../services/shared-files");
 const { updateSharedFolder } = await import("../repositories/core-shared-folders.repo");
 
 const ORIGIN = "http://panel.example.test";
@@ -69,7 +70,6 @@ function rig() {
           now: clock.now,
         }),
       now: clock.now,
-      uploadLimitBytes: LIMIT,
     }),
   );
   return { clock, s3, sts };
@@ -107,6 +107,7 @@ beforeEach(async () => {
     oidcIssuer: "https://panel.test",
     keyId: "k1",
     masterKey: MASTER_PEM,
+    uploadSizeLimitBytes: LIMIT,
   });
 });
 afterEach(async () => {
@@ -341,6 +342,70 @@ describe("previews", () => {
   });
 });
 
+describe("the upload limit is the one stored in Storage settings", () => {
+  const put = (coreId: string, name: string, size: number) =>
+    call(files(coreId, "upload", q(name)), { method: "PUT", body: new Uint8Array(size), headers: { "content-length": String(size) } });
+  const setLimit = (uploadSizeLimitBytes: number) =>
+    saveStorageConfig({ backend: "seaweedfs", endpoint: ENDPOINT, bucket: BUCKET, prefix: PREFIX, oidcIssuer: "https://panel.test", keyId: "k1", uploadSizeLimitBytes });
+
+  it("refuses a file one byte over the stored limit and takes one at it, and the summary reports the same number", async () => {
+    const { s3 } = rig();
+    const a = await attachedCore();
+    await setLimit(1_000);
+
+    const over = await put(a, "over.bin", 1_001);
+    expect(over.status).toBe(413);
+    expect(over.headers.get("x-upload-limit")).toBe("1000");
+    expect(s3.objects.size).toBe(0);
+    expect((await put(a, "at.bin", 1_000)).status).toBe(200);
+    expect(s3.objects.get(`${PREFIX}/${a}/at.bin`)?.bytes.byteLength).toBe(1_000);
+    expect((await (await call(files(a, "summary"))).json()).uploadLimitBytes).toBe(1_000);
+  });
+
+  it("reads the limit again on every request: a change in Storage settings applies to the next upload", async () => {
+    rig();
+    const a = await attachedCore();
+    await setLimit(500);
+    expect((await put(a, "first.bin", 501)).status).toBe(413);
+
+    await setLimit(600);
+    expect((await put(a, "second.bin", 501)).status).toBe(200);
+    await setLimit(100);
+    expect((await put(a, "third.bin", 101)).status).toBe(413);
+  });
+
+  it("applies the stored limit to a stream with no declared length", async () => {
+    const { s3 } = rig();
+    const a = await attachedCore();
+    await setLimit(70);
+    const chunks = [new Uint8Array(40), new Uint8Array(40)];
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        const next = chunks.shift();
+        if (next) controller.enqueue(next);
+        else controller.close();
+      },
+    });
+
+    const res = await call(files(a, "upload", q("stream.bin")), { method: "PUT", body: stream });
+
+    expect(res.status).toBe(413);
+    expect(res.headers.get("x-upload-limit")).toBe("70");
+    expect(s3.objects.size).toBe(0);
+  });
+
+  it("regression guard: keeps a sane default of 100 MB when no limit is stored", async () => {
+    rig();
+    const a = await attachedCore();
+    await testDb.pool.query("delete from storage_config");
+
+    const over = await put(a, "huge.bin", DEFAULT_UPLOAD_LIMIT_BYTES + 1);
+
+    expect(over.status).toBe(413);
+    expect(over.headers.get("x-upload-limit")).toBe(String(DEFAULT_UPLOAD_LIMIT_BYTES));
+  });
+});
+
 describe("uploads", () => {
   it("refuses a file over the limit from its declared length, before a key is issued: nothing written, S3 asked for nothing", async () => {
     const { s3, sts } = rig();
@@ -371,6 +436,19 @@ describe("uploads", () => {
     const res = await call(files(a, "upload", q("big.bin")), { method: "PUT", body: stream });
     expect(res.status).toBe(413);
     expect(s3.objects.size).toBe(0);
+  });
+
+  it("holds the bytes once: a body that is not the length it declares is refused, and nothing is written", async () => {
+    const { s3 } = rig();
+    const a = await attachedCore();
+    const body = (size: number) => new Blob([new Uint8Array(size)]).stream() as ReadableStream<Uint8Array>;
+    const service = sharedFiles();
+
+    await expect(service.upload(1, a, "long.bin", body(20), 10)).rejects.toThrow("longer than its declared length");
+    await expect(service.upload(1, a, "short.bin", body(10), 20)).rejects.toThrow("shorter than its declared length");
+    expect(s3.objects.size).toBe(0);
+    await expect(service.upload(1, a, "ok.bin", body(10), 10)).resolves.toMatchObject({ size: 10 });
+    expect(s3.objects.get(`${PREFIX}/${a}/ok.bin`)?.bytes.byteLength).toBe(10);
   });
 
   it("takes a file exactly at the limit", async () => {

@@ -12,6 +12,7 @@ import {
   taskResultPath,
   type TaskResult,
 } from "~/shared/task-report";
+import { isFolderScoped } from "./shared-factory";
 import { consoleDispatchLog, messageOf, type Clock, type DispatchLog } from "./types";
 
 /**
@@ -183,10 +184,16 @@ export class ResultWatcher {
   private async step(t: Tracked): Promise<void> {
     let finished = false;
     try {
-      const watched = await t.shared.watch(t.cursor ?? undefined);
-      finished = await this.consume(t, watched.changes);
-      // Only once every change is dealt with: a read that failed is read again from the same cursor next tick.
-      t.cursor = watched.cursor;
+      if (isFolderScoped(t.shared)) {
+        // The object store has no change feed: `watch` would list the whole Shared folder. List this Task's folder
+        // alone, and read it again next tick, which `t.done` and the dispatch-time rule make safe.
+        finished = await this.consume(t, await this.folderChanges(t));
+      } else {
+        const watched = await t.shared.watch(t.cursor ?? undefined);
+        finished = await this.consume(t, watched.changes);
+        // Only once every change is dealt with: a read that failed is read again from the same cursor next tick.
+        t.cursor = watched.cursor;
+      }
     } catch (err) {
       // The Shared folder cannot be read right now (a Core that is down, a key that expired), or the result could not
       // be recorded. Timeout and exit below do not depend on it, so a Task is never stuck behind it.
@@ -269,20 +276,23 @@ export class ResultWatcher {
     }
   }
 
+  /** What is in the Task's own folder now, as changes. One listing of that folder. */
+  private async folderChanges(t: Tracked): Promise<SharedChange[]> {
+    const entries = await t.shared.list(taskFolder(t.taskId));
+    return entries.map((e) => ({
+      path: e.path,
+      kind: e.kind,
+      deleted: false,
+      ...(e.size !== undefined ? { size: e.size } : {}),
+      ...(e.modifiedAt ? { modifiedAt: e.modifiedAt } : {}),
+    }));
+  }
+
   /** The Panel's own `fail.md`: written to the Shared folder, then recorded like any other result. */
   private async synthesize(t: Tracked, reason: string): Promise<void> {
     // One last look at the folder itself, not at the change feed: a result whose event was missed still counts.
     try {
-      const folder = taskFolder(t.taskId);
-      const entries = await t.shared.list(folder);
-      const changes: SharedChange[] = entries.map((e) => ({
-        path: e.path,
-        kind: e.kind,
-        deleted: false,
-        ...(e.size !== undefined ? { size: e.size } : {}),
-        ...(e.modifiedAt ? { modifiedAt: e.modifiedAt } : {}),
-      }));
-      if (await this.consume(t, changes)) {
+      if (await this.consume(t, await this.folderChanges(t))) {
         this.drop(t);
         return;
       }
