@@ -18,8 +18,11 @@ import {
  * adds the tables it moves here and generates its migration with `db:generate`.
  *
  * PR 4 moves what the SQLite `panel.db` held: the Operator, the Panel's sessions, the
- * Core registry and its sealed secrets. Time columns are epoch milliseconds as
- * `bigint` read back as a JS number (D18); the sealed blob is `bytea`.
+ * Core registry and its sealed secrets. PR 5 moves the seven `missioncontrol.db`
+ * tables (sessions, terminal_logs, home_terminals, app_settings, token_usage,
+ * token_usage_session_offsets, event_log) plus their rollup companion. Time
+ * columns are epoch milliseconds as `bigint` read back as a JS number (D18); the
+ * sealed blob is `bytea`.
  *
  * Only `repositories/` may import this file (`__tests__/owner-guard.test.ts`
  * fails otherwise), so every query on an owner-scoped table is one the guard
@@ -427,3 +430,208 @@ export const coreSharedFolders = pgTable("core_shared_folders", {
   lastError: text("last_error"),
   updatedAt: epochMs("updated_at").notNull(),
 });
+
+/**
+ * A Panel-side Session row (#567 PR 5): the seven tables that lived in
+ * `missioncontrol.db`. Time columns stay epoch ms as `bigint` (D18); SQLite
+ * integer-booleans become `boolean`. Every table is owner-scoped (D15, D23).
+ * A Session belongs to a Core and nothing narrower (ADR 0041 D1); there is no
+ * `project_id`.
+ */
+export const sessions = pgTable(
+  "sessions",
+  {
+    id: text("id").primaryKey(),
+    ownerId: integer("owner_id")
+      .notNull()
+      .references(() => operator.id, { onDelete: "cascade" }),
+    title: text("title").notNull(),
+    titleManuallySet: boolean("title_manually_set").notNull().default(false),
+    icon: text("icon"),
+    agent: text("agent").notNull(),
+    status: text("status").notNull().default("ready"),
+    branch: text("branch").notNull().default("main"),
+    preview: text("preview").notNull().default(""),
+    lines: integer("lines").notNull().default(0),
+    archived: boolean("archived").notNull().default(false),
+    pinned: boolean("pinned").notNull().default(false),
+    claudeSessionId: text("claude_session_id"),
+    claudeSkipPermissions: boolean("claude_skip_permissions").notNull().default(false),
+    claudeBareSession: boolean("claude_bare_session").notNull().default(false),
+    createdAt: epochMs("created_at").notNull(),
+    updatedAt: epochMs("updated_at").notNull(),
+  },
+  (t) => [
+    index("sessions_status_idx").on(t.status),
+    index("sessions_archived_idx").on(t.archived),
+    index("sessions_pinned_idx").on(t.pinned),
+    index("sessions_owner_idx").on(t.ownerId),
+  ],
+);
+
+/** Terminal output chunks for a Session; `owner_id` repeats the Session's owner so the guard's rule holds here too. */
+export const terminalLogs = pgTable(
+  "terminal_logs",
+  {
+    id: text("id").primaryKey(),
+    ownerId: integer("owner_id")
+      .notNull()
+      .references(() => operator.id, { onDelete: "cascade" }),
+    sessionId: text("session_id")
+      .notNull()
+      .references(() => sessions.id, { onDelete: "cascade" }),
+    chunk: text("chunk").notNull(),
+    createdAt: epochMs("created_at").notNull(),
+  },
+  (t) => [index("terminal_logs_session_idx").on(t.sessionId)],
+);
+
+/** A VM Shell Session the Panel opened on a Core (issue 266). */
+export const homeTerminals = pgTable(
+  "home_terminals",
+  {
+    id: text("id").primaryKey(),
+    ownerId: integer("owner_id")
+      .notNull()
+      .references(() => operator.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    cwd: text("cwd"),
+    position: integer("position").notNull().default(0),
+    createdAt: epochMs("created_at").notNull(),
+    updatedAt: epochMs("updated_at").notNull(),
+  },
+  (t) => [index("home_terminals_owner_idx").on(t.ownerId)],
+);
+
+/**
+ * Operator key/value settings. The primary key is `(owner_id, key)` so one
+ * owner's `api_token` is never another's.
+ */
+export const appSettings = pgTable(
+  "app_settings",
+  {
+    ownerId: integer("owner_id")
+      .notNull()
+      .references(() => operator.id, { onDelete: "cascade" }),
+    key: text("key").notNull(),
+    value: text("value").notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.ownerId, t.key], name: "app_settings_owner_id_key_pk" })],
+);
+
+/** Raw per-message token usage; `message_uuid` is unique so a re-sync cannot double-count. */
+export const tokenUsage = pgTable(
+  "token_usage",
+  {
+    id: text("id").primaryKey(),
+    ownerId: integer("owner_id")
+      .notNull()
+      .references(() => operator.id, { onDelete: "cascade" }),
+    sessionId: text("session_id")
+      .notNull()
+      .references(() => sessions.id, { onDelete: "cascade" }),
+    claudeSessionId: text("claude_session_id").notNull(),
+    messageUuid: text("message_uuid").notNull().unique(),
+    model: text("model"),
+    inputTokens: integer("input_tokens").notNull().default(0),
+    outputTokens: integer("output_tokens").notNull().default(0),
+    cacheCreationTokens: integer("cache_creation_tokens").notNull().default(0),
+    cacheReadTokens: integer("cache_read_tokens").notNull().default(0),
+    ts: epochMs("ts").notNull(),
+  },
+  (t) => [
+    index("token_usage_session_idx").on(t.sessionId),
+    index("token_usage_ts_idx").on(t.ts),
+    index("token_usage_ts_cover_idx").on(
+      t.ts,
+      t.inputTokens,
+      t.outputTokens,
+      t.cacheCreationTokens,
+      t.cacheReadTokens,
+    ),
+    index("token_usage_session_ts_cover_idx").on(
+      t.sessionId,
+      t.ts,
+      t.inputTokens,
+      t.outputTokens,
+      t.cacheCreationTokens,
+      t.cacheReadTokens,
+    ),
+  ],
+);
+
+/**
+ * Pre-aggregated token usage per (session, local day). Summary reads sum this
+ * instead of scanning `token_usage`. Kept in lockstep by the ingest transaction.
+ * `owner_id` repeats the Session's owner so the guard's rule holds here too.
+ */
+export const tokenUsageRollup = pgTable(
+  "token_usage_rollup",
+  {
+    ownerId: integer("owner_id")
+      .notNull()
+      .references(() => operator.id, { onDelete: "cascade" }),
+    sessionId: text("session_id")
+      .notNull()
+      .references(() => sessions.id, { onDelete: "cascade" }),
+    day: text("day").notNull(),
+    inputTokens: integer("input_tokens").notNull().default(0),
+    outputTokens: integer("output_tokens").notNull().default(0),
+    cacheCreationTokens: integer("cache_creation_tokens").notNull().default(0),
+    cacheReadTokens: integer("cache_read_tokens").notNull().default(0),
+    lastTs: epochMs("last_ts").notNull().default(0),
+  },
+  (t) => [
+    primaryKey({ columns: [t.sessionId, t.day], name: "token_usage_rollup_session_id_day_pk" }),
+    index("token_usage_rollup_session_idx").on(t.sessionId),
+    index("token_usage_rollup_day_idx").on(t.day),
+  ],
+);
+
+/** Byte offset into a Claude JSONL file for incremental token-usage sync. */
+export const tokenUsageSessionOffsets = pgTable(
+  "token_usage_session_offsets",
+  {
+    ownerId: integer("owner_id")
+      .notNull()
+      .references(() => operator.id, { onDelete: "cascade" }),
+    claudeSessionId: text("claude_session_id").notNull(),
+    sessionId: text("session_id")
+      .notNull()
+      .references(() => sessions.id, { onDelete: "cascade" }),
+    byteOffset: integer("byte_offset").notNull().default(0),
+    updatedAt: epochMs("updated_at").notNull(),
+  },
+  (t) => [
+    primaryKey({
+      columns: [t.ownerId, t.claudeSessionId],
+      name: "token_usage_session_offsets_owner_claude_pk",
+    }),
+  ],
+);
+
+/**
+ * Monotonic event log the Panel appends session/hook events to. SQLite's
+ * `AUTOINCREMENT` becomes `GENERATED ALWAYS AS IDENTITY`. `owner_id` scopes
+ * replay to one Operator.
+ */
+export const eventLog = pgTable(
+  "event_log",
+  {
+    eventId: bigint("event_id", { mode: "number" }).generatedAlwaysAsIdentity().primaryKey(),
+    ownerId: integer("owner_id")
+      .notNull()
+      .references(() => operator.id, { onDelete: "cascade" }),
+    ts: epochMs("ts").notNull(),
+    kind: text("kind").notNull(),
+    ptyId: text("pty_id"),
+    sessionId: text("session_id"),
+    payload: text("payload").notNull(),
+  },
+  (t) => [
+    index("event_log_kind_idx").on(t.kind),
+    index("event_log_session_idx").on(t.sessionId),
+    index("event_log_pty_idx").on(t.ptyId),
+    index("event_log_owner_idx").on(t.ownerId),
+  ],
+);

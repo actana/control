@@ -1,5 +1,13 @@
-import { getDb, getSqlite } from "~/db/client";
-import { tokenUsageSessionOffsets } from "~/db/schema";
+import { eq, sql } from "drizzle-orm";
+import { ownedBy } from "~/db/owner";
+import { panelDb } from "~/db/panel-db-handle";
+import {
+  appSettings,
+  sessions,
+  tokenUsage,
+  tokenUsageRollup,
+  tokenUsageSessionOffsets,
+} from "~/db/pg-schema";
 import { PER_SESSION_LIMIT } from "~/shared/token-usage";
 
 export type TotalsRow = {
@@ -9,47 +17,66 @@ export type TotalsRow = {
   cacheReadTokens: number;
 };
 
-// Every summary read below aggregates token_usage_rollup (pre-summed per
-// session/local-day) rather than scanning token_usage, which keeps these
-// sub-millisecond even at ~1M raw rows. The rollup is kept equal to the raw
-// table by the ingest transaction and ON DELETE CASCADE (see ensureSchema).
+/**
+ * Every summary read aggregates `token_usage_rollup` rather than scanning
+ * `token_usage`. The rollup is kept equal to the raw table by the ingest
+ * transaction and ON DELETE CASCADE. Day buckets use the process local
+ * calendar day (matching SQLite's `strftime(..., 'localtime')`).
+ */
 
-export function selectTotals(): TotalsRow | null {
-  const row = getSqlite()
-    .prepare(
-      `SELECT
-         COALESCE(SUM(input_tokens), 0) AS inputTokens,
-         COALESCE(SUM(output_tokens), 0) AS outputTokens,
-         COALESCE(SUM(cache_creation_tokens), 0) AS cacheCreationTokens,
-         COALESCE(SUM(cache_read_tokens), 0) AS cacheReadTokens
-       FROM token_usage_rollup`,
-    )
-    .get() as TotalsRow | undefined;
+/** Local calendar day `YYYY-MM-DD` for an epoch-ms timestamp. */
+export function localDay(tsMs: number): string {
+  const d = new Date(tsMs);
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+function asTotals(row: {
+  inputTokens?: unknown;
+  outputTokens?: unknown;
+  cacheCreationTokens?: unknown;
+  cacheReadTokens?: unknown;
+} | null): TotalsRow | null {
   if (!row) return null;
+  const n = (v: unknown) => Number(v) || 0;
   return {
-    inputTokens: Number(row.inputTokens) || 0,
-    outputTokens: Number(row.outputTokens) || 0,
-    cacheCreationTokens: Number(row.cacheCreationTokens) || 0,
-    cacheReadTokens: Number(row.cacheReadTokens) || 0,
+    inputTokens: n(row.inputTokens),
+    outputTokens: n(row.outputTokens),
+    cacheCreationTokens: n(row.cacheCreationTokens),
+    cacheReadTokens: n(row.cacheReadTokens),
   };
+}
+
+export async function selectTotals(ownerId: number): Promise<TotalsRow | null> {
+  const rows = await panelDb()
+    .select({
+      inputTokens: sql<number>`coalesce(sum(${tokenUsageRollup.inputTokens}), 0)`,
+      outputTokens: sql<number>`coalesce(sum(${tokenUsageRollup.outputTokens}), 0)`,
+      cacheCreationTokens: sql<number>`coalesce(sum(${tokenUsageRollup.cacheCreationTokens}), 0)`,
+      cacheReadTokens: sql<number>`coalesce(sum(${tokenUsageRollup.cacheReadTokens}), 0)`,
+    })
+    .from(tokenUsageRollup)
+    .where(ownedBy(tokenUsageRollup, ownerId));
+  return asTotals(rows[0] ?? null);
 }
 
 export type PerDayRow = TotalsRow & { day: string };
 
-export function selectTotalsPerDaySince(sinceMs: number): PerDayRow[] {
-  const rows = getSqlite()
-    .prepare(
-      `SELECT
-         day AS day,
-         COALESCE(SUM(input_tokens), 0) AS inputTokens,
-         COALESCE(SUM(output_tokens), 0) AS outputTokens,
-         COALESCE(SUM(cache_creation_tokens), 0) AS cacheCreationTokens,
-         COALESCE(SUM(cache_read_tokens), 0) AS cacheReadTokens
-       FROM token_usage_rollup
-       WHERE day >= strftime('%Y-%m-%d', ? / 1000, 'unixepoch', 'localtime')
-       GROUP BY day`,
-    )
-    .all(sinceMs) as PerDayRow[];
+export async function selectTotalsPerDaySince(ownerId: number, sinceMs: number): Promise<PerDayRow[]> {
+  const sinceDay = localDay(sinceMs);
+  const rows = await panelDb()
+    .select({
+      day: tokenUsageRollup.day,
+      inputTokens: sql<number>`coalesce(sum(${tokenUsageRollup.inputTokens}), 0)`,
+      outputTokens: sql<number>`coalesce(sum(${tokenUsageRollup.outputTokens}), 0)`,
+      cacheCreationTokens: sql<number>`coalesce(sum(${tokenUsageRollup.cacheCreationTokens}), 0)`,
+      cacheReadTokens: sql<number>`coalesce(sum(${tokenUsageRollup.cacheReadTokens}), 0)`,
+    })
+    .from(tokenUsageRollup)
+    .where(ownedBy(tokenUsageRollup, ownerId, sql`${tokenUsageRollup.day} >= ${sinceDay}`))
+    .groupBy(tokenUsageRollup.day);
   return rows.map((r) => ({
     day: String(r.day),
     inputTokens: Number(r.inputTokens) || 0,
@@ -65,34 +92,30 @@ export type PerSessionRow = TotalsRow & {
   lastTs: number | null;
 };
 
-export function selectTotalsPerSession(): PerSessionRow[] {
-  // Bounded to the top PER_SESSION_LIMIT sessions by total tokens: the usage
-  // panel renders one row per session, so an unbounded list would grow the DOM
-  // (and this result set) without limit on long-lived installs.
-  const rows = getSqlite()
-    .prepare(
-      `SELECT
-         r.session_id AS sessionId,
-         t.title AS title,
-         MAX(r.last_ts) AS lastTs,
-         COALESCE(SUM(r.input_tokens), 0) AS inputTokens,
-         COALESCE(SUM(r.output_tokens), 0) AS outputTokens,
-         COALESCE(SUM(r.cache_creation_tokens), 0) AS cacheCreationTokens,
-         COALESCE(SUM(r.cache_read_tokens), 0) AS cacheReadTokens
-       FROM token_usage_rollup r
-       INNER JOIN sessions t ON t.id = r.session_id
-       GROUP BY r.session_id
-       ORDER BY (
-         SUM(r.input_tokens) + SUM(r.output_tokens)
-           + SUM(r.cache_creation_tokens) + SUM(r.cache_read_tokens)
-       ) DESC
-       LIMIT ?`,
+export async function selectTotalsPerSession(ownerId: number): Promise<PerSessionRow[]> {
+  const rows = await panelDb()
+    .select({
+      sessionId: tokenUsageRollup.sessionId,
+      title: sessions.title,
+      lastTs: sql<number | null>`max(${tokenUsageRollup.lastTs})`,
+      inputTokens: sql<number>`coalesce(sum(${tokenUsageRollup.inputTokens}), 0)`,
+      outputTokens: sql<number>`coalesce(sum(${tokenUsageRollup.outputTokens}), 0)`,
+      cacheCreationTokens: sql<number>`coalesce(sum(${tokenUsageRollup.cacheCreationTokens}), 0)`,
+      cacheReadTokens: sql<number>`coalesce(sum(${tokenUsageRollup.cacheReadTokens}), 0)`,
+    })
+    .from(tokenUsageRollup)
+    .innerJoin(sessions, sql`${sessions.id} = ${tokenUsageRollup.sessionId}`)
+    .where(ownedBy(tokenUsageRollup, ownerId, ownedBy(sessions, ownerId)))
+    .groupBy(tokenUsageRollup.sessionId, sessions.title)
+    .orderBy(
+      sql`(sum(${tokenUsageRollup.inputTokens}) + sum(${tokenUsageRollup.outputTokens})
+        + sum(${tokenUsageRollup.cacheCreationTokens}) + sum(${tokenUsageRollup.cacheReadTokens})) desc`,
     )
-    .all(PER_SESSION_LIMIT) as (PerSessionRow & { lastTs: number | null })[];
+    .limit(PER_SESSION_LIMIT);
   return rows.map((r) => ({
     sessionId: r.sessionId,
     title: r.title,
-    lastTs: r.lastTs ? Number(r.lastTs) : null,
+    lastTs: r.lastTs != null ? Number(r.lastTs) : null,
     inputTokens: Number(r.inputTokens) || 0,
     outputTokens: Number(r.outputTokens) || 0,
     cacheCreationTokens: Number(r.cacheCreationTokens) || 0,
@@ -105,14 +128,14 @@ export type SessionOffsetRow = {
   byteOffset: number;
 };
 
-export function findAllSessionOffsets(): SessionOffsetRow[] {
-  return getDb()
+export async function findAllSessionOffsets(ownerId: number): Promise<SessionOffsetRow[]> {
+  return panelDb()
     .select({
       claudeSessionId: tokenUsageSessionOffsets.claudeSessionId,
       byteOffset: tokenUsageSessionOffsets.byteOffset,
     })
     .from(tokenUsageSessionOffsets)
-    .all();
+    .where(ownedBy(tokenUsageSessionOffsets, ownerId));
 }
 
 export type TokenUsageIngestRow = {
@@ -128,21 +151,13 @@ export type TokenUsageIngestRow = {
   ts: number;
 };
 
-export type IngestResult = {
-  inserted: number;
-  lastSyncedAt: number | null;
-};
-
 /**
- * Ingest parsed JSONL chunks atomically using raw SQLite for prepared-statement
- * speed across thousands of rows. Returns the count of newly-inserted rows.
- *
- * The walker function is called inside the transaction with a `commitChunk` it
- * uses to drain parsed rows + the advanced byte offset for each session; this
- * lets the caller keep filesystem I/O outside this repo while still benefiting
- * from one round-trip transaction.
+ * Ingest parsed JSONL chunks atomically. Returns the count of newly-inserted
+ * rows. The walker is called inside the transaction with a `commitChunk` it
+ * uses to drain parsed rows + the advanced byte offset for each session.
  */
-export function ingestTokenUsageTx(
+export async function ingestTokenUsageTx(
+  ownerId: number,
   walker: (commit: (params: {
     rows: TokenUsageIngestRow[];
     sessionOffset: {
@@ -150,102 +165,96 @@ export function ingestTokenUsageTx(
       sessionId: string;
       byteOffset: number;
     };
-  }) => void) => void,
+  }) => Promise<void>) => Promise<void> | void,
   now: number,
-): number {
-  const sqlite = getSqlite();
-  const insertUsage = sqlite.prepare(
-    `INSERT OR IGNORE INTO token_usage (
-      id, session_id, claude_session_id, message_uuid, model,
-      input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens, ts
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-  );
-  const upsertOffset = sqlite.prepare(
-    `INSERT INTO token_usage_session_offsets
-       (claude_session_id, session_id, byte_offset, updated_at)
-     VALUES (?, ?, ?, ?)
-     ON CONFLICT(claude_session_id) DO UPDATE SET
-       session_id = excluded.session_id,
-       byte_offset = excluded.byte_offset,
-       updated_at = excluded.updated_at`
-  );
-  // Fold each newly-inserted row into its (session, local day) rollup
-  // bucket. The day expression and the accumulation must match the backfill and
-  // the read queries exactly so the rollup stays equal to the raw aggregate.
-  const upsertRollup = sqlite.prepare(
-    `INSERT INTO token_usage_rollup (
-       session_id, day,
-       input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens, last_ts
-     ) VALUES (
-       ?, strftime('%Y-%m-%d', ? / 1000, 'unixepoch', 'localtime'), ?, ?, ?, ?, ?
-     )
-     ON CONFLICT(session_id, day) DO UPDATE SET
-       input_tokens = input_tokens + excluded.input_tokens,
-       output_tokens = output_tokens + excluded.output_tokens,
-       cache_creation_tokens = cache_creation_tokens + excluded.cache_creation_tokens,
-       cache_read_tokens = cache_read_tokens + excluded.cache_read_tokens,
-       last_ts = MAX(last_ts, excluded.last_ts)`
-  );
-
-  let inserted = 0;
-  const tx = sqlite.transaction(() => {
-    walker(({ rows, sessionOffset }) => {
+): Promise<number> {
+  return panelDb().transaction(async (tx) => {
+    let inserted = 0;
+    await walker(async ({ rows, sessionOffset }) => {
       for (const r of rows) {
-        const result = insertUsage.run(
-          r.id,
-          r.sessionId,
-          r.claudeSessionId,
-          r.messageUuid,
-          r.model,
-          r.inputTokens,
-          r.outputTokens,
-          r.cacheCreationTokens,
-          r.cacheReadTokens,
-          r.ts,
-        );
-        // message_uuid is UNIQUE, so changes > 0 means this row is newly counted
-        // (INSERT OR IGNORE skipped a duplicate otherwise). Only then fold it into
-        // the rollup, or a re-seen line would be double-counted.
-        if (result.changes > 0) {
+        const written = await tx
+          .insert(tokenUsage)
+          .values({
+            id: r.id,
+            ownerId,
+            sessionId: r.sessionId,
+            claudeSessionId: r.claudeSessionId,
+            messageUuid: r.messageUuid,
+            model: r.model,
+            inputTokens: r.inputTokens,
+            outputTokens: r.outputTokens,
+            cacheCreationTokens: r.cacheCreationTokens,
+            cacheReadTokens: r.cacheReadTokens,
+            ts: r.ts,
+          })
+          .onConflictDoNothing({ target: tokenUsage.messageUuid })
+          .returning({ id: tokenUsage.id });
+        if (written.length > 0) {
           inserted += 1;
-          upsertRollup.run(
-            r.sessionId,
-            r.ts,
-            r.inputTokens,
-            r.outputTokens,
-            r.cacheCreationTokens,
-            r.cacheReadTokens,
-            r.ts,
-          );
+          await tx
+            .insert(tokenUsageRollup)
+            .values({
+              ownerId,
+              sessionId: r.sessionId,
+              day: localDay(r.ts),
+              inputTokens: r.inputTokens,
+              outputTokens: r.outputTokens,
+              cacheCreationTokens: r.cacheCreationTokens,
+              cacheReadTokens: r.cacheReadTokens,
+              lastTs: r.ts,
+            })
+            .onConflictDoUpdate({
+              target: [tokenUsageRollup.sessionId, tokenUsageRollup.day],
+              set: {
+                inputTokens: sql`${tokenUsageRollup.inputTokens} + ${r.inputTokens}`,
+                outputTokens: sql`${tokenUsageRollup.outputTokens} + ${r.outputTokens}`,
+                cacheCreationTokens: sql`${tokenUsageRollup.cacheCreationTokens} + ${r.cacheCreationTokens}`,
+                cacheReadTokens: sql`${tokenUsageRollup.cacheReadTokens} + ${r.cacheReadTokens}`,
+                lastTs: sql`greatest(${tokenUsageRollup.lastTs}, ${r.ts})`,
+              },
+            });
         }
       }
-      upsertOffset.run(
-        sessionOffset.claudeSessionId,
-        sessionOffset.sessionId,
-        sessionOffset.byteOffset,
-        now,
-      );
+      await tx
+        .insert(tokenUsageSessionOffsets)
+        .values({
+          ownerId,
+          claudeSessionId: sessionOffset.claudeSessionId,
+          sessionId: sessionOffset.sessionId,
+          byteOffset: sessionOffset.byteOffset,
+          updatedAt: now,
+        })
+        .onConflictDoUpdate({
+          target: [tokenUsageSessionOffsets.ownerId, tokenUsageSessionOffsets.claudeSessionId],
+          set: {
+            sessionId: sessionOffset.sessionId,
+            byteOffset: sessionOffset.byteOffset,
+            updatedAt: now,
+          },
+        });
     });
-  });
-  tx();
 
-  if (inserted > 0) {
-    sqlite
-      .prepare(
-        `INSERT INTO app_settings (key, value) VALUES ('token_usage_last_sync_at', ?)
-         ON CONFLICT(key) DO UPDATE SET value = excluded.value`
-      )
-      .run(String(now));
-  }
-  return inserted;
+    if (inserted > 0) {
+      await tx
+        .insert(appSettings)
+        .values({ ownerId, key: "token_usage_last_sync_at", value: String(now) })
+        .onConflictDoUpdate({
+          target: [appSettings.ownerId, appSettings.key],
+          set: { value: String(now) },
+        });
+    }
+    return inserted;
+  });
 }
 
-export function getTokenUsageLastSyncedAt(): number | null {
-  const sqlite = getSqlite();
-  const row = sqlite
-    .prepare("SELECT value FROM app_settings WHERE key = 'token_usage_last_sync_at'")
-    .get() as { value?: string } | undefined;
-  if (!row?.value) return null;
-  const n = Number(row.value);
+export async function getTokenUsageLastSyncedAt(ownerId: number): Promise<number | null> {
+  const rows = await panelDb()
+    .select({ value: appSettings.value })
+    .from(appSettings)
+    .where(ownedBy(appSettings, ownerId, eq(appSettings.key, "token_usage_last_sync_at")))
+    .limit(1);
+  const value = rows[0]?.value;
+  if (!value) return null;
+  const n = Number(value);
   return Number.isFinite(n) ? n : null;
 }

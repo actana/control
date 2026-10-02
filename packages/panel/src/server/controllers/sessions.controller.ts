@@ -26,10 +26,6 @@ const updateSessionBody = z
     icon: z.string().nullable(),
     pinned: z.boolean(),
     claudeSessionId: z.string().nullable(),
-    // Whether the `title` beside it is an operator's rename. Absent, a title
-    // is one — the shape every rename has always had. A generator sends
-    // `false`, matching the Core-side rule (issue 84), so the two arms of one
-    // session-mutation frame cannot disagree about what a title means.
     titleManuallySet: z.boolean(),
     claudeSkipPermissions: z.boolean(),
     claudeBareSession: z.boolean(),
@@ -43,18 +39,18 @@ const updateStatusBody = z.object({
   prompt: z.string().optional(),
 });
 
-export async function getOne(rawId: string, request: Request): Promise<Response> {
+export async function getOne(rawId: string, _request: Request): Promise<Response> {
   const parsed = idParam.safeParse(rawId);
   if (!parsed.success) return notFound();
-  const t = getSession(parsed.data);
+  const t = await getSession(parsed.data);
   if (!t) return notFound();
   return json({ session: t });
 }
 
-export function readQuestion(rawId: string): Response {
+export async function readQuestion(rawId: string): Promise<Response> {
   const parsed = idParam.safeParse(rawId);
   if (!parsed.success) return notFound();
-  const t = getSession(parsed.data);
+  const t = await getSession(parsed.data);
   if (!t) return notFound();
   return json({ question: getPendingQuestion(parsed.data) });
 }
@@ -68,7 +64,7 @@ export async function update(rawId: string, request: Request): Promise<Response>
     const patch = Object.prototype.hasOwnProperty.call(parsed.data, "title")
       ? { ...parsed.data, titleManuallySet: parsed.data.titleManuallySet ?? true }
       : parsed.data;
-    const t = updateSession(idParsed.data, patch);
+    const t = await updateSession(idParsed.data, patch);
     if (!t) return notFound();
     return json({ session: t });
   } catch (e) {
@@ -76,10 +72,10 @@ export async function update(rawId: string, request: Request): Promise<Response>
   }
 }
 
-export async function remove(rawId: string, request: Request): Promise<Response> {
+export async function remove(rawId: string, _request: Request): Promise<Response> {
   const parsed = idParam.safeParse(rawId);
   if (!parsed.success) return notFound();
-  return deleteSession(parsed.data) ? noContent() : notFound();
+  return (await deleteSession(parsed.data)) ? noContent() : notFound();
 }
 
 export async function setStatus(rawId: string, request: Request): Promise<Response> {
@@ -88,7 +84,7 @@ export async function setStatus(rawId: string, request: Request): Promise<Respon
   const parsed = await parseJsonBody(request, updateStatusBody);
   if (!parsed.ok) return parsed.response;
   try {
-    const t = updateStatus(idParsed.data, parsed.data);
+    const t = await updateStatus(idParsed.data, parsed.data);
     if (!t) return notFound();
     const prompt = typeof parsed.data.prompt === "string" ? parsed.data.prompt.trim() : "";
     if (prompt) {
@@ -100,27 +96,22 @@ export async function setStatus(rawId: string, request: Request): Promise<Respon
   }
 }
 
-/**
- * POST /api/sessions/sweep-disconnected — the Panel calls this once per service
- * boot (before the first window) to settle statuses orphaned by the previous
- * run. See sweepOrphanedActiveSessions for the invariant that makes this safe.
- */
 export async function sweepDisconnected(): Promise<Response> {
-  return json({ swept: sweepOrphanedActiveSessions() });
+  return json({ swept: await sweepOrphanedActiveSessions() });
 }
 
-export async function archive(rawId: string, request: Request): Promise<Response> {
+export async function archive(rawId: string, _request: Request): Promise<Response> {
   const parsed = idParam.safeParse(rawId);
   if (!parsed.success) return notFound();
-  const t = archiveSession(parsed.data);
+  const t = await archiveSession(parsed.data);
   if (!t) return notFound();
   return json({ session: t });
 }
 
-export async function restore(rawId: string, request: Request): Promise<Response> {
+export async function restore(rawId: string, _request: Request): Promise<Response> {
   const parsed = idParam.safeParse(rawId);
   if (!parsed.success) return notFound();
-  const t = restoreSession(parsed.data);
+  const t = await restoreSession(parsed.data);
   if (!t) return notFound();
   return json({ session: t });
 }

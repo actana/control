@@ -1,27 +1,30 @@
 import { asc, eq } from "drizzle-orm";
-import { getDb } from "~/db/client";
-import { terminalLogs } from "~/db/schema";
+import { ownedBy } from "~/db/owner";
+import { panelDb } from "~/db/panel-db-handle";
+import { terminalLogs } from "~/db/pg-schema";
 
-export type TerminalLogRow = {
-  id: string;
-  sessionId: string;
-  chunk: string;
-  createdAt: number;
-};
+export type TerminalLogRow = typeof terminalLogs.$inferSelect;
+export type NewTerminalLogRow = typeof terminalLogs.$inferInsert;
 
-export function insertTerminalLog(row: TerminalLogRow): void {
-  getDb().insert(terminalLogs).values(row).run();
+/** Every query here filters on `owner_id` (ADR 0041 D15). */
+
+export async function insertTerminalLog(row: NewTerminalLogRow): Promise<void> {
+  await panelDb().insert(terminalLogs).values({ ...row, ownerId: row.ownerId });
 }
 
-export function findTerminalLogsBySessionId(sessionId: string): TerminalLogRow[] {
-  return getDb()
+export async function findTerminalLogsBySessionId(
+  ownerId: number,
+  sessionId: string,
+): Promise<TerminalLogRow[]> {
+  return panelDb()
     .select()
     .from(terminalLogs)
-    .where(eq(terminalLogs.sessionId, sessionId))
-    .orderBy(asc(terminalLogs.createdAt))
-    .all();
+    .where(ownedBy(terminalLogs, ownerId, eq(terminalLogs.sessionId, sessionId)))
+    .orderBy(asc(terminalLogs.createdAt));
 }
 
-export function deleteTerminalLogById(id: string): void {
-  getDb().delete(terminalLogs).where(eq(terminalLogs.id, id)).run();
+export async function deleteTerminalLogById(ownerId: number, id: string): Promise<void> {
+  await panelDb()
+    .delete(terminalLogs)
+    .where(ownedBy(terminalLogs, ownerId, eq(terminalLogs.id, id)));
 }

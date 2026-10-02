@@ -1,20 +1,13 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
-import { closePanelTestDb, openPanelTestDb } from "./_panel-test-db";
-import * as fs from "node:fs";
-import * as os from "node:os";
-import * as path from "node:path";
+import { closePanelTestDb, openPanelTestDb, resetPanelState } from "./_panel-test-db";
 import { DEFAULT_SESSION_HEADER_BUTTON_VISIBILITY } from "~/shared/session-header-buttons";
 import { DEFAULT_HEADER_BUTTON_VISIBILITY } from "~/shared/header-buttons";
 
-const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mc-settings-test-"));
-process.env.AC_USER_DATA_DIR = tmpRoot;
-
 const testDb = await openPanelTestDb();
 const { handleApiRequest } = await import("../api-router");
-const { getDb } = await import("~/db/client");
-const { appSettings } = await import("~/db/schema");
 const { getOrCreateApiToken } = await import("../services/settings");
-const { operatorSessionCookie } = await import("./_operator-session");
+const { createOperator } = await import("../services/operator");
+const { operatorSessionCookie, resetOperatorSessionForTests } = await import("./_operator-session");
 
 async function jsonBody(response: Response) {
   return (await response.json()) as Record<string, unknown>;
@@ -26,11 +19,17 @@ async function authedRequest(input: string | URL, init: RequestInit = {}): Promi
   return new Request(input, { ...init, headers });
 }
 
-describe("settings API", () => {
-  beforeEach(() => {
-    getDb().delete(appSettings).run();
-  });
+beforeEach(async () => {
+  await resetPanelState(testDb);
+  resetOperatorSessionForTests();
+  await createOperator({ name: "Test Operator", password: "test-password" });
+});
 
+afterAll(async () => {
+  await closePanelTestDb(testDb);
+});
+
+describe("settings API", () => {
   it("keeps mouse gradients enabled by default", async () => {
     const response = await handleApiRequest(
       (await authedRequest("http://localhost/api/settings")),
@@ -464,7 +463,7 @@ describe("settings API", () => {
   // token in the JSON body, collapsing the entire auth tier.
   // See todos/bugs/done/02-api-settings-leaks-bearer-token.md.
   it("never returns the agent hook token over HTTP", async () => {
-    const token = getOrCreateApiToken();
+    const token = await getOrCreateApiToken();
     expect(token).toMatch(/^[0-9a-f]{64}$/);
 
     const getResponse = await handleApiRequest(
@@ -489,11 +488,7 @@ describe("settings API", () => {
     expect(postBody).not.toHaveProperty("apiToken");
     expect(JSON.stringify(postBody)).not.toContain(token);
 
-    const tokenAfterRegenerateAttempt = getOrCreateApiToken();
+    const tokenAfterRegenerateAttempt = await getOrCreateApiToken();
     expect(tokenAfterRegenerateAttempt).toBe(token);
   });
-});
-
-afterAll(async () => {
-  await closePanelTestDb(testDb);
 });

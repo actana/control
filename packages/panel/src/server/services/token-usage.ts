@@ -18,6 +18,7 @@ import {
   type TokenUsageIngestRow,
 } from "../repositories/token-usage.repo";
 import { findSessionsWithClaudeSessionId } from "../repositories/sessions.repo";
+import { OPERATOR_ID } from "./operator";
 
 /**
  * Parse one JSONL line. Returns null for lines that don't carry token usage
@@ -121,90 +122,93 @@ export function syncTokenUsage(): Promise<number> {
   return p;
 }
 
-function doSync(): number {
-  const sessionRows = findSessionsWithClaudeSessionId();
-  if (sessionRows.length === 0) return 0;
+function doSync(): Promise<number> {
+  return (async () => {
+    const ownerId = OPERATOR_ID;
+    const sessionRows = await findSessionsWithClaudeSessionId(ownerId);
+    if (sessionRows.length === 0) return 0;
 
-  const offsets = new Map(
-    findAllSessionOffsets().map((r) => [r.claudeSessionId, r.byteOffset]),
-  );
-  const fileIndex = buildSessionFileIndex();
-  const now = Date.now();
+    const offsets = new Map(
+      (await findAllSessionOffsets(ownerId)).map((r) => [r.claudeSessionId, r.byteOffset]),
+    );
+    const fileIndex = buildSessionFileIndex();
+    const now = Date.now();
 
-  return ingestTokenUsageTx((commit) => {
-    for (const row of sessionRows) {
-      const sessionId = row.claudeSessionId;
-      const file = fileIndex.get(sessionId);
-      if (!file) continue;
-      let stat: fs.Stats;
-      try {
-        stat = fs.statSync(file);
-      } catch {
-        continue;
-      }
-      const prev = offsets.get(sessionId) ?? 0;
-      // File rotation / truncation safety: re-read from 0.
-      const start = stat.size < prev ? 0 : prev;
-      if (stat.size === start) continue;
-      let buf: Buffer;
-      try {
-        const fd = fs.openSync(file, "r");
-        try {
-          const length = stat.size - start;
-          buf = Buffer.alloc(length);
-          fs.readSync(fd, buf, 0, length, start);
-        } finally {
-          fs.closeSync(fd);
+    return ingestTokenUsageTx(
+      ownerId,
+      async (commit) => {
+        for (const row of sessionRows) {
+          const sessionId = row.claudeSessionId;
+          const file = fileIndex.get(sessionId);
+          if (!file) continue;
+          let stat: fs.Stats;
+          try {
+            stat = fs.statSync(file);
+          } catch {
+            continue;
+          }
+          const prev = offsets.get(sessionId) ?? 0;
+          const start = stat.size < prev ? 0 : prev;
+          if (stat.size === start) continue;
+          let buf: Buffer;
+          try {
+            const fd = fs.openSync(file, "r");
+            try {
+              const length = stat.size - start;
+              buf = Buffer.alloc(length);
+              fs.readSync(fd, buf, 0, length, start);
+            } finally {
+              fs.closeSync(fd);
+            }
+          } catch {
+            continue;
+          }
+          const lastNl = buf.lastIndexOf(0x0a);
+          if (lastNl < 0) continue;
+          const consumable = buf.subarray(0, lastNl + 1).toString("utf8");
+          const newOffset = start + lastNl + 1;
+          const rows: TokenUsageIngestRow[] = [];
+          for (const line of consumable.split("\n")) {
+            const parsed = parseUsageLine(line);
+            if (!parsed) continue;
+            rows.push({
+              id: `tu-${parsed.uuid}`,
+              sessionId: row.sessionId,
+              claudeSessionId: sessionId,
+              messageUuid: parsed.uuid,
+              model: parsed.model,
+              inputTokens: parsed.usage.inputTokens,
+              outputTokens: parsed.usage.outputTokens,
+              cacheCreationTokens: parsed.usage.cacheCreationTokens,
+              cacheReadTokens: parsed.usage.cacheReadTokens,
+              ts: parsed.ts,
+            });
+          }
+          await commit({
+            rows,
+            sessionOffset: {
+              claudeSessionId: sessionId,
+              sessionId: row.sessionId,
+              byteOffset: newOffset,
+            },
+          });
         }
-      } catch {
-        continue;
-      }
-      // Trailing partial line guard: only commit through the last newline.
-      const lastNl = buf.lastIndexOf(0x0a);
-      if (lastNl < 0) {
-        // No complete line — try again next sync once more lines arrive.
-        continue;
-      }
-      const consumable = buf.subarray(0, lastNl + 1).toString("utf8");
-      const newOffset = start + lastNl + 1;
-      const rows: TokenUsageIngestRow[] = [];
-      for (const line of consumable.split("\n")) {
-        const parsed = parseUsageLine(line);
-        if (!parsed) continue;
-        rows.push({
-          id: `tu-${parsed.uuid}`,
-          sessionId: row.sessionId,
-          claudeSessionId: sessionId,
-          messageUuid: parsed.uuid,
-          model: parsed.model,
-          inputTokens: parsed.usage.inputTokens,
-          outputTokens: parsed.usage.outputTokens,
-          cacheCreationTokens: parsed.usage.cacheCreationTokens,
-          cacheReadTokens: parsed.usage.cacheReadTokens,
-          ts: parsed.ts,
-        });
-      }
-      commit({
-        rows,
-        sessionOffset: {
-          claudeSessionId: sessionId,
-          sessionId: row.sessionId,
-          byteOffset: newOffset,
-        },
-      });
-    }
-  }, now);
+      },
+      now,
+    );
+  })();
 }
 
 const MS_PER_DAY = 86_400_000;
 const DEFAULT_USAGE_DAYS = 30;
 
-export function getUsageSummary(daysBack: number = DEFAULT_USAGE_DAYS): UsageSummary {
-  const totalsRow = selectTotals();
+export async function getUsageSummary(daysBack: number = DEFAULT_USAGE_DAYS): Promise<UsageSummary> {
+  const ownerId = OPERATOR_ID;
+  const totalsRow = await selectTotals(ownerId);
   const totals: TokenTotals = totalsRow ?? { ...EMPTY_TOTALS };
 
   const sinceMs = startOfLocalDay(Date.now() - (daysBack - 1) * MS_PER_DAY);
-  const perDayRows = selectTotalsPerDaySince(sinceMs);
+  const perDayRows = await selectTotalsPerDaySince(ownerId, sinceMs);
   const dayMap = new Map<string, DailyUsage>();
   for (const r of perDayRows) {
     dayMap.set(r.day, {
@@ -222,7 +226,7 @@ export function getUsageSummary(daysBack: number = DEFAULT_USAGE_DAYS): UsageSum
     perDay.push(dayMap.get(key) ?? { day: key, ...EMPTY_TOTALS });
   }
 
-  const perSession: SessionUsage[] = selectTotalsPerSession().sort(
+  const perSession: SessionUsage[] = (await selectTotalsPerSession(ownerId)).sort(
     (a, b) => totalOf(b) - totalOf(a),
   );
 
@@ -230,7 +234,7 @@ export function getUsageSummary(daysBack: number = DEFAULT_USAGE_DAYS): UsageSum
     totals,
     perDay,
     perSession,
-    lastSyncedAt: getTokenUsageLastSyncedAt(),
+    lastSyncedAt: await getTokenUsageLastSyncedAt(ownerId),
     syncing: false,
   };
 }

@@ -27,7 +27,7 @@ async function seedOperator(db: TestDb, id = 1) {
 }
 
 describe("the panel.db tables on Postgres", { timeout: 30_000 }, () => {
-  it("creates operator, panel_sessions, cores, core_secrets, the Shared folder tables, the Task tables, agents, webhooks and the API key tables", async () => {
+  it("creates operator, panel_sessions, cores, core_secrets, the Shared folder tables, the Task tables, agents, webhooks, the API key tables and the missioncontrol.db tables", async () => {
     const db = await make();
     const { rows } = await db.pool.query(
       "select table_name from information_schema.tables where table_schema = 'public' order by 1",
@@ -36,15 +36,23 @@ describe("the panel.db tables on Postgres", { timeout: 30_000 }, () => {
       "agents",
       "api_key_cores",
       "api_keys",
+      "app_settings",
       "core_secrets",
       "core_shared_folders",
       "cores",
+      "event_log",
+      "home_terminals",
       "operator",
       "panel_sessions",
+      "sessions",
       "storage_config",
       "task_comments",
       "task_status_history",
       "tasks",
+      "terminal_logs",
+      "token_usage",
+      "token_usage_rollup",
+      "token_usage_session_offsets",
       "webhook_cores",
       "webhook_deliveries",
       "webhook_outbox",
@@ -61,7 +69,7 @@ describe("the panel.db tables on Postgres", { timeout: 30_000 }, () => {
          'changed_at','dispatched_at','processed_at','next_attempt_at','claimed_until','delivered_at','key_expires_at'
        )`,
     );
-    expect(rows.length).toBe(29);
+    expect(rows.length).toBe(35);
     for (const r of rows) expect(r.data_type, `${r.table_name}.${r.column_name}`).toBe("bigint");
     await seedOperator(db);
     // An int4 column would reject this outright.

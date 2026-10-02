@@ -1,20 +1,23 @@
-import { describe, it, expect, beforeEach } from "vitest";
-import { eq } from "drizzle-orm";
-import * as fs from "node:fs";
-import * as os from "node:os";
-import * as path from "node:path";
+import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { closePanelTestDb, openPanelTestDb, resetPanelState } from "../../__tests__/_panel-test-db";
 
-const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mc-test-home-"));
-process.env.AC_USER_DATA_DIR = tmpRoot;
-
+const testDb = await openPanelTestDb();
+const { createOperator } = await import("../operator");
 const {
   listHomeTerminals,
   createHomeTerminal,
   renameHomeTerminal,
   deleteHomeTerminal,
 } = await import("../home-terminals");
-const { getDb } = await import("~/db/client");
-const { homeTerminals } = await import("~/db/schema");
+
+beforeEach(async () => {
+  await resetPanelState(testDb);
+  await createOperator({ name: "Test Operator", password: "test-password" });
+});
+
+afterAll(async () => {
+  await closePanelTestDb(testDb);
+});
 
 describe("home-terminals service", () => {
   it("stores no cwd: a terminal is a login shell in the Core's home, whatever the caller sends", async () => {
@@ -31,70 +34,65 @@ describe("home-terminals service", () => {
     expect(terminal.cwd).toBeNull();
   });
 
-  beforeEach(() => {
-    getDb().delete(homeTerminals).run();
-  });
-
-  it("creates with default name and lists in insertion order", () => {
-    const a = createHomeTerminal({});
-    const b = createHomeTerminal({});
+  it("creates with default name and lists in insertion order", async () => {
+    const a = await createHomeTerminal({});
+    const b = await createHomeTerminal({});
     expect(a.name).toBe("Terminal 1");
     expect(b.name).toBe("Terminal 2");
-    expect(listHomeTerminals().map((t) => t.id)).toEqual([a.id, b.id]);
+    expect((await listHomeTerminals()).map((t) => t.id)).toEqual([a.id, b.id]);
   });
 
-  it("renames and trims", () => {
-    const t = createHomeTerminal({});
-    const renamed = renameHomeTerminal(t.id, "  dev box  ");
+  it("renames and trims", async () => {
+    const t = await createHomeTerminal({});
+    const renamed = await renameHomeTerminal(t.id, "  dev box  ");
     expect(renamed?.name).toBe("dev box");
-    expect(listHomeTerminals()[0]!.name).toBe("dev box");
+    expect((await listHomeTerminals())[0]!.name).toBe("dev box");
   });
 
-  it("rejects empty rename", () => {
-    const t = createHomeTerminal({});
-    expect(() => renameHomeTerminal(t.id, "   ")).toThrow();
+  it("rejects empty rename", async () => {
+    const t = await createHomeTerminal({});
+    await expect(renameHomeTerminal(t.id, "   ")).rejects.toThrow();
   });
 
-  it("returns null when renaming a missing terminal", () => {
-    expect(renameHomeTerminal("ht-missing-000000", "x")).toBeNull();
+  it("returns null when renaming a missing terminal", async () => {
+    expect(await renameHomeTerminal("ht-missing-000000", "x")).toBeNull();
   });
 
-  it("deletes only the targeted row", () => {
-    const a = createHomeTerminal({});
-    const b = createHomeTerminal({});
-    expect(deleteHomeTerminal(a.id)).toBe(true);
-    expect(listHomeTerminals().map((t) => t.id)).toEqual([b.id]);
+  it("deletes only the targeted row", async () => {
+    const a = await createHomeTerminal({});
+    const b = await createHomeTerminal({});
+    expect(await deleteHomeTerminal(a.id)).toBe(true);
+    expect((await listHomeTerminals()).map((t) => t.id)).toEqual([b.id]);
   });
 
-  it("reports false when deleting a missing terminal", () => {
-    expect(deleteHomeTerminal("ht-missing-000000")).toBe(false);
+  it("reports false when deleting a missing terminal", async () => {
+    expect(await deleteHomeTerminal("ht-missing-000000")).toBe(false);
   });
 
-  it("reuses the lowest free Terminal N after a gap", () => {
-    const first = createHomeTerminal({});
-    createHomeTerminal({});
-    deleteHomeTerminal(first.id);
-    expect(createHomeTerminal({}).name).toBe("Terminal 1");
+  it("reuses the lowest free Terminal N after a gap", async () => {
+    const first = await createHomeTerminal({});
+    await createHomeTerminal({});
+    await deleteHomeTerminal(first.id);
+    expect((await createHomeTerminal({})).name).toBe("Terminal 1");
   });
 
-  it("accepts a client-provided domain id", () => {
+  it("accepts a client-provided domain id", async () => {
     const clientId = "ht-mabc123-abcdef";
-    const t = createHomeTerminal({ id: clientId });
+    const t = await createHomeTerminal({ id: clientId });
     expect(t.id).toBe(clientId);
   });
 
-  it("rejects an invalid client id", () => {
-    expect(() => createHomeTerminal({ id: "not a domain id" })).toThrow();
+  it("rejects an invalid client id", async () => {
+    await expect(createHomeTerminal({ id: "not a domain id" })).rejects.toThrow();
   });
 
-  it("orders by position before createdAt", () => {
-    const a = createHomeTerminal({});
-    const b = createHomeTerminal({});
-    const c = createHomeTerminal({});
-    const db = getDb();
-    db.update(homeTerminals).set({ position: 2 }).where(eq(homeTerminals.id, a.id)).run();
-    db.update(homeTerminals).set({ position: 1 }).where(eq(homeTerminals.id, b.id)).run();
-    db.update(homeTerminals).set({ position: 0 }).where(eq(homeTerminals.id, c.id)).run();
-    expect(listHomeTerminals().map((t) => t.id)).toEqual([c.id, b.id, a.id]);
+  it("orders by position before createdAt", async () => {
+    const a = await createHomeTerminal({});
+    const b = await createHomeTerminal({});
+    const c = await createHomeTerminal({});
+    await testDb.pool.query("update home_terminals set position = 2 where id = $1", [a.id]);
+    await testDb.pool.query("update home_terminals set position = 1 where id = $1", [b.id]);
+    await testDb.pool.query("update home_terminals set position = 0 where id = $1", [c.id]);
+    expect((await listHomeTerminals()).map((t) => t.id)).toEqual([c.id, b.id, a.id]);
   });
 });

@@ -1,52 +1,55 @@
-import { eq, inArray, sql } from "drizzle-orm";
-import { getDb } from "~/db/client";
-import { sessions } from "~/db/schema";
-import type { Session } from "~/db/schema";
+import { eq, inArray, isNotNull } from "drizzle-orm";
+import { ownedBy } from "~/db/owner";
+import { panelDb } from "~/db/panel-db-handle";
+import { sessions } from "~/db/pg-schema";
 
-export function findAllSessions(): Session[] {
-  return getDb().select().from(sessions).all();
+export type SessionRow = typeof sessions.$inferSelect;
+export type NewSessionRow = typeof sessions.$inferInsert;
+
+/** Every query here filters on `owner_id` (ADR 0041 D15). */
+
+export async function findAllSessions(ownerId: number): Promise<SessionRow[]> {
+  return panelDb().select().from(sessions).where(ownedBy(sessions, ownerId));
 }
 
-// Sessions whose status claims a live agent process. Used by the startup sweep:
-// at Panel boot no PTYs exist yet, so any such session is an orphan of a
-// previous run.
-export function findActiveLocalSessions(): Session[] {
-  return getDb()
+/** Sessions whose status claims a live agent process — orphans at Panel boot. */
+export async function findActiveLocalSessions(ownerId: number): Promise<SessionRow[]> {
+  return panelDb()
     .select()
     .from(sessions)
-    .where(inArray(sessions.status, ["running", "needs-input"]))
-    .all();
+    .where(ownedBy(sessions, ownerId, inArray(sessions.status, ["running", "needs-input"])));
 }
 
-// Hot path (every session read + status poll). Hoist the prepared statement once
-// so drizzle/better-sqlite3 skips re-parsing and re-planning the query on each
-// call. Lazily built on first use because getDb() must open the connection
-// first. `sql.placeholder` binds the id per call.
-function buildFindSessionByIdStmt() {
-  return getDb()
+export async function findSessionById(ownerId: number, id: string): Promise<SessionRow | null> {
+  const rows = await panelDb()
     .select()
     .from(sessions)
-    .where(eq(sessions.id, sql.placeholder("id")))
-    .prepare();
-}
-let findSessionByIdStmt: ReturnType<typeof buildFindSessionByIdStmt> | null = null;
-
-export function findSessionById(id: string): Session | null {
-  if (!findSessionByIdStmt) findSessionByIdStmt = buildFindSessionByIdStmt();
-  return (findSessionByIdStmt.get({ id }) as Session | undefined) ?? null;
+    .where(ownedBy(sessions, ownerId, eq(sessions.id, id)))
+    .limit(1);
+  return rows[0] ?? null;
 }
 
-export function insertSession(row: Session): void {
-  getDb().insert(sessions).values(row).run();
+export async function insertSession(row: NewSessionRow): Promise<void> {
+  await panelDb().insert(sessions).values({ ...row, ownerId: row.ownerId });
 }
 
-export function updateSessionRow(id: string, patch: Partial<Session>): void {
-  getDb().update(sessions).set(patch).where(eq(sessions.id, id)).run();
+export async function updateSessionRow(
+  ownerId: number,
+  id: string,
+  patch: Partial<SessionRow>,
+): Promise<void> {
+  await panelDb()
+    .update(sessions)
+    .set(patch)
+    .where(ownedBy(sessions, ownerId, eq(sessions.id, id)));
 }
 
-export function deleteSessionRow(id: string): number {
-  const result = getDb().delete(sessions).where(eq(sessions.id, id)).run();
-  return result.changes;
+export async function deleteSessionRow(ownerId: number, id: string): Promise<number> {
+  const removed = await panelDb()
+    .delete(sessions)
+    .where(ownedBy(sessions, ownerId, eq(sessions.id, id)))
+    .returning({ id: sessions.id });
+  return removed.length;
 }
 
 export type SessionSessionRef = {
@@ -54,15 +57,14 @@ export type SessionSessionRef = {
   claudeSessionId: string;
 };
 
-export function findSessionsWithClaudeSessionId(): SessionSessionRef[] {
-  const rows = getDb()
+export async function findSessionsWithClaudeSessionId(ownerId: number): Promise<SessionSessionRef[]> {
+  const rows = await panelDb()
     .select({
       sessionId: sessions.id,
       claudeSessionId: sessions.claudeSessionId,
     })
     .from(sessions)
-    .where(sql`${sessions.claudeSessionId} IS NOT NULL`)
-    .all();
+    .where(ownedBy(sessions, ownerId, isNotNull(sessions.claudeSessionId)));
   return rows.map((r) => ({
     sessionId: r.sessionId,
     claudeSessionId: r.claudeSessionId!,

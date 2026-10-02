@@ -71,7 +71,7 @@ describe("the migrated database", { timeout: 30_000 }, () => {
 
   it("passes a table with a not-null owner_id that references operator.id", async () => {
     const pool = await migrate(
-      "CREATE TABLE sessions (id integer PRIMARY KEY, owner_id integer NOT NULL REFERENCES operator (id))",
+      "CREATE TABLE planted_owned (id integer PRIMARY KEY, owner_id integer NOT NULL REFERENCES operator (id))",
     );
     expect(await checkDatabaseTables(pool)).toEqual([]);
   });

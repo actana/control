@@ -1,20 +1,13 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
-import { closePanelTestDb, openPanelTestDb } from "./_panel-test-db";
-import * as fs from "node:fs";
-import * as os from "node:os";
-import * as path from "node:path";
-
-const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mc-ask-question-api-test-"));
-process.env.AC_USER_DATA_DIR = tmpRoot;
+import { closePanelTestDb, openPanelTestDb, resetPanelState } from "./_panel-test-db";
 
 const testDb = await openPanelTestDb();
 const { handleApiRequest } = await import("../api-router");
-const { operatorSessionCookie } = await import("./_operator-session");
+const { operatorSessionCookie, resetOperatorSessionForTests } = await import("./_operator-session");
 const { getOrCreateApiToken } = await import("../services/settings");
 const { createSession, getSession } = await import("../services/sessions");
+const { createOperator } = await import("../services/operator");
 const { getPendingQuestion } = await import("../services/pending-questions");
-const { getDb } = await import("~/db/client");
-const { sessions, appSettings } = await import("~/db/schema");
 const { TITLE_WAITING } = await import("~/lib/session-sentinels");
 
 const LOOPBACK_HEADERS = { origin: "http://127.0.0.1:5173" };
@@ -44,7 +37,7 @@ async function authed(input: string, init: RequestInit = {}): Promise<Request> {
       // This file drives both surfaces: the agent hook endpoints (machine
       // token) and the Operator's session API (session cookie).
       cookie: await operatorSessionCookie(),
-      authorization: `Bearer ${getOrCreateApiToken()}`,
+      authorization: `Bearer ${await getOrCreateApiToken()}`,
       ...(init.headers as Record<string, string> | undefined),
     },
   });
@@ -77,13 +70,7 @@ async function postAskUserQuestion(sessionId: string): Promise<Response | null> 
   });
 }
 
-function resetDb() {
-  const db = getDb();
-  db.delete(sessions).run();
-  db.delete(appSettings).run();
-}
-
-function createHookSession() {
+async function createHookSession() {
   return createSession({
     title: TITLE_WAITING,
     agent: "claude-code",
@@ -94,9 +81,11 @@ function createHookSession() {
 describe("AskUserQuestion hook API", () => {
   let sessionId = "";
 
-  beforeEach(() => {
-    resetDb();
-    sessionId = createHookSession().id;
+  beforeEach(async () => {
+    await resetPanelState(testDb);
+    resetOperatorSessionForTests();
+    await createOperator({ name: "Test Operator", password: "test-password" });
+    sessionId = (await createHookSession()).id;
   });
 
   it("stores the question and flips status on PreToolUse", async () => {
@@ -104,7 +93,7 @@ describe("AskUserQuestion hook API", () => {
 
     expect(res?.status).toBe(200);
     await expect(res?.json()).resolves.toEqual({ ok: true, status: "needs-input" });
-    expect(getSession(sessionId)?.status).toBe("needs-input");
+    expect((await getSession(sessionId))?.status).toBe("needs-input");
 
     const stored = getPendingQuestion(sessionId);
     expect(stored).toMatchObject({
@@ -145,7 +134,7 @@ describe("AskUserQuestion hook API", () => {
 
     expect(res?.status).toBe(200);
     await expect(res?.json()).resolves.toEqual({ ok: true, status: "running" });
-    expect(getSession(sessionId)?.status).toBe("running");
+    expect((await getSession(sessionId))?.status).toBe("running");
     expect(getPendingQuestion(sessionId)).toBeNull();
   });
 
@@ -186,7 +175,7 @@ describe("AskUserQuestion hook API", () => {
     expect(res?.status).toBe(200);
     await expect(res?.json()).resolves.toEqual({ ok: true, ignored: "PreToolUse" });
     expect(getPendingQuestion(sessionId)).toBeNull();
-    expect(getSession(sessionId)?.status).not.toBe("needs-input");
+    expect((await getSession(sessionId))?.status).not.toBe("needs-input");
   });
 
   it("ignores questions from foreign sessions", async () => {

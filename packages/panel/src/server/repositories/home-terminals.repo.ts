@@ -1,28 +1,52 @@
 import { asc, eq } from "drizzle-orm";
-import { getDb } from "~/db/client";
-import { homeTerminals } from "~/db/schema";
-import type { HomeTerminal } from "~/db/schema";
+import { ownedBy } from "~/db/owner";
+import { panelDb } from "~/db/panel-db-handle";
+import { homeTerminals } from "~/db/pg-schema";
 
-export function findHomeTerminals(): HomeTerminal[] {
-  return getDb()
+export type HomeTerminalRow = typeof homeTerminals.$inferSelect;
+export type NewHomeTerminalRow = typeof homeTerminals.$inferInsert;
+
+/** Every query here filters on `owner_id` (ADR 0041 D15). */
+
+export async function findHomeTerminals(ownerId: number): Promise<HomeTerminalRow[]> {
+  return panelDb()
     .select()
     .from(homeTerminals)
-    .orderBy(asc(homeTerminals.position), asc(homeTerminals.createdAt))
-    .all();
+    .where(ownedBy(homeTerminals, ownerId))
+    .orderBy(asc(homeTerminals.position), asc(homeTerminals.createdAt));
 }
 
-export function findHomeTerminalById(id: string): HomeTerminal | null {
-  return getDb().select().from(homeTerminals).where(eq(homeTerminals.id, id)).get() ?? null;
+export async function findHomeTerminalById(
+  ownerId: number,
+  id: string,
+): Promise<HomeTerminalRow | null> {
+  const rows = await panelDb()
+    .select()
+    .from(homeTerminals)
+    .where(ownedBy(homeTerminals, ownerId, eq(homeTerminals.id, id)))
+    .limit(1);
+  return rows[0] ?? null;
 }
 
-export function insertHomeTerminal(row: HomeTerminal): void {
-  getDb().insert(homeTerminals).values(row).run();
+export async function insertHomeTerminal(row: NewHomeTerminalRow): Promise<void> {
+  await panelDb().insert(homeTerminals).values({ ...row, ownerId: row.ownerId });
 }
 
-export function updateHomeTerminalRow(id: string, patch: Partial<HomeTerminal>): void {
-  getDb().update(homeTerminals).set(patch).where(eq(homeTerminals.id, id)).run();
+export async function updateHomeTerminalRow(
+  ownerId: number,
+  id: string,
+  patch: Partial<HomeTerminalRow>,
+): Promise<void> {
+  await panelDb()
+    .update(homeTerminals)
+    .set(patch)
+    .where(ownedBy(homeTerminals, ownerId, eq(homeTerminals.id, id)));
 }
 
-export function deleteHomeTerminalRow(id: string): number {
-  return getDb().delete(homeTerminals).where(eq(homeTerminals.id, id)).run().changes;
+export async function deleteHomeTerminalRow(ownerId: number, id: string): Promise<number> {
+  const removed = await panelDb()
+    .delete(homeTerminals)
+    .where(ownedBy(homeTerminals, ownerId, eq(homeTerminals.id, id)))
+    .returning({ id: homeTerminals.id });
+  return removed.length;
 }

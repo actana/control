@@ -24,8 +24,8 @@ const updateBindingBody = z.object({
   binding: bindingSchema,
 });
 
-export function list(): Response {
-  return json({ bindings: getBindings() });
+export async function list(): Promise<Response> {
+  return json({ bindings: await getBindings() });
 }
 
 export async function set(request: Request): Promise<Response> {
@@ -34,13 +34,13 @@ export async function set(request: Request): Promise<Response> {
   const { action, binding } = parsed.data;
   const valid = isValidBinding(binding);
   if (!valid.ok) return jsonError(HTTP_BAD_REQUEST, valid.reason);
-  return json({ bindings: setBinding(action as HotkeyAction, binding) });
+  return json({ bindings: await setBinding(action as HotkeyAction, binding) });
 }
 
-export function reset(url: URL): Response {
+export async function reset(url: URL): Promise<Response> {
   const rawAction = url.searchParams.get("action");
-  if (rawAction === null) return json({ bindings: resetAllBindings() });
+  if (rawAction === null) return json({ bindings: await resetAllBindings() });
   const parsed = hotkeyAction.safeParse(rawAction);
   if (!parsed.success) return jsonError(HTTP_BAD_REQUEST, "invalid action");
-  return json({ bindings: resetBinding(parsed.data as HotkeyAction) });
+  return json({ bindings: await resetBinding(parsed.data as HotkeyAction) });
 }
