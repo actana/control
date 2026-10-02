@@ -23,6 +23,15 @@
 > **Amended 2026-10-01 by [#562](https://github.com/actana/control/issues/562)** with D33 ("Landed by #562"). It
 > **amends D25**: the Shared folder's sync runs as the daemon user `actana`, not as `core`, by the owner's ruling of
 > 2026-10-01 (option A). Nothing else in D1–D32 is changed.
+>
+> **Amended 2026-10-02 by the release audit of [#552](https://github.com/actana/control/issues/552)** with D34–D42
+> ("Landed by" #565, #569, #570, #563 and client#8, #564, #566, #572–#574 and #567). The audit found that tickets of
+> the train settled in merged code questions this record still lists as open, so this amendment writes down what the
+> merged code does and nothing else; it decides nothing new. It settles the Open items on the Files tab, the shape of
+> an Agent and how a Task is dispatched, and the Report contract, and it marks D14 and D20 as now true of the Panel's code and
+> dependency lists (D41 says what that leaves out). On where Remembered session settings live it only records what the code does
+> (D42); that question stays open for the owner. It says where the code and an earlier clause
+> disagree: D12 (D38) and the "dumb pipe" of ADR 0030 (D34). Nothing in D1–D33 is changed; D12, D14 and D20 each gain a pointer.
 
 > **On the number.** This record takes **0041**, the next free number after
 > [`0040-pi-project-trust-answered-by-extension.md`](0040-pi-project-trust-answered-by-extension.md).
@@ -73,7 +82,7 @@ other users are: D24.*
 **D11 — The Core daemon runs as its own user, with its state outside `~`.** *Which user, which directory and what the
 daemon holds: D24.*
 
-**D12 — Deleting a Core removes the Core, its Shared folder and its S3 folder.**
+**D12 — Deleting a Core removes the Core, its Shared folder and its S3 folder.** *What the Panel's delete does, and where that differs from this: D38.*
 
 **D13 — Unpairing a Core from a Panel removes only the S3 link.** `~/shared`
 stays and keeps its contents.
@@ -106,7 +115,7 @@ workspace, Session, Harness, Shared folder, Task, Agent and Report.
 
 ## Definitions this record fixes
 
-- **Agent** is a Harness with its settings on a Core (#569).
+- **Agent** is a Harness with its settings on a Core (#569). *Its shape: D35.*
 - **Report** is what goes through the Shared folder (D7). Its contract is
   actana/client#8, and the Panel turns result files into Task status and
   comments (#570).
@@ -118,24 +127,24 @@ Neither definition says more than the tickets say. The rest is open, below.
 These are not decided here. Each is the named ticket's to settle.
 
 - **The shape of an Agent's settings**, and how a Task is dispatched to one
-  (#569, #570).
+  (#569, #570). *Settled in merged code on 2026-10-01 and 2026-10-02: D35 (Agent) and D36 (dispatch).*
 - **The Report contract** through the Shared folder: file names, layout and
-  fields (actana/client#8).
+  fields (actana/client#8). *Settled by client PR 41 and #563 (PR 621): D37. It fixes names, paths and an end marker, and no fields.*
 - **The wire form of the rename** in D3, and what happens to core-link frames
   and the protocol version (#556). *Decided on 2026-09-30: a hard cut, D21.*
 - **The new Files API address and its delete and create-folder routes** (#557). *Decided by #557: D30–D32.*
 - **The Shared folder's change feed** and the mount mechanism (#561, #562).
 - **How the Panel's Files tab reaches Shared-folder bytes**, and so whether the
-  Panel remains a "dumb pipe" (ADR 0030) for them (#565).
+  Panel remains a "dumb pipe" (ADR 0030) for them (#565). *Settled by #565 (PR 637, PR 640): D34. For these bytes it is not a dumb pipe.*
 - **Where Remembered session settings live** (ADR 0017) now that the Project row
-  they were stored against is gone. No ticket in #552 says.
+  they were stored against is gone. No ticket in #552 says. *Answered in code, not by a ruling: PR 622 (#560) keeps them in the browser: D42. The owner has not confirmed it.*
 - **Which directory holds the daemon's state**, outside `~` (#559). *Decided on 2026-10-01: `/var/lib/actana`, D24.*
 - **How the daemon starts Sessions as `core` and writes into `core`'s home.** D11 runs the daemon as its own user
   and D10 allows root only at container startup, so after startup the daemon has no root. Nothing in #552 says how
   it then starts a Session's PTY as `core` (D2) or writes into the workspace (D1). #559 owns it. *Decided on
   2026-09-30: two capabilities on the daemon, D25. The Files API is not part of it: it moves with #557.*
 - **How an Agent relates to Remembered session settings.** Both are a Harness with settings. Only #569 defines
-  Agent.
+  Agent. *Still open after #569 (D35): no merged code connects the two (D42).*
 
 ## Amended by #567: the Panel's database is Postgres
 
@@ -147,7 +156,7 @@ later pull requests of #567, and until they land the Panel still runs on SQLite.
 
 **D14 — The Panel's state lives in Postgres only.** Every Panel table moves, including the Projects family, which
 #560 then deletes on Postgres. No SQLite is left in the Panel's state. "Done" for #567 is that the Panel runs on
-Postgres only.
+Postgres only. *Now true: D41.*
 
 **D15 — `owner_id` references `operator.id`.** It keeps ADR 0011's single Operator. Ownership is enforced in Panel
 code: every user-facing table has an `owner_id`, and every query filters on the owner (#567).
@@ -170,7 +179,7 @@ any install). It is not written in this repository's own `SECURITY.md`. The owne
 the Postgres image itself (D16).
 
 **D20 — `better-sqlite3` leaves the Panel.** The Panel's provider-usage readers of other apps' SQLite files move to
-`node:sqlite`.
+`node:sqlite`. *Now true: D41.*
 
 **D21 — The wire rename in D3 is a hard cut, with no alias (#556).** Frames, events, the DB and the SDK and CLI say
 `sessionId` only. There is no `taskId` alias anywhere, including `session start --json`. The protocol version is
@@ -354,6 +363,168 @@ here can change that. The Core does not paper over it: it reports the folder as 
 when the users differ, and logs `shared-sync.key-not-isolated` when it takes a key otherwise. The owner's ruling that the sync
 runs as `actana` where there are two users is unchanged. The change feed of D5 and D6 is unchanged: what the sync writes into `~/shared` is
 seen by the watcher of #561 and becomes a `shared:changed` event like any other write.
+
+## Landed by #565: how the Files tab reaches Shared-folder bytes
+
+[#565](https://github.com/actana/control/issues/565) puts a Drive for the Shared folder on the Core page (PR 637, 1 of 2,
+merged 2026-10-02; its Storage settings half is D39). PR 640 later changed its upload limit. The owner may change these
+by amending this record.
+
+**D34 — The Panel's server reads and writes Shared-folder bytes itself, in S3, with a key it holds; the browser never holds
+one. This settles the Open item on the Files tab, and says the Panel is not a dumb pipe for these bytes.** The tab calls
+Panel routes under `/api/cores/:id/shared/files` (list, details, media, download-url, search, summary, mkdir, upload,
+rename, move, delete), each checked against the session's owner. The server opens the SDK's `CoreShared` in its S3 mode
+(`createS3CoreShared`, `@actana/sdk/shared`) for that one Core, with the key the SDK issuer gives for that Core's folder only
+(D38, D39: the master key stays on the Panel, and the key's life is the one D33 gives). The tab therefore works while the
+Core is offline or paused. A download is the SDK's `signedUrl` for one object, valid 5 minutes (`DOWNLOAD_URL_SECONDS`),
+and it is the only credential-bearing thing a browser receives; a preview is the Panel's own `/media` route, which returns
+the bytes it read from S3. An upload is read into the Panel's memory, refused with 413 past the limit (checked against the
+declared length and again as the body streams), and then put to S3 with the SDK, so the Panel holds one file at a time per
+request. The Panel validates the path itself (no `..`, no absolute path, not the root for rename, move or delete) before
+any key is issued. **The upload limit is stored (PR 640):** each request reads it from Storage settings (D39, default
+512 MiB); the 100 MB constant `DEFAULT_UPLOAD_LIMIT_BYTES` applies only when no limit is stored (storage not set up yet). Task attachments
+use the same stored limit. **Where this meets earlier clauses:** ADR 0030's "dumb pipe" (the Panel streams the Core's
+workspace file bytes through with nothing buffered and no path validated) is about the Core's Files API (D30) and is not
+changed here; it is not true of the Shared folder, where the Panel buffers uploads, validates paths and reads S3 on its own.
+D6 says the Shared folder is mounted from S3 with short-lived keys; the Panel does not mount it, it reaches the same
+prefix as a client of S3, with its own key and not the Core's (D33).
+
+## Landed by #569 and #570: Agents, and how a Task is dispatched
+
+[#569](https://github.com/actana/control/issues/569) (PR 625, merged 2026-10-01) defines the Agent in Postgres.
+[#570](https://github.com/actana/control/issues/570) (PR 629, merged 2026-10-01, and PR 640, merged 2026-10-02)
+dispatches Tasks and reads their results. The owner may change these by amending this record.
+
+**D35 — An Agent is a named harness plus a model and flags, on one Core, with no command in it. This settles the Open item
+on the shape of an Agent's settings.** The `agents` table holds `id`, `owner_id` (to `operator.id`, D15 and D23), `core_id`,
+`name`, `harness`, `model`, `flags`, `is_default` and the times. The harness is one of `claude-code`, `codex`, `cursor-cli`,
+`opencode` or `pi`. The service accepts exactly `coreId`, `name`, `harness`, `model` and `flags`, and refuses any other
+field. There is no command, argument, script or environment column, and no provider key can be stored. `model` must match a
+plain model-id pattern; `name` is one line of up to 60 characters; `flags` are ids from a closed set (today only
+`skip-permissions`, offered only for a harness that has an auto-mode flag), and the Core maps an id to the harness's own
+flag at dispatch. A name is unique per Core. An Agent is created, and resolved, only if the Core reports its harness
+`available` (the Panel asks again each time, with the `agentsAvailabilityList` frame). `listAgentsForCore` makes one default
+Agent per available harness, once, and a partial unique index allows one default per harness per Core.
+
+**D36 — A Task is dispatched by one conditional claim and a Session; its result is read from the Shared folder. This
+settles the Open item on how a Task is dispatched.** Per Task, the Panel: (1) claims it with one
+`UPDATE … WHERE status = 'assigned'` to `in_progress`, adding 1 to `attempt_count`, so of two racing dispatchers exactly one
+wins; (2) resolves the Agent, asking its Core again; (3) on a re-run renames the older results to `attempt-<n>-<name>`;
+(4) starts a Session with `CoreSession.start` (the public SDK, D9) over the Panel's own link; (5) writes one system comment
+naming the Session. The prompt holds the Task, its comments and the result instructions: write `~/shared/tasks/<id>/success.md`,
+`fail.md` or `partial-<n>.md`, last line `ACT-REPORT-END`. The Panel adds no standard block, because the Core appends its own
+(D37). The watcher turns a finished result file newer than the dispatch time into one agent comment and one status move through
+the Tasks service, so its rules for legal moves still apply. An agent that exits with no result, or a Task that runs out of
+time, gets a `fail.md` written by the Panel and then fails the same way; a failed start moves the Task to `failed` with the
+reason as `last_error`. **Which Shared mode the watcher uses changed between the two PRs.** PR 629 shipped the through-the-Core
+mode in practice (a result is seen only while the Core is up) because no storage was configured yet. PR 640 makes the S3 mode the
+default whenever storage is configured, with the same per-Core key as D34 asked again on each read, so a result is seen while the
+Core is paused; the through-the-Core mode is the fallback when storage is not configured and for a Core that has no Shared folder.
+**Two report paths reach one Session.** The Core's block (D37) names the Session's own `shared/sessions/<id>/report-1.md`; the
+Task prompt names `tasks/<id>/…`. The Panel reads only the second. Nothing in the code reconciles the two, and the harness is told both.
+
+## Landed by client#8 and #563: the report contract
+
+Client [#8](https://github.com/actana/client/issues/8) (client PR 41, merge commit `ef8b3ff`) defines the report;
+[#563](https://github.com/actana/control/issues/563) (PR 621, merged 2026-10-01) is the Core's half. The owner may change
+these by amending this record.
+
+**D37 — A report is a file in the Shared folder that ends with `ACT-REPORT-END`, and the Core appends a versioned block to a
+Session's starting prompt only. This settles the Open item on the Report contract, and it fixes names and an end marker, not fields.**
+A plain Session turn writes `sessions/<session-id>/report-<turn>.md`; a Task writes `tasks/<task-id>/success.md`, `fail.md` or
+`partial-<n>.md`, with `attempt-<n>.log` for an attempt's log and `attempt-<n>-<name>` for an older result after a re-run. All
+are relative to the Shared folder (`~/shared` on the Core). A report is finished when its last non-blank line is exactly
+`ACT-REPORT-END`. The contract defines no fields inside a report. The client's `session wait` settles on that file through the
+Shared watcher, not on a screen or a status. The Core's block (`prompt-standard-block.ts`, version 1) is one line saying the workspace is `~`, that
+`~/shared` is shared and syncs within seconds, where this turn's report goes, its last line, and never to use sudo. It is appended once to a
+starting prompt, as turn 1 (`appendPromptBlock`; a prompt that already holds a block of any version is returned unchanged), and a Session
+started with no prompt gets none. When the Core reports the prompt delivered it records the block version on that Session row
+(`sessions.prompt_block_version`, a fresh-install column). A follow-up `session send` is a raw write on the Core and gets no block there;
+the client CLI appends the same block itself with the next turn's path, and a wording change bumps the version on both sides.
+The Panel copies the Task paths and the marker into `shared/task-report.ts`, pinned by a test, because the CLI is not its dependency.
+The end marker, the block's wording and the Core-side turn handling were the Core's choices where client#8 said only "a fixed last line".
+
+## Landed by #564: pairing ends with the Shared folder
+
+[#564](https://github.com/actana/control/issues/564) (PR 634, 1 of N, merged 2026-10-01). The owner may change these by amending
+this record.
+
+**D38 — The Panel holds the storage config and the master key; a pairing made from the Panel is not finished until the Shared
+folder is attached; a delete empties only that Core's S3 prefix.** The config lives in `storage_config`, the master key sealed like
+`core_secrets` (ADR 0011), write-only, with one reader: the SDK issuer's closure; no route, log line, error or frame carries it. A Core registered from the Panel stays
+`pending` in `core_shared_folders` until `sharedAttach` succeeds. The pairing wizard's last step tests the folder (own folder
+reachable, another Core's not), then finishes; finishing without storage is a 409 and the Core is sent nothing. The Panel pushes each
+Core a fresh key over the core-link before the current one ends (at the SDK's refresh point, 15 minutes early), retries after 5 seconds, 15 seconds, 60 seconds and then every 300 seconds, the last delay repeating for as long as the push keeps failing (`RETRY_DELAYS_MS`), and shows the error on the Core. **Unpair** (`DELETE /api/cores/:id`) sends `sharedDetach`: the Core keeps `~/shared`,
+the row is forgotten and the S3 prefix is left, which is D13. **Delete** (`POST /api/cores/:id/delete`, with the exact `<prefix>/<core id>/`
+typed back) removes the Core row and empties only that prefix, and only after the Core answered `detached` or `not-attached`, or its key ran out;
+otherwise it is a 409 and nothing is removed, since a Core still syncing would delete its own `~/shared` once the objects were gone.
+**Where this differs from D12**, which says a delete removes the Core, its Shared folder and its S3 folder: the Panel empties the S3 folder and,
+by design, does not empty the machine's `~/shared`. **The attach table:** `shared-folders-attach-table.test.ts` runs 64 rows against a model of the
+Core's sync (a key push runs a deleting pass, a detach only copies S3 into the folder, a fresh attach never deletes). The rows differ by Core row
+(exists, or mounted on an earlier deleted Core's folder), still attached, key valid or expired, S3 folder present or deleted, local folder with
+contents or empty, and reachable or not; the Panel sees only reachability and how the Core answers, so they collapse into four actions: not connected
+(32 rows, send nothing, stay `pending`), attach (16), detach then attach (8), and left as it is (8: still attached with an expired key, sent no key,
+stays `pending` with the reason). In every row neither side deletes or empties data because the other is missing or empty. The way out of the last
+action needs a Core that can detach without a key, which is a Core change not made here.
+
+## Landed by #566: Storage settings and backends
+
+[#566](https://github.com/actana/control/issues/566) part 2 (PR 636, merged 2026-10-02), on the config model of D38. The owner may change
+these by amending this record.
+
+**D39 — Settings › Storage configures one of four backends through the SDK's four issuers.** The backends are `seaweedfs` (the default),
+`sts`, `supabase` and `r2`, each with the SDK issuer of that name (`@actana/sdk` 0.6.0-next.4). The master key is write-only: no route returns it
+and the page shows only that one is set and when it was rotated. A Save that types a key while one is stored is refused and points at Rotate, which
+replaces the key and re-issues every Core's key. A change of backend without new master material is refused, since a sealed key cannot move between
+backends. Test connection issues a one-hour key and proves another Core's folder is unreachable, the same probe as pairing. The page lists each Core's folder size and key expiry from the
+server, and holds the upload size limit (default 512 MiB) that D34 reads. The key's life is the SDK's (one hour, refresh 15 minutes early), shown, not stored.
+**The `sts` and `supabase` tabs say they are not usable yet against a real service**, because one Endpoint field cannot be both the STS AssumeRole URL
+(or the Supabase project URL) and the S3 API host; `seaweedfs` and `r2` are the ones that work. The form shows OIDC fields that screen 08 does not draw,
+so the SeaweedFS issuer can be configured.
+
+## Landed by #572, #573 and #574: API keys, the public API, MCP and webhooks
+
+[#572](https://github.com/actana/control/issues/572) (PR 626, 632 and 641), [#573](https://github.com/actana/control/issues/573) (PR 633 and 641)
+and [#574](https://github.com/actana/control/issues/574) (PR 628 and 641), all merged 2026-10-01 or 2026-10-02. They fill in what D8 lists as living in the Panel. The owner may change
+these by amending this record.
+
+**D40 — A key authenticates as its owner on an allow-listed set of routes; the public API, the MCP server and signed webhooks all sit on it.**
+**API keys** (`api_keys`, `api_key_cores`, PR 626): `ak_<owner id>_<43 characters>`, the plaintext shown once, the row holding its sha256 and a display
+prefix, compared with `timingSafeEqual`, revocable, scoped to all of the owner's Cores or chosen ones. A `Bearer ak_…` that is unknown, malformed or revoked is
+a 401 and never falls back to the session cookie; a key on a route outside `API_KEY_ROUTES` is a 403; a call outside the key's Core scope is a 403. A key
+creates and revokes no keys (session only). **The public API** (PR 632) is `/api/v1`: Cores, Agents, Tasks and comments, described by `openapi/v1.json`, every call
+running as the key's owner; a key may ask a Task for the statuses `assigned` and `draft` only; `/api/tasks` stays session-only. **MCP** (PR 633) is `POST /mcp`, stateless
+Streamable HTTP, written directly with no MCP library, key only, with nine tools (`list_cores`, `list_agents`, `get_tasks`, `get_task`, `create_task`, `assign_task`,
+`comment_task`, `list_shared`, `get_shared`), each calling the same handler as `/api/v1`; the two Shared tools check scope, then owner, then the path, and read through the
+through-the-Core mode of `CoreShared` (not S3, unlike D34) with size caps. **Webhooks** (PR 628) are https only, signed with HMAC-SHA256 (`X-Webhook-Signature`,
+`-Timestamp`, `-Delivery`), for `task.created`, `task.updated`, `task.status_changed`, `task.deleted`, `comment.created` and `ping`, written to an outbox in the
+same transaction as the change, delivered with private, loopback, link-local and similar addresses refused, the checked address pinned and redirects not
+followed, retried after 1 minute, 5 minutes, 30 minutes, 2 hours and 6 hours and then marked failed, and pruned after 14 days. A webhook may be limited to chosen Cores. The Settings › API &
+integrations screen (PR 641) creates keys (plaintext once), restricts and revokes them, copies the MCP command, and creates, pings and deletes webhooks; webhook routes refuse an
+API-key principal. It differs from screen 09: the key prefix is `ak_`, not `actk_`, and there is no "last used" because the schema has no such column.
+
+## Landed by #567: Postgres only
+
+[#567](https://github.com/actana/control/issues/567), PR 639 (merged 2026-10-02) and PR 643 (merged 2026-10-02).
+
+**D41 — D14 and D20 are now true.** PR 639 moved the `missioncontrol.db` tables (`sessions`, `terminal_logs`, `home_terminals`, `app_settings`, `token_usage`,
+`token_usage_rollup`, `token_usage_session_offsets`, `event_log`) to Postgres and deleted `db/client.ts`, the schema bootstrap and the legacy SQL migrations, so no Panel
+state is in a SQLite file. `pg-schema.ts` holds no Projects table. PR 643 moved the three provider-usage readers (Cursor's `state.vscdb`, OpenCode Go's `opencode.db`,
+Windsurf's `state.vscdb`) to `node:sqlite`, read-only with a 250 ms busy timeout, and removed `better-sqlite3` and its types from the dependency lists of the Panel's and the root's `package.json`. The root manifest still names it in the
+`native:node:rebuild` script and in the build allow-list (`package.json:53`, `:95`).
+**What this does not say:** the Panel's image is not shown to be free of it. The deploy installs the Core, so the Core's compiled copy may still sit in the image's tree, and the build stage still compiles it. The image smoke proves only that `better-sqlite3` cannot be resolved from the Panel (its own log line says the files "may remain under the Core's copy"), and whether the deploy should stop installing the Core is undecided. Also, `better-sqlite3` is still used by the Core and is declared as a `devDependency` of `packages/shared` (PR 643 added the declaration), which D20
+(about the Panel) allows; `packages/panel/src/server/repositories/_sql.ts` still imports a type from `drizzle-orm/sqlite-core`, for a helper nothing uses. **Where the record and the
+pull requests disagree on the count:** the intro to D14–D23 and the Consequences say #567 is seven pull requests; PR 639 calls itself "5 of 7" and PR 643 "6 of 6".
+
+## Where Remembered session settings live: D42
+
+**D42 — Remembered session settings are in the browser's `localStorage`, per Core, and no ruling put them there.** PR 622 (#560 PR 2, merged 2026-10-01) stores
+`rememberHarnessSettings` and `savedHarness` under the key `mc:core-remember:<core id>` (`packages/panel/src/lib/core-remember.ts`). That is neither the Core, where ADR 0017 kept
+them against the Project row so that every Panel saw the same choice, nor Postgres. The PR says itself that ADR 0041 left the home open and that it chose `localStorage` because the
+Panel database was out of its boundary; no owner comment settles it, and the choice is a pull request's, not this record's. The file's own header says the same: "until a later ticket
+picks a durable home". Two things follow from the code, not from a decision: the setting is per browser and not per account, and what it holds is the harness and the flag
+that remembers it, which is not everything ADR 0017 lists (its default grid view is not in this file). The Open item stays open for the owner, and so does how an Agent (D35)
+relates to it: nothing merged connects them.
 
 ## Consequences
 
