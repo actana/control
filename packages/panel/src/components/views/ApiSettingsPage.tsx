@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Btn } from "~/components/ui/Btn";
 import { ConfirmDialog } from "~/components/ui/ConfirmDialog";
+import { FormErrorBox } from "~/components/ui/FormErrorBox";
 import { Icon } from "~/components/ui/Icon";
 import { Modal } from "~/components/ui/Modal";
 import { TextField } from "~/components/ui/TextField";
@@ -31,8 +32,9 @@ import { WEBHOOK_CHANGE_EVENT_TYPES } from "~/shared/webhooks";
  * returns null here), and this page replaces that copy with the Panel REST / MCP /
  * webhook surface. The Core hook-token feature itself is unchanged.
  *
- * Plaintext keys and webhook secrets live only in the shown-once dialog's local
- * state and are cleared when it closes — never in react-query, never in a URL.
+ * Plaintext keys and webhook secrets are handed to the shown-once dialog inside
+ * `mutationFn` and never returned as mutation `data`, so React Query's mutation
+ * cache holds none after Done. Never in a URL, never in storage.
  */
 
 type ShownOnce =
@@ -106,14 +108,18 @@ export function ApiSettingsPage() {
   const refreshKeys = () => queryClient.invalidateQueries({ queryKey: queryKeys.apiKeys });
   const refreshWebhooks = () => queryClient.invalidateQueries({ queryKey: queryKeys.webhooks });
 
+  // Plaintext must not become mutation `data` (R1). Hand it to the dialog here
+  // and return only the view; reset on close so the cache retains nothing.
   const createKey = useMutation({
-    mutationFn: (input: { name: string; coreIds: string[] | null }) => api.createApiKey(input),
-    onSuccess: async (res) => {
-      setCreateKeyOpen(false);
+    mutationFn: async (input: { name: string; coreIds: string[] | null }) => {
+      const res = await api.createApiKey(input);
       setShownOnce({ kind: "api-key", name: res.apiKey.name, value: res.key });
+      return res.apiKey;
+    },
+    onSuccess: async () => {
+      setCreateKeyOpen(false);
       await refreshKeys();
     },
-    onError: (err) => setError(messageOf(err)),
   });
 
   const revoke = useMutation({
@@ -122,18 +128,18 @@ export function ApiSettingsPage() {
       setRevokeKey(null);
       await refreshKeys();
     },
-    onError: (err) => setError(messageOf(err)),
   });
 
   const createHook = useMutation({
-    mutationFn: (input: { url: string; events: string[]; coreIds: string[] | null }) =>
-      api.createWebhook(input),
-    onSuccess: async (res) => {
-      setCreateWebhookOpen(false);
+    mutationFn: async (input: { url: string; events: string[]; coreIds: string[] | null }) => {
+      const res = await api.createWebhook(input);
       setShownOnce({ kind: "webhook-secret", url: res.webhook.url, value: res.secret });
+      return res.webhook;
+    },
+    onSuccess: async () => {
+      setCreateWebhookOpen(false);
       await refreshWebhooks();
     },
-    onError: (err) => setError(messageOf(err)),
   });
 
   const removeHook = useMutation({
@@ -142,7 +148,6 @@ export function ApiSettingsPage() {
       setDeleteHook(null);
       await refreshWebhooks();
     },
-    onError: (err) => setError(messageOf(err)),
   });
 
   const ping = useMutation({
@@ -153,7 +158,11 @@ export function ApiSettingsPage() {
     onError: (err) => setError(messageOf(err)),
   });
 
-  const closeShownOnce = () => setShownOnce(null);
+  const closeShownOnce = () => {
+    setShownOnce(null);
+    createKey.reset();
+    createHook.reset();
+  };
 
   return (
     <>
@@ -192,14 +201,25 @@ export function ApiSettingsPage() {
               coreLabels={coreLabels}
               expanded={expandedKeyId === key.id}
               onToggle={() => setExpandedKeyId((id) => (id === key.id ? null : key.id))}
-              onRevoke={() => setRevokeKey(key)}
+              onRevoke={() => {
+                revoke.reset();
+                setRevokeKey(key);
+              }}
             />
           ))}
           {apiKeys.length === 0 && !keysQuery.isLoading && (
             <div style={{ fontSize: 12, color: "var(--text-dim)" }}>No API keys yet.</div>
           )}
         </div>
-        <Btn variant="accent" icon="plus" onClick={() => { setError(null); setCreateKeyOpen(true); }}>
+        <Btn
+          variant="accent"
+          icon="plus"
+          onClick={() => {
+            setError(null);
+            createKey.reset();
+            setCreateKeyOpen(true);
+          }}
+        >
           Create API key
         </Btn>
       </SettingsSection>
@@ -232,7 +252,10 @@ export function ApiSettingsPage() {
                 setError(null);
                 ping.mutate(hook.id);
               }}
-              onDelete={() => setDeleteHook(hook)}
+              onDelete={() => {
+                removeHook.reset();
+                setDeleteHook(hook);
+              }}
               pinging={ping.isPending && ping.variables === hook.id}
             />
           ))}
@@ -246,6 +269,7 @@ export function ApiSettingsPage() {
             icon="plus"
             onClick={() => {
               setError(null);
+              createHook.reset();
               setCreateWebhookOpen(true);
             }}
           >
@@ -278,9 +302,13 @@ export function ApiSettingsPage() {
         <CreateApiKeyDialog
           cores={cores.map((c) => ({ id: c.id, label: c.label }))}
           loading={createKey.isPending}
-          onClose={() => setCreateKeyOpen(false)}
+          error={createKey.error ? messageOf(createKey.error) : null}
+          onClose={() => {
+            createKey.reset();
+            setCreateKeyOpen(false);
+          }}
           onCreate={(input) => {
-            setError(null);
+            createKey.reset();
             createKey.mutate(input);
           }}
         />
@@ -290,9 +318,13 @@ export function ApiSettingsPage() {
         <CreateWebhookDialog
           cores={cores.map((c) => ({ id: c.id, label: c.label }))}
           loading={createHook.isPending}
-          onClose={() => setCreateWebhookOpen(false)}
+          error={createHook.error ? messageOf(createHook.error) : null}
+          onClose={() => {
+            createHook.reset();
+            setCreateWebhookOpen(false);
+          }}
           onCreate={(input) => {
-            setError(null);
+            createHook.reset();
             createHook.mutate(input);
           }}
         />
@@ -302,7 +334,10 @@ export function ApiSettingsPage() {
 
       <ConfirmDialog
         open={!!revokeKey}
-        onClose={() => setRevokeKey(null)}
+        onClose={() => {
+          revoke.reset();
+          setRevokeKey(null);
+        }}
         onConfirm={() => {
           if (revokeKey) revoke.mutate(revokeKey.id);
         }}
@@ -312,16 +347,22 @@ export function ApiSettingsPage() {
         loading={revoke.isPending}
       >
         {revokeKey && (
-          <p style={{ margin: 0, fontSize: 13, color: "var(--text-dim)", lineHeight: 1.5 }}>
-            Revoke <strong style={{ color: "var(--text)" }}>{revokeKey.name}</strong> (
-            {revokeKey.prefix}…). Revocation is final; callers get 401 at once.
-          </p>
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            <p style={{ margin: 0, fontSize: 13, color: "var(--text-dim)", lineHeight: 1.5 }}>
+              Revoke <strong style={{ color: "var(--text)" }}>{revokeKey.name}</strong> (
+              {revokeKey.prefix}…). Revocation is final; callers get 401 at once.
+            </p>
+            <FormErrorBox error={revoke.error ? messageOf(revoke.error) : null} />
+          </div>
         )}
       </ConfirmDialog>
 
       <ConfirmDialog
         open={!!deleteHook}
-        onClose={() => setDeleteHook(null)}
+        onClose={() => {
+          removeHook.reset();
+          setDeleteHook(null);
+        }}
         onConfirm={() => {
           if (deleteHook) removeHook.mutate(deleteHook.id);
         }}
@@ -331,10 +372,13 @@ export function ApiSettingsPage() {
         loading={removeHook.isPending}
       >
         {deleteHook && (
-          <p style={{ margin: 0, fontSize: 13, color: "var(--text-dim)", lineHeight: 1.5 }}>
-            Delete <strong style={{ color: "var(--text)" }}>{deleteHook.url}</strong>? Deliveries
-            already queued keep their schedule; no new events are sent.
-          </p>
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            <p style={{ margin: 0, fontSize: 13, color: "var(--text-dim)", lineHeight: 1.5 }}>
+              Delete <strong style={{ color: "var(--text)" }}>{deleteHook.url}</strong>? Deliveries
+              already queued keep their schedule; no new events are sent.
+            </p>
+            <FormErrorBox error={removeHook.error ? messageOf(removeHook.error) : null} />
+          </div>
         )}
       </ConfirmDialog>
     </>
@@ -576,11 +620,13 @@ function ShownOnceDialog({
 function CreateApiKeyDialog({
   cores,
   loading,
+  error,
   onClose,
   onCreate,
 }: {
   cores: { id: string; label: string }[];
   loading: boolean;
+  error: string | null;
   onClose: () => void;
   onCreate: (input: { name: string; coreIds: string[] | null }) => void;
 }) {
@@ -634,6 +680,7 @@ function CreateApiKeyDialog({
           onAllCores={setAllCores}
           onToggle={toggle}
         />
+        <FormErrorBox error={error} />
       </div>
     </Modal>
   );
@@ -642,11 +689,13 @@ function CreateApiKeyDialog({
 function CreateWebhookDialog({
   cores,
   loading,
+  error,
   onClose,
   onCreate,
 }: {
   cores: { id: string; label: string }[];
   loading: boolean;
+  error: string | null;
   onClose: () => void;
   onCreate: (input: { url: string; events: string[]; coreIds: string[] | null }) => void;
 }) {
@@ -757,6 +806,7 @@ function CreateWebhookDialog({
           onAllCores={setAllCores}
           onToggle={toggle}
         />
+        <FormErrorBox error={error} />
       </div>
     </Modal>
   );

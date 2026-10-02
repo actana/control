@@ -20,7 +20,12 @@ const { resetSecretsKeyForTests } = await import("../services/secrets-at-rest");
 resetSecretsKeyForTests();
 
 const { createWebhook, listWebhooks } = await import("../services/webhooks");
-const { insertOutbox, claimAndFanOutOneOutbox } = await import("../repositories/webhooks.repo");
+const {
+  insertOutbox,
+  claimAndFanOutOneOutbox,
+  findLastDeliveriesForWebhooks,
+  lastDeliveriesQuery,
+} = await import("../repositories/webhooks.repo");
 const { newId } = await import("../services/_ids");
 
 const publicLookup = async () => ["93.184.216.34"];
@@ -82,6 +87,35 @@ describe("listWebhooks last delivery", () => {
     const listed = await listWebhooks(1);
     const row = listed.find((w) => w.id === webhook.id);
     expect(row?.lastDelivery).toMatchObject({ webhookId: webhook.id, status: "pending" });
+  });
+
+  it("reads one delivery per webhook via DISTINCT ON, not every row", async () => {
+    const { sql } = lastDeliveriesQuery(1, ["wh-probe"]).toSQL();
+    expect(sql.toLowerCase()).toContain("distinct on");
+
+    const { webhook } = await createWebhook(
+      1,
+      { url: "https://hooks.example.com/many", events: ["task.created"] },
+      Date.now(),
+      { lookup: publicLookup },
+    );
+    for (let i = 0; i < 5; i++) {
+      await insertOutbox({
+        id: newId("wob"),
+        ownerId: 1,
+        eventType: "task.created",
+        payload: JSON.stringify({ n: i, pad: "x".repeat(200) }),
+        coreId: "core-a",
+        createdAt: Date.now() + i,
+        processedAt: null,
+      });
+      await claimAndFanOutOneOutbox(1, Date.now() + i);
+    }
+    const map = await findLastDeliveriesForWebhooks(1, [webhook.id]);
+    expect(map.size).toBe(1);
+    const last = map.get(webhook.id);
+    expect(last?.webhookId).toBe(webhook.id);
+    expect(JSON.parse(last!.payload)).toMatchObject({ n: 4 });
   });
 });
 

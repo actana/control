@@ -150,15 +150,16 @@ const { ApiSettingsPage } = await import("../ApiSettingsPage");
 
 function mount() {
   const client = new QueryClient({
-    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    defaultOptions: { queries: { retry: false }, mutations: { retry: false, gcTime: 5 * 60_000 } },
   });
-  return render(
+  const view = render(
     <QueryClientProvider client={client}>
       <KeybindingsProvider>
         <ApiSettingsPage />
       </KeybindingsProvider>
     </QueryClientProvider>,
   );
+  return { ...view, client };
 }
 
 beforeEach(() => {
@@ -176,6 +177,16 @@ beforeEach(() => {
   });
 });
 afterEach(() => cleanup());
+
+function mutationCacheBlob(client: QueryClient): string {
+  return JSON.stringify(
+    client.getMutationCache().getAll().map((m) => ({
+      data: m.state.data,
+      error: m.state.error,
+      variables: m.state.variables,
+    })),
+  );
+}
 
 describe("Settings › API & integrations", () => {
   it("lists keys and the MCP command with the Panel URL and a key placeholder", async () => {
@@ -222,9 +233,10 @@ describe("Settings › API & integrations", () => {
     expect(listed).not.toContain("PLAINTEXT_SECRET");
   });
 
-  it("clears plaintext from state after the shown-once dialog closes", async () => {
+  it("clears plaintext from state and the mutation cache after the shown-once dialog closes", async () => {
+    let client!: QueryClient;
     await act(async () => {
-      mount();
+      client = mount().client;
     });
     await screen.findByText("ci-deploy");
     await act(async () => {
@@ -242,6 +254,25 @@ describe("Settings › API & integrations", () => {
     expect(document.body.textContent).not.toContain("PLAINTEXT_SECRET");
     expect(window.sessionStorage.length).toBe(0);
     expect(window.localStorage.getItem("api-key")).toBeNull();
+    expect(mutationCacheBlob(client)).not.toContain("PLAINTEXT_SECRET");
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /Add webhook/i }));
+    });
+    const hookDialog = screen.getByRole("dialog");
+    await act(async () => {
+      fireEvent.change(within(hookDialog).getByLabelText(/^URL$/i), {
+        target: { value: "https://ci.example.com/tasks" },
+      });
+      fireEvent.click(within(hookDialog).getByRole("button", { name: /^Create$/i }));
+    });
+    expect(screen.getByText(/whsec_PLAINTEXT_SHOWN_ONCE/)).toBeTruthy();
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /^Done$/i }));
+    });
+    expect(document.body.textContent).not.toContain("whsec_PLAINTEXT");
+    expect(mutationCacheBlob(client)).not.toContain("whsec_PLAINTEXT");
+    expect(mutationCacheBlob(client)).not.toContain("PLAINTEXT_SECRET");
   });
 
   it("asks for confirmation before revoking a key", async () => {
@@ -310,6 +341,58 @@ describe("Settings › API & integrations", () => {
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: /^Done$/i }));
     });
+    expect(screen.queryByText(/whsec_PLAINTEXT/)).toBeNull();
+  });
+
+  it("shows a future webhook retry as in N minutes, not just now", async () => {
+    const now = Date.now();
+    api.listWebhooks.mockResolvedValue({
+      webhooks: [
+        {
+          ...WEBHOOKS[0]!,
+          lastDelivery: {
+            id: "wd-retry",
+            webhookId: "wh-1",
+            eventType: "task.status_changed",
+            status: "pending",
+            attemptCount: 1,
+            lastStatusCode: 500,
+            lastError: "upstream",
+            createdAt: now - 60_000,
+            deliveredAt: null,
+            nextAttemptAt: now + 5 * 60_000,
+          },
+        },
+      ],
+    });
+    await act(async () => {
+      mount();
+    });
+    expect(await screen.findByText(/retry in 5 minutes/i)).toBeTruthy();
+    expect(screen.queryByText(/retry just now/i)).toBeNull();
+  });
+
+  it("shows a refused create error inside the open dialog", async () => {
+    api.createWebhook.mockRejectedValueOnce(
+      new Error("URL must be https and must not target a private address"),
+    );
+    await act(async () => {
+      mount();
+    });
+    await screen.findByText("https://hooks.example.com/actana");
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /Add webhook/i }));
+    });
+    const dialog = screen.getByRole("dialog");
+    await act(async () => {
+      fireEvent.change(within(dialog).getByLabelText(/^URL$/i), {
+        target: { value: "http://127.0.0.1/hook" },
+      });
+      fireEvent.click(within(dialog).getByRole("button", { name: /^Create$/i }));
+    });
+    const alert = await within(dialog).findByRole("alert");
+    expect(alert.textContent).toMatch(/https|private/i);
+    expect(screen.getByRole("dialog")).toBeTruthy();
     expect(screen.queryByText(/whsec_PLAINTEXT/)).toBeNull();
   });
 });
