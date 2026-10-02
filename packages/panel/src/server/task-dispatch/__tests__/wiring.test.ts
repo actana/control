@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { DATABASE_URL_ENV, closePanelDatabase, type PanelPoolLike } from "~/db/pg";
+import { installPanelDb } from "~/db/panel-db-handle";
 import { createTestDb, type TestDb } from "~/db/test-db";
 import { CoreLinkManager } from "../../services/core-link-manager";
 
@@ -23,8 +24,9 @@ const open: TestDb[] = [];
 async function poolOver(): Promise<PanelPoolLike> {
   const db = await createTestDb({ env: {} });
   open.push(db);
+  installPanelDb(db.db);
   const pool: PanelPoolLike = {
-    query: (text: string) => db.pool.query(text),
+    query: ((text: string, params?: unknown[]) => db.pool.query(text, params)) as PanelPoolLike["query"],
     connect: () => db.pool.connect(),
     end: async () => {
       order.push("database closed");
@@ -36,6 +38,7 @@ async function poolOver(): Promise<PanelPoolLike> {
 
 afterEach(async () => {
   await closePanelDatabase();
+  installPanelDb(null);
   vi.restoreAllMocks();
   order.length = 0;
   await Promise.all(open.splice(0).map((db) => db.close()));

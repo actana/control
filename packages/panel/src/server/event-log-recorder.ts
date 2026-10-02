@@ -1,21 +1,17 @@
 // Event-log recorder — wires the stateful server's in-process AppEvent stream
-// into the monotonic per-Core event log (the `event_log` SQLite table).
+// into the monotonic per-owner event log (Postgres `event_log`, #567 PR 5).
 //
 // The server emits session/hook events via the `events` emitter
 // (src/server/events.ts). This module subscribes for the life of the server
-// process and appends each as a row in `event_log`, so a reconnecting Panel
-// can replay the missed event/session timeline via the core-link's `subscribe`
-// path (served by the Core / PTY-manager process, which shares the same
-// SQLite file).
+// process and appends each as a row, so a reconnecting client can replay the
+// missed event/session timeline.
 //
 // PTY lifecycle events (pty:spawn / pty:exit) are recorded by the Core
-// process itself (packages/core/src/pty-core-link-server.ts); this recorder owns the
-// session/hook half. Both append to the same append-only table — SQLite's
-// WAL write lock serializes the commits and the kinds never overlap, so the
-// two writers stay out of each other's way.
+// process itself against the Core's own database; this recorder owns the
+// Panel's session/hook half.
 
-import { getSqlite } from "~/db/client";
-import { appendEvent, type EventLogSqlite } from "@actana/shared/event-log";
+import { appendEventLogRow } from "./repositories/event-log.repo";
+import { OPERATOR_ID } from "./services/operator";
 import { events, type AppEvent } from "./events";
 
 let registered = false;
@@ -33,16 +29,17 @@ export function registerEventLogRecorder(): void {
   if (registered) return;
   registered = true;
   events.onAny((e) => {
-    try {
-      const sqlite = getSqlite() as unknown as EventLogSqlite;
-      const { type: kind, ...rest } = e;
-      const payload = JSON.stringify(rest);
-      appendEvent(sqlite, kind, payload, { sessionId: sessionIdOf(e) });
-    } catch {
-      // A failed append (e.g. the DB isn't open yet during early boot) must
-      // never break the server's event emission — the event is best-effort
-      // durability, not a write of record. The next event retries.
-    }
+    void (async () => {
+      try {
+        const { type: kind, ...rest } = e;
+        const payload = JSON.stringify(rest);
+        await appendEventLogRow(OPERATOR_ID, kind, payload, { sessionId: sessionIdOf(e) });
+      } catch {
+        // A failed append (e.g. the DB isn't open yet during early boot) must
+        // never break the server's event emission — the event is best-effort
+        // durability, not a write of record. The next event retries.
+      }
+    })();
   });
 }
 

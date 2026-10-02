@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DATABASE_URL_ENV, closePanelDatabase, type PanelPoolLike } from "~/db/pg";
+import { installPanelDb } from "~/db/panel-db-handle";
 import { bundledPanelMigrations } from "~/db/pg-migrations-bundle";
 import { createTestDb, type TestDb } from "~/db/test-db";
 import { bootPanel, closePanel } from "../panel-boot";
@@ -29,8 +30,11 @@ const open: TestDb[] = [];
 async function poolOver(): Promise<PanelPoolLike> {
   const db = await createTestDb({ env: {}, migrations: [] });
   open.push(db);
+  // Route repositories (the boot sweep) through the PGlite drizzle handle —
+  // node-postgres drizzle over the stub pool cannot bind parameters on PGlite.
+  installPanelDb(db.db);
   const pool: PanelPoolLike = {
-    query: (text: string) => db.pool.query(text),
+    query: ((text: string, params?: unknown[]) => db.pool.query(text, params)) as PanelPoolLike["query"],
     connect: () => db.pool.connect(),
     end: async () => {},
     on: () => pool,
@@ -46,6 +50,7 @@ beforeEach(() => {
 afterEach(async () => {
   stopWebhookDeliveryWorkerForTests();
   await closePanelDatabase();
+  installPanelDb(null);
   vi.restoreAllMocks();
   await Promise.all(open.splice(0).map((db) => db.close()));
 });
@@ -113,5 +118,59 @@ describe("bootPanel", { timeout: 30_000 }, () => {
     };
     await expect(bootPanel(env, () => failing)).rejects.toThrow(/cannot reach Postgres/);
     expect(SharedFolders.prototype.start).not.toHaveBeenCalled();
+  });
+
+  it("sweeps running and needs-input Sessions to disconnected after migrations", async () => {
+    // What client.ts / reconcileStaleSessionsOnBoot did when opening missioncontrol.db.
+    const db = await createTestDb({ env: {} });
+    open.push(db);
+    const NOW = 1_790_800_767_886;
+    await db.pool.query(
+      "insert into operator (id, name, password_hash, created_at, password_changed_at) values (1, 'op', 'h', $1, $1)",
+      [NOW],
+    );
+    const seed = async (id: string, status: string) => {
+      await db.pool.query(
+        `insert into sessions (
+           id, owner_id, title, title_manually_set, agent, status, branch, preview,
+           lines, archived, pinned, claude_skip_permissions, claude_bare_session,
+           created_at, updated_at
+         ) values ($1, 1, 't', false, 'claude-code', $2, 'main', '', 0, false, false, false, false, $3, 0)`,
+        [id, status, NOW],
+      );
+    };
+    await seed("run", "running");
+    await seed("blocked", "needs-input");
+    await seed("ready", "ready");
+    await seed("finished", "finished");
+    await seed("terminated", "terminated");
+    await seed("interrupted", "interrupted");
+    await seed("disconnected", "disconnected");
+
+    const pool: PanelPoolLike = {
+      query: ((text: string, params?: unknown[]) => db.pool.query(text, params)) as PanelPoolLike["query"],
+      connect: () => db.pool.connect(),
+      end: async () => {},
+      on: () => pool,
+    };
+    installPanelDb(db.db);
+    vi.spyOn(CoreLinkManager.prototype, "start").mockResolvedValue();
+    // Schema already applied by createTestDb; boot re-checks the journal (no-op)
+    // and runs the stale-Session sweep that client.ts used to do at open.
+    await bootPanel(env, () => pool);
+
+    const { rows } = await db.pool.query(
+      "select id, status, updated_at::text as updated_at from sessions order by id",
+    );
+    const byId = Object.fromEntries(rows.map((r) => [String(r.id), r]));
+    expect(byId.run).toMatchObject({ status: "disconnected" });
+    expect(Number(byId.run!.updated_at)).toBeGreaterThan(0);
+    expect(byId.blocked).toMatchObject({ status: "disconnected" });
+    expect(Number(byId.blocked!.updated_at)).toBeGreaterThan(0);
+    expect(byId.ready).toMatchObject({ status: "ready" });
+    expect(byId.finished).toMatchObject({ status: "finished" });
+    expect(byId.terminated).toMatchObject({ status: "terminated" });
+    expect(byId.interrupted).toMatchObject({ status: "interrupted" });
+    expect(byId.disconnected).toMatchObject({ status: "disconnected" });
   });
 });

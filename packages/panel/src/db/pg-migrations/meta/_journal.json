@@ -57,6 +57,13 @@
       "when": 1790901829428,
       "tag": "0007_panel_storage_settings",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1790903895429,
+      "tag": "0008_panel_missioncontrol_tables",
+      "breakpoints": true
     }
   ]
 }

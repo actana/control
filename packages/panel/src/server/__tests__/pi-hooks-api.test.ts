@@ -1,27 +1,23 @@
-import { beforeEach, describe, expect, it } from "vitest";
-import * as fs from "node:fs";
-import * as os from "node:os";
-import * as path from "node:path";
+import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { closePanelTestDb, openPanelTestDb, resetPanelState } from "./_panel-test-db";
 
-const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mc-pi-hooks-test-"));
-process.env.AC_USER_DATA_DIR = tmpRoot;
+const testDb = await openPanelTestDb();
 
 const { handleApiRequest } = await import("../api-router");
 const { getOrCreateApiToken } = await import("../services/settings");
 const { createSession, getSession } = await import("../services/sessions");
-const { getDb } = await import("~/db/client");
-const { sessions, appSettings } = await import("~/db/schema");
+const { createOperator } = await import("../services/operator");
 
 const LOOPBACK_HEADERS = { origin: "http://127.0.0.1:5173" };
 /** Shape Pi's extension posts from ctx.sessionManager.getSessionId(). */
 const PI_SESSION = "a1b2c3d4-e5f6-7890-abcd-ef1234567890";
 
-function authed(input: string, init: RequestInit = {}): Request {
+async function authed(input: string, init: RequestInit = {}): Promise<Request> {
   return new Request(`http://127.0.0.1:5173${input}`, {
     ...init,
     headers: {
       ...LOOPBACK_HEADERS,
-      authorization: `Bearer ${getOrCreateApiToken()}`,
+      authorization: `Bearer ${await getOrCreateApiToken()}`,
       ...(init.headers as Record<string, string> | undefined),
     },
   });
@@ -30,12 +26,10 @@ function authed(input: string, init: RequestInit = {}): Request {
 describe("Pi hook API (ADO #4986)", () => {
   let sessionId = "";
 
-  beforeEach(() => {
-    const db = getDb();
-    db.delete(sessions).run();
-        db.delete(appSettings).run();
-
-    const session = createSession({
+  beforeEach(async () => {
+    await resetPanelState(testDb);
+    await createOperator({ name: "Test Operator", password: "test-password" });
+    const session = await createSession({
       title: "Waiting for initial prompt...",
       agent: "pi",
       claudeSessionId: null,
@@ -43,9 +37,9 @@ describe("Pi hook API (ADO #4986)", () => {
     sessionId = session.id;
   });
 
-  function postHook(body: Record<string, unknown>): Promise<Response | null> {
+  async function postHook(body: Record<string, unknown>): Promise<Response | null> {
     return handleApiRequest(
-      authed(`/api/hooks/pi?sessionId=${encodeURIComponent(sessionId)}`, {
+      await authed(`/api/hooks/pi?sessionId=${encodeURIComponent(sessionId)}`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(body),
@@ -62,8 +56,8 @@ describe("Pi hook API (ADO #4986)", () => {
 
     expect(res?.status).toBe(200);
     await expect(res?.json()).resolves.toEqual({ ok: true, ignored: "SessionStart" });
-    expect(getSession(sessionId)?.claudeSessionId).toBe(PI_SESSION);
-    expect(getSession(sessionId)?.status).toBe("ready");
+    expect((await getSession(sessionId))?.claudeSessionId).toBe(PI_SESSION);
+    expect((await getSession(sessionId))?.status).toBe("ready");
   });
 
   it("keeps the UUID after a full turn so relaunch can use pi --session", async () => {
@@ -78,7 +72,7 @@ describe("Pi hook API (ADO #4986)", () => {
       prompt: "say hello",
     });
     expect(running?.status).toBe(200);
-    expect(getSession(sessionId)).toMatchObject({
+    expect(await getSession(sessionId)).toMatchObject({
       claudeSessionId: PI_SESSION,
       status: "running",
     });
@@ -88,9 +82,13 @@ describe("Pi hook API (ADO #4986)", () => {
       session_id: PI_SESSION,
     });
     expect(stop?.status).toBe(200);
-    expect(getSession(sessionId)).toMatchObject({
+    expect(await getSession(sessionId)).toMatchObject({
       claudeSessionId: PI_SESSION,
       status: "finished",
     });
   });
+});
+
+afterAll(async () => {
+  await closePanelTestDb(testDb);
 });
