@@ -16,13 +16,8 @@
   "engines": {
     "node": ">=22"
   },
-  "files": ["dist", "bin"],
-  "bin": {
-    "actana": "bin/actana.mjs"
-  },
   "scripts": {
     "build": "node build.mjs",
-    "prepack": "node build.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },

@@ -211,34 +211,3 @@ export function canRedeem(session: PairingSession, now: number): PairingRedeemab
   if (isExpired(session, now)) return { ok: false, reason: "expired" };
   return { ok: true };
 }
-
-/**
- * Record a wrong code. Returns the next session — the input is never mutated,
- * so a caller that fails to persist has not already changed its in-memory copy.
- *
- * The counter stops at the cap rather than climbing past it: past the cap the
- * session is dead and the exact number of attempts beyond it says nothing,
- * while an unbounded counter invites `attempts > attemptCap` states that every
- * later reader has to reason about.
- */
-export function recordWrongAttempt(session: PairingSession): PairingSession {
-  return { ...session, attempts: Math.min(session.attempts + 1, session.attemptCap) };
-}
-
-export type PairingConsumeResult =
-  | { ok: true; session: PairingSession }
-  | { ok: false; reason: PairingRefusal };
-
-/**
- * Redeem the session once, stamping `consumedAt`. A second consume is refused
- * with `already-consumed`, which is the whole of single use: the Core writes
- * the returned session back and any replay of the same code meets this branch.
- */
-export function consumePairingSession(
-  session: PairingSession,
-  now: number,
-): PairingConsumeResult {
-  const gate = canRedeem(session, now);
-  if (!gate.ok) return gate;
-  return { ok: true, session: { ...session, consumedAt: now } };
-}
