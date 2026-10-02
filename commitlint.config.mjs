@@ -78,6 +78,32 @@ const trailerLeadingBlank = (parsed) => {
   return [true];
 };
 
+/**
+ * The only two commits allowed to break `header-max-length`, by exact header (#552).
+ *
+ * Both are squash commits already merged to `feat/0.5.0`, whose GitHub-written subject is the PR title
+ * plus ` (#NNN)`; the title was within the 112-character cap and the suffix pushed the header to 125 and
+ * 122, past the 120 limit below. History is not rewritten, so the `Conventions` push check on
+ * `feat/0.5.0` would stay red on them for ever. Commitlint hands an `ignores` function the message and
+ * not the sha, so the exemption is the commit's exact header, which no other commit has; the shas are
+ * here so the list can be checked against history and read by whoever extends it. **Do not add to this
+ * list and do not raise the limit:** a new long header must fail, and
+ * `scripts/__tests__/commitlint-config.test.mjs` fails if it does not, or if this list is anything but
+ * these two.
+ */
+export const LEGACY_LONG_HEADERS = [
+  {
+    sha: '87daa0a',
+    header:
+      'feat(ci): pin what the Core tarball inlines of @actana/cli and @actana/sdk, and prove it offline (T-405, part of #580) (#648)',
+  },
+  {
+    sha: '79b752a',
+    header:
+      'refactor: delete the in-repo packages/sdk, the dead client code and the Projects Files routes (T-404, part of #580) (#646)',
+  },
+];
+
 export default {
   extends: ['@commitlint/config-conventional'],
   rules: {
@@ -127,5 +153,7 @@ export default {
   ignores: [
     // Allow auto-generated merge/revert messages from GitHub UI
     (message) => message.startsWith('Merge '),
+    // The two already-merged squash commits with a header over the limit; see LEGACY_LONG_HEADERS.
+    (message) => LEGACY_LONG_HEADERS.some(({ header }) => message.split('\n')[0] === header),
   ],
 };

@@ -4,7 +4,7 @@ The domain that results from detaching the harness-running layer ("Core") from t
 
 ## Language
 
-The 0.5.0 model is locked by [ADR 0041](docs/adr/0041-the-0-5-0-core-model.md). The Core has said **Session** since #556 (part 1) and has had no Projects since #555: it stores none, handles no Project frame, and starts every Session in the workspace. The Files API has been addressed at the workspace since #557 (`/v1/files?path=`, relative to `~`, run as `core`). The Panel has had no Projects since #560 (PR 3): its UI, its SQLite and its wire frames group Sessions by Core only, on `@actana/sdk` 0.6.0-next.2, which dropped the Project frames and `projectId`. Until the rest of #552 lands, the CLI still says **Project** where this file says **workspace** (there is no Project row that becomes a Session). The old `/v1/projects/:id/files` address of the Files API is no longer served (#580).
+The 0.5.0 model is locked by [ADR 0041](docs/adr/0041-the-0-5-0-core-model.md). The Core has said **Session** since #556 (part 1) and has had no Projects since #555: it stores none, handles no Project frame, and starts every Session in the workspace. The Files API has been addressed at the workspace since #557 (`/v1/files?path=`, relative to `~`, run as `core`). The Panel has had no Projects since #560 (PR 3): its UI, its Postgres and its wire frames group Sessions by Core only, on `@actana/sdk` 0.6.0-next.2, which dropped the Project frames and `projectId`. The old `/v1/projects/:id/files` address of the Files API is no longer served (#580).
 
 ### Topology
 

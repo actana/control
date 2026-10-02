@@ -9,19 +9,18 @@ architectural rules that a reviewer will send a PR back over.
 Actana Control is two programs that talk over one WebSocket:
 
 - The **Panel** (`packages/panel`) — the self-hosted web service you deploy.
-  It owns the Core registry and terminates every core-link. It holds no task,
-  session, or project state.
+  It owns the Core registry and terminates every core-link. It holds no Session state; Tasks live in its Postgres.
 - The **Core** (`packages/core`) — the daemon installed on each machine
-  you want to run harnesses on. It owns everything task-shaped: PTYs, SQLite, the
-  event log, the project registry.
+  you want to run harnesses on. It owns everything Session-shaped: PTYs, SQLite, the
+  event log. There are no Projects: a Session starts in the Core's home.
 - the SDK is not in this repository: the core-link wire protocol and the Core client are the
   published `@actana/sdk`, released from actana/client, and the Core and the Panel import its frames
   ([ADR 0025](docs/adr/0025-the-protocol-ships-with-the-client.md)).
-- `packages/cli` — the whole `actana` command: the blob registry that names the
-  Cores a machine can reach and the nouns built on the SDK, plus the verbs that
-  install and operate a Core on this machine. One program under one name; the
-  Core package is the daemon and nothing else
-  ([ADR 0032](docs/adr/0032-one-actana-cli.md)).
+- `packages/cli` — `@actana/core-cli`, the private built-in `actana` of a Core: the blob registry
+  that names the Cores a machine can reach and the verbs that install and operate a Core on this
+  machine, with the client nouns (`core`, `session`, `events`, `files`, `shared`, `harness`) handed to
+  the published `@actana/cli`. One program under one name; the Core package is the daemon and nothing
+  else ([ADR 0032](docs/adr/0032-one-actana-cli.md)).
 - `packages/shared` — the other types both sides agree on: the mutation and
   query contracts, the registration-blob codec, the event log, the harness
   registry. Private, and it stays private.
@@ -43,11 +42,11 @@ project's glossary, and reviewers use its terms.
 ```
 control/
 ├── packages/
-│   ├── cli/                The whole `actana` command — client and Core manager
+│   ├── cli/                @actana/core-cli (private) — the Core's own `actana`, over @actana/cli
 │   │   └── src/
-│   │       ├── actana-cli.ts       noun dispatch
-│   │       ├── blob-registry.ts    ~/.config/actana/cores/<name>.txt, mode 0600
-│   │       └── core-command.ts     the `core` noun
+│   │       ├── actana-cli.ts       noun dispatch; client nouns go to runClient
+│   │       ├── actana-cli-entry.ts binds the ports (probe, connect, openSessions, openFiles, …)
+│   │       └── actana-setup.ts, actana-pair.ts, …  the machine verbs
 │   ├── core/               Standalone Node daemon — the Core, and nothing else
 │   │   └── src/
 │   │       ├── core-entry.ts           daemon entry

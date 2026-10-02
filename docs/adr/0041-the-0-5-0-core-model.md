@@ -199,9 +199,9 @@ transaction, so a Panel that dies mid-migration releases it. (b) **A database th
 refuses to start, exits 1 and says why, when the database records a migration it does not ship (a newer Panel's, or a
 downgrade), when a shipped migration's recorded hash differs (edited after it ran), or when an unapplied migration
 sorts before one already applied. Migrations are matched by hash, never by the newest timestamp alone, so a migration
-generated early and merged late is an error, not silently skipped. (c) **Still to do before the first pull request that
-adds real DDL:** a `lock_timeout` on the migration transaction and a "waiting for the migration lock" log line, so a
-new Panel does not hang silently behind a holder. (d) The migrations table is drizzle's own
+generated early and merged late is an error, not silently skipped. (c) **Done** (`packages/panel/src/db/pg-migrate.ts`: `SET LOCAL lock_timeout = '30s'` on the migration
+transaction and a "waiting for the migration lock" log line before the wait), so a new Panel does not hang silently
+behind a holder. (d) The migrations table is drizzle's own
 (`drizzle.__drizzle_migrations`), so a role behind an external `AC_PANEL_DATABASE_URL` needs `CREATE` on the database.
 
 **D23 — `owner_id` is a database foreign key to `operator.id` (settled 2026-10-01 in [#605](https://github.com/actana/control/pull/605), PR 3b of #567).**
@@ -532,9 +532,10 @@ relates to it: nothing merged connects them.
 
 ## Consequences
 
-- **#555 and #556 change the code to match** and #560 the Panel. #555 and the first part of #556 have landed on the
-  Core; the Panel, the CLI and the SDK still say Project, and `CONTEXT.md` says what they will say.
+- **#555 and #556 change the code to match** and #560 the Panel. They have landed: the Core, the Panel, the CLI and
+  the SDK say Session and have no Projects, and `CONTEXT.md` says so.
 - **Every later ticket in #552 cites this record** for the model.
 - **A ticket that needs a decision changed amends this record rather than settling it in a comment.** This rule is
   from `docs/adr/README.md` and ADR 0024. It is new to this record and was not decided in #552 or #554.
-- **#567 is built in seven pull requests, and this record is the first.** Each later one builds on D14–D21.
+- **#567 was planned as seven pull requests, and this record was the first.** Seven merged: #593 (this record),
+  #594, #595, #605 ("3b of 7"), #616, #639 and #643 (the last, titled "6 of 6"). Each one built on D14–D21.
