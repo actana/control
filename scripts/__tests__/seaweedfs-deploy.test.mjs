@@ -135,8 +135,17 @@ describe("compose: the seaweedfs service is opt-in", () => {
   });
 
   it("takes the OIDC issuer and JWKS URL from variables, not from the file", () => {
-    expect(block).toMatch(/SEAWEEDFS_OIDC_ISSUER=\$\{SEAWEEDFS_OIDC_ISSUER:-\}/);
-    expect(block).toMatch(/SEAWEEDFS_OIDC_JWKS_URL=\$\{SEAWEEDFS_OIDC_JWKS_URL:-\}/);
+    expect(block).toMatch(/SEAWEEDFS_OIDC_ISSUER=\$\{SEAWEEDFS_OIDC_ISSUER:-[^}]*\}/);
+    expect(block).toMatch(/SEAWEEDFS_OIDC_JWKS_URL=\$\{SEAWEEDFS_OIDC_JWKS_URL:-[^}]*\}/);
+  });
+
+  it("defaults the issuer and JWKS URL to the panel service, which serves the key set itself (#566)", () => {
+    const panelPort = /^ {6}- "127\.0\.0\.1:(\d+):\1"$/m.exec(COMPOSE.slice(COMPOSE.indexOf("  panel:")))?.[1];
+    expect(panelPort).toBeTruthy();
+    expect(block).toContain(`SEAWEEDFS_OIDC_ISSUER=\${SEAWEEDFS_OIDC_ISSUER:-http://panel:${panelPort}}`);
+    expect(block).toContain(
+      `SEAWEEDFS_OIDC_JWKS_URL=\${SEAWEEDFS_OIDC_JWKS_URL:-http://panel:${panelPort}/.well-known/jwks.json}`,
+    );
   });
 
   it("never uses a required-variable form, which would break the plain up", () => {

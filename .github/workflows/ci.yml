@@ -892,7 +892,7 @@ jobs:
           sed \
             -e "s|@@STS_SIGNING_KEY@@|$sts_key|g" \
             -e "s|@@OIDC_ISSUER@@|$SEAWEEDFS_OIDC_ISSUER|g" \
-            -e "s|@@OIDC_JWKS_URL@@|$SEAWEEDFS_OIDC_ISSUER/jwks.json|g" \
+            -e "s|@@OIDC_JWKS_URL@@|$SEAWEEDFS_OIDC_ISSUER/.well-known/jwks.json|g" \
             -e "s|@@OIDC_AUDIENCE@@|$SEAWEEDFS_OIDC_AUDIENCE|g" \
             -e "s|@@BUCKET@@|$SEAWEEDFS_BUCKET|g" \
             -e "s|@@PREFIX@@|$SEAWEEDFS_PREFIX|g" \
@@ -921,20 +921,6 @@ jobs:
           set -euo pipefail
           openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "$RUNNER_TEMP/controller-signing.pem"
           echo "SEAWEEDFS_SIGNING_KEY_FILE=$RUNNER_TEMP/controller-signing.pem" >>"$GITHUB_ENV"
-      - name: Run the Shared-folder sync against SeaweedFS
-        working-directory: packages/core
-        run: >-
-          pnpm exec vitest run --maxWorkers=1 --reporter=verbose
-          --reporter=json --outputFile=${{ runner.temp }}/shared-sync-sw.json
-          src/__tests__/shared-sync-seaweedfs.test.ts
-      - name: Every test ran against the real server, none was skipped
-        run: |
-          node -e '
-            const r = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
-            const all = r.testResults.flatMap((f) => f.assertionResults);
-            console.log(`${r.numPassedTests} passed, ${r.numFailedTests} failed, ${r.numPendingTests} skipped of ${r.numTotalTests}`);
-            if (r.numFailedTests > 0 || r.numPendingTests > 0 || all.length < 3) process.exit(1);
-          ' "$RUNNER_TEMP/shared-sync-sw.json"
       # The Panel's side of the same Shared folder (#564), against the same server and the same signing key: a key
       # issued for one Core is refused on another's prefix, and deleting a Core empties its prefix and not one object of
       # any other (read back with the bucket's admin identity). The master key goes in sealed, as the Panel stores it.
@@ -985,6 +971,22 @@ jobs:
             console.log(`${r.numPassedTests} passed, ${r.numFailedTests} failed, ${r.numPendingTests} skipped of ${r.numTotalTests}`);
             if (r.numFailedTests > 0 || r.numPendingTests > 0 || all.length < 2) process.exit(1);
           ' "$RUNNER_TEMP/panel-task-watch-sw.json"
+      # The Core's own sync runs last on purpose: SeaweedFS may keep the JWKS it first read, so the first read must be
+      # the Panel's /.well-known/jwks.json (#566) in the Panel tests above, not the copy this package serves by hand.
+      - name: Run the Shared-folder sync against SeaweedFS
+        working-directory: packages/core
+        run: >-
+          pnpm exec vitest run --maxWorkers=1 --reporter=verbose
+          --reporter=json --outputFile=${{ runner.temp }}/shared-sync-sw.json
+          src/__tests__/shared-sync-seaweedfs.test.ts
+      - name: Every test ran against the real server, none was skipped
+        run: |
+          node -e '
+            const r = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+            const all = r.testResults.flatMap((f) => f.assertionResults);
+            console.log(`${r.numPassedTests} passed, ${r.numFailedTests} failed, ${r.numPendingTests} skipped of ${r.numTotalTests}`);
+            if (r.numFailedTests > 0 || r.numPendingTests > 0 || all.length < 3) process.exit(1);
+          ' "$RUNNER_TEMP/shared-sync-sw.json"
       - name: SeaweedFS log
         if: failure()
         run: docker logs seaweedfs || true

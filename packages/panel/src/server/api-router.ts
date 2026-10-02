@@ -18,6 +18,7 @@ import * as providerUsageController from "./controllers/provider-usage.controlle
 import * as harnessLaunchersController from "./controllers/harness-launchers.controller";
 import * as eventsController from "./controllers/events.controller";
 import * as healthController from "./controllers/health.controller";
+import * as jwksController from "./controllers/jwks.controller";
 import * as aiRuntimeModelsController from "./controllers/ai-runtime-models.controller";
 import * as authController from "./controllers/auth.controller";
 import * as apiKeysController from "./controllers/api-keys.controller";
@@ -218,12 +219,18 @@ export async function handleApiRequest(request: Request): Promise<Response | nul
   const { pathname } = url;
   const method = request.method.toUpperCase();
 
-  if (pathname !== MCP_PATH && !pathname.startsWith("/api/")) return null;
+  if (pathname !== MCP_PATH && pathname !== jwksController.JWKS_PATH && !pathname.startsWith("/api/")) return null;
   const requestId = requestHeaderId(request, REQUEST_ID_HEADER) ?? randomUUID();
   const correlationId = requestHeaderId(request, CORRELATION_ID_HEADER) ?? requestId;
 
   if (pathname === "/api/healthz" && method === "GET") {
     return applyRequestHeaders(await healthController.read(), requestId, correlationId);
+  }
+
+  // The token signer's public key set (#566): SeaweedFS fetches it with no credentials, so it is answered before
+  // the session gate. Public material only; see jwks.controller.ts.
+  if (pathname === jwksController.JWKS_PATH && (method === "GET" || method === "HEAD")) {
+    return applyRequestHeaders(await jwksController.read(), requestId, correlationId);
   }
 
   // The MCP server (#573) is outside `/api/` and is judged by its own key-only gate, never the session's.

@@ -33,10 +33,16 @@ deploy/
    | --- | --- |
    | `SEAWEEDFS_S3_ADMIN_ACCESS_KEY`, `SEAWEEDFS_S3_ADMIN_SECRET_KEY` | The one static S3 identity, for the Panel's key issuer. Cores never get it. |
    | `SEAWEEDFS_STS_SIGNING_KEY` | Signs SeaweedFS's own STS session tokens. `openssl rand -base64 32`. |
-   | `SEAWEEDFS_OIDC_ISSUER` | The `iss` of the tokens the Panel signs. |
-   | `SEAWEEDFS_OIDC_JWKS_URL` | Where SeaweedFS fetches the Panel's public keys. Must be reachable from the container. |
+   | `SEAWEEDFS_OIDC_ISSUER` | The `iss` of the tokens the Panel signs. Empty means `http://panel:7420`, the Panel service on the compose network. |
+   | `SEAWEEDFS_OIDC_JWKS_URL` | Where SeaweedFS fetches the Panel's public keys. Empty means `http://panel:7420/.well-known/jwks.json`, a route the Panel serves itself. Set it only if the Panel is reached by another address; it must be reachable from the container. |
    | `SEAWEEDFS_OIDC_AUDIENCE` | The `aud` those tokens carry (default `actana-shared`). |
    | `SEAWEEDFS_BUCKET`, `SEAWEEDFS_PREFIX` | Where the Cores' folders live (default `actana-shared` and `cores`). |
+
+   The Panel's key set needs no hosting by hand: `GET /.well-known/jwks.json`
+   on the Panel answers without a session with the public half of the key
+   Settings › Storage holds (the same `kid` as the tokens it signs, nothing
+   private), and with an empty key set until a key is saved. In Settings ›
+   Storage use the same issuer as `SEAWEEDFS_OIDC_ISSUER`.
 
 2. `docker compose --profile seaweedfs up -d`. The S3 endpoint is
    `http://localhost:8333` on the host (loopback only) and `http://seaweedfs:8333`
@@ -143,12 +149,8 @@ This is the compose deploy for #566. Remaining caveats:
 - **The isolation checklist of [#562](https://github.com/actana/control/issues/562)**
   runs in CI against this image (`core-shared-seaweedfs` job): machine A cannot
   list, read or write machine B's prefix; Settings › Storage test-connection
-  uses the same probe. A live `docker compose --profile seaweedfs up` still needs
-  the Panel's OIDC issuer/JWKS pointed at a reachable URL.
-- **The Panel's token signer with a JWKS endpoint** is still not published by
-  anything on the compose network: `SEAWEEDFS_OIDC_JWKS_URL` has to point at
-  wherever the public half of the master key is served (CI serves it for the
-  real-SeaweedFS job).
+  uses the same probe. In that job SeaweedFS reads the Panel's key set from the
+  Panel's own `/.well-known/jwks.json` route.
 - **Container hardening.** The entrypoint runs as root to hand a file to the
   `seaweed` user, and the service has no `cap_drop`. Dropping all capabilities
   but CHOWN, SETUID, SETGID, DAC_OVERRIDE and FOWNER should work; it needs a live run.

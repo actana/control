@@ -2,6 +2,7 @@ import { createPrivateKey, type KeyObject } from "node:crypto";
 import {
   createR2KeyIssuer,
   createSeaweedfsKeyIssuer,
+  publicJwks,
   createStsKeyIssuer,
   createSupabaseKeyIssuer,
   type SharedKeyIssuer,
@@ -21,8 +22,9 @@ import {
 /**
  * Where the Shared folders live, and the master key that issues each Core's 1-hour key (#564, ADR 0041
  * D5, D33; Settings › Storage #566 / #565). The config is plain columns; the master key is sealed with
- * `secrets-at-rest.ts`, the mechanism `core_secrets` uses, and has **one reader**: {@link storageKeyIssuer},
- * which hands it to the SDK issuer and returns the issuer. Nothing in this file returns the key, logs it,
+ * `secrets-at-rest.ts`, the mechanism `core_secrets` uses, and has **two readers**: {@link storageKeyIssuer},
+ * which hands it to the SDK issuer and returns the issuer, and {@link storageJwks}, which keeps only the
+ * public half. Nothing in this file returns the key, logs it,
  * puts it in an error message or sends it to a Core or a browser; the view of the config says only whether
  * one is set and when it was last rotated.
  */
@@ -356,4 +358,21 @@ export async function storageKeyIssuer(
     throw new StorageNotConfiguredError(`The backend "${row.backend}" is not supported.`);
   }
   return { issuer, target: { endpoint: row.endpoint, bucket: row.bucket, prefix: row.prefix, region: row.region } };
+}
+
+/**
+ * The public half of the token signer, as the JWKS SeaweedFS fetches to verify the tokens {@link storageKeyIssuer}'s
+ * issuer signs (#566): the SDK's `publicJwks` for the stored key under the configured `kid`, so the two cannot drift
+ * and a rotation shows on the next read. **The second place the master key is unsealed**; the private key goes into
+ * `publicJwks` and what comes back is public material. Another backend, no config or no key yet is an empty key set,
+ * which verifies nothing, and never an error.
+ */
+export async function storageJwks(ownerId = OPERATOR_ID): Promise<{ keys: Record<string, unknown>[] }> {
+  const row = await findStorageConfig(ownerId);
+  if (!row || row.backend !== "seaweedfs") return { keys: [] };
+  const sealed = await findSealedMasterKey(ownerId);
+  if (!sealed) return { keys: [] };
+  const material = openSecret(Buffer.from(sealed));
+  if (material === null) return { keys: [] };
+  return publicJwks(material, row.keyId);
 }
