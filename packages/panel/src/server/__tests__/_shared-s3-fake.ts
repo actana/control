@@ -58,7 +58,9 @@ export class FakeS3 {
     const [bucket = "", ...rest] = parts;
     const key = rest.join("/");
     const credential = /Credential=([^/]+)\//.exec(headers.get("authorization") ?? "")?.[1] ?? "";
-    const log = (status: number): void => void this.requests.push({ method, key, accessKeyId: credential, status });
+    // A listing has no key; its prefix is what it asks about, so that is what is recorded.
+    const logKey = url.searchParams.get("list-type") === "2" ? (url.searchParams.get("prefix") ?? "") : key;
+    const log = (status: number): void => void this.requests.push({ method, key: logKey, accessKeyId: credential, status });
 
     const gate = this.gate;
     if (gate && gate.match({ method, key })) {
@@ -82,14 +84,24 @@ export class FakeS3 {
       const prefix = url.searchParams.get("prefix") ?? "";
       // The role's list condition: the prefix asked for must be inside the key's own.
       if (!prefix.startsWith(allowedRoot)) return deny(403, "AccessDenied");
-      const contents = [...this.objects.entries()]
-        .filter(([k]) => k.startsWith(prefix))
-        .sort(([a], [b]) => (a < b ? -1 : 1))
-        .map(
-          ([k, o]) =>
-            `<Contents><Key>${xml(k)}</Key><Size>${o.bytes.length}</Size><LastModified>${new Date(o.modified).toISOString()}</LastModified><ETag>"${o.modified}-${o.bytes.length}"</ETag></Contents>`,
-        )
-        .join("");
+      const delimiter = url.searchParams.get("delimiter");
+      const under = [...this.objects.entries()].filter(([k]) => k.startsWith(prefix)).sort(([a], [b]) => (a < b ? -1 : 1));
+      // With a delimiter, what is below the first one after the prefix is a folder (a CommonPrefix), as S3 lists it.
+      const folders = new Set<string>();
+      const leaves: [string, Stored][] = [];
+      for (const [k, o] of under) {
+        const at = delimiter ? k.slice(prefix.length).indexOf(delimiter) : -1;
+        if (at >= 0) folders.add(prefix + k.slice(prefix.length, prefix.length + at + 1));
+        else leaves.push([k, o]);
+      }
+      const contents =
+        [...folders].map((f) => `<CommonPrefixes><Prefix>${xml(f)}</Prefix></CommonPrefixes>`).join("") +
+        leaves
+          .map(
+            ([k, o]) =>
+              `<Contents><Key>${xml(k)}</Key><Size>${o.bytes.length}</Size><LastModified>${new Date(o.modified).toISOString()}</LastModified><ETag>"${o.modified}-${o.bytes.length}"</ETag></Contents>`,
+          )
+          .join("");
       log(200);
       return new Response(`<?xml version="1.0"?><ListBucketResult><IsTruncated>false</IsTruncated>${contents}</ListBucketResult>`, {
         status: 200,
@@ -109,6 +121,16 @@ export class FakeS3 {
         status: 200,
         headers: { "last-modified": new Date(o.modified).toUTCString() },
       });
+    }
+    if (method === "PUT" && headers.get("x-amz-copy-source")) {
+      // A server-side copy: the source must be inside the key's own folder too.
+      const source = decodeURIComponent(headers.get("x-amz-copy-source")!).replace(/^\/+/, "").slice(`${this.bucket}/`.length);
+      const from = this.objects.get(source);
+      if (!source.startsWith(allowedRoot)) return deny(403, "AccessDenied");
+      if (!from) return deny(404, "NoSuchKey");
+      this.objects.set(key, { bytes: from.bytes, modified: this.clock() });
+      log(200);
+      return new Response("<CopyObjectResult/>", { status: 200 });
     }
     if (method === "PUT") {
       const body = init?.body;

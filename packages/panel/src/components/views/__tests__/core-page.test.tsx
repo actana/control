@@ -180,10 +180,10 @@ describe("CorePage", () => {
     expect(screen.queryByText("Other Core's work")).toBeNull();
   });
 
-  it("renders a placeholder for Files and this Core's Tasks board under Tasks", async () => {
+  it("renders the Files Drive for Files (a Core with no Shared folder is told so) and this Core's Tasks board under Tasks", async () => {
     cores = [core("a", "alpha")];
     await mount("files");
-    expect(screen.getByText(/#565/)).toBeTruthy();
+    expect(screen.getByText("No Shared folder yet")).toBeTruthy();
     cleanup();
     await mount("tasks");
     // The board, without the per-Core chips: the Core page is already one Core.

@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useRouter } from "@tanstack/react-router";
 import { Btn } from "~/components/ui/Btn";
 import { FormErrorBox } from "~/components/ui/FormErrorBox";
 import { Icon } from "~/components/ui/Icon";
@@ -11,6 +12,7 @@ import { formatRelativeTime } from "~/lib/format-relative-time";
 import { TASK_STATUS_LABEL } from "~/lib/task-board";
 import { queryKeys, useCoreAgents, useTask } from "~/queries";
 import { FINISHED_TASK_STATUSES } from "~/shared/tasks";
+import { taskFolderPath } from "~/shared/shared-files";
 import type { TaskCommentDto } from "~/shared/task-wire";
 
 const KIND_COLOR: Record<TaskCommentDto["authorKind"], string> = {
@@ -34,10 +36,12 @@ function message(e: unknown): string | null {
 /**
  * A Task's detail (screen 07): badges, result files, the comment thread and a
  * large composer. Every status move is a call to the server; this view only
- * shows what comes back. Attach file and Open folder wait on the Files Drive (#565).
+ * shows what comes back. Open folder jumps to the Task's folder in the Core's Files tab (#565); Attach file waits for a later PR.
  */
 export function TaskDetail({ taskId, onClose, focusComposer = false }: { taskId: string; onClose: () => void; focusComposer?: boolean }) {
   const { cores } = useFleet();
+  // Outside a router (a bare render) there is nothing to navigate: the button then stays off.
+  const router = useRouter({ warn: false });
   const queryClient = useQueryClient();
   const { data, error } = useTask(taskId);
   const task = data?.task;
@@ -102,7 +106,22 @@ export function TaskDetail({ taskId, onClose, focusComposer = false }: { taskId:
             </div>
           ) : null}
           <section aria-label="Result files">
-            <h3 style={{ fontFamily: "var(--mono)", fontSize: 12, letterSpacing: "0.08em", textTransform: "uppercase" }}>Result files</h3>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <h3 style={{ fontFamily: "var(--mono)", fontSize: 12, letterSpacing: "0.08em", textTransform: "uppercase" }}>Result files</h3>
+              <Btn
+                variant="ghost"
+                icon="folder"
+                disabled={!router || !task.coreId}
+                title={task.coreId ? "Open this Task's folder in the Core's Files tab" : "Assign the Task to a Core first"}
+                onClick={() => {
+                  if (!router || !task.coreId) return;
+                  void router.navigate({ to: "/cores/$coreId", params: { coreId: task.coreId }, search: { tab: "files", path: taskFolderPath(task.id) } });
+                  onClose();
+                }}
+              >
+                Open folder
+              </Btn>
+            </div>
             {resultFiles.length === 0 ? (
               <div style={{ color: "var(--text-dim)", fontSize: 13 }}>None yet.</div>
             ) : (

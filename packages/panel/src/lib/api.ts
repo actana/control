@@ -21,6 +21,13 @@ import { pruneStoredSessionFinishNotifications } from "~/lib/session-notificatio
 import { HTTP_NO_CONTENT } from "~/shared/http-status";
 import type { TaskStatus } from "~/shared/tasks";
 import type {
+  SharedDownloadUrl,
+  SharedFileDetails,
+  SharedFilesListing,
+  SharedFilesSearchResult,
+  SharedFilesSummary,
+} from "~/shared/shared-files";
+import type {
   AgentDto,
   NewTaskCommentRequest,
   NewTaskRequest,
@@ -145,7 +152,41 @@ async function req<T>(url: string, init?: RequestInit): Promise<T> {
   return (await res.json()) as T;
 }
 
+/** `/api/cores/:coreId/shared/files[/leaf]`: the Files tab's routes (#565). */
+const sharedFilesUrl = (coreId: string, leaf = "") =>
+  `/api/cores/${encodeURIComponent(coreId)}/shared/files${leaf ? `/${leaf}` : ""}`;
+const pathQuery = (path: string) => `?path=${encodeURIComponent(path)}`;
+const post = (body: unknown): RequestInit => ({ method: "POST", body: JSON.stringify(body) });
+
+/** An image or PDF of the Shared folder, streamed by the Panel: a URL for an `<img>` or an `<object>`, with no key in it. */
+export const sharedFileMediaUrl = (coreId: string, path: string): string =>
+  `${sharedFilesUrl(coreId, "media")}${pathQuery(path)}`;
+
+/** The upload URL for one file: the body is the file's bytes, sent with `XMLHttpRequest` for progress. */
+export const sharedFileUploadUrl = (coreId: string, path: string): string =>
+  `${sharedFilesUrl(coreId, "upload")}${pathQuery(path)}`;
+
 export const api = {
+  /** A folder of a Core's Shared folder, read from S3 (the Core may be offline). */
+  listSharedFiles: (coreId: string, path: string) =>
+    req<SharedFilesListing>(`${sharedFilesUrl(coreId)}${pathQuery(path)}`),
+  getSharedFileDetails: (coreId: string, path: string) =>
+    req<SharedFileDetails>(`${sharedFilesUrl(coreId, "details")}${pathQuery(path)}`),
+  searchSharedFiles: (coreId: string, query: string) =>
+    req<SharedFilesSearchResult>(`${sharedFilesUrl(coreId, "search")}?q=${encodeURIComponent(query)}`),
+  getSharedFilesSummary: (coreId: string, since: number) =>
+    req<SharedFilesSummary>(`${sharedFilesUrl(coreId, "summary")}?since=${since}`),
+  /** A URL for this one file, good for five minutes: the browser downloads from it. */
+  sharedFileDownloadUrl: (coreId: string, path: string) =>
+    req<SharedDownloadUrl>(sharedFilesUrl(coreId, "download-url"), post({ path })),
+  makeSharedFolder: (coreId: string, path: string) =>
+    req<{ path: string }>(sharedFilesUrl(coreId, "mkdir"), post({ path })),
+  renameSharedFile: (coreId: string, path: string, name: string) =>
+    req<{ path: string }>(sharedFilesUrl(coreId, "rename"), post({ path, name })),
+  moveSharedFile: (coreId: string, path: string, to: string) =>
+    req<{ path: string }>(sharedFilesUrl(coreId, "move"), post({ path, to })),
+  deleteSharedFile: (coreId: string, path: string) =>
+    req<{ ok: true }>(sharedFilesUrl(coreId, "delete"), post({ path })),
   /** Every Task the owner has, across Cores. */
   listTasks: () => req<{ tasks: TaskDto[] }>("/api/tasks"),
   getTask: (id: string) =>
