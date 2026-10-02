@@ -638,7 +638,7 @@ describe("the tarball's bundles are built by one named script", () => {
     const script = manifest.scripts[BUNDLE_SCRIPT];
     expect(script, `package.json has no \`${BUNDLE_SCRIPT}\` script`).toBeDefined();
     expect(script).toContain("@actana/core");
-    expect(script).toContain("@actana/cli");
+    expect(script).toContain("@actana/core-cli");
   });
 
   it("is what `core:tarball` runs before the builder", () => {

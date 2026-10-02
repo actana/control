@@ -54,7 +54,7 @@
     "panel:e2e": "pnpm --filter @actana/core build && pnpm --filter @actana/panel build && node scripts/e2e-panel-smoke.mjs",
     "panel:image:smoke": "node scripts/smoke-panel-image.mjs",
     "core:image:smoke": "pnpm build && node scripts/smoke-core-image.mjs",
-    "build:core-tarball-bundles": "pnpm --filter @actana/core build && pnpm --filter @actana/cli build",
+    "build:core-tarball-bundles": "pnpm --filter @actana/core build && pnpm --filter @actana/core-cli build",
     "core:tarball": "pnpm build:core-tarball-bundles && node scripts/build-core-tarball.mjs",
     "core:tarball:smoke": "node scripts/smoke-core-tarball.mjs",
     "core:image:scan": "node scripts/scan-core-image.mjs",
@@ -68,8 +68,8 @@
     "npm:rehearse": "node scripts/rehearse-npm-publish.mjs --npm-dry-run"
   },
   "dependencies": {
-    "@actana/cli": "workspace:*",
     "@actana/core": "workspace:*",
+    "@actana/core-cli": "workspace:*",
     "@actana/panel": "workspace:*",
     "@actana/sdk": "0.6.0-next.4",
     "@actana/shared": "workspace:*",

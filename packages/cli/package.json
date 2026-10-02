@@ -1,7 +1,8 @@
 {
-  "name": "@actana/cli",
+  "name": "@actana/core-cli",
+  "private": true,
   "version": "0.5.0",
-  "description": "Actana Control CLI — the `actana` command: install and operate a Core on this machine, and drive Cores anywhere from the client nouns built on @actana/sdk.",
+  "description": "The built-in `actana` of a Core: the machine verbs (install, setup, status, daemon, pair), with the client nouns handed to the published @actana/cli.",
   "license": "MIT",
   "type": "module",
   "keywords": ["actana", "cli", "agent", "terminal", "core-link"],
@@ -19,10 +20,6 @@
   "bin": {
     "actana": "bin/actana.mjs"
   },
-  "publishConfig": {
-    "access": "public",
-    "provenance": true
-  },
   "scripts": {
     "build": "node build.mjs",
     "prepack": "node build.mjs",
@@ -30,6 +27,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@actana/cli": "0.6.0-next.10",
     "@actana/sdk": "0.6.0-next.4",
     "selfsigned": "^5.5.0",
     "undici": "8.10.2",

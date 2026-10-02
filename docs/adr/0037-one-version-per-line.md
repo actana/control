@@ -101,7 +101,7 @@ and not the other.
 | `train-image-tag` | the image tag `beta-x.y.z` | `ci.yml`'s `train-tags` | the tree, because `train-tags` needs `Train versions` |
 | `release-image-tag` | the image tags `x.y.z`, `x.y.z-beta`, `latest` | `release.yml`, `container-image.yml`, a beta retag | the digest's own version label, asserted before the retag |
 | `image-version-label` | `org.opencontainers.image.version` | `container-image.yml`, from the checkout | the tree the bytes were built from |
-| `npm-version` | the npm versions of `@actana/sdk` and `@actana/cli` | `release.yml`'s `npm` | the packed manifest, at `scripts/lib/npm-packages.mjs` |
+| `npm-version` | the npm version of `@actana/sdk` | `release.yml`'s `npm` | the packed manifest, at `scripts/lib/npm-packages.mjs` |
 | `tarball` | asset filenames, the archive root and `core-manifest.json` | `scripts/lib/core-tarball.mjs`, from `RELEASE_VERSION` | **derived**, and the one row that stays so — see D6 |
 
 **Today four different things were authoritative depending on which job was

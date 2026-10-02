@@ -39,13 +39,17 @@ import { resolveActanaLayout } from "./actana-layout.ts";
 import { nodeReleaseFetcher } from "./actana-release.ts";
 import { nodeActanaSystem } from "./actana-system.ts";
 import { HarnessAvailabilityStore } from "@actana/shared/harness-availability-store";
-import { probeCore } from "./core-probe.ts";
-import { openCoreShell } from "./core-shell-channel.ts";
-import { terminalFromProcess } from "./cli-terminal.ts";
-import { connectCore } from "./core-connection.ts";
-import { sdkCorePairing } from "./core-pair.ts";
-import { openSessionGateway } from "./session-gateway.ts";
-import { openSessionAttach } from "./session-attach-channel.ts";
+import {
+  connectCore,
+  openCoreShell,
+  openFilesAtHome,
+  openSessionAttach,
+  openSessionGateway,
+  openSharedThroughCore,
+  probeCore,
+  sdkCorePairing,
+  terminalFromProcess,
+} from "@actana/cli";
 import { EXIT_FAILURE } from "./exit-codes.ts";
 
 /** Read stdin to end. Only called by a verb that was told to read it. */
@@ -160,6 +164,11 @@ async function main(): Promise<void> {
     // The other command that holds the terminal, and the only one that holds a
     // Session write lock for as long as it runs (#163, ADR 0024 D3–D7).
     openAttach: openSessionAttach,
+    // The two Control had no port for before the client half moved: the home
+    // folder (`files`) and the Shared folder (`shared`). Both are the published
+    // CLI's own implementations, bound here from its root exports.
+    openFiles: openFilesAtHome,
+    openShared: openSharedThroughCore,
 
     // ─── the machine half ─────────────────────────────────────────────────────
 

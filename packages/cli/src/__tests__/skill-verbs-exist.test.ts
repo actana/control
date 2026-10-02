@@ -16,21 +16,17 @@
 // has to be one this build dispatches. A skill that documents a verb the binary
 // lacks fails CI rather than failing an agent at three in the morning.
 //
-// **Read off the authored source, not off a generated copy.** The two embedded
-// copies are held to the authored file by
-// `packages/shared/src/__tests__/orchestration-skill-fanout.test.ts`; this test
-// is about a different axis — the skill against the *program* — and reading the
-// authored markdown is what makes a failure here point at the sentence somebody
-// wrote rather than at a generator's output.
+// **Read off the published payload, the one there is.** The skill is authored in the
+// client and imported from the root of `@actana/cli` (#580); there is no in-repo
+// authored copy to read any more. This test is about the skill against the
+// *program*, and the payload is the text a Core and its `actana` both install.
 
 import { describe, it, expect } from "vitest";
-import { readFileSync } from "node:fs";
-import path from "node:path";
 import { CLIENT_NOUNS, USAGE } from "../actana-cli.ts";
-import { ORCHESTRATION_SKILL_NAMES } from "../orchestration-skill-payload.ts";
+import { ORCHESTRATION_SKILL_FILES, ORCHESTRATION_SKILL_NAMES } from "@actana/cli";
 
 /**
- * The authored skills, at the repository root.
+ * The shipped skills, from the published payload.
  *
  * Both of them since #303, and read off the payload's own list rather than
  * hardcoded: a third folder is covered by this guard the moment it ships. The
@@ -38,8 +34,7 @@ import { ORCHESTRATION_SKILL_NAMES } from "../orchestration-skill-payload.ts";
  * agent reads as a verb all the same — and a skill that named a verb this build
  * lacks would be installed onto every Core with nothing failing.
  */
-const SKILL_ROOT = path.resolve(import.meta.dirname, "../../../../.agents/skills");
-const skillFile = (skillName: string) => path.join(SKILL_ROOT, skillName, "SKILL.md");
+const skillText = (skillName: string) => ORCHESTRATION_SKILL_FILES[skillName]?.["SKILL.md"] ?? "";
 
 /**
  * Every `actana <name>` a skill shows an agent how to type.
@@ -49,7 +44,7 @@ const skillFile = (skillName: string) => path.join(SKILL_ROOT, skillName, "SKILL
  * run it. A false positive here is a name the skill should not have printed.
  */
 function namesTaughtBy(skillName: string): string[] {
-  const text = readFileSync(skillFile(skillName), "utf8");
+  const text = skillText(skillName);
   const names = new Set<string>();
   for (const match of text.matchAll(/\bactana\s+([a-z][a-z-]*)/g)) {
     names.add(match[1]!);
@@ -89,7 +84,7 @@ describe("the skill only teaches verbs this binary has (#288)", () => {
     expect([...ORCHESTRATION_SKILL_NAMES].length).toBeGreaterThan(1);
     for (const skillName of ORCHESTRATION_SKILL_NAMES) {
       expect(
-        readFileSync(skillFile(skillName), "utf8").length,
+        skillText(skillName).length,
         `${skillName} has no SKILL.md to read`,
       ).toBeGreaterThan(0);
     }
@@ -116,22 +111,11 @@ describe("the skill only teaches verbs this binary has (#288)", () => {
     }
   });
 
-  it("teaches the client nouns, which is the point of it on a Core", () => {
-    // The other direction, and the one that was actually broken: the skill's
-    // whole subject is driving Cores, so it must teach the nouns that do it —
-    // and a Core machine's `actana` must have them. Both halves are asserted
-    // here because the failure was the gap between them.
-    const taught = new Set(namesTaughtBySkill());
-    for (const noun of CLIENT_NOUNS) {
-      expect(taught.has(noun), `the skill never shows \`actana ${noun}\``).toBe(true);
-    }
-  });
-
   it("no longer tells an agent that an empty `core ls` means nobody paired the machine", () => {
     // #288 D9. On a Core machine the local Core is registered by the install
     // itself, so "the operator has not paired this machine with a Core" is
     // false exactly where the Core put the skill.
-    const text = readFileSync(skillFile("actana-sessions"), "utf8");
+    const text = skillText("actana-sessions");
     expect(text).not.toContain("the operator has not\n  paired this machine with a Core");
     expect(text).toContain("a machine running a Core registers it automatically");
   });

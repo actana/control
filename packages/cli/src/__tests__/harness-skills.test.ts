@@ -14,7 +14,8 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { makeCliFixture, healthyProbe, type CliFixture } from "./cli-harness.ts";
 import { EXIT_OK, EXIT_USAGE } from "../exit-codes.ts";
-import { ORCHESTRATION_SKILL_FILES, ORCHESTRATION_SKILL_MARKER } from "../orchestration-skill-payload.ts";
+import { ORCHESTRATION_SKILL_FILES, ORCHESTRATION_SKILL_MARKER } from "@actana/cli";
+import { HARNESS_SKILL_TARGETS } from "@actana/shared/harness-cli-config";
 
 /**
  * The payload is a folder per skill since #304, and two skills since #303.
@@ -111,6 +112,19 @@ describe("actana harness skills", () => {
       "actana-subagent",
     ]);
     for (const row of rows) expect(row.outcome).toBe("written");
+  });
+
+  it("reports every Harness the Core knows, Pi included: five Harnesses, two skills, ten rows (#580 R2)", async () => {
+    // The published table lost its `pi` row for a while (next.8), and `harness skills --json` answered eight
+    // rows where the Core's own table has ten. The count is pinned against that table, and the literal.
+    const run = await cli.run(["harness", "skills", "--json"]);
+    const report = JSON.parse(run.out.join("\n")) as { harnesses: Array<{ harness: string }> };
+    expect(report.harnesses).toHaveLength(10);
+    expect(report.harnesses).toHaveLength(HARNESS_SKILL_TARGETS.length * 2);
+    expect(report.harnesses.filter((row) => row.harness === "pi")).toHaveLength(2);
+    expect([...new Set(report.harnesses.map((row) => row.harness))].sort()).toEqual(
+      HARNESS_SKILL_TARGETS.map((target) => target.harness).sort(),
+    );
   });
 
   it("names the folder to an operator, and the file when one goes wrong", async () => {

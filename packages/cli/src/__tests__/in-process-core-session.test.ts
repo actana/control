@@ -51,7 +51,7 @@ import {
   SESSION_PROMPT_DELIVERED_EVENT_KIND,
 } from "@actana/sdk/core";
 
-import { openSessionGateway } from "../session-gateway.ts";
+import { openSessionGateway } from "@actana/cli";
 import { EXIT_FAILURE, EXIT_OK } from "../exit-codes.ts";
 import {
   makeCliFixture,

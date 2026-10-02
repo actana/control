@@ -30,12 +30,12 @@ importers:
 
   .:
     dependencies:
-      '@actana/cli':
-        specifier: workspace:*
-        version: link:packages/cli
       '@actana/core':
         specifier: workspace:*
         version: link:packages/core
+      '@actana/core-cli':
+        specifier: workspace:*
+        version: link:packages/cli
       '@actana/panel':
         specifier: workspace:*
         version: link:packages/panel
@@ -91,6 +91,9 @@ importers:
 
   packages/cli:
     dependencies:
+      '@actana/cli':
+        specifier: 0.6.0-next.10
+        version: 0.6.0-next.10(pg@8.23.0)
       '@actana/sdk':
         specifier: 0.6.0-next.4
         version: 0.6.0-next.4(pg@8.23.0)
@@ -122,6 +125,9 @@ importers:
 
   packages/core:
     dependencies:
+      '@actana/cli':
+        specifier: 0.6.0-next.10
+        version: 0.6.0-next.10(pg@8.23.0)
       '@actana/sdk':
         specifier: 0.6.0-next.4
         version: 0.6.0-next.4(pg@8.23.0)
@@ -410,6 +416,11 @@ importers:
         version: 4.1.6(@types/node@25.8.0)(jsdom@30.0.1)(vite@8.1.0(@types/node@25.8.0)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.22.0))
 
 packages:
+
+  '@actana/cli@0.6.0-next.10':
+    resolution: {integrity: sha512-xKI4vSSxdwD0KHjw7a9nghFrGrNcDw9XjqVv4A5VqXf1bkGh9a2xPKQQmbPf4v5MFfoVXZMnzoRS89tVKJ9p5w==}
+    engines: {node: '>=24.0.0 <25'}
+    hasBin: true
 
   '@actana/sdk@0.6.0-next.4':
     resolution: {integrity: sha512-BBiuydHdbMQRDr0ZcUnk4DAYZ6gTTH8AYjYs1Mdozf1HR5S2ndH27dFqnjHTKVKr6McQP0S3JgjRdJOSrYBV6A==}
@@ -4065,6 +4076,14 @@ packages:
     resolution: {integrity: sha512-bXE4cR/kVZhKZX/RjPEflHaKVhUVl85noU3v6b8apfQEc1x4A+zBxjZ4lN8LqGd6WZ3dl98pY4o717VFmoPp+A==}
 
 snapshots:
+
+  '@actana/cli@0.6.0-next.10(pg@8.23.0)':
+    dependencies:
+      '@actana/sdk': 0.6.0-next.4(pg@8.23.0)
+    transitivePeerDependencies:
+      - bufferutil
+      - pg
+      - utf-8-validate
 
   '@actana/sdk@0.6.0-next.4(pg@8.23.0)':
     dependencies:

@@ -181,12 +181,10 @@ Pick the tarball matching the machine's architecture from the GitHub Release —
 `linux-x64`, `linux-arm64` or `mac-arm64` — plus the `SHA256SUMS` asset from
 the same release. Those four files are the whole release.
 
-A beta prerelease carries seven assets: the same four, plus a copy of
-`install.sh`, plus the CLI tarball `actana-cli-x.y.z-beta.tgz` and its checksum
-`actana-cli-x.y.z-beta.tgz.sha256`. The version in every asset name is
+A beta prerelease carries five assets: the same four, plus a copy of
+`install.sh`. It carries no CLI tarball. The version in every asset name is
 `x.y.z-beta`. Verify it exactly as below — `SHA256SUMS` covers the three Core
-tarballs there too, and the CLI tarball's checksum is a file of its own rather
-than a fourth row in it.
+tarballs there too.
 
 ```bash
 sha256sum --ignore-missing -c SHA256SUMS
@@ -542,33 +540,12 @@ Two consequences worth stating plainly:
 
 ### The CLI on its own
 
-A machine that only *drives* Cores — no daemon, no Core on the box — installs
-the CLI from npm, and a beta has an equivalent. It is **not** a registry
-version: nothing is published to registry.npmjs.org by a beta cut, and `latest`
-and `next` on `@actana/cli` are untouched by one. The CLI is packed and attached
-to the beta prerelease, and npm installs a tarball URL exactly as it installs a
-registry spec:
-
-```bash
-npm i -g https://github.com/actana/control/releases/download/v0.4.1-beta/actana-cli-0.4.1-beta.tgz
-```
-
-The checksum is attached beside the tarball as
-`actana-cli-x.y.z-beta.tgz.sha256`, in `sha256sum`'s own two-space format, and
-the run prints the same row in its summary. There is no provenance attestation
-on this path ([ADR 0036](docs/adr/0036-the-beta-release-channel.md) D15, D17) —
-that checksum is what stands in its place.
-
-Compare that with the release path, which is the ordinary one:
-
-```bash
-npm i -g @actana/cli
-```
-
-The reason for the asymmetry is npm's, not this project's: a version number is
-burned by its first publish and cannot be reused, and a beta string is fixed for
-the life of its line and is designed to be cut repeatedly. A registry publish
-would work once per train and fail every time after it.
+A machine that only *drives* Cores — no daemon, no Core on the box — installs the
+client CLI from npm: `npm i -g @actana/cli`, which is published from
+[actana/client](https://github.com/actana/client). A beta cut of this repository
+publishes nothing to registry.npmjs.org and attaches no CLI tarball to the
+prerelease: the `actana` inside the Core tarball is this repository's private
+`@actana/core-cli` (#580), and the one on npm is the client's.
 
 ### What a beta ships, and what it does not
 
@@ -582,9 +559,6 @@ latest, with every asset replaced in place on each cut:
 - a copy of **`install.sh`**, so the script and the bytes it fetches ship
   together. It is a copy and not a door: the install URLs are the ones in the
   table above,
-- the **CLI tarball** described above, `actana-cli-x.y.z-beta.tgz`,
-- its checksum **`actana-cli-x.y.z-beta.tgz.sha256`**, a file of its own rather
-  than a fourth row in `SHA256SUMS`,
 - **`x.y.z-beta` container images** in `actana/panel` and `actana/core`,
   retagged from the train's own `beta-x.y.z` digest with nothing rebuilt.
 

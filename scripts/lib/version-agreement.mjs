@@ -268,7 +268,7 @@ export const SURFACES = [
   },
   {
     id: "npm-version",
-    what: "the npm versions of @actana/sdk and @actana/cli",
+    what: "the npm version of @actana/sdk",
     writtenBy: "release.yml npm, from the packed manifests",
     authority: "tree",
   },

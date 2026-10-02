@@ -24,7 +24,7 @@
 
 import { describe, it, expect, afterEach } from "vitest";
 import { EXIT_FAILURE, EXIT_OK, EXIT_USAGE } from "../exit-codes.ts";
-import { SessionGatewayError } from "../session-gateway.ts";
+import { SessionGatewayError } from "@actana/cli";
 import {
   fakeAttachment,
   fakeTerminal,
@@ -34,7 +34,7 @@ import {
   type FakeAttachment,
   type FakeTerminal,
 } from "./cli-harness.ts";
-import type { AttachAuthority } from "../session-attach-channel.ts";
+import type { AttachAuthority } from "@actana/cli";
 
 /** `Ctrl-]`, the detach key, and `Ctrl-C`, which is the harness's. */
 const DETACH = "\u001D";

@@ -35,7 +35,7 @@ import {
   harnessAutoModeFlag,
   harnessLaunchCommand,
 } from "@actana/sdk/core";
-import { KNOWN_HARNESSES } from "../session-gateway.ts";
+import { KNOWN_HARNESSES } from "@actana/cli";
 import { makeCliFixture, type CliFixture } from "./cli-harness.ts";
 import { EXIT_OK } from "../exit-codes.ts";
 import type { CoreLinkPtySpawnHarness } from "@actana/sdk/core";

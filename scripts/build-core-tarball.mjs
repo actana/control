@@ -266,7 +266,7 @@ async function main() {
     { file: "core-files-op.cjs", dist: path.join(repoRoot, "packages", "core", "dist"), pkg: "@actana/core" },
     // The Shared folder watcher (#561), found the same way: the daemon cannot read `~/shared` in the container.
     { file: "core-shared-watch.cjs", dist: path.join(repoRoot, "packages", "core", "dist"), pkg: "@actana/core" },
-    { file: "actana-cli.cjs", dist: path.join(repoRoot, "packages", "cli", "dist-tarball"), pkg: "@actana/cli" },
+    { file: "actana-cli.cjs", dist: path.join(repoRoot, "packages", "cli", "dist-tarball"), pkg: "@actana/core-cli" },
   ];
   // The message names `pnpm build:core-tarball-bundles` and not the single
   // filter that would fix this one file, because naming the single filter is

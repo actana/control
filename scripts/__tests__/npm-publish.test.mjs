@@ -122,8 +122,10 @@ const workspace = (name, { private: isPrivate = false } = {}) => ({
 });
 
 describe("what this repository publishes to npm (#129 D13)", () => {
-  it("is @actana/sdk and @actana/cli — both of them, and nothing else", () => {
-    expect(PUBLISHABLE).toEqual(["@actana/sdk", "@actana/cli"]);
+  // The in-repo CLI is the private `@actana/core-cli` since #580; the client CLI is
+  // `@actana/cli`, published from actana/client, so this repository publishes the SDK alone.
+  it("is @actana/sdk, and nothing else", () => {
+    expect(PUBLISHABLE).toEqual(["@actana/sdk"]);
     const found = discoverPublishable(repoRoot);
     // Both, not a superset check: #159's first acceptance clause is that *both*
     // packages publish, and the way it was nearly missed is that a set which
@@ -140,17 +142,10 @@ describe("what this repository publishes to npm (#129 D13)", () => {
   // the other is a release that publishes half of what its own docs claim and
   // goes green.
   it("refuses a package that exists, is meant to publish, and is held private", () => {
-    const all = [workspace("@actana/sdk"), workspace("@actana/cli", { private: true })];
+    const all = [workspace("@actana/sdk", { private: true })];
     const found = all.filter((pkg) => pkg.manifest.private !== true);
-    expect(() => assertPublishSet(found, all)).toThrow(/@actana\/cli has a manifest .* and carries/s);
+    expect(() => assertPublishSet(found, all)).toThrow(/@actana\/sdk has a manifest .* and carries/s);
     expect(() => assertPublishSet(found, all)).toThrow(/not the same thing as a package that has not been written/);
-  });
-
-  // The absence that is still allowed, and is reported rather than thrown: a
-  // name in PUBLISHABLE with no manifest anywhere in the workspace.
-  it("allows an intended package that has not been written, and names it", () => {
-    const all = [workspace("@actana/sdk")];
-    expect(assertPublishSet(all, all)).toEqual(["@actana/cli"]);
   });
 
   // The CLI depends on the SDK at exactly the version being released, and the
@@ -164,10 +159,7 @@ describe("what this repository publishes to npm (#129 D13)", () => {
       manifest: { name: "@actana/cli", dependencies: { "@actana/sdk": "0.2.2" } },
     };
     expect(publishOrder([cli, sdk]).map((pkg) => pkg.name)).toEqual(["@actana/sdk", "@actana/cli"]);
-    expect(publishOrder(discoverPublishable(repoRoot)).map((pkg) => pkg.name)).toEqual([
-      "@actana/sdk",
-      "@actana/cli",
-    ]);
+    expect(publishOrder(discoverPublishable(repoRoot)).map((pkg) => pkg.name)).toEqual(["@actana/sdk"]);
   });
 
   // The Panel is a web service and the Core is a daemon. Neither is an npm
@@ -677,7 +669,7 @@ describe("the monorepo keeps the guard the tarball drops (#129 D12)", () => {
 // can satisfy. It passed because there was exactly one tarball. A CLI added to
 // that loop would have failed on the SDK's rules rather than on its own, which
 // is how a publish set of two ends up quietly staying a publish set of one.
-describe("packing both published packages for real", () => {
+describe("packing the published package for real", () => {
   /** @type {string} */ let outDir;
   /** @type {Map<string, {tarball: string, entries: string[], manifest: object}>} */ let packs;
   /** @type {string[]} */ let order;
@@ -723,19 +715,7 @@ describe("packing both published packages for real", () => {
   // off real tarballs rather than off the manifest that would produce them.
   it("packs both of D13's packages, the dependency before the dependent", () => {
     expect([...packs.keys()].sort()).toEqual([...PUBLISHABLE].sort());
-    expect(order).toEqual(["@actana/sdk", "@actana/cli"]);
-  });
-
-  // D13's lockstep, on the artifacts: one version line, and the CLI's
-  // dependency on the SDK resolved to exactly it. `workspace:*` surviving the
-  // pack would be a tarball npm rejects; a different version would be a CLI
-  // installed against another train's SDK.
-  it("ships one version line, with the CLI pinned to the repo's one npm SDK", () => {
-    const versions = new Set([...packs.values()].map(({ manifest }) => manifest.version));
-    expect([...versions]).toHaveLength(1);
-    // The CLI's SDK is the one npm version the repo pins (#553), not the train's.
-    const cli = pack("@actana/cli").manifest;
-    expect(cli.dependencies["@actana/sdk"]).toBe(pinnedSdkVersionOf(path.resolve(import.meta.dirname, "../..")));
+    expect(order).toEqual(["@actana/sdk"]);
   });
 
   it("produces tarballs that pass every rule that applies to them", () => {
@@ -760,65 +740,6 @@ describe("packing both published packages for real", () => {
     // `publishConfig.exports` was applied by the pack — the tarball's map
     // points at what is in it.
     expect(JSON.stringify(sdk.manifest.exports)).not.toContain("./src/");
-
-    const cli = pack("@actana/cli");
-    expect(cli.entries).toContain("package/bin/actana.mjs");
-    expect(cli.entries).toContain("package/dist/actana-cli.mjs");
-    expect(cli.entries).toContain("package/README.md");
-    expect(cli.manifest.bin).toEqual({ actana: "bin/actana.mjs" });
-  });
-
-  // The command npm installs, out of the bytes that would be published. The
-  // shim is the path npm links, so its shebang and the relative hop to the
-  // bundle beside it are the two things that decide whether `actana` runs at
-  // all — and neither is visible in a manifest.
-  it("packs an `actana` that runs, with its shebang and its bundle", () => {
-    const { tarball, entries } = pack("@actana/cli");
-    const shim = execFileSync("tar", ["-xzOf", tarball, "package/bin/actana.mjs"], {
-      encoding: "utf8",
-    });
-    expect(shim.startsWith("#!/usr/bin/env node")).toBe(true);
-    // The shim loads `../dist/<bundle>` relative to itself, so the two are
-    // siblings in the tarball or the command exits 70 on a fresh install.
-    expect(entries).toContain("package/dist/actana-cli.mjs");
-
-    // Run it. `packages/cli/bin` rather than an extraction, for the reason the
-    // SDK's import loop gives: the bundle leaves `ws` external, and a temp
-    // directory outside the workspace has no `node_modules` to resolve it from
-    // — that would test the extraction. `pnpm pack` ran `prepack`, so these are
-    // the bytes in the tarball, in the same `bin/` → `../dist/` layout.
-    // Under an empty HOME, deliberately. Since #288 there is one `actana` and
-    // `--version` is one answer about *both* halves: a machine with a Core
-    // installed under it gets a second line naming that install's version
-    // (ADR 0032 D10, tolerate and report). What this test is about is the
-    // published command running at all, so it is asked the question on a
-    // machine with nothing installed — which is also every machine a fresh
-    // `npm i -g @actana/cli` lands on.
-    const emptyHome = fs.mkdtempSync(path.join(os.tmpdir(), "actana-npm-home-"));
-    let version;
-    try {
-      version = execFileSync(
-        process.execPath,
-        [path.join(repoRoot, "packages/cli/bin/actana.mjs"), "--version"],
-        {
-          encoding: "utf8",
-          // Built from nothing rather than spread from `process.env`: a CI
-          // runner that is itself a container Core carries `ACTANA_CONTAINER`
-          // and `ACTANA_ROOT`, and `actana` would then report *that* machine's
-          // Core. The published command needs `PATH` and a home, and nothing
-          // else.
-          env: {
-            PATH: process.env.PATH ?? "",
-            HOME: emptyHome,
-            XDG_DATA_HOME: path.join(emptyHome, ".local", "share"),
-            XDG_CONFIG_HOME: path.join(emptyHome, ".config"),
-          },
-        },
-      ).trim();
-    } finally {
-      fs.rmSync(emptyHome, { recursive: true, force: true });
-    }
-    expect(version).toBe(`actana ${pack("@actana/cli").manifest.version}`);
   });
 
   // Every published module loads under a plain `node`. A `dist/` that
@@ -875,220 +796,4 @@ describe("packing both published packages for real", () => {
     expect(typeof CoreSession).toBe("function");
     expect(typeof DurableCoreClient).toBe("function");
   });
-});
-
-// #320's acceptance criterion, and the ticket says so in as many words: *`npm
-// i -g <that asset URL>` on a clean machine, with no access to any private
-// registry, installs and puts a working `actana` on `PATH` — asserted in CI,
-// not assumed. That assertion is the whole ticket; if it cannot be made, say so
-// rather than shipping a URL nobody has run.*
-//
-// So it is made, on the bytes. The rehearsal packs the asset, this reads the
-// tarball again itself, and `--install-check` runs the real `npm i -g` into a
-// fresh prefix under an empty HOME and asks the installed command its version.
-//
-// **The URL half is the one thing not exercised here, and that is a property of
-// time rather than a gap in the check.** The asset URL cannot resolve until the
-// Release exists to serve it, which is after a cut and long after a pull
-// request. What a URL adds to a local path is npm's download, which is the same
-// code path `npm i -g https://…` takes for any tarball — so the risk it carries
-// is "the asset was not attached", which is #318's step and the checksum row,
-// not the tarball's. Everything that is about *these bytes* is asserted here.
-describe("packing the beta CLI asset for real (#320, ADR 0036 D16)", () => {
-  // Read off the manifest rather than written in: the line moves every train,
-  // and a number pinned here would either go stale or start asserting the
-  // wrong train's beta. This is also the cross-check the script performs — the
-  // caller names a line and the checkout has to agree it is that line.
-  const line = JSON.parse(
-    fs.readFileSync(path.join(repoRoot, "packages/cli/package.json"), "utf8"),
-  ).version;
-  const beta = `${line}-beta`;
-
-  // Opt-out rather than opt-in, and impossible to take in CI. A check that
-  // skips by default is a check that is not made, and #320 asked for this one
-  // specifically; the escape hatch exists for an offline working copy and the
-  // `CI` guard below is what stops it becoming the normal state.
-  const offline = process.env.ACTANA_SKIP_NPM_INSTALL_CHECK === "1";
-
-  /** @type {string} */ let outDir;
-  /** @type {string} */ let stdout;
-  /** @type {string} */ let tarball;
-  /** @type {string[]} */ let entries;
-  /** @type {object} */ let manifest;
-
-  beforeAll(() => {
-    if (offline && !process.env.CI) {
-      outDir = "";
-      return;
-    }
-    outDir = fs.mkdtempSync(path.join(os.tmpdir(), "actana-beta-asset-test-"));
-    stdout = execFileSync(
-      process.execPath,
-      [
-        path.join(repoRoot, "scripts/rehearse-npm-publish.mjs"),
-        "--beta",
-        line,
-        "--out-dir",
-        outDir,
-        "--install-check",
-      ],
-      { cwd: repoRoot, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
-    );
-    tarball = /^tarballs=(.*)$/m.exec(stdout)[1];
-    entries = execFileSync("tar", ["-tzf", tarball], { encoding: "utf8" })
-      .split("\n")
-      .filter(Boolean);
-    manifest = JSON.parse(
-      execFileSync("tar", ["-xzOf", tarball, "package/package.json"], { encoding: "utf8" }),
-    );
-  }, 900_000);
-
-  afterAll(() => {
-    if (outDir) fs.rmSync(outDir, { recursive: true, force: true });
-  });
-
-  // The guard on the escape hatch. `ACTANA_SKIP_NPM_INSTALL_CHECK` turns off
-  // the assertion #320 calls the whole ticket, so it may not be reachable on
-  // the machine whose green light anyone acts on.
-  it("cannot be skipped in CI", () => {
-    expect(offline && process.env.CI, "the beta install check was skipped under CI").toBeFalsy();
-  });
-
-  // C1 on the two surfaces an operator actually reads: the version inside the
-  // manifest and the filename hanging off the download URL. No counter, no run
-  // number, no short sha, in either.
-  it.skipIf(offline && !process.env.CI)("carries exactly the x.y.z-beta string, in the manifest and in the filename", () => {
-    expect(manifest.version).toBe(beta);
-    expect(BETA_VERSION.test(manifest.version)).toBe(true);
-    expect(path.basename(tarball)).toBe(`actana-cli-${beta}.tgz`);
-    // `/\./g`, not `"."` — a string argument to `replace` swaps the FIRST match
-    // only, so `0.4.1-beta` escaped one dot and left two live. The regex still
-    // matched, because `.` matches a dot, which is how a wrong escape survives
-    // a green test: it is loose, not broken.
-    expect(stdout).toMatch(new RegExp(`^asset=actana-cli-${beta.replace(/\./g, "\\.")}\\.tgz$`, "m"));
-    expect(stdout).toMatch(new RegExp(`^version=${beta.replace(/\./g, "\\.")}$`, "m"));
-    // The checksum row #318's SHA256SUMS carries, printed rather than left to
-    // a second pass over the file — an asset hashed twice is an asset that can
-    // be hashed differently.
-    expect(stdout).toMatch(/^sha256=[0-9a-f]{64}$/m);
-  });
-
-  // Route 2, on the artifact. The manifest names the three externals
-  // `build.mjs` names and nothing else — in particular not `@actana/sdk`,
-  // whose version is on no registry under D15.
-  it.skipIf(offline && !process.env.CI)("drops @actana/sdk from the packed manifest and keeps the three externals", () => {
-    expect(Object.keys(manifest.dependencies).sort()).toEqual(["selfsigned", "undici", "ws"]);
-    expect(manifest.dependencies["@actana/sdk"]).toBeUndefined();
-    expect(manifest.bin).toEqual({ actana: "bin/actana.mjs" });
-    expect(manifest.engines.node).toBe(PUBLISHED_ENGINES);
-    // The same tarball a release would produce in every other respect.
-    expect(entries).toContain("package/bin/actana.mjs");
-    expect(entries).toContain("package/dist/actana-cli.mjs");
-    expect(entries).toContain("package/LICENSE");
-    expect(entries.some((entry) => entry.endsWith(NODE_GUARD))).toBe(false);
-  });
-
-  // Landmine one, proven rather than reasoned about: the SDK is *in* the
-  // bundle. Read out of the tarball, in specifier position — the inlined
-  // `package.json` puts the bare string in these bytes either way.
-  it.skipIf(offline && !process.env.CI)("ships a bundle with the SDK inlined and no @actana specifier in it", () => {
-    const bundle = execFileSync("tar", ["-xzOf", tarball, "package/dist/actana-cli.mjs"], {
-      encoding: "utf8",
-      maxBuffer: 128 * 1024 * 1024,
-    });
-    expect(() => assertBundleInlines("@actana/cli", bundle, "@actana/sdk")).not.toThrow();
-    // The other direction, so a bundle that had lost the SDK entirely could not
-    // pass this by importing nothing: the sourcemap names the modules esbuild
-    // pulled in, and `packages/sdk/src` is among them.
-    const map = JSON.parse(
-      execFileSync("tar", ["-xzOf", tarball, "package/dist/actana-cli.mjs.map"], {
-        encoding: "utf8",
-        maxBuffer: 128 * 1024 * 1024,
-      }),
-    );
-    const fromSdk = map.sources.filter((source) => source.includes("/sdk/src/"));
-    expect(
-      fromSdk.length,
-      "the bundle inlines no @actana/sdk module, so the beta manifest dropped a dependency whose code is not in the tarball",
-    ).toBeGreaterThan(0);
-  });
-
-  // The criterion itself. `npm i -g <the tarball>`, a fresh prefix, an empty
-  // HOME, and the public registry for `ws`, `undici` and `selfsigned` — which
-  // is what a machine wired to an external Core has, and all it has.
-  it.skipIf(offline && !process.env.CI)("installs with `npm i -g` and puts a working `actana` on PATH", () => {
-    expect(stdout).toMatch(/^install=ok$/m);
-  }, 900_000);
-});
-
-// Review r1, finding 1 — regression. `fail()` is `process.exit(1)`, and a
-// `process.exit` inside a `try` skips the `finally` outright. The beta pack
-// called it from its `catch`, *after* the manifest had been rewritten, so a
-// failed `pnpm pack` left `packages/cli/package.json` in the working tree
-// carrying `x.y.z-beta` with `@actana/sdk` gone and `keywords` reflowed — the
-// exact state ADR 0023 D3 says must never be committed, sitting there for the
-// next `git add -A`. The doc block and the PR both claimed the opposite.
-//
-// Asserted on the bytes rather than on the code shape: the script is run with a
-// `PATH` that has no `pnpm` on it, which is how the reviewer reproduced it, and
-// the manifest is compared byte-for-byte before and after. A refusal *before*
-// the edit and a failure *after* it are both covered — the first by the exit
-// code, the second by the bytes.
-describe("a failed beta pack leaves the working tree alone (review r1, finding 1)", () => {
-  const manifestPath = path.join(repoRoot, "packages/cli/package.json");
-  const line = JSON.parse(fs.readFileSync(manifestPath, "utf8")).version;
-
-  /** @type {Buffer} */ let original;
-  /** @type {string} */ let emptyPathDir;
-  /** @type {string} */ let outDir;
-
-  beforeAll(() => {
-    // The safety net under the thing being tested. If the restore is broken
-    // again, this test fails *and* puts the file back, rather than failing and
-    // leaving the repository in the state it was complaining about.
-    original = fs.readFileSync(manifestPath);
-    emptyPathDir = fs.mkdtempSync(path.join(os.tmpdir(), "actana-no-pnpm-"));
-    outDir = fs.mkdtempSync(path.join(os.tmpdir(), "actana-beta-fail-"));
-  });
-
-  afterAll(() => {
-    if (original) fs.writeFileSync(manifestPath, original);
-    if (emptyPathDir) fs.rmSync(emptyPathDir, { recursive: true, force: true });
-    if (outDir) fs.rmSync(outDir, { recursive: true, force: true });
-  });
-
-  it("restores the manifest byte-for-byte when `pnpm pack` cannot run", () => {
-    const before = fs.readFileSync(manifestPath);
-    let status = 0;
-    let stderr = "";
-    try {
-      execFileSync(
-        process.execPath,
-        [path.join(repoRoot, "scripts/rehearse-npm-publish.mjs"), "--beta", line, "--out-dir", outDir],
-        {
-          cwd: repoRoot,
-          encoding: "utf8",
-          stdio: ["ignore", "pipe", "pipe"],
-          // `node` is invoked by absolute path, so an empty `PATH` starves only
-          // the `pnpm` the pack shells out to. Everything before the edit —
-          // reading the manifests, reading `build.mjs` — needs no `PATH` at all,
-          // which is what puts the failure on the far side of the rewrite.
-          env: { PATH: emptyPathDir, HOME: process.env.HOME ?? emptyPathDir },
-        },
-      );
-    } catch (error) {
-      status = error.status ?? 1;
-      stderr = error.stderr ?? "";
-    }
-
-    expect(status, "the pack was supposed to fail with no `pnpm` on PATH").not.toBe(0);
-    expect(stderr).toMatch(/`pnpm pack` failed for @actana\/cli/);
-    // The assertion the finding is about. Bytes, not a parsed comparison: the
-    // rewrite also reflows `keywords`, so a JSON-equal check would have passed
-    // on a file that is visibly modified in `git status`.
-    expect(
-      fs.readFileSync(manifestPath).equals(before),
-      "a failed beta pack left packages/cli/package.json modified in the working tree",
-    ).toBe(true);
-  }, 120_000);
 });

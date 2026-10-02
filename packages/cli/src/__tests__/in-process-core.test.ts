@@ -25,7 +25,7 @@
 // test-only module alias buys the coverage without the graph.
 
 import { describe, it, expect, afterEach } from "vitest";
-import { probeCore } from "../core-probe.ts";
+import { probeCore } from "@actana/cli";
 import { EXIT_FAILURE, EXIT_OK } from "../exit-codes.ts";
 import {
   makeCliFixture,
