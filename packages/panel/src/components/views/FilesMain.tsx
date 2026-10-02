@@ -89,7 +89,7 @@ export function FilesMain({
             <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
               {e.name} {hasNew(e) ? <span style={NEW_BADGE}>· new</span> : null}
             </span>
-            <span style={{ color: "var(--text-dim)" }}>{e.kind === "folder" ? `${e.itemCount ?? "…"} items` : formatBytes(e.size ?? 0)}</span>
+            <span style={{ color: "var(--text-dim)" }}>{e.kind === "folder" ? (e.itemCount === undefined ? "" : `${e.itemCount} ${e.itemCount === 1 ? "item" : "items"}`) : formatBytes(e.size ?? 0)}</span>
             <span style={{ color: "var(--text-dim)" }}>{e.modifiedAt ? formatRelativeTime(e.modifiedAt) : ""}</span>
           </button>
         ))}
