@@ -8,11 +8,12 @@
 // Harness this Core had not seen before becoming available
 // (`harness-skill-watcher.ts`).
 //
-// The writer itself is `@actana/shared/orchestration-skill-install`, which is a
-// byte-identical twin of a file in `packages/cli` because those two packages
-// may not share a module (ADR 0031 D8). This file is the Core's side of the
-// seam: it supplies the home directory, reads the fan-out table off
-// `HARNESS_CLI_CONFIG`, and turns the result into log lines.
+// The writer itself is `@actana/shared/orchestration-skill-install`. The payload it
+// writes is the published one: imported from the root of the pinned `@actana/cli`, the
+// same constants the client nouns install from, so there is one payload source and a
+// Core's boot install and its `actana` cannot disagree about the text (#580). This file
+// is the Core's side of the seam: it supplies the home directory, reads the fan-out
+// table off `HARNESS_CLI_CONFIG`, and turns the result into log lines.
 
 import * as path from "node:path";
 import log from "@actana/shared/log";
@@ -27,7 +28,7 @@ import {
   ORCHESTRATION_SKILL_MARKER,
   ORCHESTRATION_SKILL_FILES,
   ORCHESTRATION_SKILL_NAMES,
-} from "@actana/shared/orchestration-skill-payload";
+} from "@actana/cli";
 
 /**
  * Write or repair every copy on this machine, and log what happened.
