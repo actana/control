@@ -3,12 +3,14 @@
 // The Core tarball's claim is that an extracted tree needs nothing from the host: no system Node and
 // no network (`scripts/smoke-core-tarball.mjs`). Sandboxing egress portably across Linux and macOS
 // runners without privileges is not possible, so this does it inside the process, at the two places
-// Node reaches out from: `net.Socket#connect` (every TCP, TLS, `fetch` and `ws` connection ends
-// there) and `dns.lookup` (and its promise twin). Loopback, unix sockets and `localhost` pass: the
+// Node reaches out from for these clients: `net.Socket#connect` (every TCP, TLS, `fetch` and `ws` connection ends
+// there) and `dns.lookup` (and its promise twin), the two paths the CLI's fetch and WebSocket clients use. Loopback, unix sockets and `localhost` pass: the
 // bundled CLI dials the Core on this machine, and that is exactly what must keep working.
 //
 // Every refused attempt is appended, one line, to the file named by `ACTANA_NO_NETWORK_LOG`, and
-// thrown as an `ENETUNREACH` error. The log is what a smoke asserts on: "the CLI worked" would also
+// thrown as an `ENETUNREACH` error.
+// Not covered, and said so: `dns.resolve*` (a direct resolver query) and `dgram` (UDP). Neither is used by
+// the verbs smoked; a client that started using one would need this extended first. The log is what a smoke asserts on: "the CLI worked" would also
 // be true of a CLI that tried the network, failed, and carried on.
 "use strict";
 

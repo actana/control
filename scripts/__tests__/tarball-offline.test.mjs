@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   assertExtractedTarballPins,
   bundledProtocolVersions,
+  classifySessionStart,
   protocolFromVersionLine,
 } from "../lib/tarball-offline.mjs";
 
@@ -78,5 +79,44 @@ describe("bundledProtocolVersions", () => {
       "actana-cli.cjs": "0.18.0",
       "core-entry.cjs": "0.18.0",
     });
+  });
+});
+
+describe("classifySessionStart", () => {
+  it("is refused when the Core refuses to spawn the harness, whatever the reason", () => {
+    for (const reason of ["binary-not-found", "permission-denied"]) {
+      expect(classifySessionStart({ status: 1, stderr: `actana session start: pty:spawn rejected (${reason})` })).toEqual({ kind: "refused" });
+    }
+  });
+
+  it("is started, with its id, when a harness exists and a Session came up", () => {
+    expect(classifySessionStart({ status: 0, stdout: "t-abc123\n" })).toEqual({ kind: "started", id: "t-abc123" });
+  });
+
+  it("is unexpected for any other failure, so a broken CLI is not mistaken for a missing harness", () => {
+    expect(classifySessionStart({ status: 1, stderr: "certificate signature failure" }).kind).toBe("unexpected");
+    expect(classifySessionStart({ status: 2, stderr: "unknown flag" }).kind).toBe("unexpected");
+    expect(classifySessionStart({ status: 0, stdout: "" }).kind).toBe("unexpected");
+  });
+});
+
+// The image smoke only really runs after a PR is ready, and nothing runs it locally (it needs Docker), so
+// what it runs is pinned here: #645 named session ls, session start --await-prompt, events and files as the
+// verbs it has to judge (#646 R1 of #648).
+describe("scripts/smoke-core-image.mjs runs the bundled actana's verbs in the image", () => {
+  const source = fs.readFileSync(path.join(repoRoot, "scripts", "smoke-core-image.mjs"), "utf8");
+
+  it.each([
+    ['"session", "ls"'],
+    ['"session", "start", "--await-prompt"'],
+    ['"events", "tail"'],
+    ['["files", "ls"]'],
+    ['["shared", "ls"]'],
+  ])("runs %s as core", (needle) => {
+    expect(source).toContain(needle);
+  });
+
+  it("goes through the same session-start classifier as the tarball smoke", () => {
+    expect(source).toContain("classifySessionStart");
   });
 });

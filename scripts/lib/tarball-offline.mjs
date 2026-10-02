@@ -32,6 +32,24 @@ import { credentialAfterBoot } from "./core-smoke.mjs";
 
 export const NO_NETWORK_PRELOAD = path.resolve(import.meta.dirname, "no-network-preload.cjs");
 
+/**
+ * What `actana session start --await-prompt <prompt>` did, on a Core that may or may not have the
+ * harness: it either refused to spawn one (the Core's own `pty:spawn rejected (<reason>)`, which proves
+ * the whole path to the Core) or started a Session and printed its id (which the caller must kill, so a
+ * smoke on a machine that has a harness does not leave one running).
+ *
+ * @returns {{kind: "refused"} | {kind: "started", id: string} | {kind: "unexpected", why: string}}
+ */
+export function classifySessionStart({ status, stdout = "", stderr = "" }) {
+  if (status !== 0) {
+    return /pty:spawn rejected \(/.test(stderr)
+      ? { kind: "refused" }
+      : { kind: "unexpected", why: `exit ${status} without the Core's \`pty:spawn rejected\` refusal` };
+  }
+  const id = String(stdout).trim().split(/\s+/)[0];
+  return id ? { kind: "started", id } : { kind: "unexpected", why: "exit 0 but printed no Session id" };
+}
+
 /** `core-link protocol X.Y.Z` out of `actana --version`, or null. */
 export function protocolFromVersionLine(text) {
   const match = /core-link protocol (\d+\.\d+\.\d+)/.exec(String(text));
@@ -118,7 +136,8 @@ export async function assertBundledCliWorksOffline({ installRoot, env, home, por
   const attempts = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "actana-offline-")), "attempts.log");
   const guardEnv = {
     ...env,
-    NODE_OPTIONS: `${env.NODE_OPTIONS ? `${env.NODE_OPTIONS} ` : ""}--require=${NO_NETWORK_PRELOAD}`,
+    // Quoted: a checkout path with a space would otherwise split into two options.
+    NODE_OPTIONS: `${env.NODE_OPTIONS ? `${env.NODE_OPTIONS} ` : ""}--require=${JSON.stringify(NO_NETWORK_PRELOAD)}`,
     ACTANA_NO_NETWORK_LOG: attempts,
   };
   const control = spawnSync(
@@ -164,17 +183,25 @@ export async function assertBundledCliWorksOffline({ installRoot, env, home, por
       return `printed no JSON: ${r.stdout.slice(0, 120)}`;
     }
   });
-  expectOk(["session", "ls", "--json"], (r) => (JSON.parse(r.stdout).length === 0 ? null : `expected [], got ${r.stdout}`));
+  expectOk(["session", "ls", "--json"], (r) => {
+    try {
+      return JSON.parse(r.stdout).length === 0 ? null : `expected [], got ${r.stdout}`;
+    } catch {
+      return `printed no JSON: ${r.stdout.slice(0, 120)}`;
+    }
+  });
   expectOk(["files", "ls"], (r) => (/^KIND\s+SIZE/m.test(r.stdout) ? null : "printed no listing header"));
   expectOk(["shared", "ls"], (r) => (r.stdout.trim() === "" ? "printed nothing" : null));
 
-  // `session start --await-prompt` reaches the Core, which refuses to spawn a harness this tarball's
-  // PATH does not have; that refusal is the Core's, so it proves the whole path without a harness.
+  // `session start --await-prompt` reaches the Core: on a PATH without the harness the Core refuses
+  // to spawn it (`pty:spawn rejected`), on a machine that has one a Session starts and is killed.
   const start = run(["session", "start", "--await-prompt", "hello"]);
-  if (start.status === 0 || !/pty:spawn rejected \(binary-not-found\)/.test(start.stderr)) {
-    die(`\`actana session start --await-prompt\` offline did not reach the Core's refusal (exit ${start.status})\n  stdout: ${start.stdout.slice(0, 300)}\n  stderr: ${start.stderr.slice(0, 600)}`);
+  const outcome = classifySessionStart(start);
+  if (outcome.kind === "unexpected") {
+    die(`\`actana session start --await-prompt\` offline did not reach the Core: ${outcome.why}\n  stdout: ${start.stdout.slice(0, 300)}\n  stderr: ${start.stderr.slice(0, 600)}`);
   }
-  log("actana session start --await-prompt: reached the Core, which refused the missing harness");
+  if (outcome.kind === "started") run(["session", "kill", outcome.id]);
+  log(`actana session start --await-prompt: reached the Core (${outcome.kind === "started" ? "started a Session, killed it" : "the Core refused the missing harness"})`);
 
   await expectFirstEvent(launcher, cliEnv, die);
   log("actana events tail: streamed an event");

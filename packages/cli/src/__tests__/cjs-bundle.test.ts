@@ -44,7 +44,8 @@ describe("the CommonJS bundle the Core tarball stages", () => {
     const text = readFileSync(BUNDLE, "utf8");
     // esbuild rewrites a surviving `import.meta` to an empty `import_meta` object, whose `.url` is
     // `undefined`; a module that reads it at load is the crash. None may remain in this bundle.
-    expect(text).not.toMatch(/\bimport_meta\.url\b/);
+    // esbuild numbers the shim per module (`import_meta`, `import_meta2`, …), so match them all.
+    expect(text).not.toMatch(/\bimport_meta\d*\./);
   });
 
   it("starts, and answers --version on stdout with nothing on stderr and exit 0", () => {

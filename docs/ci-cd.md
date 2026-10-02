@@ -766,8 +766,8 @@ which is written down here rather than discovered:
 
 `actana` in the tarball is `app/actana-cli.cjs`: the Core's own verbs plus the client nouns of the
 published `@actana/cli`, inlined by esbuild, with `@actana/sdk` inlined into it and into
-`app/core-entry.cjs`. Only `ws`, `undici` and `selfsigned` are resolved at run time, from
-`app/node_modules`. Three checks keep that honest, none of them a literal:
+`app/core-entry.cjs`. Only `ws`, `undici` and `selfsigned` are resolved at run time by the CLI (the daemon
+also resolves `node-pty` and `better-sqlite3`), from `app/node_modules`. Three checks keep that honest, none of them a literal:
 
 - **Pinned.** `scripts/build-core-tarball.mjs` refuses to build unless `@actana/cli` is pinned to one
   exact version in `packages/cli` and `packages/core`, `@actana/sdk` to one exact version in all five
@@ -785,7 +785,10 @@ published `@actana/cli`, inlined by esbuild, with `@actana/sdk` inlined into it 
   skills` loads the skill payload at start-up, which is what a CommonJS bundle once crashed on;
   `packages/cli/src/__tests__/cjs-bundle.test.ts` runs the same bundle under plain `node`.
 
-The Core image smoke then runs the same verbs inside the image as `core`.
+The Core image smoke then runs the same verbs inside the image as `core` (`session ls`, `session start
+--await-prompt`, `events tail`, `files ls`, `shared ls`, `harness skills`, `--version`), without the network
+guard. `session start` is accepted either way: the Core's `pty:spawn rejected` refusal on a PATH without
+the harness, or a started Session, which the smoke kills.
 
 ## The installer e2e, and why it is one job on two triggers
 
