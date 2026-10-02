@@ -27,6 +27,12 @@ export const queryKeys = {
   tasks: ["tasks"] as const,
   task: (id: string) => ["tasks", id] as const,
   coreAgents: (coreId: string) => ["core-agents", coreId] as const,
+  /** Everything the Files tab holds for a Core, for one invalidation after a write. */
+  sharedFiles: (coreId: string) => ["shared-files", coreId] as const,
+  sharedFolder: (coreId: string, path: string) => ["shared-files", coreId, "folder", path] as const,
+  sharedFileDetails: (coreId: string, path: string) => ["shared-files", coreId, "details", path] as const,
+  sharedFilesSummary: (coreId: string, since: number) => ["shared-files", coreId, "summary", since] as const,
+  sharedFilesSearch: (coreId: string, query: string) => ["shared-files", coreId, "search", query] as const,
   settings: ["settings"] as const,
   hookToken: ["hook-token"] as const,
   keybindings: ["keybindings"] as const,
@@ -363,6 +369,52 @@ export const coreAgentsQueryOptions = (coreId: string) =>
     queryKey: queryKeys.coreAgents(coreId),
     queryFn: async () => (await api.listCoreAgents(coreId)).agents,
     enabled: !!coreId,
+  });
+
+/** The Files tab polls S3 (a change on the Core reaches S3 through the sync, so about every ten seconds is as fresh as it gets); a hidden tab does not. */
+export const SHARED_FILES_POLL_MS = 10_000;
+
+export const sharedFolderQueryOptions = (coreId: string, path: string) =>
+  queryOptions({
+    queryKey: queryKeys.sharedFolder(coreId, path),
+    queryFn: () => api.listSharedFiles(coreId, path),
+    enabled: !!coreId,
+    refetchInterval: SHARED_FILES_POLL_MS,
+    retry: false,
+  });
+
+export const useSharedFolder = (coreId: string, path: string, opts: { enabled?: boolean; poll?: boolean } = {}) =>
+  useQuery({
+    ...sharedFolderQueryOptions(coreId, path),
+    enabled: !!coreId && opts.enabled !== false,
+    ...(opts.poll === false ? { refetchInterval: false as const } : {}),
+  });
+
+export const useSharedFileDetails = (coreId: string, path: string | null, opts: { enabled?: boolean } = {}) =>
+  useQuery({
+    queryKey: queryKeys.sharedFileDetails(coreId, path ?? ""),
+    queryFn: () => api.getSharedFileDetails(coreId, path!),
+    enabled: !!coreId && !!path && opts.enabled !== false,
+    staleTime: 30_000,
+    retry: false,
+  });
+
+/** The tree's footer and the "new" badges: one listing of the Core's folder, since the operator's last visit. */
+export const useSharedFilesSummary = (coreId: string, since: number) =>
+  useQuery({
+    queryKey: queryKeys.sharedFilesSummary(coreId, since),
+    queryFn: () => api.getSharedFilesSummary(coreId, since),
+    enabled: !!coreId,
+    refetchInterval: SHARED_FILES_POLL_MS,
+    retry: false,
+  });
+
+export const useSharedFilesSearch = (coreId: string, query: string) =>
+  useQuery({
+    queryKey: queryKeys.sharedFilesSearch(coreId, query),
+    queryFn: () => api.searchSharedFiles(coreId, query),
+    enabled: !!coreId && query.trim().length > 0,
+    retry: false,
   });
 
 export const useTasks = () => useQuery(tasksQueryOptions());

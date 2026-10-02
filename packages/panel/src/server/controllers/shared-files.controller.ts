@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { json, jsonError, parseJsonBody, rethrowUnlessDomain } from "./_helpers";
-import { HTTP_BAD_REQUEST, HTTP_PAYLOAD_TOO_LARGE } from "~/shared/http-status";
+import { HTTP_PAYLOAD_TOO_LARGE } from "~/shared/http-status";
 import { PayloadTooLargeError, sharedFiles } from "../services/shared-files";
 
 /**
@@ -74,7 +74,7 @@ export const mkdir = (ownerId: number, coreId: string, request: Request) =>
 /** The browser's stream is handed on unread: the service counts it against the limit as it arrives. */
 export const upload = (ownerId: number, coreId: string, url: URL, request: Request) =>
   guarded(async () => {
-    if (!request.body) return jsonError(HTTP_BAD_REQUEST, "this upload carried no body");
+    // A body-less PUT is an empty file (a new text file is one); the browser's stream is handed on unread.
     const declared = request.headers.get("content-length");
     const length = declared !== null && /^\d+$/.test(declared) ? Number(declared) : null;
     return json({ entry: await sharedFiles().upload(ownerId, coreId, url.searchParams.get("path") ?? "", request.body, length) });

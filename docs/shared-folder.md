@@ -238,3 +238,42 @@ POST /api/cores/:id/delete {confirmPrefix} ──▶ prefix typed exactly ──
 | keys rotate 15 minutes early, hourly, with a back-off and a visible error | `shared-folders.test.ts` (fake clock) |
 | unpair keeps the Core's folder | `shared-folder-pairing-api.test.ts` |
 | delete touches only its own prefix | `shared-folder-pairing-api.test.ts` (fake S3), `shared-folders-seaweedfs.test.ts` (real SeaweedFS in CI) |
+
+## The Panel's Files tab
+
+Issue [#565](https://github.com/actana/control/issues/565), part 1 (the Storage settings page is part 2 of #566). A Core's page has a
+**Files** tab that shows its Shared folder as a Drive: a folder tree, folders as tiles and files as cards with previews, breadcrumbs,
+Grid and List, search by name, a details pane (Download by a 5-minute signed URL, Copy path, Rename, Move, Delete with a confirmation),
+the **New** menu (New folder, Upload files, Upload folder with its tree, New text file), drag-in with a progress row per file, and a
+**new** badge on files written since the operator last had the tab open.
+
+It reads S3 directly, **never the Core**, so it works while the Core is offline or paused (a banner says so), and what it writes reaches
+the Core through the Core's own sync (*The S3 sync*, above):
+
+```
+browser ──/api/cores/:id/shared/files/…──▶ Panel (session owner, path rule) ── SDK CoreShared S3 mode ──▶ S3 prefix of this Core
+                                              │   key: 1 hour, from the issuer, this Core's folder only          │
+                                              └── master key: read only by storageKeyIssuer, never returned ◀──┘
+```
+
+| Route (under `/api/cores/:coreId/shared/files`) | What it does |
+|---|---|
+| `GET ?path=` | the direct children of a folder, folders first, with item counts |
+| `GET /details?path=` | one file: size, time and a text preview (a log from its tail) |
+| `GET /media?path=` | an image or PDF inline, streamed by the Panel (never an SVG or a page) |
+| `POST /download-url` | `{ url, expiresAt }`: one object's URL, five minutes, minted here |
+| `GET /search?q=` · `GET /summary?since=` | names anywhere in the folder · bytes used and the files written after `since` |
+| `POST /mkdir` · `PUT /upload?path=` | a folder · one file, counted against the upload limit as it streams in |
+| `POST /rename` · `POST /move` · `POST /delete` | the root is refused; a folder moves, renames and deletes with its contents |
+
+- **No key reaches the browser.** The master key has one reader, `storageKeyIssuer`. A Core's 1-hour key stays in the Panel's memory,
+  limited to `<prefix>/<core id>/`, and is replaced six minutes before it ends. The one credential-bearing thing a browser receives is
+  the download URL, which the SDK signs for one object and which ends in five minutes.
+- **Who may ask** is decided on every call from the database: the session's owner must own the Core and the Core must have a finished
+  folder, whatever key is in memory. A stored folder that is not `…/<core id>/` is refused.
+- **Paths** from the browser are checked in `shared/shared-files.ts` (`checkSharedPath`) before a key is asked for: no leading `/`, no
+  `.` or `..` segment, no empty segment, no backslash or control character. The SDK checks again.
+- **The upload limit** is `DEFAULT_UPLOAD_LIMIT_BYTES` (100 MB) until the Storage settings page stores one beside the rest of the
+  storage config; the config model of #564 is unchanged. One file is held in memory while it is written, because the SDK's `put`
+  takes bytes.
+- **Open folder** on a Task opens `?tab=files&path=tasks/<task id>`. Attaching files to a Task is not in this part.

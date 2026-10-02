@@ -8,6 +8,7 @@ import { EmptyState } from "~/components/ui/EmptyState";
 import { CoreHeader, type CoreTab } from "~/components/views/CoreHeader";
 import { CoreNeedsUpdateNotice } from "~/components/views/CoreNeedsUpdate";
 import { FleetSessionRow } from "~/components/views/FleetSessionRow";
+import { FilesDrive } from "~/components/views/FilesDrive";
 import { TasksBoard } from "~/components/views/TasksBoard";
 import { NewHarnessDialog } from "~/components/views/NewHarnessDialog";
 import { useFleet } from "~/lib/fleet-context";
@@ -26,11 +27,11 @@ import type { Harness } from "@actana/shared/domain";
 
 /**
  * A Core's page (screen 02): header, then one of three tabs. Sessions lists
- * this Core's harness Sessions; Files is a placeholder until #565 lands; Tasks is the
+ * this Core's harness Sessions; Files is the Shared folder Drive (#565), its open folder in `?path=`; Tasks is the
  * Tasks board filtered to this Core (#571). The Terminal is the bottom drawer the shell already owns.
  * New Session is prompt-first (issue 560, screen 03).
  */
-export function CorePage({ coreId, tab }: { coreId: string; tab: CoreTab }) {
+export function CorePage({ coreId, tab, path = "" }: { coreId: string; tab: CoreTab; path?: string }) {
   const router = useRouter();
   const queryClient = useQueryClient();
   const cliAvailability = useCliAvailability(coreId);
@@ -48,6 +49,12 @@ export function CorePage({ coreId, tab }: { coreId: string; tab: CoreTab }) {
   const setTab = useCallback(
     (next: CoreTab) => {
       void router.navigate({ to: "/cores/$coreId", params: { coreId }, search: { tab: next } });
+    },
+    [router, coreId],
+  );
+  const setPath = useCallback(
+    (next: string) => {
+      void router.navigate({ to: "/cores/$coreId", params: { coreId }, search: { tab: "files", ...(next ? { path: next } : {}) } });
     },
     [router, coreId],
   );
@@ -172,11 +179,7 @@ export function CorePage({ coreId, tab }: { coreId: string; tab: CoreTab }) {
             />
           )
         ) : tab === "files" ? (
-          <EmptyState
-            title="Files"
-            subtitle="The Shared folder Drive lands with #565."
-            icon="folder"
-          />
+          <FilesDrive core={core} path={path} onPath={setPath} />
         ) : (
           <TasksBoard coreId={coreId} />
         )}

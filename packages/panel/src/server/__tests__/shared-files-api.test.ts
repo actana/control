@@ -380,6 +380,15 @@ describe("uploads", () => {
     expect(s3.objects.get(`${PREFIX}/${a}/edge.bin`)?.bytes.byteLength).toBe(LIMIT);
   });
 
+  it("takes a body-less PUT as an empty file (a new text file is one)", async () => {
+    const { s3 } = rig();
+    const a = await attachedCore();
+    const res = await call(files(a, "upload", q("notes/untitled.txt")), { method: "PUT" });
+    expect(res.status).toBe(200);
+    expect((await res.json()).entry).toMatchObject({ path: "notes/untitled.txt", size: 0 });
+    expect(s3.objects.get(`${PREFIX}/${a}/notes/untitled.txt`)?.bytes.byteLength).toBe(0);
+  });
+
   it("keeps a folder's whole tree: nested files and an empty folder come back where they were", async () => {
     const { s3 } = rig();
     const a = await attachedCore();
