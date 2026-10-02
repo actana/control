@@ -537,5 +537,5 @@ relates to it: nothing merged connects them.
 - **Every later ticket in #552 cites this record** for the model.
 - **A ticket that needs a decision changed amends this record rather than settling it in a comment.** This rule is
   from `docs/adr/README.md` and ADR 0024. It is new to this record and was not decided in #552 or #554.
-- **#567 was planned as seven pull requests, and this record was the first.** It landed in six (the last is
-  "6 of 6", #643). Each one built on D14–D21.
+- **#567 was planned as seven pull requests, and this record was the first.** Seven merged: #593 (this record),
+  #594, #595, #605 ("3b of 7"), #616, #639 and #643 (the last, titled "6 of 6"). Each one built on D14–D21.

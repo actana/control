@@ -171,9 +171,11 @@ actana core status
 - [ ] Because you are at a terminal on that machine too, the pairing **result**
       comes framed (#360): a green `✓`, the endpoint, an honest `Current` row,
       where the credential landed at mode 0600 — and under it `actana core
-      status`, `actana files ls`, `actana harness ls`, `actana session
-      start` and `actana core shell`. Run all five. They are the checkbox: a
-      next step that does not work is worse than no next step.
+      status`, `actana harness ls`, `actana session start "<prompt>"` and
+      `actana core shell`. Run all four. (When the pairing did not become `current`,
+      `actana core use <name>` comes first, and a closing line points at the Panel's
+      Settings -> Cores screen.) They are the checkbox: a next step that does not
+      work is worse than no next step.
 - [ ] The `Sent as` row names what this machine put in the request — the
       `--label` you passed, or its hostname. It claims nothing about the Core,
       and it should not: `actana pair ls` **on the Core** lists the label the
