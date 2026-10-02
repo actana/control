@@ -92,8 +92,8 @@ importers:
   packages/cli:
     dependencies:
       '@actana/cli':
-        specifier: 0.6.0-next.9
-        version: 0.6.0-next.9(pg@8.23.0)
+        specifier: 0.6.0-next.10
+        version: 0.6.0-next.10(pg@8.23.0)
       '@actana/sdk':
         specifier: 0.6.0-next.4
         version: 0.6.0-next.4(pg@8.23.0)
@@ -126,8 +126,8 @@ importers:
   packages/core:
     dependencies:
       '@actana/cli':
-        specifier: 0.6.0-next.9
-        version: 0.6.0-next.9(pg@8.23.0)
+        specifier: 0.6.0-next.10
+        version: 0.6.0-next.10(pg@8.23.0)
       '@actana/sdk':
         specifier: 0.6.0-next.4
         version: 0.6.0-next.4(pg@8.23.0)
@@ -417,8 +417,8 @@ importers:
 
 packages:
 
-  '@actana/cli@0.6.0-next.9':
-    resolution: {integrity: sha512-IpSHD0PdAZduzpG0XYPOTS1WNmILhKx+ZqTIv+Fhd9emunLoc0Fx0cB0TxzGExfMhtHSLsWEJMepY1JpEAZ7Wg==}
+  '@actana/cli@0.6.0-next.10':
+    resolution: {integrity: sha512-xKI4vSSxdwD0KHjw7a9nghFrGrNcDw9XjqVv4A5VqXf1bkGh9a2xPKQQmbPf4v5MFfoVXZMnzoRS89tVKJ9p5w==}
     engines: {node: '>=24.0.0 <25'}
     hasBin: true
 
@@ -4077,7 +4077,7 @@ packages:
 
 snapshots:
 
-  '@actana/cli@0.6.0-next.9(pg@8.23.0)':
+  '@actana/cli@0.6.0-next.10(pg@8.23.0)':
     dependencies:
       '@actana/sdk': 0.6.0-next.4(pg@8.23.0)
     transitivePeerDependencies:
