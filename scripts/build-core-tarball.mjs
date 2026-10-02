@@ -8,7 +8,8 @@
 //                           SHA-256 verified against that release's SHASUMS256.txt)
 //   app/actana-cli.cjs      the unified `actana` — the operator verbs (setup,
 //                           status, token, daemon, …) and the client nouns
-//                           (core, project, session, events, harness) (#288)
+//                           (core, session, events, files, shared, harness) — the published
+//                           @actana/cli, inlined at its pinned version (#580)
 //   app/core-entry.cjs   the esbuild-bundled Core daemon
 //   app/core-home-ops.cjs  the helper the daemon runs as `core` for work in core's home (#559)
 //   app/core-files-op.cjs  the helper the daemon runs as `core` for the Files API (#557)

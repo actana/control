@@ -1,6 +1,20 @@
 import { describe, expect, it } from "vitest";
 
-import config from "../../commitlint.config.mjs";
+import { spawnSync } from "node:child_process";
+import * as path from "node:path";
+
+import config, { LEGACY_LONG_HEADERS } from "../../commitlint.config.mjs";
+
+const repoRoot = path.resolve(import.meta.dirname, "..", "..");
+
+/** Lint one message through the real commitlint, the way scripts/check-conventions.sh does. */
+function lint(message) {
+  return spawnSync(path.join(repoRoot, "node_modules", ".bin", "commitlint"), ["--config", path.join(repoRoot, "commitlint.config.mjs"), "--cwd", repoRoot], {
+    input: message,
+    encoding: "utf8",
+    timeout: 60_000,
+  });
+}
 
 const rule = config.plugins[0].rules["trailer-leading-blank"];
 const check = (raw) => rule({ raw });
@@ -130,5 +144,37 @@ describe("commitlint config wiring", () => {
 
   it("enforces the replacement at error level", () => {
     expect(config.rules["trailer-leading-blank"]).toEqual([2, "always"]);
+  });
+});
+
+describe("the header length limit and its two legacy exemptions (#552)", () => {
+  it("is still 120: the limit was not raised to make room for them", () => {
+    expect(config.rules["header-max-length"]).toEqual([2, "always", 120]);
+  });
+
+  it("exempts exactly the two merged squash commits 87daa0a and 79b752a, and nothing else", () => {
+    expect(LEGACY_LONG_HEADERS.map(({ sha }) => sha)).toEqual(["87daa0a", "79b752a"]);
+    expect(LEGACY_LONG_HEADERS.map(({ header }) => header.length)).toEqual([125, 122]);
+    for (const { header } of LEGACY_LONG_HEADERS) expect(header.length).toBeGreaterThan(120);
+  });
+
+  it.each(LEGACY_LONG_HEADERS.map(({ sha, header }) => [sha, header]))("passes %s's header through commitlint", (_sha, header) => {
+    const run = lint(`${header}\n\nBody.\n\nRefs #580`);
+    expect(run.status, `${run.stdout}${run.stderr}`).toBe(0);
+  });
+
+  it("still fails a new header over 120 characters, with the length named", () => {
+    const header = `feat(ci): ${"a long subject that nobody shortened ".repeat(4)}(#999)`;
+    expect(header.length).toBeGreaterThan(120);
+    const run = lint(`${header}\n\nRefs #580`);
+    expect(run.status).toBe(1);
+    expect(`${run.stdout}${run.stderr}`).toMatch(/header must not be longer than 120 characters/);
+  });
+
+  it("still fails a header that only starts like an exempt one", () => {
+    const [{ header }] = LEGACY_LONG_HEADERS;
+    const run = lint(`${header} and then some more words\n\nRefs #580`);
+    expect(run.status).toBe(1);
+    expect(`${run.stdout}${run.stderr}`).toMatch(/header must not be longer than 120 characters/);
   });
 });

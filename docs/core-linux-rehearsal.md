@@ -171,7 +171,7 @@ actana core status
 - [ ] Because you are at a terminal on that machine too, the pairing **result**
       comes framed (#360): a green `✓`, the endpoint, an honest `Current` row,
       where the credential landed at mode 0600 — and under it `actana core
-      status`, `actana project ls`, `actana harness ls`, `actana session
+      status`, `actana files ls`, `actana harness ls`, `actana session
       start` and `actana core shell`. Run all five. They are the checkbox: a
       next step that does not work is worse than no next step.
 - [ ] The `Sent as` row names what this machine put in the request — the
