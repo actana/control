@@ -575,10 +575,12 @@ export const tokenUsageRollup = pgTable(
       .notNull()
       .references(() => sessions.id, { onDelete: "cascade" }),
     day: text("day").notNull(),
-    inputTokens: integer("input_tokens").notNull().default(0),
-    outputTokens: integer("output_tokens").notNull().default(0),
-    cacheCreationTokens: integer("cache_creation_tokens").notNull().default(0),
-    cacheReadTokens: integer("cache_read_tokens").notNull().default(0),
+    // Day buckets sum every message of a Session-day; SQLite INTEGER was 64-bit,
+    // so these stay bigint (number mode) — an int4 would reject past 2^31.
+    inputTokens: bigint("input_tokens", { mode: "number" }).notNull().default(0),
+    outputTokens: bigint("output_tokens", { mode: "number" }).notNull().default(0),
+    cacheCreationTokens: bigint("cache_creation_tokens", { mode: "number" }).notNull().default(0),
+    cacheReadTokens: bigint("cache_read_tokens", { mode: "number" }).notNull().default(0),
     lastTs: epochMs("last_ts").notNull().default(0),
   },
   (t) => [
@@ -599,7 +601,8 @@ export const tokenUsageSessionOffsets = pgTable(
     sessionId: text("session_id")
       .notNull()
       .references(() => sessions.id, { onDelete: "cascade" }),
-    byteOffset: integer("byte_offset").notNull().default(0),
+    // JSONL files grow past 2 GiB on long Sessions; keep SQLite's 64-bit width.
+    byteOffset: bigint("byte_offset", { mode: "number" }).notNull().default(0),
     updatedAt: epochMs("updated_at").notNull(),
   },
   (t) => [

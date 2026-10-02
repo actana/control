@@ -72,4 +72,54 @@ describe("the missioncontrol.db tables on Postgres", { timeout: 30_000 }, () => 
     expect(alice.rows[0].value).toBe("a");
     expect(bob.rows[0].value).toBe("b");
   });
+
+  it("holds rollup counters and byte_offset past 2^31 (SQLite INTEGER width)", async () => {
+    const db = await make();
+    await seedOperator(db);
+    await db.pool.query(
+      `insert into sessions (
+         id, owner_id, title, title_manually_set, agent, status, branch, preview,
+         lines, archived, pinned, claude_skip_permissions, claude_bare_session,
+         created_at, updated_at
+       ) values ('s1', 1, 't', false, 'claude-code', 'ready', 'main', '', 0, false, false, false, false, $1, $1)`,
+      [NOW],
+    );
+    // One past int4 max: an integer column would reject this with "out of range".
+    const pastInt4 = 2_147_483_648;
+    await db.pool.query(
+      `insert into token_usage_rollup (
+         owner_id, session_id, day, input_tokens, output_tokens,
+         cache_creation_tokens, cache_read_tokens, last_ts
+       ) values (1, 's1', '2026-05-10', $1, $1, $1, $1, $2)`,
+      [pastInt4, NOW],
+    );
+    await db.pool.query(
+      `insert into token_usage_session_offsets (
+         owner_id, claude_session_id, session_id, byte_offset, updated_at
+       ) values (1, 'claude-1', 's1', $1, $2)`,
+      [pastInt4, NOW],
+    );
+    const types = await db.pool.query(
+      `select column_name, data_type from information_schema.columns
+       where table_schema = 'public' and (
+         (table_name = 'token_usage_rollup' and column_name in (
+           'input_tokens','output_tokens','cache_creation_tokens','cache_read_tokens'
+         ))
+         or (table_name = 'token_usage_session_offsets' and column_name = 'byte_offset')
+       )
+       order by table_name, column_name`,
+    );
+    for (const r of types.rows) {
+      expect(r.data_type, String(r.column_name)).toBe("bigint");
+    }
+    const rollup = await db.pool.query(
+      "select input_tokens::text as i, cache_read_tokens::text as c from token_usage_rollup where session_id = 's1'",
+    );
+    expect(Number(rollup.rows[0].i)).toBe(pastInt4);
+    expect(Number(rollup.rows[0].c)).toBe(pastInt4);
+    const offset = await db.pool.query(
+      "select byte_offset::text as b from token_usage_session_offsets where claude_session_id = 'claude-1'",
+    );
+    expect(Number(offset.rows[0].b)).toBe(pastInt4);
+  });
 });

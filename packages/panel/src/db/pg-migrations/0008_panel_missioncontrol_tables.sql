@@ -72,10 +72,10 @@ CREATE TABLE "token_usage_rollup" (
 	"owner_id" integer NOT NULL,
 	"session_id" text NOT NULL,
 	"day" text NOT NULL,
-	"input_tokens" integer DEFAULT 0 NOT NULL,
-	"output_tokens" integer DEFAULT 0 NOT NULL,
-	"cache_creation_tokens" integer DEFAULT 0 NOT NULL,
-	"cache_read_tokens" integer DEFAULT 0 NOT NULL,
+	"input_tokens" bigint DEFAULT 0 NOT NULL,
+	"output_tokens" bigint DEFAULT 0 NOT NULL,
+	"cache_creation_tokens" bigint DEFAULT 0 NOT NULL,
+	"cache_read_tokens" bigint DEFAULT 0 NOT NULL,
 	"last_ts" bigint DEFAULT 0 NOT NULL,
 	CONSTRAINT "token_usage_rollup_session_id_day_pk" PRIMARY KEY("session_id","day")
 );
@@ -84,7 +84,7 @@ CREATE TABLE "token_usage_session_offsets" (
 	"owner_id" integer NOT NULL,
 	"claude_session_id" text NOT NULL,
 	"session_id" text NOT NULL,
-	"byte_offset" integer DEFAULT 0 NOT NULL,
+	"byte_offset" bigint DEFAULT 0 NOT NULL,
 	"updated_at" bigint NOT NULL,
 	CONSTRAINT "token_usage_session_offsets_owner_claude_pk" PRIMARY KEY("owner_id","claude_session_id")
 );

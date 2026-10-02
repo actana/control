@@ -86,6 +86,12 @@ export type HookPipelinePorts = {
   onQuestion?(sessionId: string, toolUseId: string | undefined, questions: unknown): void;
   /** A user prompt was submitted — the trigger for naming an unnamed Session. */
   onPrompt?(sessionId: string, prompt: string): void;
+  /**
+   * Optional override for the deferred-finish backstop. Hosts whose ports close
+   * over a request (async DB) must supply one that re-reads the row and awaits
+   * its write; otherwise {@link finishQuietSession} uses getSession/updateStatus.
+   */
+  finishQuietly?(sessionId: string): void;
 };
 
 export type HookPipelineResult =
@@ -290,7 +296,7 @@ export function handleHarnessHookEvent(
     }
     if (session.status === "finished" && inTurn) {
       ports.updateStatus(sessionId, "running");
-      armDeferredFinish(sessionId, (id) => finishQuietSession(id, ports));
+      armDeferredFinish(sessionId, (id) => armQuietFinish(id, ports));
     }
     return { outcome: "ok", event };
   }
@@ -348,7 +354,7 @@ export function handleHarnessHookEvent(
     // subagents EXPIRE (their SubagentStop never arrived), so a lost POST
     // can't wedge the session on "running" forever.
     status = "running";
-    armDeferredFinish(sessionId, (id) => finishQuietSession(id, ports));
+    armDeferredFinish(sessionId, (id) => armQuietFinish(id, ports));
   }
 
   // Hand the question over before the status write so a host's overlay data is
@@ -494,4 +500,13 @@ function finishQuietSession(sessionId: string, ports: HookPipelinePorts): void {
   if (ports.getSession(sessionId)?.status !== "running") return;
   ports.updateStatus(sessionId, "finished");
   noteSessionFinished(sessionId);
+}
+
+/** Prefer the host's own deferred path when ports outlive a request. */
+function armQuietFinish(sessionId: string, ports: HookPipelinePorts): void {
+  if (ports.finishQuietly) {
+    ports.finishQuietly(sessionId);
+    return;
+  }
+  finishQuietSession(sessionId, ports);
 }

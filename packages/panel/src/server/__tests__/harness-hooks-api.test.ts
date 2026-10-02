@@ -1,6 +1,10 @@
-import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { closePanelTestDb, openPanelTestDb, resetPanelState } from "./_panel-test-db";
 import type { Harness } from "@actana/shared/domain";
+
+const RECHECK_MS = 60 * 1000;
+const TTL_MS = 2 * 60 * 60 * 1000;
+const DRAIN_GRACE_MS = 3 * 60 * 1000;
 
 const testDb = await openPanelTestDb();
 
@@ -289,6 +293,42 @@ describe("background subagents over the claude hook API", () => {
     const finished = await stop();
     expect(finished.status).toBe("finished");
     expect((await getSession(sessionId))?.status).toBe("finished");
+  });
+
+  it("deferred finish re-reads the row and does not stomp a later needs-input", async () => {
+    // Fake the interval the backstop arms and Date (drain grace reads Date.now);
+    // leave Promise/IO timers real so the Postgres write inside finishQuietly can settle.
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
+    const rejections: unknown[] = [];
+    const onReject = (reason: unknown) => {
+      rejections.push(reason);
+    };
+    process.on("unhandledRejection", onReject);
+    try {
+      await prompt();
+      await subagent("SubagentStart", "lost-sub");
+      expect((await stop()).status).toBe("running");
+
+      // A later hook moves the Session off running while the backstop is armed.
+      const moved = await postHook("claude", sessionId, {
+        hook_event_name: "PermissionRequest",
+        session_id: SESSION_ID,
+      });
+      expect(moved?.status).toBe(200);
+      expect((await getSession(sessionId))?.status).toBe("needs-input");
+
+      // Subagent never stops: TTL expires, drain grace passes, finish fires.
+      await vi.advanceTimersByTimeAsync(TTL_MS + DRAIN_GRACE_MS + RECHECK_MS * 2);
+      // Let the async finishQuietlyFromDb settle.
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      await new Promise<void>((resolve) => setImmediate(resolve));
+
+      expect((await getSession(sessionId))?.status).toBe("needs-input");
+      expect(rejections).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", onReject);
+      vi.useRealTimers();
+    }
   });
 
   it("finishes on Stop when subagents already completed within the turn", async () => {

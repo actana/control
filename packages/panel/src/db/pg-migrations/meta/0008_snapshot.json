@@ -2067,28 +2067,28 @@
         },
         "input_tokens": {
           "name": "input_tokens",
-          "type": "integer",
+          "type": "bigint",
           "primaryKey": false,
           "notNull": true,
           "default": 0
         },
         "output_tokens": {
           "name": "output_tokens",
-          "type": "integer",
+          "type": "bigint",
           "primaryKey": false,
           "notNull": true,
           "default": 0
         },
         "cache_creation_tokens": {
           "name": "cache_creation_tokens",
-          "type": "integer",
+          "type": "bigint",
           "primaryKey": false,
           "notNull": true,
           "default": 0
         },
         "cache_read_tokens": {
           "name": "cache_read_tokens",
-          "type": "integer",
+          "type": "bigint",
           "primaryKey": false,
           "notNull": true,
           "default": 0
@@ -2199,7 +2199,7 @@
         },
         "byte_offset": {
           "name": "byte_offset",
-          "type": "integer",
+          "type": "bigint",
           "primaryKey": false,
           "notNull": true,
           "default": 0

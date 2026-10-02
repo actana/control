@@ -16,6 +16,8 @@ import { jsonError } from "./http-responses";
 function tokensEqual(a: string, b: string): boolean {
   const ba = Buffer.from(a, "utf8");
   const bb = Buffer.from(b, "utf8");
+  // Length is compared first (and leaks) because timingSafeEqual throws on a
+  // length mismatch; the token is fixed-length, so nothing usable leaks.
   if (ba.length !== bb.length) return false;
   return timingSafeEqual(ba, bb);
 }
@@ -23,6 +25,7 @@ function tokensEqual(a: string, b: string): boolean {
 export async function requireHookToken(
   request: Request,
 ): Promise<{ ok: true } | { ok: false; response: Response }> {
+  // Headers.get() is case-insensitive per the Fetch spec — one lookup is enough.
   const auth = request.headers.get("authorization") ?? "";
   const token = auth.replace(/^Bearer\s+/i, "").trim();
   const expected = (await getOrCreateApiToken()).trim();
