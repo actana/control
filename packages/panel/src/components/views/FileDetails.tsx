@@ -34,10 +34,14 @@ export function FileDetails({
   const download = async () => {
     try {
       const { url } = await api.sharedFileDownloadUrl(coreId, path);
+      // The URL is on the storage endpoint, not the Panel's origin: browsers ignore `download` on a cross-origin link and
+      // navigate to it, which would replace this tab (and abort uploads in progress). So it opens in a new tab and the
+      // store decides whether the browser shows or saves the file; forcing a save needs `response-content-disposition`
+      // in the SDK's presign (a later change).
       const a = document.createElement("a");
       a.href = url;
-      a.download = entry?.name ?? "";
-      a.rel = "noopener";
+      a.target = "_blank";
+      a.rel = "noopener noreferrer";
       document.body.appendChild(a);
       a.click();
       a.remove();

@@ -218,7 +218,13 @@ describe("the details pane", () => {
   it("downloads through a URL the Panel mints for that one file, and follows it", async () => {
     const clicked: string[] = [];
     const orig = HTMLAnchorElement.prototype.click;
-    HTMLAnchorElement.prototype.click = function (this: HTMLAnchorElement) { clicked.push(this.href); };
+    HTMLAnchorElement.prototype.click = function (this: HTMLAnchorElement) {
+      // A same-tab click on a cross-origin URL would navigate the Panel away: it must open elsewhere, without an opener.
+      expect(this.target).toBe("_blank");
+      expect(this.rel).toContain("noopener");
+      expect(this.hasAttribute("download")).toBe(false);
+      clicked.push(this.href);
+    };
     try {
       mount(core(), "sessions/t-munykjig");
       const pane = await select("report-1.md");
