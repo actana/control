@@ -120,6 +120,11 @@ export class SharedFiles {
     this.deps = { now: deps.now ?? Date.now, uploadLimit: deps.uploadLimit ?? storedUploadLimit };
   }
 
+  /** What an upload by this owner may be right now: the limit in Storage settings, read again on each call. */
+  uploadLimitBytes(ownerId: number): Promise<number> {
+    return this.deps.uploadLimit(ownerId);
+  }
+
   /** The S3 client for this owner's Core, from a live key. Throws when the owner has no such Core or it has no folder. */
   private open(ownerId: number, coreId: string): Promise<Held> {
     return this.modes.open(ownerId, coreId);

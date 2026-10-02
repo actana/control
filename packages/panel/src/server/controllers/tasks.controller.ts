@@ -98,8 +98,8 @@ type Parsed<T> = { ok: true; data: T; files: AttachmentFile[] } | { ok: false; r
  * because a browser does not keep a picked folder's tree in a file's name). The files together stay within the upload
  * limit, checked from the declared length before the body is read and again on what was read.
  */
-async function parseMultipart<S extends z.ZodType>(request: Request, schema: S): Promise<Parsed<z.infer<S>>> {
-  const limit = sharedFiles().uploadLimitBytes;
+async function parseMultipart<S extends z.ZodType>(ownerId: number, request: Request, schema: S): Promise<Parsed<z.infer<S>>> {
+  const limit = await sharedFiles().uploadLimitBytes(ownerId);
   const declared = request.headers.get("content-length");
   if (declared !== null && /^\d+$/.test(declared) && Number(declared) > limit + MULTIPART_SLACK_BYTES) {
     return { ok: false, response: tooLarge(limit) };
@@ -154,7 +154,7 @@ async function attachmentFailure(err: unknown): Promise<Response> {
 
 export async function create(ownerId: number, request: Request): Promise<Response> {
   const parsed = isMultipart(request)
-    ? await parseMultipart(request, newTaskBody)
+    ? await parseMultipart(ownerId, request, newTaskBody)
     : await parseJsonBody(request, newTaskBody).then((b) => (b.ok ? { ...b, files: [] as AttachmentFile[] } : b));
   if (!parsed.ok) return parsed.response;
   const { title, description, coreId, agent, startNow } = parsed.data;
@@ -209,7 +209,7 @@ export async function setStatus(ownerId: number, id: string, request: Request): 
 /** A comment, or with `reassign` the service's single Comment & re-assign call; with files, the files are written first. */
 export async function comment(ownerId: number, id: string, request: Request): Promise<Response> {
   const parsed = isMultipart(request)
-    ? await parseMultipart(request, commentBody)
+    ? await parseMultipart(ownerId, request, commentBody)
     : await parseJsonBody(request, commentBody).then((b) => (b.ok ? { ...b, files: [] as AttachmentFile[] } : b));
   if (!parsed.ok) return parsed.response;
   try {

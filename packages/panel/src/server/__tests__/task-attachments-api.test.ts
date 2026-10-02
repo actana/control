@@ -75,7 +75,6 @@ function rig() {
           now: clock.now,
         }),
       now: clock.now,
-      uploadLimitBytes: LIMIT,
     }),
   );
   rigState = { clock, s3, sts };
@@ -112,7 +111,7 @@ beforeAll(async () => {
   await testDb.pool.query("insert into operator (id, name, password_hash, created_at, password_changed_at) values (2, 'owner-2', 'h', 1, 1)");
   for (const owner of [A, B]) {
     await saveStorageConfig(
-      { backend: "seaweedfs", endpoint: "http://seaweedfs.test:8333", bucket: BUCKET, prefix: PREFIX, oidcIssuer: "https://panel.test", keyId: "k1", masterKey: MASTER_PEM },
+      { backend: "seaweedfs", endpoint: "http://seaweedfs.test:8333", bucket: BUCKET, prefix: PREFIX, oidcIssuer: "https://panel.test", keyId: "k1", masterKey: MASTER_PEM, uploadSizeLimitBytes: LIMIT },
       owner,
     );
   }
@@ -266,6 +265,23 @@ describe("a Task created with attachments", () => {
     expect(res.status).toBe(413);
     expect(await taskCount()).toBe(before);
     expect(s3.objects.size).toBe(0);
+  });
+
+  it("applies the limit stored in Storage settings, read on each request", async () => {
+    const core = await attachedCore();
+    const set = (uploadSizeLimitBytes: number) =>
+      saveStorageConfig({ backend: "seaweedfs", endpoint: "http://seaweedfs.test:8333", bucket: BUCKET, prefix: PREFIX, oidcIssuer: "https://panel.test", keyId: "k1", uploadSizeLimitBytes }, A);
+    const files = [{ path: "a.bin", content: "a".repeat(LIMIT - 1) }, { path: "b.bin", content: "b".repeat(LIMIT - 1) }];
+    try {
+      await set(1_000);
+      expect((await createWith({ title: "Roomy", coreId: core }, files)).status).toBe(201);
+      await set(10);
+      const tight = await createWith({ title: "Tight", coreId: core }, [{ path: "c.bin", content: "c".repeat(11) }]);
+      expect(tight.status).toBe(413);
+      expect(tight.headers.get("x-upload-limit")).toBe("10");
+    } finally {
+      await set(LIMIT);
+    }
   });
 
   it("without files is the JSON route as it was", async () => {
