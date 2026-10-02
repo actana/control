@@ -71,9 +71,12 @@ describe.skipIf(!configured)("the sync against real SeaweedFS and real STS keys"
     const file = process.env.SEAWEEDFS_SIGNING_KEY_FILE;
     const signingKey = file ? fs.readFileSync(file, "utf8") : generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKey;
     const doc = JSON.stringify(publicJwks(signingKey, KEY_ID));
+    // The path SeaweedFS is configured with is the Panel's route (/.well-known/jwks.json, #566). This package cannot
+    // import the Panel, so the same document is served by hand here; the Panel tests of the job read the real route.
     jwks = createServer((req, res) => {
-      res.writeHead(req.url === "/jwks.json" ? 200 : 404, { "content-type": "application/json" });
-      res.end(req.url === "/jwks.json" ? doc : "{}");
+      const found = req.url === "/.well-known/jwks.json";
+      res.writeHead(found ? 200 : 404, { "content-type": "application/json" });
+      res.end(found ? doc : "{}");
     });
     await new Promise<void>((resolve) => jwks.listen(env.jwksPort, "127.0.0.1", resolve));
 

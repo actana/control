@@ -142,7 +142,8 @@ profile: SeaweedFS with its S3 gateway and STS enabled, and a role and policy
 that limit a Core to `<prefix>/<core-id>/`. `docker compose up -d` does not
 start it; `docker compose --profile seaweedfs up -d` does, once the
 `SEAWEEDFS_*` values in `.env` are set (the OIDC issuer and JWKS URL name the
-Panel's token signer). Setup, the pinned image, the policy and its Known gaps:
+Panel's token signer, and default to the Panel service, which serves its own
+key set at `/.well-known/jwks.json`). Setup, the pinned image, the policy and its Known gaps:
 [`deploy/seaweedfs/README.md`](deploy/seaweedfs/README.md).
 
 ## Backup

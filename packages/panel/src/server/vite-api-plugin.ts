@@ -37,7 +37,7 @@ export function missionControlApi(): Plugin {
         );
       // eslint-disable-next-line @typescript-eslint/no-misused-promises -- dev-only middleware; its body catches every failure and calls next()
       server.middlewares.use(async (req, res, next) => {
-        if (!req.url || !(req.url.startsWith("/api/") || req.url === "/mcp" || req.url.startsWith("/mcp?"))) return next();
+        if (!req.url || !(req.url.startsWith("/api/") || req.url === "/mcp" || req.url.startsWith("/mcp?") || req.url === "/.well-known/jwks.json")) return next();
         try {
           await databaseReady;
           const { handleApiRequest } = await server.ssrLoadModule(

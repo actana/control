@@ -294,9 +294,13 @@ services:
       - SEAWEEDFS_S3_ADMIN_SECRET_KEY=${SEAWEEDFS_S3_ADMIN_SECRET_KEY:-}
       - SEAWEEDFS_STS_SIGNING_KEY=${SEAWEEDFS_STS_SIGNING_KEY:-}
       # The Panel's token signer: who SeaweedFS believes when it is asked to
-      # exchange a token for S3 keys. An address in .env, never in this file.
-      - SEAWEEDFS_OIDC_ISSUER=${SEAWEEDFS_OIDC_ISSUER:-}
-      - SEAWEEDFS_OIDC_JWKS_URL=${SEAWEEDFS_OIDC_JWKS_URL:-}
+      # exchange a token for S3 keys. Unset, both name the `panel` service on
+      # this network, which serves its public key set at /.well-known/jwks.json
+      # (#566), so no file has to be hosted by hand. Set them in .env only when
+      # the Panel is reached by another address; Settings › Storage must name the
+      # same issuer.
+      - SEAWEEDFS_OIDC_ISSUER=${SEAWEEDFS_OIDC_ISSUER:-http://panel:7420}
+      - SEAWEEDFS_OIDC_JWKS_URL=${SEAWEEDFS_OIDC_JWKS_URL:-http://panel:7420/.well-known/jwks.json}
       - SEAWEEDFS_OIDC_AUDIENCE=${SEAWEEDFS_OIDC_AUDIENCE:-actana-shared}
       - SEAWEEDFS_BUCKET=${SEAWEEDFS_BUCKET:-actana-shared}
       - SEAWEEDFS_PREFIX=${SEAWEEDFS_PREFIX:-cores}

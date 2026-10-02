@@ -9,13 +9,12 @@
 // skipped proof is not a pass.
 import { createHash, createHmac } from "node:crypto";
 import * as fs from "node:fs";
-import { createServer, type Server } from "node:http";
 import * as os from "node:os";
 import * as path from "node:path";
 import { createS3CoreShared } from "@actana/sdk/shared";
-import { publicJwks } from "@actana/sdk/shared-key";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { closePanelTestDb, openPanelTestDb, resetPanelState } from "./_panel-test-db";
+import { servePanelJwks, type PanelJwksServer } from "./_panel-jwks-server";
 import { FakeClock, FakeCoreLink } from "./_shared-fakes";
 
 const env = {
@@ -90,7 +89,7 @@ async function adminKeys(prefix: string): Promise<string[]> {
 }
 
 describe.skipIf(!configured)("the Panel's Shared folders against real SeaweedFS and real STS keys", () => {
-  let jwks: Server;
+  let jwks: PanelJwksServer;
   let testDb: Awaited<ReturnType<typeof openPanelTestDb>>;
   let tmpRoot: string;
   const mods = {} as {
@@ -120,14 +119,11 @@ describe.skipIf(!configured)("the Panel's Shared folders against real SeaweedFS 
       findSharedFolder: repo.findSharedFolder,
     });
 
-    // SeaweedFS may keep the JWKS it first read, so every test file signs with the CI job's one key.
+    // SeaweedFS may keep the JWKS it first read, so every test file signs with the CI job's one key. It reads it from
+    // the Panel's own route (#566), which serves the public half of the master key stored below.
     const signingKey = fs.readFileSync(env.signingKeyFile!, "utf8");
-    const doc = JSON.stringify(publicJwks(signingKey, KEY_ID));
-    jwks = createServer((req, res) => {
-      res.writeHead(req.url === "/jwks.json" ? 200 : 404, { "content-type": "application/json" });
-      res.end(req.url === "/jwks.json" ? doc : "{}");
-    });
-    await new Promise<void>((resolve) => jwks.listen(env.jwksPort, "127.0.0.1", resolve));
+    const router = await import("../api-router");
+    jwks = await servePanelJwks(env.jwksPort, router.handleApiRequest);
     expect([200, 409]).toContain((await admin("PUT", `/${env.bucket}`)).status);
 
     const { operatorSessionCookie } = await import("./_operator-session");
@@ -146,7 +142,7 @@ describe.skipIf(!configured)("the Panel's Shared folders against real SeaweedFS 
   }, 90_000);
 
   afterAll(async () => {
-    await new Promise((resolve) => jwks?.close(resolve));
+    await new Promise((resolve) => jwks?.server.close(resolve));
     await resetPanelState(testDb);
     await closePanelTestDb(testDb);
     fs.rmSync(tmpRoot, { recursive: true, force: true });
@@ -205,6 +201,9 @@ describe.skipIf(!configured)("the Panel's Shared folders against real SeaweedFS 
     expect(row).toMatchObject({ state: "attached", s3Prefix: `${env.prefix}/${coreId}/` });
     const [attach] = link.ofType("sharedAttach");
     expect(attach).toMatchObject({ bucket: env.bucket, prefix: `${env.prefix}/${coreId}` });
+    // SeaweedFS verified the token against the Panel's own /.well-known/jwks.json (#566), not a file the test made.
+    // This file runs first in the CI job, so that is the first read SeaweedFS makes of the key set.
+    expect(jwks.hits()).toBeGreaterThan(0);
     // The key the Core was handed works on its own folder, on a real server, and only there.
     const key = { ...attach!.credentials, expiresAt: new Date(attach!.expiresAt) };
     const own = createS3CoreShared({ endpoint: env.endpoint!, bucket: env.bucket, prefix: attach!.prefix, credentials: { get: async () => key } });

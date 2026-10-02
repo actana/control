@@ -8,13 +8,12 @@
 // skipped proof is not a pass.
 import { createHash, createHmac } from "node:crypto";
 import * as fs from "node:fs";
-import { createServer, type Server } from "node:http";
 import * as os from "node:os";
 import * as path from "node:path";
 import { createS3CoreShared } from "@actana/sdk/shared";
-import { publicJwks } from "@actana/sdk/shared-key";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { closePanelTestDb, openPanelTestDb, resetPanelState } from "./_panel-test-db";
+import { servePanelJwks, type PanelJwksServer } from "./_panel-jwks-server";
 
 const env = {
   endpoint: process.env.SEAWEEDFS_ENDPOINT,
@@ -88,7 +87,7 @@ async function adminKeys(prefix: string): Promise<string[]> {
 }
 
 describe.skipIf(!configured)("the Panel's Files routes against real SeaweedFS and real STS keys", () => {
-  let jwks: Server;
+  let jwks: PanelJwksServer;
   let testDb: Awaited<ReturnType<typeof openPanelTestDb>>;
   let tmpRoot: string;
   const mods = {} as {
@@ -117,14 +116,10 @@ describe.skipIf(!configured)("the Panel's Files routes against real SeaweedFS an
       operatorSessionCookie: session.operatorSessionCookie,
     });
 
-    // SeaweedFS may keep the JWKS it first read, so every test file signs with the CI job's one key.
+    // SeaweedFS may keep the JWKS it first read, so every test file signs with the CI job's one key. It reads it from
+    // the Panel's own route (#566), which serves the public half of the master key stored below.
     const signingKey = fs.readFileSync(env.signingKeyFile!, "utf8");
-    const doc = JSON.stringify(publicJwks(signingKey, KEY_ID));
-    jwks = createServer((req, res) => {
-      res.writeHead(req.url === "/jwks.json" ? 200 : 404, { "content-type": "application/json" });
-      res.end(req.url === "/jwks.json" ? doc : "{}");
-    });
-    await new Promise<void>((resolve) => jwks.listen(env.jwksPort, "127.0.0.1", resolve));
+    jwks = await servePanelJwks(env.jwksPort, router.handleApiRequest);
     expect([200, 409]).toContain((await admin("PUT", `/${env.bucket}`)).status);
 
     await mods.operatorSessionCookie();
@@ -141,7 +136,7 @@ describe.skipIf(!configured)("the Panel's Files routes against real SeaweedFS an
   }, 90_000);
 
   afterAll(async () => {
-    await new Promise((resolve) => jwks?.close(resolve));
+    await new Promise((resolve) => jwks?.server.close(resolve));
     await resetPanelState(testDb);
     await closePanelTestDb(testDb);
     fs.rmSync(tmpRoot, { recursive: true, force: true });
