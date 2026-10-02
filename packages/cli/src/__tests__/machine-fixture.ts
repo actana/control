@@ -16,7 +16,7 @@ import { spawnSync } from "node:child_process";
 import type { ActanaCliDeps } from "../cli-deps.ts";
 import type { ActanaSystem, CommandResult } from "../actana-system.ts";
 import type { ReleaseFetcher } from "../actana-release.ts";
-import { nonInteractiveTerminal } from "../cli-terminal.ts";
+import { nonInteractiveTerminal } from "@actana/cli";
 
 /** The `ActanaSystem` a suite drives `systemctl` and `tar` through. */
 export type FakeSystem = ActanaSystem & {

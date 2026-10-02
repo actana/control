@@ -22,7 +22,7 @@
 import { describe, it, expect, afterEach } from "vitest";
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { probeCore } from "../core-probe.ts";
+import { probeCore } from "@actana/cli";
 import { EXIT_OK } from "../exit-codes.ts";
 import {
   makeCliFixture,

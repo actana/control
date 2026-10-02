@@ -16,7 +16,7 @@ import {
   registryPaths,
   writeCoreBlob,
   writeCurrentCore,
-} from "../blob-registry.ts";
+} from "../blob-registry";
 
 const roots: string[] = [];
 function paths() {

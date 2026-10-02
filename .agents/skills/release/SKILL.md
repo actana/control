@@ -58,7 +58,7 @@ Things no workflow will check for you.
   [`docs/REPO_SETUP.md`](../../../docs/REPO_SETUP.md) §1.
 - **`NPM_TOKEN` exists as a repo secret.** Since
   [#159](https://github.com/actana/control/issues/159) a release also publishes
-  `@actana/sdk` and `@actana/cli` to npm, and `resolve` fails the whole run when
+  `@actana/sdk` to npm, and `resolve` fails the whole run when
   the token is missing — in the same place and the same shape as the Docker Hub
   check, before anything is built. `REPO_SETUP.md` §2.
 - **The `macos-release` environment exists, with required reviewers on it.**

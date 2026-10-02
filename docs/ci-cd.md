@@ -353,7 +353,7 @@ for and answered rather than overlooked:
   for a release either, for the reason immediately below.
 - **No signing and no notarization**, exactly as a release — integrity is the
   published checksums, below.
-- **Nothing on registry.npmjs.org.** `latest` and `next` on `@actana/cli` and
+- **Nothing on registry.npmjs.org.** `latest` and `next` on
   `@actana/sdk` are untouched by a beta cut, and `release.yml`'s `npm` job is
   not modified. The reason is npm's own: a version number is burned by its first
   publish, and under the fixed `x.y.z-beta` string a second cut of the same beta
@@ -404,8 +404,8 @@ not a release channel someone else controls. That is the gap a signature would
 close, and it is open.
 
 One release surface is attested, and it is not a counter-example: the npm
-packages are published with `--provenance`, so `@actana/sdk` and `@actana/cli`
-carry a SLSA provenance attestation that the release reads back off the registry
+package is published with `--provenance`, so `@actana/sdk`
+carries a SLSA provenance attestation that the release reads back off the registry
 before it succeeds ([npm](#npm)). Provenance attests *where a package was
 built*. It is not a signature over a released binary, and it covers neither the
 tarballs nor the images.
@@ -1018,7 +1018,7 @@ own keys publishes under its own namespace with no edit to any workflow; see
 
 ### npm
 
-`@actana/sdk` and `@actana/cli`, published by `release.yml`'s `npm` job on the
+`@actana/sdk`, published by `release.yml`'s `npm` job on the
 same tag that builds the images and at the same version as everything else
 ([#129](https://github.com/actana/control/issues/129) D13). It authenticates
 with `NPM_TOKEN`, and a missing one fails in `resolve` in exactly the shape the

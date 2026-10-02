@@ -114,7 +114,10 @@ describe("the client half cannot shell out (#129 D9, narrowed by #288 C1)", () =
     // modules, it is also what catches a `MACHINE_MODULES` table that grew
     // until there was nothing left to check.
     expect(shippedSources().length).toBeGreaterThan(5);
-    expect(clientSources().length).toBeGreaterThan(shippedSources().length / 2);
+    // The client half used to be most of the package. Since #580 the nouns live in `@actana/cli`, so what
+    // is left of it is the dispatcher, the entry, the flag parser and the registry plumbing: still swept,
+    // still more than a handful, no longer half.
+    expect(clientSources().length).toBeGreaterThan(5);
   });
 
   it("keeps the exemption honest: every machine module is real and named with a reason", () => {
@@ -306,7 +309,7 @@ describe("the dependency list stays short (#129 D8, amended by #288 C2)", () => 
     readFileSync(path.resolve(SRC, "..", "package.json"), "utf8"),
   ) as { dependencies: Record<string, string> };
 
-  it("declares the SDK, the two libraries the SDK dials with, and selfsigned", () => {
+  it("declares the client CLI, the SDK, the two libraries the SDK dials with, and selfsigned", () => {
     // The list is short because a CLI must not grow a server dependency, a
     // database driver or a native addon, and a new name here is the first sign
     // that one has arrived. That purpose is unchanged; the list is one longer.
@@ -335,7 +338,12 @@ describe("the dependency list stays short (#129 D8, amended by #288 C2)", () => 
     // **`better-sqlite3` and `node-pty` must still never appear.** They are the
     // daemon's, they are native, and a published client that installed either
     // would be a client that needs a compiler.
+    //
+    // **`@actana/cli` is new, and it is the point of #580**: the client nouns come from the published
+    // client CLI, pinned exactly, and are bundled into this package's output. It depends on nothing but
+    // `@actana/sdk`, which is already on this list, so it brings no server, database or native addon.
     expect(Object.keys(manifest.dependencies).sort()).toEqual([
+      "@actana/cli",
       "@actana/sdk",
       "selfsigned",
       "undici",

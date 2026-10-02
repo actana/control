@@ -42,7 +42,7 @@ section is what each one is.
 | `DOCKERHUB_USERNAME` | Secret | Publishing `panel` and `core` to Docker Hub, and syncing each image's README |
 | `DOCKERHUB_TOKEN` | Secret | Same — one **personal** access token, `Read, Write, Delete`, not the account password |
 | `DOCKERHUB_CLEANUP_TOKEN` | Secret | The weekly `-dev` tag sweep, and nothing else — a **second** PAT, the only one pointed at a delete endpoint |
-| `NPM_TOKEN` | Secret | Publishing `@actana/sdk` and `@actana/cli` to npm from `release.yml` |
+| `NPM_TOKEN` | Secret | Publishing `@actana/sdk` to npm from `release.yml` (the client CLI `@actana/cli` is published from actana/client) |
 | `APP_ID` | Secret | The GitHub App's numeric id. Every job in `promote.yml` that pushes |
 | `APP_PRIVATE_KEY` | Secret | That App's private key, the whole PEM. Same jobs — **both or neither** |
 | `DOCKERHUB_NAMESPACE` | Variable | Docker Hub org to publish under. Optional; defaults to the GitHub owner (`actana`) |
@@ -64,9 +64,9 @@ need no credentials, so a fork gets green PRs with nothing set. See
 
 That ADR is amended
 ([#159](https://github.com/actana/control/issues/159)): npm is a release
-registry too, for the two published packages rather than for any image.
-`release.yml`'s `npm` job publishes `@actana/sdk` and `@actana/cli` on the same
-tag that builds the images, at the same version as everything else
+registry too, for the published package rather than for any image.
+`release.yml`'s `npm` job publishes `@actana/sdk` (the CLI in this repository is the private
+`@actana/core-cli`, #580) on the same tag that builds the images, at the same version as everything else
 ([#129](https://github.com/actana/control/issues/129) D13).
 
 It is an **automation token** on the `@actana` scope, with **Read and write**,

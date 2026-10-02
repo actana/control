@@ -18,22 +18,25 @@ import {
   writeCurrentCore,
   type RegistryPaths,
 } from "../blob-registry.ts";
-import type { CoreProbe, CoreProbeFn } from "../core-probe.ts";
-import { nonInteractiveTerminal, type CliTerminal, type TerminalSignal } from "../cli-terminal.ts";
+import type { CoreProbe, CoreProbeFn } from "@actana/cli";
+import { nonInteractiveTerminal, type CliTerminal } from "@actana/cli";
+
+/** The signals a terminal reports, read off the published `CliTerminal` rather than a copy of its module. */
+type TerminalSignal = Parameters<CliTerminal["onSignal"]>[0];
 import { stubMachineHalf, type MachineHalf } from "./machine-fixture.ts";
-import type { OpenCoreShellFn } from "../core-shell-channel.ts";
+import type { OpenCoreShellFn } from "@actana/cli";
 import { SessionWriteRefused } from "@actana/cli";
 import type {
   AttachAuthority,
   OpenSessionAttachFn,
   SessionAttachExit,
   SessionAttachment,
-} from "../session-attach-channel.ts";
-import type { CoreConnectFn, CoreConnectOptions, CoreLinkClient } from "../core-connection.ts";
-import type { CorePairingPort } from "../core-pair.ts";
+} from "@actana/cli";
+import type { CoreConnectFn, CoreConnectOptions, CoreLinkClient } from "@actana/cli";
+import type { CorePairingPort } from "@actana/cli";
 import { PairingError, type PairingFailure } from "@actana/sdk/pairing";
 import type { CoreRegistrationBlob } from "@actana/sdk/pairing";
-import type { OpenSessionGateway, SessionGateway, StartedSession } from "../session-gateway.ts";
+import type { OpenSessionGateway, SessionGateway, StartedSession } from "@actana/cli";
 import type {
   CoreLinkDirListing,
   CoreLinkEvent,

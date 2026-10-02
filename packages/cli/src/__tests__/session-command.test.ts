@@ -22,7 +22,7 @@ import {
   SessionGatewayError,
   type SessionRow,
   type StartedSession,
-} from "../session-gateway.ts";
+} from "@actana/cli";
 import {
   CoreSessionLinkLostError,
   CoreSessionTurnTimeoutError,

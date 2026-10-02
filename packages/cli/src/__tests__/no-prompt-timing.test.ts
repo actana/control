@@ -97,10 +97,11 @@ const SCHEDULERS = [
  * test below it — that is the boundary the rule is actually about.
  */
 const SCHEDULING_ALLOWED: Record<string, string> = {
-  "harness-command.ts":
-    "waits for the Core's install verdict: a deadline on this side's patience and a progress tick, neither of which re-sends anything (#161)",
-  "events-command.ts":
-    "a deadline on a subscribe the Core never answers, so `--limit` cannot be wedged by a contended Core (#402). It re-sends nothing, it cannot make an event arrive sooner, and its expiry is reported as this side giving up",
+  // Empty since #580. `harness-command.ts` (the install verdict's deadline, #161) and `events-command.ts`
+  // (the subscribe deadline, #402) moved behind the published `@actana/cli`, which carries those timers and
+  // their tests. No module left in this package may hold a timer, and a row can be added here only with a
+  // reason of the same three properties: re-sends nothing, cannot make the wait end sooner, and expires
+  // reported as this side giving up.
 };
 
 /** Modules that put text or keystrokes into a Session. Never allowed a timer. */
