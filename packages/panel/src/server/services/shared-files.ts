@@ -1,9 +1,7 @@
-import { createS3CoreShared, CoreSharedError, type CoreShared, type SharedEntry } from "@actana/sdk/shared";
-import type { SharedKey, SharedKeyIssuer } from "@actana/sdk/shared-key";
+import { CoreSharedError, type CoreShared, type SharedEntry } from "@actana/sdk/shared";
 import { ConflictError, DomainError, NotFoundError, ValidationError } from "../errors";
-import { findSharedFolder } from "../repositories/core-shared-folders.repo";
-import { getCore } from "./cores";
-import { getStorageConfig, storageKeyIssuer, type StorageTarget } from "./storage";
+import { getStorageConfig } from "./storage";
+import { coreS3Shared, CoreS3Shared, SharedFilesUnavailableError, type CoreS3Deps, type HeldCoreShared } from "./core-s3-shared";
 import {
   baseName,
   checkEntryName,
@@ -41,7 +39,6 @@ import {
  */
 
 export const DOWNLOAD_URL_SECONDS = 300;
-const KEY_MIN_LEFT_MS = 6 * 60_000;
 const COUNT_FOLDERS_MAX = 200;
 const COUNT_CONCURRENCY = 8;
 const SEARCH_MAX = 200;
@@ -55,41 +52,24 @@ export class PayloadTooLargeError extends DomainError {
   }
 }
 
-/** This Core has no Shared folder the tab could read: not paired from a Panel with storage, or not finished. */
-export class SharedFilesUnavailableError extends ConflictError {
-  readonly code = "no-shared-folder";
-  constructor(message: string) {
-    super(message);
-    this.name = "SharedFilesUnavailableError";
-  }
-}
+export { SharedFilesUnavailableError };
 
-export type SharedFilesDeps = {
-  issuer: (ownerId: number) => Promise<{ issuer: SharedKeyIssuer; target: StorageTarget }>;
-  s3: (opts: { target: StorageTarget; folder: string; key: SharedKey; fetch?: typeof fetch }) => CoreShared;
-  now: () => number;
-  fetch?: typeof fetch;
-  uploadLimitBytes: number;
+export type SharedFilesDeps = Partial<CoreS3Deps> & {
+  /** The per-Core S3 mode. The Panel's own by default, which the Task watcher shares; a test hands in one over a fake S3. */
+  modes?: CoreS3Shared;
+  /** The most one upload may be, read again on every request. The limit stored in Storage settings by default. */
+  uploadLimit: (ownerId: number) => Promise<number>;
 };
 
-function defaultDeps(): SharedFilesDeps {
-  return {
-    issuer: (ownerId) => storageKeyIssuer(ownerId),
-    s3: ({ target, folder, key, fetch }) =>
-      createS3CoreShared({
-        endpoint: target.endpoint,
-        bucket: target.bucket,
-        prefix: folder.replace(/\/+$/, ""),
-        region: target.region,
-        credentials: { get: async () => key },
-        ...(fetch ? { fetch } : {}),
-      }),
-    now: Date.now,
-    uploadLimitBytes: DEFAULT_UPLOAD_LIMIT_BYTES,
-  };
+/**
+ * The upload limit the owner set in Storage settings (`uploadSizeLimitBytes`), read on each request so a change applies
+ * at once. {@link DEFAULT_UPLOAD_LIMIT_BYTES} when none is stored (storage not set up yet) or the stored value is not a
+ * positive number.
+ */
+export async function storedUploadLimit(ownerId: number): Promise<number> {
+  const stored = (await getStorageConfig(ownerId)).uploadSizeLimitBytes;
+  return stored !== null && Number.isFinite(stored) && stored > 0 ? stored : DEFAULT_UPLOAD_LIMIT_BYTES;
 }
-
-const BACKEND_LABEL: Record<string, string> = { seaweedfs: "SeaweedFS" };
 
 /** A path a browser sent, checked here first. Throws a 400; returns it unchanged when it is good. */
 export function cleanPath(raw: unknown, want: "file" | "folder" | "either" = "either"): string {
@@ -128,47 +108,26 @@ function mapError(err: unknown): never {
   }
 }
 
-type Held = { shared: CoreShared; folder: string; expiresAt: number; backend: string };
+type Held = HeldCoreShared;
 
 export class SharedFiles {
-  private readonly deps: SharedFilesDeps;
-  private readonly held = new Map<string, Held>();
+  private readonly deps: { now: () => number; uploadLimit: (ownerId: number) => Promise<number> };
+  private readonly modes: CoreS3Shared;
 
   constructor(deps: Partial<SharedFilesDeps> = {}) {
-    this.deps = { ...defaultDeps(), ...deps };
+    // A test that hands in its own issuer, S3 or fetch gets a mode of its own; otherwise the Panel's shared one.
+    this.modes = deps.modes ?? (deps.issuer || deps.s3 || deps.fetch ? new CoreS3Shared(deps) : coreS3Shared());
+    this.deps = { now: deps.now ?? Date.now, uploadLimit: deps.uploadLimit ?? storedUploadLimit };
   }
 
-  get uploadLimitBytes(): number {
-    return this.deps.uploadLimitBytes;
+  /** What an upload by this owner may be right now: the limit in Storage settings, read again on each call. */
+  uploadLimitBytes(ownerId: number): Promise<number> {
+    return this.deps.uploadLimit(ownerId);
   }
 
   /** The S3 client for this owner's Core, from a live key. Throws when the owner has no such Core or it has no folder. */
-  private async open(ownerId: number, coreId: string): Promise<Held> {
-    // Who may ask is decided on every call, from the database: a cached key is never a licence. A Core that was
-    // deleted or unpaired, or an owner that is not the Core's, gets nothing from a client built earlier.
-    if (!(await getCore(coreId, ownerId))) throw new NotFoundError("no such Core");
-    const row = await findSharedFolder(ownerId, coreId);
-    if (!row || row.state === "pending" || !row.s3Prefix) {
-      throw new SharedFilesUnavailableError("This Core has no Shared folder yet: finish its pairing with storage first.");
-    }
-    const folder = row.s3Prefix;
-    // The folder must be this Core's own, whatever the row says (the same rule the delete applies).
-    if (!folder.endsWith(`/${coreId}/`)) throw new ValidationError("The stored folder is not this Core's folder.");
-
-    const cacheKey = `${ownerId}:${coreId}`;
-    const cached = this.held.get(cacheKey);
-    if (cached && cached.folder === folder && cached.expiresAt - this.deps.now() > KEY_MIN_LEFT_MS) return cached;
-
-    const { issuer, target } = await this.deps.issuer(ownerId);
-    const key = await issuer.issue(coreId);
-    const held: Held = {
-      shared: this.deps.s3({ target, folder, key, fetch: this.deps.fetch }),
-      folder,
-      expiresAt: key.expiresAt.getTime(),
-      backend: BACKEND_LABEL[(await getStorageConfig(ownerId)).backend ?? ""] ?? "S3",
-    };
-    this.held.set(cacheKey, held);
-    return held;
+  private open(ownerId: number, coreId: string): Promise<Held> {
+    return this.modes.open(ownerId, coreId);
   }
 
   private async run<T>(ownerId: number, coreId: string, fn: (shared: CoreShared, held: Held) => Promise<T>): Promise<T> {
@@ -294,7 +253,7 @@ export class SharedFiles {
         usedBytes += c.size ?? 0;
         if ((c.modifiedAt?.getTime() ?? 0) > since) newPaths.push(c.path);
       }
-      return { backend: held.backend, usedBytes, fileCount, newPaths: newPaths.sort(), uploadLimitBytes: this.deps.uploadLimitBytes };
+      return { backend: held.backend, usedBytes, fileCount, newPaths: newPaths.sort(), uploadLimitBytes: await this.deps.uploadLimit(ownerId) };
     });
   }
 
@@ -316,14 +275,14 @@ export class SharedFiles {
    */
   async upload(ownerId: number, coreId: string, rawPath: string, body: ReadableStream<Uint8Array> | null, declaredLength: number | null): Promise<SharedFileEntry> {
     const path = cleanPath(rawPath, "file");
-    const limit = this.deps.uploadLimitBytes;
+    const limit = await this.deps.uploadLimit(ownerId);
     if (declaredLength !== null && declaredLength > limit) {
       await body?.cancel().catch(() => undefined);
       throw new PayloadTooLargeError(limit);
     }
     // Resolve the Core before reading a byte: an owner with no such Core is refused without a read.
     const held = await this.open(ownerId, coreId);
-    const bytes = await readLimited(body, limit);
+    const bytes = await readLimited(body, limit, declaredLength);
     try {
       await held.shared.put(path, bytes);
     } catch (err) {
@@ -374,10 +333,14 @@ function toEntry(e: SharedEntry): SharedFileEntry {
   };
 }
 
-/** Read a stream into one array, refusing as soon as it has gone over `limit`. */
-export async function readLimited(stream: ReadableStream<Uint8Array> | null, limit: number): Promise<Uint8Array> {
+/**
+ * Read a stream into one array, refusing as soon as it has gone over `limit`. The bytes are held once: into an array of
+ * the declared length when there is one (a body that is longer or shorter than it says is refused), otherwise into one
+ * that doubles up to the limit, and what is returned is a view of it, never a second copy.
+ */
+export async function readLimited(stream: ReadableStream<Uint8Array> | null, limit: number, declaredLength: number | null = null): Promise<Uint8Array> {
   if (!stream) return new Uint8Array();
-  const chunks: Uint8Array[] = [];
+  let buffer = new Uint8Array(declaredLength !== null ? declaredLength : Math.min(limit, 64 * 1024));
   let total = 0;
   const reader = stream.getReader();
   try {
@@ -389,18 +352,22 @@ export async function readLimited(stream: ReadableStream<Uint8Array> | null, lim
         await reader.cancel().catch(() => undefined);
         throw new PayloadTooLargeError(limit);
       }
-      chunks.push(value);
+      if (total > buffer.byteLength) {
+        if (declaredLength !== null) {
+          await reader.cancel().catch(() => undefined);
+          throw new ValidationError("The body is longer than its declared length.");
+        }
+        const grown = new Uint8Array(Math.min(limit, Math.max(total, buffer.byteLength * 2)));
+        grown.set(buffer.subarray(0, total - value.byteLength));
+        buffer = grown;
+      }
+      buffer.set(value, total - value.byteLength);
     }
   } finally {
     reader.releaseLock();
   }
-  const out = new Uint8Array(total);
-  let at = 0;
-  for (const c of chunks) {
-    out.set(c, at);
-    at += c.byteLength;
-  }
-  return out;
+  if (declaredLength !== null && total !== declaredLength) throw new ValidationError("The body is shorter than its declared length.");
+  return buffer.subarray(0, total);
 }
 
 let singleton: SharedFiles | null = null;
