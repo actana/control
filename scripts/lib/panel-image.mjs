@@ -57,8 +57,9 @@ export const PANEL_NODE_BIN = "/nodejs/bin/node";
 /**
  * Every table the Panel's Postgres migrations create (#567, ADR 0041 D14): the
  * four `panel.db` tables, which are Postgres tables now, the three Task
- * tables (#568), the Agents table (#569), the webhook tables (#574) and the two API
- * key tables (#572). The
+ * tables (#568), the Agents table (#569), the webhook tables (#574), the two API
+ * key tables (#572), the Shared folder tables (#564), and the seven
+ * `missioncontrol.db` tables (#567 PR 5) plus their token-usage rollup. The
  * smoke script asks the Postgres beside the Panel for them after the Panel has
  * booted and been set up. A booted Panel that answers `/api/healthz` does not
  * prove its migrations ran against the database it was given; the tables, and
@@ -82,6 +83,14 @@ export const PANEL_TABLES = Object.freeze([
   "api_key_cores",
   "storage_config",
   "core_shared_folders",
+  "sessions",
+  "terminal_logs",
+  "home_terminals",
+  "app_settings",
+  "token_usage",
+  "token_usage_rollup",
+  "token_usage_session_offsets",
+  "event_log",
 ]);
 
 /** The Core's default core-link port — `EXPOSE` and `ACTANA_PORT` share it. */

@@ -39,8 +39,7 @@ import {
   type HeaderButtonVisibility,
 } from "~/shared/header-buttons";
 import { DEFAULT_SHIP_PROMPT, normalizeShipPrompt } from "~/shared/ship-defaults";
-import { HTTP_BAD_REQUEST } from "~/shared/http-status";
-import { json, jsonError, parseJsonBody } from "./_helpers";
+import { json, parseJsonBody } from "./_helpers";
 
 const DEFAULT_AGENT_SETTING_KEY = "default_agent";
 const DEFAULT_MODEL_SETTING_KEY = "default_model";
@@ -109,98 +108,98 @@ const updateSettingsBody = z
   })
   .partial();
 
-function getDefaultHarnessSetting(): Harness {
-  const value = getSetting(DEFAULT_AGENT_SETTING_KEY);
+async function getDefaultHarnessSetting(): Promise<Harness> {
+  const value = await getSetting(DEFAULT_AGENT_SETTING_KEY);
   return isHarness(value) ? value : "claude-code";
 }
 
-function getDefaultModelSetting(): AiModelId | null {
-  const value = getSetting(DEFAULT_MODEL_SETTING_KEY);
+async function getDefaultModelSetting(): Promise<AiModelId | null> {
+  const value = await getSetting(DEFAULT_MODEL_SETTING_KEY);
   return normalizeAiModelId(value);
 }
 
-function getShipHarnessSetting(): Harness {
-  const value = getSetting(SHIP_AGENT_SETTING_KEY);
+async function getShipHarnessSetting(): Promise<Harness> {
+  const value = await getSetting(SHIP_AGENT_SETTING_KEY);
   return isHarness(value) ? value : "claude-code";
 }
 
-function getShipModelSetting(): AiModelId | null {
-  const value = getSetting(SHIP_MODEL_SETTING_KEY);
+async function getShipModelSetting(): Promise<AiModelId | null> {
+  const value = await getSetting(SHIP_MODEL_SETTING_KEY);
   return normalizeAiModelId(value);
 }
 
-function getShipPromptSetting(): string {
-  const value = getSetting(SHIP_PROMPT_SETTING_KEY);
+async function getShipPromptSetting(): Promise<string> {
+  const value = await getSetting(SHIP_PROMPT_SETTING_KEY);
   return value === null ? DEFAULT_SHIP_PROMPT : normalizeShipPrompt(value);
 }
 
-function getTerminalZoomLevelSetting() {
-  return normalizeTerminalZoomLevel(getSetting(TERMINAL_ZOOM_LEVEL_KEY)) ?? DEFAULT_TERMINAL_ZOOM_LEVEL;
+async function getTerminalZoomLevelSetting() {
+  return normalizeTerminalZoomLevel(await getSetting(TERMINAL_ZOOM_LEVEL_KEY)) ?? DEFAULT_TERMINAL_ZOOM_LEVEL;
 }
 
-function getSessionHeaderButtonsSetting(): SessionHeaderButtonVisibility {
+async function getSessionHeaderButtonsSetting(): Promise<SessionHeaderButtonVisibility> {
   return normalizeSessionHeaderButtonVisibility(
-    safeJsonParse<unknown>(getSetting(SESSION_HEADER_BUTTONS_KEY), null),
+    safeJsonParse<unknown>(await getSetting(SESSION_HEADER_BUTTONS_KEY), null),
   );
 }
 
-function getHeaderButtonsSetting(): HeaderButtonVisibility {
+async function getHeaderButtonsSetting(): Promise<HeaderButtonVisibility> {
   return normalizeHeaderButtonVisibility(
-    safeJsonParse<unknown>(getSetting(HEADER_BUTTONS_KEY), null),
+    safeJsonParse<unknown>(await getSetting(HEADER_BUTTONS_KEY), null),
   );
 }
 
-function getHarnessLauncherConfigSetting(): HarnessLauncherConfig {
+async function getHarnessLauncherConfigSetting(): Promise<HarnessLauncherConfig> {
   return normalizeHarnessLauncherConfig(
-    safeJsonParse<unknown>(getSetting(HARNESS_LAUNCHER_CONFIG_KEY), null),
+    safeJsonParse<unknown>(await getSetting(HARNESS_LAUNCHER_CONFIG_KEY), null),
   );
 }
 
-function settingsPayload() {
+async function settingsPayload() {
   return {
-    agentSystemBannerDisabled: getBooleanSetting("agent_system_banner_disabled"),
-    mouseGradientDisabled: getBooleanSetting("mouse_gradient_disabled"),
-    sessionFinishToastEnabled: getBooleanSetting("session_finish_toast_enabled", true),
-    sessionFinishOsNotificationEnabled: getBooleanSetting(
+    agentSystemBannerDisabled: await getBooleanSetting("agent_system_banner_disabled"),
+    mouseGradientDisabled: await getBooleanSetting("mouse_gradient_disabled"),
+    sessionFinishToastEnabled: await getBooleanSetting("session_finish_toast_enabled", true),
+    sessionFinishOsNotificationEnabled: await getBooleanSetting(
       "session_finish_os_notification_enabled",
       false,
     ),
-    notificationSoundEnabled: getBooleanSetting("notification_sound_enabled", true),
+    notificationSoundEnabled: await getBooleanSetting("notification_sound_enabled", true),
     // This feature graduated from experimental; retained in the payload for
     // compatibility with older renderers, but stored preferences no longer gate it.
     questionOverlayEnabled: true,
-    terminalZoomLevel: getTerminalZoomLevelSetting(),
-    sessionHeaderButtons: getSessionHeaderButtonsSetting(),
-    headerButtons: getHeaderButtonsSetting(),
-    defaultHarness: getDefaultHarnessSetting(),
-    defaultModel: getDefaultModelSetting(),
-    shipHarness: getShipHarnessSetting(),
-    shipModel: getShipModelSetting(),
-    shipPrompt: getShipPromptSetting(),
+    terminalZoomLevel: await getTerminalZoomLevelSetting(),
+    sessionHeaderButtons: await getSessionHeaderButtonsSetting(),
+    headerButtons: await getHeaderButtonsSetting(),
+    defaultHarness: await getDefaultHarnessSetting(),
+    defaultModel: await getDefaultModelSetting(),
+    shipHarness: await getShipHarnessSetting(),
+    shipModel: await getShipModelSetting(),
+    shipPrompt: await getShipPromptSetting(),
     // Off by default: usage reaches out to provider APIs using local logins.
-    claudeUsageLimitsEnabled: getBooleanSetting(CLAUDE_USAGE_LIMITS_ENABLED_KEY, false),
-    claudeUsageLimitsShowSession: getBooleanSetting(CLAUDE_USAGE_LIMITS_SHOW_SESSION_KEY, true),
-    claudeUsageLimitsShowWeekly: getBooleanSetting(CLAUDE_USAGE_LIMITS_SHOW_WEEKLY_KEY, true),
+    claudeUsageLimitsEnabled: await getBooleanSetting(CLAUDE_USAGE_LIMITS_ENABLED_KEY, false),
+    claudeUsageLimitsShowSession: await getBooleanSetting(CLAUDE_USAGE_LIMITS_SHOW_SESSION_KEY, true),
+    claudeUsageLimitsShowWeekly: await getBooleanSetting(CLAUDE_USAGE_LIMITS_SHOW_WEEKLY_KEY, true),
     // Multi-provider (CodexBar fork). If unset, fall back to legacy Claude-only toggle
     // so existing users who already enabled Claude usage keep their indicator.
-    providerUsageEnabled: getProviderUsageEnabledSetting(),
-    providerUsageIds: getProviderUsageIdsSetting(),
-    harnessLauncherConfig: getHarnessLauncherConfigSetting(),
+    providerUsageEnabled: await getProviderUsageEnabledSetting(),
+    providerUsageIds: await getProviderUsageIdsSetting(),
+    harnessLauncherConfig: await getHarnessLauncherConfigSetting(),
   };
 }
 
-function getProviderUsageEnabledSetting(): boolean {
-  const raw = getSetting(PROVIDER_USAGE_ENABLED_KEY);
+async function getProviderUsageEnabledSetting(): Promise<boolean> {
+  const raw = await getSetting(PROVIDER_USAGE_ENABLED_KEY);
   if (raw !== null) return raw === "true" || raw === "1";
   // Legacy: Claude-only toggle stood in for the master switch.
-  return getBooleanSetting(CLAUDE_USAGE_LIMITS_ENABLED_KEY, false);
+  return await getBooleanSetting(CLAUDE_USAGE_LIMITS_ENABLED_KEY, false);
 }
 
-function getProviderUsageIdsSetting(): ProviderUsageId[] {
-  const raw = getSetting(PROVIDER_USAGE_IDS_KEY);
+async function getProviderUsageIdsSetting(): Promise<ProviderUsageId[]> {
+  const raw = await getSetting(PROVIDER_USAGE_IDS_KEY);
   if (raw === null) {
     // If only Claude was enabled historically, keep Claude as the sole provider.
-    if (getBooleanSetting(CLAUDE_USAGE_LIMITS_ENABLED_KEY, false)) return ["claude"];
+    if (await getBooleanSetting(CLAUDE_USAGE_LIMITS_ENABLED_KEY, false)) return ["claude"];
     return [...DEFAULT_PROVIDER_USAGE_IDS];
   }
   try {
@@ -210,8 +209,8 @@ function getProviderUsageIdsSetting(): ProviderUsageId[] {
   }
 }
 
-export function read(): Response {
-  return json(settingsPayload());
+export async function read(): Promise<Response> {
+  return json(await settingsPayload());
 }
 
 export async function update(request: Request): Promise<Response> {
@@ -219,81 +218,81 @@ export async function update(request: Request): Promise<Response> {
   if (!parsed.ok) return parsed.response;
   const body = parsed.data;
   if (body.agentSystemBannerDisabled !== undefined) {
-    setBooleanSetting("agent_system_banner_disabled", body.agentSystemBannerDisabled);
+    await setBooleanSetting("agent_system_banner_disabled", body.agentSystemBannerDisabled);
   }
   if (body.mouseGradientDisabled !== undefined) {
-    setBooleanSetting("mouse_gradient_disabled", body.mouseGradientDisabled);
+    await setBooleanSetting("mouse_gradient_disabled", body.mouseGradientDisabled);
   }
   if (body.sessionFinishToastEnabled !== undefined) {
-    setBooleanSetting("session_finish_toast_enabled", body.sessionFinishToastEnabled);
+    await setBooleanSetting("session_finish_toast_enabled", body.sessionFinishToastEnabled);
   }
   if (body.sessionFinishOsNotificationEnabled !== undefined) {
-    setBooleanSetting(
+    await setBooleanSetting(
       "session_finish_os_notification_enabled",
       body.sessionFinishOsNotificationEnabled,
     );
   }
   if (body.notificationSoundEnabled !== undefined) {
-    setBooleanSetting("notification_sound_enabled", body.notificationSoundEnabled);
+    await setBooleanSetting("notification_sound_enabled", body.notificationSoundEnabled);
   }
   // Native question popups are always on; their legacy field remains
   // accepted so older clients can update other settings safely.
   if (body.terminalZoomLevel !== undefined) {
-    setSetting(TERMINAL_ZOOM_LEVEL_KEY, String(body.terminalZoomLevel));
+    await setSetting(TERMINAL_ZOOM_LEVEL_KEY, String(body.terminalZoomLevel));
   }
   if (body.sessionHeaderButtons !== undefined) {
-    setSetting(SESSION_HEADER_BUTTONS_KEY, JSON.stringify(body.sessionHeaderButtons));
+    await setSetting(SESSION_HEADER_BUTTONS_KEY, JSON.stringify(body.sessionHeaderButtons));
   }
   if (body.headerButtons !== undefined) {
-    setSetting(HEADER_BUTTONS_KEY, JSON.stringify(body.headerButtons));
+    await setSetting(HEADER_BUTTONS_KEY, JSON.stringify(body.headerButtons));
   }
   if (body.defaultHarness !== undefined) {
-    setSetting(DEFAULT_AGENT_SETTING_KEY, body.defaultHarness);
+    await setSetting(DEFAULT_AGENT_SETTING_KEY, body.defaultHarness);
   }
   if (body.defaultModel !== undefined) {
     if (body.defaultModel === null) {
-      deleteSetting(DEFAULT_MODEL_SETTING_KEY);
+      await deleteSetting(DEFAULT_MODEL_SETTING_KEY);
     } else {
-      setSetting(DEFAULT_MODEL_SETTING_KEY, body.defaultModel);
+      await setSetting(DEFAULT_MODEL_SETTING_KEY, body.defaultModel);
     }
   }
   if (body.shipHarness !== undefined) {
-    setSetting(SHIP_AGENT_SETTING_KEY, body.shipHarness);
+    await setSetting(SHIP_AGENT_SETTING_KEY, body.shipHarness);
   }
   if (body.shipModel !== undefined) {
     if (body.shipModel === null) {
-      deleteSetting(SHIP_MODEL_SETTING_KEY);
+      await deleteSetting(SHIP_MODEL_SETTING_KEY);
     } else {
-      setSetting(SHIP_MODEL_SETTING_KEY, body.shipModel);
+      await setSetting(SHIP_MODEL_SETTING_KEY, body.shipModel);
     }
   }
   if (body.shipPrompt !== undefined) {
-    setSetting(SHIP_PROMPT_SETTING_KEY, body.shipPrompt);
+    await setSetting(SHIP_PROMPT_SETTING_KEY, body.shipPrompt);
   }
   if (body.claudeUsageLimitsEnabled !== undefined) {
-    setBooleanSetting(CLAUDE_USAGE_LIMITS_ENABLED_KEY, body.claudeUsageLimitsEnabled);
+    await setBooleanSetting(CLAUDE_USAGE_LIMITS_ENABLED_KEY, body.claudeUsageLimitsEnabled);
   }
   if (body.claudeUsageLimitsShowSession !== undefined) {
-    setBooleanSetting(CLAUDE_USAGE_LIMITS_SHOW_SESSION_KEY, body.claudeUsageLimitsShowSession);
+    await setBooleanSetting(CLAUDE_USAGE_LIMITS_SHOW_SESSION_KEY, body.claudeUsageLimitsShowSession);
   }
   if (body.claudeUsageLimitsShowWeekly !== undefined) {
-    setBooleanSetting(CLAUDE_USAGE_LIMITS_SHOW_WEEKLY_KEY, body.claudeUsageLimitsShowWeekly);
+    await setBooleanSetting(CLAUDE_USAGE_LIMITS_SHOW_WEEKLY_KEY, body.claudeUsageLimitsShowWeekly);
   }
   if (body.providerUsageEnabled !== undefined) {
-    setBooleanSetting(PROVIDER_USAGE_ENABLED_KEY, body.providerUsageEnabled);
+    await setBooleanSetting(PROVIDER_USAGE_ENABLED_KEY, body.providerUsageEnabled);
     // Keep Claude legacy flag aligned when Claude is among enabled providers.
     const ids =
       body.providerUsageIds ??
-      getProviderUsageIdsSetting();
+      await getProviderUsageIdsSetting();
     if (ids.includes("claude")) {
-      setBooleanSetting(CLAUDE_USAGE_LIMITS_ENABLED_KEY, body.providerUsageEnabled);
+      await setBooleanSetting(CLAUDE_USAGE_LIMITS_ENABLED_KEY, body.providerUsageEnabled);
     }
   }
   if (body.providerUsageIds !== undefined) {
-    setSetting(PROVIDER_USAGE_IDS_KEY, JSON.stringify(body.providerUsageIds));
+    await setSetting(PROVIDER_USAGE_IDS_KEY, JSON.stringify(body.providerUsageIds));
   }
   if (body.harnessLauncherConfig !== undefined) {
-    setSetting(HARNESS_LAUNCHER_CONFIG_KEY, JSON.stringify(body.harnessLauncherConfig));
+    await setSetting(HARNESS_LAUNCHER_CONFIG_KEY, JSON.stringify(body.harnessLauncherConfig));
   }
-  return json(settingsPayload());
+  return json(await settingsPayload());
 }

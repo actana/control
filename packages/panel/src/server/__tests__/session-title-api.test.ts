@@ -1,11 +1,5 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { closePanelTestDb, openPanelTestDb } from "./_panel-test-db";
-import * as fs from "node:fs";
-import * as os from "node:os";
-import * as path from "node:path";
-
-const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mc-session-title-api-test-"));
-process.env.AC_USER_DATA_DIR = tmpRoot;
+import { closePanelTestDb, openPanelTestDb, resetPanelState } from "./_panel-test-db";
 
 vi.mock("../services/claude-cli", () => ({
   runCli: vi.fn().mockResolvedValue("TITLE: Generated title\nICON: palette"),
@@ -14,11 +8,10 @@ vi.mock("../services/claude-cli", () => ({
 const testDb = await openPanelTestDb();
 const { runCli } = await import("../services/claude-cli");
 const { handleApiRequest } = await import("../api-router");
-const { operatorSessionCookie } = await import("./_operator-session");
+const { operatorSessionCookie, resetOperatorSessionForTests } = await import("./_operator-session");
+const { createOperator } = await import("../services/operator");
 const { createSession, getSession, updateSession } = await import("../services/sessions");
 const { generateTitleForSession } = await import("../services/title-generator");
-const { getDb } = await import("~/db/client");
-const { sessions, appSettings } = await import("~/db/schema");
 const { TITLE_WAITING } = await import("~/lib/session-sentinels");
 
 const LOOPBACK_HEADERS = { origin: "http://127.0.0.1:5173" };
@@ -34,27 +27,27 @@ async function authed(input: string, init: RequestInit = {}): Promise<Request> {
   });
 }
 
-function resetDb() {
-  const db = getDb();
-  db.delete(sessions).run();
-  db.delete(appSettings).run();
-}
-
-function createTitleSession() {
+async function createTitleSession() {
   return createSession({
     title: TITLE_WAITING,
     agent: "codex",
   });
 }
 
-describe("session title updates", () => {
-  beforeEach(() => {
-    resetDb();
-    vi.mocked(runCli).mockClear();
-  });
+beforeEach(async () => {
+  await resetPanelState(testDb);
+  resetOperatorSessionForTests();
+  await createOperator({ name: "Test Operator", password: "test-password" });
+  vi.mocked(runCli).mockClear();
+});
 
+afterAll(async () => {
+  await closePanelTestDb(testDb);
+});
+
+describe("session title updates", () => {
   it("marks PATCH title updates as manually set", async () => {
-    const session = createTitleSession();
+    const session = await createTitleSession();
 
     const res = await handleApiRequest(
       (await authed(`/api/sessions/${session.id}`, {
@@ -68,23 +61,19 @@ describe("session title updates", () => {
     const body = await res!.json();
     expect(body.session.title).toBe("Manual session title");
     expect(body.session.titleManuallySet).toBe(true);
-    expect(getSession(session.id)?.titleManuallySet).toBe(true);
+    expect((await getSession(session.id))?.titleManuallySet).toBe(true);
   });
 
   it("does not generate over a manually marked title, even when still sentinel", async () => {
-    const session = createTitleSession();
-    updateSession(session.id, { titleManuallySet: true });
+    const session = await createTitleSession();
+    await updateSession(session.id, { titleManuallySet: true });
 
     await generateTitleForSession(session.id, "add a dark mode toggle");
 
     expect(runCli).not.toHaveBeenCalled();
-    expect(getSession(session.id)).toMatchObject({
+    expect(await getSession(session.id)).toMatchObject({
       title: TITLE_WAITING,
       titleManuallySet: true,
     });
   });
-});
-
-afterAll(async () => {
-  await closePanelTestDb(testDb);
 });

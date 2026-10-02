@@ -1,19 +1,17 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import * as fs from "node:fs";
-import * as os from "node:os";
-import * as path from "node:path";
+import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { closePanelTestDb, openPanelTestDb, resetPanelState } from "./_panel-test-db";
+import { localDay } from "../repositories/token-usage.repo";
 
-// Correctness bar for the token-usage rollup: every summary read (which now sums
-// token_usage_rollup) must equal the same aggregate computed straight from the
-// raw token_usage table, across backfill, incremental ingest, dedupe, and the
-// ON DELETE CASCADE path. A separate file so the DB singleton is bound to this
-// suite's temp dir.
+/**
+ * Correctness bar for the token-usage rollup: every summary read (which sums
+ * token_usage_rollup) must equal the same aggregate computed straight from the
+ * raw token_usage table, across ingest, dedupe, and ON DELETE CASCADE.
+ */
 
-let sqlite: import("better-sqlite3").Database;
-let repo: typeof import("../repositories/token-usage.repo");
-let client: typeof import("~/db/client");
-let tempUserDataDir: string;
-let savedUserData: string | undefined;
+const testDb = await openPanelTestDb();
+const { createOperator, OPERATOR_ID } = await import("../services/operator");
+const { createSession, deleteSession } = await import("../services/sessions");
+const repo = await import("../repositories/token-usage.repo");
 
 const MS_PER_DAY = 86_400_000;
 const DAY0 = Date.parse("2026-05-10T12:00:00.000Z");
@@ -25,84 +23,75 @@ type Totals = {
   cacheReadTokens: number;
 };
 
-// --- Raw-truth aggregates computed directly over token_usage. ---
-function rawTotals(): Totals {
-  const r = sqlite
-    .prepare(
-      `SELECT
-         COALESCE(SUM(input_tokens),0) AS inputTokens,
-         COALESCE(SUM(output_tokens),0) AS outputTokens,
-         COALESCE(SUM(cache_creation_tokens),0) AS cacheCreationTokens,
-         COALESCE(SUM(cache_read_tokens),0) AS cacheReadTokens
-       FROM token_usage`,
-    )
-    .get() as Totals;
-  return r;
-}
-
-function rawPerSession() {
-  return sqlite
-    .prepare(
-      `SELECT session_id AS sessionId, MAX(ts) AS lastTs,
-         SUM(input_tokens) AS inputTokens, SUM(output_tokens) AS outputTokens,
-         SUM(cache_creation_tokens) AS cacheCreationTokens, SUM(cache_read_tokens) AS cacheReadTokens
-       FROM token_usage GROUP BY session_id ORDER BY session_id`,
-    )
-    .all() as (Totals & { sessionId: string; lastTs: number })[];
-}
-
-function rawPerDaySince(sinceMs: number) {
-  return sqlite
-    .prepare(
-      `SELECT strftime('%Y-%m-%d', ts / 1000, 'unixepoch', 'localtime') AS day,
-         SUM(input_tokens) AS inputTokens, SUM(output_tokens) AS outputTokens,
-         SUM(cache_creation_tokens) AS cacheCreationTokens, SUM(cache_read_tokens) AS cacheReadTokens
-       FROM token_usage
-       WHERE ts >= ?
-       GROUP BY day ORDER BY day`,
-    )
-    .all(sinceMs) as (Totals & { day: string })[];
-}
-
-function insertRawRow(row: {
-  uuid: string;
-  sessionId: string;
-  claudeSessionId: string;
-  ts: number;
-  i: number;
-  o: number;
-  cc: number;
-  cr: number;
-}) {
-  sqlite
-    .prepare(
-      `INSERT INTO token_usage
-         (id, session_id, claude_session_id, message_uuid, model,
-          input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens, ts)
-       VALUES (?, ?, ?, ?, 'm', ?, ?, ?, ?, ?)`,
-    )
-    .run(
-      `tu-${row.uuid}`,
-      row.sessionId,
-      row.claudeSessionId,
-      row.uuid,
-      row.i,
-      row.o,
-      row.cc,
-      row.cr,
-      row.ts,
-    );
-}
-
-function assertRollupMatchesRaw() {
-  // Totals.
-  expect(repo.selectTotals()).toEqual(rawTotals());
-
-  // Per session (seeded well under the 200 cap, so all sessions appear).
-  const gotSess = new Map(
-    repo.selectTotalsPerSession().map((s) => [s.sessionId, s]),
+async function rawTotals(): Promise<Totals> {
+  const { rows } = await testDb.pool.query(
+    `select
+       coalesce(sum(input_tokens),0)::text as inputtokens,
+       coalesce(sum(output_tokens),0)::text as outputtokens,
+       coalesce(sum(cache_creation_tokens),0)::text as cachecreationtokens,
+       coalesce(sum(cache_read_tokens),0)::text as cachereadtokens
+     from token_usage`,
   );
-  const rawSess = rawPerSession();
+  const r = rows[0]!;
+  return {
+    inputTokens: Number(r.inputtokens),
+    outputTokens: Number(r.outputtokens),
+    cacheCreationTokens: Number(r.cachecreationtokens),
+    cacheReadTokens: Number(r.cachereadtokens),
+  };
+}
+
+async function rawPerSession() {
+  const { rows } = await testDb.pool.query(
+    `select session_id as sessionid, max(ts)::text as lastts,
+       sum(input_tokens)::text as inputtokens, sum(output_tokens)::text as outputtokens,
+       sum(cache_creation_tokens)::text as cachecreationtokens, sum(cache_read_tokens)::text as cachereadtokens
+     from token_usage group by session_id order by session_id`,
+  );
+  return rows.map((r) => ({
+    sessionId: String(r.sessionid),
+    lastTs: Number(r.lastts),
+    inputTokens: Number(r.inputtokens),
+    outputTokens: Number(r.outputtokens),
+    cacheCreationTokens: Number(r.cachecreationtokens),
+    cacheReadTokens: Number(r.cachereadtokens),
+  }));
+}
+
+async function rawPerDaySince(sinceMs: number) {
+  const { rows } = await testDb.pool.query(
+    `select ts::text as ts, input_tokens::text as inputtokens, output_tokens::text as outputtokens,
+       cache_creation_tokens::text as cachecreationtokens, cache_read_tokens::text as cachereadtokens
+     from token_usage where ts >= $1`,
+    [sinceMs],
+  );
+  const byDay = new Map<string, Totals>();
+  for (const r of rows) {
+    const day = localDay(Number(r.ts));
+    const cur = byDay.get(day) ?? {
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheCreationTokens: 0,
+      cacheReadTokens: 0,
+    };
+    cur.inputTokens += Number(r.inputtokens);
+    cur.outputTokens += Number(r.outputtokens);
+    cur.cacheCreationTokens += Number(r.cachecreationtokens);
+    cur.cacheReadTokens += Number(r.cachereadtokens);
+    byDay.set(day, cur);
+  }
+  return [...byDay.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([day, t]) => ({ day, ...t }));
+}
+
+async function assertRollupMatchesRaw() {
+  expect(await repo.selectTotals(OPERATOR_ID)).toEqual(await rawTotals());
+
+  const gotSess = new Map(
+    (await repo.selectTotalsPerSession(OPERATOR_ID)).map((s) => [s.sessionId, s]),
+  );
+  const rawSess = await rawPerSession();
   expect(gotSess.size).toBe(rawSess.length);
   for (const raw of rawSess) {
     const got = gotSess.get(raw.sessionId)!;
@@ -113,12 +102,11 @@ function assertRollupMatchesRaw() {
     expect(got.lastTs).toBe(raw.lastTs);
   }
 
-  // Per day, windowed from a day before the earliest seed.
   const since = DAY0 - MS_PER_DAY;
   const gotDay = new Map(
-    repo.selectTotalsPerDaySince(since).map((d) => [d.day, d]),
+    (await repo.selectTotalsPerDaySince(OPERATOR_ID, since)).map((d) => [d.day, d]),
   );
-  const rawDay = rawPerDaySince(since);
+  const rawDay = await rawPerDaySince(since);
   expect(gotDay.size).toBe(rawDay.length);
   for (const raw of rawDay) {
     const got = gotDay.get(raw.day)!;
@@ -129,122 +117,170 @@ function assertRollupMatchesRaw() {
   }
 }
 
+beforeEach(async () => {
+  await resetPanelState(testDb);
+  await createOperator({ name: "Test Operator", password: "test-password" });
+  for (const tid of ["t1", "t2", "t3"] as const) {
+    // Use auto ids; stash mapping via claudeSessionId for ingest.
+    await createSession({
+      title: `Session ${tid}`,
+      agent: "claude-code",
+      claudeSessionId: `sess-${tid}`,
+    });
+  }
+});
+
+afterAll(async () => {
+  await closePanelTestDb(testDb);
+});
+
+async function sessionIdForClaude(claudeSessionId: string): Promise<string> {
+  const { rows } = await testDb.pool.query(
+    "select id from sessions where claude_session_id = $1",
+    [claudeSessionId],
+  );
+  return String(rows[0]!.id);
+}
+
 describe("token usage rollup", () => {
-  beforeAll(async () => {
-    tempUserDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "mc-rollup-"));
-    savedUserData = process.env.AC_USER_DATA_DIR;
-    process.env.AC_USER_DATA_DIR = tempUserDataDir;
-    client = await import("~/db/client");
-    repo = await import("../repositories/token-usage.repo");
-    client.getDb();
-    sqlite = client.getSqlite();
+  it("ingest reproduces the raw aggregate across days and sessions", async () => {
+    const t1 = await sessionIdForClaude("sess-t1");
+    const t2 = await sessionIdForClaude("sess-t2");
+    const t3 = await sessionIdForClaude("sess-t3");
 
-    const now = Date.now();
-    for (const tid of ["t1", "t2", "t3"]) {
-      sqlite
-        .prepare(
-          `INSERT INTO sessions (id, title, agent, status, branch, preview, lines, archived, claude_session_id, claude_skip_permissions, claude_bare_session, created_at, updated_at)
-           VALUES (?, ?, 'claude-code','ready','main','',0,0,?,0,0,?,?)`,
-        )
-        .run(tid, `Session ${tid}`, `sess-${tid}`, now, now);
-    }
+    const inserted = await repo.ingestTokenUsageTx(
+      OPERATOR_ID,
+      async (commit) => {
+        await commit({
+          rows: [
+            { id: "tu-a1", sessionId: t1, claudeSessionId: "sess-t1", messageUuid: "a1", model: "m", inputTokens: 100, outputTokens: 200, cacheCreationTokens: 10, cacheReadTokens: 20, ts: DAY0 },
+            { id: "tu-a2", sessionId: t1, claudeSessionId: "sess-t1", messageUuid: "a2", model: "m", inputTokens: 5, outputTokens: 6, cacheCreationTokens: 7, cacheReadTokens: 8, ts: DAY0 + MS_PER_DAY },
+            { id: "tu-a3", sessionId: t2, claudeSessionId: "sess-t2", messageUuid: "a3", model: "m", inputTokens: 1, outputTokens: 2, cacheCreationTokens: 3, cacheReadTokens: 4, ts: DAY0 },
+            { id: "tu-a4", sessionId: t3, claudeSessionId: "sess-t3", messageUuid: "a4", model: "m", inputTokens: 9, outputTokens: 8, cacheCreationTokens: 7, cacheReadTokens: 6, ts: DAY0 + 2 * MS_PER_DAY },
+          ],
+          sessionOffset: { claudeSessionId: "sess-t1", sessionId: t1, byteOffset: 1 },
+        });
+      },
+      Date.now(),
+    );
+    expect(inserted).toBe(4);
+    await assertRollupMatchesRaw();
   });
 
-  afterAll(() => {
-    if (savedUserData === undefined) delete process.env.AC_USER_DATA_DIR;
-    else process.env.AC_USER_DATA_DIR = savedUserData;
-    try {
-      fs.rmSync(tempUserDataDir, { recursive: true, force: true });
-    } catch {
-      /* windows may hold the db file briefly */
-    }
-  });
+  it("incremental ingest keeps the rollup equal to raw, and dedupes", async () => {
+    const t1 = await sessionIdForClaude("sess-t1");
+    const t3 = await sessionIdForClaude("sess-t3");
 
-  it("backfill reproduces the raw aggregate across days and sessions", () => {
-    // Seed raw rows directly (pre-rollup state) spanning three local days.
-    insertRawRow({ uuid: "a1", sessionId: "t1", claudeSessionId: "sess-t1", ts: DAY0, i: 100, o: 200, cc: 10, cr: 20 });
-    insertRawRow({ uuid: "a2", sessionId: "t1", claudeSessionId: "sess-t1", ts: DAY0 + MS_PER_DAY, i: 5, o: 6, cc: 7, cr: 8 });
-    insertRawRow({ uuid: "a3", sessionId: "t2", claudeSessionId: "sess-t2", ts: DAY0, i: 1, o: 2, cc: 3, cr: 4 });
-    insertRawRow({ uuid: "a4", sessionId: "t3", claudeSessionId: "sess-t3", ts: DAY0 + 2 * MS_PER_DAY, i: 9, o: 8, cc: 7, cr: 6 });
+    // Seed a baseline row so the second test is not empty.
+    await repo.ingestTokenUsageTx(
+      OPERATOR_ID,
+      async (commit) => {
+        await commit({
+          rows: [
+            { id: "tu-seed", sessionId: t1, claudeSessionId: "sess-t1", messageUuid: "seed", model: "m", inputTokens: 1, outputTokens: 1, cacheCreationTokens: 0, cacheReadTokens: 0, ts: DAY0 },
+          ],
+          sessionOffset: { claudeSessionId: "sess-t1", sessionId: t1, byteOffset: 1 },
+        });
+      },
+      Date.now(),
+    );
 
-    // Rollup is empty; backfill from raw.
-    client.backfillTokenUsageRollup(sqlite);
-    assertRollupMatchesRaw();
-
-    // Idempotent: a second backfill call is a no-op (rollup already populated).
-    client.backfillTokenUsageRollup(sqlite);
-    assertRollupMatchesRaw();
-  });
-
-  it("incremental ingest keeps the rollup equal to raw, and dedupes", () => {
-    // New rows via the ingest transaction: same-day/same-session accumulation,
-    // plus a brand-new day for an existing session.
-    const inserted = repo.ingestTokenUsageTx((commit) => {
-      commit({
-        rows: [
-          { id: "tu-b1", sessionId: "t1", claudeSessionId: "sess-t1", messageUuid: "b1", model: "m", inputTokens: 50, outputTokens: 60, cacheCreationTokens: 70, cacheReadTokens: 80, ts: DAY0 },
-          { id: "tu-b2", sessionId: "t3", claudeSessionId: "sess-t3", messageUuid: "b2", model: "m", inputTokens: 11, outputTokens: 12, cacheCreationTokens: 13, cacheReadTokens: 14, ts: DAY0 + 5 * MS_PER_DAY },
-        ],
-        sessionOffset: { claudeSessionId: "sess-t1", sessionId: "t1", byteOffset: 10 },
-      });
-    }, Date.now());
+    const inserted = await repo.ingestTokenUsageTx(
+      OPERATOR_ID,
+      async (commit) => {
+        await commit({
+          rows: [
+            { id: "tu-b1", sessionId: t1, claudeSessionId: "sess-t1", messageUuid: "b1", model: "m", inputTokens: 50, outputTokens: 60, cacheCreationTokens: 70, cacheReadTokens: 80, ts: DAY0 },
+            { id: "tu-b2", sessionId: t3, claudeSessionId: "sess-t3", messageUuid: "b2", model: "m", inputTokens: 11, outputTokens: 12, cacheCreationTokens: 13, cacheReadTokens: 14, ts: DAY0 + 5 * MS_PER_DAY },
+          ],
+          sessionOffset: { claudeSessionId: "sess-t1", sessionId: t1, byteOffset: 10 },
+        });
+      },
+      Date.now(),
+    );
     expect(inserted).toBe(2);
-    assertRollupMatchesRaw();
+    await assertRollupMatchesRaw();
 
-    // Re-ingesting the same message_uuids must not double count.
-    const insertedAgain = repo.ingestTokenUsageTx((commit) => {
-      commit({
-        rows: [
-          { id: "tu-b1", sessionId: "t1", claudeSessionId: "sess-t1", messageUuid: "b1", model: "m", inputTokens: 50, outputTokens: 60, cacheCreationTokens: 70, cacheReadTokens: 80, ts: DAY0 },
-        ],
-        sessionOffset: { claudeSessionId: "sess-t1", sessionId: "t1", byteOffset: 20 },
-      });
-    }, Date.now());
+    const insertedAgain = await repo.ingestTokenUsageTx(
+      OPERATOR_ID,
+      async (commit) => {
+        await commit({
+          rows: [
+            { id: "tu-b1", sessionId: t1, claudeSessionId: "sess-t1", messageUuid: "b1", model: "m", inputTokens: 50, outputTokens: 60, cacheCreationTokens: 70, cacheReadTokens: 80, ts: DAY0 },
+          ],
+          sessionOffset: { claudeSessionId: "sess-t1", sessionId: t1, byteOffset: 20 },
+        });
+      },
+      Date.now(),
+    );
     expect(insertedAgain).toBe(0);
-    assertRollupMatchesRaw();
+    await assertRollupMatchesRaw();
   });
 
-  it("keeps the rollup equal to raw after a cascade delete", () => {
-    // Deleting a session cascades its token_usage rows AND its rollup rows.
-    sqlite.prepare("DELETE FROM sessions WHERE id = 't1'").run();
-    const rollupForT1 = sqlite
-      .prepare("SELECT COUNT(*) AS n FROM token_usage_rollup WHERE session_id = 't1'")
-      .get() as { n: number };
-    expect(rollupForT1.n).toBe(0);
-    assertRollupMatchesRaw();
+  it("keeps the rollup equal to raw after a cascade delete", async () => {
+    const t1 = await sessionIdForClaude("sess-t1");
+    const t2 = await sessionIdForClaude("sess-t2");
+    await repo.ingestTokenUsageTx(
+      OPERATOR_ID,
+      async (commit) => {
+        await commit({
+          rows: [
+            { id: "tu-c1", sessionId: t1, claudeSessionId: "sess-t1", messageUuid: "c1", model: "m", inputTokens: 10, outputTokens: 20, cacheCreationTokens: 0, cacheReadTokens: 0, ts: DAY0 },
+            { id: "tu-c2", sessionId: t2, claudeSessionId: "sess-t2", messageUuid: "c2", model: "m", inputTokens: 3, outputTokens: 4, cacheCreationTokens: 0, cacheReadTokens: 0, ts: DAY0 },
+          ],
+          sessionOffset: { claudeSessionId: "sess-t1", sessionId: t1, byteOffset: 1 },
+        });
+      },
+      Date.now(),
+    );
+
+    await deleteSession(t1);
+    const rollupForT1 = await testDb.pool.query(
+      "select count(*)::int as n from token_usage_rollup where session_id = $1",
+      [t1],
+    );
+    expect(rollupForT1.rows[0]!.n).toBe(0);
+    await assertRollupMatchesRaw();
   });
 
-  it("folds out-of-order ingests into the same day bucket with last_ts = max(ts)", () => {
-    // Two ingests into the SAME (session, local-day) bucket, the newer ts
-    // committed first and the older ts second, must accumulate tokens and keep
-    // last_ts at the maximum — exercising the `last_ts = MAX(...)` upsert branch.
+  it("folds out-of-order ingests into the same day bucket with last_ts = max(ts)", async () => {
+    const t2 = await sessionIdForClaude("sess-t2");
     const day = DAY0 + 10 * MS_PER_DAY;
     const laterTs = day + 5 * 3_600_000;
     const earlierTs = day + 1 * 3_600_000;
-    repo.ingestTokenUsageTx((commit) => {
-      commit({
-        rows: [
-          { id: "tu-o1", sessionId: "t2", claudeSessionId: "sess-t2", messageUuid: "o1", model: "m", inputTokens: 3, outputTokens: 4, cacheCreationTokens: 5, cacheReadTokens: 6, ts: laterTs },
-        ],
-        sessionOffset: { claudeSessionId: "sess-t2", sessionId: "t2", byteOffset: 30 },
-      });
-    }, Date.now());
-    repo.ingestTokenUsageTx((commit) => {
-      commit({
-        rows: [
-          { id: "tu-o2", sessionId: "t2", claudeSessionId: "sess-t2", messageUuid: "o2", model: "m", inputTokens: 1, outputTokens: 1, cacheCreationTokens: 1, cacheReadTokens: 1, ts: earlierTs },
-        ],
-        sessionOffset: { claudeSessionId: "sess-t2", sessionId: "t2", byteOffset: 40 },
-      });
-    }, Date.now());
 
-    const bucket = sqlite
-      .prepare(
-        "SELECT input_tokens AS i, last_ts AS lastTs FROM token_usage_rollup WHERE session_id = 't2' AND day = strftime('%Y-%m-%d', ? / 1000, 'unixepoch', 'localtime')",
-      )
-      .get(laterTs) as { i: number; lastTs: number };
-    expect(bucket.i).toBe(4); // 3 + 1 accumulated regardless of ingest order
-    expect(bucket.lastTs).toBe(laterTs); // max, not the last-committed (earlier) ts
-    assertRollupMatchesRaw();
+    await repo.ingestTokenUsageTx(
+      OPERATOR_ID,
+      async (commit) => {
+        await commit({
+          rows: [
+            { id: "tu-o1", sessionId: t2, claudeSessionId: "sess-t2", messageUuid: "o1", model: "m", inputTokens: 3, outputTokens: 4, cacheCreationTokens: 5, cacheReadTokens: 6, ts: laterTs },
+          ],
+          sessionOffset: { claudeSessionId: "sess-t2", sessionId: t2, byteOffset: 30 },
+        });
+      },
+      Date.now(),
+    );
+    await repo.ingestTokenUsageTx(
+      OPERATOR_ID,
+      async (commit) => {
+        await commit({
+          rows: [
+            { id: "tu-o2", sessionId: t2, claudeSessionId: "sess-t2", messageUuid: "o2", model: "m", inputTokens: 1, outputTokens: 1, cacheCreationTokens: 1, cacheReadTokens: 1, ts: earlierTs },
+          ],
+          sessionOffset: { claudeSessionId: "sess-t2", sessionId: t2, byteOffset: 40 },
+        });
+      },
+      Date.now(),
+    );
+
+    const dayKey = localDay(laterTs);
+    const bucket = await testDb.pool.query(
+      "select input_tokens as i, last_ts::text as lastts from token_usage_rollup where session_id = $1 and day = $2",
+      [t2, dayKey],
+    );
+    expect(bucket.rows[0]!.i).toBe(4);
+    expect(Number(bucket.rows[0]!.lastts)).toBe(laterTs);
+    await assertRollupMatchesRaw();
   });
 });

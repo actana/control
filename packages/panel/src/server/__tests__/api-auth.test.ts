@@ -1,16 +1,11 @@
-import { afterAll, describe, expect, it } from "vitest";
-import { closePanelTestDb, openPanelTestDb } from "./_panel-test-db";
-import * as fs from "node:fs";
-import * as os from "node:os";
-import * as path from "node:path";
-
-const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mc-api-auth-test-"));
-process.env.AC_USER_DATA_DIR = tmpRoot;
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { closePanelTestDb, openPanelTestDb, resetPanelState } from "./_panel-test-db";
 
 const testDb = await openPanelTestDb();
+const { createOperator } = await import("../services/operator");
 const { handleApiRequest, ANONYMOUS_ROUTES, redactSensitiveErrorText } = await import("../api-router");
 const { getOrCreateApiToken } = await import("../services/settings");
-const { operatorSessionCookie } = await import("./_operator-session");
+const { operatorSessionCookie, resetOperatorSessionForTests } = await import("./_operator-session");
 
 function unauth(input: string, init: RequestInit = {}): Request {
   return new Request(`http://panel.example.test${input}`, {
@@ -18,6 +13,12 @@ function unauth(input: string, init: RequestInit = {}): Request {
     headers: { ...(init.headers as Record<string, string> | undefined) },
   });
 }
+
+beforeAll(async () => {
+  await resetPanelState(testDb);
+  resetOperatorSessionForTests();
+  await createOperator({ name: "Test Operator", password: "test-password" });
+});
 
 afterAll(async () => {
   await closePanelTestDb(testDb);
@@ -35,11 +36,11 @@ async function authed(input: string, init: RequestInit = {}): Promise<Request> {
 }
 
 /** An agent's hook callback — machine token, no session. See hook-auth.ts. */
-function hookAuthed(input: string, init: RequestInit = {}): Request {
+async function hookAuthed(input: string, init: RequestInit = {}): Promise<Request> {
   return new Request(`http://panel.example.test${input}`, {
     ...init,
     headers: {
-      authorization: `Bearer ${getOrCreateApiToken()}`,
+      authorization: `Bearer ${await getOrCreateApiToken()}`,
       ...(init.headers as Record<string, string> | undefined),
     },
   });
@@ -161,7 +162,7 @@ describe("api auth gate", () => {
     });
 
     it(`${route.method} ${route.pathname} rejects the machine hook token`, async () => {
-      const res = await handleApiRequest(hookAuthed(route.pathname, { method: route.method }));
+      const res = await handleApiRequest(await hookAuthed(route.pathname, { method: route.method }));
       expect(res?.status).toBe(401);
     });
 
@@ -188,7 +189,7 @@ describe("api auth gate", () => {
     });
 
     it(`${route.method} ${route.pathname} lets a token-bearing agent through`, async () => {
-      const res = await handleApiRequest(hookAuthed(route.pathname, { method: route.method }));
+      const res = await handleApiRequest(await hookAuthed(route.pathname, { method: route.method }));
       expect(res?.status).not.toBe(401);
     });
   }

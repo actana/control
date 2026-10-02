@@ -1,9 +1,8 @@
 import { defineConfig } from "drizzle-kit";
 
 // The Panel's Postgres migrations (#567, ADR 0041 D17). They start from a clean
-// baseline in `pg-migrations/`; the 25 SQLite files in `migrations/` are the
-// legacy set that `client.ts` still applies until the later pull requests
-// remove SQLite, and drizzle-kit never touches that folder.
+// baseline in `pg-migrations/`. The legacy SQLite files are gone with PR 5 of
+// #567 (missioncontrol.db moved here); drizzle-kit only touches this folder.
 export default defineConfig({
   schema: "./src/db/pg-schema.ts",
   out: "./src/db/pg-migrations",

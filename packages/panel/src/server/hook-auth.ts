@@ -22,13 +22,13 @@ function tokensEqual(a: string, b: string): boolean {
   return timingSafeEqual(ba, bb);
 }
 
-export function requireHookToken(
+export async function requireHookToken(
   request: Request,
-): { ok: true } | { ok: false; response: Response } {
+): Promise<{ ok: true } | { ok: false; response: Response }> {
   // Headers.get() is case-insensitive per the Fetch spec — one lookup is enough.
   const auth = request.headers.get("authorization") ?? "";
   const token = auth.replace(/^Bearer\s+/i, "").trim();
-  const expected = getOrCreateApiToken().trim();
+  const expected = (await getOrCreateApiToken()).trim();
   if (!token || !expected || !tokensEqual(token, expected)) {
     return { ok: false, response: jsonError(HTTP_UNAUTHORIZED, "unauthorized") };
   }

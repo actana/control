@@ -171,7 +171,7 @@ async function requireApiAuth(
 ): Promise<{ ok: true; principal: ApiPrincipal | null } | { ok: false; response: Response }> {
   if (isAnonymousRoute(method, pathname)) return { ok: true, principal: null };
   if (isHookRoute(pathname)) {
-    const hook = requireHookToken(request);
+    const hook = await requireHookToken(request);
     return hook.ok ? { ok: true, principal: null } : hook;
   }
   return await authenticateApiRequest(request, method, pathname);

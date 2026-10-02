@@ -1,33 +1,31 @@
-import { eq, sql } from "drizzle-orm";
-import { getDb } from "~/db/client";
-import { appSettings } from "~/db/schema";
+import { eq } from "drizzle-orm";
+import { ownedBy } from "~/db/owner";
+import { panelDb } from "~/db/panel-db-handle";
+import { appSettings } from "~/db/pg-schema";
 
-// Hot path (getBooleanSetting fires on many reads). Hoist the prepared statement
-// once so drizzle/better-sqlite3 skips re-parsing/re-planning per call. Built
-// lazily on first use since getDb() must open the connection first.
-function buildGetAppSettingStmt() {
-  return getDb()
-    .select()
+/** Every query here filters on `owner_id` (ADR 0041 D15). */
+
+export async function getAppSetting(ownerId: number, key: string): Promise<string | null> {
+  const rows = await panelDb()
+    .select({ value: appSettings.value })
     .from(appSettings)
-    .where(eq(appSettings.key, sql.placeholder("key")))
-    .prepare();
-}
-let getAppSettingStmt: ReturnType<typeof buildGetAppSettingStmt> | null = null;
-
-export function getAppSetting(key: string): string | null {
-  if (!getAppSettingStmt) getAppSettingStmt = buildGetAppSettingStmt();
-  return getAppSettingStmt.get({ key })?.value ?? null;
+    .where(ownedBy(appSettings, ownerId, eq(appSettings.key, key)))
+    .limit(1);
+  return rows[0]?.value ?? null;
 }
 
-export function setAppSetting(key: string, value: string): void {
-  const db = getDb();
-  db.insert(appSettings)
-    .values({ key, value })
-    .onConflictDoUpdate({ target: appSettings.key, set: { value } })
-    .run();
+export async function setAppSetting(ownerId: number, key: string, value: string): Promise<void> {
+  await panelDb()
+    .insert(appSettings)
+    .values({ ownerId, key, value })
+    .onConflictDoUpdate({
+      target: [appSettings.ownerId, appSettings.key],
+      set: { value },
+    });
 }
 
-export function deleteAppSetting(key: string): void {
-  const db = getDb();
-  db.delete(appSettings).where(eq(appSettings.key, key)).run();
+export async function deleteAppSetting(ownerId: number, key: string): Promise<void> {
+  await panelDb()
+    .delete(appSettings)
+    .where(ownedBy(appSettings, ownerId, eq(appSettings.key, key)));
 }

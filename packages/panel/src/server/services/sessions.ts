@@ -10,6 +10,7 @@ import {
   findSessionById,
   insertSession,
   updateSessionRow,
+  type SessionRow,
 } from "../repositories/sessions.repo";
 import {
   deleteTerminalLogById,
@@ -18,30 +19,39 @@ import {
 } from "../repositories/terminal-logs.repo";
 import { newId } from "./_ids";
 import { isClientDomainId } from "@actana/shared/client-id";
+import { OPERATOR_ID } from "./operator";
 
-export function getSession(id: string): Session | null {
-  return findSessionById(id);
+export type { Session };
+
+export async function getSession(id: string, ownerId = OPERATOR_ID): Promise<Session | null> {
+  return (await findSessionById(ownerId, id)) as Session | null;
 }
 
-export function createSession(input: {
-  id?: string;
-  title: string;
-  agent: Harness;
-  status?: SessionStatus;
-  preview?: string;
-  claudeSessionId?: string | null;
-  claudeSkipPermissions?: boolean;
-  claudeBareSession?: boolean;
-}): Session {
+export async function createSession(
+  input: {
+    id?: string;
+    title: string;
+    agent: Harness;
+    status?: SessionStatus;
+    preview?: string;
+    claudeSessionId?: string | null;
+    claudeSkipPermissions?: boolean;
+    claudeBareSession?: boolean;
+  },
+  ownerId = OPERATOR_ID,
+): Promise<Session> {
   if (!input.title?.trim()) throw new Error("title required");
   if (!isHarness(input.agent)) throw new Error("invalid agent");
 
   const now = Date.now();
   const requestedId = input.id?.trim();
   if (requestedId && !isClientDomainId(requestedId)) throw new Error("invalid session id");
-  if (requestedId && findSessionById(requestedId)) throw new Error("session id already exists");
-  const row: Session = {
+  if (requestedId && (await findSessionById(ownerId, requestedId))) {
+    throw new Error("session id already exists");
+  }
+  const row: SessionRow = {
     id: requestedId || newId("t"),
+    ownerId,
     title: input.title.trim(),
     titleManuallySet: false,
     icon: null,
@@ -58,17 +68,18 @@ export function createSession(input: {
     createdAt: now,
     updatedAt: now,
   };
-  insertSession(row);
+  await insertSession(row);
   events.emit("session:created", { id: row.id });
-  return row;
+  return row as Session;
 }
 
-export function updateStatus(
+export async function updateStatus(
   id: string,
-  patch: { status?: SessionStatus; preview?: string; lines?: number }
-): Session | null {
+  patch: { status?: SessionStatus; preview?: string; lines?: number },
+  ownerId = OPERATOR_ID,
+): Promise<Session | null> {
   if (patch.status && !isSessionStatus(patch.status)) throw new Error("invalid status");
-  const existing = findSessionById(id);
+  const existing = await findSessionById(ownerId, id);
   if (!existing) return null;
   const next = {
     ...existing,
@@ -77,52 +88,41 @@ export function updateStatus(
     lines: patch.lines ?? existing.lines,
     updatedAt: Date.now(),
   };
-  updateSessionRow(id, {
+  await updateSessionRow(ownerId, id, {
     status: next.status,
     preview: next.preview,
     lines: next.lines,
     updatedAt: next.updatedAt,
   });
   events.emit("session:updated", { id });
-  // Any status transition away from needs-input means the agent moved on, so
-  // whatever question was pending is stale (answered, cancelled, interrupted).
   if (patch.status && patch.status !== "needs-input") {
     clearPendingQuestion(id);
   }
-  // A dead or detached terminal takes its session's subagents with it; their
-  // tracked entries must not hold a future session of this session on "running".
   if (patch.status === "terminated" || patch.status === "disconnected") {
     clearSubagentActivity(id);
   }
-  if (
-    patch.status === "finished" &&
-    existing.status !== "finished"
-  ) {
+  if (patch.status === "finished" && existing.status !== "finished") {
     events.emit("session:finished", {
       id,
       sessionTitle: existing.title,
     });
   }
-  return next;
+  return next as Session;
 }
 
 /**
- * Startup sweep: mark every local-scope session still claiming a live agent
- * process (running / needs-input) as disconnected. Called by the Panel
- * once per app boot, before the first window loads — at that point no local
- * PTYs exist, so any such status is an orphan of a previous run (app quit or
- * crash killed the process before any hook could report). Goes through
- * updateStatus so events fire and stale subagent tracking is dropped.
+ * Startup sweep: mark every session still claiming a live agent process as
+ * disconnected. Goes through updateStatus so events fire.
  */
-export function sweepOrphanedActiveSessions(): number {
-  const orphans = findActiveLocalSessions();
+export async function sweepOrphanedActiveSessions(ownerId = OPERATOR_ID): Promise<number> {
+  const orphans = await findActiveLocalSessions(ownerId);
   for (const t of orphans) {
-    updateStatus(t.id, { status: "disconnected" });
+    await updateStatus(t.id, { status: "disconnected" }, ownerId);
   }
   return orphans.length;
 }
 
-export function updateSession(
+export async function updateSession(
   id: string,
   patch: Partial<
     Pick<
@@ -135,39 +135,40 @@ export function updateSession(
       | "claudeSkipPermissions"
       | "claudeBareSession"
     >
-  >
-): Session | null {
-  const existing = findSessionById(id);
+  >,
+  ownerId = OPERATOR_ID,
+): Promise<Session | null> {
+  const existing = await findSessionById(ownerId, id);
   if (!existing) return null;
   const next = { ...existing, ...patch, updatedAt: Date.now() };
-  updateSessionRow(id, next);
+  await updateSessionRow(ownerId, id, next);
   events.emit("session:updated", { id });
-  return next;
+  return next as Session;
 }
 
-export function archiveSession(id: string): Session | null {
-  const existing = findSessionById(id);
+export async function archiveSession(id: string, ownerId = OPERATOR_ID): Promise<Session | null> {
+  const existing = await findSessionById(ownerId, id);
   if (!existing) return null;
-  updateSessionRow(id, { archived: true, updatedAt: Date.now() });
-  const next = { ...existing, archived: true } as Session;
+  await updateSessionRow(ownerId, id, { archived: true, updatedAt: Date.now() });
+  const next = { ...existing, archived: true };
   clearPendingQuestion(id);
   events.emit("session:archived", { id });
-  return next;
+  return next as Session;
 }
 
-export function restoreSession(id: string): Session | null {
-  const existing = findSessionById(id);
+export async function restoreSession(id: string, ownerId = OPERATOR_ID): Promise<Session | null> {
+  const existing = await findSessionById(ownerId, id);
   if (!existing) return null;
-  updateSessionRow(id, { archived: false, updatedAt: Date.now() });
-  const next = { ...existing, archived: false } as Session;
+  await updateSessionRow(ownerId, id, { archived: false, updatedAt: Date.now() });
+  const next = { ...existing, archived: false };
   events.emit("session:restored", { id });
-  return next;
+  return next as Session;
 }
 
-export function deleteSession(id: string): boolean {
-  const existing = findSessionById(id);
+export async function deleteSession(id: string, ownerId = OPERATOR_ID): Promise<boolean> {
+  const existing = await findSessionById(ownerId, id);
   if (!existing) return false;
-  const changes = deleteSessionRow(id);
+  const changes = await deleteSessionRow(ownerId, id);
   if (changes > 0) {
     clearPendingQuestion(id);
     events.emit("session:deleted", { id });
@@ -178,21 +179,22 @@ export function deleteSession(id: string): boolean {
 
 const RING_LIMIT_BYTES = 1_000_000;
 
-export function appendTerminalLog(sessionId: string, chunk: string) {
+export async function appendTerminalLog(
+  sessionId: string,
+  chunk: string,
+  ownerId = OPERATOR_ID,
+): Promise<void> {
   const id = newId("tl");
-  insertTerminalLog({ id, sessionId, chunk, createdAt: Date.now() });
-  // rough FIFO eviction by total length per session
-  const all = findTerminalLogsBySessionId(sessionId);
+  await insertTerminalLog({ id, ownerId, sessionId, chunk, createdAt: Date.now() });
+  const all = await findTerminalLogsBySessionId(ownerId, sessionId);
   let total = all.reduce((a, r) => a + r.chunk.length, 0);
   for (const r of all) {
     if (total <= RING_LIMIT_BYTES) break;
-    deleteTerminalLogById(r.id);
+    await deleteTerminalLogById(ownerId, r.id);
     total -= r.chunk.length;
   }
 }
 
-export function readTerminalLog(sessionId: string): string {
-  return findTerminalLogsBySessionId(sessionId)
-    .map((r) => r.chunk)
-    .join("");
+export async function readTerminalLog(sessionId: string, ownerId = OPERATOR_ID): Promise<string> {
+  return (await findTerminalLogsBySessionId(ownerId, sessionId)).map((r) => r.chunk).join("");
 }

@@ -18,48 +18,45 @@ import { getSession, updateSession } from "./sessions";
 export { isTitleGenerationPrompt, parseResponse, resolveTitleInvocation };
 
 export async function generateTitleForSession(sessionId: string, prompt: string): Promise<void> {
-  const session = getSession(sessionId);
+  const session = await getSession(sessionId);
   if (!session) return;
   if (session.titleManuallySet) return;
-  if (!isSentinelTitle(session.title)) return; // existing finalized title
+  if (!isSentinelTitle(session.title)) return;
   if (!prompt.trim()) return;
 
   const invocation = resolveTitleInvocation(session.agent, prompt);
   if (!invocation) {
     if (session.title === TITLE_WAITING) {
-      updateSession(sessionId, { title: fallbackTitle(prompt) });
+      await updateSession(sessionId, { title: fallbackTitle(prompt) });
     }
     return;
   }
 
-  // Move from "Waiting" → "Generating".
   if (session.title === TITLE_WAITING) {
-    updateSession(sessionId, { title: TITLE_GENERATING });
+    await updateSession(sessionId, { title: TITLE_GENERATING });
   }
 
   try {
     const raw = await runCli(invocation.cmd, invocation.args);
     const parsed = parseResponse(raw);
     if (process.env.AC_LOG_TITLE_GEN) {
-      // Opt-in diagnostic. Pipe to a file when starting the app to capture
-      // CLI output verbatim while iterating on the prompt format.
       console.log("[title-gen] raw:\n" + raw);
       console.log("[title-gen] parsed:", parsed);
     }
-    const fresh = getSession(sessionId);
-    if (!fresh || fresh.titleManuallySet || !isSentinelTitle(fresh.title)) return; // user edited mid-flight
+    const fresh = await getSession(sessionId);
+    if (!fresh || fresh.titleManuallySet || !isSentinelTitle(fresh.title)) return;
     if (parsed.title) {
-      updateSession(sessionId, { title: parsed.title, icon: parsed.icon });
+      await updateSession(sessionId, { title: parsed.title, icon: parsed.icon });
     } else {
-      updateSession(sessionId, { title: fallbackTitle(prompt) });
+      await updateSession(sessionId, { title: fallbackTitle(prompt) });
     }
   } catch (e) {
     if (process.env.AC_LOG_TITLE_GEN) {
       console.error("[title-gen] CLI error:", e);
     }
-    const fresh = getSession(sessionId);
+    const fresh = await getSession(sessionId);
     if (fresh && !fresh.titleManuallySet && isSentinelTitle(fresh.title)) {
-      updateSession(sessionId, { title: fallbackTitle(prompt) });
+      await updateSession(sessionId, { title: fallbackTitle(prompt) });
     }
   }
 }

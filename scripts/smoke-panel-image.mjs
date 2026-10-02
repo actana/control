@@ -269,8 +269,7 @@ if (psql("select count(*) from panel_sessions where owner_id = 1") !== "1") {
 log(`the Panel migrated ${PANEL_TABLES.join(", ")} into Postgres and setup wrote its rows there`);
 
 // No SQLite file is left in the Panel's own state: the data volume holds the
-// secrets key and nothing named panel.db (a legacy missioncontrol.db is another
-// pull request's, and is not looked for here).
+// secrets key and nothing named panel.db or missioncontrol.db (#567 PR 5).
 const dataFiles = docker([
   "exec",
   containerName,
@@ -281,12 +280,15 @@ const dataFiles = docker([
 if (dataFiles.some((name) => name.startsWith("panel.db"))) {
   die(`the data volume still holds a panel.db — found: ${dataFiles.join(" ")}`);
 }
-log("the data volume holds no panel.db");
+if (dataFiles.some((name) => name.startsWith("missioncontrol.db"))) {
+  die(`the data volume still holds a missioncontrol.db — found: ${dataFiles.join(" ")}`);
+}
+log("the data volume holds no panel.db and no missioncontrol.db");
 
-// better-sqlite3 still ships in the image for the legacy missioncontrol.db until
-// it goes (#567's later pull requests), and is the native module compiled in the
-// build stage against a different Node and glibc (ADR 0016 D20, D25). The Panel
-// database no longer proves it loads, so load it directly. An absolute node:
+// better-sqlite3 still ships in the image for the provider-usage readers of
+// other apps' SQLite files until those move to node:sqlite (#567's next PR),
+// and is the native module compiled in the build stage against a different
+// Node and glibc (ADR 0016 D20, D25). Load it directly. An absolute node:
 // `docker exec` does not go through ENTRYPOINT, and /nodejs/bin is not on PATH.
 docker([
   "exec",

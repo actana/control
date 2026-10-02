@@ -1,25 +1,21 @@
-import { beforeEach, describe, expect, it } from "vitest";
-import * as fs from "node:fs";
-import * as os from "node:os";
-import * as path from "node:path";
+import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { closePanelTestDb, openPanelTestDb, resetPanelState } from "./_panel-test-db";
 
-const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mc-opencode-hooks-test-"));
-process.env.AC_USER_DATA_DIR = tmpRoot;
+const testDb = await openPanelTestDb();
 
 const { handleApiRequest } = await import("../api-router");
 const { getOrCreateApiToken } = await import("../services/settings");
 const { createSession, getSession } = await import("../services/sessions");
-const { getDb } = await import("~/db/client");
-const { sessions, appSettings } = await import("~/db/schema");
+const { createOperator } = await import("../services/operator");
 
 const LOOPBACK_HEADERS = { origin: "http://127.0.0.1:5173" };
 
-function authed(input: string, init: RequestInit = {}): Request {
+async function authed(input: string, init: RequestInit = {}): Promise<Request> {
   return new Request(`http://127.0.0.1:5173${input}`, {
     ...init,
     headers: {
       ...LOOPBACK_HEADERS,
-      authorization: `Bearer ${getOrCreateApiToken()}`,
+      authorization: `Bearer ${await getOrCreateApiToken()}`,
       ...(init.headers as Record<string, string> | undefined),
     },
   });
@@ -28,12 +24,10 @@ function authed(input: string, init: RequestInit = {}): Request {
 describe("OpenCode hook API", () => {
   let sessionId = "";
 
-  beforeEach(() => {
-    const db = getDb();
-    db.delete(sessions).run();
-        db.delete(appSettings).run();
-
-    const session = createSession({
+  beforeEach(async () => {
+    await resetPanelState(testDb);
+    await createOperator({ name: "Test Operator", password: "test-password" });
+    const session = await createSession({
       title: "Waiting for initial prompt...",
       agent: "opencode",
       claudeSessionId: null,
@@ -41,9 +35,9 @@ describe("OpenCode hook API", () => {
     sessionId = session.id;
   });
 
-  function postHook(body: Record<string, unknown>): Promise<Response | null> {
+  async function postHook(body: Record<string, unknown>): Promise<Response | null> {
     return handleApiRequest(
-      authed(`/api/hooks/opencode?sessionId=${encodeURIComponent(sessionId)}`, {
+      await authed(`/api/hooks/opencode?sessionId=${encodeURIComponent(sessionId)}`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(body),
@@ -59,13 +53,13 @@ describe("OpenCode hook API", () => {
       prompt: "ship opencode hooks",
     });
     expect(running?.status).toBe(200);
-    expect(getSession(sessionId)).toMatchObject({ claudeSessionId: harnessSessionId, status: "running" });
+    expect(await getSession(sessionId)).toMatchObject({ claudeSessionId: harnessSessionId, status: "running" });
   }
 
   it("captures ses_* session ids from SessionStart without changing status", async () => {
     const harnessSessionId = "ses_3cf7dd8d4ffeUPfENpVxfFojZ2";
     const res = await handleApiRequest(
-      authed(`/api/hooks/opencode?sessionId=${encodeURIComponent(sessionId)}`, {
+      await authed(`/api/hooks/opencode?sessionId=${encodeURIComponent(sessionId)}`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
@@ -77,13 +71,13 @@ describe("OpenCode hook API", () => {
 
     expect(res?.status).toBe(200);
     await expect(res?.json()).resolves.toEqual({ ok: true, ignored: "SessionStart" });
-    expect(getSession(sessionId)?.claudeSessionId).toBe(harnessSessionId);
-    expect(getSession(sessionId)?.status).toBe("ready");
+    expect((await getSession(sessionId))?.claudeSessionId).toBe(harnessSessionId);
+    expect((await getSession(sessionId))?.status).toBe("ready");
   });
 
   it("marks sessions finished on Stop", async () => {
     const res = await handleApiRequest(
-      authed(`/api/hooks/opencode?sessionId=${encodeURIComponent(sessionId)}`, {
+      await authed(`/api/hooks/opencode?sessionId=${encodeURIComponent(sessionId)}`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
@@ -95,12 +89,12 @@ describe("OpenCode hook API", () => {
 
     expect(res?.status).toBe(200);
     await expect(res?.json()).resolves.toEqual({ ok: true, status: "finished" });
-    expect(getSession(sessionId)?.status).toBe("finished");
+    expect((await getSession(sessionId))?.status).toBe("finished");
   });
 
   it("marks sessions running on UserPromptSubmit", async () => {
     const res = await handleApiRequest(
-      authed(`/api/hooks/opencode?sessionId=${encodeURIComponent(sessionId)}`, {
+      await authed(`/api/hooks/opencode?sessionId=${encodeURIComponent(sessionId)}`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
@@ -113,12 +107,12 @@ describe("OpenCode hook API", () => {
 
     expect(res?.status).toBe(200);
     await expect(res?.json()).resolves.toEqual({ ok: true, status: "running" });
-    expect(getSession(sessionId)?.status).toBe("running");
+    expect((await getSession(sessionId))?.status).toBe("running");
   });
 
   it("marks sessions needs-input on PermissionRequest", async () => {
     const res = await handleApiRequest(
-      authed(`/api/hooks/opencode?sessionId=${encodeURIComponent(sessionId)}`, {
+      await authed(`/api/hooks/opencode?sessionId=${encodeURIComponent(sessionId)}`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
@@ -130,12 +124,12 @@ describe("OpenCode hook API", () => {
 
     expect(res?.status).toBe(200);
     await expect(res?.json()).resolves.toEqual({ ok: true, status: "needs-input" });
-    expect(getSession(sessionId)?.status).toBe("needs-input");
+    expect((await getSession(sessionId))?.status).toBe("needs-input");
   });
 
   it("marks sessions needs-input on QuestionRequest", async () => {
     const res = await handleApiRequest(
-      authed(`/api/hooks/opencode?sessionId=${encodeURIComponent(sessionId)}`, {
+      await authed(`/api/hooks/opencode?sessionId=${encodeURIComponent(sessionId)}`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
@@ -147,15 +141,15 @@ describe("OpenCode hook API", () => {
 
     expect(res?.status).toBe(200);
     await expect(res?.json()).resolves.toEqual({ ok: true, status: "needs-input" });
-    expect(getSession(sessionId)?.status).toBe("needs-input");
+    expect((await getSession(sessionId))?.status).toBe("needs-input");
   });
 
   it("walks the full OpenCode hook lifecycle over HTTP", async () => {
     const harnessSessionId = "ses_lifecycle_integration";
-    const token = getOrCreateApiToken();
+    const token = await getOrCreateApiToken();
 
     const sessionStart = await handleApiRequest(
-      authed(`/api/hooks/opencode?sessionId=${encodeURIComponent(sessionId)}`, {
+      await authed(`/api/hooks/opencode?sessionId=${encodeURIComponent(sessionId)}`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
@@ -167,7 +161,7 @@ describe("OpenCode hook API", () => {
     expect(sessionStart?.status).toBe(200);
 
     const running = await handleApiRequest(
-      authed(`/api/hooks/opencode?sessionId=${encodeURIComponent(sessionId)}`, {
+      await authed(`/api/hooks/opencode?sessionId=${encodeURIComponent(sessionId)}`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
@@ -180,7 +174,7 @@ describe("OpenCode hook API", () => {
     expect(running?.status).toBe(200);
 
     const finished = await handleApiRequest(
-      authed(`/api/hooks/opencode?sessionId=${encodeURIComponent(sessionId)}`, {
+      await authed(`/api/hooks/opencode?sessionId=${encodeURIComponent(sessionId)}`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
@@ -191,7 +185,7 @@ describe("OpenCode hook API", () => {
     );
     expect(finished?.status).toBe(200);
 
-    expect(getSession(sessionId)).toMatchObject({
+    expect(await getSession(sessionId)).toMatchObject({
       claudeSessionId: harnessSessionId,
       status: "finished",
     });
@@ -204,9 +198,9 @@ describe("OpenCode hook API", () => {
     // GRANTED, which is why that family has to be healed by the next
     // PostToolUse instead — the two harnesses genuinely differ here.
     const harnessSessionId = "ses_permission_flow";
-    const hook = (body: Record<string, unknown>) =>
+    const hook = async (body: Record<string, unknown>) =>
       handleApiRequest(
-        authed(`/api/hooks/opencode?sessionId=${encodeURIComponent(sessionId)}`, {
+        await authed(`/api/hooks/opencode?sessionId=${encodeURIComponent(sessionId)}`, {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ ...body, session_id: harnessSessionId }),
@@ -215,12 +209,12 @@ describe("OpenCode hook API", () => {
 
     await hook({ hook_event_name: "UserPromptSubmit", prompt: "run the tests" });
     await hook({ hook_event_name: "PermissionRequest" });
-    expect(getSession(sessionId)?.status).toBe("needs-input");
+    expect((await getSession(sessionId))?.status).toBe("needs-input");
 
     const replied = await hook({ hook_event_name: "PermissionReplied" });
     expect(replied?.status).toBe(200);
     await expect(replied?.json()).resolves.toEqual({ ok: true, status: "running" });
-    expect(getSession(sessionId)?.status).toBe("running");
+    expect((await getSession(sessionId))?.status).toBe("running");
   });
 
   it("walks the sequence the installed plugin actually produced", async () => {
@@ -230,9 +224,9 @@ describe("OpenCode hook API", () => {
     // and `session.idle` both fire, and the card must settle once and stay
     // settled rather than flickering.
     const harnessSessionId = "ses_000c0422afferlN5ASgK5JDYj3";
-    const post = (body: Record<string, unknown>) =>
+    const post = async (body: Record<string, unknown>) =>
       handleApiRequest(
-        authed(`/api/hooks/opencode?sessionId=${encodeURIComponent(sessionId)}`, {
+        await authed(`/api/hooks/opencode?sessionId=${encodeURIComponent(sessionId)}`, {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ ...body, session_id: harnessSessionId }),
@@ -240,19 +234,19 @@ describe("OpenCode hook API", () => {
       );
 
     await post({ hook_event_name: "SessionStart" });
-    expect(getSession(sessionId)?.claudeSessionId).toBe(harnessSessionId);
-    expect(getSession(sessionId)?.status).toBe("ready");
+    expect((await getSession(sessionId))?.claudeSessionId).toBe(harnessSessionId);
+    expect((await getSession(sessionId))?.status).toBe("ready");
 
     await post({ hook_event_name: "UserPromptSubmit", prompt: "say hello" });
-    expect(getSession(sessionId)?.status).toBe("running");
+    expect((await getSession(sessionId))?.status).toBe("running");
     for (let i = 0; i < 3; i += 1) await post({ hook_event_name: "UserPromptSubmit" });
-    expect(getSession(sessionId)?.status).toBe("running");
+    expect((await getSession(sessionId))?.status).toBe("running");
 
     await post({ hook_event_name: "Stop" });
     await post({ hook_event_name: "Stop" });
     // The whole point of #230: a settle the Core can report, so `--wait` and
     // the SDK's wait-for-idle resolve instead of timing out "unreported".
-    expect(getSession(sessionId)?.status).toBe("finished");
+    expect((await getSession(sessionId))?.status).toBe("finished");
   });
 
   it("ignores claiming hooks from a different captured session", async () => {
@@ -271,7 +265,7 @@ describe("OpenCode hook API", () => {
 
     expect(foreignAsk?.status).toBe(200);
     await expect(foreignAsk?.json()).resolves.toEqual({ ok: true, ignored: "foreign-session" });
-    expect(getSession(sessionId)).toMatchObject({
+    expect(await getSession(sessionId)).toMatchObject({
       claudeSessionId: capturedSessionId,
       status: "running",
     });
@@ -285,7 +279,7 @@ describe("OpenCode hook API", () => {
 
     await start(capturedSessionId);
     await postHook({ hook_event_name: "PermissionRequest", session_id: capturedSessionId });
-    expect(getSession(sessionId)?.status).toBe("needs-input");
+    expect((await getSession(sessionId))?.status).toBe("needs-input");
 
     const childStop = await postHook({
       hook_event_name: "Stop",
@@ -294,7 +288,7 @@ describe("OpenCode hook API", () => {
 
     expect(childStop?.status).toBe(200);
     await expect(childStop?.json()).resolves.toEqual({ ok: true, event: "Stop" });
-    expect(getSession(sessionId)).toMatchObject({
+    expect(await getSession(sessionId)).toMatchObject({
       claudeSessionId: capturedSessionId,
       status: "needs-input",
     });
@@ -318,10 +312,14 @@ describe("OpenCode hook API", () => {
 
     expect(foreignStop?.status).toBe(200);
     await expect(foreignStop?.json()).resolves.toEqual({ ok: true, status: "finished" });
-    expect(getSession(sessionId)).toMatchObject({
+    expect(await getSession(sessionId)).toMatchObject({
       // The stored id is untouched: a Stop is still not a capture event.
       claudeSessionId: capturedSessionId,
       status: "finished",
     });
   });
+});
+
+afterAll(async () => {
+  await closePanelTestDb(testDb);
 });
