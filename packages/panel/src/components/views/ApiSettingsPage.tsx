@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { formatDistance } from "date-fns";
 import { Btn } from "~/components/ui/Btn";
 import { ConfirmDialog } from "~/components/ui/ConfirmDialog";
 import { FormErrorBox } from "~/components/ui/FormErrorBox";
@@ -62,6 +63,11 @@ function coreScopeLabel(
   return coreIds.map((id) => labels.get(id) ?? id).join(", ");
 }
 
+/** Future retry due-time only — do not use formatRelativeTime (it maps clock-skew futures to "just now"). */
+function formatRetryDue(nextAttemptAt: number, now = Date.now()): string {
+  return formatDistance(new Date(nextAttemptAt), new Date(now), { addSuffix: true });
+}
+
 function lastDeliveryLabel(d: WebhookDeliveryView | null, now = Date.now()): string {
   if (!d) return "no deliveries yet";
   if (d.status === "delivered") {
@@ -73,7 +79,7 @@ function lastDeliveryLabel(d: WebhookDeliveryView | null, now = Date.now()): str
     return `last delivery failed · ${formatRelativeTime(d.createdAt, now)}`;
   }
   if (d.status === "pending" && d.nextAttemptAt && d.nextAttemptAt > now) {
-    return `last delivery failed · retry ${formatRelativeTime(d.nextAttemptAt, now)}`;
+    return `last delivery failed · retry ${formatRetryDue(d.nextAttemptAt, now)}`;
   }
   if (d.status === "pending") {
     return `last delivery pending · ${formatRelativeTime(d.createdAt, now)}`;

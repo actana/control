@@ -8,9 +8,8 @@ describe("formatRelativeTime", () => {
     expect(formatRelativeTime(base - 30_000, base)).toBe("just now");
   });
 
-  it("formats future timestamps with an in-prefix (webhook retry labels)", () => {
-    expect(formatRelativeTime(base + 5 * 60_000, base)).toBe("in 5 minutes");
-    expect(formatRelativeTime(base + 6 * 3_600_000, base)).toBe("in about 6 hours");
+  it("returns just now for future timestamps", () => {
+    expect(formatRelativeTime(base + 60_000, base)).toBe("just now");
   });
 
   it("formats minutes ago", () => {
