@@ -55,7 +55,7 @@ export type CoreDialStatus = {
   lastSeenAt: number | null;
   /** Why we're unreachable / which auth failure. Operator-facing, never a secret. */
   detail?: string;
-  /** On `needs-update`: the protocol version the Core advertised, if any. */
+  /** Core-link protocol version from the last `ready` frame; on connected dials too (#560 pill). */
   coreVersion?: string | null;
   /** On `needs-update`: the protocol version this Panel speaks. */
   panelVersion?: string;

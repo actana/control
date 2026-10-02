@@ -305,7 +305,8 @@ describe("core-link manager", () => {
       client.emit.authOk({ coreId: "core_a", exp: Date.now() + 60_000 });
       const status = h.manager.status("core_a");
       expect(status.state).toBe("connected");
-      expect(status).not.toHaveProperty("coreVersion");
+      // Connected dials carry the announced version for the Core header pill (#560).
+      expect(status.coreVersion).toBe(CORE_LINK_PROTOCOL_VERSION);
     });
 
     it("still reports a dropped link as unreachable, not as needing an update", async () => {

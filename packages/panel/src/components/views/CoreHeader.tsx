@@ -34,7 +34,7 @@ export function CoreHeader({
   onToggleTerminal: () => void;
   terminalOpen: boolean;
 }) {
-  const pill = corePillParts(core.dial);
+  const pill = corePillParts(core.dial, core.sharedFolder);
   const hue = coreHue(core.id);
   const online = core.dial.state === "connected";
   return (
@@ -115,8 +115,10 @@ export function CoreHeader({
             background: online ? "var(--status-ready)" : "var(--text-faint)",
           }}
         />
-        <span>{pill.link}</span>
-        {pill.version ? <span>· {pill.version}</span> : null}
+        <span title={pill.version ? "Core link protocol version" : undefined}>
+          {pill.link}
+          {pill.version ? ` ${pill.version}` : ""}
+        </span>
         <span>· {pill.shared}</span>
       </span>
       <nav role="tablist" aria-label="Core sections" style={{ display: "inline-flex", gap: 4 }}>
