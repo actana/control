@@ -43,8 +43,8 @@ describe("the repository has exactly one orchestration skill payload", () => {
     expect(importers.length).toBeGreaterThan(0);
     for (const file of importers) {
       const text = fs.readFileSync(path.join(REPO, file), "utf8");
-      expect(text, `${file} must take the payload from the package root`).toMatch(
-        /(?:from\s+|require\()\s*"@actana\/cli"/,
+      expect(text, `${file} must take the payload from @actana/cli or its payload-only subpath`).toMatch(
+        /(?:from\s+|require\()\s*"@actana\/cli(?:\/skill-payload)?"/,
       );
     }
   });

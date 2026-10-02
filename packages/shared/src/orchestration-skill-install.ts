@@ -1,7 +1,7 @@
 // Writing the product's own agent skill into an operator's home (ADR 0031).
 //
 // **The writer is shared, the payload is not ours.** The Core's boot install calls this with
-// the payload it imports from the root of the pinned `@actana/cli` (#580), and the client's
+// the payload it imports from `@actana/cli/skill-payload`, the pinned package's payload-only subpath (#580), and the client's
 // nouns install the same payload with their own writer. The twin that used to sit in
 // `packages/cli`, and the drift test that held the two together, are gone with the in-repo
 // copy of the skill text.
