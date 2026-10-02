@@ -20,6 +20,7 @@ import type { HeaderButtonVisibility } from "~/shared/header-buttons";
 import { pruneStoredSessionFinishNotifications } from "~/lib/session-notification-store";
 import { HTTP_NO_CONTENT } from "~/shared/http-status";
 import type { TaskStatus } from "~/shared/tasks";
+import { attachmentsForm, type TaskAttachment } from "~/lib/task-attachments";
 import type {
   SharedDownloadUrl,
   SharedFileDetails,
@@ -123,6 +124,8 @@ async function req<T>(url: string, init?: RequestInit): Promise<T> {
       ? DEV_SERVER_ORIGIN + url
       : url;
   const baseHeaders: Record<string, string> = { "content-type": "application/json" };
+  // A multipart body (Task attachments) carries its own boundary in the content type: the browser sets it.
+  if (typeof FormData !== "undefined" && init?.body instanceof FormData) delete baseHeaders["content-type"];
   const res = await fetch(resolved, {
     // Explicit: every one of these calls is authenticated by the Operator's
     // session cookie, and by nothing else.
@@ -191,8 +194,9 @@ export const api = {
   listTasks: () => req<{ tasks: TaskDto[] }>("/api/tasks"),
   getTask: (id: string) =>
     req<{ task: TaskDto; comments: TaskCommentDto[] }>(`/api/tasks/${encodeURIComponent(id)}`),
-  createTask: (body: NewTaskRequest) =>
-    req<{ task: TaskDto }>("/api/tasks", { method: "POST", body: JSON.stringify(body) }),
+  /** With `attachments` the request is multipart and the server writes the files before it assigns the Task. */
+  createTask: (body: NewTaskRequest, attachments: readonly TaskAttachment[] = []) =>
+    req<{ task: TaskDto }>("/api/tasks", { method: "POST", body: attachments.length > 0 ? attachmentsForm(body, attachments) : JSON.stringify(body) }),
   /** Assign or send back to draft. The server decides whether the move is legal. */
   setTaskStatus: (id: string, status: TaskStatus) =>
     req<{ task: TaskDto }>(`/api/tasks/${encodeURIComponent(id)}/status`, {
@@ -200,10 +204,10 @@ export const api = {
       body: JSON.stringify({ status }),
     }),
   /** A comment; with `reassign`, the service's single Comment & re-assign call. */
-  commentOnTask: (id: string, body: NewTaskCommentRequest) =>
+  commentOnTask: (id: string, body: NewTaskCommentRequest, attachments: readonly TaskAttachment[] = []) =>
     req<{ comment?: TaskCommentDto; task?: TaskDto; comments?: TaskCommentDto[] }>(
       `/api/tasks/${encodeURIComponent(id)}/comments`,
-      { method: "POST", body: JSON.stringify(body) },
+      { method: "POST", body: attachments.length > 0 ? attachmentsForm(body, attachments) : JSON.stringify(body) },
     ),
   /** One Core's Agents, from the Agents service. */
   listCoreAgents: (coreId: string) =>

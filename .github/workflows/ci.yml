@@ -954,7 +954,8 @@ jobs:
             if (r.numFailedTests > 0 || r.numPendingTests > 0 || all.length < 2) process.exit(1);
           ' "$RUNNER_TEMP/panel-shared-sw.json"
       # The Files tab's routes (#565) against the same server: a Core's folder through the router with real keys, the
-      # 5-minute signed URL downloaded with nothing else, and no Core reaching another's prefix.
+      # 5-minute signed URL downloaded with nothing else, no Core reaching another's prefix, and a Task's attachments
+      # (#568) written under tasks/<id>/attachments/ before it is assigned.
       - name: Run the Panel's Files routes against SeaweedFS
         working-directory: packages/panel
         run: >-
@@ -967,7 +968,7 @@ jobs:
             const r = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
             const all = r.testResults.flatMap((f) => f.assertionResults);
             console.log(`${r.numPassedTests} passed, ${r.numFailedTests} failed, ${r.numPendingTests} skipped of ${r.numTotalTests}`);
-            if (r.numFailedTests > 0 || r.numPendingTests > 0 || all.length < 3) process.exit(1);
+            if (r.numFailedTests > 0 || r.numPendingTests > 0 || all.length < 4) process.exit(1);
           ' "$RUNNER_TEMP/panel-files-sw.json"
       - name: SeaweedFS log
         if: failure()
