@@ -181,12 +181,10 @@ Pick the tarball matching the machine's architecture from the GitHub Release —
 `linux-x64`, `linux-arm64` or `mac-arm64` — plus the `SHA256SUMS` asset from
 the same release. Those four files are the whole release.
 
-A beta prerelease carries seven assets: the same four, plus a copy of
-`install.sh`, plus the CLI tarball `actana-cli-x.y.z-beta.tgz` and its checksum
-`actana-cli-x.y.z-beta.tgz.sha256`. The version in every asset name is
+A beta prerelease carries five assets: the same four, plus a copy of
+`install.sh`. It carries no CLI tarball. The version in every asset name is
 `x.y.z-beta`. Verify it exactly as below — `SHA256SUMS` covers the three Core
-tarballs there too, and the CLI tarball's checksum is a file of its own rather
-than a fourth row in it.
+tarballs there too.
 
 ```bash
 sha256sum --ignore-missing -c SHA256SUMS
@@ -561,9 +559,6 @@ latest, with every asset replaced in place on each cut:
 - a copy of **`install.sh`**, so the script and the bytes it fetches ship
   together. It is a copy and not a door: the install URLs are the ones in the
   table above,
-- the **CLI tarball** described above, `actana-cli-x.y.z-beta.tgz`,
-- its checksum **`actana-cli-x.y.z-beta.tgz.sha256`**, a file of its own rather
-  than a fourth row in `SHA256SUMS`,
 - **`x.y.z-beta` container images** in `actana/panel` and `actana/core`,
   retagged from the train's own `beta-x.y.z` digest with nothing rebuilt.
 
