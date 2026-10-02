@@ -138,23 +138,19 @@ honour ([actana/client#5](https://github.com/actana/client/issues/5)):
 
 ## Known gaps
 
-This is part 1 of #566 (steps 1 and 2). Not done here, and not claimed:
+This is the compose deploy for #566. Remaining caveats:
 
-- **Step 3, SeaweedFS as the default in Settings › Storage (screen 08).** Later
-  part of [#566](https://github.com/actana/control/issues/566).
 - **The isolation checklist of [#562](https://github.com/actana/control/issues/562)**
-  (machine A cannot list, read or write machine B's prefix, key refresh during an
-  upload, a Core paused over an hour, no readable key on disk). It has not been
-  run against this: the Core mount (#562) does not exist yet.
-- **The Panel's key issuer**
-  ([actana/client#5](https://github.com/actana/client/issues/5)) is wired in
-  by [#564](https://github.com/actana/control/issues/564): the Panel stores the
-  master key and issues each Core's key. The Panel's token signer with a JWKS
-  endpoint is still not published by anything: `SEAWEEDFS_OIDC_JWKS_URL` has to
-  point at wherever the public half of the master key is served.
+  runs in CI against this image (`core-shared-seaweedfs` job): machine A cannot
+  list, read or write machine B's prefix; Settings › Storage test-connection
+  uses the same probe. A live `docker compose --profile seaweedfs up` still needs
+  the Panel's OIDC issuer/JWKS pointed at a reachable URL.
+- **The Panel's token signer with a JWKS endpoint** is still not published by
+  anything on the compose network: `SEAWEEDFS_OIDC_JWKS_URL` has to point at
+  wherever the public half of the master key is served (CI serves it for the
+  real-SeaweedFS job).
 - **Container hardening.** The entrypoint runs as root to hand a file to the
   `seaweed` user, and the service has no `cap_drop`. Dropping all capabilities
   but CHOWN, SETUID, SETGID, DAC_OVERRIDE and FOWNER should work; it needs a live run.
-- **Not run against a live SeaweedFS.** The config was written from the
-  SeaweedFS 4.47 source and its own IAM test configs; no container was started
-  for this change.
+- **SeaweedFS is the default** in Settings › Storage (screen 08). Opting into
+  the compose profile is still required for a local gateway.

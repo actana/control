@@ -45,7 +45,7 @@ describe("parseMigrations", () => {
 });
 
 describe("the bundled Postgres migrations", () => {
-  it("are the baseline, the panel.db tables, the Task tables, the Agents table, the webhook tables, the API key tables and the Shared folder tables, and every SQL file on disk is in the journal", () => {
+  it("are the baseline, the panel.db tables, the Task tables, the Agents table, the webhook tables, the API key tables, the Shared folder tables and the Storage settings columns, and every SQL file on disk is in the journal", () => {
     const dir = path.resolve(import.meta.dirname, "..", "pg-migrations");
     const onDisk = readdirSync(dir).filter((f) => f.endsWith(".sql")).map((f) => f.replace(/\.sql$/, ""));
     expect(bundledPanelMigrations().map((m) => m.tag)).toEqual(onDisk.sort());
@@ -57,6 +57,7 @@ describe("the bundled Postgres migrations", () => {
       "0004_panel_webhooks",
       "0005_panel_api_keys",
       "0006_panel_shared_folders",
+      "0007_panel_storage_settings",
     ]);
   });
 });
@@ -73,6 +74,7 @@ describe("runMigrations on PGlite", { timeout: 30_000 }, () => {
       "0004_panel_webhooks",
       "0005_panel_api_keys",
       "0006_panel_shared_folders",
+      "0007_panel_storage_settings",
     ]);
     expect(await runMigrations(db.pool, migrations)).toEqual([]);
     const { rows } = await db.pool.query('select hash, created_at from "drizzle"."__drizzle_migrations"');

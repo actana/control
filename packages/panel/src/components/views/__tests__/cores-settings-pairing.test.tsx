@@ -53,7 +53,13 @@ const STORAGE = {
   oidcIssuer: "https://panel.example.test",
   oidcAudience: "actana-shared",
   keyId: "k1",
+  roleArn: null,
+  accountId: null,
+  parentAccessKeyId: null,
+  anonKey: null,
   masterKeySet: true,
+  masterKeyRotatedAt: 1,
+  uploadSizeLimitBytes: 512 * 1024 * 1024,
   updatedAt: 1,
 };
 const PASSED_TEST = { folder: "cores/core_new/", expiresAt: 1_790_000_000_000, read: true, write: true, listOwn: true, reachOther: false };
@@ -71,7 +77,7 @@ const api = {
   pairCore: vi.fn(async (_body: unknown): Promise<{ core: CoreWithDial }> => ({ core: paired() })),
   renameCore: vi.fn(),
   // Step 4 (#564): a pairing from the Panel is registered pending and finished by attaching its Shared folder.
-  getStorage: vi.fn(async () => ({ storage: STORAGE })),
+  getStorage: vi.fn(async () => ({ storage: STORAGE, cores: [] })),
   putStorage: vi.fn(async () => ({ storage: STORAGE })),
   testSharedFolder: vi.fn(async () => ({ result: PASSED_TEST })),
   finishCorePairing: vi.fn(async (): Promise<{ core: CoreWithDial }> => ({ core: paired() })),

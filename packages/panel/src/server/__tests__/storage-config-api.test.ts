@@ -92,7 +92,7 @@ describe("the storage config", () => {
   });
 
   it("refuses a backend this Panel cannot issue keys for", async () => {
-    const res = await call("/api/storage", { method: "PUT", json: { ...CONFIG, backend: "r2", masterKey: pem() } });
+    const res = await call("/api/storage", { method: "PUT", json: { ...CONFIG, backend: "nope", masterKey: pem() } });
     expect(res.status).toBe(400);
   });
 });
@@ -127,7 +127,25 @@ describe("the master key", () => {
     const { storage } = await (await call("/api/storage")).json();
     expect(storage).toMatchObject({ configured: true, masterKeySet: true, bucket: "other-bucket" });
     expect(Object.keys(storage).sort()).toEqual(
-      ["backend", "bucket", "configured", "endpoint", "keyId", "masterKeySet", "oidcAudience", "oidcIssuer", "prefix", "region", "updatedAt"],
+      [
+        "accountId",
+        "anonKey",
+        "backend",
+        "bucket",
+        "configured",
+        "endpoint",
+        "keyId",
+        "masterKeyRotatedAt",
+        "masterKeySet",
+        "oidcAudience",
+        "oidcIssuer",
+        "parentAccessKeyId",
+        "prefix",
+        "region",
+        "roleArn",
+        "updatedAt",
+        "uploadSizeLimitBytes",
+      ].sort(),
     );
   });
 
@@ -172,5 +190,48 @@ describe("the master key", () => {
     expect(text).not.toContain("hunter2");
     const ec = generateKeyPairSync("ec", { namedCurve: "P-256" }).privateKey.export({ type: "pkcs8", format: "pem" }).toString();
     expect((await call("/api/storage", { method: "PUT", json: { ...CONFIG, masterKey: ec } })).status).toBe(400);
+  });
+
+  it("records when it was rotated, and an edit without a key does not move that time", async () => {
+    const first = pem();
+    await call("/api/storage", { method: "PUT", json: { ...CONFIG, masterKey: first } });
+    const { storage: afterSet } = await (await call("/api/storage")).json();
+    expect(afterSet.masterKeyRotatedAt).toEqual(expect.any(Number));
+    const rotatedAt = afterSet.masterKeyRotatedAt as number;
+    await call("/api/storage", { method: "PUT", json: { ...CONFIG, bucket: "actana-shared-2" } });
+    const { storage: afterEdit } = await (await call("/api/storage")).json();
+    expect(afterEdit.masterKeyRotatedAt).toBe(rotatedAt);
+    expect(afterEdit.bucket).toBe("actana-shared-2");
+    await new Promise((r) => setTimeout(r, 5));
+    await call("/api/storage", { method: "PUT", json: { ...CONFIG, masterKey: pem() } });
+    const { storage: afterRotate } = await (await call("/api/storage")).json();
+    expect(afterRotate.masterKeyRotatedAt).toBeGreaterThan(rotatedAt);
+  });
+
+  it("stores the upload size limit and defaults it to 512 MiB", async () => {
+    await call("/api/storage", { method: "PUT", json: { ...CONFIG, masterKey: pem() } });
+    const { storage } = await (await call("/api/storage")).json();
+    expect(storage.uploadSizeLimitBytes).toBe(512 * 1024 * 1024);
+    await call("/api/storage", { method: "PUT", json: { ...CONFIG, uploadSizeLimitBytes: 64 * 1024 * 1024 } });
+    const { storage: next } = await (await call("/api/storage")).json();
+    expect(next.uploadSizeLimitBytes).toBe(64 * 1024 * 1024);
+  });
+
+  it("accepts the STS, Supabase and R2 backends with their master material shapes", async () => {
+    for (const [backend, masterKey, extra] of [
+      ["sts", JSON.stringify({ accessKeyId: "AKIAEXAMPLE", secretAccessKey: "secret" }), { roleArn: "arn:aws:iam::1:role/r" }],
+      ["r2", "cf-api-token-example", { accountId: "acct", parentAccessKeyId: "parent" }],
+      ["supabase", JSON.stringify({ serviceRoleKey: "srk", jwtSecret: "jwt" }), { anonKey: "anon" }],
+    ] as const) {
+      const res = await call("/api/storage", {
+        method: "PUT",
+        json: { ...CONFIG, backend, masterKey, oidcIssuer: undefined, keyId: undefined, ...extra },
+      });
+      expect(res.status, backend).toBe(200);
+      const { storage } = await res.json();
+      expect(storage.backend).toBe(backend);
+      expect(storage.masterKeySet).toBe(true);
+      expect(JSON.stringify(storage)).not.toMatch(/AKIAEXAMPLE|secret|cf-api-token|srk|jwt/);
+    }
   });
 });

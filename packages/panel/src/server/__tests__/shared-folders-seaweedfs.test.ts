@@ -215,6 +215,13 @@ describe.skipIf(!configured)("the Panel's Shared folders against real SeaweedFS 
     await expect(other.put("planted.txt", "x")).rejects.toMatchObject({ code: "forbidden" });
   }, 90_000);
 
+  it("Settings › Storage test-connection proves isolation on the real role without a registered Core", async () => {
+    const { service: s } = service();
+    const proof = await s.testConfiguredConnection();
+    expect(proof).toMatchObject({ read: true, write: true, listOwn: true, reachOther: false });
+    expect(proof.folder).toMatch(new RegExp(`^${env.prefix}/probe_[a-f0-9]+/$`));
+  }, 90_000);
+
   it("deletes the Core and exactly its own prefix: not one object of any other prefix is touched", async () => {
     const { service: s, linkOf } = service();
     const a = await pairedCore();

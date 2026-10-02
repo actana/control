@@ -22,8 +22,14 @@ export async function findStorageConfig(ownerId: number): Promise<StorageConfigR
       oidcIssuer: storageConfig.oidcIssuer,
       oidcAudience: storageConfig.oidcAudience,
       keyId: storageConfig.keyId,
+      roleArn: storageConfig.roleArn,
+      accountId: storageConfig.accountId,
+      parentAccessKeyId: storageConfig.parentAccessKeyId,
+      anonKey: storageConfig.anonKey,
       // Whether a key is stored, computed in the database: the sealed key itself is not selected here.
       masterKeySet: sql<boolean>`${storageConfig.masterKeySealed} is not null`,
+      masterKeyRotatedAt: storageConfig.masterKeyRotatedAt,
+      uploadSizeLimitBytes: storageConfig.uploadSizeLimitBytes,
       updatedAt: storageConfig.updatedAt,
     })
     .from(storageConfig)

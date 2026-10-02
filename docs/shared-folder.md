@@ -196,7 +196,8 @@ Issue [#564](https://github.com/actana/control/issues/564), the controller of th
 master key, makes the Shared folder the last step of pairing, and keeps each Core's 1-hour key fresh.
 
 ```
-Settings / pairing step 4 ──PUT /api/storage (master key write-only)──▶ storage_config  (key sealed like core_secrets)
+Settings › Storage / pairing step 4 ──PUT /api/storage (master key write-only)──▶ storage_config  (key sealed like core_secrets)
+Settings › Storage ──POST /api/storage/test──▶ issuer.issue(probe) ──▶ probe own folder ✓, another Core's folder ✗
 pairing step 4 ──POST /api/cores/:id/shared/test──▶ issuer.issue(core) ──▶ probe own folder ✓, another Core's folder ✗
                ──POST /api/cores/:id/pairing/finish──▶ sharedAttach ──▶ Core ──▶ core_shared_folders: attached
 timer (refresh point of the SDK: 15 min before the end, at most half its life) ──▶ sharedCredentials ──▶ Core
@@ -206,14 +207,15 @@ POST /api/cores/:id/delete {confirmPrefix} ──▶ prefix typed exactly ──
 
 | File | What it is |
 |---|---|
-| `packages/panel/src/server/services/storage.ts` | the config, and the only place the master key is unsealed (into the SDK issuer) |
-| `packages/panel/src/server/services/shared-folders.ts` | test, finish pairing, push, rotation, detach, delete |
-| `packages/panel/src/server/repositories/{storage,core-shared-folders}.repo.ts` | `storage_config`, `core_shared_folders` (migration `0006`) |
+| `packages/panel/src/server/services/storage.ts` | the config, backends (SeaweedFS default, STS, Supabase, R2), and the only place the master key is unsealed (into the SDK issuer) |
+| `packages/panel/src/server/services/shared-folders.ts` | test, finish pairing, push, rotation, detach, delete, Settings per-Core rows |
+| `packages/panel/src/server/repositories/{storage,core-shared-folders}.repo.ts` | `storage_config`, `core_shared_folders` (migrations `0006`, `0007`) |
 | `packages/panel/src/components/views/SharedFolderStep.tsx` | step 4 of the pairing wizard |
+| `packages/panel/src/components/views/StorageSettingsPage.tsx` | Settings › Storage (screen 08) |
 
-- **The master key** is an RSA private key. It is written by `PUT /api/storage`, which is write-only: nothing returns it, and the read
-  says only `masterKeySet`. It is never logged, never in an error message, never in a frame. The SDK issuer signs a short token
-  per Core with it and returns the four fields of a key; those are all a Core ever receives. There is no public credentials route.
+- **The master key** is write-only. For SeaweedFS it is an RSA private key PEM; for Generic STS it is JSON `{accessKeyId,secretAccessKey}`; for R2 the Cloudflare API token; for Supabase JSON `{serviceRoleKey,jwtSecret}`. It is written by `PUT /api/storage`, which is write-only: nothing returns it, and the read says only `masterKeySet` and `masterKeyRotatedAt`. It is never logged, never in an error message, never in a frame. Rotating it (a PUT that carries a new master key) re-issues 1-hour keys to every connected attached Core. The SDK issuer returns the four fields of a key; those are all a Core ever receives. There is no public credentials route.
+- **SeaweedFS is the default** in Settings › Storage (screen 08, [#566](https://github.com/actana/control/issues/566)). The other backends use the matching `@actana/sdk/shared-key` issuers.
+- **Upload size limit** is stored on `storage_config` (default 512 MiB) and shown on the Settings page; the Files tab applies it.
 - **Pairing from the Panel** registers the Core with its folder `pending` in the same transaction as the Core row. The finish route repeats the connection
   test, sends `sharedAttach`, and only then marks it `attached`. A refusal (no storage, a Core that is offline or announces no
   `shared`, a key that reaches another folder, a Core that answers with an error) leaves it `pending`. The first-run wizard does not count a
@@ -224,7 +226,7 @@ POST /api/cores/:id/delete {confirmPrefix} ──▶ prefix typed exactly ──
   with the reason. The table of every case is in `shared-folders-attach-table.test.ts`.
 - **Rotation** pushes `sharedCredentials` at the SDK's refresh point, falling back to `sharedAttach` when the Core says `not-attached`. A push
   that fails is retried (5 s, 15 s, 60 s, then 5 min), the Core's folder goes to `error` with the reason, and the Panel logs it:
-  never silently. A reconnecting Core gets a new key at once; at boot every attached Core does.
+  never silently. A reconnecting Core gets a new key at once; at boot every attached Core does. A master-key rotate also re-issues immediately.
 - **Unpair** sends `sharedDetach` with `keepLocalCopy`; the Core copies S3 into `~/shared` and stops. A Core that cannot be told is still forgotten, and
   the answer says so.
 - **Delete** needs the folder's exact prefix (`<prefix>/<core id>/`) typed back. It then removes the Core row and empties that prefix with a key issued
@@ -234,6 +236,7 @@ POST /api/cores/:id/delete {confirmPrefix} ──▶ prefix typed exactly ──
 |---|---|
 | the master key is in no response, log line or frame | `storage-config-api.test.ts`, `shared-folders.test.ts`, `shared-folder-pairing-api.test.ts` |
 | the key is sealed at rest, rotated by a write, kept by an edit | `storage-config-api.test.ts` |
+| Settings › Storage test-connection isolation | `storage-config-api.test.ts` (fake), `shared-folders-seaweedfs.test.ts` (real SeaweedFS in CI) |
 | the Panel refuses to finish pairing without storage, offline, or with a leaking key | `shared-folder-pairing-api.test.ts`, `shared-folders.test.ts` |
 | keys rotate 15 minutes early, hourly, with a back-off and a visible error | `shared-folders.test.ts` (fake clock) |
 | unpair keeps the Core's folder | `shared-folder-pairing-api.test.ts` |

@@ -17,10 +17,10 @@ import {
   type CoreSharedFolderRow,
 } from "../repositories/core-shared-folders.repo";
 import { coreLinkManager, type CoreLinkClientLike } from "./core-link-manager";
-import { getCore, removeCore } from "./cores";
+import { getCore, listCores, removeCore } from "./cores";
 import { OPERATOR_ID } from "./operator";
 import type { CoreSharedFolder } from "~/shared/cores";
-import type { SharedConnectionResult } from "~/shared/storage-wire";
+import type { SharedConnectionResult, StorageCoreFolderView } from "~/shared/storage-wire";
 import { coreFolderPrefix, storageKeyIssuer, type StorageTarget } from "./storage";
 
 /**
@@ -133,6 +133,22 @@ export class SharedFolders {
    */
   async testConnection(coreId: string, ownerId = OPERATOR_ID): Promise<SharedConnectionResult> {
     await this.requireCore(coreId, ownerId);
+    return this.probeIsolation(coreId, ownerId);
+  }
+
+  /**
+   * Settings › Storage test-connection (#566): the same isolation probe as pairing. When `coreId` is set the
+   * Core must exist; otherwise a throwaway probe id is used so the page can prove the bucket without picking a Core.
+   */
+  async testConfiguredConnection(coreId?: string, ownerId = OPERATOR_ID): Promise<SharedConnectionResult> {
+    if (coreId) {
+      await this.requireCore(coreId, ownerId);
+      return this.probeIsolation(coreId, ownerId);
+    }
+    return this.probeIsolation(`probe_${randomBytes(6).toString("hex")}`, ownerId);
+  }
+
+  private async probeIsolation(coreId: string, ownerId: number): Promise<SharedConnectionResult> {
     const { issuer, target } = await this.deps.issuer(ownerId);
     const key = await issuer.issue(coreId);
     const folder = coreFolderPrefix(target.prefix, coreId);
@@ -170,6 +186,59 @@ export class SharedFolders {
     result.reachOther = reached.some(Boolean);
     if (result.reachOther) await other.rm(probe).catch(() => undefined);
     return result;
+  }
+
+  /**
+   * After a master-key rotate: push a fresh 1-hour key to every attached Core that is connected.
+   * Unreachable Cores get one when they reconnect (the existing status listener).
+   */
+  async reissueAll(ownerId = OPERATOR_ID): Promise<void> {
+    for (const row of await findLiveSharedFolders(ownerId)) {
+      if (this.deps.isConnected(row.coreId)) void this.refresh(row.coreId, ownerId, this.bump(row.coreId));
+    }
+  }
+
+  /**
+   * Per-Core rows for Settings › Storage (screen 08): folder size and key expiry from the server.
+   * Size is the sum of object bytes under the Core's prefix, listed with a key issued for that Core.
+   */
+  async listStorageCores(ownerId = OPERATOR_ID): Promise<StorageCoreFolderView[]> {
+    const cores = await listCores(ownerId);
+    const folders = await findAllSharedFolders(ownerId);
+    const byId = new Map(folders.map((r) => [r.coreId, r]));
+    const out: StorageCoreFolderView[] = [];
+    let issuerPack: { issuer: SharedKeyIssuer; target: StorageTarget } | null = null;
+    try {
+      issuerPack = await this.deps.issuer(ownerId);
+    } catch {
+      issuerPack = null;
+    }
+    for (const core of cores) {
+      const row = byId.get(core.id);
+      const prefix = row?.s3Prefix || (issuerPack ? coreFolderPrefix(issuerPack.target.prefix, core.id) : `${core.id}/`);
+      const offline = !this.deps.isConnected(core.id);
+      let sizeBytes: number | null = null;
+      if (issuerPack && row && row.state !== "pending") {
+        try {
+          const key = await issuerPack.issuer.issue(core.id);
+          const shared = this.deps.s3({ target: issuerPack.target, folder: prefix, key, fetch: this.deps.fetch });
+          sizeBytes = await sumFolderBytes(shared);
+        } catch {
+          sizeBytes = null;
+        }
+      }
+      out.push({
+        coreId: core.id,
+        label: core.label,
+        prefix,
+        sizeBytes,
+        keyExpiresAt: row?.keyExpiresAt ?? null,
+        state: (row?.state as StorageCoreFolderView["state"]) ?? "pending",
+        offline,
+        error: row?.lastError ?? null,
+      });
+    }
+    return out;
   }
 
   // ─── Finishing the pairing ───────────────────────────────────────────────
@@ -492,4 +561,18 @@ export async function describeSharedFolders(ownerId = OPERATOR_ID): Promise<Map<
 export async function describeSharedFolder(coreId: string, ownerId = OPERATOR_ID): Promise<CoreSharedFolder | undefined> {
   const row = await findSharedFolder(ownerId, coreId);
   return row ? viewOf(row) : undefined;
+}
+
+/** Sum file sizes under a Core's Shared folder by walking `list` (direct children only per call). */
+async function sumFolderBytes(shared: CoreShared, path = ""): Promise<number> {
+  let total = 0;
+  const entries = await shared.list(path);
+  for (const entry of entries) {
+    if (entry.kind === "file") {
+      total += entry.size ?? 0;
+    } else {
+      total += await sumFolderBytes(shared, entry.path);
+    }
+  }
+  return total;
 }
