@@ -24,10 +24,11 @@
 // `pnpm --filter @actana/sdk test` (the root `pnpm test` runs both). A test
 // living in one package is a test the other package's author does not run
 // before pushing — and either author can break this contract. So the body lives
-// here once and two one-line `.test.ts` files register it, one in each package:
+// here once and a one-line `.test.ts` file registers it:
 //
-//   packages/sdk/src/__tests__/core-files-list-contract.test.ts
 //   packages/core/src/__tests__/core-files-list-contract.test.ts
+//
+// (The SDK's half lives in actana/client; `packages/sdk` is gone, #580.)
 //
 // Delete either registration and half the seam stops being watched, which is
 // the state this ticket found the repository in.

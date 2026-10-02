@@ -201,6 +201,35 @@ describe("the file routes and the core link share one mTLS server", () => {
     );
   }, 30_000);
 
+  // Ported from `packages/sdk` (#580 T-404): the in-repo client's mTLS suite was the only test
+  // that the core-link WebSocket, not just the /v1 routes, is refused at the handshake.
+  it("sends no frame to a WebSocket that presents no client certificate", async () => {
+    const rig = await startCore({ "a.txt": "hello" });
+
+    const outcome = await new Promise<string>((resolve) => {
+      const socket = new WebSocket(rig.wsUrl, { ca: rig.tls.ca });
+      const timer = setTimeout(() => {
+        socket.terminate();
+        resolve("timeout");
+      }, 10_000);
+      socket.on("message", () => {
+        clearTimeout(timer);
+        socket.close();
+        resolve("message");
+      });
+      socket.on("error", () => {
+        clearTimeout(timer);
+        resolve("error");
+      });
+      socket.on("close", () => {
+        clearTimeout(timer);
+        resolve("closed");
+      });
+    });
+
+    expect(["error", "closed"]).toContain(outcome);
+  }, 30_000);
+
   it("refuses a /v1 request that presents the certificate but no bearer", async () => {
     // mTLS alone is not the gate. The certificate says a Panel talked to this
     // Core once; the bearer says the pairing is still current.
@@ -210,6 +239,26 @@ describe("the file routes and the core link share one mTLS server", () => {
 
     expect(res.status).toBe(401);
     expect(JSON.parse(res.body.toString("utf8")).code).toBe("unauthorized");
+  }, 30_000);
+
+  // ADR 0041 D27: a Core refuses what it no longer takes. The Project address of the Files API was
+  // an alias for the published SDK until #580 T-404; the SDK builds `/v1/files`, so it is retired.
+  it("refuses the retired /v1/projects/:id/files address with 404 not-found, and writes nothing", async () => {
+    const rig = await startCore({ "a.txt": "hello" });
+
+    const read = await request(rig, "GET", "/v1/projects/p1/files?path=a.txt");
+    const list = await request(rig, "GET", "/v1/projects/p1/files/list?path=");
+    const write = await request(rig, "PUT", "/v1/projects/p1/files?path=new.txt", {
+      body: Buffer.from("through the old address"),
+      headers: { "content-type": "text/plain" },
+    });
+
+    for (const res of [read, list, write]) {
+      expect(res.status).toBe(404);
+      expect(JSON.parse(res.body.toString("utf8")).code).toBe("not-found");
+      expect(res.body.toString("utf8")).not.toContain("hello");
+    }
+    expect(fs.existsSync(path.join(rig.projectRoot, "new.txt"))).toBe(false);
   }, 30_000);
 
   it("404s a path outside the file surface rather than leaving the request hanging", async () => {

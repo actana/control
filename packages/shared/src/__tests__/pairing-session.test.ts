@@ -3,13 +3,11 @@ import {
   PAIRING_ATTEMPT_CAP,
   PAIRING_SESSION_TTL_MS,
   canRedeem,
-  consumePairingSession,
   createPairingSession,
   isConsumed,
   isDead,
   isExpired,
   isRevoked,
-  recordWrongAttempt,
   type PairingSession,
 } from "../pairing-session";
 
@@ -89,86 +87,26 @@ describe("pairing session", () => {
     });
   });
 
-  describe("recordWrongAttempt", () => {
-    it("dies at exactly the fifth wrong code, not the fourth", () => {
-      let s = session();
-      for (let i = 1; i < PAIRING_ATTEMPT_CAP; i += 1) {
-        s = recordWrongAttempt(s);
-        expect(s.attempts).toBe(i);
-        expect(isDead(s)).toBe(false);
-        expect(canRedeem(s, MINT)).toEqual({ ok: true });
-      }
-      s = recordWrongAttempt(s);
-      expect(s.attempts).toBe(PAIRING_ATTEMPT_CAP);
-      expect(isDead(s)).toBe(true);
-      expect(canRedeem(s, MINT)).toEqual({ ok: false, reason: "attempts-exhausted" });
-    });
-
-    it("does not mutate the session it was given", () => {
-      const s = session();
-      recordWrongAttempt(s);
-      expect(s.attempts).toBe(0);
-    });
-
-    it("stops the counter at the cap", () => {
-      let s = session();
-      for (let i = 0; i < PAIRING_ATTEMPT_CAP + 3; i += 1) s = recordWrongAttempt(s);
-      expect(s.attempts).toBe(PAIRING_ATTEMPT_CAP);
-    });
-
-    it("keeps the session's own cap when it was minted with one", () => {
-      let s = session({ attemptCap: 2 });
-      s = recordWrongAttempt(s);
-      expect(isDead(s)).toBe(false);
-      s = recordWrongAttempt(s);
-      expect(isDead(s)).toBe(true);
-    });
-  });
-
-  describe("consumePairingSession", () => {
-    it("stamps the consumption and leaves the input alone", () => {
-      const s = session();
-      const result = consumePairingSession(s, MINT + 1_000);
-      expect(result.ok).toBe(true);
-      if (result.ok) {
-        expect(result.session.consumedAt).toBe(MINT + 1_000);
-        expect(isConsumed(result.session)).toBe(true);
-      }
-      expect(s.consumedAt).toBeNull();
-    });
-
-    it("refuses a second consume", () => {
-      const first = consumePairingSession(session(), MINT + 1_000);
-      expect(first.ok).toBe(true);
-      if (!first.ok) return;
-      expect(consumePairingSession(first.session, MINT + 2_000)).toEqual({
+  describe("canRedeem, in the order the reasons are checked", () => {
+    it("refuses a session that was already redeemed", () => {
+      expect(canRedeem(session({ consumedAt: MINT + 1_000 }), MINT + 2_000)).toEqual({
         ok: false,
         reason: "already-consumed",
       });
-    });
-
-    it("refuses an expired session", () => {
-      const s = session();
-      expect(consumePairingSession(s, s.expiresAt + 1)).toEqual({
-        ok: false,
-        reason: "expired",
-      });
+      expect(isConsumed(session({ consumedAt: MINT + 1_000 }))).toBe(true);
     });
 
     it("refuses a session that hit the attempt cap", () => {
-      let s = session();
-      for (let i = 0; i < PAIRING_ATTEMPT_CAP; i += 1) s = recordWrongAttempt(s);
-      expect(consumePairingSession(s, MINT)).toEqual({
-        ok: false,
-        reason: "attempts-exhausted",
-      });
+      const s = session({ attempts: PAIRING_ATTEMPT_CAP });
+      expect(isDead(s)).toBe(true);
+      expect(canRedeem(s, MINT)).toEqual({ ok: false, reason: "attempts-exhausted" });
     });
 
     it("refuses a session the operator revoked, ahead of every other reason", () => {
       // Revocation is the operator's own decision, so it is the answer the
       // audit log should carry even when the session had also run out of time.
       const s = session({ revokedAt: MINT + 1 });
-      expect(consumePairingSession(s, s.expiresAt + 1)).toEqual({ ok: false, reason: "revoked" });
+      expect(canRedeem(s, s.expiresAt + 1)).toEqual({ ok: false, reason: "revoked" });
       expect(isRevoked(s)).toBe(true);
     });
 
@@ -181,12 +119,8 @@ describe("pairing session", () => {
     });
 
     it("reports consumption ahead of expiry, so a replay reads as a replay", () => {
-      const first = consumePairingSession(session(), MINT);
-      if (!first.ok) throw new Error("expected the first consume to succeed");
-      expect(consumePairingSession(first.session, first.session.expiresAt + 1)).toEqual({
-        ok: false,
-        reason: "already-consumed",
-      });
+      const s = session({ consumedAt: MINT });
+      expect(canRedeem(s, s.expiresAt + 1)).toEqual({ ok: false, reason: "already-consumed" });
     });
   });
 });

@@ -48,7 +48,6 @@
 // surface. No framework enters the Core bundle for a handful of routes.
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { freeSpaceBytes, stringRefusal } from "./files-confinement";
-import { FILES_ROUTE_SCOPE } from "./files-wire";
 import { filesRunAsHelper, responseOut, runFilesOpAsCore, type CoreFilesHelperOptions } from "./core-files-helper-client";
 import { refuse, runFilesOp, type FilesOpRequest, type Refusal } from "./files-ops";
 import type { FileListingOptions } from "./files-listing";
@@ -413,35 +412,21 @@ function isTarUpload(req: IncomingMessage): boolean {
 /**
  * `/v1/files[/list|/folder|/move]` → which leaf.
  *
- * `/v1/projects/:id/files[/list]` is **an alias, kept for the published SDK**.
- * Its Files client still builds that URL from a Project id, and the Panel proxies
- * through it; a Core has no Projects, so the id names nothing and is not read, and
- * the alias is the same handler as the route it stands for. It takes only what that
- * client has ever sent — read, write and list — and not the routes added since, so
- * a delete cannot be reached through an address that implies a Project.
- * **Remove it when actana/client#10 part 4 (the SDK Files client re-addressed at
- * `/v1/files`) has shipped**, together with `FILES_ROUTE_SCOPE`.
+ * The old `/v1/projects/:id/files[/list]` address is **retired** (#580 T-404): the published SDK
+ * builds `/v1/files`, so nothing calls it. It is not recognised, so a Core refuses it with the
+ * 404 every unknown route gets (ADR 0041 D27), and reads, lists or writes nothing.
  *
  * Anything else → null, and the caller keeps its 404.
  */
 function parseRoute(url: URL): Target | null {
   const segments = url.pathname.split("/").filter((s) => s.length > 0);
-  if (segments[0] !== "v1") return null;
+  if (segments[0] !== "v1" || segments[1] !== "files") return null;
 
-  if (segments[1] === "files") {
-    if (segments.length === 2) return { leaf: "files", methods: METHODS_BY_LEAF.files };
-    if (segments.length === 3 && segments[2] === "list") return { leaf: "list", methods: METHODS_BY_LEAF.list };
-    if (segments.length === 3 && segments[2] === "folder") return { leaf: "folder", methods: METHODS_BY_LEAF.folder };
-    if (segments.length === 3 && segments[2] === "move") return { leaf: "move", methods: METHODS_BY_LEAF.move };
-    return null;
-  }
-
-  // The alias: /v1/projects/:id/files and /v1/projects/:id/files/list.
-  if (segments.length !== 4 && segments.length !== 5) return null;
-  const [, legacyScope, id, files, list] = segments;
-  if (legacyScope !== FILES_ROUTE_SCOPE || files !== "files" || !id) return null;
-  if (segments.length === 5) return list === "list" ? { leaf: "list", methods: METHODS_BY_LEAF.list } : null;
-  return { leaf: "files", methods: ["GET", "HEAD", "PUT"] };
+  if (segments.length === 2) return { leaf: "files", methods: METHODS_BY_LEAF.files };
+  if (segments.length === 3 && segments[2] === "list") return { leaf: "list", methods: METHODS_BY_LEAF.list };
+  if (segments.length === 3 && segments[2] === "folder") return { leaf: "folder", methods: METHODS_BY_LEAF.folder };
+  if (segments.length === 3 && segments[2] === "move") return { leaf: "move", methods: METHODS_BY_LEAF.move };
+  return null;
 }
 
 /**

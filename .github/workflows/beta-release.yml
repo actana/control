@@ -53,13 +53,10 @@ name: Beta release
 # names, because a version that grew a suffix would be discovered by an
 # operator whose `--version 0.4.1-beta` 404s.
 #
-# What the fixed string costs is the npm registry, and it is spent knowingly:
-# an npm version is burned by its first publish, so a fixed string could be
-# published exactly once per train and the second cut would 403 after the tag
-# had already moved. **Nothing here publishes to registry.npmjs.org, under any
-# dist-tag** (D15). The CLI is no longer packed here: the Core's `actana` is the
-# private `@actana/core-cli`, which rides inside the Core tarball, and the client
-# CLI is `@actana/cli`, published from actana/client (#580).
+# **Nothing here publishes to registry.npmjs.org, under any dist-tag** (D15), and
+# nothing in this repository does any more: the Core's `actana` is the private
+# `@actana/core-cli`, which rides inside the Core tarball, and the SDK and the
+# client CLI are `@actana/sdk` and `@actana/cli`, published from actana/client (#580).
 #
 # ── The trigger is a person, never a merge (ADR 0036 C3) ─────────────────────
 #
@@ -1133,9 +1130,8 @@ jobs:
       # > would make every running Core and Panel advertise an unreleased build.
       #
       # The assertion is **not** `--prerelease` on the command line above — that
-      # is the thing that can be lost. It is this read-back, on the pattern
-      # `release.yml` already uses for a silently-lost npm attestation: the flag
-      # succeeded silently and only the API knows.
+      # is the thing that can be lost. It is this read-back: the flag can be
+      # lost silently and only the API knows.
       #
       # Three questions, and the third is the one D9 actually cares about:
       #

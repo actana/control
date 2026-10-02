@@ -28,7 +28,7 @@ import {
 } from "@actana/shared/core-material-store";
 import { coreNameError } from "@actana/shared/blob-registry";
 import { normalisePairingCode, PAIRING_CODE_ALPHABET } from "@actana/shared/pairing-code";
-import { createPairingSession, PAIRING_SESSION_TTL_MS } from "@actana/shared/pairing-session";
+import { canRedeem, createPairingSession, PAIRING_SESSION_TTL_MS } from "@actana/shared/pairing-session";
 import {
   derivePairingCodeKey,
   hashPairingCode,
@@ -120,16 +120,21 @@ function paired(over: Partial<PairedClient> = {}): PairedClient {
 }
 
 /**
- * Record a paired client on the suite's clock rather than the wall clock.
- *
- * `PairingStore.recordClient` defaults `now` to `Date.now()` and prunes settled
- * sessions past `PAIRING_SESSION_RETENTION_MS` on its way past. The fixture's
- * `NOW` is a fixed date, so once the real clock walks a day beyond it every
- * write here silently drops a pending code a test had just minted — a failure
- * that arrives by the calendar, not by a change to the code under test.
+ * Put a paired client on file, as the daemon's redemption (the SDK's store) would have written
+ * one. Written straight to the file, so no clock is involved and no pending code is pruned.
  */
-function record(client: PairedClient, now = NOW): void {
-  store().recordClient(client, now);
+function record(client: PairedClient): void {
+  const records = store().read();
+  fs.writeFileSync(
+    pairingStorePath(materialPath),
+    JSON.stringify({ ...records, clients: [...records.clients.filter((c) => c.certSerial !== client.certSerial), client] }),
+    { mode: 0o600 },
+  );
+}
+
+/** What the redemption gate says about a session on file, at the suite's clock. */
+function redeemability(sessionId: string): ReturnType<typeof canRedeem> {
+  return canRedeem(store().listSessions().find((row) => row.id === sessionId)!, NOW);
 }
 
 beforeEach(async () => {
@@ -308,7 +313,7 @@ describe("actana pair new --public-host", () => {
     expect(run(["new", "--label", "laptop", "--public-host", "10.0.0.5"])).toBe(0);
 
     expect(field("Address host")).toBe("10.0.0.5");
-    const session = store().getSession(field("Session"))!;
+    const session = store().listSessions().find((row) => row.id === field("Session"))!;
     expect(session.endpointHost).toBe("10.0.0.5");
   });
 
@@ -320,7 +325,7 @@ describe("actana pair new --public-host", () => {
     // Null, not the primary spelled into the row: the daemon resolves an
     // unchosen endpoint against whatever this Core is configured with when the
     // code is redeemed, which is today's behaviour and stays it.
-    const session = store().getSession(field("Session"))!;
+    const session = store().listSessions().find((row) => row.id === field("Session"))!;
     expect(session.endpointHost).toBeNull();
     expect(out.join("\n")).not.toContain("Address host");
   });
@@ -336,7 +341,7 @@ describe("actana pair new --public-host", () => {
   it("trims what the operator typed, as the configured list was trimmed", async () => {
     await multiHost();
     expect(run(["new", "--public-host", " 10.0.0.5 "])).toBe(0);
-    expect(store().getSession(field("Session"))!.endpointHost).toBe("10.0.0.5");
+    expect(store().listSessions().find((row) => row.id === field("Session"))!.endpointHost).toBe("10.0.0.5");
   });
 
   // **The constraint the whole design rests on.** A pairing code may not name
@@ -1110,7 +1115,7 @@ describe("actana pair revoke", () => {
     const sessionId = field("Session");
 
     expect(run(["revoke", sessionId])).toBe(0);
-    expect(store().consume(sessionId, NOW)).toEqual({ ok: false, reason: "revoked" });
+    expect(redeemability(sessionId)).toEqual({ ok: false, reason: "revoked" });
     expect(out.join("\n")).toMatch(/Cancelled the pending code/);
   });
 
@@ -1118,7 +1123,7 @@ describe("actana pair revoke", () => {
     run(["new", "--label", "laptop"]);
     const sessionId = field("Session");
     expect(run(["revoke", "laptop"])).toBe(0);
-    expect(store().consume(sessionId, NOW)).toEqual({ ok: false, reason: "revoked" });
+    expect(redeemability(sessionId)).toEqual({ ok: false, reason: "revoked" });
   });
 
   it("refuses to guess when a label matches more than one thing", () => {
@@ -1158,7 +1163,7 @@ describe("actana pair revoke", () => {
     run(["new", "--label", "laptop"]);
     const sessionId = field("Session");
     expect(run(["revoke", ""])).toBe(2);
-    expect(store().consume(sessionId, NOW).ok).toBe(true);
+    expect(redeemability(sessionId).ok).toBe(true);
   });
 
   it("refuses to revoke against a pairing file it cannot read", () => {
@@ -1194,8 +1199,7 @@ describe("actana pair revoke", () => {
 
   it("does not pretend a cancel undoes a redemption", () => {
     const session = createPairingSession({ id: "ps_9", label: "spent", codeHash: "h", now: NOW });
-    store().createSession(session, NOW);
-    store().consume("ps_9", NOW);
+    store().createSession({ ...session, consumedAt: NOW }, NOW);
     // A consumed session is not pending, so it is not a revoke target at all —
     // the client it issued is. The message says which.
     expect(run(["revoke", "ps_9"])).toBe(1);

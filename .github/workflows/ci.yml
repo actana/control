@@ -232,14 +232,13 @@ jobs:
 
           # D3, as amended by #152 and #157. The cut writes one version into
           # every manifest; this is what makes drift afterwards impossible
-          # rather than discouraged. Hand-editing six files is how five of them
+          # rather than discouraged. Hand-editing five files is how four of them
           # end up disagreeing, and the one that disagrees is found at
           # promotion, by a person.
           #
-          # `packages/sdk` is the fifth (#152, ADR 0025) — it was four until the
-          # core-link frames moved out of `packages/shared`. `packages/cli` is
-          # the sixth (#157): the `actana` command's client half, and the second
-          # package #129 publishes.
+          # `packages/cli` is the Core's built-in `actana` (private). There
+          # is no `packages/sdk` any more: the SDK is the published
+          # `@actana/sdk` (#580).
           #
           # The list below and the one a train is cut from are the same set by
           # construction, and the assertion under it is what keeps them that
@@ -256,7 +255,7 @@ jobs:
           # with a manifest missed.
           MANIFESTS=(package.json packages/cli/package.json \
                      packages/core/package.json packages/panel/package.json \
-                     packages/sdk/package.json packages/shared/package.json)
+                     packages/shared/package.json)
 
           # The failure mode this guards is not drift — it is a check that
           # quietly stops covering the repository. A manifest deleted or renamed
@@ -272,7 +271,7 @@ jobs:
             for file in "${MANIFESTS[@]}"; do
               if [[ ! -f "$file" ]]; then
                 intact=0
-                fail "A manifest in the version set is missing" "$file is in this check's list and does not exist. Either the file moved and this list was not updated, or the package was deleted — the version assertion below would otherwise cover a smaller set than ADR 0023 D3 describes (amended by #152 and #157)."
+                fail "A manifest in the version set is missing" "$file is in this check's list and does not exist. Either the file moved and this list was not updated, or the package was deleted — the version assertion below would otherwise cover a smaller set than ADR 0023 D3 describes (amended by #152, #157 and #580)."
               fi
             done
             for file in packages/*/package.json; do
@@ -282,7 +281,7 @@ jobs:
               done
               if [[ "$found" != "1" ]]; then
                 intact=0
-                fail "A workspace package is outside the version set" "$file is a workspace package and is not in this check's list, so nothing asserts it carries the train's version. Add it here and to the \`files=()\` array in docs/ci-cd.md § \"Cutting a train\", and amend ADR 0023 D3 — that is what #152 did for \`packages/sdk\` and #157 for \`packages/cli\`."
+                fail "A workspace package is outside the version set" "$file is a workspace package and is not in this check's list, so nothing asserts it carries the train's version. Add it here and to the \`files=()\` array in docs/ci-cd.md § \"Cutting a train\", and amend ADR 0023 D3 — that is what #152 did for the fifth package and #157 for \`packages/cli\`."
               fi
             done
             # An `if`, not `[[ … ]] && echo`: the `&&` form makes the function
@@ -412,7 +411,7 @@ jobs:
               version="${BASE#beta/}"
               # D46. A sub-beta is a train, so a pull request may target it.
               # `line` is the version the *tree* carries: the suffix names a
-              # variation of the train and never a version, so the six
+              # variation of the train and never a version, so the five
               # manifests and `install.sh`'s stamp still say `x.y.z` on a
               # `-fN` branch exactly as they do on the plain one. That is what
               # makes a merge back into the plain train a diff of the fixes
@@ -1546,9 +1545,9 @@ jobs:
   # publishes nothing.
   # The train's version, asserted on the push that publishes its image.
   #
-  # `Train rules` above asserts the same six manifests, and carries
+  # `Train rules` above asserts the same five manifests, and carries
   # `if: github.event_name == 'pull_request'` — so **the one commit whose entire
-  # purpose is writing six versions has never been asserted by anything.** A cut
+  # purpose is writing five versions has never been asserted by anything.** A cut
   # is a direct push (docs/ci-cd.md § "Cutting a train"), and every merge into a
   # train is a push too. `beta/0.4.1`'s cut and `beta/0.4.0`'s were both verified
   # by hand and by nothing else.
@@ -1562,7 +1561,7 @@ jobs:
   # pull request in it (ADR 0037 D3).
   #
   # **`train-tags` needs it, which is the point.** The `beta-x.y.z` image tag is
-  # computed from the branch name and reads no manifest, so a train whose six
+  # computed from the branch name and reads no manifest, so a train whose five
   # manifests all say `9.9.9` used to publish `actana/core:beta-0.4.1` green.
   # Now the job that resolves that tag cannot start until the tree it is naming
   # has been read (ADR 0037 D4).
@@ -1605,7 +1604,7 @@ jobs:
     if: startsWith(github.ref, 'refs/heads/beta/')
     # The image tag is derived from the branch name and reads no manifest, so
     # this dependency is what ties it to the tree it was built from: no train
-    # image is published under a version the six manifests do not carry
+    # image is published under a version the five manifests do not carry
     # (ADR 0037 D4).
     needs: train-versions
     runs-on: ubuntu-24.04
@@ -1659,7 +1658,7 @@ jobs:
       image: panel
       ref: ${{ github.sha }}
       stage: ${{ needs.train-tags.outputs.stage }}
-      # The line these bytes must carry. The build asserts the six manifests
+      # The line these bytes must carry. The build asserts the five manifests
       # against it and stamps it into the image, so `beta-x.y.z` stops being a
       # name derived from a branch and starts being a claim about a tree
       # (ADR 0037 D4).
@@ -1680,7 +1679,7 @@ jobs:
       image: core
       ref: ${{ github.sha }}
       stage: ${{ needs.train-tags.outputs.stage }}
-      # The line these bytes must carry. The build asserts the six manifests
+      # The line these bytes must carry. The build asserts the five manifests
       # against it and stamps it into the image, so `beta-x.y.z` stops being a
       # name derived from a branch and starts being a claim about a tree
       # (ADR 0037 D4).

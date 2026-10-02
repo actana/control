@@ -4,7 +4,7 @@
 // ## What this does and does not have to catch
 //
 // #224 removed the drift that had a mechanism: `CoreFilesErrorCode` was written
-// out in both `packages/core` and `packages/sdk`, and the SDK's copy was checked
+// out in both `packages/core` and the SDK, and the SDK's copy was checked
 // by nothing, so a code added on one side and forgotten on the other would have
 // been a type error nowhere. That is fixed by ownership rather than by a test —
 // there is now one definition, `CORE_FILES_ERROR_CODES` in
@@ -36,13 +36,12 @@
 // `core-files-routes.ts` or `files-tar.ts`, by somebody working in the Core, who
 // may reasonably run `pnpm --filter @actana/core test` and nothing else. If this
 // check lived only in the SDK's suite it would be invisible to precisely the
-// author most likely to need it. So the body lives here once and two one-line
-// `.test.ts` files register it, one in each package:
+// author most likely to need it. So the body lives here once and a one-line
+// `.test.ts` file registers it:
 //
-//   packages/sdk/src/__tests__/core-files-error-codes.test.ts
 //   packages/core/src/__tests__/core-files-error-codes.test.ts
 //
-// Delete either registration and half the audience stops being warned.
+// (The SDK's half lives in actana/client; `packages/sdk` is gone, #580.)
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import path from "node:path";

@@ -64,6 +64,7 @@ import {
   parseShasums,
   planDependencyLayout,
   prebuildDirName,
+  SDK_LINK_FRAMES_PATH,
   tarballName,
   tarballRootDirName,
 } from "./lib/core-tarball.mjs";
@@ -285,7 +286,7 @@ async function main() {
   }
 
   const protocolVersion = parseCoreLinkProtocolVersion(
-    fs.readFileSync(path.join(repoRoot, "packages", "sdk", "src", "core-link-frames.ts"), "utf8"),
+    fs.readFileSync(path.join(repoRoot, ...SDK_LINK_FRAMES_PATH), "utf8"),
   );
 
   // The channel is named in the log because the three surfaces below are the

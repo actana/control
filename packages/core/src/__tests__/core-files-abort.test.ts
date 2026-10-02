@@ -55,6 +55,13 @@ afterEach(async () => {
   cleanupTrees();
 });
 
+/** Every file under a directory, at any depth. */
+function countFiles(dir: string): number {
+  return fs
+    .readdirSync(dir, { withFileTypes: true })
+    .reduce((n, entry) => n + (entry.isDirectory() ? countFiles(`${dir}/${entry.name}`) : 1), 0);
+}
+
 const delay = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** Poll until a condition holds, or give up. Returns whether it held. */
@@ -75,9 +82,9 @@ async function eventually(predicate: () => boolean, timeoutMs = 5000): Promise<b
  * loopback socket buffer, not to move a lot of file bytes. 900 entries of ~250
  * bytes is roughly 220 KB of progress for 9 KB of payload.
  */
-async function backpressuringTar(): Promise<Buffer> {
+async function backpressuringTar(count = 900): Promise<Buffer> {
   const entries: Record<string, string> = {};
-  for (let i = 0; i < 900; i += 1) {
+  for (let i = 0; i < count; i += 1) {
     const name = `deeply/nested/folder/with/a/long/enough/path/to/fatten/every/progress/line/entry-${String(i).padStart(4, "0")}.txt`;
     entries[name] = "x".repeat(10);
   }
@@ -131,6 +138,38 @@ describe("a client that hangs up mid-transfer", () => {
     expect(await eventually(() => locks.current() === null)).toBe(true);
     expect(locks.current()).toBeNull();
   });
+
+  // Ported from `packages/sdk` (#580 T-404): the in-repo client's real-socket suite was the only
+  // test that a slow reader of the progress stream parks the Core's unpack loop, so the Core does
+  // not run a whole upload to completion ahead of a consumer that has read three lines.
+  it("stops unpacking while the reader of the progress stream has stopped reading", async () => {
+    projects.p1 = makeTree();
+    // Enough progress (a few MB) to outrun the loopback socket buffers, which swallow the 220 KB
+    // the lease tests use whole.
+    const entries = 30000;
+    const tar = await backpressuringTar(entries);
+
+    const upload = abortableUpload("/v1/files?path=drop", tar);
+    expect(await eventually(() => upload.responded(), 20_000)).toBe(true);
+
+    // Count what is on disk until it either reaches the end or stops moving. Unpacking takes
+    // however long it takes, so the answer is "it stalled short of the end", not a wall-clock cut.
+    const countNow = (): number => (fs.existsSync(`${projects.p1}/drop`) ? countFiles(`${projects.p1}/drop`) : 0);
+    let written = countNow();
+    for (let still = 0; still < 6 && written < entries; ) {
+      await delay(250);
+      const now = countNow();
+      still = now === written ? still + 1 : 0;
+      written = now;
+    }
+    upload.abort();
+
+    // Strictly short of the end, and not nothing: the Core wrote until the reader's buffers were
+    // full and then waited. A Core that buffered instead would finish every entry for a reader
+    // that read none.
+    expect(written).toBeGreaterThan(0);
+    expect(written).toBeLessThan(entries);
+  }, 60_000);
 
   it("leaves the Project writable, rather than 409 for the lifetime of the process", async () => {
     projects.p1 = makeTree();

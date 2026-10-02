@@ -569,9 +569,9 @@ And what it does not:
   runs its Core from the container image.
 - **No signing and no notarization**, exactly as a release. Integrity is the
   published checksums, which `install.sh` verifies before it extracts anything.
-- **No provenance attestation of any kind.** A release's npm packages carry one;
-  a beta publishes nothing to the registry, so there is nothing attested on this
-  path. `SHA256SUMS` is what stands in its place, and nothing here should be
+- **No provenance attestation of any kind.** Neither a beta nor a release
+  publishes anything to the npm registry from this repository, so there is nothing
+  attested on this path. `SHA256SUMS` is what stands in its place, and nothing here should be
   read as more than that.
 
 ---

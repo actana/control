@@ -22,8 +22,6 @@
 //   tags=1.4.0 latest        space-separated, for container-image.yml
 //   latest=true|false        for `gh release create --latest=`
 //   prerelease=true|false    for `gh release create --prerelease=`
-//   npm_tag=latest|next|…    for `npm publish --tag`, which otherwise defaults
-//                            to `latest` the way the other two surfaces used to
 //   mode=promote|backport
 
 import { execFileSync } from "node:child_process";
@@ -74,7 +72,7 @@ try {
 
 console.error(`[release-tags] ${decision.reason}`);
 console.error(
-  `[release-tags] ${decision.tags.join(" ")} on Docker Hub; GitHub Release latest=${decision.latest} prerelease=${decision.prerelease}; npm dist-tag ${decision.npmTag}`,
+  `[release-tags] ${decision.tags.join(" ")} on Docker Hub; GitHub Release latest=${decision.latest} prerelease=${decision.prerelease}`,
 );
 
 process.stdout.write(
@@ -83,7 +81,6 @@ process.stdout.write(
     `tags=${decision.tags.join(" ")}`,
     `latest=${decision.latest}`,
     `prerelease=${decision.prerelease}`,
-    `npm_tag=${decision.npmTag}`,
     "",
   ].join("\n"),
 );

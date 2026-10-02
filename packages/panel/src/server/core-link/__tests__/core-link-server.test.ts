@@ -8,7 +8,7 @@
 // past a cursor, the mutation port's throw becoming an `error` frame.
 //
 // That client is gone: the Panel dials with `@actana/sdk`'s durable Core client
-// now (#156), and the client-side suites went with it — `packages/sdk` covers
+// now (#156), and the client-side suites went with it — the SDK's own suite (actana/client) covers
 // that half against this same server, plus a real `wss://` handshake. What is
 // left here is every server-side test, unchanged, because nothing about the
 // Core moved and coverage of it should not have been collateral.

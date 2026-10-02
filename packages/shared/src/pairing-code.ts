@@ -24,8 +24,8 @@
 //
 // These are internals, not wire types. `packages/shared` is private and stays
 // private ([ADR 0025][adr] D4); the SDK declares its own shapes for whatever
-// crosses the socket, as `packages/sdk/src/core-registration-blob.ts` argues
-// at length.
+// crosses the socket, as the SDK's `core-registration-blob.ts` argues
+// at length (in the published `@actana/sdk`, actana/client).
 //
 // [adr]: ../../../docs/adr/0025-the-protocol-ships-with-the-client.md
 

@@ -9,7 +9,7 @@ import { describe, expect, it, beforeEach, afterEach } from "vitest";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { createPairingSession, PAIRING_ATTEMPT_CAP } from "../pairing-session";
+import { canRedeem, createPairingSession } from "../pairing-session";
 import {
   PAIRING_SESSION_RETENTION_MS,
   PairingStore,
@@ -41,6 +41,13 @@ function session(id = "ps_1", now = NOW, ttlMs?: number) {
     now,
     ...(ttlMs === undefined ? {} : { ttlMs }),
   });
+}
+
+/** Put paired clients on file, beside the sessions: what the daemon's SDK store does on a redemption. */
+function seedClients(...clients: PairedClient[]): void {
+  const file = path.join(dir, "pairing.json");
+  const records = store.read();
+  fs.writeFileSync(file, JSON.stringify({ ...records, clients: [...records.clients, ...clients] }), { mode: 0o600 });
 }
 
 function client(certSerial = "0a1b"): PairedClient {
@@ -93,40 +100,7 @@ describe("the file", () => {
 describe("sessions", () => {
   it("round-trips a minted session", () => {
     store.createSession(session(), NOW);
-    expect(store.getSession("ps_1")).toMatchObject({ id: "ps_1", label: "laptop", attempts: 0, consumedAt: null });
-  });
-
-  it("counts a wrong attempt and stops at the cap", () => {
-    store.createSession(session(), NOW);
-    for (let i = 0; i < PAIRING_ATTEMPT_CAP + 3; i += 1) store.recordWrongAttempt("ps_1");
-    expect(store.getSession("ps_1")?.attempts).toBe(PAIRING_ATTEMPT_CAP);
-  });
-
-  it("says nothing about a session that is not there", () => {
-    expect(store.recordWrongAttempt("ps_nothing")).toBeNull();
-    expect(store.consume("ps_nothing", NOW)).toEqual({ ok: false, reason: "unknown" });
-  });
-
-  it("consumes once and refuses the replay", () => {
-    store.createSession(session(), NOW);
-
-    const first = store.consume("ps_1", NOW);
-    const second = store.consume("ps_1", NOW);
-
-    expect(first).toMatchObject({ ok: true });
-    expect(second).toEqual({ ok: false, reason: "already-consumed" });
-    expect(store.getSession("ps_1")?.consumedAt).toBe(NOW);
-  });
-
-  it("refuses to consume an expired session", () => {
-    store.createSession(session("ps_1", NOW, 60_000), NOW);
-    expect(store.consume("ps_1", NOW + 60_001)).toEqual({ ok: false, reason: "expired" });
-  });
-
-  it("refuses to consume a dead session", () => {
-    store.createSession(session(), NOW);
-    for (let i = 0; i < PAIRING_ATTEMPT_CAP; i += 1) store.recordWrongAttempt("ps_1");
-    expect(store.consume("ps_1", NOW)).toEqual({ ok: false, reason: "attempts-exhausted" });
+    expect(store.listSessions()).toMatchObject([{ id: "ps_1", label: "laptop", attempts: 0, consumedAt: null }]);
   });
 
   it("forgets a session a day after it settled, and keeps a fresh one", () => {
@@ -135,35 +109,24 @@ describe("sessions", () => {
 
     expect(store.listSessions().map((s) => s.id)).toEqual(["ps_new"]);
   });
-
-  it("answers a pruned session exactly as it answers an unknown one", () => {
-    // Pruning must not be observable: both are `unknown`, and the endpoint
-    // turns both into the same refusal.
-    store.createSession(session("ps_old", NOW - PAIRING_SESSION_RETENTION_MS - 60_000, 60_000), NOW);
-    store.createSession(session("ps_new", NOW), NOW);
-
-    expect(store.consume("ps_old", NOW)).toEqual({ ok: false, reason: "unknown" });
-    expect(store.consume("ps_never", NOW)).toEqual({ ok: false, reason: "unknown" });
-  });
 });
 
 describe("paired clients", () => {
   it("records one and lists it", () => {
-    store.recordClient(client(), NOW);
+    seedClients(client());
     expect(store.listClients()).toEqual([client()]);
   });
 
   it("keeps the sessions beside them", () => {
     store.createSession(session(), NOW);
-    store.recordClient(client(), NOW);
-    expect(store.getSession("ps_1")).not.toBeNull();
+    seedClients(client());
+    expect(store.listSessions().map((x) => x.id)).toEqual(["ps_1"]);
   });
 
   it("revokes by serial, and stamps rather than deletes", () => {
     // `actana pair revoke` has to be able to say what it revoked, and a row
     // that vanished would take the trail of the pairing with it.
-    store.recordClient(client("0a1b"), NOW);
-    store.recordClient(client("0c2d"), NOW);
+    seedClients(client("0a1b"), client("0c2d"));
 
     const revoked = store.revokeClient("0a1b", NOW + 5);
 
@@ -171,31 +134,12 @@ describe("paired clients", () => {
     expect(store.listClients().find((c) => c.certSerial === "0c2d")?.revokedAt).toBeNull();
   });
 
-  it("keeps a revocation when a second process writes after it", () => {
-    // #306's review: a lost `revokedAt` is the one write that fails *open* —
-    // the operator is told the client is unpaired and the file does not say
-    // so. Two `PairingStore` instances are the daemon and the CLI over one
-    // file. Neither holds a parsed copy, so a write that lands *after* a
-    // revocation re-reads it and carries the stamp forward. That is the whole
-    // protection there is today, and it covers the sequential case; the
-    // same-millisecond interleave is the gap the class comment tracks.
-    const daemon = new PairingStore(path.join(dir, "pairing.json"));
-    store.recordClient(client("0a1b"), NOW);
-    store.revokeClient("0a1b", NOW + 5);
-
-    daemon.recordClient(client("0c2d"), NOW + 6);
-
-    const rows = daemon.listClients();
-    expect(rows.find((c) => c.certSerial === "0a1b")?.revokedAt).toBe(NOW + 5);
-    expect(rows.find((c) => c.certSerial === "0c2d")?.revokedAt).toBeNull();
-  });
-
   it("says nothing about a serial it never issued", () => {
     expect(store.revokeClient("nope", NOW)).toBeNull();
   });
 
   it("leaves an already-revoked pairing's timestamp alone", () => {
-    store.recordClient(client("0a1b"), NOW);
+    seedClients(client("0a1b"));
     store.revokeClient("0a1b", NOW + 5);
     expect(store.revokeClient("0a1b", NOW + 500)?.revokedAt).toBe(NOW + 5);
   });
@@ -254,25 +198,23 @@ describe("the code digest", () => {
 
 describe("cancelling a pending session", () => {
   it("stops the code being redeemed", () => {
-    const pending = createPairingSession({ id: "ps_9", label: "laptop", codeHash: "h", now: NOW });
+    const pending = createPairingSession({ id: "ps_10", label: "laptop", codeHash: "h", now: NOW });
     store.createSession(pending, NOW);
-    expect(store.consume("ps_9", NOW).ok).toBe(true);
+    expect(canRedeem(pending, NOW)).toEqual({ ok: true });
 
-    const again = createPairingSession({ id: "ps_10", label: "laptop", codeHash: "h", now: NOW });
-    store.createSession(again, NOW);
-    expect(store.cancelSession("ps_10", NOW)?.revokedAt).toBe(NOW);
-    expect(store.consume("ps_10", NOW)).toEqual({ ok: false, reason: "revoked" });
+    const cancelled = store.cancelSession("ps_10", NOW);
+    expect(cancelled?.revokedAt).toBe(NOW);
+    expect(canRedeem(cancelled!, NOW)).toEqual({ ok: false, reason: "revoked" });
   });
 
   it("survives the round trip through disk", () => {
     store.createSession(createPairingSession({ id: "ps_11", label: "l", codeHash: "h", now: NOW }), NOW);
     store.cancelSession("ps_11", NOW);
-    expect(new PairingStore(path.join(dir, "pairing.json")).getSession("ps_11")?.revokedAt).toBe(NOW);
+    expect(new PairingStore(path.join(dir, "pairing.json")).listSessions()[0]?.revokedAt).toBe(NOW);
   });
 
   it("reports a session that was already redeemed rather than pretending to undo it", () => {
-    store.createSession(createPairingSession({ id: "ps_12", label: "l", codeHash: "h", now: NOW }), NOW);
-    store.consume("ps_12", NOW);
+    store.createSession({ ...createPairingSession({ id: "ps_12", label: "l", codeHash: "h", now: NOW }), consumedAt: NOW }, NOW);
     const after = store.cancelSession("ps_12", NOW + 1);
     // There is a certificate in the world for this one. The thing to take back
     // is the client, and the caller is told so by what comes back unchanged.
@@ -310,7 +252,7 @@ describe("reading strictly", () => {
   });
 
   it("reads a good file the same way the lenient reader does", () => {
-    store.recordClient(client(), NOW);
+    seedClients(client());
     expect(store.readStrict()).toEqual(store.read());
   });
 
@@ -422,6 +364,6 @@ describe("a malformed endpointHost is absent, not a condemned row", () => {
   it("round-trips a session the ordinary way, untouched", () => {
     const chosen = { ...session(), endpointHost: "10.0.0.5" };
     store.createSession(chosen, NOW);
-    expect(store.getSession("ps_1")).toEqual(chosen);
+    expect(store.listSessions()).toEqual([chosen]);
   });
 });

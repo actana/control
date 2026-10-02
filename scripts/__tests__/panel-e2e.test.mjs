@@ -1,4 +1,6 @@
 import { EventEmitter } from "node:events";
+import * as fs from "node:fs";
+import * as path from "node:path";
 import * as http from "node:http";
 import { Readable } from "node:stream";
 import { afterEach, describe, expect, it } from "vitest";
@@ -277,5 +279,30 @@ describe("PanelHttpClient", () => {
     expect(response.status).toBe(401);
     expect(response.body).toBeNull();
     expect(response.text).toBe("unauthorized");
+  });
+});
+
+// The e2e script is run only in CI (Postgres, a built Panel), so a caller of a deleted Panel route
+// would stay invisible to every local run and show up as a red `E2E — Panel service seam` (#646 R1).
+// This pins the one shape that is allowed: the old per-Project Files route appears in the script
+// only inside the leg that asserts it is refused.
+describe("scripts/e2e-panel-smoke.mjs and the retired Panel Files route (#580)", () => {
+  const source = fs.readFileSync(path.resolve(import.meta.dirname, "..", "e2e-panel-smoke.mjs"), "utf8");
+
+  it("has no leg that expects the old route to serve bytes", () => {
+    for (const gone of ["putStreamed", "putText", "filesPath", "assertDropIsOnTheCoresDisk", "assertFileViewLists"]) {
+      expect(source, `${gone} still drives /api/cores/:id/projects/:id/files`).not.toContain(gone);
+    }
+  });
+
+  it("only names the route inside the refusal leg, and expects the router's 404", () => {
+    const lines = source.split("\n").filter((line) => line.includes("/projects/") && line.includes("/files"));
+    expect(lines.length).toBeGreaterThan(0);
+    const leg = source.slice(source.indexOf("async function assertRetiredFilesRouteIsRefused"));
+    for (const line of lines.filter((l) => !l.trim().startsWith("//") && !l.trim().startsWith("*"))) {
+      expect(leg, `route used outside the refusal leg: ${line.trim()}`).toContain(line);
+    }
+    expect(leg).toContain("answer.status !== 404");
+    expect(leg).toContain('"not found"');
   });
 });
