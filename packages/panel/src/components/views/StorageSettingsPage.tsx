@@ -169,6 +169,10 @@ export function StorageSettingsPage() {
     setError(null);
     setResult(null);
     try {
+      const typedKey = buildMasterKey();
+      if (!rotate && masterKeySet && typedKey !== undefined) {
+        throw new Error("A typed master key is not saved with Save: use Rotate… to replace the stored key.");
+      }
       const input = buildInput(rotate || !masterKeySet);
       if (rotate && input.masterKey === undefined) {
         throw new Error(
@@ -266,6 +270,28 @@ export function StorageSettingsPage() {
           );
         })}
       </div>
+
+      {(backend === "sts" || backend === "supabase") && (
+        <div
+          role="note"
+          data-backend-limitation={backend}
+          style={{
+            fontFamily: "var(--mono)",
+            fontSize: 12,
+            lineHeight: 1.5,
+            padding: "10px 12px",
+            marginBottom: 8,
+            background: "var(--surface-1)",
+            border: "1px solid var(--border)",
+            borderRadius: 7,
+            color: "var(--text-dim)",
+          }}
+        >
+          Not usable yet against a real service: one Endpoint field cannot be both the{" "}
+          {backend === "sts" ? "STS AssumeRole URL and the S3 API host" : "Supabase project URL and the S3 API host"}.
+          SeaweedFS and Cloudflare R2 work with the fields below.
+        </div>
+      )}
 
       <TextField
         label="Endpoint"

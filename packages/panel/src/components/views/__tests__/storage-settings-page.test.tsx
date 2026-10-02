@@ -139,4 +139,36 @@ describe("Settings › Storage", () => {
     expect(screen.getByRole("tab", { name: /SeaweedFS/i }).getAttribute("aria-selected")).toBe("true");
     expect(within(screen.getByRole("tablist")).getByRole("tab", { name: /S3 STS/i })).toBeTruthy();
   });
+
+  it("Save with a typed master key refuses and points at Rotate when one is already stored", async () => {
+    await act(async () => {
+      render(<StorageSettingsPage />);
+    });
+    const master = screen.getByLabelText(/^Master key$/i) as HTMLInputElement;
+    await act(async () => {
+      fireEvent.change(master, { target: { value: "-----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY-----" } });
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /^Save$/i }));
+    });
+    expect(api.putStorage).not.toHaveBeenCalled();
+    expect(screen.getByRole("alert").textContent).toMatch(/Rotate/i);
+    expect(master.value).toContain("PRIVATE KEY");
+  });
+
+  it("marks S3 STS and Supabase as not usable yet against a real service", async () => {
+    await act(async () => {
+      render(<StorageSettingsPage />);
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("tab", { name: /S3 STS/i }));
+    });
+    expect(screen.getByRole("note").getAttribute("data-backend-limitation")).toBe("sts");
+    expect(screen.getByRole("note").textContent).toMatch(/Not usable yet/i);
+    await act(async () => {
+      fireEvent.click(screen.getByRole("tab", { name: /Supabase/i }));
+    });
+    expect(screen.getByRole("note").getAttribute("data-backend-limitation")).toBe("supabase");
+    expect(screen.getByRole("note").textContent).toMatch(/project URL and the S3 API host/i);
+  });
 });

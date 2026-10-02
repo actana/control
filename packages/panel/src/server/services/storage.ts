@@ -266,6 +266,10 @@ export async function saveStorageConfig(
     rotated = true;
   } else if (!existing?.masterKeySet) {
     throw new ValidationError("The master key is required the first time storage is configured.");
+  } else if (existing.backend !== backend) {
+    throw new ValidationError(
+      "Changing the storage backend requires a new master key for that backend; the sealed key cannot move across backends.",
+    );
   }
   await upsertStorageConfig(ownerId, fields, sealed);
   return { view: await getStorageConfig(ownerId), rotated };

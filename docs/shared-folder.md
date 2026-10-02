@@ -236,7 +236,9 @@ POST /api/cores/:id/delete {confirmPrefix} ──▶ prefix typed exactly ──
 |---|---|
 | the master key is in no response, log line or frame | `storage-config-api.test.ts`, `shared-folders.test.ts`, `shared-folder-pairing-api.test.ts` |
 | the key is sealed at rest, rotated by a write, kept by an edit | `storage-config-api.test.ts` |
-| Settings › Storage test-connection isolation | `storage-config-api.test.ts` (fake), `shared-folders-seaweedfs.test.ts` (real SeaweedFS in CI) |
+| Settings › Storage test-connection isolation | `storage-config-api.test.ts` (fake S3), `shared-folders-seaweedfs.test.ts` (real SeaweedFS in CI) |
+| rotate PUT re-issues `sharedCredentials`; edit without a key does not | `storage-config-api.test.ts` |
+| per-Core folder size and key expiry on GET `/api/storage` | `storage-config-api.test.ts` |
 | the Panel refuses to finish pairing without storage, offline, or with a leaking key | `shared-folder-pairing-api.test.ts`, `shared-folders.test.ts` |
 | keys rotate 15 minutes early, hourly, with a back-off and a visible error | `shared-folders.test.ts` (fake clock) |
 | unpair keeps the Core's folder | `shared-folder-pairing-api.test.ts` |
