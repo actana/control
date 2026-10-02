@@ -35,6 +35,8 @@ export const queryKeys = {
   sharedFilesSearch: (coreId: string, query: string) => ["shared-files", coreId, "search", query] as const,
   settings: ["settings"] as const,
   hookToken: ["hook-token"] as const,
+  apiKeys: ["api-keys"] as const,
+  webhooks: ["webhooks"] as const,
   keybindings: ["keybindings"] as const,
   usage: (days: number) => ["usage", days] as const,
   claudeUsageLimits: ["claude-usage-limits"] as const,
@@ -479,3 +481,19 @@ export const useProviderUsage = (enabled: boolean, providerIds: readonly string[
 export const useHarnessAccounts = () => useQuery(harnessAccountsQueryOptions());
 export const useHarnessLatestVersions = () => useQuery(harnessLatestVersionsQueryOptions());
 export const useUpdateCheck = () => useQuery(updateCheckQueryOptions());
+
+/** Settings › API & integrations: API keys (no plaintext in the cache). */
+export const apiKeysQueryOptions = () =>
+  queryOptions({
+    queryKey: queryKeys.apiKeys,
+    queryFn: async () => (await api.listApiKeys()).apiKeys,
+  });
+export const useApiKeys = () => useQuery(apiKeysQueryOptions());
+
+/** Settings › API & integrations: webhooks with last delivery. */
+export const webhooksQueryOptions = () =>
+  queryOptions({
+    queryKey: queryKeys.webhooks,
+    queryFn: async () => (await api.listWebhooks()).webhooks,
+  });
+export const useWebhooks = () => useQuery(webhooksQueryOptions());

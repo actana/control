@@ -37,10 +37,10 @@ export default defineConfig({
     }),
   ],
   optimizeDeps: {
-    exclude: ["better-sqlite3", "node-pty"],
+    exclude: ["node-pty"],
   },
   ssr: {
-    external: ["better-sqlite3", "node-pty"],
+    external: ["node-pty"],
     noExternal: ["@xterm/xterm", "@xterm/addon-fit", "@xterm/addon-web-links"],
   },
 });

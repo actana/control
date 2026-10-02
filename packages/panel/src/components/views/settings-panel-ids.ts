@@ -9,6 +9,7 @@ export const SETTINGS_PANEL_IDS = [
   "providers",
   "usage",
   "storage",
+  "api",
   "terminal",
   "interface",
   "appearance",

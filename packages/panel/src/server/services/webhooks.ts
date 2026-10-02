@@ -6,6 +6,7 @@ import { findCoreById } from "../repositories/cores.repo";
 import {
   deleteWebhookRow,
   findDeliveriesForWebhook,
+  findLastDeliveriesForWebhooks,
   findWebhookById,
   findWebhookCoreIds,
   findWebhooks,
@@ -48,6 +49,8 @@ export type Webhook = {
   coreIds: string[];
   createdAt: number;
   updatedAt: number;
+  /** Newest delivery for this hook, when any; filled by {@link listWebhooks}. */
+  lastDelivery: WebhookDelivery | null;
 };
 
 export type WebhookDelivery = {
@@ -60,9 +63,10 @@ export type WebhookDelivery = {
   lastError: string | null;
   createdAt: number;
   deliveredAt: number | null;
+  nextAttemptAt: number | null;
 };
 
-function toWebhook(row: WebhookRow, coreIds: string[]): Webhook {
+function toWebhook(row: WebhookRow, coreIds: string[], lastDelivery: WebhookDelivery | null = null): Webhook {
   return {
     id: row.id,
     url: row.url,
@@ -71,6 +75,7 @@ function toWebhook(row: WebhookRow, coreIds: string[]): Webhook {
     coreIds: row.allCores ? [] : coreIds,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
+    lastDelivery,
   };
 }
 
@@ -85,6 +90,7 @@ function toDelivery(row: WebhookDeliveryRow): WebhookDelivery {
     lastError: row.lastError,
     createdAt: row.createdAt,
     deliveredAt: row.deliveredAt,
+    nextAttemptAt: row.status === "pending" ? row.nextAttemptAt : null,
   };
 }
 
@@ -166,7 +172,7 @@ export async function createWebhook(
   );
   if (result.kind === "no-core") throw new ValidationError("a Core named for this webhook does not exist");
   return {
-    webhook: toWebhook(result.webhook, coreIds ? [...new Set(coreIds)].sort() : []),
+    webhook: toWebhook(result.webhook, coreIds ? [...new Set(coreIds)].sort() : [], null),
     secret,
   };
 }
@@ -174,7 +180,14 @@ export async function createWebhook(
 export async function listWebhooks(ownerId: number = OPERATOR_ID): Promise<Webhook[]> {
   const rows = await findWebhooks(ownerId);
   const coreIds = await findWebhookCoreIds(ownerId);
-  return rows.map((row) => toWebhook(row, coreIds.get(row.id) ?? []));
+  const lastById = await findLastDeliveriesForWebhooks(
+    ownerId,
+    rows.map((r) => r.id),
+  );
+  return rows.map((row) => {
+    const last = lastById.get(row.id);
+    return toWebhook(row, coreIds.get(row.id) ?? [], last ? toDelivery(last) : null);
+  });
 }
 
 export async function deleteWebhook(ownerId: number, id: string): Promise<void> {

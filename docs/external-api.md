@@ -352,8 +352,7 @@ Connect Claude Code to it:
 claude mcp add --transport http actana https://panel.example.com/mcp --header "Authorization: Bearer ak_…"
 ```
 
-Use the Panel's own address and a key from Settings › API & integrations (until that screen ships, `POST /api/api-keys`
-with the Operator's session creates one; the key is shown once). Then `claude mcp list` shows `actana` connected, and
+Use the Panel's own address and a key from Settings › API & integrations. Then `claude mcp list` shows `actana` connected, and
 the tools below are available to the model.
 
 | Property | Value |

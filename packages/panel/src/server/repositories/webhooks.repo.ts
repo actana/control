@@ -356,6 +356,39 @@ export async function findDeliveriesForWebhook(
     .limit(limit);
 }
 
+/**
+ * The newest delivery for each of the named webhooks of this owner. Used by
+ * Settings › API & integrations (screen 09) so the list can show last delivery
+ * without an N+1 of {@link findDeliveriesForWebhook}.
+ *
+ * One row per webhook via Postgres `DISTINCT ON (webhook_id)` ordered newest
+ * first — not every delivery of every webhook (payload included) for 14 days.
+ */
+export function lastDeliveriesQuery(ownerId: number, webhookIds: string[]) {
+  return panelDb()
+    .selectDistinctOn([webhookDeliveries.webhookId])
+    .from(webhookDeliveries)
+    .where(ownedBy(webhookDeliveries, ownerId, inArray(webhookDeliveries.webhookId, webhookIds)))
+    .orderBy(
+      asc(webhookDeliveries.webhookId),
+      desc(webhookDeliveries.createdAt),
+      asc(webhookDeliveries.id),
+    );
+}
+
+export async function findLastDeliveriesForWebhooks(
+  ownerId: number,
+  webhookIds: string[],
+): Promise<Map<string, WebhookDeliveryRow>> {
+  const out = new Map<string, WebhookDeliveryRow>();
+  if (webhookIds.length === 0) return out;
+  const rows = await lastDeliveriesQuery(ownerId, webhookIds);
+  for (const row of rows) {
+    out.set(row.webhookId, row);
+  }
+  return out;
+}
+
 /** Count deliveries for an outbox row (tests: fan-out twice → still one). */
 export async function countDeliveriesForOutbox(ownerId: number, outboxId: string): Promise<number> {
   const rows = await panelDb()
