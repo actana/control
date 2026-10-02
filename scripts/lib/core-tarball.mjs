@@ -353,19 +353,25 @@ export function assertShasumsSet(names) {
 }
 
 /**
- * Extract `CORE_LINK_PROTOCOL_VERSION` from the text of
- * `packages/sdk/src/core-link-frames.ts`.
+ * Where the installed `@actana/sdk` keeps the file that defines the protocol version, relative to
+ * the repository root (the root package depends on it, so pnpm links it there). The package's
+ * exports map does not list its files, so the build script reads this path rather than resolving it.
+ */
+export const SDK_LINK_FRAMES_PATH = ["node_modules", "@actana", "sdk", "dist", "core", "link-frames.js"];
+
+/**
+ * Extract `CORE_LINK_PROTOCOL_VERSION` from the text of the installed SDK's
+ * `dist/core/link-frames.js` ({@link SDK_LINK_FRAMES_PATH}).
  *
  * The tarball must embed the protocol version so `actana status` and the
- * Panel's needs-update gate can compare against it, but the build script is
- * plain `.mjs` and cannot import the TypeScript source. Reading the literal
- * keeps a single definition; the unit test runs this against the real file so
- * a rename can't silently start shipping a stale version.
+ * Panel's needs-update gate can compare against it, and the build script is
+ * plain `.mjs`. Reading the literal keeps a single definition; the unit test runs this against the
+ * real file so a rename can't silently start shipping a stale version.
  */
 export function parseCoreLinkProtocolVersion(source) {
   const match = /CORE_LINK_PROTOCOL_VERSION\s*=\s*"([^"]+)"/.exec(source);
   if (!match) {
-    throw new Error("could not find CORE_LINK_PROTOCOL_VERSION in core-link-frames.ts");
+    throw new Error("could not find CORE_LINK_PROTOCOL_VERSION in the SDK's link-frames.js");
   }
   return match[1];
 }

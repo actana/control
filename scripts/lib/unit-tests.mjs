@@ -7,7 +7,7 @@
 // and both links in that chain throw information away. `&&` stops at the first
 // non-zero exit, so a failure in the 16-file root suite means none of the five
 // packages run at all. And `pnpm -r` bails on the first failing package by
-// default, in topological order — sdk → shared → cli → core → panel — so a
+// default, in topological order — shared → cli → core → panel — so a
 // single flake in `packages/cli` means `core` and `panel` never run either.
 //
 // That is not a theoretical loss. Issue #257 §1 lists three runs of
@@ -48,12 +48,11 @@ import * as path from "node:path";
  * can be skipped because an earlier one failed, which is the entire point.
  *
  * `unit-tests.test.mjs` asserts this list against `packages/*` on disk, so a
- * sixth package added next year fails a test here instead of silently never
+ * fifth package added next year fails a test here instead of silently never
  * being tested in CI.
  */
 export const STAGES = [
   { id: "root", label: "root suite", kind: "root" },
-  { id: "sdk", label: "packages/sdk", kind: "package", pkg: "@actana/sdk", dir: "sdk" },
   { id: "shared", label: "packages/shared", kind: "package", pkg: "@actana/shared", dir: "shared" },
   { id: "cli", label: "packages/cli", kind: "package", pkg: "@actana/core-cli", dir: "cli" },
   { id: "core", label: "packages/core", kind: "package", pkg: "@actana/core", dir: "core" },

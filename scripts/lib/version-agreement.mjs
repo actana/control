@@ -1,17 +1,17 @@
 // The version vocabulary, in one module (ADR 0037; ADR 0036 C1; ADR 0023 D3, D7).
 //
-// A version in this repository was six independent strings that happened to be
+// A version in this repository was five independent strings that happened to be
 // equal. This module is the one definition they are all derived from and the
 // one comparison that reads actual content rather than the name a string was
 // derived from.
 //
 // ── The vocabulary ──────────────────────────────────────────────────────────
 //
-//   line        `x.y.z`. The unit of versioning. It is what the six manifests
+//   line        `x.y.z`. The unit of versioning. It is what the five manifests
 //               carry, what a train branch is named for, and what an image's
 //               `org.opencontainers.image.version` label says.
 //   release     the line's release. Git tag `vx.y.z`, image tags `x.y.z` and
-//               possibly `latest`, npm version `x.y.z`.
+//               possibly `latest`.
 //   beta        the line's beta. Git tag and GitHub Release `vx.y.z-beta`,
 //               image tag `x.y.z-beta`, asset filenames `…-x.y.z-beta-…`.
 //               **Exactly that string, with no counter of any kind**
@@ -40,7 +40,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 
 /**
- * The manifests a cut stamps (ADR 0023 D3, amended by #152 and #157).
+ * The manifests a cut stamps (ADR 0023 D3, amended by #152, #157 and #580).
  *
  * **Three lists hold this set and a test binds each pair**: this one, the
  * `MANIFESTS` bash array in `ci.yml`'s `Train rules` job, and the `files=()`
@@ -55,12 +55,11 @@ export const MANIFESTS = [
   "packages/cli/package.json",
   "packages/core/package.json",
   "packages/panel/package.json",
-  "packages/sdk/package.json",
   "packages/shared/package.json",
 ];
 
 /**
- * The seventh place a cut writes the line, and deliberately **not** a seventh
+ * The sixth place a cut writes the line, and deliberately **not** a sixth
  * manifest (ADR 0036 D4).
  *
  * `install.sh` carries the line so that the copy on a train installs that
@@ -132,7 +131,7 @@ export function channelOf(version) {
  * The counted forms are called out by name rather than lumped into "bad
  * shape", because `0.4.1-beta.1` is what every semver habit produces and ADR
  * 0036 C1 bans it on every surface — the git tag, the Release, the image tags,
- * the asset filenames and anything npm would see.
+ * the asset filenames.
  */
 export function versionProblem(version) {
   const value = String(version ?? "");
@@ -226,7 +225,7 @@ export function lineFromImageTag(tag) {
 export const SURFACES = [
   {
     id: "manifests",
-    what: "the six package.json manifests",
+    what: "the five package.json manifests",
     writtenBy: "the cut, docs/ci-cd.md § Cutting a train",
     authority: "tree",
   },
@@ -267,12 +266,6 @@ export const SURFACES = [
     authority: "tree",
   },
   {
-    id: "npm-version",
-    what: "the npm version of @actana/sdk",
-    writtenBy: "release.yml npm, from the packed manifests",
-    authority: "tree",
-  },
-  {
     id: "tarball",
     what: "asset filenames, the archive root and core-manifest.json",
     writtenBy: "scripts/lib/core-tarball.mjs, from RELEASE_VERSION",
@@ -283,7 +276,7 @@ export const SURFACES = [
 // ── The comparison ───────────────────────────────────────────────────────────
 
 /**
- * Read the six manifests, from the working tree or from a git object.
+ * Read the five manifests, from the working tree or from a git object.
  *
  * `gitRef` reads through `git show <ref>:<path>` rather than checking the ref
  * out, because the two callers that need a ref other than HEAD — `release.yml`
@@ -297,7 +290,7 @@ export function readManifestVersions({ root = process.cwd(), gitRef = null, mani
     try {
       raw = gitRef
         ? // stderr ignored: `git show` writes "fatal: invalid object name" once
-          // per file, and six copies of one fact is not a diagnosis. The caller
+          // per file, and five copies of one fact is not a diagnosis. The caller
           // reports the ref as a single problem.
           execFileSync("git", ["show", `${gitRef}:${file}`], {
             cwd: root,

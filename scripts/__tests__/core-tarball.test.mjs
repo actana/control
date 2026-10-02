@@ -20,6 +20,7 @@ import {
   nodeDistShasumsUrl,
   nodeDistTarballUrl,
   parseCoreLinkProtocolVersion,
+  SDK_LINK_FRAMES_PATH,
   parseShasums,
   parseTarballName,
   planDependencyLayout,
@@ -439,10 +440,7 @@ describe("parseCoreLinkProtocolVersion", () => {
   it("finds the real constant in the SDK package", () => {
     // Guards the rename that would otherwise ship a stale protocol version in
     // every tarball.
-    const source = fs.readFileSync(
-      path.join(repoRoot, "packages", "sdk", "src", "core-link-frames.ts"),
-      "utf8",
-    );
+    const source = fs.readFileSync(path.join(repoRoot, ...SDK_LINK_FRAMES_PATH), "utf8");
     expect(parseCoreLinkProtocolVersion(source)).toMatch(/^\d+\.\d+\.\d+$/);
   });
 
@@ -452,10 +450,7 @@ describe("parseCoreLinkProtocolVersion", () => {
     // `@actana/sdk` it is built against, so a copy of the constant that lags it would ship a
     // manifest that disagrees with the Core it describes.
     const { CORE_LINK_PROTOCOL_VERSION } = await import("@actana/sdk/core");
-    const source = fs.readFileSync(
-      path.join(repoRoot, "packages", "sdk", "src", "core-link-frames.ts"),
-      "utf8",
-    );
+    const source = fs.readFileSync(path.join(repoRoot, ...SDK_LINK_FRAMES_PATH), "utf8");
     expect(parseCoreLinkProtocolVersion(source)).toBe(CORE_LINK_PROTOCOL_VERSION);
   });
 });
