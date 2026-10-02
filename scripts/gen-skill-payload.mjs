@@ -1,10 +1,9 @@
-// Embed the authored skill folders into both packages that have to write them.
+// Embed the authored skill folders into the package the Core's daemon installs them from.
 //
 // ADR 0031 D8. The skills are authored once under `.agents/skills/`, following
 // the `release` skill's harness-neutral precedent, and this script writes them
-// into `packages/shared` (which the Core imports) and `packages/cli`, which
-// embeds its own copy so the published bundle carries the payload rather than
-// resolving it (ADR 0031 D8).
+// into `packages/shared` (which the Core imports). It used to write `packages/cli` too; that copy is gone
+// (#580), because the CLI's client nouns now come from the published `@actana/cli`, which embeds its own.
 //
 // **A folder, not a file** (#304, ADR 0035 D4 and D5). A skill ships `await.sh`
 // beside `SKILL.md`, so what is embedded per skill is a map from folder-relative
@@ -55,10 +54,10 @@ export const SKILL_NAMES = ["actana-sessions", "actana-subagent"];
 export const SKILLS_ROOT = join(".agents", "skills");
 export const MARKER = "x-actana-managed: true";
 
-const TARGETS = [
-  join("packages", "shared", "src", "orchestration-skill-payload.ts"),
-  join("packages", "cli", "src", "orchestration-skill-payload.ts"),
-];
+// One target since #580: the CLI's own copy is gone, because `actana`'s client nouns now come from the
+// published `@actana/cli`, which carries its own skill payload. The Core daemon's boot-time install still
+// reads this one.
+const TARGETS = [join("packages", "shared", "src", "orchestration-skill-payload.ts")];
 
 /**
  * Every file in one skill folder, as `{ relative, content }`, sorted by path.

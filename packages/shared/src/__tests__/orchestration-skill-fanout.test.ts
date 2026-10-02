@@ -22,7 +22,6 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { HARNESSES } from "../domain";
 import { HARNESS_CLI_CONFIG, HARNESS_SKILL_TARGETS } from "../harness-cli-config";
-import { HARNESS_SKILL_TARGETS as CLI_TARGETS } from "../../../cli/src/harness-skill-targets";
 import {
   ORCHESTRATION_SKILL_FILES,
   ORCHESTRATION_SKILL_MARKER,
@@ -131,12 +130,11 @@ describe("every Harness has a skill target (#265, ADR 0031 D4)", () => {
     }
   });
 
-  it("keeps a static .pi marker in both tables; call sites resolve PI_CODING_AGENT_DIR", () => {
+  it("keeps a static .pi marker in the table; call sites resolve PI_CODING_AGENT_DIR", () => {
     // Tables stay Node-free (Panel bundle). withPiHomeMarkersResolved at the
     // Core/CLI fan-out entry points applies piHomeMarkers against the call-time
     // env (#518 part 3 gate follow-up).
     expect(HARNESS_CLI_CONFIG.pi.skillTarget.homeMarkers).toEqual([".pi"]);
-    expect(CLI_TARGETS.find((row) => row.harness === "pi")!.homeMarkers).toEqual([".pi"]);
     expect(withPiHomeMarkersResolved(HARNESS_SKILL_TARGETS, {}, "/home/op").find((r) => r.harness === "pi")!.homeMarkers).toEqual([
       ".pi",
     ]);
@@ -147,33 +145,6 @@ describe("every Harness has a skill target (#265, ADR 0031 D4)", () => {
         "/home/op",
       ).find((r) => r.harness === "pi")!.homeMarkers,
     ).toEqual(["moved/agent"]);
-  });
-});
-
-describe("the CLI's copy of the table agrees (ADR 0031 D8, ADR 0025 D3)", () => {
-  it("has a row for every Harness", () => {
-    expect(CLI_TARGETS.map((row) => row.harness).sort()).toEqual([...HARNESSES].sort());
-  });
-
-  it("agrees with this package's row for each, field by field", () => {
-    for (const harness of HARNESSES) {
-      const mine = HARNESS_SKILL_TARGETS.find((row) => row.harness === harness)!;
-      const theirs = CLI_TARGETS.find((row) => row.harness === harness);
-      expect(theirs, `packages/cli/src/harness-skill-targets.ts has no row for ${harness}`).toBeDefined();
-      expect({ ...theirs }, `${harness} drifted between the two tables`).toEqual({ ...mine });
-    }
-  });
-});
-
-describe("the installer exists twice and is one file (ADR 0031 D8)", () => {
-  it("is byte-identical in packages/shared and packages/cli", () => {
-    const mine = read("packages/shared/src/orchestration-skill-install.ts");
-    const theirs = read("packages/cli/src/orchestration-skill-install.ts");
-    expect(
-      theirs === mine,
-      "packages/cli/src/orchestration-skill-install.ts has drifted from the shared copy — " +
-        "edit one and copy it across; the payload is embedded in both bundles (ADR 0031 D8)",
-    ).toBe(true);
   });
 });
 
@@ -241,12 +212,6 @@ describe("the embedded payload is the authored folders (ADR 0031 D8, ADR 0035 D5
         ).toBe(true);
       }
     }
-  });
-
-  it("matches in the CLI's copy too", () => {
-    const cliCopy = read("packages/cli/src/orchestration-skill-payload.ts");
-    const sharedCopy = read("packages/shared/src/orchestration-skill-payload.ts");
-    expect(cliCopy).toBe(sharedCopy);
   });
 
   it("carries the marker that authorises overwriting it, in every file (D1)", () => {
