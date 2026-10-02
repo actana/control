@@ -14,12 +14,10 @@ import {
   CORE_HOME_OPERATIONS,
   CoreHomeOpFailedError,
   CoreHomeOpRefusedError,
-  handleCoreHomeOp,
   handleCoreHomeOpSync,
   parseCoreHomeOpRequest,
   type CoreHomeOpContext,
   type CoreHomeOpRequest,
-  type SyncRequest,
 } from "../core-home-ops";
 
 let base: string;
@@ -64,8 +62,6 @@ describe("request validation: known operations only", () => {
   it("lists exactly the operations the plan names", () => {
     expect([...CORE_HOME_OPERATIONS].sort()).toEqual(
       [
-        "createDirectory",
-        "dirList",
         "ensureClaudeShiftEnterBinding",
         "ensureOrchestrationSkill",
         "ensureStatuslineTap",
@@ -87,10 +83,17 @@ describe("request validation: known operations only", () => {
     expect(refusal(() => parseCoreHomeOpRequest(raw)).code).toBe("unknown-op");
   });
 
+  it.each([["dirList", { op: "dirList", path: null }], ["createDirectory", { op: "createDirectory", parent: "/h", name: "x" }]])(
+    "refuses %s, which went with the folder picker (#555), as unknown-op",
+    (_name, raw) => {
+      expect(refusal(() => parseCoreHomeOpRequest(raw)).code).toBe("unknown-op");
+    },
+  );
+
   it.each([
     ["null", null],
-    ["an array", [{ op: "dirList" }]],
-    ["a string", "dirList"],
+    ["an array", [{ op: "resolveExecCwd" }]],
+    ["a string", "resolveExecCwd"],
   ])("refuses %s as bad-request", (_name, raw) => {
     expect(refusal(() => parseCoreHomeOpRequest(raw)).code).toBe("bad-request");
   });
@@ -108,11 +111,6 @@ describe("request validation: known operations only", () => {
     ["an enormous path", { op: "ensureStatuslineTap", cwd: `/${"a".repeat(5000)}` }],
     ["a harness that is a path", { op: "installHarnessHooks", harness: "../x", cwd: "/x", piAgentDir: null }],
     ["too many roots", { op: "spawnPathFacts", cwd: "/x", roots: Array.from({ length: 300 }, (_, i) => `/r${i}`) }],
-    ["a folder name that is empty", { op: "createDirectory", parent: "/h", name: "" }],
-    ["a folder name with a NUL", { op: "createDirectory", parent: "/h", name: "a\0b" }],
-    ["a folder name that is not a string", { op: "createDirectory", parent: "/h", name: 4 }],
-    ["a folder name far past any filename", { op: "createDirectory", parent: "/h", name: "a".repeat(300) }],
-    ["no parent", { op: "createDirectory", name: "x" }],
     ["a command that is a path", { op: "resolveCommand", command: "/tmp/evil", path: null }],
     ["a command with a separator", { op: "resolveCommand", command: "../claude", path: null }],
     ["a command with a space", { op: "resolveCommand", command: "claude --version", path: null }],
@@ -132,8 +130,6 @@ describe("request validation: known operations only", () => {
       { op: "wireLocalCore", label: "", credential: { endpoint: "wss://127.0.0.1:1", label: "", caCert: "a", clientCert: "b", clientKey: "c", bearer: "d" } },
       { op: "spawnPathFacts", cwd: "/h/w", roots: ["/h/w"] },
       { op: "resolveExecCwd", cwd: null },
-      { op: "dirList", path: null },
-      { op: "createDirectory", parent: "/h/w", name: "new" },
       { op: "resolveCommand", command: "claude", path: "/h/.local/bin:/usr/bin" },
       { op: "resolveCommand", command: "claude", path: null },
     ];
@@ -142,7 +138,7 @@ describe("request validation: known operations only", () => {
 });
 
 describe("path confinement: nothing outside the home is touched", () => {
-  const hooks = (cwd: string): SyncRequest => ({ op: "installHarnessHooks", harness: "claude-code", cwd, piAgentDir: null });
+  const hooks = (cwd: string): CoreHomeOpRequest => ({ op: "installHarnessHooks", harness: "claude-code", cwd, piAgentDir: null });
 
   it("writes hooks into a workspace inside the home", () => {
     const work = path.join(home, "repos", "app");
@@ -275,7 +271,7 @@ describe("path confinement: nothing outside the home is touched", () => {
   it("refuses a Pi agent dir outside the home, and expands `~` inside it", () => {
     const work = path.join(home, "w");
     fs.mkdirSync(work);
-    const pi = (piAgentDir: string): SyncRequest => ({ op: "installHarnessHooks", harness: "pi", cwd: work, piAgentDir });
+    const pi = (piAgentDir: string): CoreHomeOpRequest => ({ op: "installHarnessHooks", harness: "pi", cwd: work, piAgentDir });
     expect(refusal(() => handleCoreHomeOpSync(pi(path.join(outside, "agent")), ctx)).code).toBe("path-escape");
     expect(filesUnder(outside)).toEqual([]);
     expect(handleCoreHomeOpSync(pi("~/.pi/agent"), ctx)).toMatchObject({ installed: true });
@@ -283,7 +279,7 @@ describe("path confinement: nothing outside the home is touched", () => {
   });
 
   it("refuses to register into a registry that XDG_CONFIG_HOME moves outside the home", () => {
-    const request: SyncRequest = {
+    const request: CoreHomeOpRequest = {
       op: "wireLocalCore",
       label: "core-01",
       credential: { endpoint: "wss://127.0.0.1:8443", label: "core-01", caCert: "ca", clientCert: "cc", clientKey: "ck", bearer: "b" },
@@ -375,74 +371,6 @@ describe("operations", () => {
       `Not a directory on this Core: ${path.join(home, "f")}`,
     );
     expect(() => handleCoreHomeOpSync({ op: "resolveExecCwd", cwd: outside }, ctx)).toThrow(/Not inside this Core's home/);
-  });
-
-  it("lists folders inside the home, stops 'up' at the home, and refuses to list outside it", async () => {
-    fs.mkdirSync(path.join(home, "repos", "a"), { recursive: true });
-    fs.mkdirSync(path.join(home, "repos", "b"));
-    const top = await handleCoreHomeOp({ op: "dirList", path: null }, ctx);
-    expect(top.path).toBe(home);
-    expect(top.parent).toBeNull();
-    expect(top.entries.map((e) => e.name)).toEqual(["repos"]);
-    const repos = await handleCoreHomeOp({ op: "dirList", path: path.join(home, "repos") }, ctx);
-    expect(repos.parent).toBe(home);
-    expect(repos.entries.map((e) => e.name)).toEqual(["a", "b"]);
-
-    await expect(handleCoreHomeOp({ op: "dirList", path: outside }, ctx)).rejects.toThrow("only lists folders inside its home");
-    fs.symlinkSync(outside, path.join(home, "link"));
-    await expect(handleCoreHomeOp({ op: "dirList", path: path.join(home, "link") }, ctx)).rejects.toThrow("only lists folders inside its home");
-    await expect(handleCoreHomeOp({ op: "dirList", path: path.join(home, "nope") }, ctx)).rejects.toThrow("Folder not found");
-  });
-
-  it("keeps the picker's 'up' outside the container (roots null)", async () => {
-    const listing = await handleCoreHomeOp({ op: "dirList", path: home }, { ...ctx, roots: null });
-    expect(listing.parent).toBe(base);
-  });
-
-  it("does not run the async operation synchronously", () => {
-    expect(() => handleCoreHomeOpSync({ op: "dirList", path: null } as never, ctx)).toThrow(/async/);
-  });
-});
-
-describe("createDirectory: the picker's new folder, made by core", () => {
-  const create = (parent: string, name: string) =>
-    handleCoreHomeOp({ op: "createDirectory", parent, name }, ctx);
-
-  it("makes one folder inside the home and answers with its path", async () => {
-    fs.mkdirSync(path.join(home, "repos"));
-    const made = await create(path.join(home, "repos"), "warehouse");
-    expect(made).toEqual({ path: path.join(home, "repos", "warehouse") });
-    expect(fs.statSync(made.path).isDirectory()).toBe(true);
-  });
-
-  it("keeps the operator's sentences for a bad name, a missing parent and a name that exists", async () => {
-    fs.mkdirSync(path.join(home, "taken"));
-    await expect(create(home, "a/b")).rejects.toThrow(new CoreHomeOpFailedError("Invalid folder name"));
-    await expect(create(home, ".hidden")).rejects.toThrow("Invalid folder name");
-    await expect(create(path.join(home, "nope"), "x")).rejects.toThrow("Location not found");
-    await expect(create(home, "taken")).rejects.toThrow("Something with that name already exists here");
-  });
-
-  it("makes nothing outside the home: an absolute path, `..`, a link out and a dangling link", async () => {
-    const sentence = "This Core only creates folders inside its home";
-    await expect(create(outside, "x")).rejects.toThrow(sentence);
-    await expect(create(path.join(home, "..", "outside"), "x")).rejects.toThrow(sentence);
-    fs.symlinkSync(outside, path.join(home, "link"));
-    await expect(create(path.join(home, "link"), "x")).rejects.toThrow(sentence);
-    fs.symlinkSync(path.join(outside, "gone"), path.join(home, "dangling"));
-    await expect(create(path.join(home, "dangling"), "x")).rejects.toThrow(sentence);
-    await expect(create("relative/dir", "x")).rejects.toThrow(sentence);
-    expect(fs.readdirSync(outside)).toEqual([]);
-    expect(fs.existsSync(path.join(base, "gone"))).toBe(false);
-  });
-
-  it("is not confined outside the container (roots null), as before", async () => {
-    const made = await handleCoreHomeOp({ op: "createDirectory", parent: outside, name: "x" }, { ...ctx, roots: null });
-    expect(made.path).toBe(path.join(outside, "x"));
-  });
-
-  it("is async: the sync entry refuses it", () => {
-    expect(() => handleCoreHomeOpSync({ op: "createDirectory", parent: home, name: "x" } as never, ctx)).toThrow(/async/);
   });
 });
 

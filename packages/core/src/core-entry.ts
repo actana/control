@@ -147,7 +147,7 @@ import log from "@actana/shared/log";
 import { bootstrapCoreDb } from "./core-db-bootstrap";
 import { HarnessAvailabilityStore } from "@actana/shared/harness-availability-store";
 import { HarnessSkillWatcher } from "./harness-skill-watcher";
-import { createDirectoryViaCore, ensureOrchestrationSkillViaCore, listDirectoryViaCore } from "./core-home-ops-client";
+import { ensureOrchestrationSkillViaCore } from "./core-home-ops-client";
 import { HarnessInstallService } from "./harness-install-service";
 import { daemonHarnessSystem } from "./core-harness-system";
 import { legacyEnvRefusal, plaintextExposureRefusal } from "./core-boot-refusals";
@@ -523,14 +523,6 @@ async function startCore(): Promise<void> {
     installPort: {
       installable: (harnessId) => harnessInstalls.installable(harnessId),
       install: (harnessId) => harnessInstalls.install(harnessId),
-    },
-    // Web-panel issue 06: the Panel's folder picker browses THIS machine's
-    // disk. The browser has none to offer and the operator's laptop is the
-    // wrong one — a path is a path on the Core's machine, so the Core serves and
-    // validates every listing.
-    directoryPort: {
-      list: (requestedPath) => listDirectoryViaCore(requestedPath),
-      create: (parent, name) => createDirectoryViaCore(parent, name),
     },
     // Issue 266: `actana core exec` runs one command here, non-interactively.
     // It grants nothing `core shell` does not already grant — same credential,

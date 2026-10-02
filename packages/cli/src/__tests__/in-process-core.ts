@@ -50,7 +50,6 @@ import https from "node:https";
 import { WebSocketServer } from "ws";
 import {
   PtyCoreLinkServer,
-  type CoreDirectoryPort,
   type CoreExecPort,
   type CoreMutationPort,
   type CoreQueryPort,
@@ -221,7 +220,6 @@ export type InProcessCoreOptions = {
   eventLog?: EventLogPort;
   queryPort?: CoreQueryPort;
   mutationPort?: CoreMutationPort;
-  directoryPort?: CoreDirectoryPort;
   execPort?: CoreExecPort;
   availabilityPort?: HarnessAvailabilityPort;
   installPort?: HarnessInstallPort;
@@ -275,7 +273,6 @@ export async function startInProcessCore(opts: InProcessCoreOptions = {}): Promi
     ...(opts.eventLog === undefined ? {} : { eventLog: opts.eventLog }),
     ...(opts.queryPort === undefined ? {} : { queryPort: opts.queryPort }),
     ...(opts.mutationPort === undefined ? {} : { mutationPort: opts.mutationPort }),
-    ...(opts.directoryPort === undefined ? {} : { directoryPort: opts.directoryPort }),
     ...(opts.execPort === undefined ? {} : { execPort: opts.execPort }),
     ...(opts.availabilityPort === undefined ? {} : { availabilityPort: opts.availabilityPort }),
     ...(opts.installPort === undefined ? {} : { installPort: opts.installPort }),

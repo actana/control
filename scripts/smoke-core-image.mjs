@@ -948,21 +948,21 @@ for (const [what, script, expect] of [
 }
 log("the Session's terminal works: tty, stty, /dev/tty and script(1)");
 
-// The two daemon operations that used to run in the daemon: both are `core`'s.
+// The folder picker's frames went with Projects (#555): the Core refuses them by name and makes nothing.
 const madeName = `smoke-made-${suffix}`;
-const created = await shell.request({ type: "dirCreate", parent: CORE_HOME, name: madeName });
-if (created.type !== "dirCreateResult" || created.path !== `${CORE_HOME}/${madeName}`) {
-  die(`dirCreate in the home answered ${JSON.stringify(created)}`);
+for (const frame of [
+  { type: "dirCreate", parent: CORE_HOME, name: madeName },
+  { type: "dirList", path: null },
+]) {
+  const refused = await shell.request(frame);
+  if (refused.type !== "error" || refused.message !== `unhandled frame type: ${frame.type}`) {
+    die(`${frame.type} was not refused by name: ${JSON.stringify(refused)}`);
+  }
 }
-const madeOwner = core.exec(["stat", "-c", "%u:%g", `${CORE_HOME}/${madeName}`]).stdout.trim();
-if (madeOwner !== `${CORE_SESSION_USER.uid}:${CORE_SESSION_USER.gid}`) {
-  die(`the folder the picker made is owned by ${madeOwner}, expected core (${CORE_SESSION_USER.uid}:${CORE_SESSION_USER.gid}): it was made by the daemon`);
+if (core.exec(["test", "-e", `${CORE_HOME}/${madeName}`], { allowFailure: true }).status === 0) {
+  die(`the refused dirCreate still made ${CORE_HOME}/${madeName}`);
 }
-const refusedCreate = await shell.request({ type: "dirCreate", parent: "/tmp", name: madeName });
-if (refusedCreate.type !== "error" || !/only creates folders inside its home/.test(refusedCreate.message ?? "")) {
-  die(`dirCreate outside the home was not refused by the helper: ${JSON.stringify(refusedCreate)}`);
-}
-log("the folder picker's new folder is made by core, and refused outside the home");
+log("the retired folder-picker frames are refused by name, and make nothing");
 
 // `actana core exec` is a child of the daemon as well, and it too is `core`.
 const exec = core.exec(["actana", "core", "exec", "--", "cat", "/proc/self/status"], { allowFailure: true });

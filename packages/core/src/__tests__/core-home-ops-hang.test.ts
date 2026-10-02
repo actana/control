@@ -18,7 +18,6 @@ import {
   ensureOrchestrationSkillViaCore,
   ensureStatuslineTapViaCore,
   installHarnessHooksViaCore,
-  listDirectoryViaCore,
   resolveExecCwdViaCore,
   spawnPathFactsViaCore,
   wireLocalCoreViaCore,
@@ -91,7 +90,7 @@ const material = { caCert: "a", clientCert: "b", clientKey: "c", bearerSecret: "
 
 /** Every way the daemon asks the helper for something; each resolves or rejects, never hangs. */
 const callers: Array<[string, () => Promise<unknown>]> = [
-  ["a raw request", () => coreHomeOp({ op: "dirList", path: null })],
+  ["a raw request", () => coreHomeOp({ op: "resolveExecCwd", cwd: null })],
   ["Shift+Enter (boot)", () => ensureClaudeShiftEnterBindingViaCore()],
   ["the skill install (boot and the watcher)", () => ensureOrchestrationSkillViaCore()],
   ["the registry blob (boot)", () => registerSelfWithLocalCli({ material, bindHost: "0.0.0.0", port: 1, label: "c", bearerDays: 1, env: {}, home: "/home/core" })],
@@ -100,7 +99,6 @@ const callers: Array<[string, () => Promise<unknown>]> = [
   ["the hook install", () => installHarnessHooksViaCore("claude-code", "/home/core/w", {})],
   ["the spawn policy's path facts", () => spawnPathFactsViaCore("/home/core/w", ["/home/core/w"])],
   ["core exec's cwd", () => resolveExecCwdViaCore("/home/core/w")],
-  ["the folder picker", () => listDirectoryViaCore(null)],
 ];
 
 describe("a helper that never answers", () => {
@@ -117,13 +115,13 @@ describe("a helper that never answers", () => {
   it("keeps the event loop running while it waits", async () => {
     let ticks = 0;
     const timer = setInterval(() => ticks++, 20);
-    await coreHomeOp({ op: "dirList", path: null }).catch(() => undefined);
+    await coreHomeOp({ op: "resolveExecCwd", cwd: null }).catch(() => undefined);
     clearInterval(timer);
     // A blocking wait would have let almost none of these through.
     expect(ticks).toBeGreaterThan(8);
   });
 
   it("rejects a required request with an error naming the wait", async () => {
-    await expect(coreHomeOp({ op: "dirList", path: null })).rejects.toThrow(`no answer within ${DEADLINE_MS} ms`);
+    await expect(coreHomeOp({ op: "resolveExecCwd", cwd: null })).rejects.toThrow(`no answer within ${DEADLINE_MS} ms`);
   });
 });

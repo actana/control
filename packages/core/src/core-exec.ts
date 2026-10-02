@@ -101,8 +101,8 @@ export function outputTooLargeMessage(limitBytes: number): string {
 // outcome.
 export async function runCoreExec(input: CoreExecInput): Promise<CoreExecOutcome> {
   // Checked by `core`, the user the command will run as (issue 559). Blank means
-  // this Core's home, for the same reason `dirList` starts there: a client has
-  // never seen this machine and cannot compute a sensible default for it.
+  // this Core's home, because a client has never seen this machine and cannot
+  // compute a sensible default for it.
   const cwd = await resolveExecCwdViaCore(input.cwd);
   const limit = input.maxOutputBytes ?? EXEC_MAX_OUTPUT_BYTES;
   const timeoutMs = input.timeoutMs ?? EXEC_TIMEOUT_MS;

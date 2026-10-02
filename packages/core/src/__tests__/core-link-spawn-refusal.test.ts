@@ -243,6 +243,22 @@ describe("a frame that names a project reaches no port, and is refused", () => {
     expect(portCalls).toEqual([]);
   });
 
+  it.each([
+    [{ type: "dirList", reqId: "r3", path: null }],
+    [{ type: "dirCreate", reqId: "r4", parent: "/home/core", name: "atlas" }],
+  ])("answers the folder-picker frame %j as unhandled by name, with its reqId, and emits no Result frame", (frame) => {
+    // #555 removed Projects and with them the folder picker. The pinned SDK codec still parses
+    // these two, so the refusal comes from the dispatch, not from the codec.
+    const ws = ask(frame);
+    expect(ws.answers).toHaveLength(1);
+    expect(JSON.parse(ws.answers[0]!)).toEqual({
+      type: "error",
+      reqId: frame.reqId,
+      message: `unhandled frame type: ${frame.type}`,
+    });
+    expect(portCalls).toEqual([]);
+  });
+
   it("still names the retired frame when it carried no reqId, and names no request", () => {
     const ws = ask({ type: "projectsList" });
     expect(ws.answers).toHaveLength(1);

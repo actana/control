@@ -34,14 +34,14 @@ async function run(input: string | Buffer, env: NodeJS.ProcessEnv = { HOME: home
   return { status, stdout, stderr, answer: stdout.trim() ? JSON.parse(stdout) : null };
 }
 
-const listing = (p: string | null) => JSON.stringify({ op: "dirList", path: p });
+const execCwd = (p: string | null) => JSON.stringify({ op: "resolveExecCwd", cwd: p });
 
 describe("the helper program", () => {
   it("answers a good request with exit 0 and exactly one JSON line", async () => {
-    const r = await run(listing(null));
+    const r = await run(execCwd(null));
     expect(r.status).toBe(0);
     expect(r.stdout.trim().split("\n")).toHaveLength(1);
-    expect(r.answer).toMatchObject({ ok: true, result: { path: home } });
+    expect(r.answer).toMatchObject({ ok: true, result: { cwd: home } });
     expect(r.stderr).toBe("");
   });
 
@@ -84,15 +84,16 @@ describe("the helper program", () => {
   });
 
   it("reports an operation that ran and failed as exit 1, in the operator's words", async () => {
-    const r = await run(listing(path.join(home, "nope")));
+    const r = await run(execCwd(path.join(home, "nope")));
     expect(r.status).toBe(1);
-    expect(r.stderr).toContain("core-home-ops: failed: Folder not found");
-    expect(r.answer).toEqual({ ok: false, code: "failed", message: "Folder not found" });
+    const message = `No such directory on this Core: ${path.join(home, "nope")}`;
+    expect(r.stderr).toContain(`core-home-ops: failed: ${message}`);
+    expect(r.answer).toEqual({ ok: false, code: "failed", message });
   });
 
   it("refuses to start in the daemon's environment, and does no work", async () => {
     for (const name of ["AC_USER_DATA_DIR", "AC_CORE_MATERIAL_FILE", "AC_SECRETS_KEY", "AC_CORE_HOME"]) {
-      const r = await run(listing(null), { HOME: home, [name]: "x" });
+      const r = await run(execCwd(null), { HOME: home, [name]: "x" });
       expect(r.status, name).toBe(2);
       expect(r.stderr, name).toContain(`refusing to run with the daemon's environment (${name})`);
       expect(r.stdout.includes('"ok":true'), name).toBe(false);
@@ -100,19 +101,19 @@ describe("the helper program", () => {
   });
 
   it("lets AC_HOOK_* through: that is what a Session's own hooks read", async () => {
-    const r = await run(listing(null), { HOME: home, AC_HOOK_URL: "http://127.0.0.1:1" });
+    const r = await run(execCwd(null), { HOME: home, AC_HOOK_URL: "http://127.0.0.1:1" });
     expect(r.status).toBe(0);
   });
 
   it.each([["missing", undefined], ["relative", "home"]])("refuses when HOME is %s", async (_n, value) => {
-    const r = await run(listing(null), value === undefined ? {} : { HOME: value });
+    const r = await run(execCwd(null), value === undefined ? {} : { HOME: value });
     expect(r.status).toBe(2);
     expect(r.stderr).toContain("HOME is not an absolute path");
   });
 
   it("confines to its own HOME, not to a root the request names", async () => {
-    const r = await run(listing(outside), { HOME: home });
+    const r = await run(execCwd(outside), { HOME: home });
     expect(r.status).toBe(1);
-    expect(r.stderr).toContain("only lists folders inside its home");
+    expect(r.stderr).toContain("Not inside this Core's home");
   });
 });

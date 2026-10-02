@@ -73,7 +73,7 @@ describe("in the container: one helper process per request, started as core", ()
     inContainer();
     let env: Record<string, string> | undefined;
     await coreHomeOp(
-      { op: "dirList", path: null },
+      { op: "resolveExecCwd", cwd: null },
       {
         exists: setpriv,
         run: async (spec) => {
@@ -95,7 +95,7 @@ describe("in the container: one helper process per request, started as core", ()
   it("refuses to start the helper when setpriv is missing: it would run as the daemon", async () => {
     inContainer();
     const run = vi.fn();
-    await expect(coreHomeOp({ op: "dirList", path: null }, { exists: () => false, run })).rejects.toThrow(/setpriv is not in/);
+    await expect(coreHomeOp({ op: "resolveExecCwd", cwd: null }, { exists: () => false, run })).rejects.toThrow(/setpriv is not in/);
     expect(run).not.toHaveBeenCalled();
   });
 
@@ -123,7 +123,7 @@ describe("outside the container: the same request, handled in this process", () 
 
 describe("what the helper's outcome means", () => {
   it("decodes exit 0 to the result", () => {
-    expect(decodeHelperOutcome("dirList", ok({ a: 1 }))).toEqual({ a: 1 });
+    expect(decodeHelperOutcome("resolveExecCwd", ok({ a: 1 }))).toEqual({ a: 1 });
   });
 
   it("decodes exit 2 to a refusal with the helper's code and message", () => {
@@ -143,7 +143,7 @@ describe("what the helper's outcome means", () => {
 
   it("decodes exit 1 to a failure carrying the operator's sentence", () => {
     const outcome: HelperOutcome = { status: 1, stdout: JSON.stringify({ ok: false, code: "failed", message: "Folder not found" }), stderr: "" };
-    expect(() => decodeHelperOutcome("dirList", outcome)).toThrow(new CoreHomeOpFailedError("Folder not found"));
+    expect(() => decodeHelperOutcome("resolveExecCwd", outcome)).toThrow(new CoreHomeOpFailedError("Folder not found"));
   });
 
   it("names a crash, a signal, a spawn error and unreadable stdout as what they are, with stderr", () => {

@@ -52,7 +52,7 @@ describe("a helper that does not answer", () => {
 
   it("is signalled as core, and the caller gets an error naming the wait", async () => {
     vi.useFakeTimers();
-    const pending = coreHomeOp({ op: "dirList", path: null }, { exists: setpriv, helperPath: "/opt/actana/app/core-home-ops.cjs" });
+    const pending = coreHomeOp({ op: "resolveExecCwd", cwd: null }, { exists: setpriv, helperPath: "/opt/actana/app/core-home-ops.cjs" });
     const outcome = expect(pending).rejects.toThrow(/did not finish: no answer within 15000 ms/);
     await vi.advanceTimersByTimeAsync(15_001);
     await outcome;

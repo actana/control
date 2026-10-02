@@ -48,7 +48,7 @@ const MISSING: CoreLinkHarnessAvailabilityMap = {
   opencode: { status: "missing", reason: "not on PATH", label: "opencode" },
 };
 
-/** An ack, and a `dirList`-shaped fallthrough for anything else. */
+/** An ack, and an error for anything else. */
 function acking(accepted: boolean, message?: string) {
   return (frame: CoreLinkRequestFrame): CoreLinkResponseFrame => {
     if (frame.type === "harnessInstall") {

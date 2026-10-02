@@ -65,7 +65,6 @@ import {
   type CoreLinkSessionLockTransition,
   type CoreLinkHarnessAvailabilityMap,
   type CoreLinkHarnessInstallFailedPayload,
-  type CoreLinkDirListing,
   type CoreLinkEvent,
   type CoreLinkRequestFrame,
   type CoreLinkServerFrame,
@@ -208,22 +207,6 @@ export interface HarnessInstallPort {
 }
 
 /**
- * The Core's own filesystem, as the Panel's folder picker browses it
- * (web-panel issue 06). The Panel runs in a browser and has no disk to offer;
- * a path on the Core's machine is one only this process can resolve. Both
- * methods reject with an operator-readable message, which the server passes
- * through as the `error` frame the picker renders.
- *
- * The real implementation is `directory-browse.ts`; tests inject a fake. When
- * omitted, both frames answer with an `error` saying browsing is unavailable —
- * a PTY-only Core stays a valid Core.
- */
-export interface CoreDirectoryPort {
-  list(requestedPath: string | null | undefined): Promise<CoreLinkDirListing>;
-  create(parent: string, name: string): Promise<string>;
-}
-
-/**
  * What running one command can end as.
  *
  * Three outcomes, not two, and the split is the point:
@@ -254,8 +237,7 @@ export type CoreExecPortResult =
 /**
  * Running one command on this machine, non-interactively (issue 266).
  *
- * Behind a port for the same reason {@link CoreDirectoryPort} is: this class
- * routes frames, and a test that had to spawn a real process to check that
+ * Behind a port because this class routes frames, and a test that had to spawn a real process to check that
  * routing would be testing `node:child_process`. The real implementation is
  * `core-exec.ts`, and it is the only thing in the Core that this frame reaches.
  *
@@ -396,12 +378,6 @@ export type PtyCoreLinkServerOptions = {
    * goes back to plain `missing` rather than waiting forever.
    */
   installPort?: HarnessInstallPort;
-  /**
-   * This machine's filesystem, for the Panel's folder picker (web-panel issue
-   * 06). When omitted, `dirList` / `dirCreate` answer with an `error` frame
-   * saying browsing is unavailable on this Core.
-   */
-  directoryPort?: CoreDirectoryPort;
   /**
    * Runs one command on this machine for the `exec` frame (issue 266). When
    * omitted, `exec` answers with an `error` frame saying so. See
@@ -693,7 +669,6 @@ export class PtyCoreLinkServer {
   private readonly mutationPort: CoreMutationPort | null;
   private readonly availabilityPort: HarnessAvailabilityPort | null;
   private readonly installPort: HarnessInstallPort | null;
-  private readonly directoryPort: CoreDirectoryPort | null;
   private readonly execPort: CoreExecPort | null;
   private readonly sharedPort: CoreSharedPort | null;
   private readonly promptPort: { submitted(sessionId: string, prompt: string): void } | null;
@@ -773,7 +748,6 @@ export class PtyCoreLinkServer {
     this.mutationPort = opts.mutationPort ?? null;
     this.availabilityPort = opts.availabilityPort ?? null;
     this.installPort = opts.installPort ?? null;
-    this.directoryPort = opts.directoryPort ?? null;
     this.execPort = opts.execPort ?? null;
     this.sharedPort = opts.sharedPort ?? null;
     this.promptPort = opts.promptPort ?? null;
@@ -1321,20 +1295,6 @@ export class PtyCoreLinkServer {
       const message = err instanceof Error ? err.message : String(err);
       this.send(ws, { type: "error", reqId: frame.reqId, message });
     }
-  }
-
-  /**
-   * The filesystem port, or `null` after telling the Panel there isn't one.
-   * A Core wired without it is still a valid Core.
-   */
-  private requireDirectoryPort(ws: WebSocketLike, reqId: string): CoreDirectoryPort | null {
-    if (this.directoryPort) return this.directoryPort;
-    this.send(ws, {
-      type: "error",
-      reqId,
-      message: "Folder browsing is unavailable on this Core",
-    });
-    return null;
   }
 
   private requireExecPort(ws: WebSocketLike, reqId: string): CoreExecPort | null {
@@ -1902,24 +1862,6 @@ export class PtyCoreLinkServer {
         this.startHarnessInstall(ws, frame.reqId, frame.harness);
         return;
       }
-      // ─── Folder picker (web-panel issue 06) ───
-      // The Panel is a browser: the machine whose folders matter is this one,
-      // and nothing else can enumerate it. Errors are thrown by the port with
-      // the message the operator should read and travel back as `error`.
-      case "dirList": {
-        const port = this.requireDirectoryPort(ws, frame.reqId);
-        if (!port) return;
-        const listing = await port.list(frame.path);
-        this.send(ws, { type: "dirListResult", reqId: frame.reqId, listing });
-        return;
-      }
-      case "dirCreate": {
-        const port = this.requireDirectoryPort(ws, frame.reqId);
-        if (!port) return;
-        const created = await port.create(frame.parent, frame.name);
-        this.send(ws, { type: "dirCreateResult", reqId: frame.reqId, path: created });
-        return;
-      }
       // ─── One command, non-interactively (issue 266) ───
       // Not a PTY and deliberately not built on one: the caller wants stdout
       // and stderr apart and an exit status it can branch on, and a terminal
@@ -1979,7 +1921,8 @@ export class PtyCoreLinkServer {
     // Exhaustive switch — if a new frame type is added to CoreLinkRequestFrame
     // without a case here, TypeScript flags this unreachable line.
     // A frame the codec accepts and this Core no longer handles — the grouping
-    // frames of a 0.4.x client — is refused by name, with its reqId so the
+    // frames of a 0.4.x client, and the folder picker's `dirList` and `dirCreate`
+    // (#555, which removed Projects and with them the picker) — is refused by name, with its reqId so the
     // caller's request settles instead of timing out (ADR 0041 D1).
     const { type, reqId } = frame as { type: string; reqId?: string };
     this.send(ws, { type: "error", ...(reqId === undefined ? {} : { reqId }), message: `unhandled frame type: ${type}` });
