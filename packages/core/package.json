@@ -12,6 +12,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@actana/cli": "0.6.0-next.9",
     "@actana/sdk": "0.6.0-next.4",
     "@actana/shared": "workspace:*",
     "better-sqlite3": "12.10.0",
