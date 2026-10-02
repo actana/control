@@ -1,6 +1,6 @@
 // The published pairing client, against a real Core (#284).
 //
-// This suite used to live in `packages/sdk`, beside the client it drove. The
+// This suite used to live in the in-repo `packages/sdk` (deleted in #580), beside the client it drove. The
 // client ships from actana/client now, so the half that needs a Core moved here:
 // it is the check that the `@actana/sdk` a Panel or the CLI pairs with and the
 // `@actana/sdk` the Core answers with still agree on the wire.

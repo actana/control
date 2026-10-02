@@ -21,7 +21,7 @@
 // These are internals, not wire types: `packages/shared` is private and stays
 // private ([ADR 0025][adr] D4). The redemption request and response are the
 // SDK's to declare, for the reason written out at the top of
-// `packages/sdk/src/core-registration-blob.ts`.
+// the SDK's `core-registration-blob.ts` (published `@actana/sdk`, actana/client).
 //
 // [adr]: ../../../docs/adr/0025-the-protocol-ships-with-the-client.md
 

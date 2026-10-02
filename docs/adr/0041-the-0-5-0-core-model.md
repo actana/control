@@ -20,6 +20,10 @@
 > **Amended by [#557](https://github.com/actana/control/issues/557)** with D30–D32 ("Landed by #557"), which record what
 > the Files API does; D29 is superseded by D30, and nothing in D1–D28 is changed.
 >
+> **Amended by [#580](https://github.com/actana/control/issues/580) (T-404, 2026-10-02):** D30's alias of
+> `/v1/projects/:id/files[/list]` is removed, and so is the Panel's `/api/cores/:id/projects/:id/files` route. Both are
+> refused as unknown routes (D27): a `404`, with nothing read, listed or written.
+>
 > **Amended 2026-10-01 by [#562](https://github.com/actana/control/issues/562)** with D33 ("Landed by #562"). It
 > **amends D25**: the Shared folder's sync runs as the daemon user `actana`, not as `core`, by the owner's ruling of
 > 2026-10-01 (option A). Nothing else in D1–D32 is changed.
@@ -326,8 +330,8 @@ move in the same folder; nothing is overwritten) all take a path relative to the
 segment and a symlink that leaves the home are refused, on every operation, with the codes the published SDK lists
 (`absolute-path`, `dot-dot-segment`, `outside-project-root`). mTLS and the Bearer check are unchanged. A link is read
 through, but deleted, replaced and moved **as a link**: what it points at is never touched. All writes take the
-Core's one write lease. `/v1/projects/:id/files` and `/v1/projects/:id/files/list` remain as an alias onto the same
-handlers for the published SDK (read, write and list only, the id read by nothing), and go with actana/client#10 part 4.
+Core's one write lease. `/v1/projects/:id/files` and `/v1/projects/:id/files/list` were an alias onto the same
+handlers for the published SDK until #580 (T-404) removed them: they answer `404` like any unknown route (D27).
 
 **D31 — Every Files operation runs as `core`, in a short-lived helper.** The daemon checks the Bearer, the route, the
 method and the write lease, then starts `core-files-op.cjs` through `asCore` (D25) with one request line and the HTTP

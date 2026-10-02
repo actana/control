@@ -60,7 +60,7 @@ would cost a third of the wire.
 This is not a public integration API either. It is reached with the material a
 pairing issued — `CoreConnection.httpsBaseUrl` is the origin, and the same
 client certificate and bearer the core link uses — and the surface a third
-party is meant to type against is `project.files.*` in `@actana/sdk`.
+party is meant to type against is `client.files.*` in `@actana/sdk`.
 
 | Property | Value |
 | --- | --- |
@@ -101,11 +101,9 @@ Delete, create folder and move answer a small JSON document (`{"path", "kind", "
 `409 transfer-in-progress` while an upload runs. Any request that names a path outside the home, or reaches it
 through a symlink, is a `400` and changes nothing.
 
-**The old address is an alias, for now.** `GET`, `HEAD` and `PUT` on `/v1/projects/:projectId/files` and `GET` on
-`/v1/projects/:projectId/files/list` are the published SDK's, which still builds that URL, and the Panel reaches the Core
-through it. They are the same handlers as the routes above, the id names nothing and is not read, and they carry no
-delete, folder or move. The alias goes with actana/client#10 part 4, when the SDK's Files client is re-addressed at
-`/v1/files`.
+**The old address is retired.** `/v1/projects/:projectId/files` and `/v1/projects/:projectId/files/list` are no
+longer served (#580): the published SDK builds `/v1/files`, a Core has no Projects, and a request to the old address is
+refused as an unknown route (`404`, `not-found`, ADR 0041 D27), reading, listing and writing nothing.
 
 `PUT` answers `200` with a chunked `application/x-ndjson` progress stream, one
 line per entry carrying `{path, size, mtime, mode, sha256}` and a `result` of
@@ -253,19 +251,16 @@ A write holds the Core's lease only for as long as the request
 lives. A client that aborts mid-upload — including one whose progress stream has
 backpressured — releases it, and the helper that was doing the write is stopped, so the 409 above is never permanent.
 
-### `project.files.*` — the surface to type against
+### `client.files.*` — the surface to type against
 
 The routes above are the wire. What a third party writes against is
-`@actana/sdk`, where the same three operations are `list`, `upload` and
-`download` on a Project handle. The published SDK still addresses the old
-`/v1/projects/:projectId/files` alias (above), and has no delete, folder or move
-yet; both come with actana/client#10:
+`@actana/sdk`, where the same operations are `list`, `upload`, `download` and
+`remove` on `client.files`, addressed at `/v1/files`:
 
 ```js
-const project = client.project(projectId);
-for await (const entry of project.files.list()) …
-for await (const line of project.files.upload({ path, body })) …
-const { stream } = await project.files.download({ path });
+for await (const entry of client.files.list()) …
+for await (const line of client.files.upload({ path, body })) …
+const { stream } = await client.files.download({ path });
 ```
 
 | Property | Why it is that way |
@@ -283,8 +278,8 @@ The client presents its certificate through an undici `Agent` — `fetch` has no
 satisfies the undici implementation it came from and Node embeds its own copy.
 
 The client's listing URL and the route above are held together by a contract
-test that drives `project.files.list` against the Core's real handler in one
-process, registered in **both** packages' suites
+test that drives the SDK's `client.files.list` against the Core's real handler in one
+process (`files-list-contract.ts`, run by the Core's suite; the SDK half lives in actana/client)
 ([#218](https://github.com/actana/control/issues/218)). They disagreed once —
 the client sent `?list=1` on the read route while the Core served
 `…/files/list` — and every suite stayed green, because each side was checked

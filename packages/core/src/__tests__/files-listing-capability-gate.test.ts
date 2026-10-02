@@ -20,7 +20,7 @@
 // What this file deliberately does not do is stand up an `@actana/sdk`
 // `CoreClient` — the socket rig for one lives in that package's own tests, and
 // both mismatch directions are already covered there (`files-capability.test.ts`
-// in `packages/sdk`). The reader used here is the one that client is built on.
+// in the SDK's own suite, actana/client). The reader used here is the one that client is built on.
 import * as http from "node:http";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { readFilesCapability, type CoreLinkEvent } from "@actana/sdk/core";

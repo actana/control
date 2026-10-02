@@ -1,5 +1,7 @@
 # One version per line: where a version string is written, and what is authoritative
 
+> **Amended 2026-10-02 by [#580](https://github.com/actana/control/issues/580) (T-404):** the `npm-version` surface is gone with the npm publish, and the version set is five manifests, because `packages/sdk` is deleted. D5's npm assertion (`scripts/lib/npm-packages.mjs`) no longer exists; the tag-against-tree assertion in `resolve` (D3) is the content check.
+
 > **Status: PROPOSED.** Not accepted. This record **amends**
 > [ADR 0023](0023-release-trains-and-digest-promotion.md) at **D3** and **D7**,
 > the two clauses [ADR 0036](0036-the-beta-release-channel.md) §G left open for
@@ -101,7 +103,6 @@ and not the other.
 | `train-image-tag` | the image tag `beta-x.y.z` | `ci.yml`'s `train-tags` | the tree, because `train-tags` needs `Train versions` |
 | `release-image-tag` | the image tags `x.y.z`, `x.y.z-beta`, `latest` | `release.yml`, `container-image.yml`, a beta retag | the digest's own version label, asserted before the retag |
 | `image-version-label` | `org.opencontainers.image.version` | `container-image.yml`, from the checkout | the tree the bytes were built from |
-| `npm-version` | the npm version of `@actana/sdk` | `release.yml`'s `npm` | the packed manifest, at `scripts/lib/npm-packages.mjs` |
 | `tarball` | asset filenames, the archive root and `core-manifest.json` | `scripts/lib/core-tarball.mjs`, from `RELEASE_VERSION` | **derived**, and the one row that stays so — see D6 |
 
 **Today four different things were authoritative depending on which job was

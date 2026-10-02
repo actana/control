@@ -14,9 +14,8 @@ Actana Control is two programs that talk over one WebSocket:
 - The **Core** (`packages/core`) — the daemon installed on each machine
   you want to run harnesses on. It owns everything task-shaped: PTYs, SQLite, the
   event log, the project registry.
-- `packages/sdk` — the core-link wire protocol: the frame schema both sides
-  agree on, and the only definition of it in the repository. It lives with the
-  client that speaks it, and the Core imports its frames from here too
+- the SDK is not in this repository: the core-link wire protocol and the Core client are the
+  published `@actana/sdk`, released from actana/client, and the Core and the Panel import its frames
   ([ADR 0025](docs/adr/0025-the-protocol-ships-with-the-client.md)).
 - `packages/cli` — the whole `actana` command: the blob registry that names the
   Cores a machine can reach and the nouns built on the SDK, plus the verbs that
@@ -45,7 +44,6 @@ project's glossary, and reviewers use its terms.
 control/
 ├── packages/
 │   ├── cli/                The whole `actana` command — client and Core manager
-│   │   ├── bin/actana.mjs  what npm links as `actana`
 │   │   └── src/
 │   │       ├── actana-cli.ts       noun dispatch
 │   │       ├── blob-registry.ts    ~/.config/actana/cores/<name>.txt, mode 0600
@@ -69,7 +67,6 @@ control/
 │   │       │   ├── core-link/       the service's link to each Core
 │   │       │   └── controllers/     the `/api/*` surface
 │   │       └── db/         Drizzle schema + client
-│   ├── sdk/                The Core client and the core-link frames it speaks
 │   └── shared/             mutation/query contracts, registration-blob codec
 ├── docs/adr/               Architecture decisions
 ├── designs/                Original HTML+JSX prototype (source of truth)

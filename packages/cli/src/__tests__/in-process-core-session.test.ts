@@ -16,7 +16,7 @@
 //
 // Starting a Session is deliberately not exercised here. A spawn needs a real
 // harness binary on this machine's PATH and a real PTY, which is
-// `packages/sdk`'s `live-session.test.ts` — an opt-in suite against an
+// the opt-in `live-session.test.ts` that the SDK's own suite (actana/client) ran against an
 // operator's own Core. What is provable without one is proved here.
 //
 // **With one exception, added by #395 and narrow on purpose.** That ticket is
