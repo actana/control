@@ -377,6 +377,80 @@ export function parseCoreLinkProtocolVersion(source) {
 }
 
 /**
+ * The versions of `name` that a bundle inlined, read off its source map.
+ *
+ * esbuild writes the path of every input into `sources`, and pnpm puts the version in that path
+ * (`node_modules/.pnpm/@actana+cli@0.6.0-next.10_pg@8.23.0/node_modules/@actana/cli/src/...`), so
+ * the map says which published version the bytes came from without the bundle having to carry a
+ * version string of its own. A package inlined at two versions returns both: that is a bundle no
+ * one pinned.
+ *
+ * @param {string} sourceMapText the `.map` file's text.
+ * @param {string} name a scoped package name, e.g. `@actana/cli`.
+ * @returns {string[]} the distinct versions, sorted; `[]` when nothing of it is inlined.
+ */
+export function inlinedPackageVersions(sourceMapText, name) {
+  const map = JSON.parse(sourceMapText);
+  if (!Array.isArray(map.sources)) throw new Error("not a source map: it has no `sources`");
+  const store = name.replace("/", "+");
+  const pattern = new RegExp(`node_modules/\\.pnpm/${store.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}@([^/_]+)(?:_[^/]*)?/node_modules/`);
+  const versions = new Set();
+  for (const source of map.sources) {
+    const match = pattern.exec(String(source).split("\\").join("/"));
+    if (match) versions.add(match[1]);
+  }
+  return [...versions].sort();
+}
+
+/**
+ * The exact version a manifest pins `name` to, or a refusal.
+ *
+ * Exact means `1.2.3` or `1.2.3-next.4`: a range (`^`, `~`, `>=`, `*`, `latest`, a tag) lets the
+ * lockfile move the bundled bytes without any manifest changing, which is the thing a pinned
+ * bundle exists to rule out.
+ */
+export function pinnedVersion(manifest, name, label = "manifest") {
+  const range = manifest?.dependencies?.[name] ?? manifest?.devDependencies?.[name];
+  if (typeof range !== "string") throw new Error(`${label} does not depend on ${name}`);
+  if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(range)) {
+    throw new Error(`${label} pins ${name} to "${range}", which is not an exact version`);
+  }
+  return range;
+}
+
+/**
+ * Fail unless one package is the same version everywhere it is pinned, installed and inlined.
+ *
+ * @param {{name: string, pins: Record<string,string>, installed: string, inlined: Record<string,string[]>}} facts
+ *   `pins`: manifest label to pinned version. `installed`: the version in `node_modules`.
+ *   `inlined`: bundle label to the versions that bundle's source map names.
+ * @returns {string} the version they all agree on.
+ */
+export function assertPackageVersionAgreement({ name, pins, installed, inlined }) {
+  const wanted = new Set(Object.values(pins));
+  if (wanted.size !== 1) {
+    const rows = Object.entries(pins).map(([label, version]) => `${label}: ${version}`);
+    throw new Error(`${name} is pinned to different versions (${rows.join(", ")}) — one exact version everywhere`);
+  }
+  const [version] = wanted;
+  if (installed !== version) {
+    throw new Error(`${name} is pinned to ${version} but ${installed} is installed — run \`pnpm install --frozen-lockfile\``);
+  }
+  for (const [label, versions] of Object.entries(inlined)) {
+    if (versions.length === 0) {
+      throw new Error(`${label} inlines none of ${name}, which is pinned to ${version}`);
+    }
+    if (versions.length !== 1 || versions[0] !== version) {
+      throw new Error(
+        `${label} inlines ${name}@${versions.join(", ")} but ${version} is pinned — ` +
+          "the bundle was built from different bytes than the manifest names; rebuild it",
+      );
+    }
+  }
+  return version;
+}
+
+/**
  * The `core-manifest.json` written at the tarball root.
  *
  * Deliberately flat and boring: `actana update` and `actana status` read it,

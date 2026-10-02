@@ -976,6 +976,27 @@ if (execState.status === 0 || !/Permission denied/.test(`${execState.stdout}${ex
 }
 log("a `core exec` child is core with no capabilities, and cannot read the state either");
 
+// The tarball's bundled `actana` inside the image (#580 T-405): the client nouns are the pinned,
+// inlined `@actana/cli`, and the image is where an operator meets them. As `core`, against the Core
+// this container runs and registered with itself, the verbs must answer. Offline is proven on the
+// tarball itself (`scripts/smoke-core-tarball.mjs`, with the network refused); here the point is that the
+// same bytes work installed under /opt/actana as the unprivileged user.
+const cliSessions = core.exec(["actana", "session", "ls", "--json"], { allowFailure: true });
+if (cliSessions.status !== 0 || !Array.isArray(JSON.parse(cliSessions.stdout || "null"))) {
+  die(`\`actana session ls --json\` in the image exited ${cliSessions.status}:\n${cliSessions.stdout}${cliSessions.stderr}\n${core.logs()}`);
+}
+for (const verb of [["files", "ls"], ["shared", "ls"], ["harness", "skills", "--json"]]) {
+  const answer = core.exec(["actana", ...verb], { allowFailure: true });
+  if (answer.status !== 0) {
+    die(`\`actana ${verb.join(" ")}\` in the image exited ${answer.status}:\n${answer.stdout}${answer.stderr}\n${core.logs()}`);
+  }
+}
+const cliVersion = core.exec(["actana", "--version"], { allowFailure: true });
+if (cliVersion.status !== 0 || !/core-link protocol \d+\.\d+\.\d+/.test(cliVersion.stdout)) {
+  die(`\`actana --version\` in the image did not state the protocol the tarball's manifest carries: ${cliVersion.stdout}${cliVersion.stderr}`);
+}
+log("the bundled actana answers in the image as core: session ls, files ls, shared ls, harness skills, --version");
+
 // Stop: a Session whose own process ignores HUP and TERM. The daemon is another
 // uid with no CAP_KILL, so the stop is a SIGKILL sent as core (`killAsCore`),
 // 1.5 s after the master is closed. Alive before the stop, gone after it.

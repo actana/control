@@ -21,10 +21,11 @@
 // whose ABI disagrees with the prebuilds, this fails here rather than on an
 // operator's fresh VM.
 //
-// The criterion's "no network fetches" half is not enforced here — sandboxing
-// egress portably across both targets is more machinery than it is worth,
-// and the build is what guarantees it: everything the Core loads is copied
-// into the tarball, and nothing in the boot path fetches.
+// The criterion's "no network fetches" half is enforced for the bundled `actana`
+// (#580 T-405): `scripts/lib/tarball-offline.mjs` runs its verbs against the Core
+// just booted with `scripts/lib/no-network-preload.cjs` refusing every connection
+// that leaves the machine, and fails if one is attempted. The daemon's own boot
+// path is held by the build: everything it loads is copied into the tarball.
 //
 // Usage:
 //   node scripts/smoke-core-tarball.mjs --tarball <file> [--timeout <ms>]
@@ -43,6 +44,7 @@ import * as path from "node:path";
 
 import { parseArgs, stringFlag } from "./lib/cli.mjs";
 import { assertTarballSurfaces } from "./lib/core-tarball.mjs";
+import { assertBundledCliWorksOffline } from "./lib/tarball-offline.mjs";
 import {
   assertBootsAndDials,
   assertRefusesUnsafeEnv,
@@ -205,6 +207,19 @@ async function main() {
 
   await assertBootsAndDials(child, { home: tmpHome, port, timeoutMs, die, log });
 
+  // The bundled `actana` — client nouns from the pinned, inlined `@actana/cli` — against this Core,
+  // with the network taken away.
+  await assertBundledCliWorksOffline({
+    installRoot,
+    env,
+    home: tmpHome,
+    port,
+    manifest,
+    repoRoot: path.resolve(import.meta.dirname, ".."),
+    die,
+    log,
+  });
+
   // The same launcher, the same tree, two environments it must refuse (#348).
   // Run after the good boot and on the same port, so "nothing is listening" is
   // a statement about this refusal rather than about a port that was never
@@ -221,7 +236,7 @@ async function main() {
     log,
   });
 
-  log("OK — extracted tarball boots a dialable Core with no system Node");
+  log("OK — extracted tarball boots a dialable Core with no system Node, and its bundled actana works offline");
   cleanup();
   process.exit(0);
 }
