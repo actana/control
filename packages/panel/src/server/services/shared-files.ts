@@ -1,5 +1,6 @@
 import { CoreSharedError, type CoreShared, type SharedEntry } from "@actana/sdk/shared";
 import { ConflictError, DomainError, NotFoundError, ValidationError } from "../errors";
+import { getStorageConfig } from "./storage";
 import { coreS3Shared, CoreS3Shared, SharedFilesUnavailableError, type CoreS3Deps, type HeldCoreShared } from "./core-s3-shared";
 import {
   baseName,
@@ -56,8 +57,19 @@ export { SharedFilesUnavailableError };
 export type SharedFilesDeps = Partial<CoreS3Deps> & {
   /** The per-Core S3 mode. The Panel's own by default, which the Task watcher shares; a test hands in one over a fake S3. */
   modes?: CoreS3Shared;
-  uploadLimitBytes: number;
+  /** The most one upload may be, read again on every request. The limit stored in Storage settings by default. */
+  uploadLimit: (ownerId: number) => Promise<number>;
 };
+
+/**
+ * The upload limit the owner set in Storage settings (`uploadSizeLimitBytes`), read on each request so a change applies
+ * at once. {@link DEFAULT_UPLOAD_LIMIT_BYTES} when none is stored (storage not set up yet) or the stored value is not a
+ * positive number.
+ */
+export async function storedUploadLimit(ownerId: number): Promise<number> {
+  const stored = (await getStorageConfig(ownerId)).uploadSizeLimitBytes;
+  return stored !== null && Number.isFinite(stored) && stored > 0 ? stored : DEFAULT_UPLOAD_LIMIT_BYTES;
+}
 
 /** A path a browser sent, checked here first. Throws a 400; returns it unchanged when it is good. */
 export function cleanPath(raw: unknown, want: "file" | "folder" | "either" = "either"): string {
@@ -99,17 +111,13 @@ function mapError(err: unknown): never {
 type Held = HeldCoreShared;
 
 export class SharedFiles {
-  private readonly deps: { now: () => number; uploadLimitBytes: number };
+  private readonly deps: { now: () => number; uploadLimit: (ownerId: number) => Promise<number> };
   private readonly modes: CoreS3Shared;
 
   constructor(deps: Partial<SharedFilesDeps> = {}) {
     // A test that hands in its own issuer, S3 or fetch gets a mode of its own; otherwise the Panel's shared one.
     this.modes = deps.modes ?? (deps.issuer || deps.s3 || deps.fetch ? new CoreS3Shared(deps) : coreS3Shared());
-    this.deps = { now: deps.now ?? Date.now, uploadLimitBytes: deps.uploadLimitBytes ?? DEFAULT_UPLOAD_LIMIT_BYTES };
-  }
-
-  get uploadLimitBytes(): number {
-    return this.deps.uploadLimitBytes;
+    this.deps = { now: deps.now ?? Date.now, uploadLimit: deps.uploadLimit ?? storedUploadLimit };
   }
 
   /** The S3 client for this owner's Core, from a live key. Throws when the owner has no such Core or it has no folder. */
@@ -240,7 +248,7 @@ export class SharedFiles {
         usedBytes += c.size ?? 0;
         if ((c.modifiedAt?.getTime() ?? 0) > since) newPaths.push(c.path);
       }
-      return { backend: held.backend, usedBytes, fileCount, newPaths: newPaths.sort(), uploadLimitBytes: this.deps.uploadLimitBytes };
+      return { backend: held.backend, usedBytes, fileCount, newPaths: newPaths.sort(), uploadLimitBytes: await this.deps.uploadLimit(ownerId) };
     });
   }
 
@@ -262,7 +270,7 @@ export class SharedFiles {
    */
   async upload(ownerId: number, coreId: string, rawPath: string, body: ReadableStream<Uint8Array> | null, declaredLength: number | null): Promise<SharedFileEntry> {
     const path = cleanPath(rawPath, "file");
-    const limit = this.deps.uploadLimitBytes;
+    const limit = await this.deps.uploadLimit(ownerId);
     if (declaredLength !== null && declaredLength > limit) {
       await body?.cancel().catch(() => undefined);
       throw new PayloadTooLargeError(limit);
