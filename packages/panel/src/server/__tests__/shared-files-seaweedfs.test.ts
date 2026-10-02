@@ -1,4 +1,4 @@
-// The Panel's Files routes (#565) against a REAL SeaweedFS with real STS keys (CI job `core-shared-seaweedfs`, see
+// The Panel's Files routes (#565), and the Task attachments written through them (#568), against a REAL SeaweedFS with real STS keys (CI job `core-shared-seaweedfs`, see
 // .github/workflows/ci.yml; ADR 0041 D33). Through the real router, with the keys the SDK's issuer asks SeaweedFS for
 // and the role in deploy/seaweedfs/iam.json.tmpl. What the in-memory fake cannot say: a Core's key really is refused on
 // another Core's prefix, the signed download URL really downloads the one object with no other credential, and what the
@@ -231,5 +231,34 @@ describe.skipIf(!configured)("the Panel's Files routes against real SeaweedFS an
     await expect(onB.list("")).rejects.toMatchObject({ code: "forbidden" });
     await expect(onB.rm("only-b.txt")).rejects.toMatchObject({ code: "forbidden" });
     expect(await adminKeys(`${env.prefix}/${b}/`)).toContain(`${env.prefix}/${b}/only-b.txt`);
+  }, 120_000);
+
+  it("writes a Task's attachments under tasks/<id>/attachments/ with real keys, before the Task is assigned, and nothing beside the result files", async () => {
+    const a = await attachedCore();
+    const b = await attachedCore();
+    await testDb.pool.query(
+      "insert into agents (id, owner_id, core_id, name, harness, flags, is_default, created_at, updated_at) values ($1, 1, $2, 'claude-code', 'claude-code', '{}', true, 1, 1)",
+      [`sw-agent-${a}`, a],
+    );
+    const form = new FormData();
+    form.set("json", JSON.stringify({ title: "With files", coreId: a, agent: `sw-agent-${a}`, startNow: true }));
+    const attached = ["brief.md", "success.md", "mock/deep/a.png"];
+    form.set("paths", JSON.stringify(attached));
+    for (const p of attached) form.append("files", new File([`content of ${p}`], p.split("/").pop()!));
+    const res = await call("/api/tasks", { method: "POST", body: form });
+    expect(res.status).toBe(201);
+    const { task } = await json(res);
+    expect(task.status).toBe("assigned");
+
+    // Read back with the bucket's admin identity: exactly the three files, under this Task's attachments folder.
+    const folder = `${env.prefix}/${a}/tasks/${task.id}/`;
+    const keys = (await adminKeys(folder)).filter((k) => !k.endsWith("/")).map((k) => k.slice(folder.length));
+    expect(keys).toEqual(["attachments/brief.md", "attachments/mock/deep/a.png", "attachments/success.md"]);
+    // Nothing straight under the Task's folder, where the dispatcher looks for success.md and its siblings.
+    expect(keys.filter((k) => !k.startsWith("attachments/"))).toEqual([]);
+    // And not one object in the other Core's prefix.
+    expect(await adminKeys(`${env.prefix}/${b}/`)).toEqual([]);
+    const read = await fetch((await json(await call(files(a, "download-url"), { method: "POST", json: { path: `tasks/${task.id}/attachments/brief.md` } }))).url);
+    expect(await read.text()).toBe("content of brief.md");
   }, 120_000);
 });

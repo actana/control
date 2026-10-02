@@ -4,7 +4,9 @@ import { Btn } from "~/components/ui/Btn";
 import { FormErrorBox } from "~/components/ui/FormErrorBox";
 import { Modal } from "~/components/ui/Modal";
 import { MarkdownField } from "~/components/views/MarkdownField";
-import { api } from "~/lib/api";
+import { api, ApiError } from "~/lib/api";
+import { TaskAttachments } from "~/components/views/TaskAttachments";
+import type { TaskAttachment } from "~/lib/task-attachments";
 import { useFleet } from "~/lib/fleet-context";
 import { queryKeys, useCoreAgents } from "~/queries";
 import type { NewTaskRequest } from "~/shared/task-wire";
@@ -39,12 +41,23 @@ function Form({ onClose, initialCoreId, onCreated }: { onClose: () => void; init
   // The Agent is one of the chosen Core's. A pick made on another Core is not it.
   const agent = agents.find((a) => a.id === pickedAgent) ?? agents.find((a) => a.isDefault) ?? agents[0] ?? null;
 
+  const [attachments, setAttachments] = useState<TaskAttachment[]>([]);
+  // An attachment that could not be written leaves the Task a draft (the server never assigns it): it is not created a second time.
+  const [keptDraft, setKeptDraft] = useState<string | null>(null);
+
   const create = useMutation({
-    mutationFn: (body: NewTaskRequest) => api.createTask(body),
+    mutationFn: (body: NewTaskRequest) => api.createTask(body, ...(attachments.length > 0 ? [attachments] : [])),
     onSuccess: async ({ task }) => {
       await queryClient.invalidateQueries({ queryKey: queryKeys.tasks });
       onClose();
       onCreated?.(task.id);
+    },
+    onError: async (err) => {
+      const body = err instanceof ApiError ? (err.body as { taskId?: unknown } | null) : null;
+      if (typeof body?.taskId === "string") {
+        setKeptDraft(body.taskId);
+        await queryClient.invalidateQueries({ queryKey: queryKeys.tasks });
+      }
     },
   });
   const submit = (assign: boolean) =>
@@ -67,10 +80,21 @@ function Form({ onClose, initialCoreId, onCreated }: { onClose: () => void; init
       footer={
         <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", width: "100%" }}>
           <Btn onClick={onClose}>Cancel</Btn>
-          <Btn variant="frame" disabled={!hasTitle || create.isPending} onClick={() => submit(false)}>
+          {keptDraft ? (
+            <Btn
+              variant="primary"
+              onClick={() => {
+                onClose();
+                onCreated?.(keptDraft);
+              }}
+            >
+              Open the draft
+            </Btn>
+          ) : null}
+          <Btn variant="frame" disabled={!hasTitle || create.isPending || !!keptDraft} onClick={() => submit(false)}>
             Save as draft
           </Btn>
-          <Btn variant="primary" disabled={!canAssign || create.isPending} onClick={() => submit(startNow)}>
+          <Btn variant="primary" disabled={!canAssign || create.isPending || !!keptDraft} onClick={() => submit(startNow)}>
             {startNow ? "Create & assign" : "Create"}
           </Btn>
         </div>
@@ -112,6 +136,10 @@ function Form({ onClose, initialCoreId, onCreated }: { onClose: () => void; init
             ))}
           </div>
         </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+          <span style={labelStyle}>Attachments · kept in the Core's Shared folder under tasks/&lt;id&gt;/attachments</span>
+          <TaskAttachments items={attachments} onChange={setAttachments} folder />
+        </div>
         <label style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16, padding: 14, border: "1px solid var(--border)", borderRadius: 8 }}>
           <span>
             <strong>Start as soon as it is created</strong>
@@ -121,12 +149,13 @@ function Form({ onClose, initialCoreId, onCreated }: { onClose: () => void; init
           <input type="checkbox" role="switch" aria-label="Start as soon as it is created" checked={startNow} onChange={(e) => setStartNow(e.target.checked)} />
         </label>
         <FormErrorBox error={create.error ? (create.error instanceof Error ? create.error.message : String(create.error)) : null} />
+        {keptDraft ? <div role="status" style={{ fontSize: 13, color: "var(--text-dim)" }}>The Task was saved as a draft and was not assigned. Open it from the board to try the attachment again.</div> : null}
       </div>
     </Modal>
   );
 }
 
-/** The New Task dialog (screen 06b). Attachments wait on the Files Drive (#565). */
+/** The New Task dialog (screen 06b): with attachments, a file or a whole folder, written before the Task is assigned (#568). */
 export function NewTaskDialog({ open, onClose, initialCoreId, onCreated }: { open: boolean; onClose: () => void; initialCoreId: string | null; onCreated?: (id: string) => void }) {
   return open ? <Form onClose={onClose} initialCoreId={initialCoreId} onCreated={onCreated} /> : null;
 }
