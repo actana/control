@@ -14,7 +14,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { makeCliFixture, healthyProbe, type CliFixture } from "./cli-harness.ts";
 import { EXIT_OK, EXIT_USAGE } from "../exit-codes.ts";
-import { ORCHESTRATION_SKILL_FILES, ORCHESTRATION_SKILL_MARKER } from "../orchestration-skill-payload.ts";
+import { ORCHESTRATION_SKILL_FILES, ORCHESTRATION_SKILL_MARKER } from "@actana/cli";
 
 /**
  * The payload is a folder per skill since #304, and two skills since #303.

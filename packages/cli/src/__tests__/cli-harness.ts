@@ -22,7 +22,7 @@ import type { CoreProbe, CoreProbeFn } from "../core-probe.ts";
 import { nonInteractiveTerminal, type CliTerminal, type TerminalSignal } from "../cli-terminal.ts";
 import { stubMachineHalf, type MachineHalf } from "./machine-fixture.ts";
 import type { OpenCoreShellFn } from "../core-shell-channel.ts";
-import { SessionWriteRefused } from "../session-attach-channel.ts";
+import { SessionWriteRefused } from "@actana/cli";
 import type {
   AttachAuthority,
   OpenSessionAttachFn,

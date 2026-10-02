@@ -8,7 +8,7 @@
 // system), and pins what a script can see: the exit code, the first line of
 // stderr (a prefix of it) and, where the command prints, the first line of stdout.
 //
-// The two rows tagged INTENDED are the additions this ticket is *for*: `files`
+// The rows tagged INTENDED are the additions this ticket is *for*: `files`
 // and `shared` arrive with `runClient`. They are listed apart so the diff that
 // turns them from "unknown command" into a recognised noun is one small hunk.
 // `search` is not part of this release and stays refused exactly as before.
@@ -78,8 +78,15 @@ const SURFACE: Row[] = [
   [["daemon"], "throw", "Error: this test did not expect to start a daemon", ""],
   [["help"], 0, "", "actana — drive AI coding agents across your Cores,"],
   [["bogus"], 2, "actana: unknown command \"bogus\".", ""],
-  [["files"], 2, "actana: unknown command \"files\".", ""],
-  [["shared"], 2, "actana: unknown command \"shared\".", ""],
+  // INTENDED additions (#580): `files` and `shared` arrive with runClient. These rows answered
+  // `unknown command` before the move; everything above and below them did not change.
+  [["files"], 2, "", "actana files — a Core's files"],
+  [["files","ls"], 1, "actana files ls: no Core selected.", ""],
+  [["files","bogus"], 2, "actana files: unknown verb \"bogus\".", ""],
+  [["files","--help"], 0, "", "actana files — a Core's files"],
+  [["shared"], 2, "", "actana shared — a Core's Shared folder"],
+  [["shared","ls"], 1, "actana shared ls: no Core selected.", ""],
+  [["shared","bogus"], 2, "actana shared: unknown verb \"bogus\".", ""],
   [["search"], 2, "actana: unknown command \"search\".", ""],
   [["token","regenerate"], 1, "No Core is installed for this user. Run `actana setup` first", ""],
   [["pair","new"], 1, "No Core is installed for this user. Run `actana setup` first", ""],
@@ -152,13 +159,7 @@ const SURFACE: Row[] = [
 ];
 
 describe("the command surface", () => {
-  // The files and shared nouns are what the ticket adds; everything else is
-  // what it must not change.
-  const PRE_EXISTING = SURFACE.filter(
-    ([argv]) => !(["files", "shared"].includes(argv[0]!) && argv.length === 1),
-  );
-
-  it.each(PRE_EXISTING.map((r) => [r[0].join(" "), r] as const))("%s", async (_name, row) => {
+  it.each(SURFACE.map((r) => [r[0].join(" "), r] as const))("%s", async (_name, row) => {
     const [argv, code, errPrefix, outPrefix] = row;
     const got = await run(argv);
     expect(got.code).toBe(code);
@@ -180,11 +181,11 @@ describe("the command surface", () => {
 });
 
 describe("INTENDED: the nouns runClient adds", () => {
-  it("does not know `files` or `shared` yet", async () => {
-    for (const noun of ["files", "shared"]) {
-      const got = await run([noun]);
-      expect(got.code, noun).toBe(2);
-      expect(got.err, noun).toContain(`actana: unknown command "${noun}".`);
-    }
+  it("lists files and shared in `actana --help`, and still not search", async () => {
+    const got = await run(["--help"]);
+    expect(got.code).toBe(0);
+    expect(got.out).toMatch(/^ {2}files {6}ls, get, put, rm/m);
+    expect(got.out).toMatch(/^ {2}shared {5}ls, get, put, rm, mkdir, watch/m);
+    expect(got.out).not.toMatch(/^ {2}search\b/m);
   });
 });

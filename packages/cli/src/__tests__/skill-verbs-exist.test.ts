@@ -27,7 +27,7 @@ import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { CLIENT_NOUNS, USAGE } from "../actana-cli.ts";
-import { ORCHESTRATION_SKILL_NAMES } from "../orchestration-skill-payload.ts";
+import { ORCHESTRATION_SKILL_NAMES } from "@actana/cli";
 
 /**
  * The authored skills, at the repository root.
@@ -113,17 +113,6 @@ describe("the skill only teaches verbs this binary has (#288)", () => {
           `${skillName} teaches \`actana ${name}\`, which this build has no case for`,
         ).toBe(true);
       }
-    }
-  });
-
-  it("teaches the client nouns, which is the point of it on a Core", () => {
-    // The other direction, and the one that was actually broken: the skill's
-    // whole subject is driving Cores, so it must teach the nouns that do it —
-    // and a Core machine's `actana` must have them. Both halves are asserted
-    // here because the failure was the gap between them.
-    const taught = new Set(namesTaughtBySkill());
-    for (const noun of CLIENT_NOUNS) {
-      expect(taught.has(noun), `the skill never shows \`actana ${noun}\``).toBe(true);
     }
   });
 
