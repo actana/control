@@ -23,7 +23,6 @@ import * as authController from "./controllers/auth.controller";
 import * as apiKeysController from "./controllers/api-keys.controller";
 import * as coresController from "./controllers/cores.controller";
 import * as storageController from "./controllers/storage.controller";
-import * as coreFilesController from "./controllers/core-files.controller";
 import * as sharedFilesController from "./controllers/shared-files.controller";
 import * as updateCheckController from "./controllers/update-check.controller";
 import * as tasksController from "./controllers/tasks.controller";
@@ -43,12 +42,6 @@ const API_KEY_REVOKE_PATH = /^\/api\/api-keys\/([^/]+)\/revoke$/;
 const WEBHOOK_PATH = /^\/api\/webhooks\/([^/]+)$/;
 const WEBHOOK_PING_PATH = /^\/api\/webhooks\/([^/]+)\/ping$/;
 const WEBHOOK_DELIVERIES_PATH = /^\/api\/webhooks\/([^/]+)\/deliveries$/;
-// A Core's files, addressed by both ids: the SDK's Files client still builds its
-// requests as `/v1/projects/:id/files`, which a Core answers as an alias of the
-// workspace's files (issue 557), so the Panel's proxy takes the same shape.
-// `files/list` is matched before `files` so the leaf is never read as a path — the same order, and the same reason, as on the Core (#216).
-const CORE_PROJECT_FILES_LIST_PATH = /^\/api\/cores\/([^/]+)\/projects\/([^/]+)\/files\/list$/;
-const CORE_PROJECT_FILES_PATH = /^\/api\/cores\/([^/]+)\/projects\/([^/]+)\/files$/;
 // Literal path — checked before SESSION_PATH so the id patterns never see it.
 const SESSION_SWEEP_DISCONNECTED_PATH = "/api/sessions/sweep-disconnected";
 const TASK_PATH = /^\/api\/tasks\/([^/]+)$/;
@@ -333,21 +326,6 @@ async function dispatch(
   if (pathname === "/api/cores/pairing" && method === "POST") {
     return coresController.pair(request);
   }
-  // A Core's files, on the Core that owns them (#129 F6/F11, #169). The
-  // Panel is a dumb pipe here: these three lines resolve a Core and forward a
-  // stream, and every decision about what a path means is the Core's.
-  m = pathname.match(CORE_PROJECT_FILES_LIST_PATH);
-  if (m) {
-    if (method === "GET") return coreFilesController.list(decode(m[1]), decode(m[2]), url);
-  }
-  m = pathname.match(CORE_PROJECT_FILES_PATH);
-  if (m) {
-    const coreId = decode(m[1]);
-    const projectId = decode(m[2]);
-    if (method === "GET") return coreFilesController.read(coreId, projectId, url);
-    if (method === "PUT") return coreFilesController.write(coreId, projectId, url, request);
-  }
-
   // Tasks (#571). Every route runs as the session's owner, and the Tasks and
   // Agents services apply the status rules; nothing here moves a status itself.
   // A Panel session belongs to the one Operator today (ADR 0011), so that is the owner.

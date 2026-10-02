@@ -1,4 +1,4 @@
-// `GET /v1/projects/:projectId/files/list` over a real HTTP server (#166 F7).
+// `GET /v1/files/list` over a real HTTP server (#166 F7; addressed `/v1/files` since #557).
 //
 // Plain `http` here rather than `https`, for the same reason
 // `core-files-routes.test.ts` uses it: this suite is about the route, and the

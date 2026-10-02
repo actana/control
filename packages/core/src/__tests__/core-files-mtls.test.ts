@@ -241,6 +241,26 @@ describe("the file routes and the core link share one mTLS server", () => {
     expect(JSON.parse(res.body.toString("utf8")).code).toBe("unauthorized");
   }, 30_000);
 
+  // ADR 0041 D27: a Core refuses what it no longer takes. The Project address of the Files API was
+  // an alias for the published SDK until #580 T-404; the SDK builds `/v1/files`, so it is retired.
+  it("refuses the retired /v1/projects/:id/files address with 404 not-found, and writes nothing", async () => {
+    const rig = await startCore({ "a.txt": "hello" });
+
+    const read = await request(rig, "GET", "/v1/projects/p1/files?path=a.txt");
+    const list = await request(rig, "GET", "/v1/projects/p1/files/list?path=");
+    const write = await request(rig, "PUT", "/v1/projects/p1/files?path=new.txt", {
+      body: Buffer.from("through the old address"),
+      headers: { "content-type": "text/plain" },
+    });
+
+    for (const res of [read, list, write]) {
+      expect(res.status).toBe(404);
+      expect(JSON.parse(res.body.toString("utf8")).code).toBe("not-found");
+      expect(res.body.toString("utf8")).not.toContain("hello");
+    }
+    expect(fs.existsSync(path.join(rig.projectRoot, "new.txt"))).toBe(false);
+  }, 30_000);
+
   it("404s a path outside the file surface rather than leaving the request hanging", async () => {
     const rig = await startCore();
     const res = await request(rig, "GET", "/healthz");
