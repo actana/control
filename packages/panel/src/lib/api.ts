@@ -35,6 +35,7 @@ import type {
   TaskCommentDto,
   TaskDto,
 } from "~/shared/task-wire";
+import type { ApiKeyView, WebhookDeliveryView, WebhookView } from "~/shared/api-integrations-wire";
 
 export type AppSettings = {
   agentSystemBannerDisabled: boolean;
@@ -434,6 +435,31 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body),
     }),
+
+  /** Settings › API & integrations: the Operator's API keys (no plaintext). */
+  listApiKeys: () => req<{ apiKeys: ApiKeyView[] }>("/api/api-keys"),
+  /** Create a key; the plaintext `key` is returned once and never again. */
+  createApiKey: (body: { name: string; coreIds?: string[] | null }) =>
+    req<{ apiKey: ApiKeyView; key: string }>("/api/api-keys", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  revokeApiKey: (id: string) =>
+    req<{ apiKey: ApiKeyView }>(`/api/api-keys/${encodeURIComponent(id)}/revoke`, { method: "POST" }),
+
+  /** Settings › API & integrations: webhooks with each row's newest delivery. */
+  listWebhooks: () => req<{ webhooks: WebhookView[] }>("/api/webhooks"),
+  createWebhook: (body: { url: string; events: string[]; coreIds?: string[] | null }) =>
+    req<{ webhook: WebhookView; secret: string }>("/api/webhooks", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  deleteWebhook: (id: string) =>
+    req<void>(`/api/webhooks/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  pingWebhook: (id: string) =>
+    req<{ outboxId: string }>(`/api/webhooks/${encodeURIComponent(id)}/ping`, { method: "POST" }),
+  listWebhookDeliveries: (id: string) =>
+    req<{ deliveries: WebhookDeliveryView[] }>(`/api/webhooks/${encodeURIComponent(id)}/deliveries`),
 };
 
 export type AuthStateResponse = {

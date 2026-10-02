@@ -3,6 +3,10 @@ import { differenceInSeconds, formatDistance } from "date-fns";
 /**
  * Relative time like "3 minutes ago". Pass `baseDate` when labels must stay
  * stable across re-renders (e.g. search result timestamps).
+ *
+ * Future timestamps (clock skew of a few seconds) read as "just now". Callers
+ * that need a real future label (e.g. webhook retry due) must format that
+ * themselves — see ApiSettingsPage's retry branch.
  */
 export function formatRelativeTime(
   timestampMs: number,
