@@ -210,12 +210,16 @@ describe("Dockerfile", () => {
     expect(smoke).not.toContain("sqlite_master");
   });
 
-  it("has the smoke prove better-sqlite3 is out of the image and node:sqlite loads quietly", () => {
+  it("has the smoke say only what it proves: better-sqlite3 is not resolvable from the Panel, and node:sqlite loads", () => {
     const smoke = readRepoFile("scripts/smoke-panel-image.mjs");
     expect(smoke).toContain('require.resolve("better-sqlite3")');
     expect(smoke).toContain('require("node:sqlite")');
     expect(smoke).toContain("the Panel's logs carry an experimental-feature warning");
     expect(smoke).not.toContain("still loads");
+    // The log must not claim the image is clean: the Core's copy can remain.
+    expect(smoke).not.toContain("is not in the Panel image");
+    expect(smoke).not.toContain("is gone from the image");
+    expect(smoke).toContain("not resolvable from the Panel");
   });
 
   it("installs the pinned pnpm from package.json's packageManager field", () => {
