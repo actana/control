@@ -23,6 +23,7 @@ const { registerCoreFromCredential } = await import("../services/cores");
 const { saveStorageConfig, storageKeyIssuer } = await import("../services/storage");
 const { SharedFolders, describeSharedFolder } = await import("../services/shared-folders");
 const { findSharedFolder } = await import("../repositories/core-shared-folders.repo");
+const { getCore } = await import("../services/cores");
 
 const BUCKET = "actana-shared";
 const PREFIX = "cores";
@@ -51,9 +52,20 @@ async function rig(opts: { leaky?: boolean } = {}) {
   const link = new FakeCoreLink();
   const logs: string[] = [];
   const online = { value: true };
+  const machine: {
+    calls: Array<{ coreId: string; registered: boolean; frames: string[] }>;
+    result: { state: "emptied"; removed: number } | { state: "kept"; reason: string; removed: number };
+    throws: string | null;
+  } = { calls: [], result: { state: "emptied", removed: 2 }, throws: null };
   const service = new SharedFolders({
     link: () => (online.value ? link : null),
-    isConnected: () => true,
+    isConnected: () => online.value,
+    emptyMachineFolder: async (id) => {
+      // Recorded with whether the Core was still registered: its credentials go with its row.
+      machine.calls.push({ coreId: id, registered: (await getCore(id)) !== null, frames: link.frames.map((f) => f.type) });
+      if (machine.throws) throw new Error(machine.throws);
+      return machine.result;
+    },
     issuer: (ownerId) => storageKeyIssuer(ownerId, { fetch: sts.fetch, now: clock.now }),
     now: clock.now,
     setTimer: clock.setTimer,
@@ -63,7 +75,7 @@ async function rig(opts: { leaky?: boolean } = {}) {
     log: (m) => logs.push(m),
     fetch: s3.fetch,
   });
-  return { clock, s3, sts, link, logs, service, online };
+  return { clock, s3, sts, link, logs, service, online, machine };
 }
 
 beforeEach(async () => {
@@ -368,9 +380,10 @@ describe("the key expiry the row records", () => {
     expect(recorded).toBe(new Date(r.link.key!.expiresAt).getTime());
     expect((await findSharedFolder(1, coreId))?.state).toBe("error");
 
-    // Unreachable now, and past the key the Panel had confirmed but before the one the Core holds: not "run out".
-    r.online.value = false;
+    // Past the key the Panel had confirmed but before the one the Core holds: not "run out". The Core is connected and
+    // does not answer the detach, so it may still be syncing.
     await r.clock.advance(20 * MINUTE);
+    r.link.failures = 1;
     expect(r.clock.now()).toBeGreaterThan(first);
     await expect(r.service.deleteCore(coreId, `${PREFIX}/${coreId}/`)).rejects.toMatchObject({ code: "still-attached" });
     expect(r.s3.text(`${PREFIX}/${coreId}/a.txt`)).toBe("a");
@@ -453,11 +466,41 @@ describe("delete waits for the Core to let go of S3", () => {
     await refused(r, coreId);
   });
 
-  it("keeps the prefix when the Core is not connected and its key has not run out", async () => {
+  it("keeps everything when the Core is not connected and its key is live: its own sync would mirror the purge", async () => {
     const r = await rig();
     const coreId = await attachedWithFiles(r);
     r.online.value = false;
     await refused(r, coreId);
+    expect(r.machine.calls).toEqual([]);
+  });
+
+  it("finishes on the Panel once the key has run out, and says the machine's folder was kept and why", async () => {
+    const r = await rig();
+    const coreId = await attachedWithFiles(r);
+    r.online.value = false;
+    await r.clock.advance(61 * MINUTE);
+    await settle();
+    const result = await r.service.deleteCore(coreId, `${PREFIX}/${coreId}/`);
+    expect(result).toMatchObject({ prefix: `${PREFIX}/${coreId}/`, machineFolder: { state: "kept", removed: 0 } });
+    expect(result.machineFolder.state === "kept" && result.machineFolder.reason).toMatch(/could not be reached.*key has run out/);
+    expect(r.machine.calls).toEqual([]);
+    expect(await getCore(coreId)).toBeNull();
+    expect([...r.s3.objects.keys()]).toEqual([]);
+    expect(r.logs.some((m) => m.includes("~/shared on the machine was kept"))).toBe(true);
+  });
+
+  it("names a refusal accurately for a connected Core whose key has run out", async () => {
+    const r = await rig();
+    const coreId = await attachedWithFiles(r);
+    // Its key runs out while the link is down; it is then back, and refuses the detach for the expired key.
+    r.online.value = false;
+    await r.clock.advance(61 * MINUTE);
+    await settle();
+    r.online.value = true;
+    r.link.answer = { state: "error", code: "mount-failed", message: "the key has expired" };
+    const result = await r.service.deleteCore(coreId, `${PREFIX}/${coreId}/`);
+    expect(result.machineFolder.state === "kept" && result.machineFolder.reason).toMatch(/did not let go of S3 \(mount-failed: the key has expired\), and its key has run out/);
+    expect(r.machine.calls).toEqual([]);
   });
 
   it("empties the prefix once the key the Core holds has run out, even though it cannot be reached", async () => {
@@ -478,5 +521,92 @@ describe("delete waits for the Core to let go of S3", () => {
     await r.service.deleteCore(coreId, `${PREFIX}/${coreId}/`);
     expect(r.link.ofType("sharedDetach")).toHaveLength(1);
     expect([...r.s3.objects.keys()]).toEqual([]);
+  });
+});
+
+describe("delete empties the machine's Shared folder (ADR 0041 D12, D38)", () => {
+  async function attached(r: Awaited<ReturnType<typeof rig>>) {
+    const coreId = await pairedCore();
+    await r.service.finishPairing(coreId);
+    r.s3.seed(`${PREFIX}/${coreId}/a.txt`, "a");
+    return coreId;
+  }
+
+  it("asks the Core to detach, then empties its folder while the Core is still registered, then S3", async () => {
+    const r = await rig();
+    const coreId = await attached(r);
+    const result = await r.service.deleteCore(coreId, `${PREFIX}/${coreId}/`);
+    expect(result).toEqual({ prefix: `${PREFIX}/${coreId}/`, removed: 1, machineFolder: { state: "emptied", removed: 2 } });
+    // One call, for this Core, after the detach, before its credentials went with the row.
+    expect(r.machine.calls).toEqual([{ coreId, registered: true, frames: ["sharedAttach", "sharedDetach"] }]);
+    expect(await getCore(coreId)).toBeNull();
+    expect([...r.s3.objects.keys()]).toEqual([]);
+  });
+
+  it("does it for a Core whose folder was never attached (a pending pairing)", async () => {
+    const r = await rig();
+    const coreId = await pairedCore();
+    const result = await r.service.deleteCore(coreId, coreId);
+    expect(result.machineFolder).toEqual({ state: "emptied", removed: 2 });
+    expect(r.machine.calls).toHaveLength(1);
+  });
+
+  it("is not done by unpair: the machine keeps ~/shared and its contents", async () => {
+    const r = await rig();
+    const coreId = await attached(r);
+    expect(await r.service.detach(coreId)).toEqual({ detached: true });
+    expect(r.machine.calls).toEqual([]);
+  });
+
+  it("is not asked of a Core that refused the detach: nothing is removed and the machine is untouched", async () => {
+    const r = await rig();
+    const coreId = await attached(r);
+    r.link.answer = { state: "error", code: "mount-failed", message: "could not copy S3 into the folder" };
+    await expect(r.service.deleteCore(coreId, `${PREFIX}/${coreId}/`)).rejects.toMatchObject({ code: "still-attached" });
+    expect(r.machine.calls).toEqual([]);
+    expect(await getCore(coreId)).not.toBeNull();
+  });
+
+  it("is not asked of a Core whose link dropped after the detach, and the delete still finishes", async () => {
+    const r = await rig();
+    const coreId = await attached(r);
+    // Answered the detach, then the link went away before the Files request.
+    const original = r.link.request;
+    r.link.request = async (frame) => {
+      const answer = await original(frame);
+      if (frame.type === "sharedDetach") r.online.value = false;
+      return answer;
+    };
+    const result = await r.service.deleteCore(coreId, `${PREFIX}/${coreId}/`);
+    expect(result.machineFolder).toEqual({ state: "kept", reason: "the Core is not connected", removed: 0 });
+    expect(r.machine.calls).toEqual([]);
+    expect(await getCore(coreId)).toBeNull();
+  });
+
+  it("finishes and reports what stayed when the folder could not be emptied", async () => {
+    const r = await rig();
+    const coreId = await attached(r);
+    r.machine.result = { state: "kept", reason: "~/shared on the machine is a symlink, not a folder, so it was left alone", removed: 0 };
+    const result = await r.service.deleteCore(coreId, `${PREFIX}/${coreId}/`);
+    expect(result.machineFolder).toMatchObject({ state: "kept", removed: 0 });
+    expect(await getCore(coreId)).toBeNull();
+    expect([...r.s3.objects.keys()]).toEqual([]);
+  });
+
+  it("finishes when asking the Core's Files API throws", async () => {
+    const r = await rig();
+    const coreId = await attached(r);
+    r.machine.throws = "socket hang up";
+    const result = await r.service.deleteCore(coreId, `${PREFIX}/${coreId}/`);
+    expect(result.machineFolder).toEqual({ state: "kept", reason: "socket hang up", removed: 0 });
+    expect(await getCore(coreId)).toBeNull();
+  });
+
+  it("still needs the typed prefix: nothing is touched on a wrong confirmation", async () => {
+    const r = await rig();
+    const coreId = await attached(r);
+    await expect(r.service.deleteCore(coreId, "nope")).rejects.toMatchObject({ code: "confirmation" });
+    expect(r.machine.calls).toEqual([]);
+    expect(r.link.ofType("sharedDetach")).toHaveLength(0);
   });
 });

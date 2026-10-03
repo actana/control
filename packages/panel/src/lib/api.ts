@@ -282,9 +282,16 @@ export const api = {
       method: "POST",
       body: JSON.stringify({}),
     }),
-  /** Delete the Core and empty its S3 prefix; `confirmPrefix` must be exactly the prefix. */
+  /**
+   * Delete the Core, empty its S3 prefix and empty `~/shared` on its machine; `confirmPrefix` must be exactly the prefix.
+   * `machineFolder.state` is `kept` when the Core was not connected: it is still deleted on the Panel.
+   */
   deleteCoreWithStorage: (coreId: string, confirmPrefix: string) =>
-    req<{ prefix: string | null; removed: number }>(`/api/cores/${encodeURIComponent(coreId)}/delete`, {
+    req<{
+      prefix: string | null;
+      removed: number;
+      machineFolder?: { state: "emptied"; removed: number } | { state: "kept"; reason: string; removed: number };
+    }>(`/api/cores/${encodeURIComponent(coreId)}/delete`, {
       method: "POST",
       body: JSON.stringify({ confirmPrefix }),
     }),

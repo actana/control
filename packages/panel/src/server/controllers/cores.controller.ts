@@ -197,7 +197,7 @@ export async function remove(id: string): Promise<Response> {
 }
 
 /**
- * Delete a Core and its Shared folder (#564): the Core row, then its S3 prefix. Only after a confirmation that is
+ * Delete a Core and its Shared folder (#564): empty `~/shared` on the machine (while the Core is connected), the Core row, then its S3 prefix. Only after a confirmation that is
  * exactly the prefix (`sharedFolder.prefix` on the Core, `<prefix>/<core id>/`); anything else is a 409 and nothing is removed.
  */
 export async function destroy(id: string, request: Request): Promise<Response> {

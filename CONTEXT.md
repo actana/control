@@ -63,7 +63,7 @@ A unit of harness work on a Core — a run of opencode/claude/… in the workspa
 _Avoid_: task, run, job, conversation, thread
 
 **Shared folder** (Core-scoped):
-`~/shared`. Always exists. Without S3 it is a local folder; with a Panel it is mounted from S3 using short-lived keys, one folder per Core. All Reports and communication go through it. Deleting a Core removes the Core, its Shared folder and its S3 folder; unpairing from a Panel removes only the S3 link, and `~/shared` stays with its contents. See ADR 0041.
+`~/shared`. Always exists. Without S3 it is a local folder; with a Panel it is mounted from S3 using short-lived keys, one folder per Core. All Reports and communication go through it. Deleting a Core removes the Core, its S3 folder and, while the Core is connected, the contents of `~/shared` on the machine; unpairing from a Panel removes only the S3 link, and `~/shared` stays with its contents. See ADR 0041.
 
 **Task** (Panel-scoped):
 The work item that lives on the Panel (Postgres), with its comments. Not a Session. Tasks, comments, Agents, the REST API, MCP, API keys and webhooks all live in the Panel, which uses only the public SDK, so another controller (e.g. Studio) can do the same.

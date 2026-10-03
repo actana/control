@@ -17,7 +17,11 @@ import {
   type CoreSharedFolderRow,
 } from "../repositories/core-shared-folders.repo";
 import { coreLinkManager, type CoreLinkClientLike } from "./core-link-manager";
-import { getCore, listCores, removeCore } from "./cores";
+import { getCore, getCoreSecrets, listCores, removeCore } from "./cores";
+import { emptyMachineFolder, type MachineFolderResult } from "./core-machine-folder";
+import { createCoreFilesFetch } from "@actana/sdk/core";
+import { httpsBaseUrlFor } from "@actana/sdk/pairing";
+import { filesFetchFor } from "./core-files-proxy";
 import { OPERATOR_ID } from "./operator";
 import type { CoreSharedFolder } from "~/shared/cores";
 import type { SharedConnectionResult, StorageCoreFolderView } from "~/shared/storage-wire";
@@ -46,6 +50,8 @@ export type SharedFolderDeps = {
   isConnected: (coreId: string) => boolean;
   issuer: (ownerId: number) => Promise<{ issuer: SharedKeyIssuer; target: StorageTarget }>;
   s3: (opts: { target: StorageTarget; folder: string; key: SharedKey; fetch?: typeof fetch }) => CoreShared;
+  /** Empty `~/shared` on the Core's machine through its Files API. Only called while the Core's link is up. */
+  emptyMachineFolder: (coreId: string, ownerId: number) => Promise<MachineFolderResult>;
   now: () => number;
   setTimer: (fn: () => void, ms: number) => Timer;
   clearTimer: (t: Timer) => void;
@@ -77,6 +83,9 @@ export class SharedFolderError extends ConflictError {
 
 export type { SharedConnectionResult } from "~/shared/storage-wire";
 
+/** What a delete did. `machineFolder.state` is `kept` when the Core was not reachable (or `~/shared` could not be emptied). */
+export type DeleteCoreResult = { prefix: string | null; removed: number; machineFolder: MachineFolderResult };
+
 const RETRY_DELAYS_MS = [5_000, 15_000, 60_000, 300_000] as const;
 const REQUEST_TIMEOUT_MS = 15_000;
 const MAX_DELETE_PASSES = 100;
@@ -95,6 +104,18 @@ function defaultDeps(): SharedFolderDeps {
         credentials: { get: async () => key },
         ...(fetch ? { fetch } : {}),
       }),
+    emptyMachineFolder: async (coreId, ownerId) => {
+      const core = await getCore(coreId, ownerId);
+      const secrets = core ? await getCoreSecrets(coreId, ownerId) : null;
+      if (!core || !secrets?.bearer) {
+        return { state: "kept", reason: "the Core's stored credentials could not be read", removed: 0 };
+      }
+      return emptyMachineFolder({
+        baseUrl: httpsBaseUrlFor(core.endpoint),
+        bearer: secrets.bearer,
+        fetch: filesFetchFor(coreId, secrets, createCoreFilesFetch),
+      });
+    },
     now: Date.now,
     setTimer: (fn, ms) => setTimeout(fn, ms),
     clearTimer: (t) => clearTimeout(t),
@@ -439,23 +460,24 @@ export class SharedFolders {
    */
   async detach(coreId: string): Promise<{ detached: boolean; error?: string }> {
     this.cancel(coreId);
-    return this.sendDetach(coreId);
+    const { detached, error } = await this.sendDetach(coreId);
+    return error === undefined ? { detached } : { detached, error };
   }
 
   /** The `sharedDetach` request alone: the refresh timer is left running, for a caller that may not go on. */
-  private async sendDetach(coreId: string): Promise<{ detached: boolean; error?: string }> {
+  private async sendDetach(coreId: string): Promise<{ detached: boolean; error?: string; reached?: boolean }> {
     const link = this.deps.link(coreId);
-    if (!link) return { detached: false, error: "the Core is not connected; its key ends within the hour" };
-    if (link.sharedCapability && link.sharedCapability() === null) return { detached: true };
+    if (!link) return { detached: false, error: "the Core is not connected; its key ends within the hour", reached: false };
+    if (link.sharedCapability && link.sharedCapability() === null) return { detached: true, reached: true };
     try {
       const status = statusOf(
         await link.request({ type: "sharedDetach", reqId: `panel-shared-${randomBytes(6).toString("hex")}`, keepLocalCopy: true }, this.deps.requestTimeoutMs),
       );
-      if (status.state === "detached") return { detached: true };
-      if (status.state === "error" && status.code === "not-attached") return { detached: true };
-      return { detached: false, error: status.state === "error" ? `${status.code}: ${status.message}` : status.state };
+      if (status.state === "detached") return { detached: true, reached: true };
+      if (status.state === "error" && status.code === "not-attached") return { detached: true, reached: true };
+      return { detached: false, error: status.state === "error" ? `${status.code}: ${status.message}` : status.state, reached: true };
     } catch (err) {
-      return { detached: false, error: err instanceof Error ? err.message : "the detach request failed" };
+      return { detached: false, error: err instanceof Error ? err.message : "the detach request failed", reached: true };
     }
   }
 
@@ -467,33 +489,59 @@ export class SharedFolders {
   }
 
   /**
-   * Delete a Core: after a confirmation that is exactly its prefix, and once the Core has let go of S3, remove the
-   * Core row, then empty its S3 prefix with a key issued for that Core. The key is limited to `<prefix>/<core id>/` by the role, and the SDK's
+   * Delete a Core: after a confirmation that is exactly its prefix, remove the Core row, empty `~/shared` on its machine
+   * and empty its S3 prefix with a key issued for that Core. The key is limited to `<prefix>/<core id>/` by the role, and the SDK's
    * S3 mode cannot leave the prefix it was made with, so no other Core's folder is touched. A prefix that could
    * not be emptied is an error that names it (the Core is already gone from the registry).
+   *
+   * **The machine's folder (ADR 0041 D12, D38)** is emptied only while the Core's link is up and the Core has let go of S3
+   * (answered `detached` or `not-attached`), through its Files API: its children only, never through a link. A Core that is
+   * not connected does not stop the delete: it finishes on the Panel and the answer says `machineFolder.state` is `kept`,
+   * with the reason, for the screen to state. Unpair never calls this: it keeps the machine copy.
    */
-  async deleteCore(coreId: string, confirmation: string, ownerId = OPERATOR_ID): Promise<{ prefix: string | null; removed: number }> {
+  async deleteCore(coreId: string, confirmation: string, ownerId = OPERATOR_ID): Promise<DeleteCoreResult> {
     const expected = await this.deleteConfirmation(coreId, ownerId);
     if (confirmation !== expected) {
       throw new SharedFolderError(`Type the prefix ${expected} exactly to delete this Core and its Shared folder.`, "confirmation");
     }
     const row = await findSharedFolder(ownerId, coreId);
     const folder = row?.s3Prefix ?? "";
-    // The machine keeps its own `~/shared` only if it has let go of S3 before the prefix is emptied: a Core still
-    // syncing sees every file it had uploaded as gone there and deletes it here. So the prefix is touched only once
-    // the Core answered `detached` (or `not-attached`), or the key it holds has run out and it cannot sync.
+    // The Core must stop syncing before anything is emptied: a Core that holds a live key syncs every 15 seconds with or
+    // without the Panel, and would mirror the emptied prefix into ~/shared (or upload into it again, with no row left to
+    // clean it). So a Core that did not let go (unreachable, silent or refused) while its key is live is a 409 and nothing
+    // is touched. Once its key has run out it cannot sync, and the delete finishes on the Panel with the machine copy kept.
     const letGo = await this.sendDetach(coreId);
     if (folder && !letGo.detached && (row?.keyExpiresAt ?? 0) > this.deps.now()) {
       throw new SharedFolderError(
-        `The Core has not let go of ${folder} (${letGo.error ?? "no answer"}), so nothing was deleted: it would delete its own ` +
-          `~/shared. Try again when it is connected, or after its key ends at ${new Date(row!.keyExpiresAt!).toISOString()}.`,
+        `The Core has not let go of ${folder} (${letGo.error ?? "no answer"}), so nothing was deleted: it may still be syncing, and ` +
+          `emptying the prefix would make it delete its own ~/shared or upload into the prefix again. ` +
+          `Try again when it is connected, or after its key ends at ${new Date(row!.keyExpiresAt!).toISOString()}.`,
         "still-attached",
       );
     }
+    // The machine's folder, before the Core's credentials go with its row.
+    let machineFolder: MachineFolderResult;
+    if (!letGo.detached) {
+      const why = letGo.error ?? "no answer";
+      machineFolder = {
+        state: "kept",
+        reason: letGo.reached ? `the Core did not let go of S3 (${why}), and its key has run out` : `the Core could not be reached (${why}), and its key has run out`,
+        removed: 0,
+      };
+    } else if (!this.deps.isConnected(coreId)) {
+      machineFolder = { state: "kept", reason: "the Core is not connected", removed: 0 };
+    } else {
+      try {
+        machineFolder = await this.deps.emptyMachineFolder(coreId, ownerId);
+      } catch (err) {
+        machineFolder = { state: "kept", reason: err instanceof Error ? err.message : "the Core did not answer", removed: 0 };
+      }
+    }
+    if (machineFolder.state === "kept") this.deps.log(`[panel] core ${coreId}: ~/shared on the machine was kept: ${machineFolder.reason}`);
     this.cancel(coreId);
     coreLinkManager().hangup(coreId);
     await removeCore(coreId, ownerId);
-    if (!folder) return { prefix: null, removed: 0 };
+    if (!folder) return { prefix: null, removed: 0, machineFolder };
 
     try {
       const { issuer, target } = await this.deps.issuer(ownerId);
@@ -515,12 +563,13 @@ export class SharedFolders {
           removed += 1;
         }
       }
-      return { prefix: folder, removed };
+      return { prefix: folder, removed, machineFolder };
     } catch (err) {
       const reason = err instanceof Error ? err.message : "unknown error";
       this.deps.log(`[panel] core ${coreId}: could not empty ${folder}: ${reason}`);
       throw new SharedFolderError(
-        `The Core was removed, but its S3 prefix ${folder} could not be emptied: ${reason}. Remove it by hand.`,
+        `The Core was removed, but its S3 prefix ${folder} could not be emptied: ${reason}. Remove it by hand.` +
+          (machineFolder.state === "kept" ? ` ~/shared on the machine was kept: ${machineFolder.reason}.` : ""),
         "prefix-delete-failed",
       );
     }

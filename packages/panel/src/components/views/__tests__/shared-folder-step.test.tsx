@@ -82,7 +82,11 @@ const api = {
   putStorage: vi.fn(async (_body: unknown) => ({ storage: STORAGE_SET })),
   testSharedFolder: vi.fn(async () => ({ result: PASSED })),
   finishCorePairing: vi.fn(async (): Promise<{ core: CoreWithDial }> => ({ core: core({ sharedFolder: { state: "attached", prefix: "cores/core_new/", keyExpiresAt: 1, error: null } }) })),
-  deleteCoreWithStorage: vi.fn(async (_id: string, _prefix: string) => ({ prefix: "cores/core_new/", removed: 3 })),
+  deleteCoreWithStorage: vi.fn(async (_id: string, _prefix: string): Promise<unknown> => ({
+    prefix: "cores/core_new/",
+    removed: 3,
+    machineFolder: { state: "emptied", removed: 2 },
+  })),
   removeCore: vi.fn(async () => undefined),
   renameCore: vi.fn(),
   inspectCoreForPairing: vi.fn(),
@@ -90,7 +94,7 @@ const api = {
   getKeybindings: vi.fn(async () => ({ bindings: {} })),
   getSettings: vi.fn(async () => ({})),
 };
-const toasts = { success: vi.fn(), error: vi.fn() };
+const toasts = { success: vi.fn(), error: vi.fn(), warning: vi.fn() };
 
 vi.mock("~/lib/api", () => ({ api, ApiError }));
 vi.mock("sonner", () => ({ toast: toasts }));
@@ -334,7 +338,35 @@ describe("delete: the Core and its Shared folder", () => {
     expect(confirm().disabled).toBe(false);
     await click("Delete Core and folder");
     expect(api.deleteCoreWithStorage).toHaveBeenCalledWith("core_new", "cores/core_new/");
-    expect(toasts.success).toHaveBeenCalledWith('Core "workstation-berlin" and its Shared folder deleted.');
+    expect(toasts.success).toHaveBeenCalledWith('Core "workstation-berlin" and its Shared folder deleted, on the Panel and on the machine.');
+    expect(toasts.warning).not.toHaveBeenCalled();
+  });
+
+  it("says the machine copy was emptied too, and that it stays when the Core is not connected", async () => {
+    await openSettings();
+    await click(/Delete Core workstation-berlin and its Shared folder/);
+    const text = document.body.textContent ?? "";
+    expect(text).toContain("empties the ~/shared folder on the machine");
+    expect(text).toContain("If the Core is not connected, the delete is refused");
+    expect(text).not.toContain("the machine keeps");
+  });
+
+  it("states plainly that ~/shared stays on the machine when the Core was not connected", async () => {
+    api.deleteCoreWithStorage.mockResolvedValueOnce({
+      prefix: "cores/core_new/",
+      removed: 3,
+      machineFolder: { state: "kept", reason: "the Core is not connected", removed: 0 },
+    });
+    await openSettings();
+    await click(/Delete Core workstation-berlin and its Shared folder/);
+    await act(async () => {
+      type("Prefix", "cores/core_new/");
+    });
+    await click("Delete Core and folder");
+    expect(toasts.warning).toHaveBeenCalledWith(
+      'Core "workstation-berlin" deleted. Its ~/shared on the machine was not emptied and stays: the Core is not connected.',
+    );
+    expect(toasts.success).not.toHaveBeenCalled();
   });
 
   it("shows the Shared folder's error on the Core when its key could not be refreshed", async () => {
