@@ -13,6 +13,7 @@ import { FilesTree } from "~/components/views/FilesTree";
 import { api } from "~/lib/api";
 import { filesDrive, useFilesDrive, type UploadItem } from "~/lib/files-drive-store";
 import { readLastVisit, writeLastVisit } from "~/lib/files-last-visit";
+import { useSharedFeed } from "~/lib/shared-feed";
 import { planUploads, runUploads, sourcesFromDrop, sourcesFromFileList, type UploadSource } from "~/lib/files-upload";
 import { formatRelativeTime } from "~/lib/format-relative-time";
 import { queryKeys, useSharedFilesSearch, useSharedFilesSummary, useSharedFolder } from "~/queries";
@@ -90,11 +91,22 @@ function FilesDriveOfCore({
     filesDrive.select(null);
   }, [coreId, path]);
 
-  const folder = useSharedFolder(coreId, path);
-  const summary = useSharedFilesSummary(coreId, since);
+  // The Core's change feed (#561) refreshes the folder and marks what is new; S3 is listed on a timer only while the Core
+  // is offline, when the feed has nothing to say.
+  const offline = core.dial.state !== "connected";
+  const feed = useSharedFeed(coreId, since);
+  const folder = useSharedFolder(coreId, path, { poll: offline });
+  const summary = useSharedFilesSummary(coreId, since, { poll: offline });
   const searching = search.trim().length > 0;
   const results = useSharedFilesSearch(coreId, search.trim());
-  const newPaths = useMemo(() => new Set(summary.data?.newPaths ?? []), [summary.data]);
+  // Files written while no tab was open come from the one listing at load; everything since comes from the feed, which
+  // also knows what the Core has deleted since that listing.
+  const newPaths = useMemo(() => {
+    const out = new Set<string>();
+    for (const p of summary.data?.newPaths ?? []) if (feed.changes.get(p)?.deleted !== true) out.add(p);
+    for (const p of feed.newPaths) out.add(p);
+    return out;
+  }, [summary.data, feed]);
   const entries = searching ? (results.data?.entries ?? []) : (folder.data?.entries ?? []);
 
   const refresh = useCallback(() => queryClient.invalidateQueries({ queryKey: queryKeys.sharedFiles(coreId) }), [queryClient, coreId]);
@@ -143,7 +155,6 @@ function FilesDriveOfCore({
     }
   };
 
-  const offline = core.dial.state !== "connected";
   const crumbs = breadcrumbs(path);
   const selectedIsNew = selected ? newPaths.has(selected) : false;
   const finished = uploads.some((u) => u.status === "done" || u.status === "error");
@@ -257,7 +268,7 @@ function FilesDriveOfCore({
 
       <div style={{ display: "grid", gridTemplateColumns: `260px minmax(0, 1fr)${selected ? " 340px" : ""}`, gap: 12, flex: 1, minHeight: 0 }}>
         <div style={{ display: "flex", flexDirection: "column", gap: 10, overflowY: "auto", borderRight: "1px solid var(--border)", paddingRight: 8 }}>
-          <FilesTree coreId={coreId} current={path} onOpen={(p) => { setSearch(""); onPath(p); }} />
+          <FilesTree coreId={coreId} current={path} poll={offline} onOpen={(p) => { setSearch(""); onPath(p); }} />
           {summary.data ? (
             <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--text-dim)", marginTop: "auto" }}>
               {formatBytes(summary.data.usedBytes)} used · {summary.data.backend}
@@ -298,6 +309,8 @@ function FilesDriveOfCore({
               coreId={coreId}
               path={selected}
               isNew={selectedIsNew}
+              coreChange={feed.changes.get(selected)}
+              coreLive={!offline}
               onRename={() => setDialog({ kind: "rename", path: selected })}
               onMove={() => setDialog({ kind: "move", path: selected })}
               onDelete={() => setDialog({ kind: "delete", path: selected })}
