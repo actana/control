@@ -34,7 +34,9 @@
 //
 // **Unpair** (`sharedDetach`) is one pass that only copies, S3 into the folder, and then
 // the sync stops. It never deletes anything, and it never overwrites a file `core` has
-// changed since the last pass.
+// changed since the last pass. From the first moment of it no other pass runs, whoever asks (a
+// timer tick, a pushed key), so nothing is uploaded or deleted after the pull and the state file
+// it removes stays removed. A pull that fails detaches nothing and syncing goes on.
 //
 // The change feed is not here. What the sync writes into `~/shared` is seen by the watcher
 // of #561, which runs as `core`, and becomes `shared:changed` like any other write.
@@ -133,6 +135,8 @@ export function createSharedSync(options: SharedSyncOptions): SharedSync {
   let current: SharedAttachment | null = store.load();
   let timer: NodeJS.Timeout | null = null;
   let stopped = false;
+  /** Set for the whole of an unpair: no pass but its own pull runs, whoever asks. */
+  let detaching = false;
   let running: Promise<PassReport> | null = null;
   let again = false;
   let readOnlyLogged = false;
@@ -457,6 +461,8 @@ export function createSharedSync(options: SharedSyncOptions): SharedSync {
 
   /** One pass at a time; one asked for while another runs follows it. */
   function pass(mode: "sync" | "pull" = "sync"): Promise<PassReport> {
+    // A sync pass asked for while unpairing never runs: it could upload, delete or save state after the pull.
+    if (detaching && mode === "sync") return running ?? Promise.resolve({ ...emptyReport(), skipped: "detached" });
     if (running) {
       again = true;
       return running;
@@ -569,19 +575,32 @@ export function createSharedSync(options: SharedSyncOptions): SharedSync {
       case "sharedDetach": {
         if (attaching) return refused("mount-failed", "an attach is in progress");
         if (!current) return refused("not-attached", "this Core is not attached");
+        if (detaching) return refused("mount-failed", "a detach is in progress");
+        // Latch first: from here no timer tick or pushed key starts a sync pass, only the pull below.
+        detaching = true;
+        stop();
+        again = false;
         // Wait for a pass in flight, then copy what is in S3 into the folder.
         while (running) await running;
         const report = await pass("pull");
+        const refuse = (message: string): CoreLinkSharedMountStatus => {
+          // Nothing was detached: the Core goes on syncing.
+          detaching = false;
+          stopped = false;
+          schedule();
+          return refused("mount-failed", message);
+        };
         if (report.skipped === "expired") {
-          return refused("mount-failed", "the key has expired, so S3 cannot be copied: push credentials, then detach");
+          return refuse("the key has expired, so S3 cannot be copied: push credentials, then detach");
         }
         if (report.skipped || report.failed.length > 0) {
-          return refused("mount-failed", "S3 could not be copied into the folder; nothing was detached");
+          return refuse("S3 could not be copied into the folder; nothing was detached");
         }
-        stop();
+        while (running) await running;
         store.clear();
         fs.rmSync(statePath, { force: true });
         current = null;
+        detaching = false;
         return { state: "detached", keptLocalCopy: true };
       }
       default:
@@ -606,6 +625,7 @@ export function createSharedSync(options: SharedSyncOptions): SharedSync {
       while (running) await running;
     },
     start() {
+      if (detaching) return;
       stopped = false;
       if (current) {
         schedule();
