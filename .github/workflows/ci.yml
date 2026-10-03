@@ -842,12 +842,12 @@ jobs:
   # The Shared folder's sync against a real SeaweedFS with real STS keys (#562, ADR 0041
   # D33): machine A cannot list, read or write machine B's prefix, a key refresh during an
   # upload does not break it, and unpair keeps the folder's contents. The image and its
-  # digest are the ones in deploy/docker-compose.yml, and the role is
-  # deploy/seaweedfs/iam.json.tmpl rendered here with throwaway values. The keys are issued
+  # digest are the ones in deploy/docker-compose.yml, and the service is deploy/seaweedfs itself (its entrypoint renders the
+  # role and creates the bucket, #566) with throwaway values. The keys are issued
   # by the controller's own issuer (`@actana/sdk/shared-key`), which is what a Panel will run.
   #
-  # A `services:` container cannot take a command or the checked-out IAM config, and
-  # SeaweedFS needs both, so the same pinned image is started in a step. SEAWEEDFS_REQUIRED
+  # A `services:` container cannot take a command, an entrypoint or the checked-out config, and
+  # SeaweedFS needs all three, so the same pinned image is started in a step. SEAWEEDFS_REQUIRED
   # makes the test fail rather than skip when the variables are missing, and the last step
   # fails the job if any test of the file was skipped, so a green run cannot mean "the real
   # server was not used".
@@ -879,41 +879,45 @@ jobs:
           version: 11.1.2
           cache: true
       - run: pnpm install --frozen-lockfile
-      - name: Start SeaweedFS (S3 gateway, STS and the per-Core role)
+      # The deployed service itself, not a look-alike: deploy/seaweedfs is mounted where the compose file mounts it and its
+      # entrypoint renders the role and creates the bucket (#566). None of the SeaweedFS tests below creates the bucket (each
+      # asserts it exists with a HEAD), so a service that leaves it missing fails here and in every one of them.
+      - name: Start SeaweedFS (the deploy/seaweedfs service itself, with its role and its bucket)
         run: |
           set -euo pipefail
-          cfg="$RUNNER_TEMP/seaweedfs"
-          mkdir -p "$cfg"
           sts_key="$(openssl rand -base64 32)"
           admin_key="admin$(openssl rand -hex 8)"
           admin_secret="$(openssl rand -hex 24)"
           echo "::add-mask::$sts_key"
           echo "::add-mask::$admin_secret"
-          sed \
-            -e "s|@@STS_SIGNING_KEY@@|$sts_key|g" \
-            -e "s|@@OIDC_ISSUER@@|$SEAWEEDFS_OIDC_ISSUER|g" \
-            -e "s|@@OIDC_JWKS_URL@@|$SEAWEEDFS_OIDC_ISSUER/.well-known/jwks.json|g" \
-            -e "s|@@OIDC_AUDIENCE@@|$SEAWEEDFS_OIDC_AUDIENCE|g" \
-            -e "s|@@BUCKET@@|$SEAWEEDFS_BUCKET|g" \
-            -e "s|@@PREFIX@@|$SEAWEEDFS_PREFIX|g" \
-            deploy/seaweedfs/iam.json.tmpl >"$cfg/iam.json"
-          chmod 644 "$cfg/iam.json"
           echo "SEAWEEDFS_ADMIN_ACCESS_KEY=$admin_key" >>"$GITHUB_ENV"
           echo "SEAWEEDFS_ADMIN_SECRET_KEY=$admin_secret" >>"$GITHUB_ENV"
-          docker run -d --name seaweedfs --network host \
-            -e AWS_ACCESS_KEY_ID="$admin_key" -e AWS_SECRET_ACCESS_KEY="$admin_secret" \
-            -v "$cfg:/cfg:ro" "$SEAWEEDFS_IMAGE" \
-            server -dir=/data -ip=127.0.0.1 -ip.bind=127.0.0.1 -filer -s3 -s3.port=8333 -s3.ip.bind=127.0.0.1 \
-            -s3.port.iceberg=0 -s3.port.lance=0 -s3.iam.config=/cfg/iam.json -s3.iam.readOnly=true
+          # The healthcheck is the compose service's own (deploy/docker-compose.yml), at a shorter interval.
+          docker run -d --name seaweedfs --init --network host \
+            --health-cmd 'curl -fsS http://localhost:9333/cluster/healthz >/dev/null && /seaweedfs-config/create-bucket.sh --check' \
+            --health-interval 5s --health-timeout 5s --health-retries 5 --health-start-period 20s \
+            -e SEAWEEDFS_S3_ADMIN_ACCESS_KEY="$admin_key" -e SEAWEEDFS_S3_ADMIN_SECRET_KEY="$admin_secret" \
+            -e SEAWEEDFS_STS_SIGNING_KEY="$sts_key" \
+            -e SEAWEEDFS_OIDC_ISSUER="$SEAWEEDFS_OIDC_ISSUER" \
+            -e SEAWEEDFS_OIDC_JWKS_URL="$SEAWEEDFS_OIDC_ISSUER/.well-known/jwks.json" \
+            -e SEAWEEDFS_OIDC_AUDIENCE="$SEAWEEDFS_OIDC_AUDIENCE" \
+            -e SEAWEEDFS_BUCKET="$SEAWEEDFS_BUCKET" -e SEAWEEDFS_PREFIX="$SEAWEEDFS_PREFIX" \
+            -v "$PWD/deploy/seaweedfs:/seaweedfs-config:ro" \
+            --entrypoint /seaweedfs-config/entrypoint.sh "$SEAWEEDFS_IMAGE" \
+            server -dir=/data -ip=127.0.0.1 -ip.bind=127.0.0.1 -filer -s3 -s3.port=8333 -s3.ip.bind=0.0.0.0 \
+            -s3.port.iceberg=0 -s3.port.lance=0 -s3.iam.config=/run/seaweedfs/iam.json -s3.iam.readOnly=true
+          # Up means Docker reports the container healthy: the master answers and the bucket exists, checked by the same
+          # script and within the same timeout as the compose service, so a check that hangs never passes here.
           for _ in $(seq 1 60); do
-            if curl -fsS http://127.0.0.1:9333/cluster/healthz >/dev/null 2>&1 && \
-               [ "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8333/)" != "000" ]; then
-              echo "SeaweedFS is up"; exit 0
+            state="$(docker inspect --format '{{.State.Health.Status}}' seaweedfs)"
+            if [ "$state" = healthy ]; then
+              echo "SeaweedFS is healthy and created $SEAWEEDFS_BUCKET"; exit 0
             fi
             sleep 2
           done
+          docker inspect --format '{{json .State.Health}}' seaweedfs || true
           docker logs seaweedfs || true
-          echo "SeaweedFS did not come up" >&2
+          echo "SeaweedFS did not become healthy with its bucket" >&2
           exit 1
       # SeaweedFS may keep the JWKS it first read, so every test file signs with this one key.
       - name: Make the controller's signing key

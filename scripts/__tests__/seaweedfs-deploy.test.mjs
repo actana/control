@@ -14,6 +14,7 @@ import { repoRoot } from "../lib/panel-image.mjs";
 const COMPOSE = fs.readFileSync(path.join(repoRoot, "deploy/docker-compose.yml"), "utf8");
 const ENV_EXAMPLE = fs.readFileSync(path.join(repoRoot, "deploy/.env.example"), "utf8");
 const ENTRYPOINT = path.join(repoRoot, "deploy/seaweedfs/entrypoint.sh");
+const CREATE_BUCKET = path.join(repoRoot, "deploy/seaweedfs/create-bucket.sh");
 const TEMPLATE = path.join(repoRoot, "deploy/seaweedfs/iam.json.tmpl");
 
 /** The lines of one top-level compose service, by indentation. */
@@ -54,6 +55,7 @@ function render(env) {
     .replace("TEMPLATE=/seaweedfs-config/iam.json.tmpl", `TEMPLATE=${TEMPLATE}`)
     .replace("OUT_DIR=/run/seaweedfs", `OUT_DIR=${dir}/out`)
     .replace("chown -R seaweed:seaweed \"$OUT_DIR\"", ":")
+    .replace(/\( env -u .* \/seaweedfs-config\/create-bucket\.sh & \)/, 'echo "BUCKET-JOB $AWS_ACCESS_KEY_ID"')
     .replace('exec /entrypoint.sh "$@"', 'echo "HANDOVER $*"; echo "JWT=$WEED_JWT_FILER_SIGNING_KEY"');
   const copy = path.join(dir, "entrypoint.sh");
   fs.writeFileSync(copy, script, { mode: 0o755 });
@@ -281,6 +283,108 @@ describe("the entrypoint fails closed", () => {
       expect(out.status, bad).not.toBe(0);
       expect(out.iam, bad).toBeNull();
     }
+  });
+});
+
+/** Run create-bucket.sh against a fake curl that plays the gateway: `state` is the bucket's existence. */
+function runCreateBucket(args, { exists }) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "seaweedfs-bucket-"));
+  scratch.push(dir);
+  const bin = path.join(dir, "bin");
+  fs.mkdirSync(bin);
+  const state = path.join(dir, "exists");
+  if (exists) fs.writeFileSync(state, "");
+  fs.writeFileSync(
+    path.join(bin, "curl"),
+    [
+      "#!/bin/sh",
+      'echo "$*" >>"$LOG"',
+      "cat >>\"$LOG.stdin\"",
+      'for a in "$@"; do last=$a; done',
+      'method=GET',
+      'while [ $# -gt 0 ]; do case "$1" in -X) method=$2 ;; --head | -I) method=HEAD ;; esac; shift; done',
+      'echo "$method $last" >>"$LOG.calls"',
+      'case "$method" in',
+      '  HEAD) if [ -e "$STATE" ]; then printf 200; else printf 404; fi ;;',
+      '  PUT) if [ -e "$STATE" ]; then printf 409; else : >"$STATE"; printf 200; fi ;;',
+      "esac",
+    ].join("\n"),
+    { mode: 0o755 },
+  );
+  const log = path.join(dir, "log");
+  const result = spawnSync("sh", [CREATE_BUCKET, ...args], {
+    encoding: "utf8",
+    env: {
+      PATH: `${bin}:${process.env.PATH}`,
+      LOG: log,
+      STATE: state,
+      SEAWEEDFS_BUCKET: "actana-shared",
+      AWS_ACCESS_KEY_ID: "test-admin-access",
+      AWS_SECRET_ACCESS_KEY: "test-admin-secret-value",
+    },
+  });
+  const read = (f) => (fs.existsSync(f) ? fs.readFileSync(f, "utf8") : "");
+  return { ...result, calls: read(`${log}.calls`).trim().split("\n").filter(Boolean), argv: read(log), stdin: read(`${log}.stdin`), created: fs.existsSync(state) };
+}
+
+describe("the service creates its own bucket (#566)", () => {
+  it("is started by the entrypoint with the admin identity, before the handover", () => {
+    const out = render(GOOD_ENV);
+    expect(out.stdout).toContain("BUCKET-JOB test-admin-access");
+    expect(fs.readFileSync(ENTRYPOINT, "utf8")).toMatch(/^\( env -u SEAWEEDFS_STS_SIGNING_KEY -u WEED_JWT_FILER_SIGNING_KEY \/seaweedfs-config\/create-bucket\.sh & \)$/m);
+  });
+
+  it("creates a missing bucket with the admin key, and that key is on stdin, never in argv", () => {
+    const out = runCreateBucket([], { exists: false });
+    expect(out.status, out.stderr).toBe(0);
+    expect(out.calls).toEqual(["HEAD http://127.0.0.1:8333/actana-shared", "PUT http://127.0.0.1:8333/actana-shared"]);
+    expect(out.created).toBe(true);
+    expect(out.stdin).toContain("test-admin-access:test-admin-secret-value");
+    expect(out.argv).not.toContain("test-admin-secret-value");
+  });
+
+  it("leaves an existing bucket alone, so a restart is a no-op", () => {
+    const out = runCreateBucket([], { exists: true });
+    expect(out.status, out.stderr).toBe(0);
+    expect(out.calls).toEqual(["HEAD http://127.0.0.1:8333/actana-shared"]);
+  });
+
+  it("--check passes only when the bucket exists, and never creates it", () => {
+    expect(runCreateBucket(["--check"], { exists: true }).status).toBe(0);
+    const missing = runCreateBucket(["--check"], { exists: false });
+    expect(missing.status).not.toBe(0);
+    expect(missing.created).toBe(false);
+  });
+
+  it("never hangs: no curl uses -X HEAD, and every curl has --max-time under the healthcheck timeout", () => {
+    // Code only: the comment that explains the rule names `-X HEAD`.
+    const script = fs
+      .readFileSync(CREATE_BUCKET, "utf8")
+      .split("\n")
+      .filter((l) => !/^\s*#/.test(l))
+      .join("\n");
+    expect(script).not.toMatch(/-X\s+HEAD/);
+    const calls = script.split("\n").filter((l) => /^\s*curl\b/.test(l));
+    expect(calls.length).toBeGreaterThan(0);
+    for (const call of calls) {
+      const max = call.match(/--max-time\s+(\d+)/);
+      expect(max, call).not.toBeNull();
+      expect(Number(max[1])).toBeLessThan(5);
+    }
+    // HEAD goes through --head, and the fake gateway only answers a HEAD that asked for one.
+    expect(script).toMatch(/HEAD\) method=--head/);
+    const out = runCreateBucket(["--check"], { exists: true });
+    expect(out.argv).toMatch(/--head/);
+    expect(out.argv).not.toMatch(/-X HEAD/);
+    expect(out.argv).toMatch(/--max-time 3/);
+  });
+
+  it("makes the compose service healthy only once the bucket exists", () => {
+    expect(serviceBlock("seaweedfs")).toMatch(/healthcheck:[\s\S]*create-bucket\.sh --check/);
+  });
+
+  it("does not widen the policy: still no bucket-management action for a Core", () => {
+    expect(fs.readFileSync(TEMPLATE, "utf8")).not.toMatch(/CreateBucket|s3:\*/);
   });
 });
 

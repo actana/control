@@ -36,21 +36,21 @@ if (!configured && process.env.SEAWEEDFS_REQUIRED === "1") {
 
 const KEY_ID = "ci-key";
 
-/** `PUT /<bucket>` with the static admin identity, signed with SigV4 (an empty body). Cores never hold this key. */
-async function makeBucket(endpoint: string, bucket: string, accessKey: string, secretKey: string): Promise<number> {
+/** `HEAD /<bucket>` with the static admin identity, signed with SigV4 (an empty body). Cores never hold this key. */
+async function bucketStatus(endpoint: string, bucket: string, accessKey: string, secretKey: string): Promise<number> {
   const url = new URL(`/${bucket}`, endpoint);
   const amzDate = new Date().toISOString().replace(/[-:]|\.\d{3}/g, "");
   const day = amzDate.slice(0, 8);
   const payload = createHash("sha256").update("").digest("hex");
   const signedHeaders = "host;x-amz-content-sha256;x-amz-date";
-  const canonical = ["PUT", url.pathname, "", `host:${url.host}\nx-amz-content-sha256:${payload}\nx-amz-date:${amzDate}\n`, signedHeaders, payload].join("\n");
+  const canonical = ["HEAD", url.pathname, "", `host:${url.host}\nx-amz-content-sha256:${payload}\nx-amz-date:${amzDate}\n`, signedHeaders, payload].join("\n");
   const scope = `${day}/us-east-1/s3/aws4_request`;
   const toSign = ["AWS4-HMAC-SHA256", amzDate, scope, createHash("sha256").update(canonical).digest("hex")].join("\n");
   const hmac = (key: Buffer | string, data: string): Buffer => createHmac("sha256", key).update(data).digest();
   const signingKey = hmac(hmac(hmac(hmac(`AWS4${secretKey}`, day), "us-east-1"), "s3"), "aws4_request");
   const signature = createHmac("sha256", signingKey).update(toSign).digest("hex");
   const response = await fetch(url, {
-    method: "PUT",
+    method: "HEAD",
     headers: {
       "x-amz-date": amzDate,
       "x-amz-content-sha256": payload,
@@ -80,8 +80,9 @@ describe.skipIf(!configured)("the sync against real SeaweedFS and real STS keys"
     });
     await new Promise<void>((resolve) => jwks.listen(env.jwksPort, "127.0.0.1", resolve));
 
-    // The bucket is made with the static admin identity, which Cores never receive.
-    expect([200, 409]).toContain(await makeBucket(env.endpoint!, env.bucket, env.adminKey!, env.adminSecret!));
+    // Not created here: deploy/seaweedfs must have created it itself (#566), or every Core would be refused. Read with
+    // the static admin identity, which Cores never receive.
+    expect(await bucketStatus(env.endpoint!, env.bucket, env.adminKey!, env.adminSecret!), "the deployed service creates the bucket").toBe(200);
 
     issuer = createSeaweedfsKeyIssuer({
       endpoint: env.endpoint!,
