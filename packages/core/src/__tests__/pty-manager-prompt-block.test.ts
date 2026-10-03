@@ -128,6 +128,45 @@ describe("a starting prompt through PtyCore.spawn", () => {
     expect(delivered[0]).toMatchObject({ sessionId: "t-abc", promptBlockVersion: PROMPT_BLOCK_VERSION });
   });
 
+  it("reports an exit between the opencode return and the turn start as an undelivered prompt", async () => {
+    const fake = pty();
+    vi.spyOn(nodePty, "spawn").mockReturnValue(fake.proc as never);
+    const delivered: Array<Record<string, unknown>> = [];
+    const abandoned: Array<Record<string, unknown>> = [];
+    const core = new PtyCore({
+      userDataDir: os.tmpdir(),
+      appPath: os.tmpdir(),
+      getHookEnv: () => null,
+      getProtectedPorts: () => [],
+      onSessionPromptDelivered: (info: Record<string, unknown>) => void delivered.push(info),
+      onSessionPromptAbandoned: (info: Record<string, unknown>) => void abandoned.push(info),
+    } as never);
+
+    await core.spawn({ sessionId: "t-exit", agent: "opencode", command: "opencode", initialInput: "fix the bug" } as never);
+    const composer = "Ask anything...";
+    fake.emit(composer);
+    // Type, echo, and let the return go out; no working hint ever shows.
+    for (let second = 0; second < 4; second++) {
+      await vi.advanceTimersByTimeAsync(1_000);
+      const last = fake.writes.filter((w) => w !== "\r").at(-1);
+      if (last) fake.emit(`\u001B[2J\u001B[H${composer}\n> ${last}`);
+    }
+    expect(fake.writes.at(-1)).toBe("\r");
+    expect(delivered).toHaveLength(0);
+
+    // The harness dies while the return is still being verified.
+    const onExit = fake.proc.onExit.mock.calls[0][0] as (e: { exitCode: number }) => void;
+    onExit({ exitCode: 1 });
+
+    expect(delivered).toHaveLength(0);
+    expect(abandoned).toEqual([
+      expect.objectContaining({
+        sessionId: "t-exit",
+        reason: "the harness exited before the prompt was delivered",
+      }),
+    ]);
+  });
+
   it("appends nothing, and reports no version, when the Session has no starting prompt", async () => {
     const fake = pty();
     vi.spyOn(nodePty, "spawn").mockReturnValue(fake.proc as never);

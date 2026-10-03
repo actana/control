@@ -1485,6 +1485,9 @@ describe("promptEchoed", () => {
   });
 });
 
+const NO_TURN =
+  "opencode did not start a turn after the prompt was submitted (its working hint was never seen)";
+
 describe("verifying opencode's submit (paste block, issue 563)", () => {
   const LONG = "Refactor the authentication module and report back. ".repeat(12);
   const SHORT = "say hello";
@@ -1551,15 +1554,29 @@ describe("verifying opencode's submit (paste block, issue 563)", () => {
     expect(Math.max(...gaps)).toBeLessThanOrEqual(10_000);
   });
 
-  it("counts a turn-start chunk plus spinner ticks as working, with no hint on screen", () => {
+  it("stops pressing return on a screen that moved, but never calls it delivered without the hint", () => {
     const h = deliver(LONG, "opencode");
     h.delivery.onOutput(`${ESC}[2K\rYou: Refactor the authentication module\n⠋ Thinking… (0s)`);
     h.clock.advance(300);
     h.delivery.onOutput(`${ESC}[2K\r⠙ Thinking… (1s)`);
     h.clock.advance(300);
     h.delivery.onOutput(`${ESC}[2K\r⠹ Thinking… (2s)`);
-    h.clock.advance(120_000);
+    h.clock.advance(1_000);
     expect(h.writes).toEqual([LONG, "\r"]);
+    expect(h.events.some((e) => e.phase === "delivered")).toBe(false);
+    expect(h.delivery.currentPhase).toBe("submitted");
+  });
+
+  it("is not delivered when a swallowed write is followed only by footer repaints", () => {
+    // The reviewer's probe: the write never landed, and the footer repaints.
+    const h = deliver(LONG, "opencode");
+    for (let i = 0; i < 40; i += 1) {
+      h.delivery.onOutput(`${ESC}[40;1H${ESC}[2K  Build  big-pickle  Tip: use /help ${i % 2}`);
+      h.clock.advance(1_000);
+    }
+    expect(h.events.some((e) => e.phase === "delivered")).toBe(false);
+    expect(h.delivery.currentPhase).toBe("abandoned");
+    expect(h.events.at(-1)).toEqual({ phase: "abandoned", reason: NO_TURN });
   });
 
   it("reads the hint across absolute cursor moves between its words", () => {
@@ -1592,7 +1609,7 @@ describe("verifying opencode's submit (paste block, issue 563)", () => {
     expect(h.events.some((e) => e.phase === "delivered")).toBe(false);
     expect(h.events.at(-1)).toEqual({
       phase: "abandoned",
-      reason: "opencode did not start a turn after the prompt was submitted",
+      reason: NO_TURN,
     });
   });
 
@@ -1699,7 +1716,7 @@ describe("opencode with the prompt still in the composer (issue 563)", () => {
     expect(h.events.some((e) => e.phase === "delivered")).toBe(false);
     expect(h.events.at(-1)).toEqual({
       phase: "abandoned",
-      reason: "opencode did not start a turn after the prompt was submitted",
+      reason: NO_TURN,
     });
     expect(h.writes.filter((w) => w === LONG)).toHaveLength(1);
   });

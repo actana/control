@@ -886,15 +886,16 @@ export type PromptDeliveryProfile = {
   submitMaxMs: number;
   /**
    * Gaps before each re-check of a submit, in order; the length is the number
-   * of extra `\r` this module may send. Unset means one submit and no checking.
+   * of steps this module takes, each sending one more `\r` unless the screen
+   * moved. Unset means one submit, delivered at once, and no checking.
    *
    * OpenCode collapses a large write into a paste block and a `\r` that lands
    * before the TUI is ready for it is swallowed: the prompt stays in the
    * composer and the Session stays in `needs-input` (1.18.34; a fixed second
-   * `\r` one second later, PR 669, was not enough). After each `\r` the module
-   * watches the screen, and when the harness has not started working by the
-   * end of the gap it sends one more. It never sends one into a harness it has
-   * seen working. See {@link submitTaken}.
+   * `\r` one second later, PR 669, was not enough). With this set the prompt is
+   * `delivered` only once the harness's working hint is seen ({@link turnStarted});
+   * painted chunks alone only stop further returns. If the hint never comes
+   * before the steps run out the delivery ends `abandoned`.
    */
   submitRetryGapsMs?: readonly number[];
   /** How many keystrokes this module will spend getting past dialogs. */
@@ -1265,7 +1266,7 @@ export class HarnessPromptDelivery {
    * {@link promptEchoed} cannot read. The screen text is not matched any
    * further, because a long prompt scrolls inside the box and what is visible
    * cannot be predicted. Being wrong costs a return into an empty composer, and
-   * the verify loop (see {@link submitTaken}) catches that: the delivery is
+   * the verify loop (see {@link turnStarted}) catches that: the delivery is
    * reported only once a turn has started, and ends `abandoned` if none does.
    * A repainted placeholder means "empty, retype".
    */
@@ -1505,22 +1506,28 @@ export class HarnessPromptDelivery {
     this.cancelSubmitCheck = null;
     if (!this.verifying) return;
     const gaps = this.profile.submitRetryGapsMs ?? [];
-    if (this.submitTaken()) {
+    if (this.turnStarted()) {
       this.confirmSubmit();
       return;
     }
     if (this.submitRetries >= gaps.length) {
-      // The last return has had its whole gap and the harness shows no sign of
-      // working. The prompt is in the box, unsubmitted: say so as a Session in
-      // `needs-input`, exactly as a swallowed prompt is reported.
+      // The last step has had its whole gap and the hint was never seen. The
+      // prompt is in the box unsubmitted, or the turn never began: say so as a
+      // Session in `needs-input`, exactly as a swallowed prompt is reported.
       this.verifying = false;
       this.pendingDelivered = null;
-      this.abandon(`${this.opts.harness} did not start a turn after the prompt was submitted`);
+      this.abandon(
+        `${this.opts.harness} did not start a turn after the prompt was submitted ` +
+          "(its working hint was never seen)",
+      );
       return;
     }
     this.submitRetries += 1;
-    this.opts.write("\r");
-    // After the last return there is one more gap to watch it, then the verdict.
+    // A screen that moved is not evidence of a turn, but it is evidence that the
+    // last return did something, so no further return goes into it. The step
+    // still counts, and the hint is still what has to arrive.
+    if (!this.screenMoved()) this.opts.write("\r");
+    // After the last step there is one more gap to watch, then the verdict.
     this.armSubmitCheck(gaps[this.submitRetries] ?? gaps[gaps.length - 1]);
   }
 
@@ -1542,28 +1549,33 @@ export class HarnessPromptDelivery {
     // Painted chunks, not distinct frames: a spinner tick normalises to the
     // same signature every time, and it is exactly what a working turn does.
     if (redrawSignature(chunk) !== "") this.sinceSubmitPaints += 1;
-    if (this.submitTaken()) this.confirmSubmit();
+    if (this.turnStarted()) this.confirmSubmit();
   }
 
   /**
-   * Did the last `\r` start a turn? Two readings, either is enough:
-   *
-   *   - the harness says it is working: its interrupt hint is on screen, read
-   *     with an absolute cursor move counted as a space, because OpenCode lays
-   *     the footer out with moves and `stripAnsi` would glue the words, or
-   *   - more than one chunk painted since the `\r`. A swallowed `\r` leaves an
-   *     idle composer that paints nothing, and a paste block opening is one
-   *     repaint. Anything past that is a turn — a spinner tick counts — so the
-   *     default is the safe one: retry only into a provably idle screen.
+   * Has the harness said it is working? Only its interrupt hint counts, read
+   * with an absolute cursor move as a space, because OpenCode lays the footer
+   * out with moves and `stripAnsi` would glue the words. OpenCode shows it, as
+   * the progress bar then `esc interrupt`, for the whole turn; an idle composer
+   * never does. This is the one signal that makes the prompt `delivered`.
    *
    * The prompt text is deliberately not consulted: a submitted prompt is
    * echoed again in the transcript, so its presence proves nothing.
    */
-  private submitTaken(): boolean {
-    const screen = stripAnsi(this.sinceSubmit.replace(CURSOR_POSITION, " "));
-    if (WORKING_HINT.test(screen)) return true;
+  private turnStarted(): boolean {
+    return WORKING_HINT.test(stripAnsi(this.sinceSubmit.replace(CURSOR_POSITION, " ")));
+  }
+
+  /**
+   * Did the screen move since the last step? More than one painted chunk — a
+   * swallowed `\r` leaves an idle composer that paints nothing, and a paste
+   * block opening is one repaint. This only stops further returns: a footer or
+   * status repaint paints too, so it is never evidence of a delivery.
+   */
+  private screenMoved(): boolean {
     return this.sinceSubmitPaints >= WORKING_PAINTS;
   }
+
 
   /**
    * Is the prompt provably sitting in a composer, marker or no marker?
