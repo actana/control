@@ -403,6 +403,87 @@ describe("unpair", () => {
     expect(readLocal("mine.txt")).toBe("mine");
     expect(fs.existsSync(createSharedKeyStore(stateDir).path)).toBe(true);
   });
+
+  describe("a pass asked for during the detach pull never runs as a sync (#562)", () => {
+    /** Folder listings the sync made: one per pass that got as far as reading the folder. */
+    let listings = 0;
+    beforeEach(() => {
+      const home = createSharedHome({ home: homeDir, identityEnv: {} });
+      listings = 0;
+      sync = createSharedSync({
+        stateDir,
+        home: {
+          ...home,
+          list: () => {
+            listings++;
+            return home.list();
+          },
+        },
+        now: () => t,
+        fetch: s3.fetch,
+        intervalMs: 3_600_000,
+      });
+    });
+
+    /** Attached, with a file only S3 has, a detach paused in its pull and a local file a sync would upload. */
+    async function detachPausedInPull(): Promise<{ done: Promise<CoreLinkSharedMountStatus>; release: () => void }> {
+      await attach();
+      s3.seed("cores/core-a/from-s3.txt", "S3's", T0 - 1_000);
+      const held = s3.hold((r) => r.method === "GET" && r.key.endsWith("from-s3.txt"));
+      const done = sync.handle({ type: "sharedDetach", reqId: "d", keepLocalCopy: true });
+      await held.reached;
+      writeLocal("new-here.txt", "new");
+      return { done, release: held.release };
+    }
+
+    // The attach pass and the pull are the only two passes there may be.
+    const noSyncAfterPull = (): void => {
+      expect(listings).toBe(2);
+      expect(s3.requests.filter((r) => r.method === "PUT" || r.method === "DELETE")).toEqual([]);
+      expect(s3.text("cores/core-a/new-here.txt")).toBeUndefined();
+      expect(readLocal("from-s3.txt")).toBe("S3's");
+      expect(sync.attached).toBe(false);
+      expect(fs.existsSync(path.join(stateDir, SYNC_STATE_FILE))).toBe(false);
+      expect(fs.existsSync(createSharedKeyStore(stateDir).path)).toBe(false);
+    };
+
+    it("a timer tick", async () => {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      try {
+        const { done, release } = await detachPausedInPull();
+        await vi.advanceTimersByTimeAsync(3_600_000);
+        release();
+        expect(await done).toEqual({ state: "detached", keptLocalCopy: true });
+        await sync.idle();
+        noSyncAfterPull();
+        await vi.advanceTimersByTimeAsync(3_600_000);
+        await sync.idle();
+        noSyncAfterPull();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("a credential push", async () => {
+      const { done, release } = await detachPausedInPull();
+      const pushed = await sync.handle(credsFrame(newKey()));
+      expect(pushed.state).toBe("attached");
+      release();
+      expect(await done).toEqual({ state: "detached", keptLocalCopy: true });
+      await sync.idle();
+      noSyncAfterPull();
+    });
+
+    it("syncing goes on when the pull fails and nothing is detached", async () => {
+      await attach();
+      t += 2 * HOUR;
+      expect(await sync.handle({ type: "sharedDetach", reqId: "d", keepLocalCopy: true })).toMatchObject({ state: "error" });
+      writeLocal("later.txt", "later");
+      await sync.handle(credsFrame(newKey()));
+      await sync.idle();
+      expect(s3.text("cores/core-a/later.txt")).toBe("later");
+    });
+  });
 });
 
 describe("what ready.shared says", () => {
