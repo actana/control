@@ -397,12 +397,12 @@ prefix as a client of S3, with its own key and not the Core's (D33).
 
 **What the tab shows beyond the listing (the second audit of #565).** The "new" badges and the refresh come from the Core's `shared:changed` feed (#561, D5), not from
 S3: the tab already watches the Core over the panel link, which delivers each event live and replays what was missed, so a file the Core writes after the operator's last visit is
-badged when its event arrives and the open folder is refetched once the burst is over (400 ms). One S3 listing at load supplies the badges for files written while no tab was open.
+badged when its event arrives and the open folder is refetched 400 ms after the burst, and again 17 s and 34 s after it: the event is the Core's local write, and the Core uploads it on its next sync pass (15 s), so the first look is usually before the object is in S3 and no second event follows the upload. One S3 listing at load supplies the badges for files written while no tab was open.
 S3 is listed every ten seconds only while the Core is offline, when the feed has nothing to say. The sync state in the details pane compares the Core's last event for a path with the
-stored size: the same size is "synced to S3", another size or a delete is "syncing", and no event is only "in storage" (with "Core not connected" when it is offline). Who wrote a file
+stored copy: the same size and a stored copy not older than the Core's write (2 s of clock skew allowed) is "synced to S3", another size, an older copy or a delete is "syncing", and no event is only "in storage" (with "Core not connected" when it is offline). Who wrote a file
 is read off its path: `sessions/<id>/` is that Session, with its harness from the Core's Session list, and `tasks/<id>/` is that Task, with its Agent. The links are the Task, as a link to
 `/tasks?task=<id>`, and each full GitHub pull request URL the server finds in the file's text and in its Task's description and comments; a bare "PR 581" names no repository and is not linked.
-A markdown preview is rendered with react-markdown with raw HTML skipped, images dropped and only `http`, `https` and `mailto` links kept. A PDF card draws the browser's viewer on page one
+A JSON preview is re-indented with only the whitespace between tokens changed, so no value is reformatted. A card's preview sits beside its button, not in it, and shows links as text. A markdown preview is rendered with react-markdown with raw HTML skipped, images dropped and only `http`, `https` and `mailto` links kept. A PDF card draws the browser's viewer on page one
 from the Panel's `/media` route, for a file up to 5 MB and once the card is on screen; no preview uses a signed URL.
 
 ## Landed by #569 and #570: Agents, and how a Task is dispatched

@@ -26,7 +26,7 @@ function Snippet({ coreId, entry }: { coreId: string; entry: SharedFileEntry }) 
     // Rendered, like the details pane, but only the top of it: the card is a glance.
     return (
       <div data-testid="card-markdown" style={{ ...base, fontFamily: "var(--mono)", pointerEvents: "none" }}>
-        <SafeMarkdown>{firstLines(text, 14)}</SafeMarkdown>
+        <SafeMarkdown plain>{firstLines(text, 14)}</SafeMarkdown>
       </div>
     );
   }
@@ -185,22 +185,33 @@ export function FilesMain({
           {label("Files")}
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(190px, 1fr))", gap: 12 }}>
             {files.map((f) => (
-              <button
+              // The card is a box with a button in it, not a button around a box: a preview holds block elements and a
+              // PDF viewer, which a button may not. The button is the one control (focus, name, pressed state); a click
+              // anywhere else on the card selects too, for the pointer.
+              <div
                 key={f.path}
-                type="button"
-                aria-pressed={selected === f.path}
                 onClick={() => onSelect(f.path)}
-                style={{ display: "flex", flexDirection: "column", padding: 0, overflow: "hidden", border: selected === f.path ? "2px solid var(--brand-accent)" : "1px solid var(--border)", borderRadius: 8, background: "var(--surface-card)", color: "var(--text)", textAlign: "left", cursor: "pointer", fontFamily: "var(--mono)" }}
+                style={{ display: "flex", flexDirection: "column", overflow: "hidden", border: selected === f.path ? "2px solid var(--brand-accent)" : "1px solid var(--border)", borderRadius: 8, background: "var(--surface-card)", color: "var(--text)", cursor: "pointer", fontFamily: "var(--mono)" }}
               >
-                <CardPreview coreId={coreId} entry={f} />
-                <span style={{ display: "flex", flexDirection: "column", padding: "8px 10px", minWidth: 0 }}>
+                <div aria-hidden>
+                  <CardPreview coreId={coreId} entry={f} />
+                </div>
+                <button
+                  type="button"
+                  aria-pressed={selected === f.path}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onSelect(f.path);
+                  }}
+                  style={{ display: "flex", flexDirection: "column", padding: "8px 10px", minWidth: 0, border: 0, background: "transparent", color: "inherit", textAlign: "left", cursor: "pointer", fontFamily: "inherit" }}
+                >
                   <strong style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 13 }}>{f.name}</strong>
                   <span style={{ fontSize: 12, color: "var(--text-dim)" }}>
                     {formatBytes(f.size ?? 0)} · {f.modifiedAt ? formatRelativeTime(f.modifiedAt) : ""}
                     {hasNew(f) ? <span style={NEW_BADGE}> · new</span> : null}
                   </span>
-                </span>
-              </button>
+                </button>
+              </div>
             ))}
           </div>
         </section>

@@ -162,7 +162,7 @@ describe("the new badge, from the change feed", () => {
 });
 
 describe("refreshing without polling", () => {
-  it("does not list S3 on a timer while the Core is connected, and lists once after a burst of events", async () => {
+  it("does not list S3 on a timer while the Core is connected, and looks after a burst, then after the Core's sync passes", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     mount(core("connected"));
     await screen.findByText("report.md");
@@ -179,6 +179,53 @@ describe("refreshing without polling", () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(1_000); });
     expect(listings()).toBe(before + 1);
     expect(await screen.findByText("b.log")).toBeTruthy();
+    await act(async () => { await vi.advanceTimersByTimeAsync(17_000); });
+    expect(listings()).toBe(before + 2);
+    await act(async () => { await vi.advanceTimersByTimeAsync(17_000); });
+    expect(listings()).toBe(before + 3);
+    await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+    expect(listings()).toBe(before + 3);
+  });
+
+  it("shows a file the Core wrote once its sync has uploaded it, though no second event comes", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    mount(core("connected"));
+    await screen.findByText("report.md");
+    // The Core's local write is announced at once; S3 does not have the object until the sync pass uploads it.
+    act(() => emit("shared:changed", { path: "fresh.log", size: 10, mtime: Date.now(), deleted: false }));
+    await act(async () => { await vi.advanceTimersByTimeAsync(1_000); });
+    expect(screen.queryByText("fresh.log")).toBeNull();
+    // Some seconds later the sync pass uploads it. Nothing changes locally, so nothing is announced.
+    entries = [file("report.md"), file("fresh.log")];
+    await act(async () => { await vi.advanceTimersByTimeAsync(14_000); });
+    expect(screen.queryByText("fresh.log")).toBeNull();
+    await act(async () => { await vi.advanceTimersByTimeAsync(3_000); });
+    expect(await screen.findByText("fresh.log")).toBeTruthy();
+    expect(screen.getAllByText(/· new/)).toHaveLength(1);
+  });
+
+  it("drops a file the Core deleted once its sync has removed it from S3", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    mount(core("connected"));
+    await screen.findByText("report.md");
+    act(() => emit("shared:changed", { path: "report.md", size: 0, mtime: Date.now(), deleted: true }));
+    await act(async () => { await vi.advanceTimersByTimeAsync(1_000); });
+    expect(screen.getByText("report.md")).toBeTruthy();
+    entries = [];
+    await act(async () => { await vi.advanceTimersByTimeAsync(17_000); });
+    await waitFor(() => expect(screen.queryByText("report.md")).toBeNull());
+  });
+
+  it("catches a sync that was slow, on the second follow-up", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    mount(core("connected"));
+    await screen.findByText("report.md");
+    act(() => emit("shared:changed", { path: "late.log", size: 10, mtime: Date.now(), deleted: false }));
+    await act(async () => { await vi.advanceTimersByTimeAsync(18_000); });
+    expect(screen.queryByText("late.log")).toBeNull();
+    entries = [file("report.md"), file("late.log")];
+    await act(async () => { await vi.advanceTimersByTimeAsync(17_000); });
+    expect(await screen.findByText("late.log")).toBeTruthy();
   });
 
   it("falls back to listing S3 every ten seconds while the Core is offline", async () => {
@@ -208,7 +255,13 @@ describe("the sync state in the details pane", () => {
     const card = await screen.findByText("report.md");
     act(() => card.closest("button")!.click());
     expect(await screen.findByText(/in storage$/)).toBeTruthy();
-    act(() => emit("shared:changed", { path: "report.md", size: 10, mtime: Date.now(), deleted: false }));
+    // The Core's last write is older than the stored copy (written NOW - 60 s) and the same size: it is on both sides.
+    act(() => emit("shared:changed", { path: "report.md", size: 10, mtime: NOW - 90_000, deleted: false }));
+    expect(await screen.findByText(/synced to S3/)).toBeTruthy();
+    // A same-size rewrite after the stored copy is still to be uploaded.
+    act(() => emit("shared:changed", { path: "report.md", size: 10, mtime: NOW, deleted: false }));
+    expect(await screen.findByText(/syncing with the Core/)).toBeTruthy();
+    act(() => emit("shared:changed", { path: "report.md", size: 10, mtime: NOW - 90_000, deleted: false }));
     expect(await screen.findByText(/synced to S3/)).toBeTruthy();
     act(() => emit("shared:changed", { path: "report.md", size: 99, mtime: Date.now(), deleted: false }));
     expect(await screen.findByText(/syncing with the Core/)).toBeTruthy();

@@ -32,10 +32,16 @@ const components: Components = {
   },
 };
 
-export function SafeMarkdown({ children }: { children: string }) {
+/** On a card the text is a glance, not a place to click or tab to: a link is its text, a task-list box is its mark. */
+const cardComponents: Components = {
+  a: ({ children }) => <span>{children}</span>,
+  input: ({ checked }) => <span aria-hidden>{checked ? "[x] " : "[ ] "}</span>,
+};
+
+export function SafeMarkdown({ children, plain = false }: { children: string; plain?: boolean }) {
   return (
     <div className="task-markdown" data-testid="markdown-preview">
-      <ReactMarkdown remarkPlugins={[remarkGfm]} skipHtml disallowedElements={["img"]} urlTransform={safeMarkdownUrl} components={components}>
+      <ReactMarkdown remarkPlugins={[remarkGfm]} skipHtml disallowedElements={["img"]} urlTransform={safeMarkdownUrl} components={plain ? cardComponents : components}>
         {children}
       </ReactMarkdown>
     </div>

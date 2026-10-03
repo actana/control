@@ -86,3 +86,15 @@ describe("SafeMarkdown", () => {
     expect(safeMarkdownUrl("data:text/html,x")).toBe("");
   });
 });
+
+describe("SafeMarkdown on a card (plain)", () => {
+  it("renders links as their text and task-list boxes as marks, with no raw HTML", () => {
+    render(<SafeMarkdown plain>{"[pr](https://github.com/a/b/pull/1) - [x] done\n\n<script>window.__pwned = 1</script>"}</SafeMarkdown>);
+    const root = screen.getByTestId("markdown-preview");
+    expect(root.querySelector("a")).toBeNull();
+    expect(root.querySelector("input")).toBeNull();
+    expect(root.querySelector("script")).toBeNull();
+    expect(root.textContent).toContain("pr");
+  });
+});
+

@@ -14,6 +14,34 @@ export const SHARED_CHANGED_KIND = "shared:changed";
 /** Events within this window of each other cause one refetch. A Session writing a tree is a burst, not a stream. */
 export const REFRESH_DEBOUNCE_MS = 400;
 
+/**
+ * When to look at S3 again after a burst of events. The event is the Core's local write; the Core uploads it on its next
+ * sync pass, up to `SYNC_INTERVAL_MS` (15 s, core/src/shared-sync.ts) later, and the first look at 400 ms is usually
+ * before the object exists. A second pass can be needed when the first was already running, so there are two follow-ups,
+ * a little past one and two intervals. A delete the Core made reaches S3 the same way.
+ */
+export const REFRESH_FOLLOW_UP_MS = [17_000, 34_000] as const;
+
+/**
+ * The refreshes one burst of events asks for: one after the debounce, then the follow-ups. A new event restarts the
+ * sequence, so a Session writing for a minute is looked at once it has stopped, not on every file.
+ */
+export function createRefreshSchedule(refresh: () => void) {
+  let timers: ReturnType<typeof setTimeout>[] = [];
+  const stop = () => {
+    for (const t of timers) clearTimeout(t);
+    timers = [];
+  };
+  return {
+    /** An event arrived: (re)start the sequence. */
+    note() {
+      stop();
+      timers = [REFRESH_DEBOUNCE_MS, ...REFRESH_FOLLOW_UP_MS].map((ms) => setTimeout(refresh, ms));
+    },
+    stop,
+  };
+}
+
 /** The most paths the state remembers; the oldest go first. The panel link's own replay is bounded the same way. */
 const MAX_PATHS = 10_000;
 
@@ -102,7 +130,7 @@ export function createSharedFeed(coreId: string, since: number, bridge: Bridge, 
 export function useSharedFeed(coreId: string, since: number): SharedFeedState {
   const queryClient = useQueryClient();
   const storeRef = useRef<ReturnType<typeof createSharedFeed> | null>(null);
-  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const scheduleRef = useRef<ReturnType<typeof createRefreshSchedule> | null>(null);
 
   if (storeRef.current === null || (storeRef.current as { coreId?: string }).coreId !== coreId) {
     const bridge = getPanelBridge();
@@ -111,25 +139,22 @@ export function useSharedFeed(coreId: string, since: number): SharedFeedState {
         coreId,
         since,
         bridge ?? NO_BRIDGE,
-        () => {
-          if (timer.current) clearTimeout(timer.current);
-          timer.current = setTimeout(() => {
-            timer.current = null;
-            void queryClient.invalidateQueries({ queryKey: queryKeys.sharedFiles(coreId) });
-          }, REFRESH_DEBOUNCE_MS);
-        },
+        () => scheduleRef.current?.note(),
       ),
       { coreId },
     );
   }
   const store = storeRef.current;
   useEffect(() => {
+    const schedule = createRefreshSchedule(() => void queryClient.invalidateQueries({ queryKey: queryKeys.sharedFiles(coreId) }));
+    scheduleRef.current = schedule;
     const stop = store.connect();
     return () => {
       stop();
-      if (timer.current) clearTimeout(timer.current);
+      schedule.stop();
+      scheduleRef.current = null;
     };
-  }, [store]);
+  }, [store, queryClient, coreId]);
   return useSyncExternalStore(store.subscribe, store.get, () => EMPTY_FEED);
 }
 

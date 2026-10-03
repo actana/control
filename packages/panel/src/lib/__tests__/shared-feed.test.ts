@@ -1,5 +1,5 @@
-import { describe, expect, it, vi } from "vitest";
-import { applyChange, createSharedFeed, EMPTY_FEED, parseSharedChanged } from "../shared-feed";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { applyChange, createRefreshSchedule, createSharedFeed, EMPTY_FEED, parseSharedChanged, REFRESH_FOLLOW_UP_MS } from "../shared-feed";
 
 const payload = (o: Record<string, unknown>) => JSON.stringify({ path: "a/b.md", size: 5, mtime: 2_000, deleted: false, ...o });
 
@@ -89,5 +89,53 @@ describe("the feed for one Core", () => {
     expect(onChange).toHaveBeenCalledTimes(1);
     b.connection[0]!(true);
     expect(onChange).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("looking at S3 again after the Core's sync pass", () => {
+  afterEach(() => vi.useRealTimers());
+
+  it("looks once after the debounce and again after one and two sync intervals, then stops", () => {
+    vi.useFakeTimers();
+    const refresh = vi.fn();
+    createRefreshSchedule(refresh).note();
+    vi.advanceTimersByTime(399);
+    expect(refresh).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(1);
+    expect(refresh).toHaveBeenCalledTimes(1);
+    // The Core uploads on its next pass, at most 15 s later: the follow-ups are just past one and two passes.
+    expect(REFRESH_FOLLOW_UP_MS[0]).toBeGreaterThan(15_000);
+    expect(REFRESH_FOLLOW_UP_MS[1]).toBeGreaterThan(30_000);
+    vi.advanceTimersByTime(REFRESH_FOLLOW_UP_MS[0] - 400);
+    expect(refresh).toHaveBeenCalledTimes(2);
+    vi.advanceTimersByTime(REFRESH_FOLLOW_UP_MS[1] - REFRESH_FOLLOW_UP_MS[0]);
+    expect(refresh).toHaveBeenCalledTimes(3);
+    vi.advanceTimersByTime(120_000);
+    expect(refresh).toHaveBeenCalledTimes(3);
+  });
+
+  it("restarts the sequence on a new event, so a long burst is looked at once it has stopped", () => {
+    vi.useFakeTimers();
+    const refresh = vi.fn();
+    const schedule = createRefreshSchedule(refresh);
+    schedule.note();
+    vi.advanceTimersByTime(10_000);
+    schedule.note();
+    vi.advanceTimersByTime(10_000);
+    // 20 s in: the first look (400 ms) and the second sequence's first look (10.4 s). The first sequence's 17 s follow-up
+    // was cancelled by the second note, or this would be 3.
+    expect(refresh).toHaveBeenCalledTimes(2);
+    vi.advanceTimersByTime(REFRESH_FOLLOW_UP_MS[1] + 1_000);
+    expect(refresh).toHaveBeenCalledTimes(4);
+  });
+
+  it("cancels everything when stopped", () => {
+    vi.useFakeTimers();
+    const refresh = vi.fn();
+    const schedule = createRefreshSchedule(refresh);
+    schedule.note();
+    schedule.stop();
+    vi.advanceTimersByTime(120_000);
+    expect(refresh).not.toHaveBeenCalled();
   });
 });

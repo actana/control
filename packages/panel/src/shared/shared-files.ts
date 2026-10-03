@@ -210,13 +210,23 @@ export type SyncState = { kind: "synced" | "syncing" | "in-storage"; label: stri
 export type CoreFileChange = { size: number; mtime: number; deleted: boolean };
 
 /**
- * Whether a file is on both sides, from the object store's entry and the Core's last event for that path. The two sides
- * hold the same file when the Core's last write has the size the store has; a different size, or a Core that says it is
- * gone, means a sync is still to land. With no event the Panel only knows the store has it. `coreLive` says whether the
- * feed is connected, so "in storage" can say why nothing more is known.
+ * How far the Core's clock may be ahead of the store's before a stored copy that is newer in fact reads as older. The two
+ * stamps come from different machines.
  */
-export function syncStateOf(entry: Pick<SharedFileEntry, "size">, change: CoreFileChange | undefined, coreLive: boolean): SyncState {
+export const SYNC_CLOCK_SKEW_MS = 2_000;
+
+/**
+ * Whether a file is on both sides, from the object store's entry and the Core's last event for that path. The store holds
+ * the Core's file when it has the size the Core wrote **and** was written at or after the Core's last write (within
+ * {@link SYNC_CLOCK_SKEW_MS}): the same size alone would call a same-size rewrite synced while the store still has the old
+ * bytes. A different size, an older copy, or a Core that says it is gone, means a sync is still to land. With no event the
+ * Panel only knows the store has it, and `coreLive` says whether the feed is connected, so "in storage" can say why nothing
+ * more is known. A stored entry with no time is judged on size alone.
+ */
+export function syncStateOf(entry: Pick<SharedFileEntry, "size" | "modifiedAt">, change: CoreFileChange | undefined, coreLive: boolean): SyncState {
   if (!change) return { kind: "in-storage", label: coreLive ? "in storage" : "in storage · Core not connected" };
-  if (change.deleted || change.size !== (entry.size ?? 0)) return { kind: "syncing", label: "syncing with the Core" };
+  const sameSize = change.size === (entry.size ?? 0);
+  const storeIsCurrent = entry.modifiedAt === undefined || entry.modifiedAt + SYNC_CLOCK_SKEW_MS >= change.mtime;
+  if (change.deleted || !sameSize || !storeIsCurrent) return { kind: "syncing", label: "syncing with the Core" };
   return { kind: "synced", label: "synced to S3" };
 }

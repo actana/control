@@ -122,8 +122,13 @@ describe("the details pane: sync state", () => {
   beforeEach(() => api.getSharedFileDetails.mockResolvedValue(answer(entry(path, 3482), { kind: "markdown", text: "x", truncated: false })));
 
   it("says synced to S3 when the Core's last write is the stored size", async () => {
-    details(path, { coreChange: { size: 3482, mtime: NOW, deleted: false }, coreLive: true });
+    details(path, { coreChange: { size: 3482, mtime: NOW - 20_000, deleted: false }, coreLive: true });
     expect(await screen.findByText(/just now · synced to S3/)).toBeTruthy();
+  });
+
+  it("says syncing for a same-size rewrite the stored copy predates", async () => {
+    details(path, { coreChange: { size: 3482, mtime: NOW, deleted: false }, coreLive: true });
+    expect(await screen.findByText(/· syncing with the Core/)).toBeTruthy();
   });
 
   it("says syncing when the Core holds something else", async () => {
@@ -188,9 +193,43 @@ describe("the cards", () => {
     api.getSharedFileDetails.mockResolvedValue(answer(entry("report-1.md"), { kind: "markdown", text: "# impl-558 report\n\n- [x] sudo removed\n\n<img src=x onerror=alert(1)>", truncated: false }));
     main([entry("report-1.md")]);
     const card = await screen.findByTestId("card-markdown");
-    expect(within(card).getByRole("heading", { name: "impl-558 report" })).toBeTruthy();
+    expect(within(card).getByRole("heading", { name: "impl-558 report", hidden: true })).toBeTruthy();
     expect(card.textContent).not.toContain("# impl-558");
     expect(card.innerHTML).not.toMatch(/<img/i);
+  });
+
+  it("puts no link, checkbox or block element inside the card's button, and nothing on it to tab to", async () => {
+    api.getSharedFileDetails.mockResolvedValue(
+      answer(entry("report-1.md"), { kind: "markdown", text: "# head\n\nsee [the PR](https://github.com/acme/app/pull/1) and https://example.test/x\n\n- [x] done\n- [ ] todo\n\n> quote\n\n| a | b |\n|---|---|\n| 1 | 2 |", truncated: false }),
+    );
+    const { container } = main([entry("report-1.md")]);
+    const card = await screen.findByTestId("card-markdown");
+    // A link is its text, a task-list box is its mark, and the file's own source is still rendered as markdown.
+    expect(card.querySelector("a")).toBeNull();
+    expect(card.querySelector("input")).toBeNull();
+    expect(card.textContent).toContain("the PR");
+    expect(card.textContent).toMatch(/\[x\]\s+done/);
+    expect(card.textContent).toMatch(/\[ \]\s+todo/);
+    expect(card.querySelector("h1")).not.toBeNull();
+    // The one button is the name and size line: it holds phrasing content only, and the preview is outside it.
+    const buttons = container.querySelectorAll("button");
+    expect(buttons).toHaveLength(1);
+    expect(buttons[0]!.contains(card)).toBe(false);
+    expect(buttons[0]!.querySelector("a, input, h1, h2, p, ul, li, table, blockquote, pre, div, object")).toBeNull();
+    // Nothing inside the card can take focus, so Tab lands on the button alone.
+    const focusable = container.querySelectorAll('a[href], input, select, textarea, object, [tabindex]:not([tabindex="-1"])');
+    expect(focusable).toHaveLength(0);
+  });
+
+  it("selects the file from a click on its preview, and once from a click on its button", () => {
+    const onSelect = vi.fn();
+    const { container } = wrap(<FilesMain coreId="c1" view="grid" entries={[entry("brief.pdf", 10)]} selected={null} newPaths={new Set()} onOpenFolder={noop} onSelect={onSelect} />);
+    fireEvent.click(container.querySelector("[aria-hidden]")!);
+    expect(onSelect).toHaveBeenCalledTimes(1);
+    onSelect.mockClear();
+    fireEvent.click(container.querySelector("button")!);
+    expect(onSelect).toHaveBeenCalledTimes(1);
+    expect(onSelect).toHaveBeenCalledWith("brief.pdf");
   });
 
   it("shows only the top of a long markdown file on its card", async () => {
