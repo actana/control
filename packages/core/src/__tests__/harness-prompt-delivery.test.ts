@@ -1485,7 +1485,7 @@ describe("promptEchoed", () => {
   });
 });
 
-describe("submitting a long prompt to opencode (paste block, issue 563)", () => {
+describe("verifying opencode's submit (paste block, issue 563)", () => {
   const LONG = "Refactor the authentication module and report back. ".repeat(12);
   const SHORT = "say hello";
   const COMPOSERS: Record<string, string> = {
@@ -1494,6 +1494,12 @@ describe("submitting a long prompt to opencode (paste block, issue 563)", () => 
     "cursor-cli": "Plan, search, build anything",
     pi: "0.0%/1.0M (auto)",
   };
+  /** A turn starting: the user message, the footer, the spinner line. */
+  const WORKING_FRAMES = [
+    `${ESC}[2K\rYou: Refactor the authentication module`,
+    `${ESC}[2K\rbuild  big-pickle  esc interrupt`,
+    `${ESC}[2K\r⠋ Thinking… (1s)`,
+  ];
 
   function deliver(prompt: string, harness: string): Fixture {
     const h = startDelivery(prompt, { harness });
@@ -1504,26 +1510,99 @@ describe("submitting a long prompt to opencode (paste block, issue 563)", () => 
     return h;
   }
 
-  it("gives the paste block its own submit after the first carriage return", () => {
+  const returns = (h: Fixture): number => h.writes.filter((w) => w === "\r").length;
+
+  it("keeps pressing return, with growing gaps, until a composer that wakes at 3 s takes it", () => {
     const h = deliver(LONG, "opencode");
-    expect(h.writes).toEqual([LONG, "\r"]);
-    h.clock.advance(deliveryProfileFor("opencode").pasteBlockSubmitGapMs ?? 0);
-    expect(h.writes).toEqual([LONG, "\r", "\r"]);
+    // The composer swallows every return before it is ready, and says nothing.
+    // Step the clock to see when each return goes out.
+    const at: number[] = [];
+    let seen = returns(h);
+    for (let i = 0; i < 50 && seen < 3; i += 1) {
+      h.clock.advance(100);
+      if (returns(h) > seen) {
+        seen = returns(h);
+        at.push(h.clock.time);
+      }
+    }
+    expect(at).toHaveLength(2);
+    expect(at[0]).toBeGreaterThan(0);
+    // The gaps grow: a second to the first retry, two more to the next.
+    expect(at[1] - at[0]).toBeGreaterThanOrEqual(2_000);
+    expect(at[1] - at[0]).toBeLessThanOrEqual(2_100);
+    // This one lands: the harness starts working.
+    for (const frame of WORKING_FRAMES) h.delivery.onOutput(frame);
     h.clock.advance(60_000);
-    expect(h.writes).toEqual([LONG, "\r", "\r"]);
+    expect(returns(h)).toBe(3);
   });
 
-  it("does not double-submit a short prompt", () => {
+  it("never sends a return once the harness is working", () => {
+    const h = deliver(LONG, "opencode");
+    h.delivery.onOutput(WORKING_FRAMES[1]);
+    h.clock.advance(60_000);
+    expect(h.writes).toEqual([LONG, "\r"]);
+  });
+
+  it("stops after a bounded number of returns when nothing ever takes it", () => {
+    const h = deliver(LONG, "opencode");
+    h.clock.advance(120_000);
+    const gaps = deliveryProfileFor("opencode").submitRetryGapsMs ?? [];
+    expect(returns(h)).toBe(1 + gaps.length);
+    expect(Math.max(...gaps)).toBeLessThanOrEqual(10_000);
+  });
+
+  it("counts a turn-start chunk plus spinner ticks as working, with no hint on screen", () => {
+    const h = deliver(LONG, "opencode");
+    h.delivery.onOutput(`${ESC}[2K\rYou: Refactor the authentication module\n⠋ Thinking… (0s)`);
+    h.clock.advance(300);
+    h.delivery.onOutput(`${ESC}[2K\r⠙ Thinking… (1s)`);
+    h.clock.advance(300);
+    h.delivery.onOutput(`${ESC}[2K\r⠹ Thinking… (2s)`);
+    h.clock.advance(120_000);
+    expect(h.writes).toEqual([LONG, "\r"]);
+  });
+
+  it("reads the hint across absolute cursor moves between its words", () => {
+    const h = deliver(LONG, "opencode");
+    h.delivery.onOutput(`${ESC}[40;3H▀▀▀▀▀▀  esc${ESC}[40;12Hinterrupt${ESC}[40;30H1.2K`);
+    h.clock.advance(120_000);
+    expect(h.writes).toEqual([LONG, "\r"]);
+  });
+
+  it("still retries into an idle screen that repainted once", () => {
+    const h = deliver(LONG, "opencode");
+    h.delivery.onOutput(`${ESC}[2K\r[Pasted ~12 lines] Build  big-pickle`);
+    h.clock.advance(1_001);
+    expect(returns(h)).toBe(2);
+  });
+
+  it("says so when the retries run out unconfirmed", () => {
+    const h = deliver(LONG, "opencode");
+    h.clock.advance(120_000);
+    expect(h.events.filter((e) => e.phase === "submit-unconfirmed")).toEqual([
+      { phase: "submit-unconfirmed", retries: 5 },
+    ]);
+  });
+
+  it("does not report unconfirmed for a submit that took", () => {
+    const h = deliver(LONG, "opencode");
+    h.delivery.onOutput(WORKING_FRAMES[1]);
+    h.clock.advance(120_000);
+    expect(h.events.some((e) => e.phase === "submit-unconfirmed")).toBe(false);
+  });
+
+  it("does not repeat a short prompt that the first return took", () => {
     const h = deliver(SHORT, "opencode");
+    for (const frame of WORKING_FRAMES) h.delivery.onOutput(frame);
     h.clock.advance(60_000);
     expect(h.writes).toEqual([SHORT, "\r"]);
   });
 
-  it("leaves every other harness at one submit, long prompt or not", () => {
+  it("leaves every other harness at one submit", () => {
     for (const harness of ["claude-code", "codex", "cursor-cli", "pi"]) {
       const h = deliver(LONG, harness);
-      h.clock.advance(60_000);
-      expect(h.writes.filter((w) => w === "\r"), harness).toHaveLength(1);
+      h.clock.advance(120_000);
+      expect(returns(h), harness).toBe(1);
     }
   });
 
@@ -1532,6 +1611,16 @@ describe("submitting a long prompt to opencode (paste block, issue 563)", () => 
     h.delivery.dispose();
     h.clock.advance(60_000);
     expect(h.writes).toEqual([LONG, "\r"]);
+  });
+
+  it("sends nothing more when disposed after one retry, with the next check armed", () => {
+    const h = deliver(LONG, "opencode");
+    h.clock.advance(1_001);
+    expect(returns(h)).toBe(2);
+    h.delivery.dispose();
+    h.clock.advance(120_000);
+    expect(returns(h)).toBe(2);
+    expect(h.events.some((e) => e.phase === "submit-unconfirmed")).toBe(false);
   });
 });
 
