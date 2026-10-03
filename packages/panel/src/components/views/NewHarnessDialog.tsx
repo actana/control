@@ -10,11 +10,10 @@ import { getPanelBridge } from "~/lib/panel-bridge";
 import {
   harnessCanLaunch,
   availabilityFor,
-  installStateFor,
   type CliAvailability,
   useCliAvailability,
-  useHarnessInstall,
 } from "~/lib/cli-availability";
+import { coreHasHarness } from "~/lib/core-has-harness";
 import { TITLE_WAITING } from "~/lib/session-sentinels";
 import { useSettings } from "~/queries";
 import { HARNESS_REGISTRY } from "@actana/shared/harnesses";
@@ -49,7 +48,8 @@ const labelStyle: CSSProperties = {
 
 /**
  * Start a new session (design screen 03, issue 560): harness picker + prompt,
- * a Runs on line, no path or cwd. Remember is per Core.
+ * a Runs on line, no path or cwd. Remember is per Core. The picker lists only
+ * harnesses this Core already has; missing CLIs install from Settings › Providers.
  */
 export function NewHarnessDialog({
   open,
@@ -90,8 +90,6 @@ export function NewHarnessDialog({
   const [submitting, setSubmitting] = useState(false);
   const promptRef = useRef<HTMLTextAreaElement>(null);
   const cliAvailability = useCliAvailability(coreId);
-  const { installs, install } = useHarnessInstall(coreId);
-  const [installIntent, setInstallIntent] = useState<Harness | null>(null);
   const { data: settings } = useSettings();
   const { cores } = useCores();
   const coreLabel =
@@ -105,8 +103,9 @@ export function NewHarnessDialog({
     () =>
       visibleLauncherHarnesses(launcherConfig)
         .filter((id) => HARNESS_REGISTRY[id].uiVisible)
+        .filter((id) => coreHasHarness(cliAvailability, id))
         .map((id) => ({ id, ...HARNESS_REGISTRY[id] })),
-    [launcherConfig],
+    [launcherConfig, cliAvailability],
   );
 
   const buildRememberPatch = (
@@ -135,9 +134,6 @@ export function NewHarnessDialog({
         : harnessOptions[0]?.id ?? "claude-code";
     setHarness(seedHarness);
     setPrompt("");
-    setInstallIntent(
-      harnessOptions.find((a) => installStateFor(installs, a.id).installing)?.id ?? null,
-    );
     setRememberSettings(!!initialRemember?.rememberHarnessSettings);
     setError(null);
     setSubmitting(false);
@@ -169,7 +165,7 @@ export function NewHarnessDialog({
     }
     if (selectedAvailability.status === "missing") {
       setError(
-        `${HARNESS_REGISTRY[agent].command} is not on PATH on \`${coreLabel}\`.`,
+        `${HARNESS_REGISTRY[agent].command} is not on PATH on \`${coreLabel}\`. Install it from Settings › Providers.`,
       );
       return;
     }
@@ -194,26 +190,12 @@ export function NewHarnessDialog({
     }
   };
 
-  const startInstall = (nextHarness: Harness) => {
-    setError(null);
-    setInstallIntent(nextHarness);
-    install(nextHarness);
-  };
-
-  useEffect(() => {
-    if (!open || !installIntent) return;
-    if (!harnessCanLaunch(cliAvailability, installIntent)) return;
-    setInstallIntent(null);
-    selectHarness(installIntent);
-  }, [open, installIntent, cliAvailability]);
-
   useEffect(() => {
     if (!open) return;
-    if (availabilityFor(cliAvailability, agent).status !== "missing") return;
-    if (installStateFor(installs, agent).installing) return;
-    const next = harnessOptions.find((a) => harnessCanLaunch(cliAvailability, a.id))?.id;
-    if (next && next !== agent) setHarness(next);
-  }, [open, agent, cliAvailability, harnessOptions, installs]);
+    if (harnessOptions.some((a) => a.id === agent)) return;
+    const next = harnessOptions[0]?.id;
+    if (next) setHarness(next);
+  }, [open, agent, harnessOptions]);
 
   useEffect(() => {
     if (!open) return;
@@ -249,6 +231,7 @@ export function NewHarnessDialog({
   const selectedHarnessOutdated = selectedAvailability.status === "outdated";
   const startDisabled =
     submitting ||
+    harnessOptions.length === 0 ||
     (!selectedHarnessOutdated && !harnessCanLaunch(cliAvailability, agent));
 
   useHotkey("dialog.submit", () => void submit(), { enabled: open && !startDisabled });
@@ -293,111 +276,110 @@ export function NewHarnessDialog({
 
         <div>
           <label style={labelStyle}>Harness</label>
-          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-            {harnessOptions.map((a) => {
-              const meta = HARNESS_META[a.id];
-              const selected = agent === a.id;
-              const availability = availabilityFor(cliAvailability, a.id);
-              const installState = installStateFor(installs, a.id);
-              const installing = installState.installing;
-              const cliChecking =
-                !installing &&
-                (availability.status === "checking" ||
-                  (availability.status === "unknown" && !!getPanelBridge()));
-              const cliOutdated = availability.status === "outdated";
-              const cliMissing =
-                !a.disabled && !cliOutdated && (availability.status === "missing" || installing);
-              const disabled =
-                !cliOutdated && !cliMissing && !harnessCanLaunch(cliAvailability, a.id);
-              return (
-                <div key={a.id} style={{ position: "relative", display: "flex" }}>
-                  <button
-                    onClick={() => !disabled && selectHarness(a.id)}
-                    disabled={disabled}
-                    aria-disabled={disabled}
-                    title={
-                      a.disabled
-                        ? "Coming soon"
-                        : installing
-                          ? `Installing ${a.command} on ${coreLabel}`
-                        : cliMissing
-                          ? `${a.command} was not found on PATH`
+          {harnessOptions.length === 0 ? (
+            <div
+              style={{
+                padding: "12px 14px",
+                background: "var(--surface-0)",
+                border: "1px solid var(--border)",
+                borderRadius: 8,
+                fontFamily: "var(--mono)",
+                fontSize: 12,
+                color: "var(--text-dim)",
+                lineHeight: 1.45,
+              }}
+            >
+              This Core has no harness CLIs yet. Install one from Settings › Providers.
+            </div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {harnessOptions.map((a) => {
+                const meta = HARNESS_META[a.id];
+                const selected = agent === a.id;
+                const availability = availabilityFor(cliAvailability, a.id);
+                const cliChecking =
+                  availability.status === "checking" ||
+                  (availability.status === "unknown" && !!getPanelBridge());
+                const cliOutdated = availability.status === "outdated";
+                const disabled =
+                  !cliOutdated && !harnessCanLaunch(cliAvailability, a.id);
+                return (
+                  <div key={a.id} style={{ position: "relative", display: "flex" }}>
+                    <button
+                      onClick={() => !disabled && selectHarness(a.id)}
+                      disabled={disabled}
+                      aria-disabled={disabled}
+                      title={
+                        a.disabled
+                          ? "Coming soon"
                           : cliOutdated
                             ? `${a.command} must be updated before launching`
                           : cliChecking
                             ? `Checking for ${a.command}`
                           : undefined
-                    }
-                    style={{
-                      flex: 1,
-                      display: "flex",
-                      alignItems: "center",
-                      gap: 12,
-                      textAlign: "left",
-                      padding: cliMissing ? "12px 108px 12px 14px" : "12px 14px",
-                      background: selected ? "var(--surface-2)" : "var(--surface-0)",
-                      border: `1px solid ${selected ? "var(--accent)" : "var(--border)"}`,
-                      borderRadius: 8,
-                      cursor: disabled ? "not-allowed" : cliMissing ? "default" : "pointer",
-                      color: "var(--text)",
-                      boxShadow: selected ? "0 0 0 1px var(--accent)" : "none",
-                      opacity: disabled ? 0.56 : 1,
-                    }}
-                  >
-                    <div
+                      }
                       style={{
-                        width: 32,
-                        height: 32,
-                        borderRadius: 6,
-                        background: `${meta.color}22`,
-                        border: `1px solid ${meta.color}44`,
+                        flex: 1,
                         display: "flex",
                         alignItems: "center",
-                        justifyContent: "center",
-                        color: meta.color,
-                        fontSize: 15,
-                        fontFamily: "var(--mono)",
-                        flexShrink: 0,
+                        gap: 12,
+                        textAlign: "left",
+                        padding: "12px 14px",
+                        background: selected ? "var(--surface-2)" : "var(--surface-0)",
+                        border: `1px solid ${selected ? "var(--accent)" : "var(--border)"}`,
+                        borderRadius: 8,
+                        cursor: disabled ? "not-allowed" : "pointer",
+                        color: "var(--text)",
+                        boxShadow: selected ? "0 0 0 1px var(--accent)" : "none",
+                        opacity: disabled ? 0.56 : 1,
                       }}
                     >
-                      <HarnessLogo agent={a.id} size={20} title={a.label} />
-                    </div>
-                    <div style={{ flex: 1 }}>
-                      <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 2 }}>{a.label}</div>
                       <div
                         style={{
+                          width: 32,
+                          height: 32,
+                          borderRadius: 6,
+                          background: `${meta.color}22`,
+                          border: `1px solid ${meta.color}44`,
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          color: meta.color,
+                          fontSize: 15,
                           fontFamily: "var(--mono)",
-                          fontSize: 11,
-                          color: "var(--text-dim)",
-                          lineHeight: 1.4,
+                          flexShrink: 0,
                         }}
                       >
-                        {a.description}
+                        <HarnessLogo agent={a.id} size={20} title={a.label} />
                       </div>
-                      {(cliChecking || cliMissing || cliOutdated) && (
+                      <div style={{ flex: 1 }}>
+                        <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 2 }}>{a.label}</div>
                         <div
                           style={{
-                            marginTop: 5,
                             fontFamily: "var(--mono)",
-                            fontSize: 10.5,
-                            color:
-                              (cliMissing && !installing) || cliOutdated
-                                ? "var(--status-failed)"
-                                : "var(--text-faint)",
-                            lineHeight: 1.35,
+                            fontSize: 11,
+                            color: "var(--text-dim)",
+                            lineHeight: 1.4,
                           }}
                         >
-                          {cliMissing
-                            ? installing
-                              ? `Installing on ${coreLabel}...`
-                              : installState.error ?? "CLI not found on PATH."
-                            : cliOutdated
+                          {a.description}
+                        </div>
+                        {(cliChecking || cliOutdated) && (
+                          <div
+                            style={{
+                              marginTop: 5,
+                              fontFamily: "var(--mono)",
+                              fontSize: 10.5,
+                              color: cliOutdated ? "var(--status-failed)" : "var(--text-faint)",
+                              lineHeight: 1.35,
+                            }}
+                          >
+                            {cliOutdated
                               ? `Update required: ${availability.label ?? a.label} ${availability.requiredVersion ?? "latest"} or newer.`
                               : "Checking PATH..."}
-                        </div>
-                      )}
-                    </div>
-                    {!cliMissing && (
+                          </div>
+                        )}
+                      </div>
                       <code
                         style={{
                           fontFamily: "var(--mono)",
@@ -419,34 +401,12 @@ export function NewHarnessDialog({
                               ? "Checking"
                               : `$${a.command}`}
                       </code>
-                    )}
-                  </button>
-                  {cliMissing && (
-                    <Btn
-                      size="sm"
-                      variant="frame"
-                      icon={installing ? undefined : "download"}
-                      disabled={installing}
-                      onClick={() => startInstall(a.id)}
-                      title={
-                        installing
-                          ? `Installing ${a.command} on ${coreLabel}`
-                          : `Install ${a.command} on ${coreLabel}`
-                      }
-                      style={{
-                        position: "absolute",
-                        right: 10,
-                        top: "50%",
-                        transform: "translateY(-50%)",
-                      }}
-                    >
-                      {installing ? "Installing..." : "Install"}
-                    </Btn>
-                  )}
-                </div>
-              );
-            })}
-          </div>
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </div>
 
         <div>

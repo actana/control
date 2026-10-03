@@ -55,6 +55,8 @@ export function UserTerminalPanel() {
     coreId,
     panelOpen,
     setPanelOpen,
+    panelMaximized,
+    setPanelMaximized,
     sessions,
     focusedId,
     focusTerminal,
@@ -71,13 +73,16 @@ export function UserTerminalPanel() {
 
   const visibleSessions = sessions.filter((s) => !hiddenIds.has(s.terminal.id));
 
-  const { size: height, onMouseDown: onResizeMouseDown } = useResizablePanel({
+  const { size: storedHeight, onMouseDown: onResizeMouseDown } = useResizablePanel({
     storageKey: "mc:userTerminalsPanelHeight",
     axis: "y",
     defaultSize: 320,
     minSize: MIN_HEIGHT,
     maxSize: (vh) => vh - 160,
   });
+  // Maximise fills the viewport minus the Core header chrome (issue 560); the
+  // stored height returns when maximise is cleared, so resize still sticks.
+  const height: number | string = panelMaximized ? "calc(100vh - 120px)" : storedHeight;
 
   const paneRowRef = useRef<HTMLDivElement | null>(null);
   const [paneWeights, setPaneWeights] = useState<PaneWeights>(() => readStoredWeights());
@@ -187,7 +192,7 @@ export function UserTerminalPanel() {
         overflow: "visible",
       }}
     >
-      {panelOpen && (
+      {panelOpen && !panelMaximized && (
         <div
           onMouseDown={onResizeMouseDown}
           title="Drag to resize"
@@ -339,6 +344,27 @@ export function UserTerminalPanel() {
               New Terminal
             </Btn>
           </HotkeyTooltip>
+          <label
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 6,
+              fontFamily: "var(--mono)",
+              fontSize: 11,
+              color: "var(--text-dim)",
+              cursor: "pointer",
+              userSelect: "none",
+              padding: "2px 4px",
+            }}
+          >
+            <input
+              type="checkbox"
+              checked={panelMaximized}
+              aria-label="Maximise terminal"
+              onChange={(e) => setPanelMaximized(e.target.checked)}
+            />
+            maximise
+          </label>
           <HotkeyTooltip
             action="terminal.toggle"
             label={panelOpen ? "Collapse panel" : "Expand panel"}
