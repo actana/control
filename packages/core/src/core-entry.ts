@@ -148,6 +148,7 @@ import { bootstrapCoreDb } from "./core-db-bootstrap";
 import { HarnessAvailabilityStore } from "@actana/shared/harness-availability-store";
 import { HarnessSkillWatcher } from "./harness-skill-watcher";
 import { ensureOrchestrationSkillViaCore } from "./core-home-ops-client";
+import { coreAvailabilityProbe } from "./harness-availability-probe";
 import { HarnessInstallService } from "./harness-install-service";
 import { daemonHarnessSystem } from "./core-harness-system";
 import { legacyEnvRefusal, plaintextExposureRefusal } from "./core-boot-refusals";
@@ -434,6 +435,9 @@ async function startCore(): Promise<void> {
       skillWatcher.observe(kind, payload, eventId);
       return eventId;
     },
+    // In the container the daemon cannot look into core's home, so core does
+    // the lookup (#559); undefined elsewhere, which keeps the in-process probe.
+    probeAsync: coreAvailabilityProbe(),
   });
   availabilityStore.start();
 
@@ -441,7 +445,7 @@ async function startCore(): Promise<void> {
   // this daemon is running. The 60s tick would find it eventually; SIGHUP is
   // how the CLI says "now", so a Panel sees the agent it just installed
   // without a restart and without a wait. Unknown senders cost one probe.
-  process.on("SIGHUP", () => availabilityStore.runProbe());
+  process.on("SIGHUP", () => void availabilityStore.refresh());
 
   // Issue 83 (ADR 0021): the Panel can now ask this Core to install a Harness
   // it found missing. Same non-interactive path `actana harnesses install <id>`
@@ -451,7 +455,7 @@ async function startCore(): Promise<void> {
   // user and the daemon's own home would be the wrong place to install into.
   const harnessInstalls = new HarnessInstallService({
     availability: () => availabilityStore.snapshot(),
-    reprobe: () => availabilityStore.runProbe(),
+    reprobe: () => availabilityStore.refresh(),
     system: daemonHarnessSystem(),
     platform: process.platform,
     homeDir: coreHome(),

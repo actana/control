@@ -277,6 +277,16 @@ COPY core-entrypoint.sh /usr/libexec/actana/core-entrypoint.sh
 RUN chown root:root /usr/libexec/actana/core-entrypoint.sh \
  && chmod 0755 /usr/libexec/actana/core-entrypoint.sh
 
+# The Harness directories on a login shell's PATH (#559). Harnesses install into
+# core's home as `core`; the daemon (`actana`) puts those directories on every
+# Session's PATH itself and asks `core` to look in them, and it never writes core's
+# profile (it could not: the home is 0750 core:core). A login shell from
+# `docker exec -u core core bash -l` gets them here instead, from a root-owned file
+# that the Harness registry's directories are tested against.
+COPY core-harness-path.sh /etc/profile.d/actana-harness-path.sh
+RUN chown root:root /etc/profile.d/actana-harness-path.sh \
+ && chmod 0644 /etc/profile.d/actana-harness-path.sh
+
 # Last root step (#558): strip every setuid/setgid bit the base packages ship
 # (su, mount, passwd, ssh-keysign, unix_chkpwd, …). no-new-privs on the daemon
 # and on compose exec is not enough — a plain `docker exec` shell has neither.

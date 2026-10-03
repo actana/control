@@ -14,6 +14,7 @@ import {
   coreShell,
   coreUsername,
 } from "../core-home";
+import { harnessHomePathSuffixes } from "../harness-cli-config";
 
 const CONTAINER = { AC_CORE_HOME: "/home/core", AC_CORE_UID: "1000", AC_CORE_GID: "1000" };
 const hasSetpriv = () => true;
@@ -185,7 +186,22 @@ describe("coreChildEnv", () => {
     expect(env.LOGNAME).toBe("core");
     expect(env.SHELL).toBe("/bin/bash");
     expect(env.NPM_CONFIG_PREFIX).toBe("/home/core/.local");
-    expect(env.PATH).toBe("/home/core/.local/bin:/opt/actana/bin:/usr/bin:/bin");
+    expect(env.PATH).toBe("/home/core/.local/bin:/home/core/.opencode/bin:/opt/actana/bin:/usr/bin:/bin");
+  });
+
+  // #559: only `~/.local/bin` was on a Session's PATH, so an OpenCode installed into
+  // `~/.opencode/bin` was never found. Every directory the registry says a Harness
+  // installs into has to lead, however the daemon's own PATH looks.
+  it("leads with every home directory the Harness registry names, .local/bin first", () => {
+    const entries = coreChildEnv(identity, { PATH: "/usr/bin" }).PATH.split(":");
+    const expected = harnessHomePathSuffixes("linux").map((suffix) => `/home/core/${suffix}`);
+    expect(expected.length).toBeGreaterThan(1);
+    expect(entries.slice(0, expected.length + 1)).toEqual(
+      expect.arrayContaining(["/home/core/.local/bin", ...expected]),
+    );
+    expect(entries[0]).toBe("/home/core/.local/bin");
+    for (const dir of expected) expect(entries.filter((entry) => entry === dir)).toHaveLength(1);
+    expect(entries.at(-1)).toBe("/usr/bin");
   });
 
   it("does not leak the daemon's state, secrets or identity variables", () => {
@@ -224,7 +240,7 @@ describe("coreChildEnv", () => {
     expect(env.XDG_STATE_HOME).toBeUndefined();
     expect(env.FOO_CACHE).toBeUndefined();
     expect(env.SOME_TOOL_DB).toBeUndefined();
-    expect(env.PATH).toBe("/home/core/.local/bin:/opt/actana/bin:/usr/bin");
+    expect(env.PATH).toBe("/home/core/.local/bin:/home/core/.opencode/bin:/opt/actana/bin:/usr/bin");
     // Not secret, and the CLI in a Session may need it.
     expect(env.ACTANA_ROOT).toBe("/opt/actana");
   });
@@ -251,7 +267,7 @@ describe("coreChildEnv", () => {
       const env = coreChildEnv(identity, {});
       expect(env.SENTINEL_DAEMON_ONLY).toBeUndefined();
       expect(env.PATH).toBe(
-        "/home/core/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        "/home/core/.local/bin:/home/core/.opencode/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
       );
     } finally {
       delete process.env.SENTINEL_DAEMON_ONLY;
@@ -260,7 +276,7 @@ describe("coreChildEnv", () => {
 
   it("does not repeat core's local bin", () => {
     const env = coreChildEnv(identity, { PATH: "/home/core/.local/bin:/usr/bin" });
-    expect(env.PATH).toBe("/home/core/.local/bin:/usr/bin");
+    expect(env.PATH).toBe("/home/core/.local/bin:/home/core/.opencode/bin:/usr/bin");
   });
 
   it("is what asCore puts on the spawn, and an absent env does not mean the daemon's", () => {

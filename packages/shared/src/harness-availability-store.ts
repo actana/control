@@ -34,8 +34,8 @@ import {
   type CoreLinkHarnessAvailabilityMap,
 } from "./sdk-link-frames";
 import {
-  resolveHarnessCommandMeetingVersion,
-  resolveHarnessCommandOnPath,
+  pickHarnessCandidateMeetingVersion,
+  resolveAllHarnessCommandsOnPath,
 } from "./harness-cli-resolution";
 import { sanitizedProcessEnv } from "./shell-env";
 
@@ -58,12 +58,22 @@ export type HarnessAvailabilityStoreOptions = {
   tickMs?: number;
   /** Injectable probe for tests. Default runs the real PATH resolution. */
   probe?: (agent: Harness) => CoreLinkHarnessAvailability;
+  /**
+   * An asynchronous probe, for a Core whose daemon cannot look into the home the
+   * Harness CLIs live in (the container: the daemon is `actana`, the home is
+   * `core`'s and 0750). When set it replaces `probe` for {@link refresh}, which
+   * is what the tick, SIGHUP and the install service use; {@link runProbe} stays
+   * the synchronous one-shot the CLI and the tests call.
+   */
+  probeAsync?: (agent: Harness) => Promise<CoreLinkHarnessAvailability>;
 };
 
 export class HarnessAvailabilityStore {
   private readonly appendEvent: HarnessAvailabilityStoreOptions["appendEvent"];
   private readonly tickMs: number;
   private readonly probe: (agent: Harness) => CoreLinkHarnessAvailability;
+  private readonly probeAsync: ((agent: Harness) => Promise<CoreLinkHarnessAvailability>) | null;
+  private refreshing: Promise<void> | null = null;
   private current: CoreLinkHarnessAvailabilityMap;
   private timer: ReturnType<typeof setInterval> | null = null;
 
@@ -71,6 +81,7 @@ export class HarnessAvailabilityStore {
     this.appendEvent = opts.appendEvent;
     this.tickMs = opts.tickMs ?? DEFAULT_AVAILABILITY_TICK_MS;
     this.probe = opts.probe ?? defaultProbe;
+    this.probeAsync = opts.probeAsync ?? null;
     // Start every agent as `checking` so the Panel has a stable initial
     // rendering (matches the pre-issue-11 boot flow where the store seeds
     // "checking" before the first probe completes).
@@ -91,8 +102,8 @@ export class HarnessAvailabilityStore {
    */
   start(): void {
     if (this.timer) return;
-    this.runProbe();
-    this.timer = setInterval(() => this.runProbe(), this.tickMs);
+    void this.refresh();
+    this.timer = setInterval(() => void this.refresh(), this.tickMs);
     if (typeof this.timer.unref === "function") this.timer.unref();
   }
 
@@ -114,18 +125,51 @@ export class HarnessAvailabilityStore {
     const next: CoreLinkHarnessAvailabilityMap = {};
     for (const agent of UI_HARNESSES) {
       if (HARNESS_REGISTRY[agent].disabled) {
-        next[agent] = { status: "missing", reason: "disabled" };
+        next[agent] = DISABLED;
         continue;
       }
       try {
         next[agent] = this.probe(agent);
       } catch (err) {
-        next[agent] = {
-          status: "missing",
-          reason: err instanceof Error ? err.message : "probe-failed",
-        };
+        next[agent] = probeFailed(err);
       }
     }
+    this.publish(next);
+  }
+
+  /**
+   * Re-probe with the asynchronous probe when there is one, else {@link runProbe}.
+   * Resolves once the map is published. Overlapping calls share one probe: a
+   * probe that asks another process per Harness can outlast a tick, and two
+   * concurrent rounds would only race to publish the same answer.
+   */
+  refresh(): Promise<void> {
+    const probeAsync = this.probeAsync;
+    if (!probeAsync) {
+      this.runProbe();
+      return Promise.resolve();
+    }
+    this.refreshing ??= (async () => {
+      const next: CoreLinkHarnessAvailabilityMap = {};
+      for (const agent of UI_HARNESSES) {
+        if (HARNESS_REGISTRY[agent].disabled) {
+          next[agent] = DISABLED;
+          continue;
+        }
+        try {
+          next[agent] = await probeAsync(agent);
+        } catch (err) {
+          next[agent] = probeFailed(err);
+        }
+      }
+      this.publish(next);
+    })().finally(() => {
+      this.refreshing = null;
+    });
+    return this.refreshing;
+  }
+
+  private publish(next: CoreLinkHarnessAvailabilityMap): void {
     if (mapsEqual(this.current, next)) return;
     this.current = next;
     try {
@@ -142,6 +186,12 @@ export class HarnessAvailabilityStore {
   }
 }
 
+const DISABLED: CoreLinkHarnessAvailability = { status: "missing", reason: "disabled" };
+
+function probeFailed(err: unknown): CoreLinkHarnessAvailability {
+  return { status: "missing", reason: err instanceof Error ? err.message : "probe-failed" };
+}
+
 /**
  * Default probe — PATH resolution plus a version check. Runs in the Core
  * process, so `sanitizedProcessEnv` +
@@ -150,18 +200,38 @@ export class HarnessAvailabilityStore {
 function defaultProbe(agent: Harness): CoreLinkHarnessAvailability {
   const command = HARNESS_REGISTRY[agent].command;
   const env = sanitizedProcessEnv();
-  const requirement = HARNESS_CLI_CONFIG_BY_COMMAND[command];
   const platform = os.platform();
+  return availabilityFromCandidates(
+    agent,
+    resolveAllHarnessCommandsOnPath(command, env, platform),
+    env,
+    platform,
+  );
+}
+
+/**
+ * The availability of `agent` given every executable match for its command, in
+ * search order. The matches come from whoever can see the directories: this
+ * process, or in the container `core` (the daemon cannot read core's home). The
+ * version probes that follow start as `core` either way.
+ */
+export function availabilityFromCandidates(
+  agent: Harness,
+  candidates: readonly string[],
+  env: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform = os.platform(),
+): CoreLinkHarnessAvailability {
+  const command = HARNESS_REGISTRY[agent].command;
+  const requirement = HARNESS_CLI_CONFIG_BY_COMMAND[command];
 
   if (!requirement) {
-    // No version requirement registered — fall back to a plain PATH lookup.
-    const resolved = resolveHarnessCommandOnPath(command, env, platform);
-    return resolved
-      ? { status: "available", path: resolved }
+    // No version requirement registered — a plain PATH lookup is the answer.
+    return candidates[0]
+      ? { status: "available", path: candidates[0] }
       : { status: "missing", reason: "not-found" };
   }
 
-  const meeting = resolveHarnessCommandMeetingVersion(command, requirement, env, platform);
+  const meeting = pickHarnessCandidateMeetingVersion(candidates, requirement, env, platform);
   if (!meeting) {
     return { status: "missing", reason: "not-found" };
   }

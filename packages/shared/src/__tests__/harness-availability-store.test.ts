@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { HarnessAvailabilityStore } from "../harness-availability-store";
 import { HARNESSES_AVAILABILITY_EVENT_KIND } from "@actana/sdk/core";
-import { UI_HARNESSES } from "@actana/shared/harnesses";
+import { HARNESS_REGISTRY, UI_HARNESSES } from "@actana/shared/harnesses";
 import { offerableHarnessIds } from "@actana/shared/actana-harnesses";
 import type { Harness } from "@actana/shared/domain";
 
@@ -142,3 +142,64 @@ describe("HarnessAvailabilityStore", () => {
 function mkEntry(status: "available" | "missing", path?: string) {
   return path ? { status, path } : { status };
 }
+
+// #559: in the container the daemon cannot look into core's home, so the probe is a
+// question asked of another process, and therefore asynchronous.
+describe("HarnessAvailabilityStore.refresh with an asynchronous probe", () => {
+  it("publishes what the asynchronous probe found, once", async () => {
+    const appendEvent: ReturnType<typeof vi.fn<AppendEventFn>> = vi.fn(() => 1);
+    const probe = vi.fn(() => ({ status: "missing" as const, reason: "sync-probe-used" }));
+    const store = new HarnessAvailabilityStore({
+      appendEvent,
+      probe,
+      probeAsync: async (agent) => ({ status: "available", path: `/home/core/.local/bin/${agent}` }),
+    });
+    await store.refresh();
+    await store.refresh();
+    expect(probe).not.toHaveBeenCalled();
+    expect(appendEvent).toHaveBeenCalledTimes(1);
+    expect(store.snapshot()["claude-code"]).toEqual({
+      status: "available",
+      path: "/home/core/.local/bin/claude-code",
+    });
+  });
+
+  it("runs overlapping refreshes as one round", async () => {
+    let calls = 0;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const store = new HarnessAvailabilityStore({
+      appendEvent: () => 1,
+      probeAsync: async () => {
+        calls += 1;
+        await gate;
+        return { status: "missing", reason: "not-found" };
+      },
+    });
+    const first = store.refresh();
+    const second = store.refresh();
+    release();
+    await Promise.all([first, second]);
+    expect(calls).toBe(UI_HARNESSES.filter((agent) => !HARNESS_REGISTRY[agent].disabled).length);
+  });
+
+  it("records a probe that throws as missing, not as a rejection", async () => {
+    const store = new HarnessAvailabilityStore({
+      appendEvent: () => 1,
+      probeAsync: async () => {
+        throw new Error("helper did not finish");
+      },
+    });
+    await expect(store.refresh()).resolves.toBeUndefined();
+    expect(store.snapshot()["claude-code"]).toEqual({ status: "missing", reason: "helper did not finish" });
+  });
+
+  it("falls back to the synchronous probe when there is no asynchronous one", async () => {
+    const store = new HarnessAvailabilityStore({
+      appendEvent: () => 1,
+      probe: () => ({ status: "available", path: "/x" }),
+    });
+    await store.refresh();
+    expect(store.snapshot()["claude-code"]).toEqual({ status: "available", path: "/x" });
+  });
+});
