@@ -80,7 +80,7 @@ product in one command:
 ```bash
 git clone https://github.com/actana/control && cd control
 docker compose -f deploy/docker-compose.yml up -d
-docker compose -f deploy/docker-compose.yml exec core actana pair new
+docker compose -f deploy/docker-compose.yml exec -u actana core actana pair new
 ```
 
 That last command prints a one-time pairing code, the Core's CA fingerprint and
