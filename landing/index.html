@@ -134,7 +134,7 @@
               <div class="codeblock">
                 <pre><code>git clone https://github.com/actana/control &amp;&amp; cd control
 docker compose -f deploy/docker-compose.yml up -d
-docker compose -f deploy/docker-compose.yml exec core actana pair new <span class="cmt"># a one-time code</span></code></pre>
+docker compose -f deploy/docker-compose.yml exec -u actana core actana pair new <span class="cmt"># a one-time code</span></code></pre>
                 <button class="copy" type="button" data-copy>Copy</button>
               </div>
               <p class="install-note">
@@ -598,7 +598,7 @@ actana setup</code></pre>
               <div class="codeblock">
                 <pre><code>git clone https://github.com/actana/control &amp;&amp; cd control
 docker compose -f deploy/docker-compose.yml up -d
-docker compose -f deploy/docker-compose.yml exec core actana pair new <span class="cmt"># a one-time code</span></code></pre>
+docker compose -f deploy/docker-compose.yml exec -u actana core actana pair new <span class="cmt"># a one-time code</span></code></pre>
                 <button class="copy" type="button" data-copy>Copy</button>
               </div>
             </div>
