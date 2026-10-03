@@ -1644,10 +1644,15 @@ describe("opencode with the prompt still in the composer (issue 563)", () => {
     return h;
   }
 
-  /** The live run: a paste chip the echo probe cannot read, return, text still there, later return taken. */
+  /** The live run: the text, wrapped over rows inside the composer box, or a paste chip. */
   it.each([
     ["a collapsed paste block", `${ESC}[2K\r┃ [Pasted ~14 lines] ┃\n  Build  big-pickle`],
-    ["a box the probe cannot read", `${ESC}[2K\r┃ ░░ ┃\n  Build  big-pickle  Tip: use /help`],
+    [
+      "the prompt wrapped over box rows",
+      [0, 1, 2, 3]
+        .map((i) => `${ESC}[${10 + i};1H┃ ${LONG.slice(i * 40, i * 40 + 40).padEnd(40)} ┃`)
+        .join("") + `${ESC}[40;1H  Build  big-pickle  Tip: use /help`,
+    ],
   ])("submits instead of retyping when the composer shows %s", (_name, box) => {
     const h = typedInto(box);
     expect(h.writes).toEqual([LONG, "\r"]);
@@ -1666,6 +1671,24 @@ describe("opencode with the prompt still in the composer (issue 563)", () => {
     expect(h.delivery.currentPhase).toBe("delivered");
     expect(h.events.some((e) => e.phase === "abandoned")).toBe(false);
     expect(h.events.some((e) => e.phase === "delivered")).toBe(true);
+  });
+
+  it.each([
+    ["a bare footer repaint", `${ESC}[40;1H${ESC}[2K  Build  big-pickle  Tip: use /help`],
+    ["a framed footer with no prompt text", `${ESC}[40;1H┃  Build  big-pickle  Tip: use /help ┃`],
+  ])("keeps the retype path when the write was swallowed and only %s", (_name, footer) => {
+    const h = typedInto(footer);
+    expect(h.writes).toEqual([LONG]);
+    expect(h.events).toContainEqual({ phase: "prompt-swallowed", attempt: 1 });
+    expect(h.events.some((e) => e.phase === "delivered")).toBe(false);
+    expect(h.delivery.currentPhase).not.toBe("delivered");
+    // And it ends with a reason rather than a false delivery.
+    h.clock.advance(120_000);
+    expect(h.events.some((e) => e.phase === "delivered")).toBe(false);
+    expect(h.events).toContainEqual({
+      phase: "abandoned",
+      reason: "opencode composer never appeared within 90000 ms",
+    });
   });
 
   it("still retypes when the composer is really empty after the write", () => {

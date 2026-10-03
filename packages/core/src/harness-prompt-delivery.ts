@@ -524,12 +524,14 @@ export type HarnessReadiness = {
   maxPromptWrites: number;
   /**
    * The composer's placeholder disappears once it holds text, and this harness
-   * may draw that text in a form the echo probe cannot read (a collapsed paste
-   * block, a wrapped or decorated box). When set, a screen that painted
-   * something after the write and shows no placeholder is a composer holding
-   * the prompt, not a swallowed write: submit, do not retype. A retype clears
-   * the screen and waits for a placeholder that cannot come back while the
-   * text is still in the box, which ends `abandoned` with the prompt visible.
+   * may draw that text in a form the short echo probe misses (a wrapped box).
+   * When set, a screen with no placeholder and positive evidence that the
+   * prompt is in the composer — a paste chip, or a longer slice of the prompt
+   * inside the composer box rows — is a composer holding the prompt, not a
+   * swallowed write: submit, do not retype. A retype clears the screen and
+   * waits for a placeholder that cannot come back while the text is in the box,
+   * which ends `abandoned` with the prompt visible. A footer or status repaint
+   * is no evidence and keeps the retype path.
    */
   textHidesComposerMarker?: boolean;
 };
@@ -696,7 +698,8 @@ const NO_READINESS: HarnessReadiness = {
  * composer gate, so a harness that had taken the prompt would be re-typed at
  * and then abandoned. The failing shape would be a long prompt rendered as a
  * collapsed paste chip, because {@link PASTE_PLACEHOLDER} transcribes Claude
- * Code's `[Pasted text #1 …]` and would not match codex's wording.
+ * Code's `[Pasted text #1 …]` and OpenCode's `[Pasted ~N lines]` and would not
+ * match codex's wording.
  *
  * It does not happen. `sanitizeInitialInput` flattens a multi-line prompt to
  * one line before delivery sees it, and an 800-character sub-agent contract
@@ -789,7 +792,32 @@ export function composerOnScreen(screen: string, readiness: HarnessReadiness): b
  */
 const ECHO_PROBE_CHARS = 12;
 
-/** `[Pasted text #1 +12 lines]` — a landed prompt the composer does not echo. */
+/** The longer slice looked for inside composer box rows, where a footer cannot supply it. */
+const BOX_ROW_PROBE_CHARS = 24;
+/** A row drawn with box glyphs (`┃`, `│`, `║` …) is a composer frame row, not a footer line. */
+const BOX_GLYPH = /[│┃║▏▕▌▐]/;
+/** An absolute `ESC[row;colH` starts a new row in the rendered screen. */
+const ROW_MOVE = new RegExp("\\u001B\\[[0-9]*;?[0-9]*[Hf]", "g");
+
+/**
+ * Is a distinctive slice of the prompt visible inside the composer box rows?
+ * Whitespace, the frame glyphs and the line wrapping are removed on both sides,
+ * so a prompt wrapped over several rows still matches; only rows that carry a
+ * frame glyph are read, so a footer or tip line cannot supply the text.
+ */
+export function promptInBoxRows(screen: string, prompt: string): boolean {
+  const probe = squeeze(prompt).slice(0, BOX_ROW_PROBE_CHARS);
+  if (probe.length === 0) return false;
+  const rows = stripAnsi(screen.replace(ROW_MOVE, "\n"))
+    .split("\n")
+    .filter((row) => BOX_GLYPH.test(row));
+  return squeeze(rows.join("")).includes(probe);
+}
+
+/**
+ * `[Pasted text #1 +12 lines]` (Claude Code) or `[Pasted ~12 lines]` (OpenCode)
+ * — a landed prompt the composer does not echo.
+ */
 const PASTE_PLACEHOLDER = /\[\s*pasted\s+(text|~)/i;
 
 /**
@@ -1249,15 +1277,19 @@ export class HarnessPromptDelivery {
   }
 
   /**
-   * The harness painted after our write and the empty-composer placeholder is
-   * gone: the box holds the text, in a form {@link promptEchoed} cannot read.
-   * Only for harnesses that say so (`textHidesComposerMarker`); the placeholder
-   * being visible again is the one screen that means "empty, retype".
+   * Positive evidence that the prompt is in the composer although
+   * {@link promptEchoed} did not see it: the paste chip, or a longer slice of
+   * the prompt inside the composer box rows (see {@link promptInBoxRows}).
+   * Only for harnesses that say so (`textHidesComposerMarker`). A repainted
+   * placeholder means "empty, retype", and so does a footer repaint alone.
    */
   private composerHoldsUnreadableText(): boolean {
     if (!this.readiness.textHidesComposerMarker || this.promptWrites === 0) return false;
     if (composerOnScreen(this.screen, this.readiness)) return false;
-    return stripAnsi(this.screen).trim() !== "";
+    return (
+      PASTE_PLACEHOLDER.test(stripAnsi(this.screen)) ||
+      promptInBoxRows(this.screen, this.opts.prompt)
+    );
   }
 
   /**
