@@ -51,7 +51,7 @@ async function attachedCore(opts: { state?: "attached" | "pending" } = {}): Prom
   return core.id;
 }
 
-function rig() {
+function rig(extra: Partial<import("../services/shared-files").SharedFilesDeps> = {}) {
   const clock = new FakeClock();
   const s3 = new FakeS3(BUCKET);
   s3.clock = clock.now;
@@ -70,6 +70,7 @@ function rig() {
           now: clock.now,
         }),
       now: clock.now,
+      ...extra,
     }),
   );
   return { clock, s3, sts };
@@ -319,6 +320,7 @@ describe("previews", () => {
     s3.seed(`${PREFIX}/${a}/run.log`, `${"x".repeat(70 * 1024)}THE END`);
     const md = await (await call(files(a, "details", q("doc.md")))).json();
     expect(md.preview).toEqual({ kind: "markdown", text: "# title\nbody", truncated: false });
+    expect(md.links).toEqual({ pullRequests: [] });
     const log = await (await call(files(a, "details", q("run.log")))).json();
     expect(log.preview.kind).toBe("log");
     expect(log.preview.truncated).toBe(true);
@@ -562,5 +564,56 @@ describe("search and the change feed", () => {
     const sum = await (await call(files(a, "summary", "?since=2000"))).json();
     expect(sum).toMatchObject({ backend: "SeaweedFS", usedBytes: 6, fileCount: 2, newPaths: ["sub/fresh.txt"], uploadLimitBytes: LIMIT });
     expect((await (await call(files(a, "summary", "?since=0"))).json()).newPaths).toEqual(["old.txt", "sub/fresh.txt"]);
+  });
+});
+
+describe("what a file links to", () => {
+  const PR = "https://github.com/acme/app/pull/581";
+
+  it("names a pull request the file's own text gives in full, and nothing that only looks like one", async () => {
+    const { s3 } = rig({ taskText: async () => "" });
+    const a = await attachedCore();
+    const text = [
+      `Done: ${PR}?diff=split, and again ${PR}.`,
+      "PR 581 names no repository, so it is no link.",
+      "http://github.com/acme/app/pull/1 is not https; https://github.com/acme/app/issues/2 is not a pull request;",
+      "javascript:alert(1)//github.com/acme/app/pull/3 is not a URL.",
+      "https://evil.test/https://github.com/acme/app/pull/4 and https://github.com.evil.test/acme/app/pull/5",
+    ].join("\n");
+    s3.seed(`${PREFIX}/${a}/report.md`, text);
+    const body = await (await call(files(a, "details", q("report.md")))).json();
+    expect(body.links.pullRequests).toEqual([PR, "https://github.com/acme/app/pull/4"]);
+  });
+
+  it("reads a Task's own words for a file under tasks/<id>/, as the owner, and only there", async () => {
+    const asked: string[] = [];
+    const { s3 } = rig({ taskText: async (owner, id) => (asked.push(`${owner}:${id}`), `see ${PR}`) });
+    const a = await attachedCore();
+    s3.seed(`${PREFIX}/${a}/tasks/T-1/success.md`, "all good");
+    s3.seed(`${PREFIX}/${a}/tasks/T-1/brief.pdf`, "%PDF-1.4");
+    s3.seed(`${PREFIX}/${a}/notes.md`, "no link here");
+    const ok = await (await call(files(a, "details", q("tasks/T-1/success.md")))).json();
+    expect(ok.links.pullRequests).toEqual([PR]);
+    // An image, a PDF or any file with no preview text still links to what its Task names.
+    const pdf = await (await call(files(a, "details", q("tasks/T-1/brief.pdf")))).json();
+    expect(pdf.links.pullRequests).toEqual([PR]);
+    const other = await (await call(files(a, "details", q("notes.md")))).json();
+    expect(other.links.pullRequests).toEqual([]);
+    expect(asked).toEqual(["1:T-1", "1:T-1"]);
+  });
+
+  it("reads the real Task record: its description and comments, and an unknown Task is no reason to fail", async () => {
+    const { createTask, addTaskComment } = await import("../services/tasks");
+    const { s3 } = rig();
+    const a = await attachedCore();
+    const task = await createTask(1, { title: "ship it", description: `opened ${PR}`, coreId: a, agent: "agent_x" } as never);
+    await addTaskComment(1, task.id, { authorKind: "user", authorName: "me", body: "also https://github.com/acme/app/pull/600" } as never);
+    s3.seed(`${PREFIX}/${a}/tasks/${task.id}/success.md`, "done");
+    s3.seed(`${PREFIX}/${a}/tasks/T-gone/success.md`, "done");
+    const known = await (await call(files(a, "details", q(`tasks/${task.id}/success.md`)))).json();
+    expect(known.links.pullRequests).toEqual([PR, "https://github.com/acme/app/pull/600"]);
+    const gone = await call(files(a, "details", q("tasks/T-gone/success.md")));
+    expect(gone.status).toBe(200);
+    expect((await gone.json()).links.pullRequests).toEqual([]);
   });
 });

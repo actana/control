@@ -23,6 +23,8 @@ export type SharedFilesListing = { path: string; entries: SharedFileEntry[] };
 export type SharedFileDetails = {
   entry: SharedFileEntry;
   preview: { kind: PreviewKind; text?: string; truncated?: boolean };
+  /** What the file points at, found by the server in its text and in its Task: full GitHub pull request URLs only. */
+  links: { pullRequests: string[] };
 };
 
 export type SharedFilesSummary = {
@@ -172,4 +174,49 @@ export function formatBytes(bytes: number): string {
     unit += 1;
   }
   return `${value >= 10 || Number.isInteger(value) ? Math.round(value) : value.toFixed(1)} ${units[unit]}`;
+}
+
+/** The Session a path belongs to, if it is under `sessions/<id>/` (where a Session's reports go, ADR 0041 D37). */
+export function sessionIdOfPath(path: string): string | null {
+  const m = /^sessions\/([^/]+)(?:\/|$)/.exec(path);
+  return m ? m[1]! : null;
+}
+
+const PULL_REQUEST_URL = /https:\/\/github\.com\/[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})\/[A-Za-z0-9._-]{1,100}\/pull\/[1-9][0-9]{0,8}(?![0-9A-Za-z_-])/g;
+
+/**
+ * The GitHub pull request URLs a text names in full, first seen first, at most `max`. A bare "PR 581" is not one: it names
+ * no repository, so there is nothing to link to without guessing. A URL is matched by shape and rebuilt from the match,
+ * so nothing after it (a query, a fragment, markup) can come along.
+ */
+export function findPullRequestUrls(text: string, max = 5): string[] {
+  const found: string[] = [];
+  for (const match of text.matchAll(PULL_REQUEST_URL)) {
+    if (!found.includes(match[0])) found.push(match[0]);
+    if (found.length >= max) break;
+  }
+  return found;
+}
+
+/** `https://github.com/acme/app/pull/581` → `acme/app#581`, for the link's text. */
+export function pullRequestLabel(url: string): string {
+  const m = /^https:\/\/github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)$/.exec(url);
+  return m ? `${m[1]}#${m[2]}` : url;
+}
+
+export type SyncState = { kind: "synced" | "syncing" | "in-storage"; label: string };
+
+/** What the Core last said about a path on its `shared:changed` feed (ADR 0041 D5, #561). */
+export type CoreFileChange = { size: number; mtime: number; deleted: boolean };
+
+/**
+ * Whether a file is on both sides, from the object store's entry and the Core's last event for that path. The two sides
+ * hold the same file when the Core's last write has the size the store has; a different size, or a Core that says it is
+ * gone, means a sync is still to land. With no event the Panel only knows the store has it. `coreLive` says whether the
+ * feed is connected, so "in storage" can say why nothing more is known.
+ */
+export function syncStateOf(entry: Pick<SharedFileEntry, "size">, change: CoreFileChange | undefined, coreLive: boolean): SyncState {
+  if (!change) return { kind: "in-storage", label: coreLive ? "in storage" : "in storage · Core not connected" };
+  if (change.deleted || change.size !== (entry.size ?? 0)) return { kind: "syncing", label: "syncing with the Core" };
+  return { kind: "synced", label: "synced to S3" };
 }

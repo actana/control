@@ -101,6 +101,36 @@ describe("Tasks board", () => {
   });
 });
 
+describe("a link to one Task (?task=<id>, from a file's details)", () => {
+  it("opens that Task's detail over the board", async () => {
+    mount(<TasksBoard openTaskId="t3" />);
+    expect(await screen.findByText("Remove sudo", { selector: "h2, h3, h1, strong, span, div" })).toBeTruthy();
+    await waitFor(() => expect(api.getTask).toHaveBeenCalledWith("t3"));
+  });
+
+  it("opens another Task when the link changes while the board is open", async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const ui = (id: string | null) => (
+      <QueryClientProvider client={client}>
+        <KeybindingsProvider>
+          <TasksBoard openTaskId={id} />
+        </KeybindingsProvider>
+      </QueryClientProvider>
+    );
+    const view = render(ui(null));
+    await screen.findByText("Rotate keys");
+    expect(api.getTask).not.toHaveBeenCalled();
+    view.rerender(ui("t2"));
+    await waitFor(() => expect(api.getTask).toHaveBeenCalledWith("t2"));
+  });
+
+  it("opens nothing for no link", async () => {
+    mount(<TasksBoard openTaskId={null} />);
+    await screen.findByText("Rotate keys");
+    expect(api.getTask).not.toHaveBeenCalled();
+  });
+});
+
 describe("New Task dialog", () => {
   async function open() {
     mount(<TasksBoard />);

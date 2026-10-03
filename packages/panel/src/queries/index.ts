@@ -373,7 +373,10 @@ export const coreAgentsQueryOptions = (coreId: string) =>
     enabled: !!coreId,
   });
 
-/** The Files tab polls S3 (a change on the Core reaches S3 through the sync, so about every ten seconds is as fresh as it gets); a hidden tab does not. */
+/**
+ * The Files tab's fallback when the Core's change feed (#561) cannot tell it anything, because the Core is offline: it
+ * lists S3 every ten seconds then. With the feed up nothing polls: a `shared:changed` event refreshes the folder.
+ */
 export const SHARED_FILES_POLL_MS = 10_000;
 
 export const sharedFolderQueryOptions = (coreId: string, path: string) =>
@@ -402,12 +405,12 @@ export const useSharedFileDetails = (coreId: string, path: string | null, opts: 
   });
 
 /** The tree's footer and the "new" badges: one listing of the Core's folder, since the operator's last visit. */
-export const useSharedFilesSummary = (coreId: string, since: number) =>
+export const useSharedFilesSummary = (coreId: string, since: number, opts: { poll?: boolean } = {}) =>
   useQuery({
     queryKey: queryKeys.sharedFilesSummary(coreId, since),
     queryFn: () => api.getSharedFilesSummary(coreId, since),
     enabled: !!coreId,
-    refetchInterval: SHARED_FILES_POLL_MS,
+    refetchInterval: opts.poll === false ? false : SHARED_FILES_POLL_MS,
     retry: false,
   });
 
@@ -420,7 +423,7 @@ export const useSharedFilesSearch = (coreId: string, query: string) =>
   });
 
 export const useTasks = () => useQuery(tasksQueryOptions());
-export const useTask = (id: string) => useQuery(taskQueryOptions(id));
+export const useTask = (id: string) => useQuery({ ...taskQueryOptions(id), enabled: !!id });
 export const useCoreAgents = (coreId: string) => useQuery(coreAgentsQueryOptions(coreId));
 
 export const useSessions = (coreId: string) => {

@@ -10,6 +10,7 @@ import {
   IMAGE_CONTENT_TYPES,
   INLINE_MEDIA_MAX_BYTES,
   extensionOf,
+  findPullRequestUrls,
   joinPath,
   parentOf,
   PREVIEW_TEXT_BYTES,
@@ -20,7 +21,9 @@ import {
   type SharedFilesListing,
   type SharedFilesSearchResult,
   type SharedFilesSummary,
+  taskIdOfPath,
 } from "~/shared/shared-files";
+import { getTask, listTaskComments } from "./tasks";
 
 /**
  * A Core's Shared folder as the Files tab reads and writes it (#565, ADR 0041 D5, D33). Every call goes to S3 with the
@@ -59,7 +62,20 @@ export type SharedFilesDeps = Partial<CoreS3Deps> & {
   modes?: CoreS3Shared;
   /** The most one upload may be, read again on every request. The limit stored in Storage settings by default. */
   uploadLimit: (ownerId: number) => Promise<number>;
+  /** The text of a Task (its description and comments) for the owner, where a file under `tasks/<id>/` may name a pull request. */
+  taskText: (ownerId: number, taskId: string) => Promise<string>;
 };
+
+/** A Task's own words, or nothing: a Task that is gone, or another owner's, is no reason to fail a file's details. */
+export async function storedTaskText(ownerId: number, taskId: string): Promise<string> {
+  try {
+    const task = await getTask(ownerId, taskId);
+    const comments = await listTaskComments(ownerId, taskId);
+    return [task.description, ...comments.map((c) => c.body)].join("\n");
+  } catch {
+    return "";
+  }
+}
 
 /**
  * The upload limit the owner set in Storage settings (`uploadSizeLimitBytes`), read on each request so a change applies
@@ -111,13 +127,17 @@ function mapError(err: unknown): never {
 type Held = HeldCoreShared;
 
 export class SharedFiles {
-  private readonly deps: { now: () => number; uploadLimit: (ownerId: number) => Promise<number> };
+  private readonly deps: {
+    now: () => number;
+    uploadLimit: (ownerId: number) => Promise<number>;
+    taskText: (ownerId: number, taskId: string) => Promise<string>;
+  };
   private readonly modes: CoreS3Shared;
 
   constructor(deps: Partial<SharedFilesDeps> = {}) {
     // A test that hands in its own issuer, S3 or fetch gets a mode of its own; otherwise the Panel's shared one.
     this.modes = deps.modes ?? (deps.issuer || deps.s3 || deps.fetch ? new CoreS3Shared(deps) : coreS3Shared());
-    this.deps = { now: deps.now ?? Date.now, uploadLimit: deps.uploadLimit ?? storedUploadLimit };
+    this.deps = { now: deps.now ?? Date.now, uploadLimit: deps.uploadLimit ?? storedUploadLimit, taskText: deps.taskText ?? storedTaskText };
   }
 
   /** What an upload by this owner may be right now: the limit in Storage settings, read again on each call. */
@@ -172,13 +192,16 @@ export class SharedFiles {
     return this.run(ownerId, coreId, async (shared) => {
       const entry = await this.statFile(shared, path);
       const kind = previewKindOf(entry.name);
-      if (kind === "image" || kind === "pdf" || kind === "none") return { entry, preview: { kind } };
-      if ((entry.size ?? 0) > PREVIEW_READ_MAX_BYTES) return { entry, preview: { kind, truncated: true } };
+      const taskId = taskIdOfPath(path);
+      const taskText = taskId ? await this.deps.taskText(ownerId, taskId) : "";
+      if (kind === "image" || kind === "pdf" || kind === "none") return { entry, preview: { kind }, links: linksIn(taskText) };
+      if ((entry.size ?? 0) > PREVIEW_READ_MAX_BYTES) return { entry, preview: { kind, truncated: true }, links: linksIn(taskText) };
       const body = (await shared.get(path)).body;
       // A log is read from its end, anything else from its start.
       const tail = kind === "log" && body.byteLength > PREVIEW_TEXT_BYTES;
       const slice = tail ? body.subarray(body.byteLength - PREVIEW_TEXT_BYTES) : body.subarray(0, PREVIEW_TEXT_BYTES);
-      return { entry, preview: { kind, text: new TextDecoder().decode(slice), truncated: body.byteLength > PREVIEW_TEXT_BYTES } };
+      const text = new TextDecoder().decode(slice);
+      return { entry, preview: { kind, text, truncated: body.byteLength > PREVIEW_TEXT_BYTES }, links: linksIn(text, taskText) };
     });
   }
 
@@ -321,6 +344,11 @@ export class SharedFiles {
     if (path === "") throw new ValidationError("The Shared folder itself cannot be deleted.");
     await this.run(ownerId, coreId, (shared) => shared.rm(path));
   }
+}
+
+/** The pull requests named in these texts, in full, the file's own first. */
+function linksIn(...texts: string[]): { pullRequests: string[] } {
+  return { pullRequests: findPullRequestUrls(texts.join("\n")) };
 }
 
 function toEntry(e: SharedEntry): SharedFileEntry {

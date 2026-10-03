@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Btn } from "~/components/ui/Btn";
 import { EmptyState } from "~/components/ui/EmptyState";
 import { useFleet } from "~/lib/fleet-context";
@@ -52,12 +52,16 @@ function CardWithAgent({
  * With `coreId` it is the same board filtered to that Core and the chips go
  * away (the Core page's Tasks tab). Status only ever comes from the server.
  */
-export function TasksBoard({ coreId = null }: { coreId?: string | null }) {
+export function TasksBoard({ coreId = null, openTaskId = null }: { coreId?: string | null; openTaskId?: string | null }) {
   const { cores } = useFleet();
   const { data: tasks = [], isLoading, error } = useTasks();
   const [chip, setChip] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
-  const [open, setOpen] = useState<{ id: string; reply: boolean } | null>(null);
+  const [open, setOpen] = useState<{ id: string; reply: boolean } | null>(openTaskId ? { id: openTaskId, reply: false } : null);
+  // A link to another Task while the board is already open.
+  useEffect(() => {
+    if (openTaskId) setOpen({ id: openTaskId, reply: false });
+  }, [openTaskId]);
   const filter = coreId ?? chip;
   const visible = useMemo(() => tasksForCore(tasks, filter), [tasks, filter]);
   const counts = useMemo(() => taskCountsByCore(tasks), [tasks]);

@@ -95,7 +95,7 @@ beforeEach(() => {
   api.listSharedFiles.mockImplementation(async (_c: string, p: string) => ({ path: p, entries: tree[p.replace(/\/+$/, "")] ?? [] }));
   api.getSharedFileDetails.mockImplementation(async (_c: string, p: string) => {
     const entry = Object.values(tree).flat().find((e) => e.path === p)!;
-    return { entry, preview: p.endsWith(".md") ? { kind: "markdown", text: "# impl report\nPR 581", truncated: false } : p.endsWith(".png") ? { kind: "image" } : { kind: "log", text: "$ run\nok", truncated: true } };
+    return { links: { pullRequests: [] }, entry, preview: p.endsWith(".md") ? { kind: "markdown", text: "# impl report\nPR 581", truncated: false } : p.endsWith(".png") ? { kind: "image" } : { kind: "log", text: "$ run\nok", truncated: true } };
   });
   api.getSharedFilesSummary.mockResolvedValue({ backend: "SeaweedFS", usedBytes: 412 * 1024 * 1024, fileCount: 20, newPaths: ["sessions/t-munykjig/report-1.md"], uploadLimitBytes: 1000 });
   api.searchSharedFiles.mockResolvedValue({ query: "rep", entries: [file("sessions/t-munykjig/report-1.md", 3482)], truncated: false });
@@ -208,8 +208,9 @@ describe("the details pane", () => {
   it("shows the preview, path, size and when it changed, and a new file is marked", async () => {
     mount(core(), "sessions/t-munykjig");
     const pane = await select("report-1.md");
-    expect(await within(pane).findByTestId("file-preview")).toBeTruthy();
-    expect(within(pane).getByText(/# impl report/)).toBeTruthy();
+    // Markdown is rendered, not shown as its source.
+    expect(await within(pane).findByTestId("markdown-preview")).toBeTruthy();
+    expect(within(pane).getByRole("heading", { name: "impl report" })).toBeTruthy();
     expect(within(pane).getByText("shared/sessions/t-munykjig/report-1.md")).toBeTruthy();
     expect(within(pane).getByText("3.4 KB")).toBeTruthy();
     expect(await within(pane).findByText("new")).toBeTruthy();
