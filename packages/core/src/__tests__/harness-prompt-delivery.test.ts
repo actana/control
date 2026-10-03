@@ -1625,7 +1625,10 @@ describe("verifying opencode's submit (paste block, issue 563)", () => {
 });
 
 describe("opencode with the prompt still in the composer (issue 563)", () => {
-  const LONG = "Refactor the authentication module and report back. ".repeat(12);
+  // A long prompt scrolls inside the box: the start is gone, the standard block shows.
+  const TAIL_TEXT =
+    "and write the report to sessions/t-1/report-1.md ending with ACT-REPORT-END. [/Actana standard block v1]  ";
+  const LONG = `Dispatch alpha-bravo-charlie: ${"Refactor the authentication module. ".repeat(12)}${TAIL_TEXT}`;
   const WORKING = [
     `${ESC}[2K\rYou: Refactor the authentication module`,
     `${ESC}[2K\rbuild  big-pickle  esc interrupt`,
@@ -1648,9 +1651,9 @@ describe("opencode with the prompt still in the composer (issue 563)", () => {
   it.each([
     ["a collapsed paste block", `${ESC}[2K\r┃ [Pasted ~14 lines] ┃\n  Build  big-pickle`],
     [
-      "the prompt wrapped over box rows",
-      [0, 1, 2, 3]
-        .map((i) => `${ESC}[${10 + i};1H┃ ${LONG.slice(i * 40, i * 40 + 40).padEnd(40)} ┃`)
+      "only the tail of a long prompt, its start scrolled out of the box",
+      [0, 1, 2]
+        .map((i) => `${ESC}[${10 + i};1H┃ ${TAIL_TEXT.slice(i * 40, i * 40 + 40).padEnd(40)} ┃`)
         .join("") + `${ESC}[40;1H  Build  big-pickle  Tip: use /help`,
     ],
   ])("submits instead of retyping when the composer shows %s", (_name, box) => {

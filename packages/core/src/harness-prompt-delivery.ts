@@ -526,8 +526,8 @@ export type HarnessReadiness = {
    * The composer's placeholder disappears once it holds text, and this harness
    * may draw that text in a form the short echo probe misses (a wrapped box).
    * When set, a screen with no placeholder and positive evidence that the
-   * prompt is in the composer — a paste chip, or a longer slice of the prompt
-   * inside the composer box rows — is a composer holding the prompt, not a
+   * prompt is in the composer — a paste chip, or a longer slice of the prompt's
+   * tail inside the composer box rows — is a composer holding the prompt, not a
    * swallowed write: submit, do not retype. A retype clears the screen and
    * waits for a placeholder that cannot come back while the text is in the box,
    * which ends `abandoned` with the prompt visible. A footer or status repaint
@@ -792,7 +792,11 @@ export function composerOnScreen(screen: string, readiness: HarnessReadiness): b
  */
 const ECHO_PROBE_CHARS = 12;
 
-/** The longer slice looked for inside composer box rows, where a footer cannot supply it. */
+/**
+ * The longer slice looked for inside composer box rows, where a footer cannot
+ * supply it. Taken from the END of the prompt: a long prompt scrolls inside the
+ * box, so its start is out of view and its tail (the standard block) is what shows.
+ */
 const BOX_ROW_PROBE_CHARS = 24;
 /** A row drawn with box glyphs (`┃`, `│`, `║` …) is a composer frame row, not a footer line. */
 const BOX_GLYPH = /[│┃║▏▕▌▐]/;
@@ -800,13 +804,13 @@ const BOX_GLYPH = /[│┃║▏▕▌▐]/;
 const ROW_MOVE = new RegExp("\\u001B\\[[0-9]*;?[0-9]*[Hf]", "g");
 
 /**
- * Is a distinctive slice of the prompt visible inside the composer box rows?
+ * Is a distinctive slice of the prompt's tail visible inside the composer box rows?
  * Whitespace, the frame glyphs and the line wrapping are removed on both sides,
  * so a prompt wrapped over several rows still matches; only rows that carry a
  * frame glyph are read, so a footer or tip line cannot supply the text.
  */
 export function promptInBoxRows(screen: string, prompt: string): boolean {
-  const probe = squeeze(prompt).slice(0, BOX_ROW_PROBE_CHARS);
+  const probe = squeeze(prompt).slice(-BOX_ROW_PROBE_CHARS);
   if (probe.length === 0) return false;
   const rows = stripAnsi(screen.replace(ROW_MOVE, "\n"))
     .split("\n")
@@ -1279,7 +1283,7 @@ export class HarnessPromptDelivery {
   /**
    * Positive evidence that the prompt is in the composer although
    * {@link promptEchoed} did not see it: the paste chip, or a longer slice of
-   * the prompt inside the composer box rows (see {@link promptInBoxRows}).
+   * the prompt's tail inside the composer box rows (see {@link promptInBoxRows}).
    * Only for harnesses that say so (`textHidesComposerMarker`). A repainted
    * placeholder means "empty, retype", and so does a footer repaint alone.
    */
