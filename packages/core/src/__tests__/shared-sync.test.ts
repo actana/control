@@ -571,3 +571,104 @@ describe("remarks of the review", () => {
     expect(output.filter((l) => l.includes("remote-path-skipped")).length).toBe(1);
   });
 });
+
+describe("folders (#562)", () => {
+  const dirAt = (rel: string): boolean => fs.existsSync(path.join(folder, rel)) && fs.statSync(path.join(folder, rel)).isDirectory();
+
+  it("removes the folder a remote delete or move left empty, and every empty parent of it", async () => {
+    s3.seed("cores/core-a/old/deep/a.txt", "a");
+    s3.seed("cores/core-a/keep/b.txt", "b");
+    await attach();
+    expect(dirAt("old/deep")).toBe(true);
+    s3.objects.delete("cores/core-a/old/deep/a.txt");
+    const report = await sync.pass();
+    expect(report.deletedLocal).toEqual(["old/deep/a.txt"]);
+    expect(report.deletedDirs).toEqual(["old/deep", "old"]);
+    expect(dirAt("old")).toBe(false);
+    expect(dirAt("keep")).toBe(true);
+  });
+
+  it("removes the old folder when the Panel renames it", async () => {
+    s3.seed("cores/core-a/before/f.txt", "f");
+    await attach();
+    s3.objects.delete("cores/core-a/before/f.txt");
+    s3.seed("cores/core-a/after/f.txt", "f");
+    await sync.pass();
+    expect(dirAt("before")).toBe(false);
+    expect(readLocal("after/f.txt")).toBe("f");
+  });
+
+  it("never removes a folder `core` made, empty or holding a file the sync has not uploaded", async () => {
+    fs.mkdirSync(path.join(folder, "mine/empty"), { recursive: true });
+    await attach();
+    writeLocal("mine/new.txt", "n");
+    s3.seed("cores/core-a/other/o.txt", "o");
+    await sync.pass();
+    s3.objects.delete("cores/core-a/other/o.txt");
+    fs.mkdirSync(path.join(folder, "other/sub"), { recursive: true });
+    writeLocal("other/mine.txt", "m", 1_000);
+    await sync.pass();
+    expect(dirAt("mine/empty")).toBe(true);
+    expect(dirAt("other")).toBe(true);
+    expect(readLocal("other/mine.txt")).toBe("m");
+  });
+
+  it("keeps a folder that still holds a file `core` changed while S3 deleted its other files", async () => {
+    s3.seed("cores/core-a/d/a.txt", "a");
+    s3.seed("cores/core-a/d/b.txt", "b");
+    await attach();
+    s3.objects.delete("cores/core-a/d/a.txt");
+    s3.objects.delete("cores/core-a/d/b.txt");
+    writeLocal("d/b.txt", "changed here", 4_000_000_000);
+    await sync.pass();
+    expect(readLocal("d/b.txt")).toBe("changed here");
+    expect(dirAt("d")).toBe(true);
+  });
+
+  it("makes the empty folder the Panel made (a marker in S3), and keeps it", async () => {
+    await attach();
+    s3.seed("cores/core-a/Empty/", "");
+    s3.seed("cores/core-a/Empty/Inner/", "");
+    const report = await sync.pass();
+    expect(report.createdDirs).toEqual(["Empty", "Empty/Inner"]);
+    expect(dirAt("Empty/Inner")).toBe(true);
+    const again = await sync.pass();
+    expect(again.createdDirs).toEqual([]);
+    expect(again.deletedDirs).toEqual([]);
+    expect(dirAt("Empty/Inner")).toBe(true);
+  });
+
+  it("removes a made folder when the marker goes, and does not make again one `core` removed", async () => {
+    s3.seed("cores/core-a/gone/", "");
+    s3.seed("cores/core-a/mine/", "");
+    await attach();
+    expect(dirAt("gone")).toBe(true);
+    fs.rmdirSync(path.join(folder, "mine"));
+    s3.objects.delete("cores/core-a/gone/");
+    const report = await sync.pass();
+    expect(report.deletedDirs).toEqual(["gone"]);
+    expect(dirAt("gone")).toBe(false);
+    expect(dirAt("mine")).toBe(false);
+  });
+
+  it("does not remove folders on unpair, and copies the markers", async () => {
+    s3.seed("cores/core-a/x/f.txt", "f");
+    await attach();
+    s3.objects.delete("cores/core-a/x/f.txt");
+    s3.seed("cores/core-a/marker/", "");
+    expect((await sync.handle({ type: "sharedDetach", reqId: "r9", keepLocalCopy: true })).state).toBe("detached");
+    expect(dirAt("marker")).toBe(true);
+    expect(dirAt("x")).toBe(true);
+  });
+
+  it("the helper's folder removal refuses a folder with anything in it", async () => {
+    const home = createSharedHome({ home: homeDir, identityEnv: {} });
+    writeLocal("full/f.txt", "f");
+    fs.mkdirSync(path.join(folder, "bare"));
+    expect(await home.removeEmptyDir("full")).toBe(false);
+    expect(readLocal("full/f.txt")).toBe("f");
+    expect(await home.removeEmptyDir("bare")).toBe(true);
+    expect(await home.removeEmptyDir("bare")).toBe(false);
+    expect((await home.list())!.dirs).toEqual(["full"]);
+  });
+});

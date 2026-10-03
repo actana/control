@@ -246,4 +246,38 @@ describe.skipIf(!configured)("the sync against real SeaweedFS and real STS keys"
     expect(fs.readFileSync(path.join(m.folder, "mine.txt"), "utf8")).toBe("mine");
     expect(fs.existsSync(createSharedKeyStore(m.stateDir).path)).toBe(false);
   }, 60_000);
+  // The Panel's Files tab goes through the same SDK calls (`mkdir`, `move`, `rm`), so these are what it leaves in S3 (#562, #565).
+  it("removes the folders the Panel renamed, emptied or deleted, and makes the one it created empty", async () => {
+    const m = await machine();
+    const panel = clientFor(m.key, `${env.prefix}/${m.coreId}`);
+    const isDir = (rel: string): boolean => fs.existsSync(path.join(m.folder, rel)) && fs.statSync(path.join(m.folder, rel)).isDirectory();
+    await panel.put("renamed/a.txt", "a");
+    await panel.put("emptied/b.txt", "b");
+    await panel.put("deleted/deep/c.txt", "c");
+    await panel.put("stays/d.txt", "d");
+    fs.mkdirSync(path.join(m.folder, "core-made/empty"), { recursive: true });
+    expect(await m.sync.handle(attachFrame(m.coreId, m.key))).toMatchObject({ state: "attached" });
+    await m.sync.idle();
+    for (const dir of ["renamed", "emptied", "deleted/deep", "stays"]) expect(isDir(dir)).toBe(true);
+
+    await panel.move("renamed/", "now-renamed/");
+    await panel.move("emptied/b.txt", "stays/b.txt");
+    await panel.rm("deleted/");
+    await panel.mkdir("made-in-panel/");
+    await panel.mkdir("made-in-panel/inner/");
+    const report = await m.sync.pass();
+    await m.sync.idle();
+
+    expect(report.failed).toEqual([]);
+    for (const dir of ["renamed", "emptied", "deleted", "deleted/deep"]) expect(isDir(dir)).toBe(false);
+    expect(fs.readFileSync(path.join(m.folder, "now-renamed/a.txt"), "utf8")).toBe("a");
+    expect(fs.readFileSync(path.join(m.folder, "stays/b.txt"), "utf8")).toBe("b");
+    expect(isDir("made-in-panel/inner")).toBe(true);
+    // What `core` made is not the sync's to remove, and a second pass changes nothing.
+    expect(isDir("core-made/empty")).toBe(true);
+    const again = await m.sync.pass();
+    expect([again.createdDirs, again.deletedDirs, again.failed]).toEqual([[], [], []]);
+    expect(isDir("made-in-panel/inner")).toBe(true);
+    m.sync.stop();
+  }, 120_000);
 });
