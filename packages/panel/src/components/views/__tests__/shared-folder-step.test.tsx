@@ -347,7 +347,7 @@ describe("delete: the Core and its Shared folder", () => {
     await click(/Delete Core workstation-berlin and its Shared folder/);
     const text = document.body.textContent ?? "";
     expect(text).toContain("empties the ~/shared folder on the machine");
-    expect(text).toContain("If the Core is not connected when you confirm");
+    expect(text).toContain("If the Core is not connected, the delete is refused");
     expect(text).not.toContain("the machine keeps");
   });
 

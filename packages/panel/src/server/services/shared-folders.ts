@@ -506,21 +506,28 @@ export class SharedFolders {
     }
     const row = await findSharedFolder(ownerId, coreId);
     const folder = row?.s3Prefix ?? "";
-    // The Core must stop syncing before anything is emptied: one still syncing would mirror a half-done delete. A Core that
-    // answered and refused is asked again later (409). A Core that cannot be reached does not hold the delete: the
-    // Panel finishes, and the machine's copy is reported as kept.
+    // The Core must stop syncing before anything is emptied: a Core that holds a live key syncs every 15 seconds with or
+    // without the Panel, and would mirror the emptied prefix into ~/shared (or upload into it again, with no row left to
+    // clean it). So a Core that did not let go (unreachable, silent or refused) while its key is live is a 409 and nothing
+    // is touched. Once its key has run out it cannot sync, and the delete finishes on the Panel with the machine copy kept.
     const letGo = await this.sendDetach(coreId);
-    if (folder && !letGo.detached && letGo.reached && (row?.keyExpiresAt ?? 0) > this.deps.now()) {
+    if (folder && !letGo.detached && (row?.keyExpiresAt ?? 0) > this.deps.now()) {
       throw new SharedFolderError(
-        `The Core has not let go of ${folder} (${letGo.error ?? "no answer"}), so nothing was deleted: it is still syncing. ` +
-          `Try again in a moment, or after its key ends at ${new Date(row!.keyExpiresAt!).toISOString()}.`,
+        `The Core has not let go of ${folder} (${letGo.error ?? "no answer"}), so nothing was deleted: it may still be syncing, and ` +
+          `emptying the prefix would make it delete its own ~/shared or upload into the prefix again. ` +
+          `Try again when it is connected, or after its key ends at ${new Date(row!.keyExpiresAt!).toISOString()}.`,
         "still-attached",
       );
     }
     // The machine's folder, before the Core's credentials go with its row.
     let machineFolder: MachineFolderResult;
     if (!letGo.detached) {
-      machineFolder = { state: "kept", reason: `the Core could not be reached (${letGo.error ?? "no answer"})`, removed: 0 };
+      const why = letGo.error ?? "no answer";
+      machineFolder = {
+        state: "kept",
+        reason: letGo.reached ? `the Core did not let go of S3 (${why}), and its key has run out` : `the Core could not be reached (${why}), and its key has run out`,
+        removed: 0,
+      };
     } else if (!this.deps.isConnected(coreId)) {
       machineFolder = { state: "kept", reason: "the Core is not connected", removed: 0 };
     } else {

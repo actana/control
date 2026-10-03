@@ -231,8 +231,9 @@ POST /api/cores/:id/delete {confirmPrefix} ──▶ prefix typed exactly ──
   the answer says so.
 - **Delete** needs the folder's exact prefix (`<prefix>/<core id>/`) typed back. It first asks the Core to `sharedDetach`, then, while the Core's link is up, empties `~/shared` on the machine through the Core's Files API
   (the children only; a symlinked `~/shared` is left alone and a symlink inside it is removed as a link, never followed). It then removes the Core row and
-  empties that prefix with a key issued for that Core, which the role limits to it and which the SDK's S3 mode cannot widen. A Core that is not connected does not
-  stop the delete: it finishes on the Panel, the answer carries `machineFolder: { state: "kept", reason }` and the screen says `~/shared` stays on the machine.
+  empties that prefix with a key issued for that Core, which the role limits to it and which the SDK's S3 mode cannot widen. A Core that did not let go (refused, silent or not connected) while its key is live is a 409 and nothing is touched, since its sync
+  would mirror the emptied prefix; once its key has run out the delete finishes on the Panel, the answer carries `machineFolder: { state: "kept", reason }` and the screen says
+  `~/shared` stays on the machine. A listing that was not read in full is `kept`, never `emptied`.
   A prefix that could not be emptied is an error that names it.
 
 | Claim | Test |

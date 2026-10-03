@@ -174,7 +174,7 @@ describe("emptyMachineFolder", () => {
       }
       return json(200, {});
     };
-    expect(await emptyMachineFolder({ ...target(), fetch: hostile })).toEqual({ state: "emptied", removed: 0 });
+    expect(await emptyMachineFolder({ ...target(), fetch: hostile })).toMatchObject({ state: "kept", removed: 0 });
     expect(requests.some((q) => q.method === "DELETE")).toBe(false);
     expect(fs.existsSync(path.join(home, "victim.txt"))).toBe(true);
   });
@@ -219,5 +219,47 @@ describe("emptyMachineFolder", () => {
     const result = await emptyMachineFolder({ ...target(), fetch: down });
     expect(result).toMatchObject({ state: "kept", removed: 0 });
     expect(result.state === "kept" && result.reason).toMatch(/ECONNREFUSED/);
+  });
+
+  it("never reports an unreadable ~/shared as emptied: a skipped line is kept", async () => {
+    fs.mkdirSync(shared());
+    const unreadable: CoreFilesFetch = async (req) => {
+      const rel = new URL(req.url).searchParams.get("path");
+      if (req.method === "GET" && rel === "shared") {
+        const lines = [{ type: "skipped", path: "shared", code: "unreadable-directory" }, { type: "done", entries: 0, skipped: 1, bytes: 0 }];
+        return new Response(lines.map((l) => JSON.stringify(l)).join("\n"));
+      }
+      return coreFiles(req);
+    };
+    const result = await emptyMachineFolder({ ...target(), fetch: unreadable });
+    expect(result).toMatchObject({ state: "kept", removed: 0 });
+    expect(result.state === "kept" && result.reason).toMatch(/could not be read/);
+  });
+
+  it("keeps the folder when the listing names an entry that is not a plain child, and deletes nothing", async () => {
+    fs.mkdirSync(shared());
+    fs.writeFileSync(path.join(shared(), "a.txt"), "a");
+    const odd: CoreFilesFetch = async (req) => {
+      const rel = new URL(req.url).searchParams.get("path");
+      if (req.method === "GET" && rel === "shared") {
+        const lines = [
+          { type: "entry", path: "shared/a.txt", kind: "file" },
+          { type: "entry", path: "shared/back\\slash", kind: "file" },
+          { type: "done" },
+        ];
+        return new Response(lines.map((l) => JSON.stringify(l)).join("\n"));
+      }
+      return coreFiles(req);
+    };
+    const result = await emptyMachineFolder({ ...target(), fetch: odd });
+    expect(result).toMatchObject({ state: "kept", removed: 0 });
+    expect(requests.some((q) => q.method === "DELETE")).toBe(false);
+    expect(fs.existsSync(path.join(shared(), "a.txt"))).toBe(true);
+  });
+
+  it("keeps it when the home cannot be listed (404): that says nothing about ~/shared", async () => {
+    const missing: CoreFilesFetch = async () => json(404, { code: "not-found" });
+    const result = await emptyMachineFolder({ ...target(), fetch: missing });
+    expect(result).toMatchObject({ state: "kept", removed: 0 });
   });
 });

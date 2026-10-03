@@ -463,13 +463,15 @@ reachable, another Core's not), then finishes; finishing without storage is a 40
 Core a fresh key over the core-link before the current one ends (at the SDK's refresh point, 15 minutes early), retries after 5 seconds, 15 seconds, 60 seconds and then every 300 seconds, the last delay repeating for as long as the push keeps failing (`RETRY_DELAYS_MS`), and shows the error on the Core. **Unpair** (`DELETE /api/cores/:id`) sends `sharedDetach`: the Core keeps `~/shared`,
 the row is forgotten and the S3 prefix is left, which is D13. **Delete** (`POST /api/cores/:id/delete`, with the exact `<prefix>/<core id>/`
 typed back) removes the Core row, empties that prefix and empties `~/shared` on the machine, which is D12. The order is: the Core is asked to `sharedDetach`;
-a Core that answers and refuses is a 409 and nothing is removed, since a Core still syncing would mirror a half-done delete; then, only while the Core's
-link is up and it answered `detached` or `not-attached`, the Panel empties the machine's folder through the Core's Files API; then the row goes and the prefix is emptied.
+a Core that did not let go (answered and refused, did not answer, or is not connected) **while its key is live** is a 409 and nothing is touched: a Core with a live
+key syncs every 15 seconds with or without the Panel, so emptying the prefix would make it delete its own `~/shared`, or upload into the prefix again with no row left to
+clean it. Then, only while the Core's link is up and it answered `detached` or `not-attached`, the Panel empties the machine's folder through the Core's Files API; then the row goes and the prefix is emptied.
 **The machine's folder** loses its children and nothing else: the folder stays, `shared/<name>` is the only path form deleted, and no symlink is followed. A `~/shared`
 that is itself a symlink (or not a folder) is left alone, because every path under a link resolves to wherever it points; a symlink inside it is removed as a link
-and never what it points at. A Core that is not connected (or does not answer) does **not** stop the delete: it finishes on the Panel, the answer says
-`machineFolder.state: "kept"` with the reason, and the screen says that `~/shared` stays on the machine. A Core that is offline but still holds a live key can mirror the emptied
-prefix into its own folder until the key ends; that is not promised and not relied on. **Unpair** never empties anything. **Not done here:** a Core-side purge frame. The
+and never what it points at. `emptied` is reported only for a listing read in full: a listing that did not finish, skipped anything, named an entry that is not a plain
+child, or a home that could not be listed is `kept`, with the reason. A Core that did not let go and whose key **has run out** cannot sync, so the delete finishes on the Panel; the answer says
+`machineFolder.state: "kept"` with the reason (unreachable, or refused), and the screen says that `~/shared` stays on the machine. So an offline Core is deleted once its key ends, at most an hour later,
+and never before. **Unpair** never empties anything. **Not done here:** a Core-side purge frame. The
 SDK's `sharedDetach` only carries `keepLocalCopy: true`, so the empty goes through the Files API; a frame of its own is a client change, and would let the Core
 empty its own folder on the Panel's request and finish an offline delete when it next connects. **The attach table:** `shared-folders-attach-table.test.ts` runs 64 rows against a model of the
 Core's sync (a key push runs a deleting pass, a detach only copies S3 into the folder, a fresh attach never deletes). The rows differ by Core row

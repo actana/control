@@ -147,7 +147,9 @@ export function CoresSettingsPage() {
       if (result.machineFolder?.state === "kept") {
         // The Core was gone from the Panel either way: say plainly that its copy on the machine is still there.
         toast.warning(
-          `Core "${core.label}" deleted. Its ~/shared on the machine was not emptied and stays: ${result.machineFolder.reason}.`,
+          result.machineFolder.removed > 0
+            ? `Core "${core.label}" deleted. Its ~/shared on the machine was only partly emptied and the rest stays: ${result.machineFolder.reason}.`
+            : `Core "${core.label}" deleted. Its ~/shared on the machine was not emptied and stays: ${result.machineFolder.reason}.`,
         );
       } else {
         toast.success(`Core "${core.label}" and its Shared folder deleted, on the Panel and on the machine.`);
@@ -246,8 +248,9 @@ export function CoresSettingsPage() {
         <p>
           This removes the Core from the Panel, empties every file under its S3 prefix{" "}
           <code>{pendingDeletion?.sharedFolder?.prefix}</code> and empties the <code>~/shared</code> folder on the machine.
-          Nothing else in the bucket or in the machine's home is touched. If the Core is not connected when you confirm, it is
-          still removed from the Panel, but its <code>~/shared</code> stays on the machine. This cannot be undone. Type the
+          Nothing else in the bucket or in the machine's home is touched. If the Core is not connected, the delete is refused
+          until the key it holds ends (within the hour); it is then removed from the Panel, but its <code>~/shared</code> stays on
+          the machine. This cannot be undone. Type the
           prefix to confirm.
         </p>
         <TextField

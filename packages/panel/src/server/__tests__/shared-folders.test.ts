@@ -466,17 +466,41 @@ describe("delete waits for the Core to let go of S3", () => {
     await refused(r, coreId);
   });
 
-  it("finishes on the Panel when the Core is not connected, and says the machine's folder was kept", async () => {
+  it("keeps everything when the Core is not connected and its key is live: its own sync would mirror the purge", async () => {
     const r = await rig();
     const coreId = await attachedWithFiles(r);
     r.online.value = false;
+    await refused(r, coreId);
+    expect(r.machine.calls).toEqual([]);
+  });
+
+  it("finishes on the Panel once the key has run out, and says the machine's folder was kept and why", async () => {
+    const r = await rig();
+    const coreId = await attachedWithFiles(r);
+    r.online.value = false;
+    await r.clock.advance(61 * MINUTE);
+    await settle();
     const result = await r.service.deleteCore(coreId, `${PREFIX}/${coreId}/`);
     expect(result).toMatchObject({ prefix: `${PREFIX}/${coreId}/`, machineFolder: { state: "kept", removed: 0 } });
-    expect(result.machineFolder.state === "kept" && result.machineFolder.reason).toMatch(/could not be reached/);
+    expect(result.machineFolder.state === "kept" && result.machineFolder.reason).toMatch(/could not be reached.*key has run out/);
     expect(r.machine.calls).toEqual([]);
     expect(await getCore(coreId)).toBeNull();
     expect([...r.s3.objects.keys()]).toEqual([]);
     expect(r.logs.some((m) => m.includes("~/shared on the machine was kept"))).toBe(true);
+  });
+
+  it("names a refusal accurately for a connected Core whose key has run out", async () => {
+    const r = await rig();
+    const coreId = await attachedWithFiles(r);
+    // Its key runs out while the link is down; it is then back, and refuses the detach for the expired key.
+    r.online.value = false;
+    await r.clock.advance(61 * MINUTE);
+    await settle();
+    r.online.value = true;
+    r.link.answer = { state: "error", code: "mount-failed", message: "the key has expired" };
+    const result = await r.service.deleteCore(coreId, `${PREFIX}/${coreId}/`);
+    expect(result.machineFolder.state === "kept" && result.machineFolder.reason).toMatch(/did not let go of S3 \(mount-failed: the key has expired\), and its key has run out/);
+    expect(r.machine.calls).toEqual([]);
   });
 
   it("empties the prefix once the key the Core holds has run out, even though it cannot be reached", async () => {
