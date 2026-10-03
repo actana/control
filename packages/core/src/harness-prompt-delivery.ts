@@ -524,14 +524,13 @@ export type HarnessReadiness = {
   maxPromptWrites: number;
   /**
    * The composer's placeholder disappears once it holds text, and this harness
-   * may draw that text in a form the short echo probe misses (a wrapped box).
-   * When set, a screen with no placeholder and positive evidence that the
-   * prompt is in the composer — a paste chip, or a longer slice of the prompt's
-   * tail inside the composer box rows — is a composer holding the prompt, not a
-   * swallowed write: submit, do not retype. A retype clears the screen and
-   * waits for a placeholder that cannot come back while the text is in the box,
-   * which ends `abandoned` with the prompt visible. A footer or status repaint
-   * is no evidence and keeps the retype path.
+   * may draw that text in a form the echo probe cannot read (a collapsed paste
+   * block, or a long prompt scrolled so only its end shows). When set, a screen
+   * that painted after the write and shows no placeholder goes to submit, not
+   * to retype: a retype clears the screen and waits for a placeholder that
+   * cannot come back while the text is in the box, and ends `abandoned` with the
+   * prompt visible. Pair it with {@link PromptDeliveryProfile.submitRetryGapsMs},
+   * which makes a wrong guess visible instead of a false delivery.
    */
   textHidesComposerMarker?: boolean;
 };
@@ -793,32 +792,6 @@ export function composerOnScreen(screen: string, readiness: HarnessReadiness): b
 const ECHO_PROBE_CHARS = 12;
 
 /**
- * The longer slice looked for inside composer box rows, where a footer cannot
- * supply it. Taken from the END of the prompt: a long prompt scrolls inside the
- * box, so its start is out of view and its tail (the standard block) is what shows.
- */
-const BOX_ROW_PROBE_CHARS = 24;
-/** A row drawn with box glyphs (`┃`, `│`, `║` …) is a composer frame row, not a footer line. */
-const BOX_GLYPH = /[│┃║▏▕▌▐]/;
-/** An absolute `ESC[row;colH` starts a new row in the rendered screen. */
-const ROW_MOVE = new RegExp("\\u001B\\[[0-9]*;?[0-9]*[Hf]", "g");
-
-/**
- * Is a distinctive slice of the prompt's tail visible inside the composer box rows?
- * Whitespace, the frame glyphs and the line wrapping are removed on both sides,
- * so a prompt wrapped over several rows still matches; only rows that carry a
- * frame glyph are read, so a footer or tip line cannot supply the text.
- */
-export function promptInBoxRows(screen: string, prompt: string): boolean {
-  const probe = squeeze(prompt).slice(-BOX_ROW_PROBE_CHARS);
-  if (probe.length === 0) return false;
-  const rows = stripAnsi(screen.replace(ROW_MOVE, "\n"))
-    .split("\n")
-    .filter((row) => BOX_GLYPH.test(row));
-  return squeeze(rows.join("")).includes(probe);
-}
-
-/**
  * `[Pasted text #1 +12 lines]` (Claude Code) or `[Pasted ~12 lines]` (OpenCode)
  * — a landed prompt the composer does not echo.
  */
@@ -1010,7 +983,9 @@ export type PromptDeliveryPhase =
   | "answering"
   /** The prompt is written; waiting to send the carriage return. */
   | "typing"
-  /** The carriage return went out. */
+  /** The carriage return went out and the harness has yet to show a turn start. */
+  | "submitted"
+  /** The carriage return went out (and, where it is verified, a turn started). */
   | "delivered"
   /** Gave up without typing anything. The session is alive and untouched. */
   | "abandoned";
@@ -1045,7 +1020,6 @@ export type PromptDeliveryEvent =
        */
       composerObserved: boolean;
     }
-  | { phase: "submit-unconfirmed"; retries: number }
   | { phase: "abandoned"; reason: string };
 
 export type PromptDeliveryTimers = {
@@ -1130,6 +1104,7 @@ export class HarnessPromptDelivery {
   private cancelSubmitCheck: (() => void) | null = null;
   // Verification of the submit, after the delivery itself is over.
   private verifying = false;
+  private pendingDelivered: PromptDeliveryEvent | null = null;
   private submitRetries = 0;
   private sinceSubmit = "";
   private sinceSubmitPaints = 0;
@@ -1206,6 +1181,7 @@ export class HarnessPromptDelivery {
     this.cancelSubmitCheck?.();
     this.cancelSubmitCheck = null;
     this.verifying = false;
+    this.pendingDelivered = null;
     if (!this.finished) this.phase = "abandoned";
   }
 
@@ -1215,7 +1191,9 @@ export class HarnessPromptDelivery {
   }
 
   private get finished(): boolean {
-    return this.phase === "delivered" || this.phase === "abandoned";
+    return (
+      this.phase === "delivered" || this.phase === "abandoned" || this.phase === "submitted"
+    );
   }
 
   // The one timer. Re-armed on every paint and after every keystroke we send,
@@ -1281,19 +1259,20 @@ export class HarnessPromptDelivery {
   }
 
   /**
-   * Positive evidence that the prompt is in the composer although
-   * {@link promptEchoed} did not see it: the paste chip, or a longer slice of
-   * the prompt's tail inside the composer box rows (see {@link promptInBoxRows}).
-   * Only for harnesses that say so (`textHidesComposerMarker`). A repainted
-   * placeholder means "empty, retype", and so does a footer repaint alone.
+   * The harness painted after our write and the empty-composer placeholder is
+   * gone: for a harness that says its text hides the marker
+   * (`textHidesComposerMarker`) that is a composer holding the prompt, in a form
+   * {@link promptEchoed} cannot read. The screen text is not matched any
+   * further, because a long prompt scrolls inside the box and what is visible
+   * cannot be predicted. Being wrong costs a return into an empty composer, and
+   * the verify loop (see {@link submitTaken}) catches that: the delivery is
+   * reported only once a turn has started, and ends `abandoned` if none does.
+   * A repainted placeholder means "empty, retype".
    */
   private composerHoldsUnreadableText(): boolean {
     if (!this.readiness.textHidesComposerMarker || this.promptWrites === 0) return false;
     if (composerOnScreen(this.screen, this.readiness)) return false;
-    return (
-      PASTE_PLACEHOLDER.test(stripAnsi(this.screen)) ||
-      promptInBoxRows(this.screen, this.opts.prompt)
-    );
+    return stripAnsi(this.screen).trim() !== "";
   }
 
   /**
@@ -1485,28 +1464,35 @@ export class HarnessPromptDelivery {
 
   private submit(now: number): void {
     this.opts.write("\r");
-    this.phase = "delivered";
     this.cancelIdle?.();
     this.cancelIdle = null;
     this.cancelDeadline?.();
     this.cancelDeadline = null;
     this.cancelComposerCeiling?.();
     this.cancelComposerCeiling = null;
-    this.beginSubmitCheck();
-    this.emit({
+    const delivered: PromptDeliveryEvent = {
       phase: "delivered",
       waitedMs: now - this.startedAt,
       promptChars: this.opts.prompt.length,
       submitPauseMs: submitPauseMs(this.opts.prompt, this.profile),
       composerObserved: this.composerObserved,
-    });
+    };
+    const gaps = this.profile.submitRetryGapsMs;
+    if (!gaps || gaps.length === 0) {
+      this.phase = "delivered";
+      this.emit(delivered);
+      return;
+    }
+    // A harness whose return can be swallowed is not reported delivered on the
+    // strength of having sent one: the event waits for the turn to start.
+    this.phase = "submitted";
+    this.pendingDelivered = delivered;
+    this.beginSubmitCheck(gaps[0]);
   }
 
-  private beginSubmitCheck(): void {
-    const gaps = this.profile.submitRetryGapsMs;
-    if (!gaps || gaps.length === 0) return;
+  private beginSubmitCheck(firstGapMs: number): void {
     this.verifying = true;
-    this.armSubmitCheck(gaps[0]);
+    this.armSubmitCheck(firstGapMs);
   }
 
   private armSubmitCheck(gapMs: number): void {
@@ -1520,20 +1506,33 @@ export class HarnessPromptDelivery {
     if (!this.verifying) return;
     const gaps = this.profile.submitRetryGapsMs ?? [];
     if (this.submitTaken()) {
-      this.verifying = false;
+      this.confirmSubmit();
       return;
     }
     if (this.submitRetries >= gaps.length) {
-      // The last return has had its whole gap and the harness still shows no
-      // sign of working. Said so, because `delivered` was reported long ago.
+      // The last return has had its whole gap and the harness shows no sign of
+      // working. The prompt is in the box, unsubmitted: say so as a Session in
+      // `needs-input`, exactly as a swallowed prompt is reported.
       this.verifying = false;
-      this.emit({ phase: "submit-unconfirmed", retries: this.submitRetries });
+      this.pendingDelivered = null;
+      this.abandon(`${this.opts.harness} did not start a turn after the prompt was submitted`);
       return;
     }
     this.submitRetries += 1;
     this.opts.write("\r");
     // After the last return there is one more gap to watch it, then the verdict.
     this.armSubmitCheck(gaps[this.submitRetries] ?? gaps[gaps.length - 1]);
+  }
+
+  /** A turn started: now, and not before, the prompt counts as delivered. */
+  private confirmSubmit(): void {
+    this.verifying = false;
+    this.cancelSubmitCheck?.();
+    this.cancelSubmitCheck = null;
+    this.phase = "delivered";
+    const event = this.pendingDelivered;
+    this.pendingDelivered = null;
+    if (event) this.emit(event);
   }
 
   /** Output after the delivery finished: only the submit check reads it. */
@@ -1543,6 +1542,7 @@ export class HarnessPromptDelivery {
     // Painted chunks, not distinct frames: a spinner tick normalises to the
     // same signature every time, and it is exactly what a working turn does.
     if (redrawSignature(chunk) !== "") this.sinceSubmitPaints += 1;
+    if (this.submitTaken()) this.confirmSubmit();
   }
 
   /**

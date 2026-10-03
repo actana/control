@@ -1576,19 +1576,24 @@ describe("verifying opencode's submit (paste block, issue 563)", () => {
     expect(returns(h)).toBe(2);
   });
 
-  it("says so when the retries run out unconfirmed", () => {
+  it("is not delivered at the first return, only once a turn starts", () => {
     const h = deliver(LONG, "opencode");
-    h.clock.advance(120_000);
-    expect(h.events.filter((e) => e.phase === "submit-unconfirmed")).toEqual([
-      { phase: "submit-unconfirmed", retries: 5 },
-    ]);
+    expect(h.delivery.currentPhase).toBe("submitted");
+    expect(h.events.some((e) => e.phase === "delivered")).toBe(false);
+    h.delivery.onOutput(WORKING_FRAMES[1]);
+    expect(h.delivery.currentPhase).toBe("delivered");
+    expect(h.events.filter((e) => e.phase === "delivered")).toHaveLength(1);
   });
 
-  it("does not report unconfirmed for a submit that took", () => {
+  it("ends abandoned, with a reason, when the retries run out and no turn started", () => {
     const h = deliver(LONG, "opencode");
-    h.delivery.onOutput(WORKING_FRAMES[1]);
     h.clock.advance(120_000);
-    expect(h.events.some((e) => e.phase === "submit-unconfirmed")).toBe(false);
+    expect(h.delivery.currentPhase).toBe("abandoned");
+    expect(h.events.some((e) => e.phase === "delivered")).toBe(false);
+    expect(h.events.at(-1)).toEqual({
+      phase: "abandoned",
+      reason: "opencode did not start a turn after the prompt was submitted",
+    });
   });
 
   it("does not repeat a short prompt that the first return took", () => {
@@ -1601,6 +1606,9 @@ describe("verifying opencode's submit (paste block, issue 563)", () => {
   it("leaves every other harness at one submit", () => {
     for (const harness of ["claude-code", "codex", "cursor-cli", "pi"]) {
       const h = deliver(LONG, harness);
+      // Delivered at the return, as before: nothing waits on a turn start.
+      expect(h.delivery.currentPhase, harness).toBe("delivered");
+      expect(h.events.some((e) => e.phase === "delivered"), harness).toBe(true);
       h.clock.advance(120_000);
       expect(returns(h), harness).toBe(1);
     }
@@ -1620,7 +1628,7 @@ describe("verifying opencode's submit (paste block, issue 563)", () => {
     h.delivery.dispose();
     h.clock.advance(120_000);
     expect(returns(h)).toBe(2);
-    expect(h.events.some((e) => e.phase === "submit-unconfirmed")).toBe(false);
+    expect(h.events.some((e) => e.phase === "abandoned" || e.phase === "delivered")).toBe(false);
   });
 });
 
@@ -1679,19 +1687,21 @@ describe("opencode with the prompt still in the composer (issue 563)", () => {
   it.each([
     ["a bare footer repaint", `${ESC}[40;1H${ESC}[2K  Build  big-pickle  Tip: use /help`],
     ["a framed footer with no prompt text", `${ESC}[40;1H┃  Build  big-pickle  Tip: use /help ┃`],
-  ])("keeps the retype path when the write was swallowed and only %s", (_name, footer) => {
+  ])("ends abandoned, not delivered, when the write was swallowed and only %s repainted", (_name, footer) => {
     const h = typedInto(footer);
-    expect(h.writes).toEqual([LONG]);
-    expect(h.events).toContainEqual({ phase: "prompt-swallowed", attempt: 1 });
+    // The screen is not matched: the return goes out, and the verify loop is
+    // what notices that nothing started.
+    expect(h.writes).toEqual([LONG, "\r"]);
+    expect(h.delivery.currentPhase).toBe("submitted");
     expect(h.events.some((e) => e.phase === "delivered")).toBe(false);
-    expect(h.delivery.currentPhase).not.toBe("delivered");
-    // And it ends with a reason rather than a false delivery.
     h.clock.advance(120_000);
+    expect(h.delivery.currentPhase).toBe("abandoned");
     expect(h.events.some((e) => e.phase === "delivered")).toBe(false);
-    expect(h.events).toContainEqual({
+    expect(h.events.at(-1)).toEqual({
       phase: "abandoned",
-      reason: "opencode composer never appeared within 90000 ms",
+      reason: "opencode did not start a turn after the prompt was submitted",
     });
+    expect(h.writes.filter((w) => w === LONG)).toHaveLength(1);
   });
 
   it("still retypes when the composer is really empty after the write", () => {
@@ -1753,6 +1763,9 @@ describe("delivering to opencode (issue 229)", () => {
     h.delivery.onOutput(`${ESC}[2J${ESC}[H┃ say hello ┃\n`);
     h.clock.advance(submitPauseMs("say hello", PROFILE) + PROFILE.quietGapMs);
     expect(h.writes).toEqual(["say hello", "\r"]);
+    // Sent, not yet delivered: opencode is reported only once a turn starts.
+    expect(h.delivery.currentPhase).toBe("submitted");
+    h.delivery.onOutput(`${ESC}[2K\rbuild  big-pickle  esc interrupt`);
     expect(h.delivery.currentPhase).toBe("delivered");
   });
 
@@ -1814,6 +1827,7 @@ describe("delivering to opencode (issue 229)", () => {
     h.delivery.onOutput(`${ESC}[2J${ESC}[H┃ say hello ┃\n`);
     h.clock.advance(submitPauseMs("say hello", PROFILE) + PROFILE.quietGapMs);
     expect(h.writes).toEqual(["say hello", "\r"]);
+    h.delivery.onOutput(`${ESC}[2K\rbuild  big-pickle  esc interrupt`);
     expect(h.delivery.currentPhase).toBe("delivered");
   });
 
@@ -2286,6 +2300,7 @@ describe("did the Core see a composer, or did the clock vouch for it (issue 395)
     h.clock.advance(PROFILE.quietGapMs + 1);
     h.delivery.onOutput(`${ESC}[2J${ESC}[H┃ say hello ┃\n`);
     h.clock.advance(submitPauseMs("say hello", PROFILE) + PROFILE.quietGapMs);
+    h.delivery.onOutput(`${ESC}[2K\rbuild  big-pickle  esc interrupt`);
     expect(h.delivery.currentPhase).toBe("delivered");
     expect(h.events.at(-1)).toMatchObject({ phase: "delivered", composerObserved: true });
   });
