@@ -1,6 +1,6 @@
 # The 0.5.0 Core model: no Projects, one workspace, a Shared folder, Tasks on the Panel
 
-> **Status: PROPOSED.** It becomes ACCEPTED when this record is merged. It **supersedes** ADR 0022 and parts of
+> **Status: ACCEPTED.** It **supersedes** ADR 0022 and parts of
 > ADR 0016 (D6, D12), 0027 (D1) and **amends** parts of ADR 0016 (D19), 0027 (D2, D6), 0028 and 0030, as the table
 > below says. Older records are amended by dated or appended notes; none is rewritten or renumbered.
 >
@@ -141,7 +141,7 @@ These are not decided here. Each is the named ticket's to settle.
 - **How the Panel's Files tab reaches Shared-folder bytes**, and so whether the
   Panel remains a "dumb pipe" (ADR 0030) for them (#565). *Settled by #565 (PR 637, PR 640): D34. For these bytes it is not a dumb pipe.*
 - **Where Remembered session settings live** (ADR 0017) now that the Project row
-  they were stored against is gone. No ticket in #552 says. *Answered in code, not by a ruling: PR 622 (#560) keeps them in the browser: D42. The owner has not confirmed it.*
+  they were stored against is gone. *#560 asks for "Remember" per Core; PR 622 keeps that in the browser's `localStorage` per Core, and D42 records it. Code and #560 agree. A durable home shared across browsers is still for the owner.*
 - **Which directory holds the daemon's state**, outside `~` (#559). *Decided on 2026-10-01: `/var/lib/actana`, D24.*
 - **How the daemon starts Sessions as `core` and writes into `core`'s home.** D11 runs the daemon as its own user
   and D10 allows root only at container startup, so after startup the daemon has no root. Nothing in #552 says how
@@ -453,20 +453,26 @@ Client [#8](https://github.com/actana/client/issues/8) (client PR 41, merge comm
 [#563](https://github.com/actana/control/issues/563) (PR 621, merged 2026-10-01) is the Core's half. The owner may change
 these by amending this record.
 
-**D37 — A report is a file in the Shared folder that ends with `ACT-REPORT-END`, and the Core appends a versioned block to a
-Session's starting prompt only. This settles the Open item on the Report contract, and it fixes names and an end marker, not fields.**
+**D37 — A report is a file in the Shared folder that ends with `ACT-REPORT-END`, and every prompt the system sends gets the
+standard block. This settles the Open item on the Report contract, and it fixes names and an end marker, not fields.**
 A plain Session turn writes `sessions/<session-id>/report-<turn>.md`; a Task writes `tasks/<task-id>/success.md`, `fail.md` or
 `partial-<n>.md`, with `attempt-<n>.log` for an attempt's log and `attempt-<n>-<name>` for an older result after a re-run. All
 are relative to the Shared folder (`~/shared` on the Core). A report is finished when its last non-blank line is exactly
 `ACT-REPORT-END`. The contract defines no fields inside a report. The client's `session wait` settles on that file through the
-Shared watcher, not on a screen or a status. The Core's block (`prompt-standard-block.ts`, version 1) is one line saying the workspace is `~`, that
-`~/shared` is shared and syncs within seconds, where this turn's report goes, its last line, and never to use sudo. It is appended once to a
-starting prompt, as turn 1 (`appendPromptBlock`; a prompt that already holds a block of any version is returned unchanged), and a Session
-started with no prompt gets none. When the Core reports the prompt delivered it records the block version on that Session row
-(`sessions.prompt_block_version`, a fresh-install column). A follow-up `session send` is a raw write on the Core and gets no block there;
-the client CLI appends the same block itself with the next turn's path, and a wording change bumps the version on both sides.
-The Panel copies the Task paths and the marker into `shared/task-report.ts`, pinned by a test, because the CLI is not its dependency.
-The end marker, the block's wording and the Core-side turn handling were the Core's choices where client#8 said only "a fixed last line".
+Shared watcher, not on a screen or a status. The block (`prompt-standard-block.ts`, version 1) is one line saying the workspace is `~`, that
+`~/shared` is shared and syncs within seconds, where this turn's report goes, its last line, and never to use sudo. **Every prompt
+the system sends carries that block:** the Session's starting prompt on the Core (`appendPromptBlock` as turn 1; a prompt that
+already holds a block of any version is returned unchanged; a Session started with no prompt gets none), every `actana session send`
+from the client CLI that is a prompt (the Core's follow-up write is raw and gets no block there; the CLI appends the same block
+with the next turn's path), and a Task re-assign which starts a new Session (the Core appends the block to that Session's
+starting prompt the same way). **The client CLI's exceptions:** a send with `--no-block` answers a dialog and is not a prompt;
+a bare carriage return is not a prompt; and a send when no Shared folder is attached (or cannot be) gets no block, the text
+still goes out, and the CLI prints a `no report block was appended` warning on stderr. **Keystrokes typed into a Session
+terminal are not prompts** and do not get the block. When the Core reports the starting prompt delivered it records the block
+version on that Session row (`sessions.prompt_block_version`, a fresh-install column). A wording change bumps the version on
+both sides. The Panel copies the Task paths and the marker into `shared/task-report.ts`, pinned by a test, because the CLI is
+not its dependency. The end marker, the block's wording and the Core-side turn handling were the Core's choices where client#8
+said only "a fixed last line".
 
 ## Landed by #564: pairing ends with the Shared folder
 
@@ -544,20 +550,22 @@ API-key principal. It differs from screen 09: the key prefix is `ak_`, not `actk
 `token_usage_rollup`, `token_usage_session_offsets`, `event_log`) to Postgres and deleted `db/client.ts`, the schema bootstrap and the legacy SQL migrations, so no Panel
 state is in a SQLite file. `pg-schema.ts` holds no Projects table. PR 643 moved the three provider-usage readers (Cursor's `state.vscdb`, OpenCode Go's `opencode.db`,
 Windsurf's `state.vscdb`) to `node:sqlite`, read-only with a 250 ms busy timeout, and removed `better-sqlite3` and its types from the dependency lists of the Panel's and the root's `package.json`. The root manifest still names it in the
-`native:node:rebuild` script and in the build allow-list (`package.json:53`, `:95`).
+`native:node:rebuild` script and in the build allow-list (`package.json` `onlyBuiltDependencies`, and `pnpm-workspace.yaml` `allowBuilds`), because the Core and
+`packages/shared` still need the native module; nothing in the Panel's dependency list does. The Panel helper
+`packages/panel/src/server/repositories/_sql.ts` types its unused `LIKE` helper with `drizzle-orm/pg-core` (`AnyPgColumn`), not `sqlite-core`.
 **What this does not say:** the Panel's image is not shown to be free of it. The deploy installs the Core, so the Core's compiled copy may still sit in the image's tree, and the build stage still compiles it. The image smoke proves only that `better-sqlite3` cannot be resolved from the Panel (its own log line says the files "may remain under the Core's copy"), and whether the deploy should stop installing the Core is undecided. Also, `better-sqlite3` is still used by the Core and is declared as a `devDependency` of `packages/shared` (PR 643 added the declaration), which D20
-(about the Panel) allows; `packages/panel/src/server/repositories/_sql.ts` still imports a type from `drizzle-orm/sqlite-core`, for a helper nothing uses. **Where the record and the
+(about the Panel) allows. **Where the record and the
 pull requests disagree on the count:** the intro to D14–D23 and the Consequences say #567 is seven pull requests; PR 639 calls itself "5 of 7" and PR 643 "6 of 6".
 
 ## Where Remembered session settings live: D42
 
-**D42 — Remembered session settings are in the browser's `localStorage`, per Core, and no ruling put them there.** PR 622 (#560 PR 2, merged 2026-10-01) stores
-`rememberHarnessSettings` and `savedHarness` under the key `mc:core-remember:<core id>` (`packages/panel/src/lib/core-remember.ts`). That is neither the Core, where ADR 0017 kept
-them against the Project row so that every Panel saw the same choice, nor Postgres. The PR says itself that ADR 0041 left the home open and that it chose `localStorage` because the
-Panel database was out of its boundary; no owner comment settles it, and the choice is a pull request's, not this record's. The file's own header says the same: "until a later ticket
-picks a durable home". Two things follow from the code, not from a decision: the setting is per browser and not per account, and what it holds is the harness and the flag
-that remembers it, which is not everything ADR 0017 lists (its default grid view is not in this file). The Open item stays open for the owner, and so does how an Agent (D35)
-relates to it: nothing merged connects them.
+**D42 — Remembered session settings are in the browser's `localStorage`, per Core.** That is what [#560](https://github.com/actana/control/issues/560) asks
+("Remember" is per Core), and the code matches: PR 622 (#560 PR 2, merged 2026-10-01) stores `rememberHarnessSettings` and `savedHarness` under the key
+`mc:core-remember:<core id>` (`packages/panel/src/lib/core-remember.ts`). That is neither the Core, where ADR 0017 kept them against the Project row so that every
+Panel saw the same choice, nor Postgres. The PR chose `localStorage` because the Panel database was out of its boundary; no owner comment settles a durable home shared
+across browsers, and the file's own header still says "until a later ticket picks a durable home". Two things follow: the setting is per browser and not per account, and
+what it holds is the harness and the flag that remembers it, which is not everything ADR 0017 lists (its default grid view is not in this file). How an Agent (D35) relates
+to it stays open: nothing merged connects them.
 
 ## Consequences
 

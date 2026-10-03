@@ -10,8 +10,9 @@
  *   AC_PANEL_HOST / HOST   interface to bind (default 0.0.0.0; the container
  *                          and reverse-proxy case — bind 127.0.0.1 to keep it
  *                          on the loopback of a shared machine)
- *   AC_PANEL_DATA_DIR      directory holding panel.db and everything else the
- *                          Panel must survive a restart with
+ *   AC_PANEL_DATA_DIR      directory for non-database state the Panel must
+ *                          survive a restart with (secrets key and similar;
+ *                          the database is Postgres via AC_PANEL_DATABASE_URL)
  *   AC_SECRETS_KEY         32-byte key (hex or base64) for the Cores' stored
  *                          credentials. Unset, the Panel generates and keeps
  *                          one at <data dir>/secrets.key; set it to hold the
