@@ -160,8 +160,8 @@ A pin flag stored on the owning Core against the Session row. Toggled via core-l
 _Avoid_: favorite, starred, bookmarked
 
 **Remembered session settings** (Core-scoped):
-The Harness a Session starts with, whether to skip the New session dialog and launch it directly, and the default grid view. They were stored on the owning Core against the Project row and patched via the core-link `settings` mutation, so — exactly like a pin — every Panel connected to that Core saw the same choice; not a per-operator preference and not Panel-local. Where they live now that there are no Projects is open (ADR 0041). See ADR 0017.
-_Avoid_: project preferences, saved agent (an **Agent** is a Harness with its settings, and how the two relate is open, ADR 0041), sticky settings
+The Harness a New Session dialog starts with when "Remember" is on for that Core (#560). With no Project row left, the Panel UI keeps them in the browser's `localStorage` keyed by Core id (`mc:core-remember:<core id>`, ADR 0041 D42): per Core and per browser, not shared across Panels the way ADR 0017's Core-fact settings were. How an Agent (D35) relates to them stays open.
+_Avoid_: project preferences, saved agent (an **Agent** is a Harness with its settings), sticky settings
 
 **Dumb pipe** (Panel-scoped):
 What the Panel is for a Core's workspace file bytes: it streams the browser's body straight through to the Core and the Core's answer straight back, buffering nothing, unpacking nothing and validating no path. One place validates paths — the machine that owns the disk — and one end holds the mTLS credentials for those routes: the Panel service, the same material it dials every core link with, because no browser can present a client certificate. See ADR 0030.
