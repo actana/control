@@ -661,6 +661,43 @@ describe("folders (#562)", () => {
     expect(dirAt("x")).toBe(true);
   });
 
+  it("makes no folder through a symlink that leaves the Shared folder", async () => {
+    const outside = path.join(homeDir, "proj");
+    fs.mkdirSync(outside);
+    fs.symlinkSync(outside, path.join(folder, "l"));
+    s3.seed("cores/core-a/l/new/", "");
+    s3.seed("cores/core-a/fine/", "");
+    await attach();
+    const report = await sync.pass();
+    expect(fs.readdirSync(outside)).toEqual([]);
+    expect(report.failed).toEqual([]);
+    expect(dirAt("fine")).toBe(true);
+  });
+
+  it("a marker under a local file or at a link is no pass failure: unpair still works and removal still runs", async () => {
+    s3.seed("cores/core-a/a", "i am a file");
+    s3.seed("cores/core-a/gone/f.txt", "f");
+    fs.symlinkSync(homeDir, path.join(folder, "ln"));
+    await attach();
+    s3.seed("cores/core-a/a/b/", "");
+    s3.seed("cores/core-a/ln/", "");
+    s3.objects.delete("cores/core-a/gone/f.txt");
+    const report = await sync.pass();
+    expect(report.failed).toEqual([]);
+    expect(report.deletedDirs).toEqual(["gone"]);
+    expect(readLocal("a")).toBe("i am a file");
+    expect(await sync.handle({ type: "sharedDetach", reqId: "r8", keepLocalCopy: true })).toMatchObject({ state: "detached" });
+  });
+
+  it("removes a folder the Core emptied itself, once S3 has nothing under it (the rule is for both sides)", async () => {
+    s3.seed("cores/core-a/outputs/a.txt", "a");
+    await attach();
+    fs.rmSync(path.join(folder, "outputs/a.txt"));
+    const report = await sync.pass();
+    expect(report.deletedRemote).toEqual(["outputs/a.txt"]);
+    expect(report.deletedDirs).toEqual(["outputs"]);
+  });
+
   it("the helper's folder removal refuses a folder with anything in it", async () => {
     const home = createSharedHome({ home: homeDir, identityEnv: {} });
     writeLocal("full/f.txt", "f");

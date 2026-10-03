@@ -138,6 +138,7 @@ export function createSharedSync(options: SharedSyncOptions): SharedSync {
   let readOnlyLogged = false;
   const tooBig = new Set<string>();
   const badRemote = new Set<string>();
+  const badMarker = new Set<string>();
   let attaching = false;
 
   // The provider reads `current` on every request, so a key pushed while a request is
@@ -335,10 +336,25 @@ export function createSharedSync(options: SharedSyncOptions): SharedSync {
       const localDirs = new Set(listing!.dirs);
       for (const p of localFiles) for (let i = p.indexOf("/"); i !== -1; i = p.indexOf("/", i + 1)) localDirs.add(p.slice(0, i));
       const known = new Set(state.dirs);
+      // A name `core` holds as something that is not a folder: a file or a link. Nothing is made at or under it.
+      const taken = new Set([...localFiles, ...listing!.links]);
+      const blocked = (d: string): boolean => {
+        if (taken.has(d)) return true;
+        for (let i = d.indexOf("/"); i !== -1; i = d.indexOf("/", i + 1)) if (taken.has(d.slice(0, i))) return true;
+        return false;
+      };
 
       // A marker in S3 with no folder here: make it, shallowest first.
       for (const d of [...listed.folders.keys()].sort()) {
-        if (localDirs.has(d) || known.has(d) || isUnreadable(d) || localFiles.includes(d)) continue;
+        if (localDirs.has(d) || known.has(d) || isUnreadable(d)) continue;
+        if (blocked(d)) {
+          // Not a failure of the pass (a failure would block unpair and folder removal for good): said once, like a bad key.
+          if (!badMarker.has(d)) {
+            badMarker.add(d);
+            log.warn("shared-sync.marker-skipped", { path: d, why: "a file or link is in the way" });
+          }
+          continue;
+        }
         try {
           await home.mkdir(d);
           localDirs.add(d);
@@ -354,13 +370,19 @@ export function createSharedSync(options: SharedSyncOptions): SharedSync {
       // A folder both sides had that S3 has lost and that holds nothing here: deepest first.
       if (mode === "sync" && report.failed.length === 0) {
         const unknownBelow = (d: string): boolean => unreadable.some((u) => u === "" || u === d || u.startsWith(`${d}/`) || d.startsWith(`${u}/`));
+        // What each folder holds directly (a file, a folder or a link), counted once; a removal takes one off its parent.
+        const parentOf = (p: string): string => p.slice(0, Math.max(0, p.lastIndexOf("/")));
+        const holding = new Map<string, number>();
+        for (const p of [...localFiles, ...localDirs, ...listing!.links]) {
+          if (p.includes("/")) holding.set(parentOf(p), (holding.get(parentOf(p)) ?? 0) + 1);
+        }
         for (const d of [...known].sort().reverse()) {
           if (remoteDirs.has(d) || !localDirs.has(d) || unknownBelow(d)) continue;
-          const holds = localFiles.some((p) => p.startsWith(`${d}/`)) || [...localDirs].some((x) => x.startsWith(`${d}/`));
-          if (holds) continue;
+          if ((holding.get(d) ?? 0) > 0) continue;
           try {
             if (await home.removeEmptyDir(d)) {
               localDirs.delete(d);
+              if (d.includes("/")) holding.set(parentOf(d), (holding.get(parentOf(d)) ?? 1) - 1);
               report.deletedDirs.push(d);
             }
           } catch (err) {

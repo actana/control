@@ -376,7 +376,7 @@ writes) or as the parent of a file, so the sync carries folders as follows. A ma
 that holds nothing on the Core, is removed with a `rmdir` that cannot take a file with it: that is what a rename, a move of the last
 file or a delete in the Files tab leaves behind. A folder the sync never saw in S3 (one `core` made) is never removed, and neither is
 one that holds a file, whatever S3 says. A folder `core` removes while S3 still has it is not made again. An empty folder `core` makes
-is not uploaded as a marker; only files are. Unpair makes the markers' folders and removes none.
+is not uploaded as a marker; only files are. Unpair makes the markers' folders and removes none. The removal rule does not ask who emptied the folder: one `core` emptied itself goes the same way once S3 has nothing under it. A marker is never made at or under a name `core` holds as a file or a link (the folder is never made through a link out of `~/shared`); it is logged once as `shared-sync.marker-skipped` and is not a failure of the pass, so unpair and folder removal go on.
 
 ## Landed by #565: how the Files tab reaches Shared-folder bytes
 
