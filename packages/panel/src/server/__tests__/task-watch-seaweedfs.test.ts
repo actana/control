@@ -40,7 +40,7 @@ if (!configured && process.env.SEAWEEDFS_REQUIRED === "1") {
 const KEY_ID = "ci-key";
 
 /** A request to the gateway with the static admin identity, signed with SigV4. Cores and the Panel's issuer never hold it. */
-async function admin(method: "GET" | "PUT", pathname: string, query: Record<string, string> = {}): Promise<Response> {
+async function admin(method: "GET" | "HEAD" | "PUT", pathname: string, query: Record<string, string> = {}): Promise<Response> {
   const url = new URL(pathname, env.endpoint!);
   const enc = (v: string) => encodeURIComponent(v).replace(/[!'()*]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`);
   const canonicalQuery = Object.keys(query)
@@ -133,7 +133,8 @@ describe.skipIf(!configured)("the Task result watcher against real SeaweedFS and
     const signingKey = fs.readFileSync(env.signingKeyFile!, "utf8");
     const router = await import("../api-router");
     jwks = await servePanelJwks(env.jwksPort, router.handleApiRequest);
-    expect([200, 409]).toContain((await admin("PUT", `/${env.bucket}`)).status);
+    // Not created here: deploy/seaweedfs must have created it itself (#566), or every Core would be refused.
+    expect((await admin("HEAD", `/${env.bucket}`)).status, "the deployed service creates the bucket").toBe(200);
 
     await mods.operatorSessionCookie();
     await storage.saveStorageConfig({

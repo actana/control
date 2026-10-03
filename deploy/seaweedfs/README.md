@@ -19,6 +19,7 @@ deploy/
 ├── .env.example              SEAWEEDFS_* placeholders, no values
 └── seaweedfs/
     ├── entrypoint.sh         validates the variables, renders the template, starts SeaweedFS
+    ├── create-bucket.sh      creates SEAWEEDFS_BUCKET once the gateway is up; also the healthcheck
     ├── iam.json.tmpl         STS, the Panel as OIDC provider, the role, the policy
     └── README.md             this file
 ```
@@ -47,6 +48,17 @@ deploy/
 2. `docker compose --profile seaweedfs up -d`. The S3 endpoint is
    `http://localhost:8333` on the host (loopback only) and `http://seaweedfs:8333`
    on the compose network. Put a TLS proxy in front before exposing it.
+
+The service creates the bucket itself, so there is nothing to run by hand:
+`entrypoint.sh` starts `create-bucket.sh` beside the server, which waits for the S3 gateway and sends one signed
+`PUT /<bucket>` as the static admin identity the container already holds, over the container's own loopback. It is
+idempotent: an existing bucket (`HEAD` answers 200, or the `PUT` answers 409) is left alone, so a restart changes
+nothing. Without it a fresh volume has no bucket, and every Core's read, write and list is refused, because the Panel
+holds only the OIDC signing key and the Core role has no bucket-level action by design. The Panel and the Cores still
+never get the admin key, and the policy is unchanged. `docker compose ps` shows the service healthy only once the
+bucket exists (`create-bucket.sh --check`), and `docker compose logs seaweedfs` shows `bucket: created …` or
+`bucket: … exists`. If the gateway never answers or refuses the admin key within about three minutes the script logs
+why and gives up, and the service stays unhealthy.
 
 Nothing secret is committed: the template holds `@@…@@` slots, and the
 entrypoint fills them from the environment into `/run/seaweedfs/iam.json`
@@ -146,6 +158,10 @@ honour ([actana/client#5](https://github.com/actana/client/issues/5)):
 
 This is the compose deploy for #566. Remaining caveats:
 
+- **The bucket is created by the deployed service, and CI checks that.** The `core-shared-seaweedfs` job starts this
+  directory's `entrypoint.sh` rather than a bare image, waits for `create-bucket.sh --check`, and the SeaweedFS tests no
+  longer create the bucket: they assert it exists with a `HEAD`, so a service that leaves it missing fails the job.
+  `scripts/__tests__/seaweedfs-deploy.test.mjs` runs `create-bucket.sh` against a fake gateway.
 - **The isolation checklist of [#562](https://github.com/actana/control/issues/562)**
   runs in CI against this image (`core-shared-seaweedfs` job): machine A cannot
   list, read or write machine B's prefix; Settings › Storage test-connection

@@ -82,10 +82,14 @@ WEED_JWT_FILER_SIGNING_KEY=$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n'
 [ "${#WEED_JWT_FILER_SIGNING_KEY}" -eq 64 ] || die "could not generate the filer JWT key"
 export WEED_JWT_FILER_SIGNING_KEY
 
-# The one static credential: the Panel's key issuer uses it to create the
-# bucket and to manage this deployment. Cores never see it.
+# The one static credential: the Panel's key issuer uses it to manage this
+# deployment, and create-bucket.sh below to create the bucket. Cores never see it.
 export AWS_ACCESS_KEY_ID="$SEAWEEDFS_S3_ADMIN_ACCESS_KEY"
 export AWS_SECRET_ACCESS_KEY="$SEAWEEDFS_S3_ADMIN_SECRET_KEY"
+
+# Nothing else creates the bucket (the Panel holds no S3 admin key and the Core role may not), so once the gateway
+# answers, this does, with the identity above and over the container's own loopback. It outlives the exec below.
+/seaweedfs-config/create-bucket.sh &
 unset SEAWEEDFS_S3_ADMIN_ACCESS_KEY SEAWEEDFS_S3_ADMIN_SECRET_KEY SEAWEEDFS_STS_SIGNING_KEY
 
 exec /entrypoint.sh "$@"
