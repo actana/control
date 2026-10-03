@@ -24,6 +24,7 @@ const { saveStorageConfig, storageKeyIssuer } = await import("../services/storag
 const { SharedFolders, describeSharedFolder } = await import("../services/shared-folders");
 const { findSharedFolder } = await import("../repositories/core-shared-folders.repo");
 const { getCore } = await import("../services/cores");
+const { coreLinkManager } = await import("../services/core-link-manager");
 
 const BUCKET = "actana-shared";
 const PREFIX = "cores";
@@ -56,13 +57,16 @@ async function rig(opts: { leaky?: boolean } = {}) {
     calls: Array<{ coreId: string; registered: boolean; frames: string[] }>;
     result: { state: "emptied"; removed: number } | { state: "kept"; reason: string; removed: number };
     throws: string | null;
-  } = { calls: [], result: { state: "emptied", removed: 2 }, throws: null };
+    /** Runs while the machine's folder is being emptied: the window between the detach and the Core's removal. */
+    during: (() => Promise<void>) | null;
+  } = { calls: [], result: { state: "emptied", removed: 2 }, throws: null, during: null };
   const service = new SharedFolders({
     link: () => (online.value ? link : null),
     isConnected: () => online.value,
     emptyMachineFolder: async (id) => {
       // Recorded with whether the Core was still registered: its credentials go with its row.
       machine.calls.push({ coreId: id, registered: (await getCore(id)) !== null, frames: link.frames.map((f) => f.type) });
+      if (machine.during) await machine.during();
       if (machine.throws) throw new Error(machine.throws);
       return machine.result;
     },
@@ -608,5 +612,119 @@ describe("delete empties the machine's Shared folder (ADR 0041 D12, D38)", () =>
     await expect(r.service.deleteCore(coreId, "nope")).rejects.toMatchObject({ code: "confirmation" });
     expect(r.machine.calls).toEqual([]);
     expect(r.link.ofType("sharedDetach")).toHaveLength(0);
+  });
+});
+
+describe("delete and unpair stop key pushes before the Core is told to let go (#564)", () => {
+  async function attached(r: Awaited<ReturnType<typeof rig>>) {
+    const coreId = await pairedCore();
+    await r.service.finishPairing(coreId);
+    r.s3.seed(`${PREFIX}/${coreId}/a.txt`, "a");
+    return coreId;
+  }
+  /** What the Core received after the detach: nothing, or the Core was handed a key while it was being deleted. */
+  const after = (r: Awaited<ReturnType<typeof rig>>) => {
+    const types = r.link.frames.map((f) => f.type);
+    return types.slice(types.indexOf("sharedDetach") + 1);
+  };
+  /** Hold the next `sharedCredentials` before the Core sees it, as a push already in flight is. */
+  function holdNextCredentials(r: Awaited<ReturnType<typeof rig>>) {
+    const real = r.link.request;
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    let held = false;
+    r.link.request = async (frame) => {
+      if (frame.type === "sharedCredentials" && !held) {
+        held = true;
+        await gate;
+      }
+      return real(frame);
+    };
+    return { release, wasHeld: () => held };
+  }
+  const connect = (coreId: string) =>
+    (coreLinkManager() as unknown as { set(id: string, s: { coreId: string; state: "connected"; lastSeenAt: number }): void }).set(coreId, {
+      coreId,
+      state: "connected",
+      lastSeenAt: 1,
+    });
+
+  it("does not let a scheduled refresh re-attach the Core while its folder is being emptied", async () => {
+    const r = await rig();
+    const coreId = await attached(r);
+    r.machine.during = async () => {
+      await r.clock.advance(45 * MINUTE);
+      await settle();
+    };
+    await r.service.deleteCore(coreId, `${PREFIX}/${coreId}/`);
+    expect(r.machine.calls).toHaveLength(1);
+    expect(after(r)).toEqual([]);
+    expect(r.link.attached).toBe(false);
+    expect(r.clock.delays()).toEqual([]);
+  });
+
+  it("does not let a refresh on reconnect re-attach the Core while its folder is being emptied", async () => {
+    const r = await rig();
+    const coreId = await attached(r);
+    const stop = await r.service.start();
+    await settle();
+    r.link.frames.length = 0;
+    r.link.attached = true;
+    r.machine.during = async () => {
+      connect(coreId);
+      await settle();
+    };
+    await r.service.deleteCore(coreId, `${PREFIX}/${coreId}/`);
+    stop();
+    expect(r.machine.calls).toHaveLength(1);
+    expect(r.link.frames.map((f) => f.type)).toEqual(["sharedDetach"]);
+    expect(r.link.attached).toBe(false);
+    expect(r.clock.delays()).toEqual([]);
+  });
+
+  it("does not let a push already in flight re-attach the Core, nor re-arm its timer", async () => {
+    const r = await rig();
+    const coreId = await attached(r);
+    const held = holdNextCredentials(r);
+    await r.clock.advance(45 * MINUTE);
+    expect(held.wasHeld()).toBe(true);
+    r.machine.during = async () => {
+      held.release();
+      await settle();
+    };
+    await r.service.deleteCore(coreId, `${PREFIX}/${coreId}/`);
+    await settle();
+    expect(after(r)).toEqual(["sharedCredentials"]);
+    expect(r.link.attached).toBe(false);
+    expect(r.clock.delays()).toEqual([]);
+    expect(await findSharedFolder(1, coreId)).toBeNull();
+  });
+
+  it("does the same for unpair: a refresh in flight cannot re-attach the Core that was told to leave", async () => {
+    const r = await rig();
+    const coreId = await attached(r);
+    const held = holdNextCredentials(r);
+    await r.clock.advance(45 * MINUTE);
+    expect(held.wasHeld()).toBe(true);
+    const unpair = r.service.detach(coreId);
+    await settle();
+    held.release();
+    await unpair;
+    await settle();
+    expect(after(r)).toEqual(["sharedCredentials"]);
+    expect(r.link.attached).toBe(false);
+    expect(r.clock.delays()).toEqual([]);
+  });
+
+  it("keeps the Core's key fresh again when the delete is refused with 409", async () => {
+    const r = await rig();
+    const coreId = await attached(r);
+    r.link.failures = 1;
+    await expect(r.service.deleteCore(coreId, `${PREFIX}/${coreId}/`)).rejects.toMatchObject({ code: "still-attached" });
+    r.link.frames.length = 0;
+    await r.clock.advance(0);
+    expect(r.link.ofType("sharedCredentials")).toHaveLength(1);
+    expect(r.link.attached).toBe(true);
+    expect(r.clock.delays().length).toBe(1);
   });
 });

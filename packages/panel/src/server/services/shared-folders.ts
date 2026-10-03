@@ -74,6 +74,7 @@ export class SharedFolderError extends ConflictError {
       | "core-refused"
       | "confirmation"
       | "still-attached"
+      | "leaving"
       | "prefix-delete-failed",
   ) {
     super(message);
@@ -140,6 +141,13 @@ export class SharedFolders {
   private readonly timers = new Map<string, Timer>();
   private readonly attempts = new Map<string, number>();
   private readonly generation = new Map<string, number>();
+  /**
+   * Cores being unpaired or deleted. A key is never pushed to one (no refresh, no reconnect refresh, no push already
+   * in flight), and a refresh never falls back to `sharedAttach` for one: the Core has just been told to let go, and an
+   * attach would hand it a fresh key while its folder is emptied. Cleared when the delete is refused, or when the
+   * Core is paired again.
+   */
+  private readonly leaving = new Set<string>();
 
   constructor(deps: Partial<SharedFolderDeps> = {}) {
     this.deps = { ...defaultDeps(), ...deps };
@@ -282,6 +290,7 @@ export class SharedFolders {
         "isolation-failed",
       );
     }
+    this.leaving.delete(coreId);
     await this.push(coreId, ownerId, "attach");
     const row = await findSharedFolder(ownerId, coreId);
     return row!;
@@ -294,7 +303,11 @@ export class SharedFolders {
    * `sharedAttach` when the Core says it is not attached (a Core that lost its key file). The row, and the next
    * refresh, are updated only once the Core has said `attached`.
    */
-  private async push(coreId: string, ownerId: number, mode: "attach" | "refresh"): Promise<void> {
+  private async push(coreId: string, ownerId: number, mode: "attach" | "refresh", gen?: number): Promise<void> {
+    // A refresh is stale once the Core is leaving or its timers were cancelled since the refresh began (`gen`).
+    const stale = () => this.leaving.has(coreId) || (gen !== undefined && this.generation.get(coreId) !== gen);
+    const leavingError = () => new SharedFolderError("This Core is being removed, so no key is pushed to it.", "leaving");
+    if (stale()) throw leavingError();
     const link = this.deps.link(coreId);
     if (!link) throw new SharedFolderError("This Core is not connected, so its Shared folder cannot be attached.", "not-connected");
     if (link.sharedCapability && link.sharedCapability() === null) {
@@ -306,6 +319,7 @@ export class SharedFolders {
     const { issuer, target } = await this.deps.issuer(ownerId);
     const issuedAt = this.deps.now();
     const key = await issuer.issue(coreId);
+    if (stale()) throw leavingError();
     const folder = coreFolderPrefix(target.prefix, coreId);
     const credentials = { accessKeyId: key.accessKeyId, secretAccessKey: key.secretAccessKey, sessionToken: key.sessionToken };
     const expiresAt = key.expiresAt.toISOString();
@@ -313,6 +327,7 @@ export class SharedFolders {
     // holding a later key than the row would say, and delete trusts the row to know when the Core can no longer sync.
     // If the Core refuses the key the row only over-states, which delays a delete and never allows one early.
     const known = (await findSharedFolder(ownerId, coreId))?.keyExpiresAt ?? 0;
+    if (stale()) throw leavingError();
     if (key.expiresAt.getTime() > known) {
       await updateSharedFolder(ownerId, coreId, { keyExpiresAt: key.expiresAt.getTime() }, this.deps.now());
     }
@@ -334,6 +349,7 @@ export class SharedFolders {
     // attached, so a plain `sharedCredentials` (which keeps whatever the Core is attached to) never rewrites it.
     let attachedHere = false;
     const attach = async (): Promise<CoreLinkSharedMountStatus> => {
+      if (stale()) throw leavingError();
       const answer = await send(attachFrame());
       attachedHere = answer.state === "attached";
       return answer;
@@ -363,6 +379,8 @@ export class SharedFolders {
       status = await send({ type: "sharedCredentials", reqId: reqId(), credentials, expiresAt });
       if (status.state === "error" && status.code === "not-attached") status = await attach();
     }
+    // The answer may have come after a delete began: the row and the timer are then no longer this push's to touch.
+    if (stale()) throw leavingError();
     if (status.state !== "attached") {
       throw new SharedFolderError(
         `The Core refused the Shared folder: ${describe(status)}.`,
@@ -410,9 +428,9 @@ export class SharedFolders {
 
   private async refresh(coreId: string, ownerId: number, gen: number): Promise<void> {
     try {
-      await this.push(coreId, ownerId, "refresh");
+      await this.push(coreId, ownerId, "refresh", gen);
     } catch (err) {
-      if (this.generation.get(coreId) !== gen) return;
+      if (this.leaving.has(coreId) || this.generation.get(coreId) !== gen) return;
       const n = (this.attempts.get(coreId) ?? 0) + 1;
       this.attempts.set(coreId, n);
       const reason = err instanceof Error ? err.message : "the key could not be pushed";
@@ -459,6 +477,8 @@ export class SharedFolders {
    * forgettable: the key it holds ends within the hour.
    */
   async detach(coreId: string): Promise<{ detached: boolean; error?: string }> {
+    // Marked before the request, like delete: a refresh already running must not re-attach the Core it is told to leave.
+    this.leaving.add(coreId);
     this.cancel(coreId);
     const { detached, error } = await this.sendDetach(coreId);
     return error === undefined ? { detached } : { detached, error };
@@ -510,8 +530,14 @@ export class SharedFolders {
     // without the Panel, and would mirror the emptied prefix into ~/shared (or upload into it again, with no row left to
     // clean it). So a Core that did not let go (unreachable, silent or refused) while its key is live is a 409 and nothing
     // is touched. Once its key has run out it cannot sync, and the delete finishes on the Panel with the machine copy kept.
+    // Marked, and the timer dropped, before the Core is told to let go: nothing may push it a key from here on.
+    this.leaving.add(coreId);
+    this.cancel(coreId);
     const letGo = await this.sendDetach(coreId);
     if (folder && !letGo.detached && (row?.keyExpiresAt ?? 0) > this.deps.now()) {
+      // Refused: the Core stays as it was, so its key is kept fresh again.
+      this.leaving.delete(coreId);
+      if (row && row.state !== "pending") this.schedule(coreId, ownerId, 0);
       throw new SharedFolderError(
         `The Core has not let go of ${folder} (${letGo.error ?? "no answer"}), so nothing was deleted: it may still be syncing, and ` +
           `emptying the prefix would make it delete its own ~/shared or upload into the prefix again. ` +
