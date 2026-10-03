@@ -490,7 +490,7 @@ typed back) removes the Core row, empties that prefix and empties `~/shared` on 
 a Core that did not let go (answered and refused, did not answer, or is not connected) **while its key is live** is a 409 and nothing is touched: a Core with a live
 key syncs every 15 seconds with or without the Panel, so emptying the prefix would make it delete its own `~/shared`, or upload into the prefix again with no row left to
 clean it. Then, only while the Core's link is up and it answered `detached` or `not-attached`, the Panel empties the machine's folder through the Core's Files API; then the row goes and the prefix is emptied.
-**The machine's folder** loses its children and nothing else: the folder stays, `shared/<name>` is the only path form deleted, and no symlink is followed. A `~/shared`
+**The machine's folder** loses its children and nothing else, one top-level child per delete (a folder with one recursive call), strictly one after another because the Core's Files API allows one write at a time; a `409 transfer-in-progress` is waited out and the same delete retried, up to 8 attempts, then `kept`: the folder stays, `shared/<name>` is the only path form deleted, and no symlink is followed. A `~/shared`
 that is itself a symlink (or not a folder) is left alone, because every path under a link resolves to wherever it points; a symlink inside it is removed as a link
 and never what it points at. `emptied` is reported only for a listing read in full: a listing that did not finish, skipped anything, named an entry that is not a plain
 child, or a home that could not be listed is `kept`, with the reason. A Core that did not let go and whose key **has run out** cannot sync, so the delete finishes on the Panel; the answer says
