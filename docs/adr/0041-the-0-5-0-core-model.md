@@ -445,13 +445,16 @@ Shared watcher, not on a screen or a status. The block (`prompt-standard-block.t
 `~/shared` is shared and syncs within seconds, where this turn's report goes, its last line, and never to use sudo. **Every prompt
 the system sends carries that block:** the Session's starting prompt on the Core (`appendPromptBlock` as turn 1; a prompt that
 already holds a block of any version is returned unchanged; a Session started with no prompt gets none), every `actana session send`
-from the client CLI (the Core's follow-up write is raw and gets no block there; the CLI appends the same block with the next
-turn's path), and a Task re-assign which starts a new Session (the Core appends the block to that Session's starting prompt the
-same way). **Keystrokes typed into a Session terminal are not prompts** and do not get the block. When the Core reports the
-starting prompt delivered it records the block version on that Session row (`sessions.prompt_block_version`, a fresh-install
-column). A wording change bumps the version on both sides. The Panel copies the Task paths and the marker into
-`shared/task-report.ts`, pinned by a test, because the CLI is not its dependency. The end marker, the block's wording and the
-Core-side turn handling were the Core's choices where client#8 said only "a fixed last line".
+from the client CLI that is a prompt (the Core's follow-up write is raw and gets no block there; the CLI appends the same block
+with the next turn's path), and a Task re-assign which starts a new Session (the Core appends the block to that Session's
+starting prompt the same way). **The client CLI's exceptions:** a send with `--no-block` answers a dialog and is not a prompt;
+a bare carriage return is not a prompt; and a send when no Shared folder is attached (or cannot be) gets no block, the text
+still goes out, and the CLI prints a `no report block was appended` warning on stderr. **Keystrokes typed into a Session
+terminal are not prompts** and do not get the block. When the Core reports the starting prompt delivered it records the block
+version on that Session row (`sessions.prompt_block_version`, a fresh-install column). A wording change bumps the version on
+both sides. The Panel copies the Task paths and the marker into `shared/task-report.ts`, pinned by a test, because the CLI is
+not its dependency. The end marker, the block's wording and the Core-side turn handling were the Core's choices where client#8
+said only "a fixed last line".
 
 ## Landed by #564: pairing ends with the Shared folder
 
