@@ -13,6 +13,7 @@ import {
   highlightIsOn,
   lastScreenClearIndex,
   matchBlockingDialog,
+  promptEchoProbe,
   promptEchoed,
   readDialogOptions,
   readinessFor,
@@ -1481,6 +1482,56 @@ describe("promptEchoed", () => {
 
   it("does not re-type forever on a prompt with nothing to look for", () => {
     expect(promptEchoed("", "   ")).toBe(true);
+  });
+});
+
+describe("submitting a long prompt to opencode (paste block, issue 563)", () => {
+  const LONG = "Refactor the authentication module and report back. ".repeat(12);
+  const SHORT = "say hello";
+  const COMPOSERS: Record<string, string> = {
+    opencode: OPENCODE_COMPOSER,
+    codex: "Ask Codex to do anything",
+    "cursor-cli": "Plan, search, build anything",
+    pi: "0.0%/1.0M (auto)",
+  };
+
+  function deliver(prompt: string, harness: string): Fixture {
+    const h = startDelivery(prompt, { harness });
+    h.delivery.onOutput(COMPOSERS[harness] ?? READY_SCREEN);
+    h.clock.advance(PROFILE.quietGapMs + 1);
+    h.delivery.onOutput(`${ESC}[2K\r[Pasted ~12 lines] ${promptEchoProbe(prompt)}`);
+    h.clock.advance(submitPauseMs(prompt, PROFILE) + PROFILE.quietGapMs + 1);
+    return h;
+  }
+
+  it("gives the paste block its own submit after the first carriage return", () => {
+    const h = deliver(LONG, "opencode");
+    expect(h.writes).toEqual([LONG, "\r"]);
+    h.clock.advance(deliveryProfileFor("opencode").pasteBlockSubmitGapMs ?? 0);
+    expect(h.writes).toEqual([LONG, "\r", "\r"]);
+    h.clock.advance(60_000);
+    expect(h.writes).toEqual([LONG, "\r", "\r"]);
+  });
+
+  it("does not double-submit a short prompt", () => {
+    const h = deliver(SHORT, "opencode");
+    h.clock.advance(60_000);
+    expect(h.writes).toEqual([SHORT, "\r"]);
+  });
+
+  it("leaves every other harness at one submit, long prompt or not", () => {
+    for (const harness of ["claude-code", "codex", "cursor-cli", "pi"]) {
+      const h = deliver(LONG, harness);
+      h.clock.advance(60_000);
+      expect(h.writes.filter((w) => w === "\r"), harness).toHaveLength(1);
+    }
+  });
+
+  it("sends nothing more once the Session is disposed", () => {
+    const h = deliver(LONG, "opencode");
+    h.delivery.dispose();
+    h.clock.advance(60_000);
+    expect(h.writes).toEqual([LONG, "\r"]);
   });
 });
 

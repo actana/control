@@ -868,6 +868,20 @@ export type PromptDeliveryProfile = {
   submitPerCharMs: number;
   /** The ceiling on that scaling. */
   submitMaxMs: number;
+  /**
+   * Prompts of at least this many characters get a second `\r`, sent
+   * {@link pasteBlockSubmitGapMs} after the first. Unset means one submit.
+   *
+   * OpenCode collapses a large write into a paste block and the first Enter
+   * only commits the block — the prompt sits in the composer, the Session
+   * stays in `needs-input`. Observed on 1.18.34 for every long start prompt and
+   * every dispatch prompt (the standard block alone makes a prompt long). The
+   * second `\r` is harmless where the first one took: an empty composer
+   * ignores it. A short prompt is never sent a second one.
+   */
+  pasteBlockMinChars?: number;
+  /** Pause between the first `\r` and the paste block's own `\r`. */
+  pasteBlockSubmitGapMs?: number;
   /** How many keystrokes this module will spend getting past dialogs. */
   maxDialogKeystrokes: number;
 };
@@ -915,7 +929,14 @@ export const DEFAULT_PROMPT_DELIVERY_PROFILE: PromptDeliveryProfile = {
 export const HARNESS_PROMPT_DELIVERY_PROFILES: Partial<
   Record<Harness, Partial<PromptDeliveryProfile>>
 > = {
-  opencode: { composerWaitMs: 90_000 },
+  // OpenCode summarises a paste of more than 150 characters into a block that
+  // needs its own submit. Claude Code, codex, cursor-cli and pi take the
+  // single `\r` after `submitPauseMs` on a long prompt, so they get no entry.
+  opencode: {
+    composerWaitMs: 90_000,
+    pasteBlockMinChars: 150,
+    pasteBlockSubmitGapMs: 1_000,
+  },
 };
 
 export function deliveryProfileFor(harness: string): PromptDeliveryProfile {
@@ -1057,6 +1078,7 @@ export class HarnessPromptDelivery {
   private cancelDeadline: (() => void) | null = null;
   /** The marker ceiling (issue 483). Only ever armed for a markered harness. */
   private cancelComposerCeiling: (() => void) | null = null;
+  private cancelPasteBlockSubmit: (() => void) | null = null;
 
   constructor(private readonly opts: PromptDeliveryOptions) {
     this.profile = opts.profile ?? deliveryProfileFor(opts.harness);
@@ -1124,6 +1146,8 @@ export class HarnessPromptDelivery {
     this.cancelDeadline = null;
     this.cancelComposerCeiling?.();
     this.cancelComposerCeiling = null;
+    this.cancelPasteBlockSubmit?.();
+    this.cancelPasteBlockSubmit = null;
     if (!this.finished) this.phase = "abandoned";
   }
 
@@ -1390,6 +1414,7 @@ export class HarnessPromptDelivery {
     this.cancelDeadline = null;
     this.cancelComposerCeiling?.();
     this.cancelComposerCeiling = null;
+    this.submitPasteBlock();
     this.emit({
       phase: "delivered",
       waitedMs: now - this.startedAt,
@@ -1397,6 +1422,16 @@ export class HarnessPromptDelivery {
       submitPauseMs: submitPauseMs(this.opts.prompt, this.profile),
       composerObserved: this.composerObserved,
     });
+  }
+
+  /** The paste block's own submit, for a harness that needs one. See the profile. */
+  private submitPasteBlock(): void {
+    const { pasteBlockMinChars, pasteBlockSubmitGapMs } = this.profile;
+    if (pasteBlockMinChars === undefined || this.opts.prompt.length < pasteBlockMinChars) return;
+    this.cancelPasteBlockSubmit = this.timers.setTimer(() => {
+      this.cancelPasteBlockSubmit = null;
+      this.opts.write("\r");
+    }, pasteBlockSubmitGapMs ?? 1_000);
   }
 
   /**
