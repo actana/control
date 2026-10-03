@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
-import type { StorageConfigView, StorageCoreFolderView } from "~/shared/storage-wire";
+import type { StorageConfigInput, StorageConfigView, StorageCoreFolderView } from "~/shared/storage-wire";
 
 /**
  * Settings › Storage (screen 08, #566): SeaweedFS is the default tab, the master key is write-only,
@@ -71,7 +71,7 @@ const CORES: StorageCoreFolderView[] = [
 
 const api = {
   getStorage: vi.fn(async () => ({ storage: STORAGE_SET, cores: CORES })),
-  putStorage: vi.fn(async () => ({ storage: STORAGE_SET })),
+  putStorage: vi.fn(async (_input: StorageConfigInput) => ({ storage: STORAGE_SET })),
   testStorage: vi.fn(async () => ({
     result: { folder: "cores/probe_abc/", expiresAt: Date.now() + 3_600_000, read: true, write: true, listOwn: true, reachOther: false },
   })),
@@ -190,7 +190,7 @@ describe("Settings › Storage", () => {
       fireEvent.click(screen.getByRole("button", { name: /^Save$/i }));
     });
     expect(api.putStorage).toHaveBeenCalledTimes(1);
-    const sent = api.putStorage.mock.calls[0]![0] as { backend: string; issuerEndpoint: string; endpoint: string };
+    const sent = api.putStorage.mock.calls[0]![0];
     expect(sent.backend).toBe("supabase");
     expect(sent.issuerEndpoint).toBe("https://xyz.supabase.co");
     expect(sent.endpoint).toBe("");
