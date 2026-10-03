@@ -74,6 +74,8 @@ export class HarnessAvailabilityStore {
   private readonly probe: (agent: Harness) => CoreLinkHarnessAvailability;
   private readonly probeAsync: ((agent: Harness) => Promise<CoreLinkHarnessAvailability>) | null;
   private refreshing: Promise<void> | null = null;
+  /** The one round queued behind {@link refreshing}, shared by every caller that arrived meanwhile. */
+  private trailing: Promise<void> | null = null;
   private current: CoreLinkHarnessAvailabilityMap;
   private timer: ReturnType<typeof setInterval> | null = null;
 
@@ -139,9 +141,11 @@ export class HarnessAvailabilityStore {
 
   /**
    * Re-probe with the asynchronous probe when there is one, else {@link runProbe}.
-   * Resolves once the map is published. Overlapping calls share one probe: a
-   * probe that asks another process per Harness can outlast a tick, and two
-   * concurrent rounds would only race to publish the same answer.
+   * Resolves once the map is published, and **from a round that started after this
+   * call**: a caller who arrives while a round is running (the install service,
+   * just after the vendor installer wrote the binary) may have changed what that
+   * round is looking at after it looked, so it is not handed the round in flight.
+   * It gets the next one, and callers that arrive meanwhile share that one.
    */
   refresh(): Promise<void> {
     const probeAsync = this.probeAsync;
@@ -149,24 +153,34 @@ export class HarnessAvailabilityStore {
       this.runProbe();
       return Promise.resolve();
     }
-    this.refreshing ??= (async () => {
-      const next: CoreLinkHarnessAvailabilityMap = {};
-      for (const agent of UI_HARNESSES) {
-        if (HARNESS_REGISTRY[agent].disabled) {
-          next[agent] = DISABLED;
-          continue;
-        }
-        try {
-          next[agent] = await probeAsync(agent);
-        } catch (err) {
-          next[agent] = probeFailed(err);
-        }
-      }
-      this.publish(next);
-    })().finally(() => {
-      this.refreshing = null;
+    const running = this.refreshing;
+    if (!running) {
+      this.refreshing = this.round(probeAsync).finally(() => {
+        this.refreshing = null;
+      });
+      return this.refreshing;
+    }
+    this.trailing ??= running.then(() => {
+      this.trailing = null;
+      return this.refresh();
     });
-    return this.refreshing;
+    return this.trailing;
+  }
+
+  private async round(probeAsync: (agent: Harness) => Promise<CoreLinkHarnessAvailability>): Promise<void> {
+    const next: CoreLinkHarnessAvailabilityMap = {};
+    for (const agent of UI_HARNESSES) {
+      if (HARNESS_REGISTRY[agent].disabled) {
+        next[agent] = DISABLED;
+        continue;
+      }
+      try {
+        next[agent] = await probeAsync(agent);
+      } catch (err) {
+        next[agent] = probeFailed(err);
+      }
+    }
+    this.publish(next);
   }
 
   private publish(next: CoreLinkHarnessAvailabilityMap): void {
@@ -211,14 +225,34 @@ function defaultProbe(agent: Harness): CoreLinkHarnessAvailability {
 
 /**
  * The availability of `agent` given every executable match for its command, in
- * search order. The matches come from whoever can see the directories: this
- * process, or in the container `core` (the daemon cannot read core's home). The
- * version probes that follow start as `core` either way.
+ * search order, version-checked here. For a caller that can see the directories
+ * and run the binaries itself; in the container the daemon can do neither, and
+ * {@link availabilityFromProbe} takes what `core` found and checked instead.
  */
 export function availabilityFromCandidates(
   agent: Harness,
   candidates: readonly string[],
   env: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform = os.platform(),
+): CoreLinkHarnessAvailability {
+  const requirement = HARNESS_CLI_CONFIG_BY_COMMAND[HARNESS_REGISTRY[agent].command];
+  const meeting = requirement ? pickHarnessCandidateMeetingVersion(candidates, requirement, env, platform) : null;
+  return availabilityFromProbe(agent, candidates, meeting, platform);
+}
+
+/** What a version check, made somewhere else, said about one binary. Only these fields are read. */
+export type ProbedVersionCheck = { ok: boolean; version?: string | null; reason?: string };
+
+/**
+ * The availability of `agent` from candidates found, and a version check made, by
+ * somebody else. The label, floor and update commands are the registry's, never
+ * the answer's: all that is taken from `meeting` is which binary and what its
+ * check said.
+ */
+export function availabilityFromProbe(
+  agent: Harness,
+  candidates: readonly string[],
+  meeting: { binary: string; check: ProbedVersionCheck } | null,
   platform: NodeJS.Platform = os.platform(),
 ): CoreLinkHarnessAvailability {
   const command = HARNESS_REGISTRY[agent].command;
@@ -231,7 +265,6 @@ export function availabilityFromCandidates(
       : { status: "missing", reason: "not-found" };
   }
 
-  const meeting = pickHarnessCandidateMeetingVersion(candidates, requirement, env, platform);
   if (!meeting) {
     return { status: "missing", reason: "not-found" };
   }
@@ -253,7 +286,7 @@ export function availabilityFromCandidates(
   // fires and the Providers page can guide the user to fix it.
   const outdated: CoreLinkHarnessAvailability = {
     status: "outdated",
-    reason: check.reason,
+    reason: check.reason as Extract<CoreLinkHarnessAvailability, { status: "outdated" }>["reason"],
     path: binary,
     label: requirement.label,
     requiredVersion: requirement.minimumVersion,

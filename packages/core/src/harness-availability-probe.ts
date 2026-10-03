@@ -13,12 +13,11 @@
 
 import type { Harness } from "@actana/shared/domain";
 import { HARNESS_REGISTRY } from "@actana/shared/harnesses";
-import { pathLookupCandidates } from "@actana/shared/harness-cli-config";
-import { availabilityFromCandidates } from "@actana/shared/harness-availability-store";
+import { availabilityFromProbe } from "@actana/shared/harness-availability-store";
 import { sanitizedProcessEnv } from "@actana/shared/shell-env";
 import type { CoreLinkHarnessAvailability } from "@actana/shared/sdk-link-frames";
 import { isContainerMode } from "./core-identity";
-import { resolveCommandViaCore, type CoreHomeOpsOptions } from "./core-home-ops-client";
+import { probeHarnessCliViaCore, type CoreHomeOpsOptions } from "./core-home-ops-client";
 
 export function coreAvailabilityProbe(
   options: CoreHomeOpsOptions = {},
@@ -27,16 +26,29 @@ export function coreAvailabilityProbe(
 ): ((agent: Harness) => Promise<CoreLinkHarnessAvailability>) | undefined {
   if (!isContainerMode(options.identityEnv)) return undefined;
   return async (agent) => {
-    const command = HARNESS_REGISTRY[agent].command;
-    // The PATH `core` searches is the one a Session gets: core's Harness
-    // directories first (`coreChildEnv`), then the system's.
-    const env = searchEnv();
-    const candidates: string[] = [];
-    for (const name of pathLookupCandidates(command)) {
-      for (const found of await resolveCommandViaCore(name, env.PATH ?? null, options)) {
-        if (!candidates.includes(found)) candidates.push(found);
-      }
-    }
-    return availabilityFromCandidates(agent, candidates, env);
+    // One request: `core` finds the CLI on the PATH a Session gets (core's Harness
+    // directories first, `coreChildEnv`) and runs its `--version`. The daemon runs
+    // no file out of core's home itself: that wait cannot be bounded from here
+    // (see `probeHarnessCliViaCore`), and this probe runs on a timer.
+    const answer = await probeHarnessCliViaCore(HARNESS_REGISTRY[agent].command, searchEnv().PATH ?? null, options);
+    // The answer is core's, and core runs what a Session wrote: take paths and the
+    // check's verdict from it and nothing it can phrase (`availabilityFromProbe`).
+    const candidates = answer.candidates.filter((entry) => typeof entry === "string" && entry.length > 0);
+    const meeting = answer.meeting;
+    const binary = meeting && candidates.includes(meeting.binary) ? meeting.binary : null;
+    return availabilityFromProbe(
+      agent,
+      candidates,
+      meeting && binary
+        ? {
+            binary,
+            check: {
+              ok: meeting.check?.ok === true,
+              version: typeof (meeting.check as { version?: unknown })?.version === "string" ? (meeting.check as { version: string }).version : null,
+              reason: (meeting.check as { reason?: string })?.reason,
+            },
+          }
+        : null,
+    );
   };
 }

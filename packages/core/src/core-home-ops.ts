@@ -36,7 +36,9 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { resolveAllHarnessCommandsOnPath } from "@actana/shared/harness-cli-resolution";
+import { pickHarnessCandidateMeetingVersion, resolveAllHarnessCommandsOnPath } from "@actana/shared/harness-cli-resolution";
+import { HARNESS_CLI_CONFIG_BY_COMMAND } from "@actana/shared/harness-cli-config";
+import type { HarnessVersionCheck } from "@actana/shared/harness-cli-version";
 import { registryPaths } from "@actana/shared/blob-registry";
 import { wireLocalCore, type LocalCoreWiring } from "@actana/shared/local-core-wiring";
 import { piAgentDir } from "@actana/shared/pi-agent-dir";
@@ -55,6 +57,7 @@ export const CORE_HOME_OPERATIONS = [
   "spawnPathFacts",
   "resolveExecCwd",
   "resolveCommand",
+  "probeHarnessCli",
 ] as const;
 
 export type CoreHomeOperation = (typeof CORE_HOME_OPERATIONS)[number];
@@ -75,7 +78,9 @@ export type CoreHomeOpRequest =
   | { op: "spawnPathFacts"; cwd: string; roots: string[] }
   | { op: "resolveExecCwd"; cwd: string | null }
   /** `path` is the PATH to search; null is the helper's own (core's). */
-  | { op: "resolveCommand"; command: string; path: string | null };
+  | { op: "resolveCommand"; command: string; path: string | null }
+  /** Find a Harness CLI on `path` and run its `--version`, both as core. Same fields as `resolveCommand`. */
+  | { op: "probeHarnessCli"; command: string; path: string | null };
 
 export type RegistrationCredential = {
   endpoint: string;
@@ -104,6 +109,12 @@ export type CoreHomeOpResult = {
   resolveExecCwd: { cwd: string };
   /** Every executable match, in search order; the caller picks by version. */
   resolveCommand: { candidates: string[] };
+  /**
+   * Every match, and the one that meets the version floor (or the first, with its
+   * failed check), already version-checked. `meeting` is null when there is no
+   * match, and for a command with no registered version floor.
+   */
+  probeHarnessCli: { candidates: string[]; meeting: { binary: string; check: HarnessVersionCheck } | null };
 };
 
 /** Where and as whom the operations run. */
@@ -227,14 +238,15 @@ export function parseCoreHomeOpRequest(raw: unknown): CoreHomeOpRequest {
     case "resolveExecCwd":
       noExtraFields(raw, ["cwd"]);
       return { op: "resolveExecCwd", cwd: optionalStr(raw.cwd, "cwd") };
-    case "resolveCommand": {
+    case "resolveCommand":
+    case "probeHarnessCli": {
       noExtraFields(raw, ["command", "path"]);
       const command = str(raw.command, "command", 32);
       // A bare name, never a path: the lookup is a search of PATH, and a name with
       // a separator would make it a probe of any file the helper can see.
       if (!/^[a-z][a-z0-9-]*$/.test(command)) refuse("bad-field", "command is not a bare command name");
       return {
-        op: "resolveCommand",
+        op: op === "probeHarnessCli" ? "probeHarnessCli" : "resolveCommand",
         command,
         path: raw.path === null || raw.path === undefined ? null : str(raw.path, "path", MAX_SEARCH_PATH_LENGTH),
       };
@@ -365,6 +377,18 @@ export function handleCoreHomeOpSync(request: CoreHomeOpRequest, ctx: CoreHomeOp
       // `core` can see, and it answers with paths only.
       const env = request.path === null ? ctx.env : { ...ctx.env, PATH: request.path };
       return { candidates: resolveAllHarnessCommandsOnPath(request.command, env, os.platform()) };
+    }
+    case "probeHarnessCli": {
+      // The `--version` of each match is run here, by core, in a process the daemon
+      // bounds and can kill. The daemon never runs a file core controls itself: its
+      // `spawnSync` cannot be interrupted (it has no CAP_KILL for another uid), so a
+      // wrapper whose `--version` hangs would hold its event loop.
+      const env = request.path === null ? ctx.env : { ...ctx.env, PATH: request.path };
+      const platform = os.platform();
+      const candidates = resolveAllHarnessCommandsOnPath(request.command, env, platform);
+      const requirement = HARNESS_CLI_CONFIG_BY_COMMAND[request.command];
+      const meeting = requirement ? pickHarnessCandidateMeetingVersion(candidates, requirement, env, platform) : null;
+      return { candidates, meeting };
     }
     case "installHarnessHooks": {
       const cwd = confine(request.cwd, ctx, "cwd");

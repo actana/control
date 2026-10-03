@@ -164,10 +164,36 @@ describe("HarnessAvailabilityStore.refresh with an asynchronous probe", () => {
     });
   });
 
-  it("runs overlapping refreshes as one round", async () => {
+  // The race: a round that already looked must not answer a caller who changed the
+  // machine after it looked (the install service, right after the installer wrote the CLI).
+  it("answers a caller who arrives mid-round from a round that starts after the call", async () => {
+    let installed = false;
+    let release!: () => void;
+    let gate = new Promise<void>((resolve) => (release = resolve));
+    const store = new HarnessAvailabilityStore({
+      appendEvent: () => 1,
+      probeAsync: async (agent) => {
+        // Looks first, then waits: the answer is fixed before the gate opens.
+        const found = installed && agent === "claude-code";
+        await gate;
+        return found ? { status: "available", path: "/home/core/.local/bin/claude" } : { status: "missing", reason: "not-found" };
+      },
+    });
+    const tick = store.refresh();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    installed = true;
+    const install = store.refresh();
+    const secondInstall = store.refresh();
+    release();
+    gate = Promise.resolve();
+    await Promise.all([tick, install, secondInstall]);
+    expect(store.snapshot()["claude-code"]).toEqual({ status: "available", path: "/home/core/.local/bin/claude" });
+  });
+
+  it("shares one trailing round between every caller that arrives mid-round", async () => {
     let calls = 0;
     let release!: () => void;
-    const gate = new Promise<void>((resolve) => (release = resolve));
+    let gate = new Promise<void>((resolve) => (release = resolve));
     const store = new HarnessAvailabilityStore({
       appendEvent: () => 1,
       probeAsync: async () => {
@@ -177,10 +203,12 @@ describe("HarnessAvailabilityStore.refresh with an asynchronous probe", () => {
       },
     });
     const first = store.refresh();
-    const second = store.refresh();
+    const late = [store.refresh(), store.refresh(), store.refresh()];
     release();
-    await Promise.all([first, second]);
-    expect(calls).toBe(UI_HARNESSES.filter((agent) => !HARNESS_REGISTRY[agent].disabled).length);
+    gate = Promise.resolve();
+    await Promise.all([first, ...late]);
+    // The round in flight and one more, not four.
+    expect(calls).toBe(2 * UI_HARNESSES.filter((agent) => !HARNESS_REGISTRY[agent].disabled).length);
   });
 
   it("records a probe that throws as missing, not as a rejection", async () => {
