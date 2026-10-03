@@ -47,7 +47,8 @@ for _ in $(seq 1 90); do
       # 409 is "already yours": another start won the race.
       put=$(s3 PUT)
       case "$put" in
-        200 | 409) log "created $bucket"; exit 0 ;;
+        200) log "created $bucket"; exit 0 ;;
+        409) log "$bucket exists"; exit 0 ;;
         *) last="PUT $put" ;;
       esac
       ;;

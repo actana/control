@@ -55,7 +55,7 @@ function render(env) {
     .replace("TEMPLATE=/seaweedfs-config/iam.json.tmpl", `TEMPLATE=${TEMPLATE}`)
     .replace("OUT_DIR=/run/seaweedfs", `OUT_DIR=${dir}/out`)
     .replace("chown -R seaweed:seaweed \"$OUT_DIR\"", ":")
-    .replace("/seaweedfs-config/create-bucket.sh &", 'echo "BUCKET-JOB $AWS_ACCESS_KEY_ID"')
+    .replace(/\( env -u .* \/seaweedfs-config\/create-bucket\.sh & \)/, 'echo "BUCKET-JOB $AWS_ACCESS_KEY_ID"')
     .replace('exec /entrypoint.sh "$@"', 'echo "HANDOVER $*"; echo "JWT=$WEED_JWT_FILER_SIGNING_KEY"');
   const copy = path.join(dir, "entrypoint.sh");
   fs.writeFileSync(copy, script, { mode: 0o755 });
@@ -331,7 +331,7 @@ describe("the service creates its own bucket (#566)", () => {
   it("is started by the entrypoint with the admin identity, before the handover", () => {
     const out = render(GOOD_ENV);
     expect(out.stdout).toContain("BUCKET-JOB test-admin-access");
-    expect(fs.readFileSync(ENTRYPOINT, "utf8")).toMatch(/^\/seaweedfs-config\/create-bucket\.sh &$/m);
+    expect(fs.readFileSync(ENTRYPOINT, "utf8")).toMatch(/^\( env -u SEAWEEDFS_STS_SIGNING_KEY -u WEED_JWT_FILER_SIGNING_KEY \/seaweedfs-config\/create-bucket\.sh & \)$/m);
   });
 
   it("creates a missing bucket with the admin key, and that key is on stdin, never in argv", () => {

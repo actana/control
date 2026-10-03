@@ -263,7 +263,7 @@ services:
     profiles: ["seaweedfs"]
     image: chrislusf/seaweedfs:4.47@sha256:ce9e796f1fe6f06968f4c04bdaf8f678dad9c8acdfef3d244133d71bfa6bf882
     restart: unless-stopped
-    # Reaps create-bucket.sh, which the entrypoint leaves running beside the server.
+    # Reaps create-bucket.sh: the entrypoint starts it in a subshell and then execs, so it is orphaned to this init.
     init: true
     security_opt:
       - no-new-privileges:true

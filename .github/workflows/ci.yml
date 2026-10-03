@@ -880,8 +880,8 @@ jobs:
           cache: true
       - run: pnpm install --frozen-lockfile
       # The deployed service itself, not a look-alike: deploy/seaweedfs is mounted where the compose file mounts it and its
-      # entrypoint renders the role and creates the bucket (#566). The tests below never create the bucket, so a service
-      # that leaves it missing fails here and there.
+      # entrypoint renders the role and creates the bucket (#566). None of the SeaweedFS tests below creates the bucket (each
+      # asserts it exists with a HEAD), so a service that leaves it missing fails here and in every one of them.
       - name: Start SeaweedFS (the deploy/seaweedfs service itself, with its role and its bucket)
         run: |
           set -euo pipefail
