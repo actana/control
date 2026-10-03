@@ -869,19 +869,18 @@ export type PromptDeliveryProfile = {
   /** The ceiling on that scaling. */
   submitMaxMs: number;
   /**
-   * Prompts of at least this many characters get a second `\r`, sent
-   * {@link pasteBlockSubmitGapMs} after the first. Unset means one submit.
+   * Gaps before each re-check of a submit, in order; the length is the number
+   * of extra `\r` this module may send. Unset means one submit and no checking.
    *
-   * OpenCode collapses a large write into a paste block and the first Enter
-   * only commits the block — the prompt sits in the composer, the Session
-   * stays in `needs-input`. Observed on 1.18.34 for every long start prompt and
-   * every dispatch prompt (the standard block alone makes a prompt long). The
-   * second `\r` is harmless where the first one took: an empty composer
-   * ignores it. A short prompt is never sent a second one.
+   * OpenCode collapses a large write into a paste block and a `\r` that lands
+   * before the TUI is ready for it is swallowed: the prompt stays in the
+   * composer and the Session stays in `needs-input` (1.18.34; a fixed second
+   * `\r` one second later, PR 669, was not enough). After each `\r` the module
+   * watches the screen, and when the harness has not started working by the
+   * end of the gap it sends one more. It never sends one into a harness it has
+   * seen working. See {@link submitTaken}.
    */
-  pasteBlockMinChars?: number;
-  /** Pause between the first `\r` and the paste block's own `\r`. */
-  pasteBlockSubmitGapMs?: number;
+  submitRetryGapsMs?: readonly number[];
   /** How many keystrokes this module will spend getting past dialogs. */
   maxDialogKeystrokes: number;
 };
@@ -929,13 +928,12 @@ export const DEFAULT_PROMPT_DELIVERY_PROFILE: PromptDeliveryProfile = {
 export const HARNESS_PROMPT_DELIVERY_PROFILES: Partial<
   Record<Harness, Partial<PromptDeliveryProfile>>
 > = {
-  // OpenCode summarises a paste of more than 150 characters into a block that
-  // needs its own submit. Claude Code, codex, cursor-cli and pi take the
+  // OpenCode collapses a long paste into a block and swallows a `\r` that comes
+  // too early, so its submit is verified and retried. Claude Code, codex, cursor-cli and pi take the
   // single `\r` after `submitPauseMs` on a long prompt, so they get no entry.
   opencode: {
     composerWaitMs: 90_000,
-    pasteBlockMinChars: 150,
-    pasteBlockSubmitGapMs: 1_000,
+    submitRetryGapsMs: [1_000, 2_000, 4_000, 7_000, 10_000],
   },
 };
 
@@ -1034,6 +1032,10 @@ export type PromptDeliveryOptions = {
 const SCREEN_WINDOW_CHARS = 8_000;
 /** How many recent redraw signatures count as "we have seen this frame". */
 const SIGNATURE_RING = 6;
+/** OpenCode's busy footer: `esc interrupt` while a turn is running. */
+const WORKING_HINT = /esc\s+(to\s+)?interrupt/i;
+/** Distinct repaints since a `\r` that mean a turn started. */
+const WORKING_REPAINTS = 3;
 
 /**
  * Delivers one starting prompt to one harness, driven by that harness's own
@@ -1078,7 +1080,12 @@ export class HarnessPromptDelivery {
   private cancelDeadline: (() => void) | null = null;
   /** The marker ceiling (issue 483). Only ever armed for a markered harness. */
   private cancelComposerCeiling: (() => void) | null = null;
-  private cancelPasteBlockSubmit: (() => void) | null = null;
+  private cancelSubmitCheck: (() => void) | null = null;
+  // Verification of the submit, after the delivery itself is over.
+  private verifying = false;
+  private submitRetries = 0;
+  private sinceSubmit = "";
+  private sinceSubmitSignatures = new Set<string>();
 
   constructor(private readonly opts: PromptDeliveryOptions) {
     this.profile = opts.profile ?? deliveryProfileFor(opts.harness);
@@ -1095,7 +1102,10 @@ export class HarnessPromptDelivery {
 
   /** Every chunk the PTY produced, in order. */
   onOutput(chunk: string): void {
-    if (this.finished) return;
+    if (this.finished) {
+      this.observeAfterSubmit(chunk);
+      return;
+    }
 
     // The quiet window opens on the harness's first byte, not on the spawn.
     // Before there is any output there is nothing that could have gone quiet,
@@ -1146,8 +1156,9 @@ export class HarnessPromptDelivery {
     this.cancelDeadline = null;
     this.cancelComposerCeiling?.();
     this.cancelComposerCeiling = null;
-    this.cancelPasteBlockSubmit?.();
-    this.cancelPasteBlockSubmit = null;
+    this.cancelSubmitCheck?.();
+    this.cancelSubmitCheck = null;
+    this.verifying = false;
     if (!this.finished) this.phase = "abandoned";
   }
 
@@ -1414,7 +1425,7 @@ export class HarnessPromptDelivery {
     this.cancelDeadline = null;
     this.cancelComposerCeiling?.();
     this.cancelComposerCeiling = null;
-    this.submitPasteBlock();
+    this.beginSubmitCheck();
     this.emit({
       phase: "delivered",
       waitedMs: now - this.startedAt,
@@ -1424,14 +1435,59 @@ export class HarnessPromptDelivery {
     });
   }
 
-  /** The paste block's own submit, for a harness that needs one. See the profile. */
-  private submitPasteBlock(): void {
-    const { pasteBlockMinChars, pasteBlockSubmitGapMs } = this.profile;
-    if (pasteBlockMinChars === undefined || this.opts.prompt.length < pasteBlockMinChars) return;
-    this.cancelPasteBlockSubmit = this.timers.setTimer(() => {
-      this.cancelPasteBlockSubmit = null;
-      this.opts.write("\r");
-    }, pasteBlockSubmitGapMs ?? 1_000);
+  private beginSubmitCheck(): void {
+    const gaps = this.profile.submitRetryGapsMs;
+    if (!gaps || gaps.length === 0) return;
+    this.verifying = true;
+    this.armSubmitCheck(gaps[0]);
+  }
+
+  private armSubmitCheck(gapMs: number): void {
+    this.sinceSubmit = "";
+    this.sinceSubmitSignatures = new Set();
+    this.cancelSubmitCheck = this.timers.setTimer(() => this.onSubmitCheck(), gapMs);
+  }
+
+  private onSubmitCheck(): void {
+    this.cancelSubmitCheck = null;
+    if (!this.verifying) return;
+    const gaps = this.profile.submitRetryGapsMs ?? [];
+    if (this.submitTaken()) {
+      this.verifying = false;
+      return;
+    }
+    this.submitRetries += 1;
+    this.opts.write("\r");
+    if (this.submitRetries >= gaps.length) {
+      this.verifying = false;
+      return;
+    }
+    this.armSubmitCheck(gaps[this.submitRetries]);
+  }
+
+  /** Output after the delivery finished: only the submit check reads it. */
+  private observeAfterSubmit(chunk: string): void {
+    if (!this.verifying) return;
+    this.sinceSubmit = (this.sinceSubmit + chunk).slice(-SCREEN_WINDOW_CHARS);
+    const signature = redrawSignature(chunk);
+    if (signature !== "") this.sinceSubmitSignatures.add(signature);
+  }
+
+  /**
+   * Did the last `\r` start a turn? Two readings, either is enough:
+   *
+   *   - the harness says it is working (its interrupt hint is on screen), or
+   *   - the screen has moved on by more than one repaint since the `\r`. A
+   *     swallowed `\r` leaves an idle composer that paints nothing, and a paste
+   *     block opening is one repaint; a turn starting paints the user message,
+   *     the footer and the spinner line, which are several distinct frames.
+   *
+   * The prompt text is deliberately not consulted: a submitted prompt is
+   * echoed again in the transcript, so its presence proves nothing.
+   */
+  private submitTaken(): boolean {
+    if (WORKING_HINT.test(stripAnsi(this.sinceSubmit))) return true;
+    return this.sinceSubmitSignatures.size >= WORKING_REPAINTS;
   }
 
   /**
