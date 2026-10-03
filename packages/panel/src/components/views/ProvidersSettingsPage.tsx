@@ -222,7 +222,7 @@ export function ProvidersSettingsPage() {
   return (
     <SettingsSection
       title="Providers"
-      subtitle="The AI agents offered when starting a new session. Drag to reorder, hide the ones you don't use, and install or update each CLI on the selected Core. New Session lists only harnesses that Core already has."
+      subtitle={`Harness CLIs on ${coreLabel}. Drag to reorder, hide ones you do not use, and install or update each CLI. New Session starts only harnesses that Core already has.`}
       headingLevel="h1"
     >
       <div ref={listRef} style={{ display: "flex", flexDirection: "column", gap: 8 }}>

@@ -63,7 +63,6 @@ type Ctx = {
   /** Full-height drawer (issue 560 design 02); independent of collapse. */
   panelMaximized: boolean;
   setPanelMaximized: (maximized: boolean) => void;
-  togglePanelMaximized: () => void;
   sessions: Session[];
   sessionsByScope: Record<string, Session[]>;
   focusedId: string | null;
@@ -198,18 +197,6 @@ export function UserTerminalProvider({ children }: { children: ReactNode }) {
     },
     [scopeKey],
   );
-  const togglePanelMaximized = useCallback(() => {
-    if (!scopeKey) return;
-    setPanelMaximizedByCore((prev) => {
-      const next = !(prev[scopeKey] ?? false);
-      if (next) {
-        setPanelOpenByCore((openPrev) =>
-          openPrev[scopeKey] === true ? openPrev : { ...openPrev, [scopeKey]: true },
-        );
-      }
-      return { ...prev, [scopeKey]: next };
-    });
-  }, [scopeKey]);
 
   const setCore = useCallback((next: string | null) => {
     setCoreState(next);
@@ -551,7 +538,6 @@ export function UserTerminalProvider({ children }: { children: ReactNode }) {
       setPanelOpen,
       panelMaximized,
       setPanelMaximized,
-      togglePanelMaximized,
       sessions,
       sessionsByScope: sessionsByCore,
       focusedId,
@@ -574,7 +560,6 @@ export function UserTerminalProvider({ children }: { children: ReactNode }) {
       setPanelOpen,
       panelMaximized,
       setPanelMaximized,
-      togglePanelMaximized,
       sessions,
       sessionsByCore,
       focusedId,

@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useRouter } from "@tanstack/react-router";
 import { toast } from "sonner";
@@ -21,6 +21,7 @@ import {
   writeCoreSessionsView,
   type CoreSessionsView,
 } from "~/lib/core-sessions-view";
+import { setSelectedCoreId } from "~/lib/selected-core-store";
 import { mutateSessionForCore } from "~/lib/mutate-session-for-core";
 import { TITLE_WAITING } from "~/lib/session-sentinels";
 import { newClientId } from "@actana/shared/client-id";
@@ -51,6 +52,13 @@ export function CorePage({ coreId, tab, path = "" }: { coreId: string; tab: Core
   const [sessionsView, setSessionsViewState] = useState<CoreSessionsView>(() =>
     readCoreSessionsView(coreId),
   );
+  // Rail / hotkeys / links change `coreId` without the header switcher. Keep
+  // the view in sync with this Core's stored choice even if the route forgot
+  // to remount (keyed in cores.$coreId.tsx; this effect is the belt).
+  useEffect(() => {
+    setSessionsViewState(readCoreSessionsView(coreId));
+    setSelectedCoreId(coreId);
+  }, [coreId]);
   const core = cores.find((c) => c.id === coreId);
   const rows = useMemo(() => fleet.rows.filter((r) => r.coreId === coreId), [fleet.rows, coreId]);
   const remembered = useMemo(() => {
@@ -80,7 +88,6 @@ export function CorePage({ coreId, tab, path = "" }: { coreId: string; tab: Core
   );
   const switchCore = useCallback(
     (next: string) => {
-      setSessionsViewState(readCoreSessionsView(next));
       void router.navigate({ to: "/cores/$coreId", params: { coreId: next }, search: { tab } });
     },
     [router, tab],

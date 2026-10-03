@@ -21,7 +21,6 @@ const store = {
   setPanelOpen: vi.fn(),
   panelMaximized: false,
   setPanelMaximized: vi.fn(),
-  togglePanelMaximized: vi.fn(),
   sessions: [] as unknown[],
   focusedId: null,
   focusTerminal: vi.fn(),
@@ -91,8 +90,9 @@ describe("the terminal panel's one control (issue 266)", () => {
 
   it("can be maximised as well as collapsed (issue 560)", () => {
     renderPanel("core_a");
-    const maximise = screen.getByRole("checkbox", { name: /maximise terminal/i });
+    const maximise = screen.getByRole("button", { name: /maximise terminal/i });
     expect(maximise).toBeTruthy();
+    expect(maximise.getAttribute("aria-pressed")).toBe("false");
     maximise.click();
     expect(store.setPanelMaximized).toHaveBeenCalledWith(true);
     expect(screen.getByRole("button", { name: /collapse|expand/i })).toBeTruthy();

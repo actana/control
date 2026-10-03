@@ -11,6 +11,8 @@ import { UserTerminalPane } from "./UserTerminalPane";
 const MIN_HEIGHT = 160;
 const MIN_PANE_WIDTH = 200;
 const PANE_WEIGHTS_STORAGE_KEY = "mc:userTerminalPaneWeights";
+/** Viewport chrome above the maximised drawer (top bar + Core header). */
+const MAXIMISED_VIEWPORT_CHROME_PX = 120;
 
 type PaneWeights = Record<string, number>;
 
@@ -82,7 +84,9 @@ export function UserTerminalPanel() {
   });
   // Maximise fills the viewport minus the Core header chrome (issue 560); the
   // stored height returns when maximise is cleared, so resize still sticks.
-  const height: number | string = panelMaximized ? "calc(100vh - 120px)" : storedHeight;
+  const height: number | string = panelMaximized
+    ? `calc(100vh - ${MAXIMISED_VIEWPORT_CHROME_PX}px)`
+    : storedHeight;
 
   const paneRowRef = useRef<HTMLDivElement | null>(null);
   const [paneWeights, setPaneWeights] = useState<PaneWeights>(() => readStoredWeights());
@@ -344,27 +348,16 @@ export function UserTerminalPanel() {
               New Terminal
             </Btn>
           </HotkeyTooltip>
-          <label
-            style={{
-              display: "inline-flex",
-              alignItems: "center",
-              gap: 6,
-              fontFamily: "var(--mono)",
-              fontSize: 11,
-              color: "var(--text-dim)",
-              cursor: "pointer",
-              userSelect: "none",
-              padding: "2px 4px",
-            }}
+          <Btn
+            variant="ghost"
+            size="sm"
+            icon={panelMaximized ? "minimize" : "maximize"}
+            aria-label="Maximise terminal"
+            aria-pressed={panelMaximized}
+            onClick={() => setPanelMaximized(!panelMaximized)}
           >
-            <input
-              type="checkbox"
-              checked={panelMaximized}
-              aria-label="Maximise terminal"
-              onChange={(e) => setPanelMaximized(e.target.checked)}
-            />
             maximise
-          </label>
+          </Btn>
           <HotkeyTooltip
             action="terminal.toggle"
             label={panelOpen ? "Collapse panel" : "Expand panel"}

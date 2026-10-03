@@ -4,8 +4,8 @@ import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
 import type { CoreLinkHarnessAvailabilityMap } from "@actana/sdk/core";
 
 // New Session is prompt-first (issue 560, design screen 03): harness picker +
-// prompt, a Runs on line, no path or cwd field, Remember per Core. The picker
-// lists only harnesses this Core has — Install lives in Settings › Providers.
+// prompt, a Runs on line, no path or cwd field, Remember per Core. Start lists
+// only harnesses this Core has; missing CLIs offer Install on this dialog's Core.
 
 type EventListener = (msg: { coreId: string; event: unknown }) => void;
 
@@ -75,6 +75,8 @@ describe("NewHarnessDialog prompt-first (issue 560)", () => {
     listeners.clear();
     __resetCliAvailabilityStoresForTests();
     __resetCoreRememberForTests();
+    bridge.installHarness.mockClear();
+    bridge.installHarness.mockResolvedValue({ accepted: true });
   });
 
   afterEach(() => {
@@ -90,16 +92,16 @@ describe("NewHarnessDialog prompt-first (issue 560)", () => {
     expect(document.querySelector('input[name="cwd"]')).toBeNull();
   });
 
-  it("lists only harnesses this Core has, not missing ones", async () => {
+  it("lists harnesses this Core has for Start, and offers Install for missing ones", async () => {
     await openDialog();
     expect(screen.getAllByText("Claude Code").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Codex").length).toBeGreaterThan(0);
-    expect(screen.queryByText("Cursor CLI")).toBeNull();
-    expect(screen.queryByText("CLI not found on PATH.")).toBeNull();
-    expect(screen.queryByRole("button", { name: /^Install$/ })).toBeNull();
+    expect(screen.getByText("Cursor CLI")).toBeTruthy();
+    expect(screen.getByText("CLI not found on PATH.")).toBeTruthy();
+    expect(screen.getByRole("button", { name: /^Install$/ })).toBeTruthy();
   });
 
-  it("points operators to Settings › Providers when the Core has no harnesses", async () => {
+  it("installs a missing harness on the dialog's Core, not a globally selected one", async () => {
     AVAILABILITY = {
       "claude-code": { status: "missing", reason: "not-found" },
       codex: { status: "missing", reason: "not-found" },
@@ -108,8 +110,11 @@ describe("NewHarnessDialog prompt-first (issue 560)", () => {
       pi: { status: "missing", reason: "not-found" },
     };
     await openDialog();
-    expect(screen.getByText(/Settings › Providers/i)).toBeTruthy();
-    expect(screen.queryByRole("button", { name: /^Install$/ })).toBeNull();
+    expect(screen.getByText(/Install one on workstation-berlin/i)).toBeTruthy();
+    await act(async () => {
+      fireEvent.click(screen.getAllByRole("button", { name: /^Install$/ })[0]!);
+    });
+    expect(bridge.installHarness).toHaveBeenCalledWith("core_a", "claude-code");
   });
 
   it("shows a Runs on line with the Core, home and report location", async () => {

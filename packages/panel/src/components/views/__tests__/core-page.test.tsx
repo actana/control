@@ -93,7 +93,10 @@ async function mount(tab: "sessions" | "files" | "tasks", coreId = "a") {
     getParentRoute: () => root,
     path: "/cores/$coreId",
     validateSearch: (s: Record<string, unknown>) => ({ tab: s.tab as string | undefined }),
-    component: () => <CorePage coreId={coreId} tab={tab} />,
+    component: function CoreRoute() {
+      const { coreId: id } = coreRoute.useParams();
+      return <CorePage key={id} coreId={id} tab={tab} />;
+    },
   });
   const router = createRouter({
     routeTree: root.addChildren([coreRoute, workspaceRoute]),
@@ -232,6 +235,32 @@ describe("CorePage", () => {
     expect(document.querySelector("[data-sessions-grid]")).not.toBeNull();
     expect(document.querySelector("[data-sessions-list]")).toBeNull();
     expect(screen.getByRole("button", { name: "Grid view" }).getAttribute("aria-pressed")).toBe(
+      "true",
+    );
+  });
+
+  it("keeps each Core's own Sessions view when switching Core without the header switcher", async () => {
+    const { writeCoreSessionsView } = await import("~/lib/core-sessions-view");
+    writeCoreSessionsView("a", "grid");
+    writeCoreSessionsView("b", "list");
+    cores = [core("a", "alpha"), core("b", "bravo")];
+    rows = [
+      row({ coreId: "a", sessionId: "sa", title: "Alpha session" }),
+      row({ coreId: "b", sessionId: "sb", title: "Bravo session" }),
+    ];
+    const router = await mount("sessions", "a");
+    expect(document.querySelector("[data-sessions-grid]")).not.toBeNull();
+    expect(screen.getByText("Alpha session")).toBeTruthy();
+
+    // Simulate the rail / hotkey / link path: navigate to another Core without
+    // going through CorePage.switchCore.
+    await act(async () => {
+      await router.navigate({ to: "/cores/$coreId", params: { coreId: "b" } });
+    });
+    expect(screen.getByText("Bravo session")).toBeTruthy();
+    expect(document.querySelector("[data-sessions-list]")).not.toBeNull();
+    expect(document.querySelector("[data-sessions-grid]")).toBeNull();
+    expect(screen.getByRole("button", { name: "List view" }).getAttribute("aria-pressed")).toBe(
       "true",
     );
   });

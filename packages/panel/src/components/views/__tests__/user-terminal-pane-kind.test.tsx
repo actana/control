@@ -19,7 +19,6 @@ const store = {
   setPanelOpen: vi.fn(),
   panelMaximized: false,
   setPanelMaximized: vi.fn(),
-  togglePanelMaximized: vi.fn(),
   sessions: [] as unknown[],
   focusedId: null,
   focusTerminal: vi.fn(),
