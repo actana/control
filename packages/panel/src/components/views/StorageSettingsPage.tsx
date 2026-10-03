@@ -296,9 +296,9 @@ export function StorageSettingsPage() {
             ? "empty: <project URL>/storage/v1/s3"
             : backend === "sts"
               ? "https://s3.us-east-1.amazonaws.com"
-            : backend === "r2"
-              ? "https://<account>.r2.cloudflarestorage.com"
-              : "https://s3.panel.internal:8333"
+              : backend === "r2"
+                ? "https://<account>.r2.cloudflarestorage.com"
+                : "https://s3.panel.internal:8333"
         }
         mono
         disabled={busy}
