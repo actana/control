@@ -1729,6 +1729,83 @@ const restored = core.exec(["stat", "-c", "%a %n", ...homeModePaths]).stdout.spl
 if (JSON.stringify(restored) !== JSON.stringify(homeModes)) die(`the home's modes were not restored: ${JSON.stringify(homeModes)} -> ${JSON.stringify(restored)}`);
 log("the planted actana never ran, through three starts, pairing and every `actana` the smoke typed; both fakes removed and the home's modes restored");
 
+// #559 — a Harness binary the Core's own user puts in its home is found by the daemon. The
+// daemon is `actana` and the home is 0750 `core:core`, so a probe that looks from the daemon's
+// own process finds nothing and reports every Harness missing, even one that installed fine
+// (the e2e run of release 552: "Claude Code was installed, but claude is still not on this
+// Core's PATH"). Two fakes, in two different directories the registry names: `claude` in
+// ~/.local/bin and `opencode` in ~/.opencode/bin, which no PATH the daemon is started with
+// lists. Each prints a version above its floor. The daemon is told to re-probe (SIGHUP, as
+// `actana harnesses install` does), and the availability the Core publishes must say
+// `available`, with the path inside the home. A Session's PATH and a login shell's carry both
+// directories too, and the fakes are removed.
+{
+  const fakes = [
+    ["claude", `${CORE_HOME}/.local/bin`, "claude-code"],
+    ["opencode", `${CORE_HOME}/.opencode/bin`, "opencode"],
+  ];
+  for (const [name, dir] of fakes) {
+    core.exec([
+      "sh",
+      "-c",
+      `mkdir -p ${dir} && printf '%s\\n' '#!/bin/sh' 'echo 99.0.0' > ${dir}/${name} && chmod 0755 ${dir}/${name}`,
+    ]);
+  }
+  const currentDaemon = processTable(core).find((process) => isDaemon(process) && process.ppid === 1);
+  if (!currentDaemon) die("no daemon to ask for a re-probe");
+  const availabilityOf = (rows) => {
+    let latest = null;
+    for (const line of rows.split("\n")) {
+      let row;
+      try {
+        row = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      if (!/availab/i.test(String(row?.kind ?? ""))) continue;
+      const payload = typeof row.payload === "string" ? JSON.parse(row.payload) : row.payload;
+      if (payload?.availability) latest = payload.availability;
+    }
+    return latest;
+  };
+  let seen = null;
+  const deadline = Date.now() + 60_000;
+  while (Date.now() < deadline) {
+    core.exec(["kill", "-HUP", String(currentDaemon.pid)], { user: CORE_DAEMON_USER.name });
+    await new Promise((resolve) => setTimeout(resolve, 3_000));
+    const tail = core.exec(["timeout", "8", "actana", "events", "tail", "--json", "--since", "start"], { allowFailure: true });
+    seen = availabilityOf(tail.stdout);
+    if (fakes.every(([, , id]) => seen?.[id]?.status === "available")) break;
+  }
+  for (const [name, dir, id] of fakes) {
+    const entry = seen?.[id];
+    if (entry?.status !== "available" || entry.path !== `${dir}/${name}`) {
+      die(
+        `the daemon did not find ${dir}/${name} placed in core's home: ${JSON.stringify(entry ?? null)}\n` +
+          `(the whole map: ${JSON.stringify(seen)})\n${core.logs()}`,
+      );
+    }
+  }
+  // What a Session sees: the same two directories lead its PATH.
+  const sessionPath = core.exec(["actana", "core", "exec", "--", "sh", "-c", 'printf %s "$PATH"'], { allowFailure: true });
+  for (const [, dir] of fakes) {
+    if (!sessionPath.stdout.split(":").includes(dir)) {
+      die(`a Session's PATH does not carry ${dir}: ${JSON.stringify(sessionPath.stdout)}${sessionPath.stderr}`);
+    }
+  }
+  // A login shell of core (docker exec -u core … bash -l) gets them from /etc/profile.d.
+  const login = core.exec(["bash", "-lc", 'printf %s "$PATH"']).stdout.trim().split(":");
+  for (const [, dir] of fakes) {
+    if (!login.includes(dir)) die(`a login shell of core has no ${dir} on PATH: ${login.join(":")}`);
+  }
+  core.exec(["rm", "-f", ...fakes.map(([name, dir]) => `${dir}/${name}`)]);
+  core.exec(["rmdir", `${CORE_HOME}/.opencode/bin`, `${CORE_HOME}/.opencode`], { allowFailure: true });
+  log(
+    "a claude in core's ~/.local/bin and an opencode in ~/.opencode/bin are found by the daemon (available, path in the home), " +
+      "lead a Session's PATH and a login shell's; the fakes are removed",
+  );
+}
+
 // #559 — the pairing store is written beside the material, in the state
 // directory, and not in the home.
 if (core.exec(["test", "-f", `${CORE_STATE_DIR}/config/pairing.json`], { user: CORE_DAEMON_USER.name, allowFailure: true }).status !== 0) {

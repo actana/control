@@ -306,3 +306,18 @@ export async function resolveCommandViaCore(
   // rather than a TypeError in the middle of a spawn.
   return Array.isArray(candidates) ? candidates.filter((c): c is string => typeof c === "string" && c.length > 0) : [];
 }
+
+/**
+ * Find a Harness CLI and check its version, both done by `core` in the helper. The
+ * helper is bounded by {@link HELPER_TIMEOUT_MS} and killed through `killAsCore`, which
+ * a `spawnSync` of a file core controls in the daemon is not (no CAP_KILL on another
+ * uid): a `--version` that never returns costs one helper, not the daemon's event loop.
+ * Rejects like any op, so a helper that hangs or dies is the caller's to record.
+ */
+export async function probeHarnessCliViaCore(
+  command: string,
+  searchPath: string | null,
+  options: CoreHomeOpsOptions = {},
+): Promise<CoreHomeOpResult["probeHarnessCli"]> {
+  return coreHomeOp({ op: "probeHarnessCli", command, path: searchPath }, options);
+}

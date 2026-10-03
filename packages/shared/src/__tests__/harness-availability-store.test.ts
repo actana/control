@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { HarnessAvailabilityStore } from "../harness-availability-store";
 import { HARNESSES_AVAILABILITY_EVENT_KIND } from "@actana/sdk/core";
-import { UI_HARNESSES } from "@actana/shared/harnesses";
+import { HARNESS_REGISTRY, UI_HARNESSES } from "@actana/shared/harnesses";
 import { offerableHarnessIds } from "@actana/shared/actana-harnesses";
 import type { Harness } from "@actana/shared/domain";
 
@@ -142,3 +142,92 @@ describe("HarnessAvailabilityStore", () => {
 function mkEntry(status: "available" | "missing", path?: string) {
   return path ? { status, path } : { status };
 }
+
+// #559: in the container the daemon cannot look into core's home, so the probe is a
+// question asked of another process, and therefore asynchronous.
+describe("HarnessAvailabilityStore.refresh with an asynchronous probe", () => {
+  it("publishes what the asynchronous probe found, once", async () => {
+    const appendEvent: ReturnType<typeof vi.fn<AppendEventFn>> = vi.fn(() => 1);
+    const probe = vi.fn(() => ({ status: "missing" as const, reason: "sync-probe-used" }));
+    const store = new HarnessAvailabilityStore({
+      appendEvent,
+      probe,
+      probeAsync: async (agent) => ({ status: "available", path: `/home/core/.local/bin/${agent}` }),
+    });
+    await store.refresh();
+    await store.refresh();
+    expect(probe).not.toHaveBeenCalled();
+    expect(appendEvent).toHaveBeenCalledTimes(1);
+    expect(store.snapshot()["claude-code"]).toEqual({
+      status: "available",
+      path: "/home/core/.local/bin/claude-code",
+    });
+  });
+
+  // The race: a round that already looked must not answer a caller who changed the
+  // machine after it looked (the install service, right after the installer wrote the CLI).
+  it("answers a caller who arrives mid-round from a round that starts after the call", async () => {
+    let installed = false;
+    let release!: () => void;
+    let gate = new Promise<void>((resolve) => (release = resolve));
+    const store = new HarnessAvailabilityStore({
+      appendEvent: () => 1,
+      probeAsync: async (agent) => {
+        // Looks first, then waits: the answer is fixed before the gate opens.
+        const found = installed && agent === "claude-code";
+        await gate;
+        return found ? { status: "available", path: "/home/core/.local/bin/claude" } : { status: "missing", reason: "not-found" };
+      },
+    });
+    const tick = store.refresh();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    installed = true;
+    const install = store.refresh();
+    const secondInstall = store.refresh();
+    release();
+    gate = Promise.resolve();
+    await Promise.all([tick, install, secondInstall]);
+    expect(store.snapshot()["claude-code"]).toEqual({ status: "available", path: "/home/core/.local/bin/claude" });
+  });
+
+  it("shares one trailing round between every caller that arrives mid-round", async () => {
+    let calls = 0;
+    let release!: () => void;
+    let gate = new Promise<void>((resolve) => (release = resolve));
+    const store = new HarnessAvailabilityStore({
+      appendEvent: () => 1,
+      probeAsync: async () => {
+        calls += 1;
+        await gate;
+        return { status: "missing", reason: "not-found" };
+      },
+    });
+    const first = store.refresh();
+    const late = [store.refresh(), store.refresh(), store.refresh()];
+    release();
+    gate = Promise.resolve();
+    await Promise.all([first, ...late]);
+    // The round in flight and one more, not four.
+    expect(calls).toBe(2 * UI_HARNESSES.filter((agent) => !HARNESS_REGISTRY[agent].disabled).length);
+  });
+
+  it("records a probe that throws as missing, not as a rejection", async () => {
+    const store = new HarnessAvailabilityStore({
+      appendEvent: () => 1,
+      probeAsync: async () => {
+        throw new Error("helper did not finish");
+      },
+    });
+    await expect(store.refresh()).resolves.toBeUndefined();
+    expect(store.snapshot()["claude-code"]).toEqual({ status: "missing", reason: "helper did not finish" });
+  });
+
+  it("falls back to the synchronous probe when there is no asynchronous one", async () => {
+    const store = new HarnessAvailabilityStore({
+      appendEvent: () => 1,
+      probe: () => ({ status: "available", path: "/x" }),
+    });
+    await store.refresh();
+    expect(store.snapshot()["claude-code"]).toEqual({ status: "available", path: "/x" });
+  });
+});

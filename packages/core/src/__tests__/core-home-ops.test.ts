@@ -66,6 +66,7 @@ describe("request validation: known operations only", () => {
         "ensureOrchestrationSkill",
         "ensureStatuslineTap",
         "installHarnessHooks",
+        "probeHarnessCli",
         "resolveCommand",
         "resolveExecCwd",
         "spawnPathFacts",
@@ -112,6 +113,8 @@ describe("request validation: known operations only", () => {
     ["a harness that is a path", { op: "installHarnessHooks", harness: "../x", cwd: "/x", piAgentDir: null }],
     ["too many roots", { op: "spawnPathFacts", cwd: "/x", roots: Array.from({ length: 300 }, (_, i) => `/r${i}`) }],
     ["a command that is a path", { op: "resolveCommand", command: "/tmp/evil", path: null }],
+    ["a probed command that is a path", { op: "probeHarnessCli", command: "/tmp/evil", path: null }],
+    ["a probed command with an argument", { op: "probeHarnessCli", command: "claude --version", path: null }],
     ["a command with a separator", { op: "resolveCommand", command: "../claude", path: null }],
     ["a command with a space", { op: "resolveCommand", command: "claude --version", path: null }],
     ["a PATH with a NUL", { op: "resolveCommand", command: "claude", path: "/a\0:/b" }],
@@ -419,4 +422,41 @@ describe("resolveCommand: where a Harness CLI is, looked up by core", () => {
   it("finds nothing for a command that is not there", () => {
     expect(resolve("claude", outside)).toEqual({ candidates: [] });
   });
+});
+
+describe("probeHarnessCli: the version check runs in the helper, as core", () => {
+  const script = (dir: string, name: string, body: string) => {
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, name);
+    fs.writeFileSync(file, `#!/bin/sh\n${body}\n`, { mode: 0o755 });
+    return file;
+  };
+  const probe = (command: string, pathValue: string) =>
+    handleCoreHomeOpSync({ op: "probeHarnessCli", command, path: pathValue }, ctx);
+
+  it("finds the binary and checks its version", () => {
+    const file = script(path.join(home, ".local", "bin"), "claude", "echo 99.0.0");
+    const answer = probe("claude", path.dirname(file));
+    expect(answer.candidates).toEqual([file]);
+    expect(answer.meeting).toMatchObject({ binary: file, check: { ok: true, version: "99.0.0" } });
+  });
+
+  it("reports a binary below the floor with its failed check", () => {
+    const file = script(path.join(home, ".local", "bin"), "claude", "echo 0.0.1");
+    expect(probe("claude", path.dirname(file)).meeting).toMatchObject({ binary: file, check: { ok: false, reason: "outdated" } });
+  });
+
+  it("finds nothing for a command that is not there", () => {
+    expect(probe("claude", outside)).toEqual({ candidates: [], meeting: null });
+  });
+
+  // The daemon cannot signal core, so it must never wait on this itself; here the wait is
+  // core's own, bounded by the check's timeout, and the helper answers rather than hangs.
+  it("answers for a binary whose --version never returns, within the check's own bound", () => {
+    const file = script(path.join(home, ".local", "bin"), "claude", "exec sleep 60");
+    const started = Date.now();
+    const answer = probe("claude", path.dirname(file));
+    expect(Date.now() - started).toBeLessThan(8_000);
+    expect(answer.meeting).toMatchObject({ binary: file, check: { ok: false } });
+  }, 15_000);
 });

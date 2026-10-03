@@ -22,6 +22,7 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { harnessHomePathSuffixes } from "./harness-cli-config";
 
 export const CORE_HOME_ENV = "AC_CORE_HOME";
 export const CORE_UID_ENV = "AC_CORE_UID";
@@ -185,10 +186,17 @@ export function coreChildEnv(
     if (statePaths.some((dir) => value.includes(dir))) continue;
     out[key] = value;
   }
-  const localBin = path.posix.join(identity.home, ".local", "bin");
+  // Every directory a Harness installer puts its CLI in under core's home (the
+  // registry's `homePathSuffixes`: `.local/bin`, which is also the npm prefix's bin,
+  // `.opencode/bin`, ...), whether or not it exists yet. The daemon cannot look
+  // inside the home, so it cannot filter them by existence the way `buildUserPath`
+  // does; a directory that is not there costs a failed `stat` and nothing else.
+  const homeBins = [...new Set([".local/bin", ...harnessHomePathSuffixes("linux")])].map(
+    (suffix) => path.posix.join(identity.home, suffix),
+  );
   const inherited = (base.PATH ?? "").split(":").filter(Boolean).filter((entry) => !statePaths.some((dir) => entry.includes(dir)));
   const pathEntries = inherited.length > 0 ? inherited : DEFAULT_CHILD_PATH;
-  out.PATH = [localBin, ...pathEntries.filter((entry) => entry !== localBin)].join(":");
+  out.PATH = [...homeBins, ...pathEntries.filter((entry) => !homeBins.includes(entry))].join(":");
   out.HOME = identity.home;
   out.USER = identity.user;
   out.LOGNAME = identity.user;
