@@ -41,7 +41,7 @@ export function CoresSettingsPage() {
 
   const [renamingId, setRenamingId] = useState<string | null>(null);
 
-  // Delete (#564): the Core and its S3 folder, after the operator has typed the folder's exact prefix.
+  // Delete (#564): the Core, its S3 folder and the machine's ~/shared, after the operator has typed the folder's exact prefix.
   const [pendingDeletion, setPendingDeletion] = useState<CoreWithDial | null>(null);
   const [confirmPrefix, setConfirmPrefix] = useState("");
   const [deleting, setDeleting] = useState(false);
@@ -139,12 +139,19 @@ export function CoresSettingsPage() {
     if (!core) return;
     setDeleting(true);
     try {
-      await api.deleteCoreWithStorage(core.id, confirmPrefix);
+      const result = await api.deleteCoreWithStorage(core.id, confirmPrefix);
       setPendingDeletion(null);
       setConfirmPrefix("");
       await refresh();
       announceCoreRegistryChanged();
-      toast.success(`Core "${core.label}" and its Shared folder deleted.`);
+      if (result.machineFolder?.state === "kept") {
+        // The Core was gone from the Panel either way: say plainly that its copy on the machine is still there.
+        toast.warning(
+          `Core "${core.label}" deleted. Its ~/shared on the machine was not emptied and stays: ${result.machineFolder.reason}.`,
+        );
+      } else {
+        toast.success(`Core "${core.label}" and its Shared folder deleted, on the Panel and on the machine.`);
+      }
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Failed to delete Core.");
     } finally {
@@ -224,7 +231,7 @@ export function CoresSettingsPage() {
       >
         The Panel stops dialing this Core and forgets its credentials and its place in the event
         log. Nothing on the machine itself is touched — its sessions and running sessions
-        keep going. To manage it again, run <code>actana pair new</code> on the machine and pair it
+        keep going, and its <code>~/shared</code> stays with its contents. To manage it again, run <code>actana pair new</code> on the machine and pair it
         here with the code it prints.
       </ConfirmDialog>
       <ConfirmDialog
@@ -237,9 +244,11 @@ export function CoresSettingsPage() {
         confirmDisabled={confirmPrefix !== pendingDeletion?.sharedFolder?.prefix}
       >
         <p>
-          This removes the Core from the Panel and then every file under its S3 prefix{" "}
-          <code>{pendingDeletion?.sharedFolder?.prefix}</code>. Nothing else in the bucket is touched, and the machine keeps
-          its own <code>~/shared</code>. This cannot be undone. Type the prefix to confirm.
+          This removes the Core from the Panel, empties every file under its S3 prefix{" "}
+          <code>{pendingDeletion?.sharedFolder?.prefix}</code> and empties the <code>~/shared</code> folder on the machine.
+          Nothing else in the bucket or in the machine's home is touched. If the Core is not connected when you confirm, it is
+          still removed from the Panel, but its <code>~/shared</code> stays on the machine. This cannot be undone. Type the
+          prefix to confirm.
         </p>
         <TextField
           label="Prefix"

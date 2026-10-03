@@ -202,7 +202,7 @@ pairing step 4 ──POST /api/cores/:id/shared/test──▶ issuer.issue(core)
                ──POST /api/cores/:id/pairing/finish──▶ sharedAttach ──▶ Core ──▶ core_shared_folders: attached
 timer (refresh point of the SDK: 15 min before the end, at most half its life) ──▶ sharedCredentials ──▶ Core
 DELETE /api/cores/:id ──▶ sharedDetach (Core keeps ~/shared) ──▶ Core row forgotten, S3 prefix left
-POST /api/cores/:id/delete {confirmPrefix} ──▶ prefix typed exactly ──▶ Core row removed, then only its prefix emptied
+POST /api/cores/:id/delete {confirmPrefix} ──▶ prefix typed exactly ──▶ sharedDetach ──▶ ~/shared emptied (link up) ──▶ Core row removed ──▶ its prefix emptied
 ```
 
 | File | What it is |
@@ -229,8 +229,11 @@ POST /api/cores/:id/delete {confirmPrefix} ──▶ prefix typed exactly ──
   never silently. A reconnecting Core gets a new key at once; at boot every attached Core does. A master-key rotate also re-issues immediately.
 - **Unpair** sends `sharedDetach` with `keepLocalCopy`; the Core copies S3 into `~/shared` and stops. A Core that cannot be told is still forgotten, and
   the answer says so.
-- **Delete** needs the folder's exact prefix (`<prefix>/<core id>/`) typed back. It then removes the Core row and empties that prefix with a key issued
-  for that Core, which the role limits to it and which the SDK's S3 mode cannot widen. A prefix that could not be emptied is an error that names it.
+- **Delete** needs the folder's exact prefix (`<prefix>/<core id>/`) typed back. It first asks the Core to `sharedDetach`, then, while the Core's link is up, empties `~/shared` on the machine through the Core's Files API
+  (the children only; a symlinked `~/shared` is left alone and a symlink inside it is removed as a link, never followed). It then removes the Core row and
+  empties that prefix with a key issued for that Core, which the role limits to it and which the SDK's S3 mode cannot widen. A Core that is not connected does not
+  stop the delete: it finishes on the Panel, the answer carries `machineFolder: { state: "kept", reason }` and the screen says `~/shared` stays on the machine.
+  A prefix that could not be emptied is an error that names it.
 
 | Claim | Test |
 |---|---|

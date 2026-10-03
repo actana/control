@@ -35,7 +35,7 @@
 > an Agent and how a Task is dispatched, and the Report contract, and it marks D14 and D20 as now true of the Panel's code and
 > dependency lists (D41 says what that leaves out). On where Remembered session settings live it only records what the code does
 > (D42); that question stays open for the owner. It says where the code and an earlier clause
-> disagree: D12 (D38) and the "dumb pipe" of ADR 0030 (D34). Nothing in D1–D33 is changed; D12, D14 and D20 each gain a pointer.
+> disagree: the "dumb pipe" of ADR 0030 (D34); D12 and D38 now agree (#564). Nothing in D1–D33 is changed; D12, D14 and D20 each gain a pointer.
 
 > **On the number.** This record takes **0041**, the next free number after
 > [`0040-pi-project-trust-answered-by-extension.md`](0040-pi-project-trust-answered-by-extension.md).
@@ -86,7 +86,7 @@ other users are: D24.*
 **D11 — The Core daemon runs as its own user, with its state outside `~`.** *Which user, which directory and what the
 daemon holds: D24.*
 
-**D12 — Deleting a Core removes the Core, its Shared folder and its S3 folder.** *What the Panel's delete does, and where that differs from this: D38.*
+**D12 — Deleting a Core removes the Core, its Shared folder and its S3 folder.** *How the Panel does it, and what it does when the Core is not connected: D38.*
 
 **D13 — Unpairing a Core from a Panel removes only the S3 link.** `~/shared`
 stays and keeps its contents.
@@ -456,16 +456,22 @@ The end marker, the block's wording and the Core-side turn handling were the Cor
 this record.
 
 **D38 — The Panel holds the storage config and the master key; a pairing made from the Panel is not finished until the Shared
-folder is attached; a delete empties only that Core's S3 prefix.** The config lives in `storage_config`, the master key sealed like
+folder is attached; a delete empties that Core's S3 prefix and, while it is connected, its machine folder.** The config lives in `storage_config`, the master key sealed like
 `core_secrets` (ADR 0011), write-only, with one reader: the SDK issuer's closure; no route, log line, error or frame carries it. A Core registered from the Panel stays
 `pending` in `core_shared_folders` until `sharedAttach` succeeds. The pairing wizard's last step tests the folder (own folder
 reachable, another Core's not), then finishes; finishing without storage is a 409 and the Core is sent nothing. The Panel pushes each
 Core a fresh key over the core-link before the current one ends (at the SDK's refresh point, 15 minutes early), retries after 5 seconds, 15 seconds, 60 seconds and then every 300 seconds, the last delay repeating for as long as the push keeps failing (`RETRY_DELAYS_MS`), and shows the error on the Core. **Unpair** (`DELETE /api/cores/:id`) sends `sharedDetach`: the Core keeps `~/shared`,
 the row is forgotten and the S3 prefix is left, which is D13. **Delete** (`POST /api/cores/:id/delete`, with the exact `<prefix>/<core id>/`
-typed back) removes the Core row and empties only that prefix, and only after the Core answered `detached` or `not-attached`, or its key ran out;
-otherwise it is a 409 and nothing is removed, since a Core still syncing would delete its own `~/shared` once the objects were gone.
-**Where this differs from D12**, which says a delete removes the Core, its Shared folder and its S3 folder: the Panel empties the S3 folder and,
-by design, does not empty the machine's `~/shared`. **The attach table:** `shared-folders-attach-table.test.ts` runs 64 rows against a model of the
+typed back) removes the Core row, empties that prefix and empties `~/shared` on the machine, which is D12. The order is: the Core is asked to `sharedDetach`;
+a Core that answers and refuses is a 409 and nothing is removed, since a Core still syncing would mirror a half-done delete; then, only while the Core's
+link is up and it answered `detached` or `not-attached`, the Panel empties the machine's folder through the Core's Files API; then the row goes and the prefix is emptied.
+**The machine's folder** loses its children and nothing else: the folder stays, `shared/<name>` is the only path form deleted, and no symlink is followed. A `~/shared`
+that is itself a symlink (or not a folder) is left alone, because every path under a link resolves to wherever it points; a symlink inside it is removed as a link
+and never what it points at. A Core that is not connected (or does not answer) does **not** stop the delete: it finishes on the Panel, the answer says
+`machineFolder.state: "kept"` with the reason, and the screen says that `~/shared` stays on the machine. A Core that is offline but still holds a live key can mirror the emptied
+prefix into its own folder until the key ends; that is not promised and not relied on. **Unpair** never empties anything. **Not done here:** a Core-side purge frame. The
+SDK's `sharedDetach` only carries `keepLocalCopy: true`, so the empty goes through the Files API; a frame of its own is a client change, and would let the Core
+empty its own folder on the Panel's request and finish an offline delete when it next connects. **The attach table:** `shared-folders-attach-table.test.ts` runs 64 rows against a model of the
 Core's sync (a key push runs a deleting pass, a detach only copies S3 into the folder, a fresh attach never deletes). The rows differ by Core row
 (exists, or mounted on an earlier deleted Core's folder), still attached, key valid or expired, S3 folder present or deleted, local folder with
 contents or empty, and reachable or not; the Panel sees only reachability and how the Core answers, so they collapse into four actions: not connected
