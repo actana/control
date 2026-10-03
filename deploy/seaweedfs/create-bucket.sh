@@ -20,11 +20,17 @@ log() { echo "seaweedfs: bucket: $*" >&2; }
 [ -n "$bucket" ] && [ -n "$access" ] && [ -n "$secret" ] || { log "SEAWEEDFS_BUCKET and the admin key are required"; exit 1; }
 
 # s3 METHOD — print the HTTP status ("000" when the gateway is not there yet). The key pair goes to curl on stdin,
-# not argv, so it is not in the process list.
+# not argv, so it is not in the process list. A HEAD is `--head`: `-X HEAD` makes curl wait for a body that never comes
+# and hangs until killed. Every call is bounded by --max-time, well under the healthcheck's 5s timeout.
 s3() {
+  case "$1" in
+    HEAD) method=--head ;;
+    *) method="-X $1" ;;
+  esac
+  # shellcheck disable=SC2086 # $method is one fixed flag, or `-X PUT`
   printf 'user = "%s:%s"\n' "$access" "$secret" |
-    curl -sS -o /dev/null -w '%{http_code}' -K - --aws-sigv4 aws:amz:us-east-1:s3 \
-      -H "x-amz-content-sha256: $empty_sha256" -X "$1" "$endpoint/$bucket" 2>/dev/null || true
+    curl -sS --max-time 3 -o /dev/null -w '%{http_code}' -K - --aws-sigv4 aws:amz:us-east-1:s3 \
+      -H "x-amz-content-sha256: $empty_sha256" $method "$endpoint/$bucket" 2>/dev/null || true
 }
 
 if [ "${1:-}" = "--check" ]; then

@@ -301,7 +301,8 @@ function runCreateBucket(args, { exists }) {
       'echo "$*" >>"$LOG"',
       "cat >>\"$LOG.stdin\"",
       'for a in "$@"; do last=$a; done',
-      'while [ $# -gt 0 ]; do [ "$1" = -X ] && method=$2; shift; done',
+      'method=GET',
+      'while [ $# -gt 0 ]; do case "$1" in -X) method=$2 ;; --head | -I) method=HEAD ;; esac; shift; done',
       'echo "$method $last" >>"$LOG.calls"',
       'case "$method" in',
       '  HEAD) if [ -e "$STATE" ]; then printf 200; else printf 404; fi ;;',
@@ -353,6 +354,29 @@ describe("the service creates its own bucket (#566)", () => {
     const missing = runCreateBucket(["--check"], { exists: false });
     expect(missing.status).not.toBe(0);
     expect(missing.created).toBe(false);
+  });
+
+  it("never hangs: no curl uses -X HEAD, and every curl has --max-time under the healthcheck timeout", () => {
+    // Code only: the comment that explains the rule names `-X HEAD`.
+    const script = fs
+      .readFileSync(CREATE_BUCKET, "utf8")
+      .split("\n")
+      .filter((l) => !/^\s*#/.test(l))
+      .join("\n");
+    expect(script).not.toMatch(/-X\s+HEAD/);
+    const calls = script.split("\n").filter((l) => /^\s*curl\b/.test(l));
+    expect(calls.length).toBeGreaterThan(0);
+    for (const call of calls) {
+      const max = call.match(/--max-time\s+(\d+)/);
+      expect(max, call).not.toBeNull();
+      expect(Number(max[1])).toBeLessThan(5);
+    }
+    // HEAD goes through --head, and the fake gateway only answers a HEAD that asked for one.
+    expect(script).toMatch(/HEAD\) method=--head/);
+    const out = runCreateBucket(["--check"], { exists: true });
+    expect(out.argv).toMatch(/--head/);
+    expect(out.argv).not.toMatch(/-X HEAD/);
+    expect(out.argv).toMatch(/--max-time 3/);
   });
 
   it("makes the compose service healthy only once the bucket exists", () => {
