@@ -33,7 +33,18 @@ export type MachineFolderTarget = {
   baseUrl: string;
   bearer: string;
   fetch: CoreFilesFetch;
+  /** Waits between retries of a delete the Core answered `transfer-in-progress`. A test passes one that does not wait. */
+  sleep?: (ms: number) => Promise<void>;
 };
+
+/**
+ * The Core's Files API runs one write at a time and answers a second with 409 `transfer-in-progress` (`core-files-routes.ts`),
+ * and its lease is released just after the answer is sent, so even the next delete of a strictly serial caller can meet it, as can a
+ * write of the Core's own sync. The same delete is retried, waiting longer each time, up to this many attempts in all.
+ */
+export const DELETE_ATTEMPTS = 8;
+const RETRY_BASE_MS = 100;
+const RETRY_MAX_MS = 2_000;
 
 export async function emptyMachineFolder(target: MachineFolderTarget): Promise<MachineFolderResult> {
   let removed = 0;
@@ -116,13 +127,31 @@ async function list(
   return { entries, skipped };
 }
 
-/** 1 when this call removed the entry; 0 for a 404 (someone else already did). A refusal throws. */
+/**
+ * One delete, awaited to its answer. 1 when this call removed the entry; 0 for a 404 (someone else already did). A 409
+ * `transfer-in-progress` waits and sends the same delete again, up to {@link DELETE_ATTEMPTS}; any other refusal throws.
+ */
 async function remove(target: MachineFolderTarget, homePath: string): Promise<number> {
+  const sleep = target.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   const url = new URL(`${target.baseUrl}/v1/files`);
   url.searchParams.set("path", homePath);
-  const res = await target.fetch({ method: "DELETE", url: url.toString(), headers: { ...headers(target), accept: "application/json" } });
-  await res.arrayBuffer().catch(() => undefined);
-  if (res.status === 404) return 0;
-  if (!res.ok) throw new Error(`deleting ${homePath} was refused (${res.status})`);
-  return 1;
+  for (let attempt = 1; ; attempt += 1) {
+    const res = await target.fetch({ method: "DELETE", url: url.toString(), headers: { ...headers(target), accept: "application/json" } });
+    const body = await res.text().catch(() => "");
+    if (res.status === 404) return 0;
+    if (res.ok) return 1;
+    if (res.status === 409 && isTransferInProgress(body) && attempt < DELETE_ATTEMPTS) {
+      await sleep(Math.min(RETRY_BASE_MS * 2 ** (attempt - 1), RETRY_MAX_MS));
+      continue;
+    }
+    throw new Error(`deleting ${homePath} was refused (${res.status}${isTransferInProgress(body) ? ", transfer-in-progress, still after " + attempt + " attempts" : ""})`);
+  }
+}
+
+function isTransferInProgress(body: string): boolean {
+  try {
+    return (JSON.parse(body) as { code?: unknown }).code === "transfer-in-progress";
+  } catch {
+    return false;
+  }
 }

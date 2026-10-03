@@ -262,4 +262,97 @@ describe("emptyMachineFolder", () => {
     const result = await emptyMachineFolder({ ...target(), fetch: missing });
     expect(result).toMatchObject({ state: "kept", removed: 0 });
   });
+
+  describe("against a Core that allows one write at a time", () => {
+    // The Core's lease (`core-files-routes.ts`): a delete while another write holds it is 409 `transfer-in-progress`. The
+    // lease is released a moment after the answer is sent, so `lagging` keeps it for the first `lag` ms of the next call.
+    function singleWriter(opts: { lag?: number; stuck?: number } = {}) {
+      const state = { inFlight: 0, overlapped: 0, refusals: 0, attempts: 0, waits: [] as number[] };
+      const fetch: CoreFilesFetch = async (req) => {
+        if (req.method !== "DELETE") return coreFiles(req);
+        state.attempts += 1;
+        if (state.inFlight > 0) {
+          state.overlapped += 1;
+          state.refusals += 1;
+          return json(409, { code: "transfer-in-progress", error: "another write is already running in the home" });
+        }
+        state.inFlight += 1;
+        try {
+          // The lease outlives the answer for a tick: a delete sent straight after the answer can still be refused.
+          if (state.refusals < (opts.stuck ?? 0) || (opts.lag && state.attempts % 2 === 1 && state.attempts <= opts.lag)) {
+            state.refusals += 1;
+            return json(409, { code: "transfer-in-progress", error: "another write is already running in the home" });
+          }
+          await new Promise((resolve) => setTimeout(resolve, 5));
+          return await coreFiles(req);
+        } finally {
+          state.inFlight -= 1;
+        }
+      };
+      return { state, fetch, sleep: async (ms: number) => void state.waits.push(ms) };
+    }
+
+    it("sends the deletes one after another, never two at once, one call per top-level child", async () => {
+      fs.mkdirSync(path.join(shared(), "big", "deep"), { recursive: true });
+      for (let i = 0; i < 5; i += 1) fs.writeFileSync(path.join(shared(), "big", `f${i}`), "x");
+      fs.writeFileSync(path.join(shared(), "deep.txt"), "d");
+      fs.writeFileSync(path.join(shared(), "e2e-hello.txt"), "h");
+      const core = singleWriter();
+      const result = await emptyMachineFolder({ ...target(), fetch: core.fetch, sleep: core.sleep });
+      expect(result).toEqual({ state: "emptied", removed: 3 });
+      expect(core.state.overlapped).toBe(0);
+      // The folder cost one recursive call, not one per file.
+      expect(core.state.attempts).toBe(3);
+      expect(listing(shared())).toEqual([]);
+    });
+
+    it("waits and retries the same delete when the Core answers transfer-in-progress", async () => {
+      fs.mkdirSync(shared());
+      fs.writeFileSync(path.join(shared(), "e2e-hello.txt"), "h");
+      const core = singleWriter({ stuck: 3 });
+      const result = await emptyMachineFolder({ ...target(), fetch: core.fetch, sleep: core.sleep });
+      expect(result).toEqual({ state: "emptied", removed: 1 });
+      expect(core.state.attempts).toBe(4);
+      // Waits grow and are bounded.
+      expect(core.state.waits).toEqual([100, 200, 400]);
+      expect(requests.filter((q) => q.method === "DELETE").every((q) => q.path === "shared/e2e-hello.txt")).toBe(true);
+    });
+
+    it("gives up after a bounded number of attempts and reports kept with the reason, deleting nothing else", async () => {
+      fs.mkdirSync(shared());
+      fs.writeFileSync(path.join(shared(), "a.txt"), "a");
+      fs.writeFileSync(path.join(shared(), "b.txt"), "b");
+      const core = singleWriter({ stuck: 1000 });
+      const result = await emptyMachineFolder({ ...target(), fetch: core.fetch, sleep: core.sleep });
+      expect(result).toMatchObject({ state: "kept", removed: 0 });
+      expect(result.state === "kept" && result.reason).toMatch(/refused \(409, transfer-in-progress, still after 8 attempts\)/);
+      expect(core.state.attempts).toBe(8);
+      expect(listing(shared())).toEqual(["a.txt", "b.txt"]);
+    });
+
+    it("does not retry a 409 that is not transfer-in-progress", async () => {
+      fs.mkdirSync(shared());
+      fs.writeFileSync(path.join(shared(), "a.txt"), "a");
+      let calls = 0;
+      const other: CoreFilesFetch = async (req) => {
+        if (req.method === "DELETE") {
+          calls += 1;
+          return json(409, { code: "bad-request" });
+        }
+        return coreFiles(req);
+      };
+      const result = await emptyMachineFolder({ ...target(), fetch: other, sleep: async () => {} });
+      expect(result).toMatchObject({ state: "kept", removed: 0 });
+      expect(calls).toBe(1);
+    });
+
+    it("still removes a symlink as a link, never followed, while retrying", async () => {
+      fs.mkdirSync(shared());
+      fs.symlinkSync(outside, path.join(shared(), "to-folder"));
+      const core = singleWriter({ stuck: 2 });
+      expect(await emptyMachineFolder({ ...target(), fetch: core.fetch, sleep: core.sleep })).toEqual({ state: "emptied", removed: 1 });
+      expect(listing(outside)).toEqual(["keep.txt"]);
+      expect(requests.filter((q) => q.method === "DELETE").every((q) => q.path === "shared/to-folder")).toBe(true);
+    });
+  });
 });
