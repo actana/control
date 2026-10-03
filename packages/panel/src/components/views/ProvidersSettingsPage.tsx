@@ -8,9 +8,15 @@ import { Icon } from "~/components/ui/Icon";
 import { Modal } from "~/components/ui/Modal";
 import { CodeBlock, SettingsSection, ToggleSwitch, useCopy } from "~/components/views/SettingsParts";
 import { api, type AppSettings } from "~/lib/api";
-import { useCliAvailability, type CliAvailability } from "~/lib/cli-availability";
+import {
+  installStateFor,
+  useCliAvailability,
+  useHarnessInstall,
+  type CliAvailability,
+} from "~/lib/cli-availability";
 import { HARNESS_META } from "~/lib/design-meta";
 import { useSelectedCoreId } from "~/lib/selected-core-store";
+import { useCores } from "~/lib/use-fleet";
 import { reorderIds } from "~/lib/reorder-ids";
 import { queryKeys, useHarnessAccounts, useHarnessLatestVersions, useSettings } from "~/queries";
 import { HARNESS_REGISTRY } from "@actana/shared/harnesses";
@@ -60,6 +66,10 @@ export function ProvidersSettingsPage() {
 
   const selectedCoreId = useSelectedCoreId();
   const coreAvailability = useCliAvailability(selectedCoreId);
+  const { installs, install } = useHarnessInstall(selectedCoreId);
+  const { cores } = useCores();
+  const coreLabel =
+    cores.find((c) => c.id === selectedCoreId)?.label || selectedCoreId || "this Core";
 
   const accountByHarness = useMemo(
     () => new Map((accounts ?? []).map((account) => [account.agent, account])),
@@ -212,7 +222,7 @@ export function ProvidersSettingsPage() {
   return (
     <SettingsSection
       title="Providers"
-      subtitle="The AI agents offered when starting a new session. Drag to reorder, hide the ones you don't use, and keep each CLI up to date. Hiding an agent only removes it from the picker — a Core's saved agent still launches."
+      subtitle={`Harness CLIs on ${coreLabel}. Drag to reorder, hide ones you do not use, and install or update each CLI. New Session starts only harnesses that Core already has.`}
       headingLevel="h1"
     >
       <div ref={listRef} style={{ display: "flex", flexDirection: "column", gap: 8 }}>
@@ -223,6 +233,9 @@ export function ProvidersSettingsPage() {
             hidden={config.hidden.includes(agent)}
             dragging={draggingHarness === agent}
             installed={installedStateFor(coreAvailability[agent], selectedCoreId)}
+            installState={installStateFor(installs, agent)}
+            coreLabel={coreLabel}
+            coreId={selectedCoreId}
             latest={latestByHarness.get(agent)}
             account={accountByHarness.get(agent)}
             refreshing={!!refreshing[agent]}
@@ -231,6 +244,7 @@ export function ProvidersSettingsPage() {
             onDragStart={(event) => startReorder(agent, event)}
             onToggleVisibility={() => toggleVisibility(agent)}
             onCheckForUpdate={() => void checkForUpdate(agent)}
+            onInstall={() => install(agent)}
           />
         ))}
       </div>
@@ -243,6 +257,9 @@ function ProviderRow({
   hidden,
   dragging,
   installed,
+  installState,
+  coreLabel,
+  coreId,
   latest,
   account,
   refreshing,
@@ -251,11 +268,15 @@ function ProviderRow({
   onDragStart,
   onToggleVisibility,
   onCheckForUpdate,
+  onInstall,
 }: {
   agent: Harness;
   hidden: boolean;
   dragging: boolean;
   installed: InstalledState;
+  installState: { installing: boolean; error?: string };
+  coreLabel: string;
+  coreId: string | null;
   latest: HarnessLatestVersion | undefined;
   account: { connected: boolean; identifier: string | null } | undefined;
   refreshing: boolean;
@@ -264,6 +285,7 @@ function ProviderRow({
   onDragStart: (event: ReactPointerEvent<HTMLButtonElement>) => void;
   onToggleVisibility: () => void;
   onCheckForUpdate: () => void;
+  onInstall: () => void;
 }) {
   const meta = HARNESS_META[agent];
   const registry = HARNESS_REGISTRY[agent];
@@ -272,6 +294,8 @@ function ProviderRow({
 
   const availability = installed.status === "ready" ? installed.availability : null;
   const installedVersion = availability?.version ?? null;
+  const missing = availability?.status === "missing";
+  const installing = installState.installing;
   const updateAvailable =
     !!latest?.latestVersion &&
     !!installedVersion &&
@@ -367,18 +391,24 @@ function ProviderRow({
         </div>
         <div style={{ textAlign: "right", flexShrink: 0 }}>
           <div style={{ fontFamily: "var(--mono)", fontSize: 11.5, color: "var(--text)" }}>
-            {installed.status === "checking"
-              ? "Checking…"
-              : installed.status === "no-core"
-                ? "—"
-                : availability?.status === "missing"
-                  ? "Not installed"
-                  : installedVersion
-                    ? `v${installedVersion}`
-                    : "Version unknown"}
+            {installing
+              ? `Installing on ${coreLabel}…`
+              : installed.status === "checking"
+                ? "Checking…"
+                : installed.status === "no-core"
+                  ? "—"
+                  : missing
+                    ? installState.error ?? "Not installed"
+                    : installedVersion
+                      ? `v${installedVersion}`
+                      : "Version unknown"}
           </div>
           <div style={{ marginTop: 3, fontFamily: "var(--mono)", fontSize: 10.5 }}>
-            {!latest || !latest.supported ? (
+            {installing || missing ? (
+              <span style={{ color: installing ? "var(--text-faint)" : "var(--status-failed)" }}>
+                {installing ? "Install in progress" : "CLI not found on PATH"}
+              </span>
+            ) : !latest || !latest.supported ? (
               <a
                 href={cliConfig.packageUrl}
                 target="_blank"
@@ -408,6 +438,22 @@ function ProviderRow({
             )}
           </div>
         </div>
+        {(missing || installing) && coreId && (
+          <Btn
+            variant="frame"
+            size="sm"
+            icon={installing ? undefined : "download"}
+            disabled={installing}
+            onClick={onInstall}
+            title={
+              installing
+                ? `Installing ${registry.command} on ${coreLabel}`
+                : `Install ${registry.command} on ${coreLabel}`
+            }
+          >
+            {installing ? "Installing..." : "Install"}
+          </Btn>
+        )}
         {updateAvailable && (
           <div style={{ display: "flex", alignItems: "center", gap: 4, flexShrink: 0 }}>
             <Btn

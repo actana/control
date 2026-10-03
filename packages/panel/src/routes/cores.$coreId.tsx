@@ -21,5 +21,7 @@ export const Route = createFileRoute("/cores/$coreId")({
 function CoreRoutePage() {
   const { coreId } = Route.useParams();
   const { tab, path } = Route.useSearch();
-  return <CorePage coreId={coreId} tab={tab ?? "sessions"} path={path ?? ""} />;
+  // Key by coreId so Sessions grid/list state re-reads when the rail, hotkeys,
+  // or a link changes Core without remounting through the header switcher.
+  return <CorePage key={coreId} coreId={coreId} tab={tab ?? "sessions"} path={path ?? ""} />;
 }

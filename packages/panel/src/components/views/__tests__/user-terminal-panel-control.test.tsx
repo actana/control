@@ -19,6 +19,8 @@ const store = {
   coreId: null as string | null,
   panelOpen: false,
   setPanelOpen: vi.fn(),
+  panelMaximized: false,
+  setPanelMaximized: vi.fn(),
   sessions: [] as unknown[],
   focusedId: null,
   focusTerminal: vi.fn(),
@@ -73,12 +75,27 @@ function buttonNames(): string[] {
 }
 
 describe("the terminal panel's one control (issue 266)", () => {
+  beforeEach(() => {
+    store.panelMaximized = false;
+    store.setPanelMaximized.mockClear();
+  });
+
   it("offers exactly one control that opens a terminal, in each place it offers one", () => {
     renderPanel("core_a");
-    const opens = buttonNames().filter((n) => /terminal/i.test(n) && !/collapse|expand/i.test(n));
+    const opens = buttonNames().filter((n) => /terminal/i.test(n) && !/collapse|expand|maximise/i.test(n));
     // The header toolbar and the empty state, one each — never a second
     // spelling of the same thing beside either.
     expect(opens).toEqual(["New Terminal", "New Terminal"]);
+  });
+
+  it("can be maximised as well as collapsed (issue 560)", () => {
+    renderPanel("core_a");
+    const maximise = screen.getByRole("button", { name: /maximise terminal/i });
+    expect(maximise).toBeTruthy();
+    expect(maximise.getAttribute("aria-pressed")).toBe("false");
+    maximise.click();
+    expect(store.setPanelMaximized).toHaveBeenCalledWith(true);
+    expect(screen.getByRole("button", { name: /collapse|expand/i })).toBeTruthy();
   });
 
   it("has no `New VM shell` button any more — the surviving control is that button", () => {

@@ -38,6 +38,7 @@ import {
 // can't drift apart.
 const HIDDEN_IDS_STORAGE_KEY = "mc.userTerminalHiddenIds";
 const PANEL_OPEN_STORAGE_KEY = "mc.userTerminalPanelOpen";
+const PANEL_MAXIMIZED_STORAGE_KEY = "mc.userTerminalPanelMaximized";
 type Session = {
   terminal: UserTerminal;
   ptyId: string | null;
@@ -59,6 +60,9 @@ type Ctx = {
   panelOpen: boolean;
   togglePanel: () => void;
   setPanelOpen: (open: boolean) => void;
+  /** Full-height drawer (issue 560 design 02); independent of collapse. */
+  panelMaximized: boolean;
+  setPanelMaximized: (maximized: boolean) => void;
   sessions: Session[];
   sessionsByScope: Record<string, Session[]>;
   focusedId: string | null;
@@ -132,6 +136,12 @@ export function UserTerminalProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     writeJson(PANEL_OPEN_STORAGE_KEY, panelOpenByCore);
   }, [panelOpenByCore]);
+  const [panelMaximizedByCore, setPanelMaximizedByCore] = useState<Record<string, boolean>>(() =>
+    readJson<Record<string, boolean>>(PANEL_MAXIMIZED_STORAGE_KEY, {}),
+  );
+  useEffect(() => {
+    writeJson(PANEL_MAXIMIZED_STORAGE_KEY, panelMaximizedByCore);
+  }, [panelMaximizedByCore]);
   // Terminal id -> the Core its shell runs on (issue 394). The row in
   // `home_terminals` carries none of that, so without this map a reload can only
   // guess. See user-terminal-identity.ts.
@@ -159,6 +169,7 @@ export function UserTerminalProvider({ children }: { children: ReactNode }) {
   // Active scope key: the Core in scope, or none.
   const scopeKey = coreId ? coreScopeKey(coreId) : null;
   const panelOpen = scopeKey ? (panelOpenByCore[scopeKey] ?? false) : false;
+  const panelMaximized = scopeKey ? (panelMaximizedByCore[scopeKey] ?? false) : false;
   const setPanelOpen = useCallback(
     (open: boolean) => {
       if (!scopeKey) return;
@@ -172,6 +183,20 @@ export function UserTerminalProvider({ children }: { children: ReactNode }) {
     if (!scopeKey) return;
     setPanelOpenByCore((prev) => ({ ...prev, [scopeKey]: !(prev[scopeKey] ?? true) }));
   }, [scopeKey]);
+  const setPanelMaximized = useCallback(
+    (maximized: boolean) => {
+      if (!scopeKey) return;
+      setPanelMaximizedByCore((prev) =>
+        prev[scopeKey] === maximized ? prev : { ...prev, [scopeKey]: maximized },
+      );
+      if (maximized) {
+        setPanelOpenByCore((prev) =>
+          prev[scopeKey] === true ? prev : { ...prev, [scopeKey]: true },
+        );
+      }
+    },
+    [scopeKey],
+  );
 
   const setCore = useCallback((next: string | null) => {
     setCoreState(next);
@@ -511,6 +536,8 @@ export function UserTerminalProvider({ children }: { children: ReactNode }) {
       panelOpen,
       togglePanel,
       setPanelOpen,
+      panelMaximized,
+      setPanelMaximized,
       sessions,
       sessionsByScope: sessionsByCore,
       focusedId,
@@ -530,6 +557,9 @@ export function UserTerminalProvider({ children }: { children: ReactNode }) {
       setCore,
       panelOpen,
       togglePanel,
+      setPanelOpen,
+      panelMaximized,
+      setPanelMaximized,
       sessions,
       sessionsByCore,
       focusedId,

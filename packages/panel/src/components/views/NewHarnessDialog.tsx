@@ -15,6 +15,7 @@ import {
   useCliAvailability,
   useHarnessInstall,
 } from "~/lib/cli-availability";
+import { coreHasHarness } from "~/lib/core-has-harness";
 import { TITLE_WAITING } from "~/lib/session-sentinels";
 import { useSettings } from "~/queries";
 import { HARNESS_REGISTRY } from "@actana/shared/harnesses";
@@ -49,7 +50,9 @@ const labelStyle: CSSProperties = {
 
 /**
  * Start a new session (design screen 03, issue 560): harness picker + prompt,
- * a Runs on line, no path or cwd. Remember is per Core.
+ * a Runs on line, no path or cwd. Remember is per Core. Start lists only
+ * harnesses this Core has; missing CLIs offer Install on this dialog's Core
+ * (the route coreId), never the globally selected Core.
  */
 export function NewHarnessDialog({
   open,
@@ -101,12 +104,28 @@ export function NewHarnessDialog({
     "Core";
 
   const launcherConfig = settings?.harnessLauncherConfig ?? DEFAULT_AGENT_LAUNCHER_CONFIG;
-  const harnessOptions = useMemo(
+  const allLauncher = useMemo(
     () =>
       visibleLauncherHarnesses(launcherConfig)
         .filter((id) => HARNESS_REGISTRY[id].uiVisible)
         .map((id) => ({ id, ...HARNESS_REGISTRY[id] })),
     [launcherConfig],
+  );
+  // Start only with harnesses this Core has (issue 560).
+  const harnessOptions = useMemo(
+    () => allLauncher.filter((a) => coreHasHarness(cliAvailability, a.id)),
+    [allLauncher, cliAvailability],
+  );
+  // Missing on this Core — Install targets the dialog's coreId, not Providers'
+  // globally selected Core.
+  const missingOptions = useMemo(
+    () =>
+      allLauncher.filter((a) => {
+        if (a.disabled) return false;
+        const status = availabilityFor(cliAvailability, a.id).status;
+        return status === "missing" || installStateFor(installs, a.id).installing;
+      }),
+    [allLauncher, cliAvailability, installs],
   );
 
   const buildRememberPatch = (
@@ -136,7 +155,7 @@ export function NewHarnessDialog({
     setHarness(seedHarness);
     setPrompt("");
     setInstallIntent(
-      harnessOptions.find((a) => installStateFor(installs, a.id).installing)?.id ?? null,
+      missingOptions.find((a) => installStateFor(installs, a.id).installing)?.id ?? null,
     );
     setRememberSettings(!!initialRemember?.rememberHarnessSettings);
     setError(null);
@@ -169,7 +188,7 @@ export function NewHarnessDialog({
     }
     if (selectedAvailability.status === "missing") {
       setError(
-        `${HARNESS_REGISTRY[agent].command} is not on PATH on \`${coreLabel}\`.`,
+        `${HARNESS_REGISTRY[agent].command} is not on PATH on \`${coreLabel}\`. Use Install on this Core below.`,
       );
       return;
     }
@@ -197,6 +216,8 @@ export function NewHarnessDialog({
   const startInstall = (nextHarness: Harness) => {
     setError(null);
     setInstallIntent(nextHarness);
+    // Install on this dialog's Core — the route coreId — never Providers'
+    // globally selected Core.
     install(nextHarness);
   };
 
@@ -209,11 +230,10 @@ export function NewHarnessDialog({
 
   useEffect(() => {
     if (!open) return;
-    if (availabilityFor(cliAvailability, agent).status !== "missing") return;
-    if (installStateFor(installs, agent).installing) return;
-    const next = harnessOptions.find((a) => harnessCanLaunch(cliAvailability, a.id))?.id;
-    if (next && next !== agent) setHarness(next);
-  }, [open, agent, cliAvailability, harnessOptions, installs]);
+    if (harnessOptions.some((a) => a.id === agent)) return;
+    const next = harnessOptions[0]?.id;
+    if (next) setHarness(next);
+  }, [open, agent, harnessOptions]);
 
   useEffect(() => {
     if (!open) return;
@@ -249,6 +269,7 @@ export function NewHarnessDialog({
   const selectedHarnessOutdated = selectedAvailability.status === "outdated";
   const startDisabled =
     submitting ||
+    harnessOptions.length === 0 ||
     (!selectedHarnessOutdated && !harnessCanLaunch(cliAvailability, agent));
 
   useHotkey("dialog.submit", () => void submit(), { enabled: open && !startDisabled });
@@ -294,21 +315,32 @@ export function NewHarnessDialog({
         <div>
           <label style={labelStyle}>Harness</label>
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {harnessOptions.length === 0 && missingOptions.length === 0 && (
+              <div
+                style={{
+                  padding: "12px 14px",
+                  background: "var(--surface-0)",
+                  border: "1px solid var(--border)",
+                  borderRadius: 8,
+                  fontFamily: "var(--mono)",
+                  fontSize: 12,
+                  color: "var(--text-dim)",
+                  lineHeight: 1.45,
+                }}
+              >
+                No harnesses are offered for this Core yet.
+              </div>
+            )}
             {harnessOptions.map((a) => {
               const meta = HARNESS_META[a.id];
               const selected = agent === a.id;
               const availability = availabilityFor(cliAvailability, a.id);
-              const installState = installStateFor(installs, a.id);
-              const installing = installState.installing;
               const cliChecking =
-                !installing &&
-                (availability.status === "checking" ||
-                  (availability.status === "unknown" && !!getPanelBridge()));
+                availability.status === "checking" ||
+                (availability.status === "unknown" && !!getPanelBridge());
               const cliOutdated = availability.status === "outdated";
-              const cliMissing =
-                !a.disabled && !cliOutdated && (availability.status === "missing" || installing);
               const disabled =
-                !cliOutdated && !cliMissing && !harnessCanLaunch(cliAvailability, a.id);
+                !cliOutdated && !harnessCanLaunch(cliAvailability, a.id);
               return (
                 <div key={a.id} style={{ position: "relative", display: "flex" }}>
                   <button
@@ -318,15 +350,11 @@ export function NewHarnessDialog({
                     title={
                       a.disabled
                         ? "Coming soon"
-                        : installing
-                          ? `Installing ${a.command} on ${coreLabel}`
-                        : cliMissing
-                          ? `${a.command} was not found on PATH`
-                          : cliOutdated
-                            ? `${a.command} must be updated before launching`
-                          : cliChecking
-                            ? `Checking for ${a.command}`
-                          : undefined
+                        : cliOutdated
+                          ? `${a.command} must be updated before launching`
+                        : cliChecking
+                          ? `Checking for ${a.command}`
+                        : undefined
                     }
                     style={{
                       flex: 1,
@@ -334,11 +362,11 @@ export function NewHarnessDialog({
                       alignItems: "center",
                       gap: 12,
                       textAlign: "left",
-                      padding: cliMissing ? "12px 108px 12px 14px" : "12px 14px",
+                      padding: "12px 14px",
                       background: selected ? "var(--surface-2)" : "var(--surface-0)",
                       border: `1px solid ${selected ? "var(--accent)" : "var(--border)"}`,
                       borderRadius: 8,
-                      cursor: disabled ? "not-allowed" : cliMissing ? "default" : "pointer",
+                      cursor: disabled ? "not-allowed" : "pointer",
                       color: "var(--text)",
                       boxShadow: selected ? "0 0 0 1px var(--accent)" : "none",
                       opacity: disabled ? 0.56 : 1,
@@ -374,78 +402,146 @@ export function NewHarnessDialog({
                       >
                         {a.description}
                       </div>
-                      {(cliChecking || cliMissing || cliOutdated) && (
+                      {(cliChecking || cliOutdated) && (
                         <div
                           style={{
                             marginTop: 5,
                             fontFamily: "var(--mono)",
                             fontSize: 10.5,
-                            color:
-                              (cliMissing && !installing) || cliOutdated
-                                ? "var(--status-failed)"
-                                : "var(--text-faint)",
+                            color: cliOutdated ? "var(--status-failed)" : "var(--text-faint)",
                             lineHeight: 1.35,
                           }}
                         >
-                          {cliMissing
-                            ? installing
-                              ? `Installing on ${coreLabel}...`
-                              : installState.error ?? "CLI not found on PATH."
-                            : cliOutdated
-                              ? `Update required: ${availability.label ?? a.label} ${availability.requiredVersion ?? "latest"} or newer.`
-                              : "Checking PATH..."}
+                          {cliOutdated
+                            ? `Update required: ${availability.label ?? a.label} ${availability.requiredVersion ?? "latest"} or newer.`
+                            : "Checking PATH..."}
                         </div>
                       )}
                     </div>
-                    {!cliMissing && (
-                      <code
-                        style={{
-                          fontFamily: "var(--mono)",
-                          fontSize: 10.5,
-                          color: "var(--text-faint)",
-                          background: "var(--surface-0)",
-                          padding: "3px 7px",
-                          border: "1px solid var(--border)",
-                          borderRadius: 4,
-                          textTransform: disabled ? "uppercase" : "none",
-                          letterSpacing: disabled ? "0.05em" : "normal",
-                        }}
-                      >
-                        {a.disabled
-                          ? "Coming soon"
-                          : cliOutdated
-                            ? "Update"
-                            : cliChecking
-                              ? "Checking"
-                              : `$${a.command}`}
-                      </code>
-                    )}
-                  </button>
-                  {cliMissing && (
-                    <Btn
-                      size="sm"
-                      variant="frame"
-                      icon={installing ? undefined : "download"}
-                      disabled={installing}
-                      onClick={() => startInstall(a.id)}
-                      title={
-                        installing
-                          ? `Installing ${a.command} on ${coreLabel}`
-                          : `Install ${a.command} on ${coreLabel}`
-                      }
+                    <code
                       style={{
-                        position: "absolute",
-                        right: 10,
-                        top: "50%",
-                        transform: "translateY(-50%)",
+                        fontFamily: "var(--mono)",
+                        fontSize: 10.5,
+                        color: "var(--text-faint)",
+                        background: "var(--surface-0)",
+                        padding: "3px 7px",
+                        border: "1px solid var(--border)",
+                        borderRadius: 4,
+                        textTransform: disabled ? "uppercase" : "none",
+                        letterSpacing: disabled ? "0.05em" : "normal",
                       }}
                     >
-                      {installing ? "Installing..." : "Install"}
-                    </Btn>
-                  )}
+                      {a.disabled
+                        ? "Coming soon"
+                        : cliOutdated
+                          ? "Update"
+                          : cliChecking
+                            ? "Checking"
+                            : `$${a.command}`}
+                    </code>
+                  </button>
                 </div>
               );
             })}
+            {missingOptions.length > 0 && (
+              <>
+                {harnessOptions.length > 0 && (
+                  <span style={{ ...labelStyle, marginTop: 6, marginBottom: 0 }}>
+                    Not on {coreLabel} yet
+                  </span>
+                )}
+                {harnessOptions.length === 0 && (
+                  <div
+                    style={{
+                      fontFamily: "var(--mono)",
+                      fontSize: 12,
+                      color: "var(--text-dim)",
+                      lineHeight: 1.45,
+                      marginBottom: 4,
+                    }}
+                  >
+                    This Core has no harness CLIs yet. Install one on {coreLabel}:
+                  </div>
+                )}
+                {missingOptions.map((a) => {
+                  const meta = HARNESS_META[a.id];
+                  const installState = installStateFor(installs, a.id);
+                  const installing = installState.installing;
+                  return (
+                    <div key={a.id} style={{ position: "relative", display: "flex" }}>
+                      <div
+                        style={{
+                          flex: 1,
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 12,
+                          textAlign: "left",
+                          padding: "12px 108px 12px 14px",
+                          background: "var(--surface-0)",
+                          border: "1px solid var(--border)",
+                          borderRadius: 8,
+                          color: "var(--text)",
+                        }}
+                      >
+                        <div
+                          style={{
+                            width: 32,
+                            height: 32,
+                            borderRadius: 6,
+                            background: `${meta.color}22`,
+                            border: `1px solid ${meta.color}44`,
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "center",
+                            color: meta.color,
+                            flexShrink: 0,
+                          }}
+                        >
+                          <HarnessLogo agent={a.id} size={20} title={a.label} />
+                        </div>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 2 }}>
+                            {a.label}
+                          </div>
+                          <div
+                            style={{
+                              fontFamily: "var(--mono)",
+                              fontSize: 10.5,
+                              color: installing ? "var(--text-faint)" : "var(--status-failed)",
+                              lineHeight: 1.35,
+                            }}
+                          >
+                            {installing
+                              ? `Installing on ${coreLabel}...`
+                              : installState.error ?? "CLI not found on PATH."}
+                          </div>
+                        </div>
+                      </div>
+                      <Btn
+                        size="sm"
+                        variant="frame"
+                        icon={installing ? undefined : "download"}
+                        disabled={installing || !coreId}
+                        onClick={() => startInstall(a.id)}
+                        title={
+                          installing
+                            ? `Installing ${a.command} on ${coreLabel}`
+                            : `Install ${a.command} on ${coreLabel}`
+                        }
+                        style={{
+                          position: "absolute",
+                          right: 10,
+                          top: "50%",
+                          transform: "translateY(-50%)",
+                        }}
+                      >
+                        {installing ? "Installing..." : "Install"}
+                      </Btn>
+                    </div>
+                  );
+                })}
+              </>
+            )}
           </div>
         </div>
 

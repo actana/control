@@ -11,6 +11,8 @@ import { UserTerminalPane } from "./UserTerminalPane";
 const MIN_HEIGHT = 160;
 const MIN_PANE_WIDTH = 200;
 const PANE_WEIGHTS_STORAGE_KEY = "mc:userTerminalPaneWeights";
+/** Viewport chrome above the maximised drawer (top bar + Core header). */
+const MAXIMISED_VIEWPORT_CHROME_PX = 120;
 
 type PaneWeights = Record<string, number>;
 
@@ -55,6 +57,8 @@ export function UserTerminalPanel() {
     coreId,
     panelOpen,
     setPanelOpen,
+    panelMaximized,
+    setPanelMaximized,
     sessions,
     focusedId,
     focusTerminal,
@@ -71,13 +75,18 @@ export function UserTerminalPanel() {
 
   const visibleSessions = sessions.filter((s) => !hiddenIds.has(s.terminal.id));
 
-  const { size: height, onMouseDown: onResizeMouseDown } = useResizablePanel({
+  const { size: storedHeight, onMouseDown: onResizeMouseDown } = useResizablePanel({
     storageKey: "mc:userTerminalsPanelHeight",
     axis: "y",
     defaultSize: 320,
     minSize: MIN_HEIGHT,
     maxSize: (vh) => vh - 160,
   });
+  // Maximise fills the viewport minus the Core header chrome (issue 560); the
+  // stored height returns when maximise is cleared, so resize still sticks.
+  const height: number | string = panelMaximized
+    ? `calc(100vh - ${MAXIMISED_VIEWPORT_CHROME_PX}px)`
+    : storedHeight;
 
   const paneRowRef = useRef<HTMLDivElement | null>(null);
   const [paneWeights, setPaneWeights] = useState<PaneWeights>(() => readStoredWeights());
@@ -187,7 +196,7 @@ export function UserTerminalPanel() {
         overflow: "visible",
       }}
     >
-      {panelOpen && (
+      {panelOpen && !panelMaximized && (
         <div
           onMouseDown={onResizeMouseDown}
           title="Drag to resize"
@@ -339,6 +348,16 @@ export function UserTerminalPanel() {
               New Terminal
             </Btn>
           </HotkeyTooltip>
+          <Btn
+            variant="ghost"
+            size="sm"
+            icon={panelMaximized ? "minimize" : "maximize"}
+            aria-label="Maximise terminal"
+            aria-pressed={panelMaximized}
+            onClick={() => setPanelMaximized(!panelMaximized)}
+          >
+            maximise
+          </Btn>
           <HotkeyTooltip
             action="terminal.toggle"
             label={panelOpen ? "Collapse panel" : "Expand panel"}

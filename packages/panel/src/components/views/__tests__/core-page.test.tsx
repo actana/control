@@ -55,6 +55,7 @@ const { showRequestedSession } = await import("~/lib/open-requested-session");
 const { takePendingInitialInput } = await import("~/lib/pending-initial-input");
 const { __resetCliAvailabilityStoresForTests } = await import("~/lib/cli-availability");
 const { __resetCoreRememberForTests } = await import("~/lib/core-remember");
+const { __resetCoreSessionsViewForTests } = await import("~/lib/core-sessions-view");
 
 function core(id: string, label: string, state: CoreWithDial["dial"]["state"] = "connected"): CoreWithDial {
   return {
@@ -92,7 +93,10 @@ async function mount(tab: "sessions" | "files" | "tasks", coreId = "a") {
     getParentRoute: () => root,
     path: "/cores/$coreId",
     validateSearch: (s: Record<string, unknown>) => ({ tab: s.tab as string | undefined }),
-    component: () => <CorePage coreId={coreId} tab={tab} />,
+    component: function CoreRoute() {
+      const { coreId: id } = coreRoute.useParams();
+      return <CorePage key={id} coreId={id} tab={tab} />;
+    },
   });
   const router = createRouter({
     routeTree: root.addChildren([coreRoute, workspaceRoute]),
@@ -117,6 +121,7 @@ afterEach(() => {
   window.localStorage.clear();
   __resetCliAvailabilityStoresForTests();
   __resetCoreRememberForTests();
+  __resetCoreSessionsViewForTests();
   togglePanel.mockReset();
   rows = [];
 });
@@ -207,6 +212,57 @@ describe("CorePage", () => {
     await mount("sessions");
     expect(screen.getByText("Refactor executor")).toBeTruthy();
     expect(screen.queryByText("Other Core's work")).toBeNull();
+  });
+
+  it("puts grid and list toggles on the Core page Sessions tab, under the header", async () => {
+    cores = [core("a", "alpha")];
+    rows = [row({})];
+    await mount("sessions");
+    const toolbar = document.querySelector("[data-sessions-toolbar]");
+    expect(toolbar).not.toBeNull();
+    expect(
+      toolbar!.compareDocumentPosition(document.querySelector("header")!) &
+        Node.DOCUMENT_POSITION_PRECEDING,
+    ).not.toBe(0);
+    expect(screen.getByRole("button", { name: "Grid view" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "List view" })).toBeTruthy();
+    expect(document.querySelector("[data-sessions-list]")).not.toBeNull();
+    expect(document.querySelector("[data-sessions-grid]")).toBeNull();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Grid view" }));
+    });
+    expect(document.querySelector("[data-sessions-grid]")).not.toBeNull();
+    expect(document.querySelector("[data-sessions-list]")).toBeNull();
+    expect(screen.getByRole("button", { name: "Grid view" }).getAttribute("aria-pressed")).toBe(
+      "true",
+    );
+  });
+
+  it("keeps each Core's own Sessions view when switching Core without the header switcher", async () => {
+    const { writeCoreSessionsView } = await import("~/lib/core-sessions-view");
+    writeCoreSessionsView("a", "grid");
+    writeCoreSessionsView("b", "list");
+    cores = [core("a", "alpha"), core("b", "bravo")];
+    rows = [
+      row({ coreId: "a", sessionId: "sa", title: "Alpha session" }),
+      row({ coreId: "b", sessionId: "sb", title: "Bravo session" }),
+    ];
+    const router = await mount("sessions", "a");
+    expect(document.querySelector("[data-sessions-grid]")).not.toBeNull();
+    expect(screen.getByText("Alpha session")).toBeTruthy();
+
+    // Simulate the rail / hotkey / link path: navigate to another Core without
+    // going through CorePage.switchCore.
+    await act(async () => {
+      await router.navigate({ to: "/cores/$coreId", params: { coreId: "b" } });
+    });
+    expect(screen.getByText("Bravo session")).toBeTruthy();
+    expect(document.querySelector("[data-sessions-list]")).not.toBeNull();
+    expect(document.querySelector("[data-sessions-grid]")).toBeNull();
+    expect(screen.getByRole("button", { name: "List view" }).getAttribute("aria-pressed")).toBe(
+      "true",
+    );
   });
 
   it("renders the Files Drive for Files (a Core with no Shared folder is told so) and this Core's Tasks board under Tasks", async () => {

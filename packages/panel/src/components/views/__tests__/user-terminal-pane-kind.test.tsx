@@ -17,6 +17,8 @@ const store = {
   coreId: "core_route" as string | null,
   panelOpen: true,
   setPanelOpen: vi.fn(),
+  panelMaximized: false,
+  setPanelMaximized: vi.fn(),
   sessions: [] as unknown[],
   focusedId: null,
   focusTerminal: vi.fn(),
