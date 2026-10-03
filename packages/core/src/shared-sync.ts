@@ -16,6 +16,13 @@
 //   gone there, unchanged here   -> deleted there: delete here
 //   gone here, changed there     -> the change wins, so it comes back
 //
+// **Folders.** S3 has a folder only as a marker key (`a/b/`, which the Panel's New folder writes) or as
+// the parent of a file. A folder the sync has seen on both sides is remembered (`dirs`). When S3 no longer
+// has it (nothing under it and no marker) and the local folder holds nothing either, it is removed here, with
+// a `rmdir` that cannot take a file with it. A folder the sync never saw in S3 (one `core` made) is never
+// removed, and neither is any folder that still holds a file. A marker in S3 with no folder here makes the
+// folder here, unless the folder was synced once and `core` has since removed it.
+//
 // Nothing is guessed about a path with no base (the first pass): it is "changed" on every
 // side it exists on, so a file present on one side is copied and never deleted.
 //
@@ -52,7 +59,7 @@ export const SYNC_STATE_FILE = "shared-sync.json";
 
 type Side = { size: number; mtime: number };
 type Base = { lSize: number; lMtime: number; rSize: number; rMtime: number };
-type SyncState = { version: 1; base: Record<string, Base>; pending: string[] };
+type SyncState = { version: 1; base: Record<string, Base>; pending: string[]; dirs: string[] };
 
 export type PassReport = {
   /** Why nothing was done, when nothing was. */
@@ -61,6 +68,9 @@ export type PassReport = {
   downloaded: string[];
   deletedLocal: string[];
   deletedRemote: string[];
+  /** Folders made here because S3 has them, and folders removed here because S3 no longer does. */
+  createdDirs: string[];
+  deletedDirs: string[];
   failed: Array<{ path: string; why: string }>;
 };
 
@@ -102,7 +112,14 @@ export type SharedSync = {
   stop(): void;
 };
 
-const emptyReport = (): PassReport => ({ uploaded: [], downloaded: [], deletedLocal: [], deletedRemote: [], failed: [] });
+const emptyReport = (): PassReport => ({ uploaded: [],
+  downloaded: [],
+  deletedLocal: [],
+  deletedRemote: [],
+  createdDirs: [],
+  deletedDirs: [],
+  failed: [],
+});
 
 export function createSharedSync(options: SharedSyncOptions): SharedSync {
   const store = options.keyStore ?? createSharedKeyStore(options.stateDir);
@@ -121,6 +138,7 @@ export function createSharedSync(options: SharedSyncOptions): SharedSync {
   let readOnlyLogged = false;
   const tooBig = new Set<string>();
   const badRemote = new Set<string>();
+  const badMarker = new Set<string>();
   let attaching = false;
 
   // The provider reads `current` on every request, so a key pushed while a request is
@@ -156,12 +174,17 @@ export function createSharedSync(options: SharedSyncOptions): SharedSync {
     try {
       const raw = JSON.parse(fs.readFileSync(statePath, "utf8")) as Partial<SyncState>;
       if (raw.version === 1 && raw.base && typeof raw.base === "object" && Array.isArray(raw.pending)) {
-        return { version: 1, base: raw.base, pending: raw.pending.filter((p): p is string => typeof p === "string") };
+        return {
+          version: 1,
+          base: raw.base,
+          pending: raw.pending.filter((p): p is string => typeof p === "string"),
+          dirs: Array.isArray(raw.dirs) ? raw.dirs.filter((p): p is string => typeof p === "string") : [],
+        };
       }
     } catch {
       // No state, or damaged: the next pass treats everything as new, which copies and never deletes.
     }
-    return { version: 1, base: {}, pending: [] };
+    return { version: 1, base: {}, pending: [], dirs: [] };
   }
 
   function saveState(state: SyncState): void {
@@ -198,7 +221,8 @@ export function createSharedSync(options: SharedSyncOptions): SharedSync {
     const isUnreadable = (p: string): boolean => unreadable.some((u) => u === "" || p === u || p.startsWith(`${u}/`));
     if (unreadable.length > 0) log.warn("shared-sync.unreadable-folders", { folders: unreadable.slice(0, 20), count: unreadable.length });
 
-    const remote = await listRemote(shared);
+    const listed = await listRemote(shared);
+    const remote = listed.files;
     const paths = [...new Set([...local.keys(), ...remote.keys(), ...Object.keys(state.base)])].sort();
 
     const uploaded = new Map<string, number>();
@@ -277,7 +301,7 @@ export function createSharedSync(options: SharedSyncOptions): SharedSync {
     // upload for a change made over there.
     if (uploaded.size > 0) {
       try {
-        const after = await listRemote(shared);
+        const after = (await listRemote(shared)).files;
         for (const [p, size] of uploaded) {
           const r = after.get(p);
           const b = state.base[p];
@@ -291,8 +315,90 @@ export function createSharedSync(options: SharedSyncOptions): SharedSync {
       }
     }
 
+    await syncFolders();
     saveState(state);
     return report;
+
+    /** See the header's "Folders". Runs after the files, so what they did is what it looks at. */
+    async function syncFolders(): Promise<void> {
+      const gone = new Set(report.deletedLocal);
+      const localFiles = [...local.keys()].filter((p) => !gone.has(p));
+      for (const p of report.downloaded) if (!local.has(p)) localFiles.push(p);
+      const remoteFiles = [...remote.keys()].filter((p) => !report.deletedRemote.includes(p));
+      for (const p of report.uploaded) if (!remote.has(p)) remoteFiles.push(p);
+
+      // A folder is in S3 when it has a marker or anything under it.
+      const remoteDirs = new Set<string>();
+      for (const p of [...remoteFiles, ...listed.folders.keys()]) {
+        for (let i = p.indexOf("/"); i !== -1; i = p.indexOf("/", i + 1)) remoteDirs.add(p.slice(0, i));
+      }
+      for (const f of listed.folders.keys()) remoteDirs.add(f);
+      const localDirs = new Set(listing!.dirs);
+      for (const p of localFiles) for (let i = p.indexOf("/"); i !== -1; i = p.indexOf("/", i + 1)) localDirs.add(p.slice(0, i));
+      const known = new Set(state.dirs);
+      // A name `core` holds as something that is not a folder: a file or a link. Nothing is made at or under it.
+      const taken = new Set([...localFiles, ...listing!.links]);
+      const blocked = (d: string): boolean => {
+        if (taken.has(d)) return true;
+        for (let i = d.indexOf("/"); i !== -1; i = d.indexOf("/", i + 1)) if (taken.has(d.slice(0, i))) return true;
+        return false;
+      };
+
+      // A marker in S3 with no folder here: make it, shallowest first.
+      for (const d of [...listed.folders.keys()].sort()) {
+        if (localDirs.has(d) || known.has(d) || isUnreadable(d)) continue;
+        if (blocked(d)) {
+          // Not a failure of the pass (a failure would block unpair and folder removal for good): said once, like a bad key.
+          if (!badMarker.has(d)) {
+            badMarker.add(d);
+            log.warn("shared-sync.marker-skipped", { path: d, why: "a file or link is in the way" });
+          }
+          continue;
+        }
+        try {
+          await home.mkdir(d);
+          localDirs.add(d);
+          for (let i = d.indexOf("/"); i !== -1; i = d.indexOf("/", i + 1)) localDirs.add(d.slice(0, i));
+          report.createdDirs.push(d);
+        } catch (err) {
+          const why = err instanceof Error ? err.message : String(err);
+          report.failed.push({ path: `${d}/`, why });
+          log.warn("shared-sync.path-failed", { path: `${d}/`, error: why });
+        }
+      }
+
+      // A folder both sides had that S3 has lost and that holds nothing here: deepest first.
+      if (mode === "sync" && report.failed.length === 0) {
+        const unknownBelow = (d: string): boolean => unreadable.some((u) => u === "" || u === d || u.startsWith(`${d}/`) || d.startsWith(`${u}/`));
+        // What each folder holds directly (a file, a folder or a link), counted once; a removal takes one off its parent.
+        const parentOf = (p: string): string => p.slice(0, Math.max(0, p.lastIndexOf("/")));
+        const holding = new Map<string, number>();
+        for (const p of [...localFiles, ...localDirs, ...listing!.links]) {
+          if (p.includes("/")) holding.set(parentOf(p), (holding.get(parentOf(p)) ?? 0) + 1);
+        }
+        for (const d of [...known].sort().reverse()) {
+          if (remoteDirs.has(d) || !localDirs.has(d) || unknownBelow(d)) continue;
+          if ((holding.get(d) ?? 0) > 0) continue;
+          try {
+            if (await home.removeEmptyDir(d)) {
+              localDirs.delete(d);
+              if (d.includes("/")) holding.set(parentOf(d), (holding.get(parentOf(d)) ?? 1) - 1);
+              report.deletedDirs.push(d);
+            }
+          } catch (err) {
+            const why = err instanceof Error ? err.message : String(err);
+            report.failed.push({ path: `${d}/`, why });
+            log.warn("shared-sync.path-failed", { path: `${d}/`, error: why });
+          }
+        }
+      }
+
+      // Remember the folders that are now in both places. One `core` removed stays remembered while S3 has it, so it is not made again.
+      const next = new Set<string>();
+      for (const d of localDirs) if (remoteDirs.has(d)) next.add(d);
+      for (const d of known) if (remoteDirs.has(d) && !localDirs.has(d)) next.add(d);
+      state.dirs = [...next].sort();
+    }
 
     async function upload(p: string, l: Side): Promise<void> {
       const data = await home.read(p);
@@ -324,11 +430,18 @@ export function createSharedSync(options: SharedSyncOptions): SharedSync {
     }
   }
 
-  async function listRemote(shared: CoreShared): Promise<Map<string, Side>> {
+  /** What S3 holds: the files, and the folder markers (a folder made empty in the Panel). */
+  async function listRemote(shared: CoreShared): Promise<{ files: Map<string, Side>; folders: Map<string, true> }> {
     const { changes } = await shared.watch();
     const remote = new Map<string, Side>();
+    const folders = new Map<string, true>();
     for (const change of changes) {
-      if (change.kind !== "file" || change.deleted) continue;
+      if (change.deleted) continue;
+      if (change.kind === "folder") {
+        if (isEventPath(change.path)) folders.set(change.path, true);
+        continue;
+      }
+      if (change.kind !== "file") continue;
       // A key that is no path in the folder (a backslash, a `..`) cannot be mirrored; it is skipped, once.
       if (!isEventPath(change.path)) {
         if (!badRemote.has(change.path)) {
@@ -339,7 +452,7 @@ export function createSharedSync(options: SharedSyncOptions): SharedSync {
       }
       remote.set(change.path, { size: change.size ?? 0, mtime: change.modifiedAt?.getTime() ?? 0 });
     }
-    return remote;
+    return { files: remote, folders };
   }
 
   /** One pass at a time; one asked for while another runs follows it. */

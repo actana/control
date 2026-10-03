@@ -370,6 +370,14 @@ when the users differ, and logs `shared-sync.key-not-isolated` when it takes a k
 runs as `actana` where there are two users is unchanged. The change feed of D5 and D6 is unchanged: what the sync writes into `~/shared` is
 seen by the watcher of #561 and becomes a `shared:changed` event like any other write.
 
+**Folders (found by the end-to-end run of release 552).** S3 has a folder only as a marker key (`a/b/`, which the Panel's New folder
+writes) or as the parent of a file, so the sync carries folders as follows. A marker in S3 with no folder on the Core makes the folder
+(the Panel's empty folder appears). A folder the sync has seen on both sides, that S3 no longer has (no marker, nothing under it) and
+that holds nothing on the Core, is removed with a `rmdir` that cannot take a file with it: that is what a rename, a move of the last
+file or a delete in the Files tab leaves behind. A folder the sync never saw in S3 (one `core` made) is never removed, and neither is
+one that holds a file, whatever S3 says. A folder `core` removes while S3 still has it is not made again. An empty folder `core` makes
+is not uploaded as a marker; only files are. Unpair makes the markers' folders and removes none. The removal rule does not ask who emptied the folder: one `core` emptied itself goes the same way once S3 has nothing under it. A marker is never made at or under a name `core` holds as a file or a link (the folder is never made through a link out of `~/shared`); it is logged once as `shared-sync.marker-skipped` and is not a failure of the pass, so unpair and folder removal go on.
+
 ## Landed by #565: how the Files tab reaches Shared-folder bytes
 
 [#565](https://github.com/actana/control/issues/565) puts a Drive for the Shared folder on the Core page (PR 637, 1 of 2,
