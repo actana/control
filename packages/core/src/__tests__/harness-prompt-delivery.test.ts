@@ -1624,6 +1624,57 @@ describe("verifying opencode's submit (paste block, issue 563)", () => {
   });
 });
 
+describe("opencode with the prompt still in the composer (issue 563)", () => {
+  const LONG = "Refactor the authentication module and report back. ".repeat(12);
+  const WORKING = [
+    `${ESC}[2K\rYou: Refactor the authentication module`,
+    `${ESC}[2K\rbuild  big-pickle  esc interrupt`,
+    `${ESC}[2K\r⠋ Thinking… (1s)`,
+  ];
+  const returns = (h: Fixture): number => h.writes.filter((w) => w === "\r").length;
+
+  /** Composer up, prompt typed, and the harness paints the box holding it. */
+  function typedInto(box: string): Fixture {
+    const h = startDelivery(LONG, { harness: "opencode" });
+    h.delivery.onOutput(OPENCODE_COMPOSER);
+    h.clock.advance(PROFILE.quietGapMs + 1);
+    expect(h.writes).toEqual([LONG]);
+    h.delivery.onOutput(box);
+    h.clock.advance(submitPauseMs(LONG, PROFILE) + PROFILE.quietGapMs + 1);
+    return h;
+  }
+
+  /** The live run: a paste chip the echo probe cannot read, return, text still there, later return taken. */
+  it.each([
+    ["a collapsed paste block", `${ESC}[2K\r┃ [Pasted ~14 lines] ┃\n  Build  big-pickle`],
+    ["a box the probe cannot read", `${ESC}[2K\r┃ ░░ ┃\n  Build  big-pickle  Tip: use /help`],
+  ])("submits instead of retyping when the composer shows %s", (_name, box) => {
+    const h = typedInto(box);
+    expect(h.writes).toEqual([LONG, "\r"]);
+    expect(h.events.some((e) => e.phase === "prompt-swallowed")).toBe(false);
+
+    // The return was swallowed: the box is unchanged and silent. The verify path
+    // keeps pressing return, and one finally lands.
+    h.clock.advance(3_100);
+    expect(returns(h)).toBeGreaterThanOrEqual(3);
+    for (const frame of WORKING) h.delivery.onOutput(frame);
+    const settled = returns(h);
+    h.clock.advance(120_000);
+
+    expect(returns(h)).toBe(settled);
+    expect(h.writes.filter((w) => w === LONG)).toHaveLength(1);
+    expect(h.delivery.currentPhase).toBe("delivered");
+    expect(h.events.some((e) => e.phase === "abandoned")).toBe(false);
+    expect(h.events.some((e) => e.phase === "delivered")).toBe(true);
+  });
+
+  it("still retypes when the composer is really empty after the write", () => {
+    const h = typedInto(OPENCODE_COMPOSER);
+    expect(h.events).toContainEqual({ phase: "prompt-swallowed", attempt: 1 });
+    expect(h.writes).toEqual([LONG]);
+  });
+});
+
 describe("delivering to opencode (issue 229)", () => {
   /**
    * The live boot, replayed at its captured timings:

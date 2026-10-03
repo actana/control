@@ -522,6 +522,16 @@ export type HarnessReadiness = {
    * {@link HarnessPromptDelivery.promptIsInComposer}.
    */
   maxPromptWrites: number;
+  /**
+   * The composer's placeholder disappears once it holds text, and this harness
+   * may draw that text in a form the echo probe cannot read (a collapsed paste
+   * block, a wrapped or decorated box). When set, a screen that painted
+   * something after the write and shows no placeholder is a composer holding
+   * the prompt, not a swallowed write: submit, do not retype. A retype clears
+   * the screen and waits for a placeholder that cannot come back while the
+   * text is still in the box, which ends `abandoned` with the prompt visible.
+   */
+  textHidesComposerMarker?: boolean;
 };
 
 const NO_READINESS: HarnessReadiness = {
@@ -725,6 +735,7 @@ export const HARNESS_READINESS: Partial<Record<Harness, HarnessReadiness>> = {
     composer: [/ask anything/i],
     confirmEcho: true,
     maxPromptWrites: 3,
+    textHidesComposerMarker: true,
   },
   "cursor-cli": {
     composer: [/plan,\s*search,\s*build/i],
@@ -779,7 +790,7 @@ export function composerOnScreen(screen: string, readiness: HarnessReadiness): b
 const ECHO_PROBE_CHARS = 12;
 
 /** `[Pasted text #1 +12 lines]` — a landed prompt the composer does not echo. */
-const PASTE_PLACEHOLDER = /\[\s*pasted\s+text/i;
+const PASTE_PLACEHOLDER = /\[\s*pasted\s+(text|~)/i;
 
 /**
  * Whitespace and the glyphs a composer draws its own frame out of.
@@ -1205,6 +1216,10 @@ export class HarnessPromptDelivery {
       // swallowed — submitting now would send a carriage return into an empty
       // composer and report a delivery that never happened.
       if (!this.echoConfirmed()) {
+        if (this.composerHoldsUnreadableText()) {
+          this.submit(now);
+          return;
+        }
         this.retypePrompt();
         return;
       }
@@ -1231,6 +1246,18 @@ export class HarnessPromptDelivery {
     if (this.deadlinePassed) return true;
     if (this.promptWrites >= this.readiness.maxPromptWrites) return true;
     return promptEchoed(this.screen, this.opts.prompt);
+  }
+
+  /**
+   * The harness painted after our write and the empty-composer placeholder is
+   * gone: the box holds the text, in a form {@link promptEchoed} cannot read.
+   * Only for harnesses that say so (`textHidesComposerMarker`); the placeholder
+   * being visible again is the one screen that means "empty, retype".
+   */
+  private composerHoldsUnreadableText(): boolean {
+    if (!this.readiness.textHidesComposerMarker || this.promptWrites === 0) return false;
+    if (composerOnScreen(this.screen, this.readiness)) return false;
+    return stripAnsi(this.screen).trim() !== "";
   }
 
   /**
