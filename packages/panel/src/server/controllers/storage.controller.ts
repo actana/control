@@ -13,6 +13,7 @@ import { sharedFolders } from "../services/shared-folders";
 const putBody = z.object({
   backend: z.string(),
   endpoint: z.string(),
+  issuerEndpoint: z.string().optional(),
   bucket: z.string(),
   prefix: z.string(),
   region: z.string().optional(),

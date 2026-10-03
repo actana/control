@@ -1,0 +1,1 @@
+ALTER TABLE "storage_config" ADD COLUMN "issuer_endpoint" text DEFAULT '' NOT NULL;

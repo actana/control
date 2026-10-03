@@ -179,6 +179,7 @@ describe("the master key", () => {
         "bucket",
         "configured",
         "endpoint",
+        "issuerEndpoint",
         "keyId",
         "masterKeyRotatedAt",
         "masterKeySet",
@@ -264,9 +265,13 @@ describe("the master key", () => {
 
   it("accepts the STS, Supabase and R2 backends with their master material shapes", async () => {
     for (const [backend, masterKey, extra] of [
-      ["sts", JSON.stringify({ accessKeyId: "AKIAEXAMPLE", secretAccessKey: "secret" }), { roleArn: "arn:aws:iam::1:role/r" }],
+      [
+        "sts",
+        JSON.stringify({ accessKeyId: "AKIAEXAMPLE", secretAccessKey: "secret" }),
+        { roleArn: "arn:aws:iam::1:role/r", issuerEndpoint: "https://sts.example.test" },
+      ],
       ["r2", "cf-api-token-example", { accountId: "acct", parentAccessKeyId: "parent" }],
-      ["supabase", JSON.stringify({ serviceRoleKey: "srk", jwtSecret: "jwt" }), { anonKey: "anon" }],
+      ["supabase", JSON.stringify({ serviceRoleKey: "srk", jwtSecret: "jwt" }), { anonKey: "anon", issuerEndpoint: "https://xyz.supabase.co" }],
     ] as const) {
       const res = await call("/api/storage", {
         method: "PUT",
@@ -280,6 +285,48 @@ describe("the master key", () => {
     }
   });
 
+  it("keeps the STS AssumeRole URL apart from the S3 host, and refuses an STS save with no AssumeRole URL", async () => {
+    const sts = {
+      ...CONFIG,
+      backend: "sts",
+      masterKey: JSON.stringify({ accessKeyId: "AKIAEXAMPLE", secretAccessKey: "secret" }),
+      roleArn: "arn:aws:iam::1:role/r",
+      oidcIssuer: undefined,
+      keyId: undefined,
+    };
+    const missing = await call("/api/storage", { method: "PUT", json: sts });
+    expect(missing.status).toBe(400);
+    expect((await missing.json()).error).toMatch(/STS AssumeRole URL/);
+    const ok = await call("/api/storage", { method: "PUT", json: { ...sts, endpoint: "https://s3.example.test", issuerEndpoint: "https://sts.example.test/" } });
+    expect(ok.status).toBe(200);
+    const { storage } = await ok.json();
+    expect(storage.endpoint).toBe("https://s3.example.test");
+    expect(storage.issuerEndpoint).toBe("https://sts.example.test");
+  });
+
+  it("takes the Supabase project URL for the issuer and derives the S3 host from it when none is given", async () => {
+    const supabase = {
+      ...CONFIG,
+      backend: "supabase",
+      masterKey: JSON.stringify({ serviceRoleKey: "srk", jwtSecret: "jwt" }),
+      anonKey: "anon",
+      oidcIssuer: undefined,
+      keyId: undefined,
+    };
+    expect((await call("/api/storage", { method: "PUT", json: { ...supabase, endpoint: "" } })).status).toBe(400);
+    const res = await call("/api/storage", { method: "PUT", json: { ...supabase, endpoint: "", issuerEndpoint: "https://xyz.supabase.co" } });
+    expect(res.status).toBe(200);
+    const { storage } = await res.json();
+    expect(storage.issuerEndpoint).toBe("https://xyz.supabase.co");
+    expect(storage.endpoint).toBe("https://xyz.supabase.co/storage/v1/s3");
+  });
+
+  it("has no issuer endpoint for SeaweedFS or R2, whatever is sent", async () => {
+    const res = await call("/api/storage", { method: "PUT", json: { ...CONFIG, masterKey: MASTER_PEM, issuerEndpoint: "https://ignored.test" } });
+    expect(res.status).toBe(200);
+    expect((await res.json()).storage.issuerEndpoint).toBeNull();
+  });
+
   it("refuses a backend change that carries no new master material", async () => {
     expect((await call("/api/storage", { method: "PUT", json: { ...CONFIG, masterKey: MASTER_PEM } })).status).toBe(200);
     const res = await call("/api/storage", {
@@ -288,6 +335,7 @@ describe("the master key", () => {
         ...CONFIG,
         backend: "sts",
         roleArn: "arn:aws:iam::1:role/r",
+        issuerEndpoint: "https://sts.example.test",
         oidcIssuer: undefined,
         keyId: undefined,
       },

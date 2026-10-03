@@ -16,6 +16,7 @@ export async function findStorageConfig(ownerId: number): Promise<StorageConfigR
       ownerId: storageConfig.ownerId,
       backend: storageConfig.backend,
       endpoint: storageConfig.endpoint,
+      issuerEndpoint: storageConfig.issuerEndpoint,
       bucket: storageConfig.bucket,
       prefix: storageConfig.prefix,
       region: storageConfig.region,

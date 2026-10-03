@@ -64,6 +64,13 @@
       "when": 1790903895429,
       "tag": "0008_panel_missioncontrol_tables",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1791056816245,
+      "tag": "0009_panel_storage_issuer_endpoint",
+      "breakpoints": true
     }
   ]
 }

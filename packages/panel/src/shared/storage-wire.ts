@@ -11,7 +11,10 @@ export type StorageBackendKind = (typeof STORAGE_BACKEND_KINDS)[number];
 export type StorageConfigView = {
   configured: boolean;
   backend: StorageBackendKind | null;
+  /** The S3 API host a Core's key signs against. */
   endpoint: string | null;
+  /** The STS AssumeRole URL (`sts`) or the Supabase project URL (`supabase`); null for the other backends. */
+  issuerEndpoint: string | null;
   bucket: string | null;
   prefix: string | null;
   region: string | null;
@@ -52,7 +55,10 @@ export type StorageCoreFolderView = {
 /** The write: the master key is optional (absent keeps the stored one) and never read back. */
 export type StorageConfigInput = {
   backend: string;
+  /** The S3 API host. For `supabase` it may be left empty: it is then `<project URL>/storage/v1/s3`. */
   endpoint: string;
+  /** Required for `sts` (the AssumeRole URL) and `supabase` (the project URL); ignored for the others. */
+  issuerEndpoint?: string;
   bucket: string;
   prefix: string;
   region?: string;
@@ -95,6 +101,9 @@ export function derivedFolder(prefix: string, coreId: string): string {
   const trimmed = prefix.trim().replace(/^\/+|\/+$/g, "");
   return trimmed ? `${trimmed}/${coreId}/` : `${coreId}/`;
 }
+
+/** The S3 API path Supabase serves under a project's URL. */
+export const SUPABASE_S3_PATH = "/storage/v1/s3";
 
 /** Default upload size limit on screen 08: 512 MB per file. */
 export const DEFAULT_UPLOAD_SIZE_LIMIT_BYTES = 512 * 1024 * 1024;
