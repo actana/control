@@ -159,7 +159,7 @@ describe("the mint command", () => {
 
   it("has a Compose form that runs the same command inside the Core container", () => {
     expect(composePairNewCommand("my-panel")).toBe(
-      "docker compose -f deploy/docker-compose.yml exec core actana pair new --label my-panel",
+      "docker compose -f deploy/docker-compose.yml exec -u actana core actana pair new --label my-panel",
     );
   });
 });

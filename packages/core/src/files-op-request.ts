@@ -57,7 +57,7 @@ export function parseFilesOpRequest(raw: unknown): FilesOpRequest {
         fileMtime: numberOrNull(r, "fileMtime"),
       };
     case "delete":
-      return { op: "delete", path: pathField(r, "path") };
+      return { op: "delete", path: pathField(r, "path"), ...(r.emptyOnly === true ? { emptyOnly: true } : {}) };
     case "mkdir":
       return { op: "mkdir", path: pathField(r, "path") };
     case "move":

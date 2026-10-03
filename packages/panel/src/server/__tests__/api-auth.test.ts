@@ -138,7 +138,7 @@ describe("api auth gate", () => {
     expect(body).toMatchObject({
       ok: true,
       status: "ok",
-      checks: { api: "ok", database: "disabled" },
+      checks: { api: "ok", database: "ok" },
     });
   });
 

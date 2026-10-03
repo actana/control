@@ -100,7 +100,8 @@ export function coreInstallPaths(panelVersion: string): readonly CoreInstallPath
 }
 
 /** The Compose prefix that runs a Core-side command inside the Core container. */
-export const COMPOSE_EXEC_PREFIX = "docker compose -f deploy/docker-compose.yml exec core";
+export const COMPOSE_EXEC_PREFIX =
+  "docker compose -f deploy/docker-compose.yml exec -u actana core";
 
 /**
  * The wizard's three steps, as ids, in the order the machine has to do them.

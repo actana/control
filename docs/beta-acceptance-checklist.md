@@ -54,7 +54,7 @@ promises about what happens next.
 ```bash
 docker compose up -d
 docker compose logs core
-docker compose exec core actana pair new     # the code, and the CA fingerprint
+docker compose exec -u actana core actana pair new     # the code, and the CA fingerprint
 ```
 
 - [ ] Both containers reach `running` and stay there for a minute
@@ -110,7 +110,7 @@ docker compose restart
 - [ ] The Panel's UI reports the same version
 
 ```bash
-docker compose exec core actana status
+docker compose exec -u actana core actana status
 ```
 
 Those versions are `x.y.z` — the train's version, with no suffix. A beta *cut*

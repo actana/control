@@ -381,7 +381,7 @@ over the panel link as core-link frames, because each Core owns that state
 
 | Area | Routes |
 | --- | --- |
-| Liveness | `GET /api/healthz` |
+| Readiness (API + Postgres) | `GET /api/healthz` |
 | Operator auth | `/api/auth/state`, `/api/auth/setup`, `/api/auth/login`, `/api/auth/logout`, `/api/auth/password` |
 | Core registry | `/api/cores` |
 | Preferences | `/api/settings`, `/api/keybindings`, `/api/home/user-terminals` |

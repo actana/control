@@ -40,7 +40,12 @@ export type FilesOpRequest =
       /** `X-Actana-File-Mtime`, epoch milliseconds. */
       fileMtime: number | null;
     }
-  | { op: "delete"; path: string }
+  | {
+      op: "delete";
+      path: string;
+      /** The Shared folder's sync (#562): remove a folder only if nothing is in it, never its contents. */
+      emptyOnly?: boolean;
+    }
   | { op: "mkdir"; path: string }
   | { op: "move"; from: string; to: string };
 
@@ -136,7 +141,7 @@ export async function runFilesOp(
       return await handleWrite(body, out, ctx, confined.absolute, confined.relative, request);
     }
     case "delete":
-      return await handleDelete(out, ctx.root, request.path);
+      return await handleDelete(out, ctx.root, request.path, request.emptyOnly === true);
     case "mkdir":
       return await handleMkdir(out, ctx.root, request.path);
     case "move":
@@ -466,7 +471,7 @@ function answerJson(out: FilesOut, status: number, value: unknown): void {
  * A link's parents are resolved, so `link/file` with `link` leading out of the home is
  * refused before anything is touched.
  */
-async function handleDelete(out: FilesOut, root: string, requested: string): Promise<void> {
+async function handleDelete(out: FilesOut, root: string, requested: string, emptyOnly = false): Promise<void> {
   const folderIntent = requested.trim().endsWith("/");
   const confined = confineWriteTarget(root, requested);
   if (!confined.ok) return refuse(out, confinementRefusal(confined));
@@ -491,6 +496,25 @@ async function handleDelete(out: FilesOut, root: string, requested: string): Pro
   }
   if (!existing.isDirectory() && folderIntent) {
     return refuse(out, { status: 400, code: "bad-request", message: `${confined.relative} is not a folder` });
+  }
+
+  if (emptyOnly) {
+    // `rmdir` cannot remove a folder that holds anything, so a file made a moment ago is never lost to it.
+    if (!existing.isDirectory()) {
+      return refuse(out, { status: 400, code: "bad-request", message: `${confined.relative} is not a folder` });
+    }
+    try {
+      await fs.promises.rmdir(confined.absolute);
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === "ENOTEMPTY" || code === "EEXIST") {
+        return answerJson(out, 200, { path: confined.relative, kind: "directory", deleted: false, reason: "not-empty" });
+      }
+      const message = err instanceof Error ? err.message : String(err);
+      log.warn("core-files.delete-failed", { path: confined.relative, error: message });
+      return refuse(out, { status: 500, code: "write-failed", message: `could not delete ${confined.relative}: ${message}` });
+    }
+    return answerJson(out, 200, { path: confined.relative, kind: "directory", deleted: true });
   }
 
   try {

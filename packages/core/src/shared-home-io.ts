@@ -31,6 +31,10 @@ export type LocalFile = { path: string; size: number; mtime: number; mode: numbe
 /** What a listing could and could not see. */
 export type LocalListing = {
   files: LocalFile[];
+  /** Every folder under the Shared folder, by its path inside it (never `""`, never a link), empty or not. */
+  dirs: string[];
+  /** Every link (or other thing that is neither a file nor a folder) under it. Never followed, never walked: a name taken. */
+  links: string[];
   /**
    * Folders (by path inside the Shared folder, `""` for the folder itself) the listing could not read or
    * walk. Nothing under one of them is known, so it is not "gone": the sync leaves that subtree alone.
@@ -49,6 +53,13 @@ export type SharedHome = {
   write(rel: string, data: Buffer, mtimeMs: number, mode?: number): Promise<{ size: number; mtime: number }>;
   /** Delete one file. One that is already gone is fine. */
   remove(rel: string): Promise<void>;
+  /** Make one folder and its parents. One already there is fine. */
+  mkdir(rel: string): Promise<void>;
+  /**
+   * Remove one folder only if nothing is in it. Answers whether it was removed: a folder that holds anything (a file
+   * made since the listing, say), or is already gone, is left alone and answers false.
+   */
+  removeEmptyDir(rel: string): Promise<boolean>;
 };
 
 export class SharedHomeError extends Error {
@@ -107,6 +118,8 @@ export function buildSharedHome(transport: Transport): SharedHome {
       if (answer.status === 404) return null;
       if (answer.status !== 200) throw new SharedHomeError(`listing the Shared folder failed (${answer.status})`);
       const files: LocalFile[] = [];
+      const dirs: string[] = [];
+      const links: string[] = [];
       const unreadable: string[] = [];
       let complete = false;
       for (const line of ndjson(answer.body)) {
@@ -121,10 +134,14 @@ export function buildSharedHome(transport: Transport): SharedHome {
         }
         const file = fileOf(line);
         if (file) files.push(file);
+        const dir = dirOf(line);
+        if (dir) dirs.push(dir);
+        const link = linkOf(line);
+        if (link) links.push(link);
       }
       // A listing that did not end is a listing that stopped early: the rest is unknown.
       if (!complete) throw new SharedHomeError("listing the Shared folder did not finish");
-      return { files, unreadable };
+      return { files, dirs, links, unreadable };
     },
 
     async stat(rel) {
@@ -161,6 +178,18 @@ export function buildSharedHome(transport: Transport): SharedHome {
       const answer = await transport({ op: "delete", path: target(rel) }, null);
       if (answer.status !== 200 && answer.status !== 404) throw new SharedHomeError(`deleting ${rel} failed (${answer.status})`);
     },
+
+    async mkdir(rel) {
+      const answer = await transport({ op: "mkdir", path: target(rel) }, null);
+      if (answer.status !== 200 && answer.status !== 201) throw new SharedHomeError(`making ${rel} failed (${answer.status})`);
+    },
+
+    async removeEmptyDir(rel) {
+      const answer = await transport({ op: "delete", path: `${target(rel)}/`, emptyOnly: true }, null);
+      if (answer.status === 404) return false;
+      if (answer.status !== 200) throw new SharedHomeError(`removing the folder ${rel} failed (${answer.status})`);
+      return ndjson(answer.body).some((line) => line.deleted === true);
+    },
   };
 }
 
@@ -173,6 +202,24 @@ function fileOf(line: Record<string, unknown>): LocalFile | null {
   const { size, mtime, mode } = line;
   if (!isEventPath(rel) || typeof size !== "number" || typeof mtime !== "number") return null;
   return { path: rel, size, mtime, mode: typeof mode === "number" ? mode & 0o777 : 0o644 };
+}
+
+/** A listing line as a folder inside the Shared folder (not the folder itself), or null. */
+function dirOf(line: Record<string, unknown>): string | null {
+  if (line.type !== "entry" || line.kind !== "directory") return null;
+  const full = line.path;
+  if (typeof full !== "string" || !full.startsWith(`${FOLDER}/`)) return null;
+  const rel = full.slice(FOLDER.length + 1);
+  return isEventPath(rel) ? rel : null;
+}
+
+/** A listing line as a link inside the Shared folder, or null. */
+function linkOf(line: Record<string, unknown>): string | null {
+  if (line.type !== "entry" || line.kind === "file" || line.kind === "directory") return null;
+  const full = line.path;
+  if (typeof full !== "string" || !full.startsWith(`${FOLDER}/`)) return null;
+  const rel = full.slice(FOLDER.length + 1);
+  return isEventPath(rel) ? rel : null;
 }
 
 function ndjson(body: Buffer): Array<Record<string, unknown>> {
