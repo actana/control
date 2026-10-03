@@ -1551,6 +1551,46 @@ describe("verifying opencode's submit (paste block, issue 563)", () => {
     expect(Math.max(...gaps)).toBeLessThanOrEqual(10_000);
   });
 
+  it("counts a turn-start chunk plus spinner ticks as working, with no hint on screen", () => {
+    const h = deliver(LONG, "opencode");
+    h.delivery.onOutput(`${ESC}[2K\rYou: Refactor the authentication module\n⠋ Thinking… (0s)`);
+    h.clock.advance(300);
+    h.delivery.onOutput(`${ESC}[2K\r⠙ Thinking… (1s)`);
+    h.clock.advance(300);
+    h.delivery.onOutput(`${ESC}[2K\r⠹ Thinking… (2s)`);
+    h.clock.advance(120_000);
+    expect(h.writes).toEqual([LONG, "\r"]);
+  });
+
+  it("reads the hint across absolute cursor moves between its words", () => {
+    const h = deliver(LONG, "opencode");
+    h.delivery.onOutput(`${ESC}[40;3H▀▀▀▀▀▀  esc${ESC}[40;12Hinterrupt${ESC}[40;30H1.2K`);
+    h.clock.advance(120_000);
+    expect(h.writes).toEqual([LONG, "\r"]);
+  });
+
+  it("still retries into an idle screen that repainted once", () => {
+    const h = deliver(LONG, "opencode");
+    h.delivery.onOutput(`${ESC}[2K\r[Pasted ~12 lines] Build  big-pickle`);
+    h.clock.advance(1_001);
+    expect(returns(h)).toBe(2);
+  });
+
+  it("says so when the retries run out unconfirmed", () => {
+    const h = deliver(LONG, "opencode");
+    h.clock.advance(120_000);
+    expect(h.events.filter((e) => e.phase === "submit-unconfirmed")).toEqual([
+      { phase: "submit-unconfirmed", retries: 5 },
+    ]);
+  });
+
+  it("does not report unconfirmed for a submit that took", () => {
+    const h = deliver(LONG, "opencode");
+    h.delivery.onOutput(WORKING_FRAMES[1]);
+    h.clock.advance(120_000);
+    expect(h.events.some((e) => e.phase === "submit-unconfirmed")).toBe(false);
+  });
+
   it("does not repeat a short prompt that the first return took", () => {
     const h = deliver(SHORT, "opencode");
     for (const frame of WORKING_FRAMES) h.delivery.onOutput(frame);
@@ -1571,6 +1611,16 @@ describe("verifying opencode's submit (paste block, issue 563)", () => {
     h.delivery.dispose();
     h.clock.advance(60_000);
     expect(h.writes).toEqual([LONG, "\r"]);
+  });
+
+  it("sends nothing more when disposed after one retry, with the next check armed", () => {
+    const h = deliver(LONG, "opencode");
+    h.clock.advance(1_001);
+    expect(returns(h)).toBe(2);
+    h.delivery.dispose();
+    h.clock.advance(120_000);
+    expect(returns(h)).toBe(2);
+    expect(h.events.some((e) => e.phase === "submit-unconfirmed")).toBe(false);
   });
 });
 

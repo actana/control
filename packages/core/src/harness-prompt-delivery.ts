@@ -929,8 +929,9 @@ export const HARNESS_PROMPT_DELIVERY_PROFILES: Partial<
   Record<Harness, Partial<PromptDeliveryProfile>>
 > = {
   // OpenCode collapses a long paste into a block and swallows a `\r` that comes
-  // too early, so its submit is verified and retried. Claude Code, codex, cursor-cli and pi take the
-  // single `\r` after `submitPauseMs` on a long prompt, so they get no entry.
+  // too early, so its submit is verified and retried. Claude Code, codex,
+  // cursor-cli and pi take the single `\r` after `submitPauseMs` on a long
+  // prompt, so they get no entry.
   opencode: {
     composerWaitMs: 90_000,
     submitRetryGapsMs: [1_000, 2_000, 4_000, 7_000, 10_000],
@@ -1001,6 +1002,7 @@ export type PromptDeliveryEvent =
        */
       composerObserved: boolean;
     }
+  | { phase: "submit-unconfirmed"; retries: number }
   | { phase: "abandoned"; reason: string };
 
 export type PromptDeliveryTimers = {
@@ -1034,8 +1036,10 @@ const SCREEN_WINDOW_CHARS = 8_000;
 const SIGNATURE_RING = 6;
 /** OpenCode's busy footer: `esc interrupt` while a turn is running. */
 const WORKING_HINT = /esc\s+(to\s+)?interrupt/i;
-/** Distinct repaints since a `\r` that mean a turn started. */
-const WORKING_REPAINTS = 3;
+/** Painted chunks since a `\r` that mean a turn started (one is a paste block). */
+const WORKING_PAINTS = 2;
+/** An absolute cursor move, `ESC[row;colH`: layout between words, not deletion. */
+const CURSOR_POSITION = new RegExp("\\u001B\\[[0-9]*;?[0-9]*[Hf]", "g");
 
 /**
  * Delivers one starting prompt to one harness, driven by that harness's own
@@ -1085,7 +1089,7 @@ export class HarnessPromptDelivery {
   private verifying = false;
   private submitRetries = 0;
   private sinceSubmit = "";
-  private sinceSubmitSignatures = new Set<string>();
+  private sinceSubmitPaints = 0;
 
   constructor(private readonly opts: PromptDeliveryOptions) {
     this.profile = opts.profile ?? deliveryProfileFor(opts.harness);
@@ -1444,7 +1448,7 @@ export class HarnessPromptDelivery {
 
   private armSubmitCheck(gapMs: number): void {
     this.sinceSubmit = "";
-    this.sinceSubmitSignatures = new Set();
+    this.sinceSubmitPaints = 0;
     this.cancelSubmitCheck = this.timers.setTimer(() => this.onSubmitCheck(), gapMs);
   }
 
@@ -1456,38 +1460,46 @@ export class HarnessPromptDelivery {
       this.verifying = false;
       return;
     }
-    this.submitRetries += 1;
-    this.opts.write("\r");
     if (this.submitRetries >= gaps.length) {
+      // The last return has had its whole gap and the harness still shows no
+      // sign of working. Said so, because `delivered` was reported long ago.
       this.verifying = false;
+      this.emit({ phase: "submit-unconfirmed", retries: this.submitRetries });
       return;
     }
-    this.armSubmitCheck(gaps[this.submitRetries]);
+    this.submitRetries += 1;
+    this.opts.write("\r");
+    // After the last return there is one more gap to watch it, then the verdict.
+    this.armSubmitCheck(gaps[this.submitRetries] ?? gaps[gaps.length - 1]);
   }
 
   /** Output after the delivery finished: only the submit check reads it. */
   private observeAfterSubmit(chunk: string): void {
     if (!this.verifying) return;
     this.sinceSubmit = (this.sinceSubmit + chunk).slice(-SCREEN_WINDOW_CHARS);
-    const signature = redrawSignature(chunk);
-    if (signature !== "") this.sinceSubmitSignatures.add(signature);
+    // Painted chunks, not distinct frames: a spinner tick normalises to the
+    // same signature every time, and it is exactly what a working turn does.
+    if (redrawSignature(chunk) !== "") this.sinceSubmitPaints += 1;
   }
 
   /**
    * Did the last `\r` start a turn? Two readings, either is enough:
    *
-   *   - the harness says it is working (its interrupt hint is on screen), or
-   *   - the screen has moved on by more than one repaint since the `\r`. A
-   *     swallowed `\r` leaves an idle composer that paints nothing, and a paste
-   *     block opening is one repaint; a turn starting paints the user message,
-   *     the footer and the spinner line, which are several distinct frames.
+   *   - the harness says it is working: its interrupt hint is on screen, read
+   *     with an absolute cursor move counted as a space, because OpenCode lays
+   *     the footer out with moves and `stripAnsi` would glue the words, or
+   *   - more than one chunk painted since the `\r`. A swallowed `\r` leaves an
+   *     idle composer that paints nothing, and a paste block opening is one
+   *     repaint. Anything past that is a turn — a spinner tick counts — so the
+   *     default is the safe one: retry only into a provably idle screen.
    *
    * The prompt text is deliberately not consulted: a submitted prompt is
    * echoed again in the transcript, so its presence proves nothing.
    */
   private submitTaken(): boolean {
-    if (WORKING_HINT.test(stripAnsi(this.sinceSubmit))) return true;
-    return this.sinceSubmitSignatures.size >= WORKING_REPAINTS;
+    const screen = stripAnsi(this.sinceSubmit.replace(CURSOR_POSITION, " "));
+    if (WORKING_HINT.test(screen)) return true;
+    return this.sinceSubmitPaints >= WORKING_PAINTS;
   }
 
   /**
