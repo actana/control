@@ -403,6 +403,16 @@ route for it was removed by #580 (see the note on ADR 0030), and it is not true 
 D6 says the Shared folder is mounted from S3 with short-lived keys; the Panel does not mount it, it reaches the same
 prefix as a client of S3, with its own key and not the Core's (D33).
 
+**What the tab shows beyond the listing (the second audit of #565).** The "new" badges and the refresh come from the Core's `shared:changed` feed (#561, D5), not from
+S3: the tab already watches the Core over the panel link, which delivers each event live and replays what was missed, so a file the Core writes after the operator's last visit is
+badged when its event arrives and the open folder is refetched 400 ms after the burst, and again 17 s and 34 s after it: the event is the Core's local write, and the Core uploads it on its next sync pass (15 s), so the first look is usually before the object is in S3 and no second event follows the upload. One S3 listing at load supplies the badges for files written while no tab was open.
+S3 is listed every ten seconds only while the Core is offline, when the feed has nothing to say. The sync state in the details pane compares the Core's last event for a path with the
+stored copy: the same size and a stored copy not older than the Core's write (2 s of clock skew allowed) is "synced to S3", another size, an older copy or a delete is "syncing", and no event is only "in storage" (with "Core not connected" when it is offline). Who wrote a file
+is read off its path: `sessions/<id>/` is that Session, with its harness from the Core's Session list, and `tasks/<id>/` is that Task, with its Agent. The links are the Task, as a link to
+`/tasks?task=<id>`, and each full GitHub pull request URL the server finds in the file's text and in its Task's description and comments; a bare "PR 581" names no repository and is not linked.
+A JSON preview is re-indented with only the whitespace between tokens changed, so no value is reformatted. A card's preview sits beside its button, not in it, and shows links as text. A markdown preview is rendered with react-markdown with raw HTML skipped, images dropped and only `http`, `https` and `mailto` links kept. A PDF card draws the browser's viewer on page one
+from the Panel's `/media` route, for a file up to 5 MB and once the card is on screen; no preview uses a signed URL.
+
 ## Landed by #569 and #570: Agents, and how a Task is dispatched
 
 [#569](https://github.com/actana/control/issues/569) (PR 625, merged 2026-10-01) defines the Agent in Postgres.
@@ -500,8 +510,9 @@ and the page shows only that one is set and when it was rotated. A Save that typ
 replaces the key and re-issues every Core's key. A change of backend without new master material is refused, since a sealed key cannot move between
 backends. Test connection issues a one-hour key and proves another Core's folder is unreachable, the same probe as pairing. The page lists each Core's folder size and key expiry from the
 server, and holds the upload size limit (default 512 MiB) that D34 reads. The key's life is the SDK's (one hour, refresh 15 minutes early), shown, not stored.
-**The `sts` and `supabase` tabs say they are not usable yet against a real service**, because one Endpoint field cannot be both the STS AssumeRole URL
-(or the Supabase project URL) and the S3 API host; `seaweedfs` and `r2` are the ones that work. The form shows OIDC fields that screen 08 does not draw,
+**`sts` and `supabase` take two addresses.** The Endpoint field is the S3 API host a Core's key signs against; `sts` also asks for the STS AssumeRole URL and
+`supabase` for the project URL (`storage_config.issuer_endpoint`, migration 0009), which is where the key issuer is asked. A Supabase save may leave the S3 host empty,
+and it is then `<project URL>/storage/v1/s3`. A row saved before the column falls back to its one endpoint for both. The form shows OIDC fields that screen 08 does not draw,
 so the SeaweedFS issuer can be configured.
 
 ## Landed by #572, #573 and #574: API keys, the public API, MCP and webhooks

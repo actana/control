@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
-import type { StorageConfigView, StorageCoreFolderView } from "~/shared/storage-wire";
+import type { StorageConfigInput, StorageConfigView, StorageCoreFolderView } from "~/shared/storage-wire";
 
 /**
  * Settings › Storage (screen 08, #566): SeaweedFS is the default tab, the master key is write-only,
@@ -12,6 +12,7 @@ const STORAGE_EMPTY: StorageConfigView = {
   configured: false,
   backend: null,
   endpoint: null,
+  issuerEndpoint: null,
   bucket: null,
   prefix: null,
   region: null,
@@ -70,7 +71,7 @@ const CORES: StorageCoreFolderView[] = [
 
 const api = {
   getStorage: vi.fn(async () => ({ storage: STORAGE_SET, cores: CORES })),
-  putStorage: vi.fn(async () => ({ storage: STORAGE_SET })),
+  putStorage: vi.fn(async (_input: StorageConfigInput) => ({ storage: STORAGE_SET })),
   testStorage: vi.fn(async () => ({
     result: { folder: "cores/probe_abc/", expiresAt: Date.now() + 3_600_000, read: true, write: true, listOwn: true, reachOther: false },
   })),
@@ -156,19 +157,42 @@ describe("Settings › Storage", () => {
     expect(master.value).toContain("PRIVATE KEY");
   });
 
-  it("marks S3 STS and Supabase as not usable yet against a real service", async () => {
+  it("asks S3 STS for its AssumeRole URL and the S3 host separately, with no not-usable note", async () => {
     await act(async () => {
       render(<StorageSettingsPage />);
     });
     await act(async () => {
       fireEvent.click(screen.getByRole("tab", { name: /S3 STS/i }));
     });
-    expect(screen.getByRole("note").getAttribute("data-backend-limitation")).toBe("sts");
-    expect(screen.getByRole("note").textContent).toMatch(/Not usable yet/i);
+    expect(screen.queryByRole("note")).toBeNull();
+    expect(screen.getByLabelText("STS AssumeRole URL")).toBeTruthy();
+    expect(screen.getByLabelText("S3 API endpoint")).toBeTruthy();
+    expect(screen.getByLabelText(/Role ARN/i)).toBeTruthy();
+  });
+
+  it("asks Supabase for its project URL, leaves the S3 host to be derived, and saves both", async () => {
+    await act(async () => {
+      render(<StorageSettingsPage />);
+    });
     await act(async () => {
       fireEvent.click(screen.getByRole("tab", { name: /Supabase/i }));
     });
-    expect(screen.getByRole("note").getAttribute("data-backend-limitation")).toBe("supabase");
-    expect(screen.getByRole("note").textContent).toMatch(/project URL and the S3 API host/i);
+    expect(screen.queryByRole("note")).toBeNull();
+    const project = screen.getByLabelText("Supabase project URL") as HTMLInputElement;
+    const s3 = screen.getByLabelText("S3 API endpoint") as HTMLInputElement;
+    expect(s3.placeholder).toMatch(/storage\/v1\/s3/);
+    await act(async () => {
+      fireEvent.change(project, { target: { value: "https://xyz.supabase.co" } });
+      fireEvent.change(s3, { target: { value: "" } });
+      fireEvent.change(screen.getByLabelText(/Anon key/i), { target: { value: "anon" } });
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /^Save$/i }));
+    });
+    expect(api.putStorage).toHaveBeenCalledTimes(1);
+    const sent = api.putStorage.mock.calls[0]![0];
+    expect(sent.backend).toBe("supabase");
+    expect(sent.issuerEndpoint).toBe("https://xyz.supabase.co");
+    expect(sent.endpoint).toBe("");
   });
 });

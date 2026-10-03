@@ -30,6 +30,7 @@ const BACKENDS: { id: StorageBackendKind; label: string; sub?: string }[] = [
 
 type Fields = {
   endpoint: string;
+  issuerEndpoint: string;
   bucket: string;
   prefix: string;
   region: string;
@@ -45,6 +46,7 @@ type Fields = {
 
 const EMPTY_FIELDS: Fields = {
   endpoint: "",
+  issuerEndpoint: "",
   bucket: "",
   prefix: "cores",
   region: "us-east-1",
@@ -61,6 +63,7 @@ const EMPTY_FIELDS: Fields = {
 function fieldsFrom(storage: StorageConfigView): Fields {
   return {
     endpoint: storage.endpoint ?? "",
+    issuerEndpoint: storage.issuerEndpoint ?? "",
     bucket: storage.bucket ?? "",
     prefix: storage.prefix ?? "cores",
     region: storage.region ?? "us-east-1",
@@ -141,6 +144,7 @@ export function StorageSettingsPage() {
     return {
       backend,
       endpoint: fields.endpoint,
+      issuerEndpoint: fields.issuerEndpoint,
       bucket: fields.bucket,
       prefix: fields.prefix,
       region: fields.region,
@@ -271,38 +275,30 @@ export function StorageSettingsPage() {
         })}
       </div>
 
-      {(backend === "sts" || backend === "supabase") && (
-        <div
-          role="note"
-          data-backend-limitation={backend}
-          style={{
-            fontFamily: "var(--mono)",
-            fontSize: 12,
-            lineHeight: 1.5,
-            padding: "10px 12px",
-            marginBottom: 8,
-            background: "var(--surface-1)",
-            border: "1px solid var(--border)",
-            borderRadius: 7,
-            color: "var(--text-dim)",
-          }}
-        >
-          Not usable yet against a real service: one Endpoint field cannot be both the{" "}
-          {backend === "sts" ? "STS AssumeRole URL and the S3 API host" : "Supabase project URL and the S3 API host"}.
-          SeaweedFS and Cloudflare R2 work with the fields below.
-        </div>
-      )}
-
+      {backend === "sts" || backend === "supabase" ? (
+        <TextField
+          label={backend === "sts" ? "STS AssumeRole URL" : "Supabase project URL"}
+          value={fields.issuerEndpoint}
+          onChange={edit("issuerEndpoint")}
+          placeholder={backend === "sts" ? "https://sts.us-east-1.amazonaws.com" : "https://xyz.supabase.co"}
+          mono
+          disabled={busy}
+          spellCheck={false}
+          autoComplete="off"
+        />
+      ) : null}
       <TextField
-        label="Endpoint"
+        label={backend === "sts" || backend === "supabase" ? "S3 API endpoint" : "Endpoint"}
         value={fields.endpoint}
         onChange={edit("endpoint")}
         placeholder={
           backend === "supabase"
-            ? "https://xyz.supabase.co"
-            : backend === "r2"
-              ? "https://<account>.r2.cloudflarestorage.com"
-              : "https://s3.panel.internal:8333"
+            ? "empty: <project URL>/storage/v1/s3"
+            : backend === "sts"
+              ? "https://s3.us-east-1.amazonaws.com"
+              : backend === "r2"
+                ? "https://<account>.r2.cloudflarestorage.com"
+                : "https://s3.panel.internal:8333"
         }
         mono
         disabled={busy}

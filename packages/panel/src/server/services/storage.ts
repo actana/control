@@ -14,6 +14,7 @@ import { openSecret, sealSecret } from "./secrets-at-rest";
 import {
   DEFAULT_UPLOAD_SIZE_LIMIT_BYTES,
   STORAGE_BACKEND_KINDS,
+  SUPABASE_S3_PATH,
   type StorageBackendKind,
   type StorageConfigInput,
   type StorageConfigView,
@@ -60,6 +61,7 @@ const EMPTY_VIEW: StorageConfigView = {
   configured: false,
   backend: null,
   endpoint: null,
+  issuerEndpoint: null,
   bucket: null,
   prefix: null,
   region: null,
@@ -84,6 +86,7 @@ export async function getStorageConfig(ownerId = OPERATOR_ID): Promise<StorageCo
     configured: row.masterKeySet,
     backend: row.backend as StorageBackend,
     endpoint: row.endpoint,
+    issuerEndpoint: row.issuerEndpoint || null,
     bucket: row.bucket,
     prefix: row.prefix,
     region: row.region,
@@ -237,9 +240,22 @@ export async function saveStorageConfig(
 
   const existing = await findStorageConfig(ownerId);
   const now = Date.now();
+  // One field cannot be both the issuer's address and the S3 host for these two: the AssumeRole URL or the project URL
+  // is asked for keys, and the S3 host is what a Core's key signs against.
+  const issuerEndpoint =
+    backend === "sts"
+      ? requireUrl(input.issuerEndpoint ?? "", "STS AssumeRole URL")
+      : backend === "supabase"
+        ? requireUrl(input.issuerEndpoint ?? "", "Supabase project URL")
+        : "";
+  const endpoint =
+    backend === "supabase" && !(input.endpoint ?? "").trim()
+      ? requireUrl(`${issuerEndpoint}${SUPABASE_S3_PATH}`, "endpoint")
+      : requireUrl(input.endpoint, "endpoint");
   const fields = {
     backend,
-    endpoint: requireUrl(input.endpoint, "endpoint"),
+    endpoint,
+    issuerEndpoint,
     bucket,
     prefix: normalizePrefix(input.prefix),
     region: requireText(input.region ?? existing?.region ?? DEFAULT_REGION, "region"),
@@ -326,7 +342,8 @@ export async function storageKeyIssuer(
   } else if (backend === "sts") {
     const creds = parseStsMaster(material);
     issuer = createStsKeyIssuer({
-      endpoint: row.endpoint,
+      // A row saved before the second field had the one endpoint for both.
+      endpoint: row.issuerEndpoint || row.endpoint,
       accessKeyId: creds.accessKeyId,
       secretAccessKey: creds.secretAccessKey,
       roleArn: row.roleArn,
@@ -347,7 +364,7 @@ export async function storageKeyIssuer(
   } else if (backend === "supabase") {
     const secrets = parseSupabaseMaster(material);
     issuer = createSupabaseKeyIssuer({
-      url: row.endpoint,
+      url: row.issuerEndpoint || row.endpoint,
       serviceRoleKey: secrets.serviceRoleKey,
       jwtSecret: secrets.jwtSecret,
       anonKey: row.anonKey,

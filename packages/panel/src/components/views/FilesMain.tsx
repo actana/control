@@ -1,4 +1,7 @@
+import { useEffect, useRef, useState } from "react";
 import { Icon } from "~/components/ui/Icon";
+import { SafeMarkdown } from "~/components/views/SafeMarkdown";
+import { firstLines, prettyJson } from "~/lib/files-preview-text";
 import { sharedFileMediaUrl } from "~/lib/api";
 import { formatRelativeTime } from "~/lib/format-relative-time";
 import { useSharedFileDetails } from "~/queries";
@@ -9,15 +12,46 @@ import type { FilesView } from "~/lib/files-drive-store";
 /** A text preview is fetched for a card only when the file is small: a snippet is not worth a megabyte. */
 const CARD_TEXT_MAX_BYTES = 256 * 1024;
 
+/** A PDF card draws the browser's own viewer on page one, so a big file is not fetched for a thumbnail. */
+const CARD_PDF_MAX_BYTES = 5 * 1024 * 1024;
+
 const NEW_BADGE: React.CSSProperties = { color: "var(--brand-accent)", fontWeight: 600 };
 
 function Snippet({ coreId, entry }: { coreId: string; entry: SharedFileEntry }) {
   const { data } = useSharedFileDetails(coreId, entry.path);
-  const text = data?.preview.text;
+  const preview = data?.preview;
+  const text = preview?.text;
+  const base: React.CSSProperties = { margin: 0, padding: 10, fontSize: 11, lineHeight: 1.4, overflow: "hidden", height: "100%" };
+  if (text && preview.kind === "markdown") {
+    // Rendered, like the details pane, but only the top of it: the card is a glance.
+    return (
+      <div data-testid="card-markdown" style={{ ...base, fontFamily: "var(--mono)", pointerEvents: "none" }}>
+        <SafeMarkdown plain>{firstLines(text, 14)}</SafeMarkdown>
+      </div>
+    );
+  }
+  const shown = text ? (preview.kind === "json" ? prettyJson(text, !!preview.truncated) : text) : "";
   return (
-    <pre style={{ margin: 0, padding: 10, fontFamily: "var(--mono)", fontSize: 11, lineHeight: 1.4, overflow: "hidden", whiteSpace: "pre-wrap", wordBreak: "break-word", height: "100%" }}>
-      {text ? text.split("\n").slice(0, 9).join("\n") : ""}
-    </pre>
+    <pre style={{ ...base, fontFamily: "var(--mono)", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{firstLines(shown, 9)}</pre>
+  );
+}
+
+/** Mounts its children once the box has been on screen: a folder of PDFs does not start a viewer for each card at once. */
+function WhenVisible({ children }: { children: React.ReactNode }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [seen, setSeen] = useState(typeof IntersectionObserver === "undefined");
+  useEffect(() => {
+    if (seen || !ref.current) return;
+    const observer = new IntersectionObserver((hits) => {
+      if (hits.some((h) => h.isIntersecting)) setSeen(true);
+    });
+    observer.observe(ref.current);
+    return () => observer.disconnect();
+  }, [seen]);
+  return (
+    <div ref={ref} style={{ width: "100%", height: "100%" }}>
+      {seen ? children : null}
+    </div>
   );
 }
 
@@ -29,6 +63,25 @@ function CardPreview({ coreId, entry }: { coreId: string; entry: SharedFileEntry
     return (
       <div style={box}>
         <img src={sharedFileMediaUrl(coreId, entry.path)} alt="" loading="lazy" style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "cover", width: "100%", height: "100%" }} />
+      </div>
+    );
+  }
+  if (kind === "pdf" && (entry.size ?? 0) <= CARD_PDF_MAX_BYTES) {
+    // The Panel's own /media route, the same bytes the details pane shows: no signed URL leaves the server for a preview.
+    // Not interactive: a click on the card selects the file.
+    return (
+      <div style={box}>
+        <WhenVisible>
+          <object
+            data={`${sharedFileMediaUrl(coreId, entry.path)}#page=1&toolbar=0&navpanes=0&scrollbar=0&view=FitH`}
+            type="application/pdf"
+            aria-label={`First page of ${entry.name}`}
+            tabIndex={-1}
+            style={{ width: "100%", height: "100%", pointerEvents: "none", border: 0 }}
+          >
+            <Icon name="file" size={38} />
+          </object>
+        </WhenVisible>
       </div>
     );
   }
@@ -132,22 +185,33 @@ export function FilesMain({
           {label("Files")}
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(190px, 1fr))", gap: 12 }}>
             {files.map((f) => (
-              <button
+              // The card is a box with a button in it, not a button around a box: a preview holds block elements and a
+              // PDF viewer, which a button may not. The button is the one control (focus, name, pressed state); a click
+              // anywhere else on the card selects too, for the pointer.
+              <div
                 key={f.path}
-                type="button"
-                aria-pressed={selected === f.path}
                 onClick={() => onSelect(f.path)}
-                style={{ display: "flex", flexDirection: "column", padding: 0, overflow: "hidden", border: selected === f.path ? "2px solid var(--brand-accent)" : "1px solid var(--border)", borderRadius: 8, background: "var(--surface-card)", color: "var(--text)", textAlign: "left", cursor: "pointer", fontFamily: "var(--mono)" }}
+                style={{ display: "flex", flexDirection: "column", overflow: "hidden", border: selected === f.path ? "2px solid var(--brand-accent)" : "1px solid var(--border)", borderRadius: 8, background: "var(--surface-card)", color: "var(--text)", cursor: "pointer", fontFamily: "var(--mono)" }}
               >
-                <CardPreview coreId={coreId} entry={f} />
-                <span style={{ display: "flex", flexDirection: "column", padding: "8px 10px", minWidth: 0 }}>
+                <div aria-hidden>
+                  <CardPreview coreId={coreId} entry={f} />
+                </div>
+                <button
+                  type="button"
+                  aria-pressed={selected === f.path}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onSelect(f.path);
+                  }}
+                  style={{ display: "flex", flexDirection: "column", padding: "8px 10px", minWidth: 0, border: 0, background: "transparent", color: "inherit", textAlign: "left", cursor: "pointer", fontFamily: "inherit" }}
+                >
                   <strong style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 13 }}>{f.name}</strong>
                   <span style={{ fontSize: 12, color: "var(--text-dim)" }}>
                     {formatBytes(f.size ?? 0)} · {f.modifiedAt ? formatRelativeTime(f.modifiedAt) : ""}
                     {hasNew(f) ? <span style={NEW_BADGE}> · new</span> : null}
                   </span>
-                </span>
-              </button>
+                </button>
+              </div>
             ))}
           </div>
         </section>

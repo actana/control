@@ -1,11 +1,14 @@
+import { useRouter } from "@tanstack/react-router";
 import { toast } from "sonner";
 import { Btn } from "~/components/ui/Btn";
 import { FormErrorBox } from "~/components/ui/FormErrorBox";
 import { api, sharedFileMediaUrl } from "~/lib/api";
 import { formatRelativeTime } from "~/lib/format-relative-time";
-import { useSharedFileDetails } from "~/queries";
-import { displayPath, formatBytes, taskIdOfPath } from "~/shared/shared-files";
-import type { SharedFileEntry } from "~/shared/shared-files";
+import { prettyJson } from "~/lib/files-preview-text";
+import { useCoreAgents, useSessions, useSharedFileDetails, useTask } from "~/queries";
+import { SafeMarkdown } from "~/components/views/SafeMarkdown";
+import { displayPath, formatBytes, pullRequestLabel, sessionIdOfPath, syncStateOf, taskIdOfPath } from "~/shared/shared-files";
+import type { CoreFileChange, SharedFileEntry } from "~/shared/shared-files";
 
 /**
  * The selected file's details (#565): a preview, where it is, how big, when it changed, and the actions. Download asks
@@ -15,6 +18,8 @@ export function FileDetails({
   coreId,
   path,
   isNew,
+  coreChange,
+  coreLive = false,
   onRename,
   onMove,
   onDelete,
@@ -22,6 +27,10 @@ export function FileDetails({
   coreId: string;
   path: string;
   isNew: boolean;
+  /** What the Core's change feed last said about this path (#561): the sync state is read off it. */
+  coreChange?: CoreFileChange;
+  /** Whether the Core is connected, so "in storage" can say why nothing more is known. */
+  coreLive?: boolean;
   onRename: (entry: SharedFileEntry) => void;
   onMove: (entry: SharedFileEntry) => void;
   onDelete: (entry: SharedFileEntry) => void;
@@ -30,6 +39,14 @@ export function FileDetails({
   const entry = data?.entry;
   const preview = data?.preview;
   const taskId = taskIdOfPath(path);
+  const sessionId = sessionIdOfPath(path);
+  // A Core's Sessions and a Task are records the Panel already holds: the path names which one, the record names who.
+  const router = useRouter({ warn: false });
+  const sessions = useSessions(coreId);
+  const session = sessionId ? sessions.data?.find((x) => x.id === sessionId) : undefined;
+  const task = useTask(taskId ?? "").data?.task;
+  const { data: agents = [] } = useCoreAgents(task?.coreId ?? "");
+  const taskAgent = task ? (agents.find((a) => a.id === task.agent)?.name ?? task.agent) : null;
 
   const download = async () => {
     try {
@@ -58,12 +75,49 @@ export function FileDetails({
     }
   };
 
+  const sync = entry ? syncStateOf(entry, coreChange, coreLive) : null;
+  const pullRequests = data?.links.pullRequests ?? [];
+  const taskHref = taskId ? `/tasks?task=${encodeURIComponent(taskId)}` : null;
+  const linkedTo: React.ReactNode[] = [
+    ...pullRequests.map((url) => (
+      <a key={url} href={url} target="_blank" rel="noopener noreferrer nofollow">
+        PR {pullRequestLabel(url)}
+      </a>
+    )),
+    ...(taskId && taskHref
+      ? [
+          <a
+            key="task"
+            href={taskHref}
+            onClick={(e) => {
+              // A plain click stays in the app; a modified click or a missing router is the browser's own link.
+              if (!router || e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return;
+              e.preventDefault();
+              void router.navigate({ to: "/tasks", search: { task: taskId } as never });
+            }}
+          >
+            Task {task?.title ?? taskId}
+          </a>,
+        ]
+      : []),
+  ];
+  const writtenBy = session
+    ? `Session ${session.id} · ${session.agent}`
+    : sessionId
+      ? `Session ${sessionId}`
+      : task
+        ? `Task ${task.id}${taskAgent ? ` · agent ${taskAgent}` : ""}`
+        : null;
+
   const rows: [string, React.ReactNode][] = entry
     ? [
         ["Path", displayPath(path)],
         ["Size", formatBytes(entry.size ?? 0)],
-        ["Modified", `${entry.modifiedAt ? formatRelativeTime(entry.modifiedAt) : "unknown"} · in storage`],
-        ...(taskId ? ([["Linked to", `Task ${taskId}`]] as [string, React.ReactNode][]) : []),
+        ["Modified", `${entry.modifiedAt ? formatRelativeTime(entry.modifiedAt) : "unknown"} · ${sync!.label}`],
+        ...(writtenBy ? ([["Written by", writtenBy]] as [string, React.ReactNode][]) : []),
+        ...(linkedTo.length > 0
+          ? ([["Linked to", <span key="links" style={{ display: "inline-flex", flexWrap: "wrap", gap: "2px 10px" }}>{linkedTo}</span>]] as [string, React.ReactNode][])
+          : []),
       ]
     : [];
 
@@ -82,10 +136,15 @@ export function FileDetails({
             <object data={sharedFileMediaUrl(coreId, path)} type="application/pdf" aria-label="PDF preview" style={{ width: "100%", height: 260 }}>
               PDF preview is not available in this browser: download the file.
             </object>
+          ) : preview.text !== undefined && preview.kind === "markdown" ? (
+            <>
+              <SafeMarkdown>{preview.text}</SafeMarkdown>
+              {preview.truncated ? <div style={{ color: "var(--text-dim)", fontSize: 12 }}>… the rest is in the download.</div> : null}
+            </>
           ) : preview.text !== undefined ? (
             <pre data-testid="file-preview" style={{ margin: 0, fontFamily: "var(--mono)", fontSize: 12, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
               {preview.truncated ? (preview.kind === "log" ? "… (tail)\n" : "") : ""}
-              {preview.text}
+              {preview.kind === "json" ? prettyJson(preview.text, !!preview.truncated) : preview.text}
               {preview.truncated && preview.kind !== "log" ? "\n…" : ""}
             </pre>
           ) : (

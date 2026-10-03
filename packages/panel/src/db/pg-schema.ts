@@ -388,7 +388,13 @@ export const storageConfig = pgTable("storage_config", {
     .primaryKey()
     .references(() => operator.id, { onDelete: "cascade" }),
   backend: text("backend").notNull(),
+  /** The S3 API host every Core's key signs requests against. */
   endpoint: text("endpoint").notNull(),
+  /**
+   * Where the key issuer is asked, when that is not the S3 host: the STS AssumeRole URL (`sts`) or the Supabase project URL
+   * (`supabase`). Empty for the other backends, and for a row saved before this column, where `endpoint` was both.
+   */
+  issuerEndpoint: text("issuer_endpoint").notNull().default(""),
   bucket: text("bucket").notNull(),
   prefix: text("prefix").notNull(),
   region: text("region").notNull(),

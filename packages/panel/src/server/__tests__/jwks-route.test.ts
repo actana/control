@@ -135,6 +135,7 @@ describe("GET /.well-known/jwks.json", () => {
     await saveStorageConfig({
       backend: "sts",
       endpoint: "http://minio:9000",
+      issuerEndpoint: "http://minio:9000",
       bucket: "actana-shared",
       prefix: "cores/",
       roleArn: "arn:aws:iam::1:role/x",

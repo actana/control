@@ -41,6 +41,7 @@ const STORAGE_EMPTY: StorageConfigView = {
   configured: false,
   backend: null,
   endpoint: null,
+  issuerEndpoint: null,
   bucket: null,
   prefix: null,
   region: null,
