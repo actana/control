@@ -1,5 +1,5 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { installPanelDb } from "~/db/panel-db-handle";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { installPanelDb, type PanelDb } from "~/db/panel-db-handle";
 import { closePanelTestDb, openPanelTestDb, resetPanelState } from "../../__tests__/_panel-test-db";
 
 const testDb = await openPanelTestDb();
@@ -7,6 +7,11 @@ const healthController = await import("../health.controller");
 
 beforeAll(async () => {
   await resetPanelState(testDb);
+});
+
+afterEach(() => {
+  installPanelDb(testDb.db);
+  vi.useRealTimers();
 });
 
 afterAll(async () => {
@@ -50,6 +55,28 @@ describe("GET /api/healthz database check", () => {
     expect(text).not.toMatch(/password/i);
     expect(text).not.toMatch(/AC_PANEL_DATABASE_URL/);
     expect(Object.keys(body.checks)).toEqual(["api", "database"]);
-    installPanelDb(testDb.db);
+  });
+
+  it("reports database error within the probe bound when select 1 never settles", async () => {
+    vi.useFakeTimers();
+    installPanelDb({
+      execute: () => new Promise(() => {}),
+    } as unknown as PanelDb);
+
+    const pending = healthController.read();
+    await vi.advanceTimersByTimeAsync(healthController.DATABASE_PROBE_TIMEOUT_MS);
+    const res = await pending;
+
+    expect(res.status).toBe(503);
+    const body = (await res.json()) as {
+      ok: boolean;
+      status: string;
+      checks: { api: string; database: string };
+    };
+    expect(body).toMatchObject({
+      ok: false,
+      status: "error",
+      checks: { api: "ok", database: "error" },
+    });
   });
 });
