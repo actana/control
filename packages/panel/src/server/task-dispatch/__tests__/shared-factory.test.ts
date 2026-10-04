@@ -4,7 +4,10 @@ import { SharedChangeFeed, createSharedFactory } from "../shared-factory";
 import { SharedFilesUnavailableError } from "../../services/core-s3-shared";
 import { StorageNotConfiguredError } from "../../services/storage";
 import { launchCommand } from "../session-starter";
-import { buildTaskPrompt } from "../task-prompt";
+import { MAX_POINTER_CHARS, buildTaskPointer, buildTaskPrompt, cutAtCodePoint, taskPromptPath } from "../task-prompt";
+import { HARNESS_FILE_MENTION, fileReference } from "@actana/shared/harness-file-mention";
+import { HARNESSES } from "@actana/shared/domain";
+import { isTaskPointerPrompt, taskPromptFilePath } from "@actana/shared/task-prompt-file";
 import { taskTimeoutMs, TASK_TIMEOUT_ENV } from "../index";
 
 const fake = (name: string) => ({ name }) as unknown as CoreShared;
@@ -172,5 +175,89 @@ describe("the timeout setting", () => {
     expect(taskTimeoutMs({ [TASK_TIMEOUT_ENV]: "5" })).toBe(300_000);
     expect(taskTimeoutMs({ [TASK_TIMEOUT_ENV]: "nope" })).toBe(3_600_000);
     expect(taskTimeoutMs({ [TASK_TIMEOUT_ENV]: "0" })).toBe(3_600_000);
+  });
+});
+
+describe("cutting long text for the prompt file", () => {
+  const task = { id: "task_9", title: "T" };
+
+  it("never leaves half of a surrogate pair at the cut", () => {
+    const text = `${"a".repeat(19_999)}😀${"b".repeat(10)}`;
+    const cut = cutAtCodePoint(text, 20_000);
+    expect(cut).toBe("a".repeat(19_999));
+    expect(cutAtCodePoint("ab😀", 3)).toBe("ab");
+    expect(cutAtCodePoint("ab😀", 4)).toBe("ab😀");
+    expect(cutAtCodePoint("abc", 3)).toBe("abc");
+  });
+
+  it("builds a prompt that survives UTF-8 whole when an emoji sits at the description's and a comment's cut", () => {
+    const description = `${"a".repeat(19_999)}😀 tail`;
+    const comment = { id: "c", seq: 1, taskId: "task_9", ownerId: 1, authorKind: "agent", authorName: "Agent", sourceFile: null, body: `${"b".repeat(3_999)}✅😀 tail`, createdAt: 1 } as never;
+    const prompt = buildTaskPrompt({ ...task, description }, [comment], 1);
+    expect(prompt).toContain("[cut]");
+    expect(new TextDecoder().decode(new TextEncoder().encode(prompt))).toBe(prompt);
+    expect(prompt).not.toMatch(/[\ud800-\udbff](?![\udc00-\udfff])/);
+  });
+});
+
+describe("the pointer typed in place of the Task", () => {
+  const path = `~/shared/${taskPromptPath("task_9", 3)}`;
+
+  it.each(HARNESSES.map((h) => [h]))("is recognised by the Core as a Task pointer for %s", (harness) => {
+    expect(isTaskPointerPrompt(buildTaskPointer(harness, "task_9", 3))).toBe(true);
+    expect(taskPromptPath("task_9", 3)).toBe(taskPromptFilePath("task_9", 3));
+  });
+
+  it("names the attempt's prompt file", () => {
+    expect(taskPromptPath("task_9", 3)).toBe("tasks/task_9/prompt-attempt-3.md");
+  });
+
+  it.each(HARNESSES.map((h) => [h]))("is one short line for %s that names the file", (harness) => {
+    const pointer = buildTaskPointer(harness, "task_9", 3);
+    expect(pointer.length).toBeLessThan(MAX_POINTER_CHARS);
+    expect(pointer).not.toMatch(/[\r\n]/);
+    expect(pointer).toContain(path);
+    expect(pointer).toContain("do what it says");
+  });
+
+  it("uses the form the table gives each harness, and the table is complete", () => {
+    for (const harness of HARNESSES) {
+      const entry = HARNESS_FILE_MENTION[harness];
+      expect(entry.reason.length).toBeGreaterThan(20);
+      const pointer = buildTaskPointer(harness, "task_9", 3);
+      expect(pointer).toContain(fileReference(harness, path));
+      // An `@` is typed only where the table allows it, and then the plain path follows in the same line.
+      if (entry.form === "plain") expect(pointer).not.toContain("@");
+      else expect(pointer).toContain(`@${path} (file ${path})`);
+    }
+  });
+
+  it("fits the cap in the `@` form too, with a real-length id", () => {
+    const id = "task_aaaaaaaaaaaaaaaaaaaa";
+    const original = HARNESS_FILE_MENTION["codex"].form;
+    HARNESS_FILE_MENTION["codex"].form = "at";
+    try {
+      const pointer = buildTaskPointer("codex", id, 12);
+      expect(pointer).toContain(`@~/shared/tasks/${id}/prompt-attempt-12.md (file ~/shared/tasks/${id}/prompt-attempt-12.md)`);
+      expect(pointer.length).toBeLessThan(MAX_POINTER_CHARS);
+      expect(isTaskPointerPrompt(pointer)).toBe(true);
+    } finally {
+      HARNESS_FILE_MENTION["codex"].form = original;
+    }
+    expect(buildTaskPointer("claude-code", id, 12).length).toBeLessThan(200);
+  });
+
+  it("types no `@` today: every harness's mention form was found risky or unknown", () => {
+    expect(HARNESSES.filter((h) => HARNESS_FILE_MENTION[h].form === "at")).toEqual([]);
+  });
+
+  it("has the `@PATH (file PATH)` form ready for a harness that moves to it", () => {
+    const original = HARNESS_FILE_MENTION["codex"].form;
+    HARNESS_FILE_MENTION["codex"].form = "at";
+    try {
+      expect(buildTaskPointer("codex", "task_9", 3)).toContain(`Read @${path} (file ${path}) and do what it says.`);
+    } finally {
+      HARNESS_FILE_MENTION["codex"].form = original;
+    }
   });
 });
