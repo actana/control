@@ -17,8 +17,10 @@
 // defence and that stays the last.
 //
 // A pass is remembered per binary and version, so a healthy Harness is started
-// once, not once a minute. A block is never remembered: it is looked at again on
-// the next round, which is how a login or a fix made by hand clears it.
+// once, not once a minute. A block is not remembered as a pass: it is looked at
+// again, which is how a login or a fix made by hand clears it, but with a backoff
+// (a minute, doubling to ten) because each look is a full Harness process on a
+// VM several Cores share. A new binary or version is looked at at once.
 
 import log from "@actana/shared/log";
 import type { Harness } from "@actana/shared/domain";
@@ -51,6 +53,19 @@ export const SETUP_ONLY_DIALOGS: readonly BlockingDialogSpec[] = [
   },
 ];
 
+/**
+ * Dialogs a Harness's own table has that the setup check must not report, because something other than the dialog
+ * table answers them in a real Session. Pi's "Trust project folder?" is answered by the global extension (ADR 0040),
+ * which acts only with the hook environment a Session sets (`AC_HOOK_URL`, `AC_HOOK_TOKEN`, `AC_HOOK_SESSION_ID`,
+ * `AC_HOOK_HARNESS=pi`, `AC_HOOK_CWD`). The setup run has none of it, so it would see the screen and call Pi blocked
+ * when a Session would not be.
+ */
+const SETUP_SKIPPED_DIALOGS: Partial<Record<Harness, readonly string[]>> = { pi: ["folder-trust"] };
+
+/** First wait before a blocked Harness is started again, doubling per round it is still blocked, up to the cap. */
+export const SETUP_RECHECK_BASE_MS = 60_000;
+export const SETUP_RECHECK_MAX_MS = 600_000;
+
 /** What it takes to start a Harness once: which one, which binary, where. */
 export type SetupRun = { harness: Harness; binary: string; cwd: string };
 
@@ -66,10 +81,14 @@ export type HarnessSetupDeps = {
    * which is not a dialog and is not reported as one.
    */
   runOnce: (run: SetupRun) => Promise<string>;
+  /** The clock, for the recheck backoff. */
+  now?: () => number;
 };
 
 export class HarnessSetup {
   private readonly passed = new Map<string, string>();
+  /** A Harness found blocked: what it showed, and when it is started again (a full process each time). */
+  private readonly blocked = new Map<Harness, { key: string; dialog: string; nextAt: number; delayMs: number }>();
 
   constructor(private readonly deps: HarnessSetupDeps) {}
 
@@ -97,13 +116,23 @@ export class HarnessSetup {
     for (const [harness, entry] of available) {
       const key = `${entry.path ?? ""}@${entry.version ?? ""}`;
       if (this.passed.get(harness) === key) continue;
+      const now = (this.deps.now ?? Date.now)();
+      const before = this.blocked.get(harness);
+      // Still inside the backoff for the same binary and version: say what it showed last time, start nothing.
+      if (before && before.key === key && now < before.nextAt) {
+        next[harness] = { ...entry, status: "missing", reason: needsSetupReason(before.dialog) };
+        continue;
+      }
       const dialog = await this.check(harness, entry, dirs[0]!);
       if (dialog === undefined) continue; // could not be started: say nothing new
       if (dialog === null) {
         this.passed.set(harness, key);
+        this.blocked.delete(harness);
         continue;
       }
       this.passed.delete(harness);
+      const delayMs = before && before.key === key ? Math.min(before.delayMs * 2, SETUP_RECHECK_MAX_MS) : SETUP_RECHECK_BASE_MS;
+      this.blocked.set(harness, { key, dialog, nextAt: now + delayMs, delayMs });
       next[harness] = { ...entry, status: "missing", reason: needsSetupReason(dialog) };
     }
     return next;
@@ -119,7 +148,7 @@ export class HarnessSetup {
       return undefined;
     }
     const dialog = matchBlockingDialog(screen, [
-      ...dialogsForHarness(harness),
+      ...dialogsForHarness(harness).filter((spec) => !SETUP_SKIPPED_DIALOGS[harness]?.includes(spec.id)),
       ...SETUP_ONLY_DIALOGS.filter((spec) => spec.harnesses?.includes(harness)),
     ]);
     if (dialog) log.warn("core-setup.needs-setup", { harness, dialog: dialog.spec.id });
