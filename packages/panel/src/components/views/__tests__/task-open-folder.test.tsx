@@ -59,3 +59,26 @@ describe("Open folder on a Task", () => {
     expect(navigate).not.toHaveBeenCalled();
   });
 });
+
+describe("Closing the Task drawer", () => {
+  it("clears the app top bar, closes on a backdrop click and on Escape, and shows a Close button", async () => {
+    const bar = document.createElement("div");
+    bar.className = "mc-topbar";
+    bar.getBoundingClientRect = () => ({ bottom: 48 }) as DOMRect;
+    document.body.appendChild(bar);
+    try {
+      const onClose = mount("c1");
+      const drawer = await screen.findByRole("dialog", { name: "Task detail" });
+      expect(drawer.style.top).toBe("48px");
+      expect(screen.getByRole("button", { name: "Close" })).toBeTruthy();
+      fireEvent.click(screen.getByTestId("task-detail-backdrop"));
+      expect(onClose).toHaveBeenCalledTimes(1);
+      fireEvent.keyDown(document.body, { key: "Escape" });
+      expect(onClose).toHaveBeenCalledTimes(2);
+      fireEvent.keyDown(document.body, { key: "a" });
+      expect(onClose).toHaveBeenCalledTimes(2);
+    } finally {
+      bar.remove();
+    }
+  });
+});

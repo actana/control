@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useRouter } from "@tanstack/react-router";
 import { Btn } from "~/components/ui/Btn";
@@ -117,6 +117,16 @@ export function TaskDetail({ taskId, onClose, focusComposer = false }: { taskId:
   const [draft, setDraft] = useState("");
   const [attachments, setAttachments] = useState<TaskAttachment[]>([]);
 
+  // The drawer starts under the app top bar, so its header and Close stay in view.
+  const [topOffset] = useState(() => document.querySelector(".mc-topbar")?.getBoundingClientRect().bottom ?? 0);
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && !e.defaultPrevented) onClose();
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [onClose]);
+
   const refresh = () => queryClient.invalidateQueries({ queryKey: queryKeys.tasks });
   const comment = useMutation({
     mutationFn: (reassign: boolean) => api.commentOnTask(taskId, { body: draft, reassign }, ...(attachments.length > 0 ? [attachments] : [])),
@@ -139,10 +149,12 @@ export function TaskDetail({ taskId, onClose, focusComposer = false }: { taskId:
   const hasBody = draft.trim().length > 0 || attachments.length > 0;
 
   return (
+    <>
+    <div data-testid="task-detail-backdrop" onClick={onClose} style={{ position: "fixed", inset: 0, zIndex: 8999, background: "rgba(0,0,0,0.35)" }} />
     <aside
       role="dialog"
       aria-label="Task detail"
-      style={{ position: "fixed", top: 0, right: 0, bottom: 0, width: "min(720px, 100vw)", zIndex: 9000, overflowY: "auto", padding: 24, background: "var(--surface-card)", borderLeft: "1px solid var(--border)", boxShadow: "-8px 0 32px rgba(0,0,0,0.3)", display: "flex", flexDirection: "column", gap: 16 }}
+      style={{ position: "fixed", top: topOffset, right: 0, bottom: 0, width: "min(720px, 100vw)", zIndex: 9000, overflowY: "auto", padding: 24, background: "var(--surface-card)", borderLeft: "1px solid var(--border)", boxShadow: "-8px 0 32px rgba(0,0,0,0.3)", display: "flex", flexDirection: "column", gap: 16 }}
     >
       <div style={{ display: "flex", justifyContent: "space-between", fontFamily: "var(--mono)", fontSize: 12, color: "var(--text-dim)" }}>
         <span>TASK · {taskId}{task ? ` · created ${formatRelativeTime(task.createdAt)}` : ""}</span>
@@ -250,5 +262,6 @@ export function TaskDetail({ taskId, onClose, focusComposer = false }: { taskId:
         </>
       ) : null}
     </aside>
+    </>
   );
 }
