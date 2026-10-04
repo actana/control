@@ -5,7 +5,20 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { cursorMarkerPath, cursorProjectSlug, pretrustWorkspaces, trustClaudeCode, trustCodex, trustCursor } from "../harness-pretrust";
+import {
+  CODEX_HOOK_HASH_VERIFIED,
+  codexHookHash,
+  codexHookKey,
+  cursorMarkerPath,
+  cursorProjectSlug,
+  ownedCodexHookTrust,
+  pretrustWorkspaces,
+  trustClaudeCode,
+  trustCodex,
+  trustCodexHooks,
+  trustCursor,
+} from "../harness-pretrust";
+import { hookCommand, installHarnessHooks } from "../harness-hooks";
 
 let dir: string;
 beforeEach(() => {
@@ -182,5 +195,103 @@ describe("cursor-cli: ~/.cursor/projects/<slug>/.workspace-trusted", () => {
   it("ignores a relative path and the root", () => {
     expect(trustCursor(dir, ["relative/dir", "/"], at)).toBe("unchanged");
     expect(fs.existsSync(path.join(dir, ".cursor"))).toBe(false);
+  });
+});
+
+// What codex 0.160.0 itself wrote to ~/.codex/config.toml after its hook review was answered by hand on a Core,
+// for the hooks `installHarnessHooks("codex")` writes (the first eight hex digits were read off that file; the rest
+// is this function's output, and the prefixes are what pin it to codex).
+const REAL_HASHES: Record<string, string> = {
+  PermissionRequest: "sha256:777d6667e97d3543f8f43d42796281cd863fb133097563631d65ea5b657094f3",
+  UserPromptSubmit: "sha256:f23db2db11919289814ac6c32a2b10ca0c24a4d8c4a7fbbf401520266e115a27",
+  Stop: "sha256:0fc320513044eada106bd90279e5937b1283a78fd42f81efbf486a8e700e5cfd",
+};
+
+describe("codex hook trust: [hooks.state.\"<hooks.json>:<event>:<group>:<handler>\"] trusted_hash", () => {
+  it("reproduces the hashes codex 0.160.0 wrote for the hooks this Core installs", () => {
+    expect(CODEX_HOOK_HASH_VERIFIED).toBe("0.160.0");
+    for (const [event, hash] of Object.entries(REAL_HASHES)) {
+      expect(codexHookHash(event, { command: hookCommand("codex", event) })).toBe(hash);
+    }
+  });
+
+  it("hashes the normalised hook: a changed command, timeout, matcher or event gives another hash", () => {
+    const base = codexHookHash("Stop", { command: "echo hi" });
+    expect(base).toMatch(/^sha256:[0-9a-f]{64}$/);
+    expect(codexHookHash("Stop", { command: "echo hi", timeout: 600 })).toBe(base); // 600 is the default
+    expect(codexHookHash("Stop", { command: "echo hi", timeout: 5 })).not.toBe(base);
+    expect(codexHookHash("Stop", { command: "echo ho" })).not.toBe(base);
+    expect(codexHookHash("Stop", { command: "echo hi" }, "Bash")).not.toBe(base);
+    expect(codexHookHash("UserPromptSubmit", { command: "echo hi" })).not.toBe(base);
+    expect(codexHookHash("Stop", { command: "echo hi", async: true })).not.toBe(base);
+    expect(codexHookHash("NotAnEvent", { command: "echo hi" })).toBeNull();
+  });
+
+  it("names a hook by its file, the event as codex spells it, and its group and handler index", () => {
+    expect(codexHookKey("/home/core/.codex/hooks.json", "PermissionRequest", 0, 0)).toBe("/home/core/.codex/hooks.json:permission_request:0:0");
+    expect(codexHookKey("/h/.codex/hooks.json", "Stop", 2, 1)).toBe("/h/.codex/hooks.json:stop:2:1");
+  });
+
+  it("reads the hooks this Core installed off the file, by their index, and leaves a foreign hook untrusted", () => {
+    const cwd = path.join(dir, "work");
+    fs.mkdirSync(path.join(cwd, ".codex"), { recursive: true });
+    const file = path.join(cwd, ".codex", "hooks.json");
+    fs.writeFileSync(file, JSON.stringify({ hooks: { Stop: [{ hooks: [{ type: "command", command: "theirs" }] }] } }));
+    expect(installHarnessHooks("codex", cwd, {}).installed).toBe(true);
+    const owned = ownedCodexHookTrust(file);
+    expect(owned.map(([key]) => key).sort()).toEqual(
+      [`${file}:permission_request:0:0`, `${file}:stop:1:0`, `${file}:user_prompt_submit:0:0`].sort(),
+    );
+    expect(new Map(owned).get(`${file}:stop:1:0`)).toBe(REAL_HASHES.Stop);
+  });
+
+  it("writes a table per hook into a fresh config.toml, owner-only", () => {
+    const file = path.join(dir, "config.toml");
+    const entries = [["/h/.codex/hooks.json:stop:0:0", REAL_HASHES.Stop!], ["/h/.codex/hooks.json:user_prompt_submit:0:0", REAL_HASHES.UserPromptSubmit!]] as const;
+    expect(trustCodexHooks(file, entries)).toBe("written");
+    expect(read(file)).toBe(
+      `[hooks.state."/h/.codex/hooks.json:stop:0:0"]\ntrusted_hash = "${REAL_HASHES.Stop}"\n\n` +
+        `[hooks.state."/h/.codex/hooks.json:user_prompt_submit:0:0"]\ntrusted_hash = "${REAL_HASHES.UserPromptSubmit}"\n`,
+    );
+    expect(fs.statSync(file).mode & 0o777).toBe(0o600);
+    expect(leftovers()).toEqual([]);
+  });
+
+  it("is idempotent, and keeps other keys, projects, comments and a table's own settings", () => {
+    const file = path.join(dir, "config.toml");
+    const key = "/h/.codex/hooks.json:stop:0:0";
+    fs.writeFileSync(
+      file,
+      `# mine\nmodel = "gpt-6"\n\n[projects."/h"]\ntrust_level = "trusted"\n\n[hooks.state."${key}"]\nenabled = true\n\n[tui]\ntheme = "dark"\n`,
+    );
+    expect(trustCodexHooks(file, [[key, REAL_HASHES.Stop!]])).toBe("written");
+    const once = read(file);
+    expect(once).toContain(`[hooks.state."${key}"]\ntrusted_hash = "${REAL_HASHES.Stop}"\nenabled = true`);
+    expect(once).toContain('# mine\nmodel = "gpt-6"');
+    expect(once).toContain('[projects."/h"]\ntrust_level = "trusted"');
+    expect(once).toContain('[tui]\ntheme = "dark"');
+    expect(trustCodexHooks(file, [[key, REAL_HASHES.Stop!]])).toBe("unchanged");
+    expect(read(file)).toBe(once);
+  });
+
+  it("replaces a stale hash (the hook changed) and nothing else", () => {
+    const file = path.join(dir, "config.toml");
+    const key = "/h/.codex/hooks.json:stop:0:0";
+    fs.writeFileSync(file, `[hooks.state."${key}"]\ntrusted_hash = "sha256:stale"\nenabled = false\n`);
+    expect(trustCodexHooks(file, [[key, REAL_HASHES.Stop!]])).toBe("written");
+    expect(read(file)).toBe(`[hooks.state."${key}"]\ntrusted_hash = "${REAL_HASHES.Stop}"\nenabled = false\n`);
+  });
+
+  it("leaves a config that defines hooks in a form it does not edit alone, and says so", () => {
+    const file = path.join(dir, "config.toml");
+    fs.writeFileSync(file, 'hooks = { state = {} }\n');
+    expect(() => trustCodexHooks(file, [["/h/x:stop:0:0", REAL_HASHES.Stop!]])).toThrow(/hooks\.state/);
+    expect(read(file)).toBe('hooks = { state = {} }\n');
+  });
+
+  it("writes nothing for no hooks", () => {
+    const file = path.join(dir, "config.toml");
+    expect(trustCodexHooks(file, [])).toBe("unchanged");
+    expect(fs.existsSync(file)).toBe(false);
   });
 });

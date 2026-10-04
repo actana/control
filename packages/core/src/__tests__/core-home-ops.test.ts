@@ -508,3 +508,38 @@ describe("pretrustWorkspaces (#685)", () => {
     expect(() => parseCoreHomeOpRequest({ op: "pretrustWorkspaces", harnesses: [], dirs: "x" })).toThrow(CoreHomeOpRefusedError);
   });
 });
+
+describe("installHarnessHooks for codex also records the trust of the hooks it wrote", () => {
+  const codexHooks = (cwd: string): CoreHomeOpRequest => ({ op: "installHarnessHooks", harness: "codex", cwd, piAgentDir: null });
+
+  it("writes a trusted_hash per installed hook into ~/.codex/config.toml, once", () => {
+    const work = path.join(home, "work");
+    fs.mkdirSync(work);
+    expect(handleCoreHomeOpSync(codexHooks(work), ctx)).toMatchObject({ installed: true });
+    const config = path.join(home, ".codex", "config.toml");
+    const file = path.join(fs.realpathSync(work), ".codex", "hooks.json");
+    const text = fs.readFileSync(config, "utf8");
+    for (const event of ["permission_request", "user_prompt_submit", "stop"]) {
+      expect(text).toContain(`[hooks.state."${file}:${event}:0:0"]`);
+    }
+    expect(text.match(/trusted_hash = "sha256:[0-9a-f]{64}"/g)).toHaveLength(3);
+    handleCoreHomeOpSync(codexHooks(work), ctx);
+    expect(fs.readFileSync(config, "utf8")).toBe(text);
+  });
+
+  it("does not touch config.toml for another harness", () => {
+    const work = path.join(home, "work2");
+    fs.mkdirSync(work);
+    handleCoreHomeOpSync({ op: "installHarnessHooks", harness: "claude-code", cwd: work, piAgentDir: null }, ctx);
+    expect(fs.existsSync(path.join(home, ".codex", "config.toml"))).toBe(false);
+  });
+
+  it("still installs the hooks when config.toml is in a form the writer will not edit", () => {
+    const work = path.join(home, "work3");
+    fs.mkdirSync(work);
+    fs.mkdirSync(path.join(home, ".codex"));
+    fs.writeFileSync(path.join(home, ".codex", "config.toml"), "hooks = {}\n");
+    expect(handleCoreHomeOpSync(codexHooks(work), ctx)).toMatchObject({ installed: true });
+    expect(fs.readFileSync(path.join(home, ".codex", "config.toml"), "utf8")).toBe("hooks = {}\n");
+  });
+});

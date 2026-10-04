@@ -46,7 +46,15 @@ import { ensureStatuslineTap, statuslineTapPath } from "@actana/shared/statuslin
 import type { SkillInstallEntry } from "@actana/shared/orchestration-skill-install";
 import { hookWritePaths, installHarnessHooks, type HookInstallResult } from "./harness-hooks";
 import { installOrchestrationSkills, orchestrationSkillFolders } from "./orchestration-skill";
-import { claudeConfigPath, codexConfigPath, cursorMarkerPath, pretrustWorkspaces, type PretrustResult } from "./harness-pretrust";
+import {
+  claudeConfigPath,
+  codexConfigPath,
+  cursorMarkerPath,
+  ownedCodexHookTrust,
+  pretrustWorkspaces,
+  trustCodexHooks,
+  type PretrustResult,
+} from "./harness-pretrust";
 
 /** The only operations the helper will run. A name not in this list is refused. */
 export const CORE_HOME_OPERATIONS = [
@@ -420,8 +428,24 @@ export function handleCoreHomeOpSync(request: CoreHomeOpRequest, ctx: CoreHomeOp
       const env = request.piAgentDir === null ? {} : { PI_CODING_AGENT_DIR: request.piAgentDir };
       // The files the writers will write, not just the directory they start from:
       // a linked `.claude` or `.codex` inside the workspace leads out of the home.
-      for (const file of hookWritePaths(request.harness, cwd, env)) confine(file, ctx, "hook file");
-      return installHarnessHooks(request.harness, cwd, env);
+      const files = hookWritePaths(request.harness, cwd, env);
+      for (const file of files) confine(file, ctx, "hook file");
+      const installed = installHarnessHooks(request.harness, cwd, env);
+      if (request.harness === "codex" && installed.installed) {
+        // codex holds hooks it has not seen at a trust review. Answer it for the ones this Core just wrote, the way
+        // codex records its own answer, so a Session never waits at it. Best-effort: the review is still answered by
+        // the bypass flag where this Core earns it, and by hand otherwise.
+        try {
+          const config = confine(codexConfigPath(ctx.home), ctx, "codex config");
+          for (const file of files) {
+            const real = realpathOrNull(file);
+            trustCodexHooks(config, ownedCodexHookTrust(file, real !== null && real !== file ? [file, real] : [file]));
+          }
+        } catch {
+          /* leave it to the review */
+        }
+      }
+      return installed;
     }
     case "pretrustWorkspaces": {
       // Only directories inside the home, and only the two config files, each

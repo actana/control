@@ -11,6 +11,10 @@
 //   codex        `~/.codex/config.toml`  `[projects."<dir>"] trust_level = "trusted"`
 //                (documented key; `"trusted" | "untrusted"`)
 //
+//   codex hooks  `~/.codex/config.toml`  `[hooks.state."<hooks.json>:<event>:<group>:<handler>"]
+//                trusted_hash = "sha256:<hex>"`, one per hook this Core installs (`trustCodexHooks`:
+//                codex asks to trust hooks it has not seen, and this is what answering it writes)
+//
 //   cursor-cli   `~/.cursor/projects/<slug>/.workspace-trusted`, a JSON object
 //                `{ "trustedAt": <ISO time>, "workspacePath": <dir> }`
 //                (cursor-agent 2026.10.01-e373342: trusting /home/core by hand
@@ -26,6 +30,7 @@
 // reported: overwriting someone's config to add a trust line is the wrong trade.
 // This code runs as `core` in the helper (`core-home-ops`), never in the daemon.
 
+import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
@@ -171,6 +176,181 @@ export function trustCodex(file: string, dirs: readonly string[]): "written" | "
       changed = true;
     } else if (!/^\s*trust_level\s*=\s*"trusted"\s*(?:#.*)?$/.test(lines[level]!)) {
       lines[level] = 'trust_level = "trusted"';
+      changed = true;
+    }
+  }
+  if (!changed) return "unchanged";
+  let text = lines.join(eol);
+  if (!text.endsWith(eol)) text += eol;
+  writeAtomic(file, text, 0o600);
+  return "written";
+}
+
+// ─── Codex hook trust ────────────────────────────────────────────────
+
+/**
+ * The codex version whose hook hash this file reproduces (codex-rs `hooks/src/engine/discovery.rs` `hook_hash`
+ * and `config/src/fingerprint.rs` `version_for_toml`, tag rust-v0.160.0). Checked against three entries codex
+ * itself wrote for the hooks this Core installs (permission_request 777d6667, user_prompt_submit f23db2db, stop
+ * 0fc32051). A newer codex may normalise differently; a hash that does not match only makes codex ask again.
+ */
+export const CODEX_HOOK_HASH_VERIFIED = "0.160.0";
+
+/** codex's `hook_event_key_label`: the event as it is spelled in a hook's key and in its hashed identity. */
+const CODEX_EVENT_LABELS: Readonly<Record<string, string>> = {
+  PreToolUse: "pre_tool_use",
+  PermissionRequest: "permission_request",
+  PostToolUse: "post_tool_use",
+  SessionStart: "session_start",
+  UserPromptSubmit: "user_prompt_submit",
+  Stop: "stop",
+};
+
+/** The marker this Core puts on every group and handler it installs. */
+const MANAGED_FLAG = "_acManaged";
+
+const DEFAULT_HOOK_TIMEOUT_SEC = 600;
+
+/** `JSON.stringify` of `value` with every object's keys sorted, which is what codex's `canonical_json` hashes. */
+function canonicalJsonText(value: unknown): string {
+  return JSON.stringify(value, (_key, val) =>
+    val && typeof val === "object" && !Array.isArray(val)
+      ? Object.fromEntries(Object.entries(val as Record<string, unknown>).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)))
+      : val,
+  );
+}
+
+/**
+ * The `trusted_hash` codex computes for one command hook: SHA-256 of the compact, key-sorted JSON of the
+ * normalised identity `{event_name, matcher?, hooks: [{type, command, timeout, async, statusMessage?}]}`.
+ * Unset options are left out (codex serialises through TOML, which has no null); `timeout` defaults to 600
+ * seconds; `matcher` is left out when the group has none (ours never do).
+ */
+export function codexHookHash(
+  event: string,
+  handler: { command: string; timeout?: number; async?: boolean; statusMessage?: string },
+  matcher?: string,
+): string | null {
+  const label = CODEX_EVENT_LABELS[event];
+  if (!label) return null;
+  const timeout = Math.max(1, Math.floor(handler.timeout ?? DEFAULT_HOOK_TIMEOUT_SEC));
+  const identity = {
+    event_name: label,
+    ...(matcher ? { matcher } : {}),
+    hooks: [
+      {
+        type: "command",
+        command: handler.command,
+        timeout,
+        async: handler.async === true,
+        ...(handler.statusMessage ? { statusMessage: handler.statusMessage } : {}),
+      },
+    ],
+  };
+  return `sha256:${createHash("sha256").update(canonicalJsonText(identity)).digest("hex")}`;
+}
+
+/** The `hooks.state` key codex gives a hook: the hooks file, the event, the group's index, the handler's index. */
+export function codexHookKey(hooksFile: string, event: string, group: number, handler: number): string | null {
+  const label = CODEX_EVENT_LABELS[event];
+  return label ? `${hooksFile}:${label}:${group}:${handler}` : null;
+}
+
+/** The hooks this Core installed in `hooksFile`, as `[key, hash]`, read off the file as codex will read it. */
+export function ownedCodexHookTrust(hooksFile: string, files: readonly string[] = [hooksFile]): [string, string][] {
+  const raw = readIfExists(hooksFile);
+  if (raw === null) return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return [];
+  }
+  const events = (parsed as { hooks?: Record<string, unknown> } | null)?.hooks;
+  if (!events || typeof events !== "object") return [];
+  const out: [string, string][] = [];
+  for (const [event, groups] of Object.entries(events)) {
+    if (!Array.isArray(groups)) continue;
+    groups.forEach((group, g) => {
+      const entry = group as { hooks?: unknown; matcher?: unknown; [k: string]: unknown } | null;
+      if (!entry || entry[MANAGED_FLAG] !== true || !Array.isArray(entry.hooks)) return;
+      entry.hooks.forEach((handler, h) => {
+        const hook = handler as { type?: unknown; command?: unknown; timeout?: unknown; async?: unknown; statusMessage?: unknown; [k: string]: unknown };
+        if (!hook || hook[MANAGED_FLAG] !== true || hook.type !== "command" || typeof hook.command !== "string") return;
+        const hash = codexHookHash(
+          event,
+          {
+            command: hook.command,
+            ...(typeof hook.timeout === "number" ? { timeout: hook.timeout } : {}),
+            async: hook.async === true,
+            ...(typeof hook.statusMessage === "string" ? { statusMessage: hook.statusMessage } : {}),
+          },
+          typeof entry.matcher === "string" ? entry.matcher : undefined,
+        );
+        if (!hash) return;
+        for (const file of files) {
+          const key = codexHookKey(file, event, g, h);
+          if (key) out.push([key, hash]);
+        }
+      });
+    });
+  }
+  return out;
+}
+
+/** The key a `[hooks.state."<key>"]` header names, or null when it is some other table. */
+function hookStateHeaderKey(line: string): string | null {
+  const m = /^\s*\[\s*hooks\s*\.\s*state\s*\.\s*("(?:[^"\\]|\\.)*"|'[^']*')\s*\]\s*(?:#.*)?$/.exec(line);
+  if (!m) return null;
+  const quoted = m[1]!;
+  if (quoted.startsWith("'")) return quoted.slice(1, -1);
+  return quoted.slice(1, -1).replace(/\\(["\\btnfr])/g, (_all, c: string) => TOML_BASIC_ESCAPES[c]!);
+}
+
+/**
+ * Anything that defines `hooks.state` other than as `[hooks.state."key"]` tables (an inline table, dotted keys, a
+ * bare `[hooks.state]`) is a shape this line editor does not rewrite, as with `projects`.
+ */
+function definesHookStateElsewhere(lines: readonly string[]): boolean {
+  return lines.some((line) => /^\s*hooks\s*[=.]/.test(line) || /^\s*\[\s*hooks\s*\.\s*state\s*\]/.test(line));
+}
+
+/**
+ * Record `trusted_hash` for each `[key, hash]` in `file` (`~/.codex/config.toml`), the way codex records it when
+ * its hook review is answered. Idempotent, keeps every other key (including a table's own `enabled`), writes
+ * atomically, and leaves a file it cannot edit alone and says so.
+ */
+export function trustCodexHooks(file: string, entries: readonly (readonly [string, string])[]): "written" | "unchanged" {
+  if (entries.length === 0) return "unchanged";
+  const raw = readIfExists(file) ?? "";
+  const eol = raw.includes("\r\n") ? "\r\n" : "\n";
+  const lines = raw === "" ? [] : raw.split(/\r?\n/);
+  if (definesHookStateElsewhere(lines)) {
+    throw new Error(`${file} defines "hooks.state" in a form this writer does not edit`);
+  }
+  let changed = false;
+  for (const [key, hash] of entries) {
+    const header = lines.findIndex((line) => hookStateHeaderKey(line) === key);
+    const want = `trusted_hash = ${tomlQuote(hash)}`;
+    if (header === -1) {
+      if (lines.length > 0 && lines[lines.length - 1] !== "") lines.push("");
+      lines.push(`[hooks.state.${tomlQuote(key)}]`, want, "");
+      changed = true;
+      continue;
+    }
+    let end = lines.length;
+    for (let i = header + 1; i < lines.length; i++) {
+      if (/^\s*\[/.test(lines[i]!)) {
+        end = i;
+        break;
+      }
+    }
+    const at = lines.findIndex((line, i) => i > header && i < end && /^\s*trusted_hash\s*=/.test(line));
+    if (at === -1) {
+      lines.splice(header + 1, 0, want);
+      changed = true;
+    } else if (/^\s*trusted_hash\s*=\s*"([^"]*)"/.exec(lines[at]!)?.[1] !== hash) {
+      lines[at] = want;
       changed = true;
     }
   }
