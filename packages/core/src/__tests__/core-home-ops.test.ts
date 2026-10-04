@@ -490,6 +490,18 @@ describe("pretrustWorkspaces (#685)", () => {
     expect(fs.readFileSync(path.join(outside, "target.json"), "utf8")).toBe("{}");
   });
 
+  it("writes the Cursor marker inside the home, and refuses a .cursor link that leaves it", () => {
+    const results = handleCoreHomeOpSync(request([home], ["cursor-cli"]), ctx);
+    expect(results.map((r) => [r.harness, r.outcome])).toEqual([["cursor-cli", "written"]]);
+    const slug = home.replace(/^\/+/, "").replace(/\//g, "-");
+    expect(fs.existsSync(path.join(home, ".cursor", "projects", slug, ".workspace-trusted"))).toBe(true);
+
+    fs.rmSync(path.join(home, ".cursor"), { recursive: true });
+    fs.symlinkSync(outside, path.join(home, ".cursor"));
+    expect(refusal(() => handleCoreHomeOpSync(request([home], ["cursor-cli"]), ctx)).code).toBe("path-escape");
+    expect(fs.readdirSync(outside)).toEqual([]);
+  });
+
   it("refuses malformed fields and unknown extras", () => {
     expect(() => parseCoreHomeOpRequest({ op: "pretrustWorkspaces", harnesses: ["Bad Id"], dirs: [home] })).toThrow(CoreHomeOpRefusedError);
     expect(() => parseCoreHomeOpRequest({ op: "pretrustWorkspaces", harnesses: [], dirs: [home], cmd: "x" })).toThrow(CoreHomeOpRefusedError);

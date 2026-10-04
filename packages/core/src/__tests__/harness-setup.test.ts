@@ -60,6 +60,15 @@ describe("HarnessSetup", () => {
     expect(blocked.runs).toHaveLength(2);
   });
 
+  it("recognises codex's real directory-trust dialog, and not its composer (#685)", async () => {
+    const dialog = readFileSync(path.resolve(__dirname, "fixtures/codex-0.153.0-directory-trust.txt"), "utf8");
+    const composer = readFileSync(path.resolve(__dirname, "fixtures/codex-0.153.0-composer.txt"), "utf8");
+    const codex = { codex: { status: "available" as const, path: "/bin/codex", version: "0.160.0" } };
+    const blocked = await setup({ codex: dialog }).subject.apply(codex);
+    expect(needsSetupDialog(blocked.codex!.reason)).toBe("directory-trust");
+    expect((await setup({ codex: composer }).subject.apply(codex)).codex!.status).toBe("available");
+  });
+
   it("clears the report once the dialog is gone", async () => {
     const screens: Record<string, string> = { "claude-code": TRUST_DIALOG };
     const { subject } = setup(screens);

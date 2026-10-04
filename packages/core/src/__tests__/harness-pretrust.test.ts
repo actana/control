@@ -5,7 +5,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { pretrustWorkspaces, trustClaudeCode, trustCodex } from "../harness-pretrust";
+import { cursorMarkerPath, cursorProjectSlug, pretrustWorkspaces, trustClaudeCode, trustCodex, trustCursor } from "../harness-pretrust";
 
 let dir: string;
 beforeEach(() => {
@@ -131,8 +131,56 @@ describe("pretrustWorkspaces", () => {
     expect(results.map((r) => [r.harness, r.outcome])).toEqual([
       ["claude-code", "failed"],
       ["codex", "written"],
+      ["cursor-cli", "written"],
     ]);
     expect(fs.existsSync(path.join(dir, ".codex", "config.toml"))).toBe(true);
-    expect(pretrustWorkspaces(dir, ["pi", "cursor-cli"], ["/home/core"])).toEqual([]);
+    expect(pretrustWorkspaces(dir, ["pi"], ["/home/core"])).toEqual([]);
+    expect(pretrustWorkspaces(dir, ["cursor-cli"], ["/home/core"]).map((r) => [r.harness, r.outcome])).toEqual([["cursor-cli", "unchanged"]]);
+  });
+});
+
+describe("cursor-cli: ~/.cursor/projects/<slug>/.workspace-trusted", () => {
+  const at = () => new Date("2026-10-04T09:21:07.646Z");
+  const marker = (slug: string) => path.join(dir, ".cursor", "projects", slug, ".workspace-trusted");
+
+  it("maps a path to its slug: leading slash dropped, other slashes become dashes", () => {
+    expect(cursorProjectSlug("/home/core")).toBe("home-core");
+    expect(cursorProjectSlug("/home/core/repos/x")).toBe("home-core-repos-x");
+    expect(cursorMarkerPath("/h", "/home/core")).toBe("/h/.cursor/projects/home-core/.workspace-trusted");
+  });
+
+  it("creates the marker exactly as Cursor does: two keys, two-space indent, mode 644", () => {
+    expect(trustCursor(dir, ["/home/core"], at)).toBe("written");
+    expect(read(marker("home-core"))).toBe(
+      '{\n  "trustedAt": "2026-10-04T09:21:07.646Z",\n  "workspacePath": "/home/core"\n}',
+    );
+    expect(fs.statSync(marker("home-core")).mode & 0o777).toBe(0o644);
+    expect(fs.readdirSync(path.dirname(marker("home-core")))).toEqual([".workspace-trusted"]);
+  });
+
+  it("never overwrites an existing marker, and reports it unchanged", () => {
+    fs.mkdirSync(path.dirname(marker("home-core")), { recursive: true });
+    fs.writeFileSync(marker("home-core"), '{"trustedAt":"2020-01-01T00:00:00.000Z","workspacePath":"/home/core"}');
+    expect(trustCursor(dir, ["/home/core"], at)).toBe("unchanged");
+    expect(read(marker("home-core"))).toContain("2020-01-01");
+  });
+
+  it("writes nested paths into their own directories, only the missing ones", () => {
+    trustCursor(dir, ["/home/core"], at);
+    expect(trustCursor(dir, ["/home/core", "/home/core/repos/app"], at)).toBe("written");
+    expect(JSON.parse(read(marker("home-core-repos-app"))).workspacePath).toBe("/home/core/repos/app");
+    expect(trustCursor(dir, ["/home/core", "/home/core/repos/app"], at)).toBe("unchanged");
+  });
+
+  it("is ambiguous for a dash in the path: the second colliding path is left to the existing marker", () => {
+    expect(cursorProjectSlug("/home/a-b")).toBe(cursorProjectSlug("/home/a/b"));
+    expect(trustCursor(dir, ["/home/a-b"], at)).toBe("written");
+    expect(trustCursor(dir, ["/home/a/b"], at)).toBe("unchanged");
+    expect(JSON.parse(read(marker("home-a-b"))).workspacePath).toBe("/home/a-b");
+  });
+
+  it("ignores a relative path and the root", () => {
+    expect(trustCursor(dir, ["relative/dir", "/"], at)).toBe("unchanged");
+    expect(fs.existsSync(path.join(dir, ".cursor"))).toBe(false);
   });
 });

@@ -24,8 +24,32 @@ import log from "@actana/shared/log";
 import type { Harness } from "@actana/shared/domain";
 import type { CoreLinkHarnessAvailability, CoreLinkHarnessAvailabilityMap } from "@actana/shared/sdk-link-frames";
 import { needsSetupReason } from "@actana/shared/harness-needs-setup";
-import { dialogsForHarness, matchBlockingDialog } from "./harness-prompt-delivery";
+import { dialogsForHarness, matchBlockingDialog, type BlockingDialogSpec } from "./harness-prompt-delivery";
 import { PRETRUST_HARNESSES } from "./harness-pretrust";
+
+/**
+ * Dialogs only the setup check looks for. codex's directory-trust dialog, as
+ * codex-cli 0.153.0 paints it (captured live,
+ * `fixtures/codex-0.153.0-directory-trust.txt`): "Do you trust the contents of this
+ * directory? Working with untrusted contents comes with higher risk of prompt
+ * injection. Trusting the directory allows project-local config, hooks, and exec
+ * policies to load." over "› 1. Yes, continue" / "2. No, quit".
+ *
+ * It is not in `BLOCKING_DIALOGS` on purpose: prompt delivery's handling of codex
+ * (issue 277, 483) is pinned by tests that wait for the dialog to be answered, and
+ * #685 leaves that path as it is. codex positions text with cursor moves, so the
+ * stripped screen reads `Doyoutrustthecontents…`; the whitespace is optional for
+ * that reason. Wording is from 0.153.0 and has not been re-captured on 0.160.0.
+ */
+export const SETUP_ONLY_DIALOGS: readonly BlockingDialogSpec[] = [
+  {
+    id: "directory-trust",
+    harnesses: ["codex"],
+    match: [/do\s*you\s*trust\s*the\s*contents\s*of\s*this\s*directory/i],
+    affirmative: /\b(yes|continue)\b/i,
+    refuse: /\b(no|quit|exit|cancel)\b/i,
+  },
+];
 
 /** What it takes to start a Harness once: which one, which binary, where. */
 export type SetupRun = { harness: Harness; binary: string; cwd: string };
@@ -94,7 +118,10 @@ export class HarnessSetup {
       log.warn("core-setup.check-failed", { harness, error: err instanceof Error ? err.message : String(err) });
       return undefined;
     }
-    const dialog = matchBlockingDialog(screen, dialogsForHarness(harness));
+    const dialog = matchBlockingDialog(screen, [
+      ...dialogsForHarness(harness),
+      ...SETUP_ONLY_DIALOGS.filter((spec) => spec.harnesses?.includes(harness)),
+    ]);
     if (dialog) log.warn("core-setup.needs-setup", { harness, dialog: dialog.spec.id });
     return dialog ? dialog.spec.id : null;
   }

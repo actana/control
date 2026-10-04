@@ -11,10 +11,14 @@
 //   codex        `~/.codex/config.toml`  `[projects."<dir>"] trust_level = "trusted"`
 //                (documented key; `"trusted" | "untrusted"`)
 //
-// Cursor CLI and Pi have no writer on purpose. Pi's trust is answered by the
-// global extension (ADR 0040). Cursor CLI's workspace trust store has not been
-// verified against an installed version, and a file shaped from third-party
-// reports would be invented: the setup check reports it as Needs setup instead.
+//   cursor-cli   `~/.cursor/projects/<slug>/.workspace-trusted`, a JSON object
+//                `{ "trustedAt": <ISO time>, "workspacePath": <dir> }`
+//                (cursor-agent 2026.10.01-e373342: trusting /home/core by hand
+//                created `~/.cursor/projects/home-core/.workspace-trusted`; its
+//                `--trust` flag is headless-only, so the marker is the mechanism)
+//
+// Pi has no writer on purpose: its trust is answered by the global extension
+// (ADR 0040).
 //
 // Every writer is idempotent (an already-trusted dir writes nothing), keeps every
 // other key, and writes a temp file beside the target before renaming it over, so
@@ -28,14 +32,14 @@ import * as path from "node:path";
 export type PretrustOutcome = "written" | "unchanged" | "failed";
 
 export type PretrustResult = {
-  harness: "claude-code" | "codex";
+  harness: (typeof PRETRUST_HARNESSES)[number];
   outcome: PretrustOutcome;
   /** The reason, for `failed`. */
   detail?: string;
 };
 
 /** The Harnesses that have a writer. Anything else is not pre-trusted. */
-export const PRETRUST_HARNESSES = ["claude-code", "codex"] as const;
+export const PRETRUST_HARNESSES = ["claude-code", "codex", "cursor-cli"] as const;
 
 export function claudeConfigPath(home: string): string {
   return path.join(home, ".claude.json");
@@ -177,6 +181,56 @@ export function trustCodex(file: string, dirs: readonly string[]): "written" | "
   return "written";
 }
 
+// ─── Cursor CLI ──────────────────────────────────────────────────────
+
+/**
+ * The directory name Cursor gives a workspace: the absolute path with the leading
+ * slash dropped and every other slash turned into a dash (`/home/core` ->
+ * `home-core`). **The mapping is not injective**: a dash already in the path stays
+ * a dash, so `/home/a-b` and `/home/a/b` are both `home-a-b`. Cursor itself has
+ * that ambiguity; the marker's `workspacePath` is what tells them apart, and an
+ * existing marker is never overwritten, so the second of two colliding paths is
+ * simply not written (it is reported as unchanged and the setup check still
+ * catches a dialog that shows).
+ */
+export function cursorProjectSlug(dir: string): string {
+  return dir.replace(/^\/+/, "").replace(/\//g, "-");
+}
+
+export function cursorMarkerPath(home: string, dir: string): string {
+  return path.join(home, ".cursor", "projects", cursorProjectSlug(dir), ".workspace-trusted");
+}
+
+/**
+ * Write the marker for each dir that has none. An existing marker, whatever it
+ * holds, is left alone: it is Cursor's (or the operator's) record, and the file is
+ * created with a hard link so a marker that appears between the check and the write
+ * is not replaced either.
+ */
+export function trustCursor(home: string, dirs: readonly string[], now: () => Date = () => new Date()): "written" | "unchanged" {
+  let changed = false;
+  for (const dir of dirs) {
+    if (!path.isAbsolute(dir) || cursorProjectSlug(dir) === "") continue;
+    const marker = cursorMarkerPath(home, dir);
+    if (fs.existsSync(marker)) continue;
+    fs.mkdirSync(path.dirname(marker), { recursive: true });
+    const temp = `${marker}.${process.pid}.${Date.now()}.tmp`;
+    try {
+      fs.writeFileSync(temp, JSON.stringify({ trustedAt: now().toISOString(), workspacePath: dir }, null, 2), {
+        encoding: "utf8",
+        mode: 0o644,
+      });
+      fs.linkSync(temp, marker);
+      changed = true;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+    } finally {
+      fs.rmSync(temp, { force: true });
+    }
+  }
+  return changed ? "written" : "unchanged";
+}
+
 // ─── both ────────────────────────────────────────────────────────────
 
 /**
@@ -195,7 +249,9 @@ export function pretrustWorkspaces(
       const outcome =
         harness === "claude-code"
           ? trustClaudeCode(claudeConfigPath(home), dirs)
-          : trustCodex(codexConfigPath(home), dirs);
+          : harness === "codex"
+            ? trustCodex(codexConfigPath(home), dirs)
+            : trustCursor(home, dirs);
       results.push({ harness, outcome });
     } catch (err) {
       results.push({ harness, outcome: "failed", detail: err instanceof Error ? err.message : String(err) });

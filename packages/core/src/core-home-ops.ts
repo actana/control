@@ -46,7 +46,7 @@ import { ensureStatuslineTap, statuslineTapPath } from "@actana/shared/statuslin
 import type { SkillInstallEntry } from "@actana/shared/orchestration-skill-install";
 import { hookWritePaths, installHarnessHooks, type HookInstallResult } from "./harness-hooks";
 import { installOrchestrationSkills, orchestrationSkillFolders } from "./orchestration-skill";
-import { claudeConfigPath, codexConfigPath, pretrustWorkspaces, type PretrustResult } from "./harness-pretrust";
+import { claudeConfigPath, codexConfigPath, cursorMarkerPath, pretrustWorkspaces, type PretrustResult } from "./harness-pretrust";
 
 /** The only operations the helper will run. A name not in this list is refused. */
 export const CORE_HOME_OPERATIONS = [
@@ -437,6 +437,7 @@ export function handleCoreHomeOpSync(request: CoreHomeOpRequest, ctx: CoreHomeOp
       }
       confine(claudeConfigPath(ctx.home), ctx, "claude config");
       confine(codexConfigPath(ctx.home), ctx, "codex config");
+      for (const dir of dirs) confine(cursorMarkerPath(ctx.home, dir), ctx, "cursor trust marker");
       return pretrustWorkspaces(ctx.home, request.harnesses, [...dirs]);
     }
     case "ensureStatuslineTap": {
