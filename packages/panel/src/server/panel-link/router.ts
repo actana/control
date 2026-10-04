@@ -9,7 +9,7 @@ import type {
   CoreLinkEvent,
   CoreLinkRequestFrame,
   CoreLinkResponseFrame,
-} from "@actana/sdk/core-link-frames";
+} from "@actana/shared/sdk-link-frames";
 import type { CoreDialStatus } from "~/shared/cores";
 import type { CoreLinkClientLike } from "../services/core-link-manager";
 import { SessionLockRegister } from "./session-lock-register";
@@ -100,7 +100,7 @@ const DEFAULT_EVENT_BUFFER_SIZE = 2048;
  *
  * A finish is not like the rest of the log. Everything else a tab needs is
  * re-derivable from a query it makes on mount — the grid reads status off
- * `tasksList` — but the *notice* of a finish happens once, when the event goes
+ * `sessionRowsList` — but the *notice* of a finish happens once, when the event goes
  * past, and a tab that was not there when it did never learns of it at all
  * (issue 388). Kinds, not payload shapes: the router routes on `kind` like
  * every other layer, and a new finish-class kind joins by being named here.
@@ -334,7 +334,7 @@ export class PanelLinkRouter {
    *
    * With one exception, and it is the exception that names the rule: the finish
    * (issue 388). A tab that opened after a Session finished has no query that
-   * would tell it a finish *happened* — `tasksList` says the row is finished,
+   * would tell it a finish *happened* — `sessionRowsList` says the row is finished,
    * which is a state, not an event, and the toast and the ding are the Panel's
    * answer to the event. So the finish-class tail rides along, bounded on both
    * axes a flood could arrive on — {@link FINISH_REPLAY_LIMIT} of them, none
@@ -420,9 +420,9 @@ export class PanelLinkRouter {
       ),
       drives: new SessionDriveRegister(),
     };
-    state.locks.onChange(({ taskId, lock }) => {
+    state.locks.onChange(({ sessionId, lock }) => {
       for (const session of this.sessions) {
-        if (session.watches(coreId)) session.send({ t: "lock", coreId, taskId, lock });
+        if (session.watches(coreId)) session.send({ t: "lock", coreId, sessionId, lock });
       }
     });
     this.cores.set(coreId, state);
@@ -430,13 +430,13 @@ export class PanelLinkRouter {
   }
 
   /** @internal — the Session lock this Core's link currently reports for a Session. */
-  lockFor(coreId: string, taskId: string) {
-    return this.stateFor(coreId).locks.lockFor(taskId);
+  lockFor(coreId: string, sessionId: string) {
+    return this.stateFor(coreId).locks.lockFor(sessionId);
   }
 
   /** @internal — a tab's answer for one Session's drive, as it should be told it. */
-  driveFor(coreId: string, taskId: string, session: PanelLinkSession): boolean {
-    return this.stateFor(coreId).drives.driverOf(taskId) === session.clientId;
+  driveFor(coreId: string, sessionId: string, session: PanelLinkSession): boolean {
+    return this.stateFor(coreId).drives.driverOf(sessionId) === session.clientId;
   }
 
   /**
@@ -457,7 +457,7 @@ export class PanelLinkRouter {
    */
   wantDrive(
     coreId: string,
-    taskId: string,
+    sessionId: string,
     session: PanelLinkSession,
     want: "watch" | "take" | "drop",
   ): void {
@@ -467,18 +467,18 @@ export class PanelLinkRouter {
     // opened after the last one would otherwise hold a pane with no answer at
     // all until something moved. One gesture, both facts, before a keystroke.
     if (want !== "drop") {
-      session.send({ t: "lock", coreId, taskId, lock: state.locks.lockFor(taskId) });
+      session.send({ t: "lock", coreId, sessionId, lock: state.locks.lockFor(sessionId) });
     }
     if (this.source.client(coreId)?.canSendMultiConnectionFrames() !== true) {
       if (want !== "drop") {
-        session.send({ t: "drive", coreId, taskId, driving: true, reason: "watch" });
+        session.send({ t: "drive", coreId, sessionId, driving: true, reason: "watch" });
       }
       return;
     }
     const change =
       want === "drop"
-        ? state.drives.release(taskId, session.clientId)
-        : state.drives.want(taskId, session.clientId, { take: want === "take" });
+        ? state.drives.release(sessionId, session.clientId)
+        : state.drives.want(sessionId, session.clientId, { take: want === "take" });
     // The loser of an intra-Panel handover is told, and told in its own
     // vocabulary: `handover`, never a takeover. Nothing was taken from this
     // operator — they moved their own keyboard between their own tabs, and this
@@ -486,7 +486,7 @@ export class PanelLinkRouter {
     for (const loser of change.lost) {
       const tab = this.sessionFor(loser);
       if (!tab || tab === session) continue;
-      tab.send({ t: "drive", coreId, taskId, driving: false, reason: "handover" });
+      tab.send({ t: "drive", coreId, sessionId, driving: false, reason: "handover" });
     }
     // The winner is never told a story. `handover` is the *loser's* word, for
     // the one case worth a sentence — the keyboard left an open pane. A tab
@@ -497,7 +497,7 @@ export class PanelLinkRouter {
       const tab = this.sessionFor(winner);
       // The asker is answered once, below, out of the register itself.
       if (!tab || tab === session) continue;
-      tab.send({ t: "drive", coreId, taskId, driving: true, reason: "watch" });
+      tab.send({ t: "drive", coreId, sessionId, driving: true, reason: "watch" });
     }
     // The asking tab always gets an answer, even when nothing moved: it asked a
     // question ("may I drive this?") and a pane with no answer would have to
@@ -513,8 +513,8 @@ export class PanelLinkRouter {
       session.send({
         t: "drive",
         coreId,
-        taskId,
-        driving: state.drives.driverOf(taskId) === session.clientId,
+        sessionId,
+        driving: state.drives.driverOf(sessionId) === session.clientId,
         reason: "watch",
       });
     }
@@ -551,7 +551,7 @@ export class PanelLinkRouter {
           this.sessionFor(winner)?.send({
             t: "drive",
             coreId,
-            taskId: change.taskId,
+            sessionId: change.sessionId,
             driving: true,
             reason: "watch",
           });
@@ -573,24 +573,24 @@ export class PanelLinkRouter {
   observeAnswer(coreId: string, answer: CoreLinkResponseFrame): void {
     const locks = this.stateFor(coreId).locks;
     switch (answer.type) {
-      case "tasksListResult":
-      case "archivedTasksListResult":
-        locks.applySnapshots(answer.tasks);
+      case "sessionRowsListResult":
+      case "archivedSessionRowsListResult":
+        locks.applySnapshots(answer.sessions);
         return;
       case "sessionsListResult":
         locks.applySnapshots(answer.sessions);
         return;
-      case "tasksMutateResult":
-        if (answer.task) locks.applySnapshots([answer.task]);
+      case "sessionsMutateResult":
+        if (answer.session) locks.applySnapshots([answer.session]);
         return;
       case "claimResult":
-        locks.applyClaimResult(answer.taskId, answer.granted);
+        locks.applyClaimResult(answer.sessionId, answer.granted);
         return;
       case "releaseResult":
-        locks.applyReleaseResult(answer.taskId, answer.released);
+        locks.applyReleaseResult(answer.sessionId, answer.released);
         return;
       case "forceTakeoverResult":
-        locks.applyForceTakeoverResult(answer.taskId, answer.takenFrom);
+        locks.applyForceTakeoverResult(answer.sessionId, answer.takenFrom);
         return;
       default:
         return;
@@ -635,7 +635,7 @@ export class PanelLinkRouter {
       // transfer is a rewrite in place and appends no event, so without this a
       // reconnected Panel would render Sessions it is holding as read-only
       // until something refetched them.
-      client.onReclaimed(({ taskIds }) => state.locks.applyReclaimed(taskIds)),
+      client.onReclaimed(({ sessionIds }) => state.locks.applyReclaimed(sessionIds)),
       // `ready` is where the `multiConnection` answer lands, and it is also the
       // first frame of a *new* connection — one that holds nothing yet. Both
       // readings say the same thing: empty the register and let it be re-learned
@@ -744,7 +744,7 @@ export class PanelLinkSession {
     // the point — the Panel holds one Session lock for all its tabs, so which
     // of them drives is settled between Panel sessions, here.
     if (frame.t === "drive") {
-      this.router.wantDrive(frame.coreId, frame.taskId, this, frame.want);
+      this.router.wantDrive(frame.coreId, frame.sessionId, this, frame.want);
       return;
     }
     const { coreId, frame: inner } = frame;

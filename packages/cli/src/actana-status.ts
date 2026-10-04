@@ -13,7 +13,7 @@
 // settled it. "Pairing token" named the hand-carried blob and is retired with
 // it; code and frames keep "Registration blob" for what a paired client holds.
 
-import type { CoreLinkHarnessAvailabilityMap } from "@actana/sdk/core-link-frames";
+import type { CoreLinkHarnessAvailabilityMap } from "@actana/sdk/core";
 import type { UpdateCheck } from "@actana/shared/actana-update-check";
 import { coreUpdateCommand } from "./actana-container.ts";
 import type { ActanaServiceState } from "./actana-service.ts";

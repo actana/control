@@ -5,18 +5,21 @@ checks, labels) lives in [`REPO_SETUP.md`](REPO_SETUP.md).
 
 ## At a glance
 
-**Six entry points and one reusable workflow** ([ADR
+**Seven entry points and one reusable workflow** ([ADR
 0023](adr/0023-release-trains-and-digest-promotion.md), amending [ADR
 0016](adr/0016-the-0-1-0-shape.md) D34; the sixth is [ADR
-0036](adr/0036-the-beta-release-channel.md) D9, amending D34 again):
+0036](adr/0036-the-beta-release-channel.md) D9, amending D34 again, and the
+seventh is `codeql.yml`, [#599](https://github.com/actana/control/issues/599)):
 
 | Workflow | Trigger | Produces |
 | --- | --- | --- |
 | [`ci.yml`](../.github/workflows/ci.yml) | every PR | nothing published on a fork or a docs-only diff; otherwise `pr-<prid><YYYYMM>` in `panel-dev` / `core-dev`. It gates |
 | [`ci.yml`](../.github/workflows/ci.yml) | push to `beta/**` | `beta-x.y.z` in `panel` / `core`, `sha-<short>` in `panel-dev` / `core-dev` |
+| [`ci.yml`](../.github/workflows/ci.yml) | push to `feat/x.y.z` (an integration branch; the filter is `feat/[0-9]+.[0-9]+.[0-9]+`) | nothing published. The pull-request verification, with the real image build and smoke on the merged commit — see [The integration branch](#the-integration-branch) |
 | [`promote.yml`](../.github/workflows/promote.yml) | dispatch, naming a train | the human pause, the digest verification, the fast-forward of `main`, the `vx.y.z` tag, the release line, retiring the promoted train |
 | [`release.yml`](../.github/workflows/release.yml) | a dispatch and only a dispatch: `promote.yml` dispatches it **at `vx.y.z`**, or a person does — **not** a `v*` tag, and no longer a `workflow_call` (D40, as amended by [#326](https://github.com/actana/control/issues/326)) | Core tarballs + checksums, `:<version>`, `:latest` when it is the highest version, the GitHub Release |
 | [`beta-release.yml`](../.github/workflows/beta-release.yml) | dispatch, naming a train | a beta cut: the moving `vx.y.z-beta` tag, a prerelease Release, three Core tarballs + `SHA256SUMS`, `install.sh` and the CLI tarball as assets, `x.y.z-beta` in `panel` / `core`. Never `latest` |
+| [`codeql.yml`](../.github/workflows/codeql.yml) | every PR, and push to `beta/**` and `feat/x.y.z` (the same two filters as `ci.yml`) | nothing published. CodeQL code scanning for JavaScript and TypeScript, uploaded to the Security tab. **Owner step, not done by the workflow:** the `Analyze (javascript-typescript)` job passes whether or not it finds an alert, so it only proves the scan ran. What fails on a finding is the code-scanning results check, **`CodeQL`**, or a ruleset's **Require code scanning results** rule with a threshold of high or critical; make that required, and `Analyze` alongside it if wanted |
 | [`housekeeping.yml`](../.github/workflows/housekeeping.yml) | daily cron | stale labels / closures, and the issue that says no train is open |
 | [`housekeeping.yml`](../.github/workflows/housekeeping.yml) | weekly cron | a `NODE_VERSION` bump PR, the `-dev` tag sweep, the four Docker Hub pages, and an issue for anything the release detector, the dev-tree audit or the Harness canary found |
 | [`landing.yml`](../.github/workflows/landing.yml) | push to `main` under `landing/**`, or dispatch | `landing/` uploaded to Bunny Edge Storage and the pull zone purged — the page at control.actana.ai |
@@ -28,14 +31,15 @@ re-prove what the train proved. `:edge` is retired with it (D13): it published
 from `main`, and under the train model `main` is only ever a released version,
 so `:edge` would have been a second name for `:latest`.
 
-`ci.yml` is one file doing two jobs, and the trigger is the difference. On a
+`ci.yml` is one file doing three jobs, and the trigger is the difference. On a
 pull request it gates, and publishes a `pr-` image a reviewer can run; on a
-push to a train it publishes the image a promotion will re-point. The repo
-conventions — PR title, commit messages, branch name — are the `Conventions`
-job inside it ([ADR 0016](adr/0016-the-0-1-0-shape.md) D34), and the branch
-model itself is the `Train rules` job beside it. A third, `Promotion gate`,
-refuses one thing only: a pull request from a train into `main`, which is a
-gate and must never be merged by hand (#264).
+push to a train it publishes the image a promotion will re-point; on a push to
+an integration branch it verifies the merged result and publishes nothing. The
+repo conventions — PR title, commit messages, branch name — are the
+`Conventions` job inside it ([ADR 0016](adr/0016-the-0-1-0-shape.md) D34), and
+the branch model itself is the `Train rules` job beside it. A third,
+`Promotion gate`, refuses one thing only: a pull request from a train into
+`main`, which is a gate and must never be merged by hand (#264).
 
 `promote.yml` is the fifth entry point, and the only thing in the repository
 that writes to `main`. It is described under [Cutting a
@@ -55,9 +59,9 @@ beta](#cutting-a-beta).
 
 **Where a version string is written, and what is authoritative for each place,
 is catalogued in [ADR 0037](adr/0037-one-version-per-line.md) §B.** The short
-version: a line is `x.y.z`, the six manifests and `install.sh`'s stamp carry it,
+version: a line is `x.y.z`, the five manifests and `install.sh`'s stamp carry it,
 and every other string — the branch name, the git tag, all four version-bearing
-image tags, the version label inside both images, the npm versions and the
+image tags, the version label inside both images and the
 tarball's filename — is asserted against that tree by
 [`scripts/assert-version-agreement.mjs`](../scripts/assert-version-agreement.mjs)
 before it is written. `pnpm versions:assert --expected x.y.z` runs the same
@@ -154,11 +158,89 @@ Five things follow from that, and each is enforced rather than asked for:
   disables the button. Red is the healthy state for a gate.
 
 Every package manifest — root, `packages/cli`, `packages/core`, `packages/panel`,
-`packages/sdk`, `packages/shared` — carries the train's version, written by the
-cut itself, and a required check asserts they still agree (D3, amended by #152
-and #157). Nothing else should be editing them. The check also asserts that its
+`packages/shared` — carries the train's version, written by the
+cut itself, and a required check asserts they still agree (D3, amended by #152,
+#157 and #580). Nothing else should be editing them. The check also asserts that its
 own list covers every workspace package, so the next package fails it rather
 than being silently left out.
+
+## The integration branch
+
+A release's work can be gathered on an **integration branch**, `feat/x.y.z`,
+before it goes to the train. The model is three moves:
+
+```
+  ticket PR ──▶ feat/0.5.0 ──(every merge: a push run, nothing published)
+  ticket PR ──▶ feat/0.5.0 ──(same)
+                   │
+                   └──▶ one PR ──▶ beta/0.5.0 ──▶ the train, as above
+                        (after the last wave)
+```
+
+- **Ticket pull requests go into `feat/x.y.z`**, not into the train.
+- **Every merge into `feat/x.y.z` starts a push run of `ci.yml`.** Two pull
+  requests that each passed alone can break together, and without this run
+  nothing would verify the merged result until the last pull request.
+- **One pull request goes from `feat/x.y.z` to `beta/x.y.z`** after the last
+  wave, and from there the train model above applies unchanged.
+
+What the workflow enforces is the push trigger and what it runs. **It does not
+enforce the routing**: nothing in `ci.yml` requires ticket pull requests to
+target `feat/x.y.z`, or limits the train to one pull request from it. That part
+is convention. A pull request *based on* `feat/x.y.z` gets the same checks as
+any pull request, except that `Train rules` has nothing to say about it: its
+base is neither `main`, a train nor a release line, so it ends at the notice
+*"No train rules apply"* (the final `*)` arm of its `case "$BASE"`).
+
+### What a push to `feat/x.y.z` runs
+
+The trigger is `on.push.branches: "feat/[0-9]+.[0-9]+.[0-9]+"`, next to
+`"beta/**"`. These are globs, not regexes: `+` means "one or more of the
+preceding character" and `.` is a literal dot, so the filter matches `feat/`
+and three dot-separated digit runs and nothing else. `feat/0.5.0` starts a run;
+a ticket branch such as `feat/553-adopt-actana-client`, `feat/0.5` and
+`feat/0.5.0-rc1` do not. `scripts/__tests__/integration-branch-push.test.mjs`
+holds the table of names.
+
+| Job | On a push to `feat/x.y.z` | The line it rests on |
+| --- | --- | --- |
+| `Conventions` | runs | `if: github.event_name == 'pull_request' \|\| (github.event_name == 'push' && startsWith(github.ref, 'refs/heads/feat/'))` |
+| `Resolve PR image mode` | runs, and decides `build` with `push=false` | the same `if:` |
+| `Panel image`, `Core image` | run: the real build and smoke, amd64 only, on the pushed commit | the same `if:`, `needs: pr-image-mode` |
+| `Promotion gate`, `Typecheck`, `Unit Tests`, `Lint`, `Dependency Audit`, `Secret Scan`, `E2E — Panel service seam`, `Panel DB tests — real Postgres` (not a required check), `Smoke — Core release tarball`, `E2E — installer` | run | no job-level `if:`, so they run on every event |
+| `Train rules` | does not run | `if: github.event_name == 'pull_request'` |
+| `Train versions`, `Resolve train tags`, `Panel image (train)`, `Core image (train)` | do not run | `if: startsWith(github.ref, 'refs/heads/beta/')` |
+
+Three details of the ones that run:
+
+- **`Conventions` lints the commits the push brought** (`github.event.before`
+  to `github.sha`). A new branch has an all-zero `before`, and a `before` that
+  is no longer in the repository has no range either; in both cases it lints
+  the tip alone (`--last`). The branch-name check reads `github.ref_name` on a
+  push, and `feat/0.5.0` satisfies its pattern. The title check is gated to
+  `pull_request`, so it does not run.
+- **The image build is never skipped.** A push has no pull request, so there
+  is no draft flag and no file list: the documentation-only test is not run on
+  a push, and `pr-image-mode` never returns `pass` for it. A push that only
+  touches documentation still builds both images. The build's stage is
+  `integration-feat-x.y.z` (slashes become hyphens), so its per-arch build tags
+  never collide with a pull request's `pr-<number>`.
+- **Nothing is published, and that is a property of the output.** The final
+  step of `pr-image-mode` sets `push=false` and empties `tags`, `dev_tags` and
+  `version` whenever the event is a push, whatever the resolver wrote or failed
+  to write. `panel-image` and `core-image` pass `push` from that output, and
+  every job that publishes a train's images is keyed to `refs/heads/beta/`.
+  No `beta-x.y.z`, `sha-<short>` or `pr-<prid><YYYYMM>` tag moves.
+
+Because nothing publishes, a superseded run is safe to cancel. The concurrency
+group is `ci-<ref>` with `cancel-in-progress: true` on everything except a
+`beta/` ref, so a newer push to `feat/0.5.0` cancels an older run of
+`feat/0.5.0` and nothing else: not `feat/0.6.0`, and not a train, whose own
+group never cancels (D7).
+
+Because `Train versions` is keyed to `beta/`, a push to `feat/x.y.z` does not
+assert the five manifests' versions; that assertion runs when the train is
+pushed.
 
 ## The published images
 
@@ -171,8 +253,8 @@ than being silently left out.
 
 All four are published to Docker Hub (`docker.io/actana/…`) — the only registry
 the images go to ([ADR 0018](adr/0018-docker-hub-is-the-only-registry.md), as
-amended: npm is a second registry, for the two published **packages** rather
-than for any image).
+amended; npm is not a registry of this repository any more, because `@actana/sdk` and
+`@actana/cli` are released from actana/client, #580).
 
 The split is by **audience**, and it is load-bearing rather than tidy: the
 `-dev` repositories hold handles for people debugging, the release repositories
@@ -255,8 +337,6 @@ is clobbered in place on each cut:
 | Core tarballs | `linux-x64`, `linux-arm64`, `mac-arm64` — the same three targets a release builds |
 | `SHA256SUMS` | over exactly those three |
 | `install.sh` | attached as a **copy**, so the script and the bytes it fetches ship together |
-| CLI | `pnpm pack`ed and attached as `actana-cli-<x.y.z>-beta.tgz`, installed from its asset URL (D16) |
-| CLI checksum | `actana-cli-<x.y.z>-beta.tgz.sha256` — the tarball's row as a file of its own, not a fourth row in `SHA256SUMS` |
 | Images | `x.y.z-beta` in `panel` / `core`, retagged from the train's `beta-x.y.z` digest — nothing rebuilt (D12) |
 
 The attached `install.sh` is a copy and **not a door**. The canonical installer
@@ -271,9 +351,8 @@ for and answered rather than overlooked:
   for a release either, for the reason immediately below.
 - **No signing and no notarization**, exactly as a release — integrity is the
   published checksums, below.
-- **Nothing on registry.npmjs.org.** `latest` and `next` on `@actana/cli` and
-  `@actana/sdk` are untouched by a beta cut, and `release.yml`'s `npm` job is
-  not modified. The reason is npm's own: a version number is burned by its first
+- **Nothing on registry.npmjs.org.** This repository publishes nothing there, beta or
+  release (#580). The reason is npm's own: a version number is burned by its first
   publish, and under the fixed `x.y.z-beta` string a second cut of the same beta
   would fail at the registry with a 403 after the tag had moved and every asset
   had already been replaced (D15).
@@ -303,12 +382,10 @@ the digest claim is about the container images only.
 container images are unsigned: no Apple notarization, no Windows Authenticode —
 there is no Windows artifact to sign — and no detached GPG or Sigstore signature
 over a tarball or an image manifest. `release.yml` carries no signing secret at
-all — its one signing-adjacent capability, `id-token: write` on the `npm` job,
-is keyless OIDC rather than a key. Three credentials sit on the release path
-and none of them signs anything: `github.token` for the Release assets, the
-`DOCKERHUB_USERNAME` / `DOCKERHUB_TOKEN` PAT for the images, and `NPM_TOKEN`
-for the packages. The last two are each mandatory, gated by their own `resolve`
-step that fails the release before anything is built when they are unset.
+all. Two credentials sit on the release path and neither signs anything:
+`github.token` for the Release assets, and the `DOCKERHUB_USERNAME` /
+`DOCKERHUB_TOKEN` PAT for the images. The PAT is mandatory, gated by its own
+`resolve` step that fails the release before anything is built when it is unset.
 
 Integrity is **the published checksums**, and both paths that put a Core on a
 machine verify them. `install.sh` fetches `SHA256SUMS` *before* the tarball, and
@@ -321,12 +398,9 @@ over the same channel as the bytes, so this catches corruption and truncation �
 not a release channel someone else controls. That is the gap a signature would
 close, and it is open.
 
-One release surface is attested, and it is not a counter-example: the npm
-packages are published with `--provenance`, so `@actana/sdk` and `@actana/cli`
-carry a SLSA provenance attestation that the release reads back off the registry
-before it succeeds ([npm](#npm)). Provenance attests *where a package was
-built*. It is not a signature over a released binary, and it covers neither the
-tarballs nor the images.
+Nothing a release ships is attested either: the npm provenance that once covered
+`@actana/sdk` went with the publish (#580), and the SDK's own release is the
+client repository's.
 
 **A beta has no attested surface at all, and that is a real loss rather than an
 omission** ([ADR 0036](adr/0036-the-beta-release-channel.md) D17).
@@ -544,7 +618,7 @@ train moved; re-approve"* and nothing is published. That is the design working.
 **A second assertion runs beside it, and it is about the version rather than
 the commit** ([ADR 0037](adr/0037-one-version-per-line.md) D4). The revision
 label says which commit these bytes came from and is silent about what version
-they think they are, so an image whose six manifests said `9.9.9` used to
+they think they are, so an image whose five manifests said `9.9.9` used to
 promote cleanly to `x.y.z` and to `latest`. Both images now carry
 `org.opencontainers.image.version`, holding the **line** — which is one label
 for all four version-bearing tags, because `beta-x.y.z`, `x.y.z`, `latest` and
@@ -600,8 +674,8 @@ one.** A fork PR with a green image check and no image behind it is working
 correctly.
 
 **PR images are amd64 only** (D35). Everything an operator deploys is
-multi-arch and built natively; the arch-specific failure is almost always the
-`better-sqlite3` build, which the amd64 leg already exercises. Emulation is
+multi-arch and built natively; the arch-specific failure is almost always a
+native build (`node-pty`, the Core's `better-sqlite3`), which the amd64 leg already exercises. Emulation is
 acceptable for a developer poking at a change and is not acceptable for
 `beta-x.y.z`, `x.y.z` or `latest`.
 
@@ -620,8 +694,8 @@ release repository under either reading.
 
 Every published image is a multi-arch manifest over `amd64` and `arm64`, and
 each architecture is built on a **native runner** of its own kind. Neither
-image could be cross-built honestly: the Panel compiles `better-sqlite3` during
-its build, and the Core bakes in the Core tarball for that architecture.
+image could be cross-built honestly: the Panel image's build stage compiles the
+workspace's native modules, and the Core bakes in the Core tarball for that architecture.
 Emulating either under QEMU is both slow and a test of the wrong machine.
 
 The PR build is `amd64` only. Paying for a second runner on every PR buys
@@ -640,13 +714,25 @@ knows its Operator. That last step is the whole "all state in one directory"
 claim stated as a test. Run it locally with `pnpm panel:image:smoke`.
 
 **Core** — [`scripts/smoke-core-image.mjs`](../scripts/smoke-core-image.mjs)
-boots the image with a plain `docker run` — nothing privileged, no host cgroup,
-one volume — and then pairs a real Panel with it end to end. Along the way it
-proves what a *build* can get wrong (the identity is `core` at 1000:1000,
-`tini` is PID 1 with the daemon as its child, and the Core tree in `/opt/actana` is the
-*architecture-matched* one) and what the *contract* can get wrong: the
-lifecycle verbs refuse and name their Docker equivalent, `docker restart` is a
-no-op for pairing, and destroying the volume is the one thing that unpairs.
+boots the image with exactly the capability set compose gives the Core (`cap_drop: ALL`,
+`SETUID` and `SETGID`, `no-new-privileges`), no host cgroup, two volumes (home and state) — and then
+pairs a real Panel with it end to end. Along the way it proves what a *build* can get wrong (the
+daemon is `actana` at 1001:1001 holding exactly `CAP_SETUID` and `CAP_SETGID` as ambient capabilities
+and `NoNewPrivs`, read line for line from `/proc/<pid>/status` of the daemon's node process; a
+Session started over the core-link is `core` at 1000:1000 with no capability in any set but the
+container's bounding set; no process of the container is root, `tini` (PID 1) included, which runs as
+`actana`; `docker stop` exits 0 and the daemon logs its shutdown; there is no setuid bit and no file
+capability; `tini` is PID 1 with the daemon as its child, and the Core tree in `/opt/actana` is
+the *architecture-matched* one) and what the *contract* can get wrong: a Session cannot read the
+state, switch to the daemon's user or signal the daemon, its terminal works, a Session that ignores
+`HUP` and `TERM` dies when it is stopped, the entrypoint refuses to start as `core` or `actana`, the
+lifecycle verbs refuse and name their Docker equivalent, the daemon's state is in
+`/var/lib/actana` on a volume of its own and the home holds none of it, a hook miss a Session
+appends to its drop box is read by the daemon, `docker restart` is a
+no-op for pairing, and destroying the state volume is the one thing that unpairs.
+
+On a draft pull request the image jobs pass in about ten seconds without building anything, so the
+smoke above runs only once the pull request is marked ready.
 
 It replaced `panel-e2e-core-in-a-box`, which needed `--privileged` and the host
 cgroup to boot a systemd fixture and asserted against bytes no operator ever
@@ -675,6 +761,34 @@ which is written down here rather than discovered:
   automated answers the persistence questions. [The pre-release
   checklist](core-macos-prerelease-checklist.md) is the rest of it, and it is a
   **release gate** — see "Cutting a release" below.
+
+### What the Core tarball carries of `@actana/cli` and `@actana/sdk` (#580 T-405)
+
+`actana` in the tarball is `app/actana-cli.cjs`: the Core's own verbs plus the client nouns of the
+published `@actana/cli`, inlined by esbuild, with `@actana/sdk` inlined into it and into
+`app/core-entry.cjs`. Only `ws`, `undici` and `selfsigned` are resolved at run time by the CLI (the daemon
+also resolves `node-pty` and `better-sqlite3`), from `app/node_modules`. Three checks keep that honest, none of them a literal:
+
+- **Pinned.** `scripts/build-core-tarball.mjs` refuses to build unless `@actana/cli` is pinned to one
+  exact version in `packages/cli` and `packages/core`, `@actana/sdk` to one exact version in all five
+  manifests, `node_modules` holds those versions, and the source map of each staged bundle names them
+  (`inlinedPackageVersions`, `assertPackageVersionAgreement` in `scripts/lib/core-tarball.mjs`). The
+  tarball smoke makes the same comparison on the extracted bytes.
+- **Protocol.** `core-manifest.json` takes `protocolVersion` from the installed SDK's
+  `dist/core/link-frames.js`; the build and the smoke fail if either bundle carries another one, and
+  the smoke fails if `actana --version` states another.
+- **Offline.** [`scripts/smoke-core-tarball.mjs`](../scripts/smoke-core-tarball.mjs) runs the
+  launcher's `--version`, `harness skills`, `session ls`, `session start --await-prompt`, `events
+  tail`, `files ls` and `shared ls` against the Core it just booted, with
+  [`scripts/lib/no-network-preload.cjs`](../scripts/lib/no-network-preload.cjs) refusing every
+  connection that leaves the machine, and fails on any attempt (loopback is the Core). `harness
+  skills` loads the skill payload at start-up, which is what a CommonJS bundle once crashed on;
+  `packages/cli/src/__tests__/cjs-bundle.test.ts` runs the same bundle under plain `node`.
+
+The Core image smoke then runs the same verbs inside the image as `core` (`session ls`, `session start
+--await-prompt`, `events tail`, `files ls`, `shared ls`, `harness skills`, `--version`), without the network
+guard. `session start` is accepted either way: the Core's `pty:spawn rejected` refusal on a PATH without
+the harness, or a started Session, which the smoke kills.
 
 ## The installer e2e, and why it is one job on two triggers
 
@@ -884,9 +998,10 @@ bumps it and not CI's Node is *meant* to go red there.
 
 ## Registries
 
-**Docker Hub for the images, npm for the packages**
-([ADR 0018](adr/0018-docker-hub-is-the-only-registry.md) — GHCR was retired;
-npm was added by [#159](https://github.com/actana/control/issues/159)).
+**Docker Hub for the images, and nothing else**
+([ADR 0018](adr/0018-docker-hub-is-the-only-registry.md) — GHCR was retired; npm was added
+by [#159](https://github.com/actana/control/issues/159) and went again with #580, when the
+SDK and the CLI moved to actana/client).
 
 ### Docker Hub
 
@@ -924,76 +1039,15 @@ own keys publishes under its own namespace with no edit to any workflow; see
 
 ### npm
 
-`@actana/sdk` and `@actana/cli`, published by `release.yml`'s `npm` job on the
-same tag that builds the images and at the same version as everything else
-([#129](https://github.com/actana/control/issues/129) D13). It authenticates
-with `NPM_TOKEN`, and a missing one fails in `resolve` in exactly the shape the
-Docker Hub check does — before anything is built.
-
-**An npm version number is burned by its first publish.** Unpublishing within
-the 72-hour window frees the bytes and not the name, so nothing about a
-container tag's re-pointability transfers, and three things follow:
-
-- The `npm` job is **last** — after both tarball legs, the installer e2e, and
-  both image publishes. Everything else in a release can be redone; a version
-  number cannot.
-- The publish is **rehearsed on every pull request**, long before a tag exists.
-  `pnpm npm:rehearse` (`scripts/rehearse-npm-publish.mjs`) packs each
-  publishable package with `pnpm pack` and asserts the tarball: the `>=22`
-  engines floor, no install-time lifecycle script, a `repository` for the
-  attestation to name, one version line with the CLI pinned to this train's
-  SDK, and a file list that is a whitelist — so `scripts/require-node-24.mjs`
-  cannot reach a tarball by any route, including a rename. The last rules
-  depend on which kind of package it is: the SDK is **imported**, so every
-  compiled module has a `.d.ts` beside it; the CLI is **run**, so the `bin`
-  path npm links is in the tarball, starts with a node shebang, and has its
-  bundle beside it. `pnpm test` runs it; the release runs the same script on
-  the tarballs it then publishes, in dependency order — the SDK before the CLI
-  that depends on it.
-- Every publish is **attested**. The job carries `id-token: write` and passes
-  `--provenance`; afterwards it reads the attestation back off the registry and
-  fails if it is not there, because a publish that lost the flag succeeds and
-  looks identical in the log. That read-back distinguishes its two failures:
-  "the registry answered and there is no attestation" says cut the next version,
-  and "the registry never answered" says explicitly not to — it is a re-run, and
-  a re-run is free because an already-published version is treated as published.
-
-**The dist-tag is decided, never defaulted.** `npm publish` with no `--tag`
-takes `latest`, which is the same unwritten default as `gh release create`'s
-`make_latest` and the same one the old `resolve` had in its Docker tag list —
-so npm is the third surface of the `latest` guard (ADR 0023 D28), not an
-exception to it. `resolve` emits `npm_tag` from
-[`scripts/lib/release-latest.mjs`](../scripts/lib/release-latest.mjs), the same
-module that decides the other two, and `release.yml` passes it explicitly:
-
-| release | dist-tag | what `npm i @actana/sdk` gets |
-| --- | --- | --- |
-| the highest version, promoted | `latest` | this release |
-| a prerelease on the main line (D30) | `next` | unchanged |
-| a backport of an old line | `release-<major>.<minor>` | unchanged |
-| a backport's release candidate | `release-<major>.<minor>-next` | unchanged |
-
-A consumer pinned to an old line gets its patches with
-`npm i @actana/sdk@release-0.1`. The `resolve` guard step fails the release if a
-backport ever resolves `latest` on **any** of the three surfaces, and if the
-dist-tag comes out empty — `npm publish --tag ""` is rejected by npm, and it
-would be rejected after both images had already shipped.
-
-A package is published exactly when its workspace manifest drops
-`private: true`. `scripts/lib/npm-packages.mjs` holds the intended set and
-checks the discovered one against it both ways: an unexpected package
-publishing is an error, and so is `@actana/sdk` not publishing.
-
-`@actana/sdk` declares `engines: ">=22"` while the monorepo, the Core and the
-Panel keep `>=24 <25`. That is not a contradiction — one is the runtime this
-repository is developed and released on, the other is the floor a consumer of
-the SDK needs, measured against a live Core in
-[`experiment/findings-151-node22-mtls.md`](../experiment/findings-151-node22-mtls.md).
-The tarball ships compiled JavaScript because a consumer on Node 22 has no type
-stripping; inside the workspace the SDK is consumed as TypeScript source, and
-`publishConfig.exports` — applied by **pnpm** at pack time and ignored by npm —
-is what reconciles the two. That is why the rehearsal packs with `pnpm` and
-asserts that the packed map no longer points at `src/`.
+**Nothing in this repository publishes to npm.** `@actana/sdk` and `@actana/cli` are released
+from [actana/client](https://github.com/actana/client); this repository consumes them at exact
+pins (`@actana/sdk` and `@actana/cli` in `package.json`), and the Core's own `actana`
+(`@actana/core-cli`) is private and rides inside the Core tarball. The `npm` job of `release.yml`,
+its `NPM_TOKEN`, the rehearsal (`scripts/rehearse-npm-publish.mjs`, `pnpm npm:rehearse`), the
+manifest checker (`scripts/lib/npm-packages.mjs`) and the npm dist-tag of the `latest` guard were
+removed with the last in-repo package (#580 T-404). `latest` is decided on two surfaces now, the
+Docker tags and the GitHub Release, by the same
+[`scripts/lib/release-latest.mjs`](../scripts/lib/release-latest.mjs).
 
 ### `gcr.io` is a second registry, and it is in the build path
 
@@ -1150,9 +1204,9 @@ required check on the train asserts every manifest equals the branch's version,
 so drift afterwards is impossible rather than merely discouraged. That commit
 **is** the stamp: a branch created without it is a train that looks right and
 carries the previous train's versions, and it stays quiet until the first pull
-request into it goes red with six errors at once, on whoever happened to open it.
+request into it goes red with five errors at once, on whoever happened to open it.
 
-The stamp in `install.sh` is a seventh file and **not** a seventh manifest. It is
+The stamp in `install.sh` is a sixth file and **not** a sixth manifest. It is
 what makes the copy of the installer on this train install this train's beta and
 the copy on `main` install the release, out of bytes that become identical at the
 promotion fast-forward (0036 D1 and D2) — so a train cut without it serves the
@@ -1165,17 +1219,17 @@ packages (0036 D4).
 git fetch origin --prune
 git switch -c beta/x.y.z origin/main
 
-# The six manifests. This list and `MANIFESTS` in `ci.yml`'s `Train rules` job
+# The five manifests. This list and `MANIFESTS` in `ci.yml`'s `Train rules` job
 # are the same set by construction, and a test asserts it: the array below is
 # read out of this file by `scripts/__tests__/workflows.test.mjs`, which fails
 # when the two drift. Extending one without the other is the bug that assertion
-# exists to catch — a seventh package would be cut unstamped and found by
+# exists to catch — a sixth package would be cut unstamped and found by
 # `Train rules` afterwards, on somebody else's pull request.
 files=(package.json packages/cli/package.json packages/core/package.json
-       packages/panel/package.json packages/sdk/package.json packages/shared/package.json)
+       packages/panel/package.json packages/shared/package.json)
 
 # One line changed in each, edited in place on purpose: `jq` and most editors
-# reserialise the whole file, and a cut whose diff is not six lines is a cut a
+# reserialise the whole file, and a cut whose diff is not five lines is a cut a
 # reviewer cannot check at a glance.
 VERSION=x.y.z node -e '
   const fs = require("node:fs");
@@ -1189,13 +1243,13 @@ VERSION=x.y.z node -e '
 for file in "${files[@]}"; do jq -r --arg f "$file" '"\($f): \(.version)"' "$file"; done
 
 # The line stamp (ADR 0036 D1) — one assignment on one line, so this is a `sed`
-# and the diff stays one line like the six above. `-i.bak` because BSD `sed` on
+# and the diff stays one line like the five above. `-i.bak` because BSD `sed` on
 # macOS requires an argument to `-i` and GNU `sed` accepts one.
 sed -i.bak 's/^LINE=".*"$/LINE="x.y.z"/' install.sh && rm -f install.sh.bak
 grep -n '^LINE=' install.sh                    # must print LINE="x.y.z"
 
 git commit -a -F cut-message.txt               # Conventional Commits, see below
-git push --no-verify origin beta/x.y.z         # --no-verify: see below
+git push origin beta/x.y.z
 ```
 
 The push is what publishes `beta-x.y.z`, so the train has an image before
@@ -1206,30 +1260,26 @@ needs an actor that bypasses the `beta/*` ruleset — the repository owner does;
 Four things this has to get right, because nothing checks any of them until far
 too late:
 
-- **`--no-verify` on that push, or the hooks off for the cut.**
-  `.husky/pre-push` does not know the `beta/*` class: its line 9 matches the
-  branch against the naming convention alone, without the `beta/x.y.z`
-  exemption that [`ci.yml`](../.github/workflows/ci.yml) carries at line 167
-  for exactly this branch class (D1). So the hook refuses the push and hints
-  `git branch -m`, which is the wrong thing to do to a train — the branch name
-  *is* the version. You only meet this if you took `CONTRIBUTING.md`'s advice
-  and ran `git config core.hooksPath .husky`, which you should have. Tracked
-  as #269; when the hook learns the class, drop the `--no-verify`.
+- **The `pre-push` hook accepts the train.** It runs the same
+  `scripts/check-conventions.sh branch` rule as [`ci.yml`](../.github/workflows/ci.yml),
+  which carries the `beta/x.y.z` exemption for exactly this branch class (D1), so
+  the cut's push needs no `--no-verify` (#269, #614). The hook still lints every
+  commit in the push — the cut's message included.
 - **The diff is only the cut.** `git diff origin/main beta/x.y.z` is exactly
-  those six manifests, `install.sh`'s stamp, and seven lines.
+  those five manifests, `install.sh`'s stamp, and six lines.
 - **The line stamp.** [ADR 0036](adr/0036-the-beta-release-channel.md) D1 gives
   `install.sh` a stamped line version and says it is *"written by the cut exactly
-  as the six manifests are"*. That is this procedure — the cut is the hand that
+  as the five manifests are"*. That is this procedure — the cut is the hand that
   writes it. [#317](https://github.com/actana/control/issues/317) put the stamp
   in the file and the resolution that reads it, and
   `scripts/__tests__/install-sh.test.mjs` asserts that the stamp is a plain
   `x.y.z` equal to the workspace version and that nothing in the file names a
   channel. **The separate `Train rules` assertion 0036 D4 asks for is now there**
   ([#327](https://github.com/actana/control/issues/327), which owns
-  `.github/workflows`): `assert_installer_stamp` runs beside the six manifests on
+  `.github/workflows`): `assert_installer_stamp` runs beside the five manifests on
   every pull request into a train and on the promotion gate, and `Train versions`
   makes the same assertion on the push a cut is. It is its own check and not a
-  seventh entry in `MANIFESTS`, because `install.sh` is not a workspace package
+  sixth entry in `MANIFESTS`, because `install.sh` is not a workspace package
   and that list refuses to grow past them (0036 D4). A cut that forgets the stamp
   now goes red on the train rather than serving the previous line's beta from its
   own door.
@@ -1305,11 +1355,11 @@ named for it:
 ```bash
 git fetch origin
 git switch -c beta/0.4.5-f1 origin/beta/0.4.5
-git push --no-verify -u origin beta/0.4.5-f1   # --no-verify: the same #269 note as a cut
+git push -u origin beta/0.4.5-f1
 ```
 
 **That is the whole cut.** A sub-beta writes no version: the suffix names the
-branch, and the six manifests and `install.sh`'s stamp keep saying `0.4.5`, so
+branch, and the five manifests and `install.sh`'s stamp keep saying `0.4.5`, so
 there is nothing here to rewrite and nothing to revert later.
 
 The suffix is `-f` plus digits and nothing else. `beta/0.4.5.1` is refused
@@ -1641,7 +1691,7 @@ check names, still green.
 3. **Preflight the release, while nothing has moved.** Everything below this
    step is irreversible in practice, so the questions `release.yml` would
    otherwise not reach until afterwards are asked here: does the promoted
-   commit carry a dispatchable `release.yml`, are the Docker Hub and npm
+   commit carry a dispatchable `release.yml`, are the Docker Hub
    credentials there, is `vx.y.z` free. It also reports which of the workflow
    files this run resolved differ from the train's (#326).
 4. **Fast-forward `main`** to that exact commit. Not a squash, not a merge
@@ -1698,7 +1748,7 @@ refuse the ref and this route would not exist.
 
 **What that buys, in one sentence each.** `preflight` asks — before `main`
 moves — whether the promoted commit carries a dispatchable `release.yml`,
-whether the Docker Hub and npm credentials are present, and whether `v0.4.1`
+whether the Docker Hub credentials are present, and whether `v0.4.1`
 is free. The release is dispatched **at `v0.4.1`**, so `release.yml` and the
 `container-image.yml` it calls come from the promoted commit rather than from
 `main`, and the run's `head_sha` is asserted to be that commit. And no train is
@@ -1715,7 +1765,7 @@ cut behind you.
    next morning.
 2. **Nothing cuts `beta/0.5.0`.** That is the point, not an omission. Cutting
    the next train is [§ Cutting a train](#cutting-a-train), by hand, and it
-   writes `install.sh`'s line stamp as well as the six manifests.
+   writes `install.sh`'s line stamp as well as the five manifests.
 
 > **Corrected 2026-08-25 by the gate review of
 > [#342](https://github.com/actana/control/pull/342): "it cannot be otherwise"
@@ -1731,7 +1781,7 @@ it is recognised rather than diagnosed. `main`'s `promote.yml` runs: no
 `preflight`, the release resolved by `workflow_call` from `main`'s SHA, and —
 because `beta/0.4.0` had to be deleted first and `retire-train` then deletes
 `beta/0.4.1` — `next-train` finds no train open and **cuts `beta/0.5.0` from
-the new `main`**. That job rewrites the six manifests to `0.5.0` and **does not
+the new `main`**. That job rewrites the five manifests to `0.5.0` and **does not
 write `install.sh`'s line stamp**; it never had to, because the stamp
 ([ADR 0036](adr/0036-the-beta-release-channel.md) D1) did not exist when it was
 written. The stamp on `main` therefore still reads `LINE="0.4.1"` while the
@@ -1812,10 +1862,9 @@ finishing the release, below — not rolling anything back.
 
 | | | |
 | --- | --- | --- |
-| **The whole release, on the same tag** | re-runnable | Every job is idempotent by design. The tarballs rebuild; `github-release` creates or `--clobber`s its four assets; the image jobs re-point a digest, and a tag is a pointer; and an npm version that is already on the registry is a `::notice`, not the 403 that would fail a release whose only fault was having worked. |
+| **The whole release, on the same tag** | re-runnable | Every job is idempotent by design. The tarballs rebuild; `github-release` creates or `--clobber`s its four assets; the image jobs re-point a digest, and a tag is a pointer; |
 | **`release/x.y` and deleting the train** | re-runnable | One `git push` each, and both are guarded: the line is created only when it does not exist, and the train is deleted only when its tip is reachable from `main`. |
 | **The tag, and `main`** | **burned** | A tag is the record of what shipped (D44) and `main` only ever moves forward. A promotion that failed after `advance` has a *correct* `main` and a *correct* tag; what is missing is everything downstream of them. Do not delete either, and do not move them. |
-| **An npm version number** | **burned** | Consumed by its first publish. Unpublishing inside the 72-hour window frees the bytes and not the name, so `@actana/sdk@x.y.z` can never mean anything else, on any future train (`release.yml` § *Why it is last*). If a package published and a later job failed, the number is spent and the re-run treats it as published. If it published **unattested**, the number cannot be reclaimed at all: restore the provenance path and cut the next version. |
 | **`:latest`, once it has moved** | **burned as a pointer** | It has no history to roll back to. If the image jobs re-pointed it and the release is then abandoned, the path is [§ Rolling back](#rolling-back), not this one. |
 
 #### Finishing a promotion whose tag and `main` already moved
@@ -1834,7 +1883,6 @@ line="release/${version%.*}"
 git fetch origin --prune --tags
 git rev-parse origin/main "v$version^{commit}"
 gh release view "v$version" --repo actana/control || echo "no Release yet"
-npm view @actana/cli versions
 ```
 
 ```bash
@@ -1847,7 +1895,7 @@ gh run list --repo actana/control --workflow release.yml --limit 1
 ```
 
 Watch it out. If it goes green, `v$version` has its GitHub Release, its four
-assets, both images at `<version>`, and its npm packages. If it goes red, fix
+assets, and both images at `<version>`. If it goes red, fix
 what it names and dispatch it again the same way — a re-run costs nothing that
 has not already been spent.
 
@@ -1953,12 +2001,9 @@ which in the log:
   that branch, because no beta digest exists to promote.
 
 The two Linux tarball legs and the installer e2e run straight away, the mac
-tarball builds alongside them, the two image jobs follow, then the **npm
-publish**, and the GitHub Release last of all. The npm job is in that position
-deliberately and it is the only one that cannot be redone: it waits on both
-image jobs, both tarball legs and the installer e2e, and the Release waits on
-it, so a release never announces an `npm i` that 404s. See
-[npm](#npm) for what it publishes and under which dist-tag. Each image's Docker
+tarball builds alongside them, the two image jobs follow, and the GitHub
+Release last of all, so a release never announces images that are not there yet.
+Each image's Docker
 Hub page is no longer part of it — that syncs on a weekly clock now (D43). The
 tag must already exist on origin.
 
@@ -1979,12 +2024,8 @@ in `release.yml`, so both are yours:
   and the promotion waves itself through — silently, and green. It is
   `promote.yml` that holds it. See [`REPO_SETUP.md`](REPO_SETUP.md) §2.
 
-`resolve` does fail the run outright when `DOCKERHUB_USERNAME`, `DOCKERHUB_TOKEN`
-or `NPM_TOKEN` is missing on `actana/control`, before anything is built — those
-three the workflow does check. `NPM_TOKEN` is checked in the same shape and in
-the same job as the Docker Hub pair, and for a sharper reason: the npm job is
-last in the graph, so a token discovered missing at the publish would be
-discovered with both images pushed and their `:latest` already re-pointed.
+`resolve` does fail the run outright when `DOCKERHUB_USERNAME` or `DOCKERHUB_TOKEN`
+is missing on `actana/control`, before anything is built — those two the workflow does check.
 
 ### The approval pause — a release waits for a person
 
@@ -1998,7 +2039,7 @@ got round to approving yet.
 The gated job goes to **waiting** the moment the run starts.
 
 **Nothing leaves the repository until a reviewer approves.** No image moves, no
-`:latest` moves, **no package reaches npm**, no GitHub Release appears, and
+`:latest` moves, no GitHub Release appears, and
 `main` does not advance.
 
 That sentence is about the **promotion**. A beta cut of the same line, if one
@@ -2013,13 +2054,6 @@ That ordering costs a release the reviewer's own latency, and it buys the one
 thing that makes "reject" a real answer: an image push is not undoable, and
 `:latest` is a pointer with no history to roll back to. A reviewer who hits a
 blocker and rejects has to be able to believe nothing shipped.
-
-The npm publish is the item on that list that cannot be taken back **at all**.
-An image tag is a pointer and can be re-pointed; an npm version number is
-consumed by its first publish, and unpublishing inside the 72-hour window frees
-the bytes and not the name. That is why it sits behind this pause and last
-within the workflow, and why the packing is rehearsed on every pull request
-long before a tag exists.
 
 The pause is the manual test window, not a rubber stamp. Before dispatching and
 approving, the reviewer:
@@ -2221,14 +2255,13 @@ pnpm core:tarball           # the Core image bakes this in, so build it first
 pnpm core:image:smoke       # builds deploy/core.Dockerfile, then pairs a Panel with it
 ```
 
-Commit conventions, without installing anything permanently:
+Commit conventions — the same script the hooks and the `Conventions` job run
+(commitlint is a pinned root devDependency, so `pnpm install` is all it needs):
 
 ```bash
 base=origin/beta/0.2.0          # the branch you targeted — the open train, not main
-d=$(mktemp -d) && cp commitlint.config.mjs "$d"
-(cd "$d" && npm init -y >/dev/null && npm install @commitlint/cli @commitlint/config-conventional)
-"$d"/node_modules/.bin/commitlint --config "$d"/commitlint.config.mjs \
-  --cwd "$PWD" --from "$(git merge-base "$base" HEAD)" --to HEAD --verbose
+sh scripts/check-conventions.sh range "$(git merge-base "$base" HEAD)" HEAD
+sh scripts/check-conventions.sh branch "$(git branch --show-current)"
 ```
 
 `--from` is the merge-base with **the branch this pull request targets**, which
@@ -2239,11 +2272,12 @@ bounce you for somebody else's message. The merge-base is also what the
 `Conventions` job passes: it reads `github.event.pull_request.base.sha`, which
 is that same commit.
 
-The detour through a temp directory is not ceremony: this is a pnpm workspace,
-and the root `package.json` declares `workspace:*` dependencies that npm
-refuses to parse (`EUNSUPPORTEDPROTOCOL`). Installing outside the checkout —
-with the config copied alongside, so `extends` still resolves — is what the
-`Conventions` job itself does.
+The `Conventions` job installs commitlint into `RUNNER_TEMP`, beside a copy of
+the config, because this is a pnpm workspace whose root `package.json` declares
+`workspace:*` dependencies that npm refuses to parse (`EUNSUPPORTEDPROTOCOL`),
+and that job has no reason to run a full `pnpm install`. It installs the version
+the root `package.json` pins and points the script at it with `COMMITLINT_BIN`
+and `COMMITLINT_CONFIG`.
 
 ## Notes for forks
 

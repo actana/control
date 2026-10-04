@@ -79,3 +79,25 @@ updates:
     labels: ["type: dependencies"]
     commit-message:
       prefix: "build"
+
+  # The compose images that are pinned by digest: the Panel's Postgres (#567)
+  # and the optional SeaweedFS service (#566) in deploy/docker-compose.yml. The
+  # `docker` entry above reads Dockerfiles only, so without this entry nothing
+  # would move those pins. The panel and core images in the same file are
+  # variables, not pins, and are left alone. A Postgres bump must also change
+  # scripts/lib/postgres-image.mjs, which the smokes boot; a test fails until
+  # the two agree. The cooldown is the repo's rule that a bumped image is at least
+  # a week old.
+  - package-ecosystem: "docker-compose"
+    directory: "/deploy"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "Europe/Berlin"
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 2
+    labels: ["type: dependencies"]
+    commit-message:
+      prefix: "build"

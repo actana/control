@@ -9,20 +9,18 @@ architectural rules that a reviewer will send a PR back over.
 Actana Control is two programs that talk over one WebSocket:
 
 - The **Panel** (`packages/panel`) — the self-hosted web service you deploy.
-  It owns the Core registry and terminates every core-link. It holds no task,
-  session, or project state.
+  It owns the Core registry and terminates every core-link. It holds no Session state; Tasks live in its Postgres.
 - The **Core** (`packages/core`) — the daemon installed on each machine
-  you want to run harnesses on. It owns everything task-shaped: PTYs, SQLite, the
-  event log, the project registry.
-- `packages/sdk` — the core-link wire protocol: the frame schema both sides
-  agree on, and the only definition of it in the repository. It lives with the
-  client that speaks it, and the Core imports its frames from here too
+  you want to run harnesses on. It owns everything Session-shaped: PTYs, SQLite, the
+  event log. There are no Projects: a Session starts in the Core's home.
+- the SDK is not in this repository: the core-link wire protocol and the Core client are the
+  published `@actana/sdk`, released from actana/client, and the Core and the Panel import its frames
   ([ADR 0025](docs/adr/0025-the-protocol-ships-with-the-client.md)).
-- `packages/cli` — the whole `actana` command: the blob registry that names the
-  Cores a machine can reach and the nouns built on the SDK, plus the verbs that
-  install and operate a Core on this machine. One program under one name; the
-  Core package is the daemon and nothing else
-  ([ADR 0032](docs/adr/0032-one-actana-cli.md)).
+- `packages/cli` — `@actana/core-cli`, the private built-in `actana` of a Core: the blob registry
+  that names the Cores a machine can reach and the verbs that install and operate a Core on this
+  machine, with the client nouns (`core`, `session`, `events`, `files`, `shared`, `harness`) handed to
+  the published `@actana/cli`. One program under one name; the Core package is the daemon and nothing
+  else ([ADR 0032](docs/adr/0032-one-actana-cli.md)).
 - `packages/shared` — the other types both sides agree on: the mutation and
   query contracts, the registration-blob codec, the event log, the harness
   registry. Private, and it stays private.
@@ -35,7 +33,7 @@ project's glossary, and reviewers use its terms.
 
 - TanStack Start (file-based React routes + server file routes for `/api/*`)
 - Vite 7 + Tailwind v4
-- SQLite (`better-sqlite3`) + Drizzle ORM
+- Postgres (`pg`) + Drizzle ORM
 - `node-pty` + `@xterm/xterm` + `@xterm/addon-fit`
 - Server-Sent Events for live updates (no socket.io / Redis)
 
@@ -44,12 +42,11 @@ project's glossary, and reviewers use its terms.
 ```
 control/
 ├── packages/
-│   ├── cli/                The whole `actana` command — client and Core manager
-│   │   ├── bin/actana.mjs  what npm links as `actana`
+│   ├── cli/                @actana/core-cli (private) — the Core's own `actana`, over @actana/cli
 │   │   └── src/
-│   │       ├── actana-cli.ts       noun dispatch
-│   │       ├── blob-registry.ts    ~/.config/actana/cores/<name>.txt, mode 0600
-│   │       └── core-command.ts     the `core` noun
+│   │       ├── actana-cli.ts       noun dispatch; client nouns go to runClient
+│   │       ├── actana-cli-entry.ts binds the ports (probe, connect, openSessions, openFiles, …)
+│   │       └── actana-setup.ts, actana-pair.ts, …  the machine verbs
 │   ├── core/               Standalone Node daemon — the Core, and nothing else
 │   │   └── src/
 │   │       ├── core-entry.ts           daemon entry
@@ -69,7 +66,6 @@ control/
 │   │       │   ├── core-link/       the service's link to each Core
 │   │       │   └── controllers/     the `/api/*` surface
 │   │       └── db/         Drizzle schema + client
-│   ├── sdk/                The Core client and the core-link frames it speaks
 │   └── shared/             mutation/query contracts, registration-blob codec
 ├── docs/adr/               Architecture decisions
 ├── designs/                Original HTML+JSX prototype (source of truth)
@@ -91,9 +87,11 @@ pnpm build          # Core bundle first, then the Panel — that order matters
 pnpm dev            # Panel dev server
 ```
 
-The native dependencies (`better-sqlite3`, `node-pty`) are compiled during
-install, against the standard Node ABI — there is no second runtime to rebuild
-for. `pnpm dev`, `pnpm test` and `pnpm db:*` each ensure `better-sqlite3`
+The native dependencies (`node-pty`, and the Core's `better-sqlite3`) are
+compiled during install, against the standard Node ABI — there is no second
+runtime to rebuild for. The Panel itself has no native addon: it keeps its state
+in Postgres and reads other tools' SQLite files with the built-in `node:sqlite`.
+`pnpm dev`, `pnpm test` and `pnpm db:*` each ensure the Core's `better-sqlite3`
 matches the current Node before they run; if it goes stale after a Node
 upgrade, `pnpm native:node:rebuild`.
 
@@ -102,7 +100,7 @@ the reference deployment — the published Panel and Core images on one network:
 
 ```bash
 docker compose -f deploy/docker-compose.yml up -d
-docker compose -f deploy/docker-compose.yml exec core actana pair new
+docker compose -f deploy/docker-compose.yml exec -u actana core actana pair new
 ```
 
 ## Before you open a PR
@@ -122,7 +120,7 @@ Heavier suites, worth running when you have touched their seam:
 | --- | --- |
 | `pnpm panel:e2e` | the Panel service seam against a real Core |
 | `pnpm panel:image:smoke` | the Panel image boots, sets up, and survives container recreation |
-| `pnpm core:image:smoke` | the Core image boots unprivileged and a Panel pairs with it (needs `pnpm core:tarball` first) |
+| `pnpm core:image:smoke` | the Core image runs its daemon as `actana` with two capabilities and a Panel pairs with it (needs `pnpm core:tarball` first) |
 | `pnpm core:tarball:smoke` | the release tarball unpacks and runs |
 | `pnpm core:setup:e2e` | the `curl \| bash` one-liner and the lifecycle verbs against systemd (Linux) |
 
@@ -206,7 +204,7 @@ There is only ever one. If you find two, a hotfix is in flight — see
 
 **A train can publish.** Beside the `beta-x.y.z` images every merge republishes,
 a person can dispatch `beta-release.yml` to cut a beta — a prerelease at
-`x.y.z-beta` with the three Core tarballs, their checksums, the CLI and the
+`x.y.z-beta` with the three Core tarballs, their checksums and the
 matching image tags, so the train is installable rather than only pullable ([ADR
 0036](docs/adr/0036-the-beta-release-channel.md)). Merging your pull request does
 not cut one; asking does.
@@ -270,18 +268,14 @@ Allowed types: `feat` `feature` `fix` `bugfix` `hotfix` `release` `chore`
 `docs` `refactor` `perf` `test` `ci` `revert`. Lowercase only, hyphen-separated,
 no leading/trailing/doubled separators.
 
-CI checks this (the `Conventions` job in `ci.yml`). To be told before you push instead
-of after, enable the local hooks once per clone:
-
-```bash
-git config core.hooksPath .husky
-```
-
-Husky is not a dependency — these run under plain git. The `commit-msg` hook
-checks your message with commitlint if it is available and steps aside with a
-hint if it is not; [`docs/ci-cd.md`](docs/ci-cd.md#running-ci-locally) has the
-install line (it goes through a temp directory — npm cannot parse this
-workspace's root `package.json`).
+CI checks this (the `Conventions` job in `ci.yml`), and so does your machine:
+`pnpm install` points `core.hooksPath` at `.husky/`, so `commit-msg` refuses a
+message that breaks `commitlint.config.mjs` and `pre-push` refuses a branch name
+outside the list above or any commit in the push that breaks the commit rules.
+Both hooks and the `Conventions` job run `scripts/check-conventions.sh`, so they
+cannot disagree. A pushed commit can never be rewritten; this is the cheap place
+to catch one. (`pnpm install --ignore-scripts` skips the hook install; run
+`git config core.hooksPath .husky` yourself.)
 
 ## Commits and PRs
 

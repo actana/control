@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import type { Core } from "~/shared/cores";
 import type { CoreSecrets } from "../cores";
 import { CoreLinkManager, type CoreCursor, type CoreLinkClientLike } from "../core-link-manager";
-import { CORE_LINK_PROTOCOL_VERSION } from "@actana/sdk/core-link-frames";
+import { CORE_LINK_PROTOCOL_VERSION } from "@actana/sdk/core";
 
 /**
  * The manager is driven through its injected seams: a fake core-link client and
@@ -108,11 +108,11 @@ function fixture(): Fixture {
       clients.set(entry.id, client);
       return client;
     },
-    listCores: () => [...cores.values()],
-    resolveCore: (id) => cores.get(id) ?? null,
-    resolveSecrets: (id) => (secrets.has(id) ? secrets.get(id)! : SECRETS),
-    resolveCursor: (id) => cursors.get(id) ?? 0,
-    advanceCursor: (id, lastEventId) => {
+    listCores: async () => [...cores.values()],
+    resolveCore: async (id) => cores.get(id) ?? null,
+    resolveSecrets: async (id) => (secrets.has(id) ? secrets.get(id)! : SECRETS),
+    resolveCursor: async (id) => cursors.get(id) ?? 0,
+    advanceCursor: async (id, lastEventId) => {
       cursors.set(id, Math.max(cursors.get(id) ?? 0, lastEventId));
     },
   });
@@ -127,8 +127,8 @@ beforeEach(() => {
 });
 
 describe("core-link manager", () => {
-  it("reports a Core as connecting the moment it starts dialing", () => {
-    h.manager.dial("core_a");
+  it("reports a Core as connecting the moment it starts dialing", async () => {
+    await h.manager.dial("core_a");
     expect(h.manager.status("core_a")).toMatchObject({
       coreId: "core_a",
       state: "connecting",
@@ -136,16 +136,16 @@ describe("core-link manager", () => {
     });
   });
 
-  it("reports connected once the Core accepts the bearer", () => {
-    h.manager.dial("core_a");
+  it("reports connected once the Core accepts the bearer", async () => {
+    await h.manager.dial("core_a");
     h.clients.get("core_a")!.emit.authOk({ coreId: "core_a", exp: Date.now() + 60_000 });
     const status = h.manager.status("core_a");
     expect(status.state).toBe("connected");
     expect(status.lastSeenAt).toBeGreaterThan(0);
   });
 
-  it("reports unreachable on a drop, remembering when the Core was last seen", () => {
-    h.manager.dial("core_a");
+  it("reports unreachable on a drop, remembering when the Core was last seen", async () => {
+    await h.manager.dial("core_a");
     const client = h.clients.get("core_a")!;
     client.emit.authOk({ coreId: "core_a", exp: Date.now() + 60_000 });
     const seenAt = h.manager.status("core_a").lastSeenAt;
@@ -157,31 +157,80 @@ describe("core-link manager", () => {
     });
   });
 
-  it("reports a rejected bearer as an auth error, not a flaky network", () => {
-    h.manager.dial("core_a");
+  it("reports a rejected bearer as an auth error, not a flaky network", async () => {
+    await h.manager.dial("core_a");
     h.clients.get("core_a")!.emit.authError({ reason: "expired" });
     expect(h.manager.status("core_a")).toMatchObject({ state: "auth-error", detail: "expired" });
   });
 
-  it("reports a Core whose sealed secrets cannot be read, and does not dial it", () => {
+  it("reports a Core whose sealed secrets cannot be read, and does not dial it", async () => {
     h.secrets.set("core_a", null);
-    h.manager.dial("core_a");
+    await h.manager.dial("core_a");
     expect(h.clients.has("core_a")).toBe(false);
     expect(h.manager.status("core_a").state).toBe("auth-error");
   });
 
-  it("dials every registered Core at boot, with no browser involved", () => {
+  it("dials every registered Core at boot, with no browser involved", async () => {
     h.cores.set("core_b", core("core_b"));
-    h.manager.start();
+    await h.manager.start();
     expect([...h.clients.keys()].sort()).toEqual(["core_a", "core_b"]);
     expect(h.manager.statuses().map((s) => s.coreId).sort()).toEqual(["core_a", "core_b"]);
   });
 
-  it("does not open a second link for a Core it is already dialing", () => {
-    h.manager.dial("core_a");
+  it("does not open a second link for a Core it is already dialing", async () => {
+    await h.manager.dial("core_a");
     const first = h.clients.get("core_a");
-    h.manager.dial("core_a");
+    await h.manager.dial("core_a");
     expect(h.clients.get("core_a")).toBe(first);
+  });
+
+  // The registry is in Postgres, so a dial awaits it: two callers racing for the
+  // same Core must still get one link, and a Core removed while its credentials
+  // were being read must not come up.
+  it("joins a dial already in flight instead of opening a second link", async () => {
+    const created: string[] = [];
+    const manager = new CoreLinkManager({
+      createClient: (entry) => {
+        created.push(entry.id);
+        return new FakeClient();
+      },
+      listCores: async () => [],
+      resolveCore: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        return core("core_a");
+      },
+      resolveSecrets: async () => SECRETS,
+      resolveCursor: async () => 0,
+      advanceCursor: async () => {},
+    });
+    await Promise.all([manager.dial("core_a"), manager.dial("core_a")]);
+    expect(created).toEqual(["core_a"]);
+  });
+
+  it("does not bring a link up for a Core hung up while its credentials were being read", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const created: string[] = [];
+    const manager = new CoreLinkManager({
+      createClient: (entry) => {
+        created.push(entry.id);
+        return new FakeClient();
+      },
+      listCores: async () => [],
+      resolveCore: async () => core("core_a"),
+      resolveSecrets: async () => {
+        await gate;
+        return SECRETS;
+      },
+      resolveCursor: async () => 0,
+      advanceCursor: async () => {},
+    });
+    const dialing = manager.dial("core_a");
+    manager.hangup("core_a");
+    release();
+    await dialing;
+    expect(created).toEqual([]);
+    expect(manager.statuses()).toEqual([]);
   });
 
   // The version gate (issue 07). A Core speaking a protocol this Panel does not
@@ -189,8 +238,8 @@ describe("core-link manager", () => {
   // is its own, it survives the auth handshake that would otherwise call it
   // connected, and it clears itself the moment the updated Core reconnects.
   describe("the protocol version gate", () => {
-    it("marks a Core on an older protocol as needing an update", () => {
-      h.manager.dial("core_a");
+    it("marks a Core on an older protocol as needing an update", async () => {
+      await h.manager.dial("core_a");
       h.clients.get("core_a")!.emit.protocolVersion({ version: "0.1.0", compatible: false });
       expect(h.manager.status("core_a")).toMatchObject({
         coreId: "core_a",
@@ -199,24 +248,24 @@ describe("core-link manager", () => {
       });
     });
 
-    it("keeps needs-update through the auth handshake that follows", () => {
-      h.manager.dial("core_a");
+    it("keeps needs-update through the auth handshake that follows", async () => {
+      await h.manager.dial("core_a");
       const client = h.clients.get("core_a")!;
       client.emit.protocolVersion({ version: "0.1.0", compatible: false });
       client.emit.authOk({ coreId: "core_a", exp: Date.now() + 60_000 });
       expect(h.manager.status("core_a").state).toBe("needs-update");
     });
 
-    it("marks needs-update even when auth landed first", () => {
-      h.manager.dial("core_a");
+    it("marks needs-update even when auth landed first", async () => {
+      await h.manager.dial("core_a");
       const client = h.clients.get("core_a")!;
       client.emit.authOk({ coreId: "core_a", exp: Date.now() + 60_000 });
       client.emit.protocolVersion({ version: "0.1.0", compatible: false });
       expect(h.manager.status("core_a").state).toBe("needs-update");
     });
 
-    it("clears needs-update when the updated Core reconnects", () => {
-      h.manager.dial("core_a");
+    it("clears needs-update when the updated Core reconnects", async () => {
+      await h.manager.dial("core_a");
       const client = h.clients.get("core_a")!;
       client.emit.protocolVersion({ version: "0.1.0", compatible: false });
       client.emit.disconnected({ error: "restarting" });
@@ -226,16 +275,16 @@ describe("core-link manager", () => {
       expect(h.manager.status("core_a").state).toBe("connected");
     });
 
-    it("pushes the needs-update change to status watchers", () => {
+    it("pushes the needs-update change to status watchers", async () => {
       const seen: string[] = [];
       h.manager.onStatusChange((status) => seen.push(status.state));
-      h.manager.dial("core_a");
+      await h.manager.dial("core_a");
       h.clients.get("core_a")!.emit.protocolVersion({ version: "0.1.0", compatible: false });
       expect(seen).toContain("needs-update");
     });
 
-    it("leaves a matching Core alone", () => {
-      h.manager.dial("core_a");
+    it("leaves a matching Core alone", async () => {
+      await h.manager.dial("core_a");
       const client = h.clients.get("core_a")!;
       client.emit.protocolVersion({ version: "0.8.0", compatible: true });
       client.emit.authOk({ coreId: "core_a", exp: Date.now() + 60_000 });
@@ -247,8 +296,8 @@ describe("core-link manager", () => {
     // `multiConnection` gets read as stale. It is not stale: it is the
     // single-connection Core, and the version it speaks is this one. The
     // manager only ever sees `compatible`, which is exactly why it stays true.
-    it("reports a Core announcing no multiConnection capability as connected, not needs-update", () => {
-      h.manager.dial("core_a");
+    it("reports a Core announcing no multiConnection capability as connected, not needs-update", async () => {
+      await h.manager.dial("core_a");
       const client = h.clients.get("core_a")!;
       // What a capability-less Core's `ready` yields: a version this Panel
       // speaks, and no capability anywhere in the payload.
@@ -256,11 +305,12 @@ describe("core-link manager", () => {
       client.emit.authOk({ coreId: "core_a", exp: Date.now() + 60_000 });
       const status = h.manager.status("core_a");
       expect(status.state).toBe("connected");
-      expect(status).not.toHaveProperty("coreVersion");
+      // Connected dials carry the announced version for the Core header pill (#560).
+      expect(status.coreVersion).toBe(CORE_LINK_PROTOCOL_VERSION);
     });
 
-    it("still reports a dropped link as unreachable, not as needing an update", () => {
-      h.manager.dial("core_a");
+    it("still reports a dropped link as unreachable, not as needing an update", async () => {
+      await h.manager.dial("core_a");
       const client = h.clients.get("core_a")!;
       client.emit.protocolVersion({ version: "0.1.0", compatible: false });
       client.emit.disconnected({ error: "ECONNREFUSED" });
@@ -270,73 +320,73 @@ describe("core-link manager", () => {
 
   describe("the Panel-owned cursor", () => {
     /** Dial and capture the cursor handle the manager gave the client. */
-    function dialCapturingCursor(): CoreCursor {
+    async function dialCapturingCursor(): Promise<CoreCursor> {
       let captured: CoreCursor | null = null;
       const manager = new CoreLinkManager({
         createClient: (_core, _secrets, cursor) => {
           captured = cursor;
           return new FakeClient();
         },
-        listCores: () => [...h.cores.values()],
-        resolveCore: (id) => h.cores.get(id) ?? null,
-        resolveSecrets: () => SECRETS,
-        resolveCursor: (id) => h.cursors.get(id) ?? 0,
-        advanceCursor: (id, lastEventId) => {
+        listCores: async () => [...h.cores.values()],
+        resolveCore: async (id) => h.cores.get(id) ?? null,
+        resolveSecrets: async () => SECRETS,
+        resolveCursor: async (id) => h.cursors.get(id) ?? 0,
+        advanceCursor: async (id, lastEventId) => {
           h.cursors.set(id, Math.max(h.cursors.get(id) ?? 0, lastEventId));
         },
       });
-      manager.dial("core_a");
+      await manager.dial("core_a");
       if (!captured) throw new Error("the manager gave the client no cursor");
       return captured;
     }
 
-    it("reads the stored position, so a reconnect resumes from it", () => {
+    it("reads the stored position, so a reconnect resumes from it", async () => {
       h.cursors.set("core_a", 42);
-      expect(dialCapturingCursor().read()).toBe(42);
+      expect((await dialCapturingCursor()).read()).toBe(42);
     });
 
-    it("writes back to the registry as the client advances", () => {
-      const cursor = dialCapturingCursor();
+    it("writes back to the registry as the client advances", async () => {
+      const cursor = (await dialCapturingCursor());
       cursor.write(17);
       expect(h.cursors.get("core_a")).toBe(17);
     });
 
-    it("belongs to the Core, not the connection — it survives a redial", () => {
-      dialCapturingCursor().write(17);
+    it("belongs to the Core, not the connection — it survives a redial", async () => {
+      (await dialCapturingCursor()).write(17);
       h.manager.hangup("core_a");
-      expect(dialCapturingCursor().read()).toBe(17);
+      expect((await dialCapturingCursor()).read()).toBe(17);
     });
   });
 
   describe("hangup", () => {
-    it("closes the link and forgets the Core's status", () => {
-      h.manager.dial("core_a");
+    it("closes the link and forgets the Core's status", async () => {
+      await h.manager.dial("core_a");
       const client = h.clients.get("core_a")!;
       h.manager.hangup("core_a");
       expect(client.closed).toBe(true);
       expect(h.manager.statuses()).toEqual([]);
     });
 
-    it("is a no-op for a Core that was never dialed", () => {
+    it("is a no-op for a Core that was never dialed", async () => {
       expect(() => h.manager.hangup("core_nope")).not.toThrow();
     });
   });
 
-  it("closes every link on dispose", () => {
+  it("closes every link on dispose", async () => {
     h.cores.set("core_b", core("core_b"));
-    h.manager.start();
+    await h.manager.start();
     h.manager.dispose();
     expect([...h.clients.values()].every((c) => c.closed)).toBe(true);
     expect(h.manager.statuses()).toEqual([]);
   });
 
-  it("ignores a dial for a Core that isn't registered", () => {
-    h.manager.dial("core_ghost");
+  it("ignores a dial for a Core that isn't registered", async () => {
+    await h.manager.dial("core_ghost");
     expect(h.clients.size).toBe(0);
     expect(h.manager.statuses()).toEqual([]);
   });
 
-  it("reports an unknown Core as unreachable rather than throwing", () => {
+  it("reports an unknown Core as unreachable rather than throwing", async () => {
     expect(h.manager.status("core_ghost")).toMatchObject({
       coreId: "core_ghost",
       state: "unreachable",
@@ -346,34 +396,34 @@ describe("core-link manager", () => {
 });
 
 describe("core-link manager · dial failures", () => {
-  it("surfaces a client that throws on construction as unreachable", () => {
+  it("surfaces a client that throws on construction as unreachable", async () => {
     const manager = new CoreLinkManager({
       createClient: () => {
         throw new Error("no route to host");
       },
-      listCores: () => [core("core_a")],
-      resolveCore: () => core("core_a"),
-      resolveSecrets: () => SECRETS,
-      resolveCursor: () => 0,
-      advanceCursor: () => {},
+      listCores: async () => [core("core_a")],
+      resolveCore: async () => core("core_a"),
+      resolveSecrets: async () => SECRETS,
+      resolveCursor: async () => 0,
+      advanceCursor: async () => {},
     });
-    manager.dial("core_a");
+    await manager.dial("core_a");
     expect(manager.status("core_a")).toMatchObject({
       state: "unreachable",
       detail: "no route to host",
     });
   });
 
-  it("retries a Core that never got a client, so a fixed key file takes effect", () => {
+  it("retries a Core that never got a client, so a fixed key file takes effect", async () => {
     // A data directory restored without its secrets key: nothing to dial with.
     h.secrets.set("core_a", null);
-    h.manager.dial("core_a");
+    await h.manager.dial("core_a");
     expect(h.manager.status("core_a").state).toBe("auth-error");
 
     // The operator puts the key back. The next dial must actually try again
     // rather than short-circuit on the status left behind by the last one.
     h.secrets.delete("core_a");
-    h.manager.dial("core_a");
+    await h.manager.dial("core_a");
     expect(h.clients.has("core_a")).toBe(true);
     expect(h.manager.status("core_a").state).toBe("connecting");
   });

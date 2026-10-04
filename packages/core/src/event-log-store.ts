@@ -3,13 +3,13 @@
 //
 // The Core appends PTY lifecycle events (pty:spawn / pty:exit) and serves
 // the reconnect replay tail to the Panel. The stateful server process
-// (server-runner.mjs) appends task/session/hook events to the same table via
+// (server-runner.mjs) appends session/hook events to the same table via
 // its own connection (src/server/event-log-recorder.ts). Both write to the
 // same append-only table; SQLite's WAL write lock serializes the commits and
 // `busy_timeout` absorbs the brief contention, so the two writers never
 // corrupt each other's rows.
 //
-// This mirrors the connection pattern in project-roots.ts but opens
+// This mirrors the connection pattern in core-query-store.ts but opens
 // read-write (the Core owns PTY events) instead of read-only. Runs only in
 // the plain-Node Core process, so better-sqlite3 uses its standard binding.
 
@@ -25,7 +25,7 @@ import {
   readEventTail as readTail,
   type EventLogSqlite,
 } from "@actana/shared/event-log";
-import type { CoreLinkEvent } from "@actana/sdk/core-link-frames";
+import type { CoreLinkEvent } from "@actana/sdk/core";
 
 export type { CoreLinkEvent };
 
@@ -35,7 +35,7 @@ let tableEnsured = false;
 // Throttle the db-missing log so a permanently-absent DB (e.g. a core-only
 // VM where the server process never bootstrapped) doesn't fill the log on every
 // event-log call. Logs the first occurrence verbatim then one summary line per
-// 60s — mirrors project-roots.ts.
+// 60s — mirrors core-query-store.ts.
 let lastDbMissingAt = 0;
 const DB_MISSING_THROTTLE_MS = 60_000;
 // A persistently-broken binding (missing native prebuild, WAL corruption)
@@ -102,7 +102,7 @@ function ensureConnection(): Database.Database | null {
 export function appendEvent(
   kind: string,
   payload: string,
-  opts: { ptyId?: string | null; taskId?: string | null } = {},
+  opts: { ptyId?: string | null; sessionId?: string | null } = {},
 ): number {
   const conn = ensureConnection();
   if (!conn) return 0;

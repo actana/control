@@ -28,7 +28,7 @@ describe("readLastAssistantText", () => {
 
   const write = (lines: string[]) => {
     fs.writeFileSync(transcriptFile, lines.join("\n") + "\n");
-    setTranscriptPath("task-1", transcriptFile);
+    setTranscriptPath("session-1", transcriptFile);
   };
 
   it("returns the last assistant message's text blocks", () => {
@@ -42,7 +42,7 @@ describe("readLastAssistantText", () => {
       ]),
       asst([{ type: "text", text: "All wrapped up. <!-- marker: fresh -->" }]),
     ]);
-    expect(readLastAssistantText("task-1")).toBe("All wrapped up. <!-- marker: fresh -->");
+    expect(readLastAssistantText("session-1")).toBe("All wrapped up. <!-- marker: fresh -->");
   });
 
   it("skips tool_use-only records to find the turn's prose", () => {
@@ -54,7 +54,7 @@ describe("readLastAssistantText", () => {
       // they are not a turn boundary.
       user([{ type: "tool_result", content: "ok" }]),
     ]);
-    expect(readLastAssistantText("task-1")).toBe("the real text");
+    expect(readLastAssistantText("session-1")).toBe("the real text");
   });
 
   it("stops at the previous user prompt instead of resurfacing an older turn", () => {
@@ -63,7 +63,7 @@ describe("readLastAssistantText", () => {
       user("a new prompt"),
       asst([{ type: "tool_use", name: "Bash", input: {} }]),
     ]);
-    expect(readLastAssistantText("task-1")).toBeNull();
+    expect(readLastAssistantText("session-1")).toBeNull();
   });
 
   it("survives torn/garbage lines and missing files", () => {
@@ -73,13 +73,13 @@ describe("readLastAssistantText", () => {
       asst([{ type: "text", text: "intact" }]),
       "not json at all",
     ]);
-    expect(readLastAssistantText("task-1")).toBe("intact");
+    expect(readLastAssistantText("session-1")).toBe("intact");
 
     fs.rmSync(transcriptFile, { force: true });
-    expect(readLastAssistantText("task-1")).toBeNull();
+    expect(readLastAssistantText("session-1")).toBeNull();
   });
 
   it("returns null when no transcript path was stashed", () => {
-    expect(readLastAssistantText("unknown-task")).toBeNull();
+    expect(readLastAssistantText("unknown-session")).toBeNull();
   });
 });

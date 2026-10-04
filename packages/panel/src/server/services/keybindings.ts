@@ -1,9 +1,7 @@
 import { getSetting, setSetting } from "./settings";
-import { safeJsonParse } from "@actana/shared/safe-json";
 import { DEFAULT_BINDINGS } from "~/lib/keybindings/defaults";
 import { HOTKEY_ACTIONS, type Binding, type BindingMap, type HotkeyAction } from "~/lib/keybindings/types";
 
-// Decoupled scope so adding per-user later is a one-line caller change.
 const DEFAULT_SCOPE = "global";
 const settingKey = (scope: string) => `keybindings:${scope}`;
 
@@ -23,8 +21,8 @@ function isBinding(v: unknown): v is Binding {
   );
 }
 
-function readOverrides(scope: string): Partial<BindingMap> {
-  const raw = getSetting(settingKey(scope));
+async function readOverrides(scope: string): Promise<Partial<BindingMap>> {
+  const raw = await getSetting(settingKey(scope));
   if (!raw) return {};
   try {
     const parsed = JSON.parse(raw);
@@ -39,30 +37,37 @@ function readOverrides(scope: string): Partial<BindingMap> {
   }
 }
 
-function writeOverrides(scope: string, overrides: Partial<BindingMap>): void {
-  setSetting(settingKey(scope), JSON.stringify(overrides));
+async function writeOverrides(scope: string, overrides: Partial<BindingMap>): Promise<void> {
+  await setSetting(settingKey(scope), JSON.stringify(overrides));
 }
 
-export function getBindings(scope: string = DEFAULT_SCOPE): BindingMap {
-  const overrides = readOverrides(scope);
+export async function getBindings(scope: string = DEFAULT_SCOPE): Promise<BindingMap> {
+  const overrides = await readOverrides(scope);
   return { ...DEFAULT_BINDINGS, ...overrides };
 }
 
-export function setBinding(action: HotkeyAction, binding: Binding, scope: string = DEFAULT_SCOPE): BindingMap {
-  const overrides = readOverrides(scope);
+export async function setBinding(
+  action: HotkeyAction,
+  binding: Binding,
+  scope: string = DEFAULT_SCOPE,
+): Promise<BindingMap> {
+  const overrides = await readOverrides(scope);
   overrides[action] = binding;
-  writeOverrides(scope, overrides);
+  await writeOverrides(scope, overrides);
   return { ...DEFAULT_BINDINGS, ...overrides };
 }
 
-export function resetBinding(action: HotkeyAction, scope: string = DEFAULT_SCOPE): BindingMap {
-  const overrides = readOverrides(scope);
+export async function resetBinding(
+  action: HotkeyAction,
+  scope: string = DEFAULT_SCOPE,
+): Promise<BindingMap> {
+  const overrides = await readOverrides(scope);
   delete overrides[action];
-  writeOverrides(scope, overrides);
+  await writeOverrides(scope, overrides);
   return { ...DEFAULT_BINDINGS, ...overrides };
 }
 
-export function resetAllBindings(scope: string = DEFAULT_SCOPE): BindingMap {
-  writeOverrides(scope, {});
+export async function resetAllBindings(scope: string = DEFAULT_SCOPE): Promise<BindingMap> {
+  await writeOverrides(scope, {});
   return { ...DEFAULT_BINDINGS };
 }

@@ -22,7 +22,7 @@ import {
 // printed once. That hand-carry is gone and so are the assertions about it —
 // deleted rather than skipped, because there is no artifact left for them to be
 // about. A client enrolls by spending a code from `actana pair new`, which
-// `core-pairing-routes.test.ts` and `actana-pair.test.ts` cover.
+// `pairing-client-e2e.test.ts` and `actana-pair.test.ts` cover.
 
 /**
  * A previous boot's material — real certificates, minted once for the suite.

@@ -11,7 +11,7 @@ export const KEYBINDING_GROUPS: KeybindingGroup[] = [
   {
     id: "session",
     label: "Session management",
-    description: "Create, hide, expand, and duplicate agent sessions on a project.",
+    description: "Create, hide, expand, and duplicate agent sessions on a Core.",
     actions: [
       "agent.new",
       "terminal.close",
@@ -33,25 +33,15 @@ export const KEYBINDING_GROUPS: KeybindingGroup[] = [
     actions: ["terminal.toggle", "terminal.newTab", "terminal.cycleNext", "terminal.cyclePrev"],
   },
   {
-    id: "project",
-    label: "Project management",
-    description: "Run projects, switch between them, and work with files.",
-    actions: [
-      "project.runToggle",
-      "project.openBrowser",
-      "project.picker",
-      "project.add",
-      "project.edit",
-      "project.pinnedSlot",
-      "group.next",
-      "group.prev",
-      "project.ship",
-    ],
+    id: "core",
+    label: "Core management",
+    description: "Switch between Cores and ship from a Session.",
+    actions: ["core.slot", "session.ship"],
   },
   {
     id: "home",
     label: "Home",
-    description: "Navigation and search on the projects home screen.",
+    description: "Navigation and search on the Fleet home screen.",
     actions: ["nav.toggle", "search.focus"],
   },
   {

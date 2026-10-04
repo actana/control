@@ -11,7 +11,7 @@
 // **#160 and #161 each extracted one of these, and this is the merge of the
 // two** (review of #205). Four suites share it now: `core status` against a
 // Core that answers no request frames, the `session` verbs against one holding
-// tasks and a live PTY, `project`/`harness` against one with a disk and an
+// sessions and a live PTY, `project`/`harness` against one with a disk and an
 // installer, and `events tail` against one that is stopped and restarted under
 // a running command. What each of them varies is a port or two; the handshake,
 // the certificates and the blob an operator would be handed are the same
@@ -50,7 +50,6 @@ import https from "node:https";
 import { WebSocketServer } from "ws";
 import {
   PtyCoreLinkServer,
-  type CoreDirectoryPort,
   type CoreExecPort,
   type CoreMutationPort,
   type CoreQueryPort,
@@ -62,7 +61,7 @@ import {
 } from "@actana/core/pty-core-link-server";
 import { generateCertMaterial } from "@actana/shared/core-cert-material";
 import { signBearer, verifyBearer } from "@actana/shared/core-link-bearer";
-import type { CoreLinkEvent } from "@actana/sdk/core-link-frames.ts";
+import type { CoreLinkEvent } from "@actana/sdk/core";
 
 export const CORE_SECRET = "cli-in-process-core-secret-at-least-32-bytes";
 export const CORE_ID = "core_in_process";
@@ -93,8 +92,8 @@ export function unusedPtyCore(): never[] & Record<string, unknown> {
     killAll: unreachable("killAll"),
     killLaunchProcesses: unreachable("killLaunchProcesses"),
     killPtysUnderPath: unreachable("killPtysUnderPath"),
-    findByTask: unreachable("findByTask"),
-    taskIdForPty: () => null,
+    findBySession: unreachable("findBySession"),
+    sessionIdForPty: () => null,
     replay: unreachable("replay"),
   } as unknown as never[] & Record<string, unknown>;
 }
@@ -221,7 +220,6 @@ export type InProcessCoreOptions = {
   eventLog?: EventLogPort;
   queryPort?: CoreQueryPort;
   mutationPort?: CoreMutationPort;
-  directoryPort?: CoreDirectoryPort;
   execPort?: CoreExecPort;
   availabilityPort?: HarnessAvailabilityPort;
   installPort?: HarnessInstallPort;
@@ -275,7 +273,6 @@ export async function startInProcessCore(opts: InProcessCoreOptions = {}): Promi
     ...(opts.eventLog === undefined ? {} : { eventLog: opts.eventLog }),
     ...(opts.queryPort === undefined ? {} : { queryPort: opts.queryPort }),
     ...(opts.mutationPort === undefined ? {} : { mutationPort: opts.mutationPort }),
-    ...(opts.directoryPort === undefined ? {} : { directoryPort: opts.directoryPort }),
     ...(opts.execPort === undefined ? {} : { execPort: opts.execPort }),
     ...(opts.availabilityPort === undefined ? {} : { availabilityPort: opts.availabilityPort }),
     ...(opts.installPort === undefined ? {} : { installPort: opts.installPort }),
@@ -425,7 +422,7 @@ export function arrayEventLog(): ArrayEventLog {
         ts: Date.now(),
         kind,
         ptyId: opts?.ptyId ?? null,
-        taskId: opts?.taskId ?? null,
+        sessionId: opts?.sessionId ?? null,
         payload,
       };
       events.push(event);

@@ -6,7 +6,7 @@ import {
   type WebSocketServerLike,
 } from "../pty-core-link-server";
 import type { PtyCore, PtyCoreEvent } from "../pty-manager";
-import { CORE_LINK_PROTOCOL_VERSION, type CoreLinkEvent } from "@actana/sdk/core-link-frames";
+import { CORE_LINK_PROTOCOL_VERSION, type CoreLinkEvent } from "@actana/sdk/core";
 
 // The `multiConnection` capability on `ready` (issue 143, ADR 0024 D11).
 //
@@ -75,7 +75,7 @@ function fakeEventLog(): EventLogPort {
         kind,
         payload,
         ptyId: opts?.ptyId ?? null,
-        taskId: opts?.taskId ?? null,
+        sessionId: opts?.sessionId ?? null,
       });
       return eventId;
     },
@@ -93,7 +93,7 @@ function mockCore(): PtyCore {
     resize: () => true,
     kill: () => true,
     killLaunchProcesses: async () => ({ ptyCount: 0, ports: [] }),
-    findByTask: () => ({ ptyId: null }),
+    findBySession: () => ({ ptyId: null }),
     replay: () => ({ data: "", nextSeq: 0, from: 0 }),
     killAll: () => {},
   } as unknown as PtyCore;

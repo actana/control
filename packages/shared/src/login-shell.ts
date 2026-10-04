@@ -9,11 +9,12 @@
 //
 // `dscl` is the one subprocess in this file and it is macOS-only: a login
 // shell changed with `chsh` lands in Directory Services, and neither `$SHELL`
-// (inherited from whatever started the process) nor `os.userInfo()` sees it
+// (inherited from whatever started the process) nor the passwd entry sees it
 // there. Everything else is `fs.existsSync` on a candidate list.
 
 import * as fs from "node:fs";
 import * as os from "node:os";
+import { asCore, coreIdentity, coreShell, coreUsername } from "./core-home";
 import * as path from "node:path";
 import { spawnSync } from "node:child_process";
 
@@ -21,8 +22,14 @@ import { spawnSync } from "node:child_process";
 function userShellFromDirectoryService(): string | null {
   if (os.platform() !== "darwin") return null;
   try {
-    const username = os.userInfo().username;
-    const result = spawnSync("/usr/bin/dscl", [".", "-read", `/Users/${username}`, "UserShell"], {
+    const username = coreUsername();
+    const launch = asCore({
+      command: "/usr/bin/dscl",
+      args: [".", "-read", `/Users/${username}`, "UserShell"],
+    });
+    const result = spawnSync(launch.command, launch.args, {
+      cwd: launch.cwd,
+      env: launch.env,
       encoding: "utf8",
       timeout: 1000,
     });
@@ -42,10 +49,15 @@ function userShellFromDirectoryService(): string | null {
  * returning it would move the failure to the spawn.
  */
 export function resolveShell(): string {
+  // In the container the process's own `$SHELL` and passwd entry are the
+  // daemon's (`nologin`); the Sessions' shell is core's.
+  const containerShell = coreIdentity()?.shell;
+  if (containerShell) return containerShell;
+
   const envShell = process.env.SHELL;
   if (envShell && fs.existsSync(envShell)) return envShell;
 
-  const infoShell = (os.userInfo() as { shell?: string }).shell;
+  const infoShell = coreShell();
   if (infoShell && fs.existsSync(infoShell)) return infoShell;
 
   const dsclShell = userShellFromDirectoryService();

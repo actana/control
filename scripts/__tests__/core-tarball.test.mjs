@@ -19,7 +19,11 @@ import {
   nodeDistDirName,
   nodeDistShasumsUrl,
   nodeDistTarballUrl,
+  assertPackageVersionAgreement,
+  inlinedPackageVersions,
   parseCoreLinkProtocolVersion,
+  pinnedVersion,
+  SDK_LINK_FRAMES_PATH,
   parseShasums,
   parseTarballName,
   planDependencyLayout,
@@ -439,11 +443,18 @@ describe("parseCoreLinkProtocolVersion", () => {
   it("finds the real constant in the SDK package", () => {
     // Guards the rename that would otherwise ship a stale protocol version in
     // every tarball.
-    const source = fs.readFileSync(
-      path.join(repoRoot, "packages", "sdk", "src", "core-link-frames.ts"),
-      "utf8",
-    );
+    const source = fs.readFileSync(path.join(repoRoot, ...SDK_LINK_FRAMES_PATH), "utf8");
     expect(parseCoreLinkProtocolVersion(source)).toMatch(/^\d+\.\d+\.\d+$/);
+  });
+
+  it("names the protocol the Core announces, which is the pinned published SDK's", async () => {
+    // The tarball's core-manifest.json carries this number, and `actana status` and the
+    // Panel's needs-update gate compare against it. The Core announces the version of the
+    // `@actana/sdk` it is built against, so a copy of the constant that lags it would ship a
+    // manifest that disagrees with the Core it describes.
+    const { CORE_LINK_PROTOCOL_VERSION } = await import("@actana/sdk/core");
+    const source = fs.readFileSync(path.join(repoRoot, ...SDK_LINK_FRAMES_PATH), "utf8");
+    expect(parseCoreLinkProtocolVersion(source)).toBe(CORE_LINK_PROTOCOL_VERSION);
   });
 });
 
@@ -625,7 +636,7 @@ describe("the tarball's bundles are built by one named script", () => {
     const script = manifest.scripts[BUNDLE_SCRIPT];
     expect(script, `package.json has no \`${BUNDLE_SCRIPT}\` script`).toBeDefined();
     expect(script).toContain("@actana/core");
-    expect(script).toContain("@actana/cli");
+    expect(script).toContain("@actana/core-cli");
   });
 
   it("is what `core:tarball` runs before the builder", () => {
@@ -662,5 +673,164 @@ describe("the tarball's bundles are built by one named script", () => {
     // The guard on the guard: a rename of the builder would make the loop above
     // sweep nothing and pass.
     expect(checked, "no workflow calls scripts/build-core-tarball.mjs any more").toBeGreaterThan(0);
+  });
+});
+
+// ─── The helper the daemon runs as `core` ships in the tarball (#559) ───────
+//
+// In the container the daemon is another user than `core` and starts
+// `core-home-ops.cjs` through `asCore` for every short write in core's home. The
+// daemon finds it by its own `__dirname`, so a tarball that stages only
+// `core-entry.cjs` is a Core that can start and cannot install a hook.
+
+describe("the tarball stages the core-home helper beside the daemon", () => {
+  it("builds it in the Core package and stages it into app/", () => {
+    const build = fs.readFileSync(path.join(repoRoot, "packages", "core", "build.mjs"), "utf8");
+    expect(build).toContain('outfile: "dist/core-home-ops.cjs"');
+    const builder = fs.readFileSync(path.join(repoRoot, "scripts", "build-core-tarball.mjs"), "utf8");
+    expect(builder).toMatch(/file: "core-home-ops\.cjs", dist: path\.join\(repoRoot, "packages", "core", "dist"\)/);
+  });
+});
+
+// ─── The Files API's helper ships in the tarball too (#557) ─────────────────
+//
+// The daemon runs every Files operation as `core` by starting `core-files-op.cjs`
+// through `asCore`, and finds it by its own `__dirname`. A tarball without it is a Core
+// whose Files API answers 500 on every request.
+
+describe("the tarball stages the Files API helper beside the daemon", () => {
+  it("builds it in the Core package and stages it into app/", () => {
+    const build = fs.readFileSync(path.join(repoRoot, "packages", "core", "build.mjs"), "utf8");
+    expect(build).toContain('outfile: "dist/core-files-op.cjs"');
+    const builder = fs.readFileSync(path.join(repoRoot, "scripts", "build-core-tarball.mjs"), "utf8");
+    expect(builder).toMatch(/file: "core-files-op\.cjs", dist: path\.join\(repoRoot, "packages", "core", "dist"\)/);
+  });
+});
+
+// ─── The Shared folder watcher ships beside the daemon (#561) ───────────────
+
+describe("the tarball stages the Shared folder watcher beside the daemon", () => {
+  it("builds it in the Core package and stages it into app/", () => {
+    const build = fs.readFileSync(path.join(repoRoot, "packages", "core", "build.mjs"), "utf8");
+    expect(build).toContain('outfile: "dist/core-shared-watch.cjs"');
+    const builder = fs.readFileSync(path.join(repoRoot, "scripts", "build-core-tarball.mjs"), "utf8");
+    expect(builder).toMatch(/file: "core-shared-watch\.cjs", dist: path\.join\(repoRoot, "packages", "core", "dist"\)/);
+  });
+});
+
+// ─── The published packages the tarball inlines (#580 T-405) ─────────────────
+
+const mapOf = (...sources) => JSON.stringify({ version: 3, sources });
+const pnpmPath = (pkg, version, inner) =>
+  `../../../node_modules/.pnpm/${pkg.replace("/", "+")}@${version}_pg@8.23.0/node_modules/${pkg}/${inner}`;
+
+describe("inlinedPackageVersions", () => {
+  it("reads the version out of the pnpm store path of each input", () => {
+    const map = mapOf(
+      pnpmPath("@actana/cli", "0.6.0-next.10", "src/kit/cli-args.ts"),
+      pnpmPath("@actana/sdk", "0.6.0-next.4", "src/core/client.ts"),
+      "../src/actana-cli.ts",
+    );
+    expect(inlinedPackageVersions(map, "@actana/cli")).toEqual(["0.6.0-next.10"]);
+    expect(inlinedPackageVersions(map, "@actana/sdk")).toEqual(["0.6.0-next.4"]);
+    expect(inlinedPackageVersions(map, "@actana/shared")).toEqual([]);
+  });
+
+  it("returns every version of a package that was inlined twice", () => {
+    const map = mapOf(pnpmPath("@actana/cli", "0.6.0-next.9", "a.ts"), pnpmPath("@actana/cli", "0.6.0-next.10", "b.ts"));
+    expect(inlinedPackageVersions(map, "@actana/cli")).toEqual(["0.6.0-next.10", "0.6.0-next.9"]);
+  });
+
+  it("does not take a longer package name for the one asked about", () => {
+    expect(inlinedPackageVersions(mapOf(pnpmPath("@actana/cli-extra", "1.0.0", "a.ts")), "@actana/cli")).toEqual([]);
+  });
+
+  it("refuses text that is not a source map", () => {
+    expect(() => inlinedPackageVersions("{}", "@actana/cli")).toThrow(/no `sources`/);
+  });
+});
+
+describe("pinnedVersion", () => {
+  const manifest = (range) => ({ dependencies: { "@actana/cli": range } });
+
+  it("accepts an exact release and an exact prerelease", () => {
+    expect(pinnedVersion(manifest("0.6.0"), "@actana/cli")).toBe("0.6.0");
+    expect(pinnedVersion(manifest("0.6.0-next.10"), "@actana/cli")).toBe("0.6.0-next.10");
+  });
+
+  it.each(["^0.6.0-next.10", "~0.6.0", ">=0.6.0", "*", "latest", "0.6", "workspace:*"])("refuses %s", (range) => {
+    expect(() => pinnedVersion(manifest(range), "@actana/cli", "packages/cli")).toThrow(/not an exact version/);
+  });
+
+  it("refuses a manifest that does not depend on it", () => {
+    expect(() => pinnedVersion({ dependencies: {} }, "@actana/cli", "packages/core")).toThrow(/does not depend/);
+  });
+});
+
+describe("assertPackageVersionAgreement", () => {
+  const facts = (over = {}) => ({
+    name: "@actana/cli",
+    pins: { "packages/cli": "0.6.0-next.10", "packages/core": "0.6.0-next.10" },
+    installed: "0.6.0-next.10",
+    inlined: { "actana-cli.cjs": ["0.6.0-next.10"], "core-entry.cjs": ["0.6.0-next.10"] },
+    ...over,
+  });
+
+  it("returns the version when the pins, the install and every bundle agree", () => {
+    expect(assertPackageVersionAgreement(facts())).toBe("0.6.0-next.10");
+  });
+
+  it("fails when two manifests pin different versions", () => {
+    expect(() =>
+      assertPackageVersionAgreement(facts({ pins: { "packages/cli": "0.6.0-next.10", "packages/core": "0.6.0-next.9" } })),
+    ).toThrow(/pinned to different versions.*packages\/core: 0\.6\.0-next\.9/);
+  });
+
+  it("fails when node_modules holds another version than the pin", () => {
+    expect(() => assertPackageVersionAgreement(facts({ installed: "0.6.0-next.11" }))).toThrow(
+      /pinned to 0\.6\.0-next\.10 but 0\.6\.0-next\.11 is installed/,
+    );
+  });
+
+  it("fails when a bundle inlines another version than the pin", () => {
+    expect(() =>
+      assertPackageVersionAgreement(facts({ inlined: { "actana-cli.cjs": ["0.6.0-next.9"], "core-entry.cjs": ["0.6.0-next.10"] } })),
+    ).toThrow(/actana-cli\.cjs inlines @actana\/cli@0\.6\.0-next\.9 but 0\.6\.0-next\.10 is pinned/);
+  });
+
+  it("fails when a bundle inlines two versions, or none", () => {
+    expect(() =>
+      assertPackageVersionAgreement(facts({ inlined: { "actana-cli.cjs": ["0.6.0-next.10", "0.6.0-next.9"] } })),
+    ).toThrow(/inlines @actana\/cli@0\.6\.0-next\.10, 0\.6\.0-next\.9/);
+    expect(() => assertPackageVersionAgreement(facts({ inlined: { "core-entry.cjs": [] } }))).toThrow(
+      /core-entry\.cjs inlines none of @actana\/cli/,
+    );
+  });
+});
+
+describe("the repository's own pins (the tarball carries what these say)", () => {
+  const manifestOf = (...segments) =>
+    JSON.parse(fs.readFileSync(path.join(repoRoot, ...segments, "package.json"), "utf8"));
+  const installedVersion = (name) =>
+    JSON.parse(
+      fs.readFileSync(path.join(repoRoot, "packages", "cli", "node_modules", ...name.split("/"), "package.json"), "utf8"),
+    ).version;
+
+  it("pins @actana/cli to one exact version in cli and core, and that version is installed", () => {
+    const pins = {
+      "packages/cli": pinnedVersion(manifestOf("packages", "cli"), "@actana/cli", "packages/cli"),
+      "packages/core": pinnedVersion(manifestOf("packages", "core"), "@actana/cli", "packages/core"),
+    };
+    expect(new Set(Object.values(pins)).size, JSON.stringify(pins)).toBe(1);
+    expect(installedVersion("@actana/cli")).toBe(pins["packages/cli"]);
+  });
+
+  it("pins @actana/sdk to one exact version in every manifest, and that version is installed", () => {
+    const labels = { "package.json": [], "packages/cli": ["packages", "cli"], "packages/core": ["packages", "core"], "packages/panel": ["packages", "panel"], "packages/shared": ["packages", "shared"] };
+    const pins = Object.fromEntries(
+      Object.entries(labels).map(([label, segments]) => [label, pinnedVersion(manifestOf(...segments), "@actana/sdk", label)]),
+    );
+    expect(new Set(Object.values(pins)).size, JSON.stringify(pins)).toBe(1);
+    expect(installedVersion("@actana/sdk")).toBe(pins["package.json"]);
   });
 });

@@ -46,6 +46,12 @@ export type RegistryPaths = {
   coresDir: string;
   /** `<config>/actana/current.txt` — holds a name, not a blob. */
   currentPointer: string;
+  /**
+   * `<config>/actana/current.json` — `{ core, search }`, the pointer the published `@actana/cli` reads
+   * first. The machine layer writes it beside `current.txt` (#580): a client that finds only the text
+   * file falls back to it, but one that finds both never has to guess which is newer.
+   */
+  currentJson: string;
 };
 
 /**
@@ -64,6 +70,7 @@ export function registryPaths(env: NodeJS.ProcessEnv, home: string): RegistryPat
     root,
     coresDir: path.join(root, "cores"),
     currentPointer: path.join(root, "current.txt"),
+    currentJson: path.join(root, "current.json"),
   };
 }
 
@@ -207,10 +214,37 @@ export function readCurrentCore(paths: RegistryPaths): string | null {
   return coreExists(paths, name) ? name : null;
 }
 
-/** Point `current` at a named Core. */
+/** What `current.json` already says, or an empty pointer pair when it is absent or unreadable. */
+function readCurrentJson(paths: RegistryPaths): { core: string | null; search: string | null } {
+  try {
+    const parsed: unknown = JSON.parse(fs.readFileSync(paths.currentJson, "utf8"));
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      const o = parsed as Record<string, unknown>;
+      return {
+        core: typeof o.core === "string" && o.core ? o.core : null,
+        search: typeof o.search === "string" && o.search ? o.search : null,
+      };
+    }
+  } catch {
+    // Absent, malformed or unreadable: nothing selected, and it is rewritten whole below.
+  }
+  return { core: null, search: null };
+}
+
+/** Write `current.json` with a new Core pointer, keeping the Search pointer the client wrote. */
+function writeCurrentJson(paths: RegistryPaths, core: string | null): void {
+  const pointers = { ...readCurrentJson(paths), core };
+  fs.writeFileSync(paths.currentJson, `${JSON.stringify(pointers, null, 2)}\n`, { mode: BLOB_FILE_MODE });
+}
+
+/**
+ * Point `current` at a named Core, in both files: `current.txt` for Control's older readers and
+ * `current.json` for the published CLI, which reads it first. The Search pointer in the JSON is kept.
+ */
 export function writeCurrentCore(paths: RegistryPaths, name: string): void {
   fs.mkdirSync(paths.root, { recursive: true, mode: REGISTRY_DIR_MODE });
   fs.writeFileSync(paths.currentPointer, `${name}\n`, { mode: BLOB_FILE_MODE });
+  writeCurrentJson(paths, name);
 }
 
 /** Drop the `current` pointer. Removing the Core it names calls this. */
@@ -220,4 +254,6 @@ export function clearCurrentCore(paths: RegistryPaths): void {
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
   }
+  // The JSON is cleared only when it exists: a registry the client never touched has none to clear.
+  if (fs.existsSync(paths.currentJson)) writeCurrentJson(paths, null);
 }

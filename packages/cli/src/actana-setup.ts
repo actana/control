@@ -45,6 +45,7 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { ensureSharedFolder } from "@actana/shared/shared-folder";
 import { signBearer, type BearerSecret } from "@actana/shared/core-link-bearer";
 import {
   formatPublicHosts,
@@ -83,7 +84,7 @@ import type { ActanaServiceManager } from "./actana-service.ts";
 import type { CoreManifest } from "./actana-manifest.ts";
 import type { ActanaSystem } from "./actana-system.ts";
 import type { Harness } from "@actana/shared/domain";
-import type { CoreLinkHarnessAvailabilityMap } from "@actana/sdk/core-link-frames";
+import type { CoreLinkHarnessAvailabilityMap } from "@actana/sdk/core";
 
 /** Bearer validity. The Panel re-handshakes on expiry; a year is a long lease. */
 const BEARER_DAYS = 365;
@@ -506,6 +507,9 @@ export async function runActanaSetup(opts: SetupOptions): Promise<SetupResult> {
   // symlink writes.
   const { installDir, launcher } = placeCoreBundle(opts, plan);
   fs.mkdirSync(layout.dataDir, { recursive: true });
+  // The Shared folder is never missing (ADR 0041 D5, #561). The daemon makes it
+  // again at every boot; making it here means it is there before the first one.
+  ensureSharedFolder(layout.home);
 
   const { material, outcome, addedHosts } = await resolveMaterial(opts);
   persistMaterial(layout.configDir, material);

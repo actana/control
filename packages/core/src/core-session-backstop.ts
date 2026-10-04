@@ -111,10 +111,10 @@
 import log from "@actana/shared/log";
 import {
   clearSubagentActivity,
-  noteTaskFinished,
+  noteSessionFinished,
 } from "@actana/shared/subagent-activity";
-import type { CoreLinkTaskSnapshot } from "@actana/sdk/core-link-frames";
-import type { CoreTaskWriter } from "./core-task-writer";
+import type { CoreSessionRow } from "@actana/shared/core-query";
+import type { CoreSessionWriter } from "./core-session-writer";
 
 /**
  * How long a `running` Session must go without a hook or a byte of output
@@ -221,24 +221,24 @@ const SWEEP_INTERVAL_MS = 60 * 1000;
 
 /**
  * Cap on remembered activity stamps — one per Session that has reported
- * anything since boot. Bounded like every other per-task map in this path; the
+ * anything since boot. Bounded like every other per-session map in this path; the
  * cost of dropping the oldest is that its row falls back to its `updatedAt`.
  */
-const MAX_TRACKED_TASKS = 500;
+const MAX_TRACKED_SESSIONS = 500;
 
 export type CoreSessionBackstopDeps = {
   /** Every row this Core still claims is working. */
-  listActiveTasks: () => CoreLinkTaskSnapshot[];
-  /** The one seam a task row changes through, events included. */
-  writer: CoreTaskWriter;
+  listActiveSessions: () => CoreSessionRow[];
+  /** The one seam a session row changes through, events included. */
+  writer: CoreSessionWriter;
   /**
-   * Does this Core currently have a live PTY for the task? Optional; when it
+   * Does this Core currently have a live PTY for the session? Optional; when it
    * answers `false` the Session is settled as `disconnected` rather than
    * `finished`, because a turn whose process is gone did not finish — that is
    * the PTY-exit settle's answer, arriving late because its exit went
    * unrecorded. Absent, every settle is a `finished`.
    */
-  hasLivePty?: (taskId: string) => boolean;
+  hasLivePty?: (sessionId: string) => boolean;
   /** Injected in tests. */
   now?: () => number;
   quietMs?: number;
@@ -292,7 +292,7 @@ type SessionActivity = {
 
 /**
  * The Core's quiet-Session backstop. One instance per Core process; the hook
- * receiver and the PTY output path feed it, and it feeds the task writer.
+ * receiver and the PTY output path feed it, and it feeds the session writer.
  */
 export class CoreSessionBackstop {
   /** Per Session: what this Core has heard from it. A redraw moves `heardAt` only. */
@@ -317,15 +317,15 @@ export class CoreSessionBackstop {
    * which additionally tells the idle rule that this harness can report
    * itself; the PTY path passes what the classifier made of the bytes.
    */
-  noteActivity(taskId: string, kind: SessionActivityKind = "output"): void {
-    if (!taskId) return;
+  noteActivity(sessionId: string, kind: SessionActivityKind = "output"): void {
+    if (!sessionId) return;
     const now = this.now();
-    const prior = this.lastActivity.get(taskId);
+    const prior = this.lastActivity.get(sessionId);
     // Re-insert so insertion order approximates recency for the cap below.
-    this.lastActivity.delete(taskId);
+    this.lastActivity.delete(sessionId);
     const progress = kind !== "redraw";
     const isHook = kind === "hook";
-    this.lastActivity.set(taskId, {
+    this.lastActivity.set(sessionId, {
       heardAt: now,
       // A redraw is the harness being there, not the turn getting anywhere:
       // it keeps the quiet rule off and leaves the idle rule's clock running.
@@ -337,7 +337,7 @@ export class CoreSessionBackstop {
       // Any progress breaks a run of idle sweeps.
       idleSweeps: progress ? 0 : (prior?.idleSweeps ?? 0),
     });
-    while (this.lastActivity.size > MAX_TRACKED_TASKS) {
+    while (this.lastActivity.size > MAX_TRACKED_SESSIONS) {
       const oldest = this.lastActivity.keys().next().value;
       if (oldest === undefined) break;
       this.lastActivity.delete(oldest);
@@ -352,7 +352,7 @@ export class CoreSessionBackstop {
     // every five seconds (review of PR 455, round 4). A hook that *did* decide
     // the status moved the row, and {@link reopenIfIdleSettled}'s `updatedAt`
     // comparison is what reads that — the same test, done honestly.
-    if (kind === "output") this.reopenIfIdleSettled(taskId, now);
+    if (kind === "output") this.reopenIfIdleSettled(sessionId, now);
   }
 
   /**
@@ -375,39 +375,39 @@ export class CoreSessionBackstop {
    * one part of a wrong idle settle that does not come back; it expires on
    * its own.
    */
-  private reopenIfIdleSettled(taskId: string, now: number): void {
-    const marker = this.idleSettled.get(taskId);
+  private reopenIfIdleSettled(sessionId: string, now: number): void {
+    const marker = this.idleSettled.get(sessionId);
     if (marker === undefined) return;
     if (now - marker.at > (this.deps.reopenMs ?? IDLE_REOPEN_MS)) {
-      this.idleSettled.delete(taskId);
+      this.idleSettled.delete(sessionId);
       return;
     }
     try {
-      const task = this.deps.writer.readTask(taskId);
+      const session = this.deps.writer.readSession(sessionId);
       // Somebody else's status, or somebody else's write under the same
       // status: either way the row is theirs now and this claim is over.
-      if (task?.status !== "finished" || task.updatedAt !== marker.rowUpdatedAt) {
-        this.idleSettled.delete(taskId);
+      if (session?.status !== "finished" || session.updatedAt !== marker.rowUpdatedAt) {
+        this.idleSettled.delete(sessionId);
         return;
       }
       // The marker is dropped only once the write has actually landed. A
       // `mutate` that throws or answers `null` — SQLite busy against the
       // concurrent event-log writer — must leave the next burst five seconds
       // from now able to try again, rather than having spent the one chance.
-      if (!this.deps.writer.mutate({ op: "update", taskId, status: "running" })) return;
-      this.idleSettled.delete(taskId);
-      log.info("session-backstop.reopened", { taskId, quietForMs: now - marker.at });
+      if (!this.deps.writer.mutate({ op: "update", sessionId, status: "running" })) return;
+      this.idleSettled.delete(sessionId);
+      log.info("session-backstop.reopened", { sessionId, quietForMs: now - marker.at });
     } catch (err) {
-      log.warn("session-backstop.reopen-failed", { taskId, error: String(err) });
+      log.warn("session-backstop.reopen-failed", { sessionId, error: String(err) });
     }
   }
 
   /** Forget a Session — its process is gone and something else settled it. */
-  forget(taskId: string): void {
-    this.lastActivity.delete(taskId);
+  forget(sessionId: string): void {
+    this.lastActivity.delete(sessionId);
     // A process that is gone writes no more bytes, so nothing is left that
     // could justify reopening the row.
-    this.idleSettled.delete(taskId);
+    this.idleSettled.delete(sessionId);
   }
 
   start(): void {
@@ -434,11 +434,11 @@ export class CoreSessionBackstop {
     const now = this.now();
     const settled: string[] = [];
 
-    for (const task of this.deps.listActiveTasks()) {
+    for (const session of this.deps.listActiveSessions()) {
       // `needs-input` is a Session waiting on a human, and may wait forever.
-      if (task.status !== "running") continue;
-      const stamps = this.lastActivity.get(task.taskId);
-      const lastHeard = Math.max(stamps?.heardAt ?? 0, task.updatedAt);
+      if (session.status !== "running") continue;
+      const stamps = this.lastActivity.get(session.sessionId);
+      const lastHeard = Math.max(stamps?.heardAt ?? 0, session.updatedAt);
       // Quiet: nothing of any kind for the long window. The row's own write is
       // the floor, so a Session this process has never met is judged on that
       // alone — and only ever by this rule, because a Core that has heard no
@@ -449,7 +449,7 @@ export class CoreSessionBackstop {
         // appeared on screen for the window, and its hooks are not the thing
         // carrying the turn (issue 391, narrowed by the review of PR 455).
         const painting = now - stamps.heardAt <= paintingMs;
-        const lastOutput = Math.max(stamps.outputAt, task.updatedAt);
+        const lastOutput = Math.max(stamps.outputAt, session.updatedAt);
         // A Session whose hooks arrive has a better witness than its pixels:
         // if it has printed anything real since its last hook, it is mid-turn
         // and the hook that ends the turn is still coming. A Session that has
@@ -468,44 +468,46 @@ export class CoreSessionBackstop {
       } else if (!quiet) {
         continue;
       }
-      if (this.settle(task.taskId, quiet ? "quiet" : "idle")) settled.push(task.taskId);
+      if (this.settle(session.sessionId, quiet ? "quiet" : "idle")) settled.push(session.sessionId);
     }
     return settled;
   }
 
-  private settle(taskId: string, rule: "quiet" | "idle"): boolean {
+  private settle(sessionId: string, rule: "quiet" | "idle"): boolean {
     // A live PTY means the harness is there and either stopped talking or is
     // only repainting: the turn ended and its `Stop` never arrived. No PTY
     // means the process went away without its exit being recorded, which is
     // not a finish at all.
-    const alive = this.deps.hasLivePty ? this.deps.hasLivePty(taskId) : true;
+    const alive = this.deps.hasLivePty ? this.deps.hasLivePty(sessionId) : true;
     const status = alive ? "finished" : "disconnected";
     try {
-      const updated = this.deps.writer.mutate({ op: "update", taskId, status });
+      const updated = this.deps.writer.mutate({ op: "update", sessionId, status });
       if (!updated) return false;
       // The Session's subagents cannot outlive a turn we just called over, and
       // a finish that this decided must be timestamped like any other — that
       // is what tells a laggard subagent POST from resumed work.
-      clearSubagentActivity(taskId);
-      if (status === "finished") noteTaskFinished(taskId);
-      this.forget(taskId);
+      clearSubagentActivity(sessionId);
+      if (status === "finished") noteSessionFinished(sessionId);
+      this.forget(sessionId);
       // Only the idle rule leaves a marker, and only a `finished` can be taken
       // back — a `disconnected` row has no process left to change its mind.
       if (rule === "idle" && status === "finished") {
-        // The row as this rule left it. Anything that moves `updatedAt` after
-        // this — a real `Stop`, an operator, the Panel — takes the row out of
-        // this rule's hands for good.
-        this.idleSettled.set(taskId, { at: this.now(), rowUpdatedAt: updated.updatedAt });
-        while (this.idleSettled.size > MAX_TRACKED_TASKS) {
+        // The row as this rule left it. `updatedAt` is the row's revision: the
+        // store makes it strictly increase on every write, even within one
+        // millisecond (issue 588), so it identifies this write. Anything that
+        // moves it after this — a real `Stop`, an operator, the Panel — takes
+        // the row out of this rule's hands for good.
+        this.idleSettled.set(sessionId, { at: this.now(), rowUpdatedAt: updated.updatedAt });
+        while (this.idleSettled.size > MAX_TRACKED_SESSIONS) {
           const oldest = this.idleSettled.keys().next().value;
           if (oldest === undefined) break;
           this.idleSettled.delete(oldest);
         }
       }
-      log.info("session-backstop.settled", { taskId, status, rule });
+      log.info("session-backstop.settled", { sessionId, status, rule });
       return true;
     } catch (err) {
-      log.warn("session-backstop.settle-failed", { taskId, status, rule, error: String(err) });
+      log.warn("session-backstop.settle-failed", { sessionId, status, rule, error: String(err) });
       return false;
     }
   }

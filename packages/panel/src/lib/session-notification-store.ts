@@ -2,29 +2,27 @@
 export type SessionFinishNotification = {
   kind: "session-finished";
   id: string;
-  projectId: string;
-  projectName: string;
-  taskTitle: string;
+  sessionTitle: string;
   finishedAt: number;
-  /** The Core the session ran on; null for a Panel-local row. */
-  coreId: string | null;
+  /** The Core the session ran on. */
+  coreId: string;
   coreAlias: string | null;
 };
 
 export type AppNotification = SessionFinishNotification;
 
-/** `coreId` omitted prunes across every Core; `coreId: null` prunes only the
- *  Panel's own rows. */
-export type SessionNotificationPruneTarget =
-  | { type: "task"; taskId: string; projectId?: string; coreId?: string | null }
-  | { type: "project"; projectId: string; coreId?: string | null };
+/** `coreId` omitted prunes across every Core. */
+export type SessionNotificationPruneTarget = {
+  type: "session";
+  sessionId: string;
+  coreId?: string;
+};
 
 export type PendingNotificationOpen = {
   kind: "session-finished";
-  projectId: string;
-  taskId: string;
+  sessionId: string;
   requestedAt: number;
-  coreId: string | null;
+  coreId: string;
   coreAlias?: string | null;
 };
 
@@ -62,21 +60,17 @@ function toSessionFinishNotification(
   value: Record<string, unknown>,
 ): SessionFinishNotification | null {
   const id = typeof value.id === "string" ? value.id : "";
-  const projectId = typeof value.projectId === "string" ? value.projectId : "";
-  const projectName = typeof value.projectName === "string" ? value.projectName : "Project";
-  const taskTitle = typeof value.taskTitle === "string" ? value.taskTitle : "Session";
+  const sessionTitle = typeof value.sessionTitle === "string" ? value.sessionTitle : "Session";
   const finishedAt = typeof value.finishedAt === "number" ? value.finishedAt : 0;
-  if (!id || !projectId || !Number.isFinite(finishedAt)) return null;
-  const coreId =
-    typeof value.coreId === "string" && value.coreId ? value.coreId : null;
+  const coreId = typeof value.coreId === "string" ? value.coreId : "";
+  // A row stored without a Core is a Panel-local one; nothing can open it any more.
+  if (!id || !coreId || !Number.isFinite(finishedAt)) return null;
   const coreAlias =
     typeof value.coreAlias === "string" && value.coreAlias ? value.coreAlias : null;
   return {
     kind: "session-finished",
     id,
-    projectId,
-    projectName,
-    taskTitle,
+    sessionTitle,
     finishedAt,
     coreId,
     coreAlias,
@@ -90,18 +84,15 @@ function toNotification(value: unknown): AppNotification | null {
 
 function toPendingOpen(value: unknown): PendingNotificationOpen | null {
   if (!isRecord(value)) return null;
-  const projectId = typeof value.projectId === "string" ? value.projectId : "";
-  const taskId = typeof value.taskId === "string" ? value.taskId : "";
+  const sessionId = typeof value.sessionId === "string" ? value.sessionId : "";
   const requestedAt = typeof value.requestedAt === "number" ? value.requestedAt : 0;
-  if (!projectId || !taskId || !Number.isFinite(requestedAt)) return null;
-  const coreId =
-    typeof value.coreId === "string" && value.coreId ? value.coreId : null;
+  const coreId = typeof value.coreId === "string" ? value.coreId : "";
+  if (!coreId || !sessionId || !Number.isFinite(requestedAt)) return null;
   const coreAlias =
     typeof value.coreAlias === "string" && value.coreAlias ? value.coreAlias : null;
   return {
     kind: "session-finished",
-    projectId,
-    taskId,
+    sessionId,
     requestedAt,
     coreId,
     coreAlias,
@@ -267,8 +258,7 @@ export function mergeSessionFinishNotification(
         !(
           n.kind === "session-finished" &&
           n.coreId === next.coreId &&
-          n.id === next.id &&
-          n.projectId === next.projectId
+          n.id === next.id
         ),
     ),
   ]);
@@ -278,16 +268,9 @@ function notificationMatchesPruneTarget(
   notification: AppNotification,
   target: SessionNotificationPruneTarget,
 ): boolean {
-  if (target.type === "task") {
-    return (
-      notification.kind === "session-finished" &&
-      notification.id === target.taskId &&
-      (!target.projectId || notification.projectId === target.projectId) &&
-      (target.coreId === undefined || notification.coreId === target.coreId)
-    );
-  }
   return (
-    notification.projectId === target.projectId &&
+    notification.kind === "session-finished" &&
+    notification.id === target.sessionId &&
     (target.coreId === undefined || notification.coreId === target.coreId)
   );
 }
@@ -314,9 +297,9 @@ function notificationPruneTarget(
   notification: AppNotification,
 ): SessionNotificationPruneTarget {
   return {
-    type: "task",
-    taskId: notification.id,
-    projectId: notification.projectId,
+    type: "session",
+    sessionId: notification.id,
+    coreId: notification.coreId,
   };
 }
 
@@ -401,14 +384,26 @@ function dispatchPendingOpen(request: PendingNotificationOpen) {
   );
 }
 
+/** Ask the Core's workspace to open one Session. */
+export function requestSessionOpen(coreId: string, sessionId: string) {
+  if (typeof window === "undefined" || !coreId || !sessionId) return;
+  const request: PendingNotificationOpen = {
+    kind: "session-finished",
+    sessionId,
+    requestedAt: Date.now(),
+    coreId,
+  };
+  writePendingOpen(request);
+  dispatchPendingOpen(request);
+}
+
 export function requestSessionNotificationOpen(
   notification: SessionFinishNotification,
 ) {
   if (typeof window === "undefined") return;
   const request: PendingNotificationOpen = {
     kind: "session-finished",
-    projectId: notification.projectId,
-    taskId: notification.id,
+    sessionId: notification.id,
     requestedAt: Date.now(),
     coreId: notification.coreId,
     coreAlias: notification.coreAlias,
@@ -438,11 +433,11 @@ function readPendingOpenFromKey(
 }
 
 export function readPendingSessionOpen(
-  projectId: string,
+  coreId: string,
 ): PendingNotificationOpen | null {
   const request = readPendingOpenFromKey(PENDING_OPEN_KEY);
   if (!request) return null;
-  return request.projectId === projectId ? request : null;
+  return request.coreId === coreId ? request : null;
 }
 
 export function clearPendingNotificationOpen(request: PendingNotificationOpen) {
@@ -452,8 +447,8 @@ export function clearPendingNotificationOpen(request: PendingNotificationOpen) {
     const current = raw ? toPendingOpen(JSON.parse(raw)) : null;
     if (
       current &&
-      current.projectId === request.projectId &&
-      current.taskId === request.taskId &&
+      current.coreId === request.coreId &&
+      current.sessionId === request.sessionId &&
       current.requestedAt === request.requestedAt
     ) {
       window.localStorage.removeItem(PENDING_OPEN_KEY);

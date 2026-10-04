@@ -1,8 +1,9 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { parseUsageLine } from "../services/token-usage";
+import { closePanelTestDb, openPanelTestDb, resetPanelState } from "./_panel-test-db";
 
 describe("parseUsageLine", () => {
   it("returns null for blank or malformed lines", () => {
@@ -78,67 +79,54 @@ describe("parseUsageLine", () => {
   });
 });
 
-// Integration: ingestion against a real on-disk JSONL + temp DB. Exercises
+// Integration: ingestion against a real on-disk JSONL + PGlite DB. Exercises
 // the dedupe + offset advance contract end-to-end.
+const testDb = await openPanelTestDb();
+const { createOperator } = await import("../services/operator");
+const { createSession, deleteSession } = await import("../services/sessions");
+
 describe("syncTokenUsage", () => {
-  let tempUserDataDir: string;
   let fakeHome: string;
   let savedHome: string | undefined;
-  let savedUserData: string | undefined;
 
-  beforeEach(() => {
-    tempUserDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "mc-usage-data-"));
+  beforeEach(async () => {
+    await resetPanelState(testDb);
+    await createOperator({ name: "Test Operator", password: "test-password" });
     fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), "mc-usage-home-"));
     fs.mkdirSync(path.join(fakeHome, ".claude", "projects", "stub"), {
       recursive: true,
     });
     savedHome = process.env.HOME;
     process.env.HOME = fakeHome;
-    savedUserData = process.env.AC_USER_DATA_DIR;
-    process.env.AC_USER_DATA_DIR = tempUserDataDir;
   });
 
   afterEach(() => {
     if (savedHome === undefined) delete process.env.HOME;
     else process.env.HOME = savedHome;
-    if (savedUserData === undefined) delete process.env.AC_USER_DATA_DIR;
-    else process.env.AC_USER_DATA_DIR = savedUserData;
-    fs.rmSync(tempUserDataDir, { recursive: true, force: true });
     fs.rmSync(fakeHome, { recursive: true, force: true });
   });
 
+  afterAll(async () => {
+    await closePanelTestDb(testDb);
+  });
+
   it("ingests assistant lines, dedupes on re-run, and advances byte offset", async () => {
-    // Fresh module load so it picks up our env-overridden AC_USER_DATA_DIR.
-    const { getDb, getSqlite } = await import("~/db/client");
-    const { syncTokenUsage, _resetSyncSingleton } = await import(
-      "../services/token-usage"
-    );
+    const { syncTokenUsage, _resetSyncSingleton } = await import("../services/token-usage");
     _resetSyncSingleton();
 
-    // Seed project + task referencing a fake claude session id.
-    const sqlite = getSqlite();
-    getDb();
     const sessionId = "sess-xyz";
-    const now = Date.now();
-    sqlite
-      .prepare(
-        `INSERT INTO projects (id, name, path, icon, icon_color, pinned, remember_agent_settings, saved_skip_permissions, saved_bare_session, created_at, updated_at)
-         VALUES ('p1', 'Demo', '/tmp/demo', 'folder', '#888', 0, 0, 0, 0, ?, ?)`
-      )
-      .run(now, now);
-    sqlite
-      .prepare(
-        `INSERT INTO tasks (id, project_id, title, agent, status, branch, preview, lines, archived, claude_session_id, claude_skip_permissions, claude_bare_session, created_at, updated_at)
-         VALUES ('t1', 'p1', 'a session', 'claude-code', 'ready', 'main', '', 0, 0, ?, 0, 0, ?, ?)`
-      )
-      .run(sessionId, now, now);
+    const session = await createSession({
+      title: "a session",
+      agent: "claude-code",
+      claudeSessionId: sessionId,
+    });
 
     const jsonlPath = path.join(
       fakeHome,
       ".claude",
       "projects",
       "stub",
-      `${sessionId}.jsonl`
+      `${sessionId}.jsonl`,
     );
 
     const line1 = JSON.stringify({
@@ -183,16 +171,12 @@ describe("syncTokenUsage", () => {
     const ingested3 = await syncTokenUsage();
     expect(ingested3).toBe(1);
 
-    const total = sqlite
-      .prepare("SELECT COUNT(*) AS c FROM token_usage")
-      .get() as { c: number };
-    expect(total.c).toBe(2);
+    const total = await testDb.pool.query("select count(*)::int as c from token_usage");
+    expect(total.rows[0]!.c).toBe(2);
 
-    // Cascade-delete: removing the task should clear its usage rows.
-    sqlite.prepare("DELETE FROM tasks WHERE id = 't1'").run();
-    const after = sqlite
-      .prepare("SELECT COUNT(*) AS c FROM token_usage")
-      .get() as { c: number };
-    expect(after.c).toBe(0);
+    // Cascade-delete: removing the session should clear its usage rows.
+    await deleteSession(session.id);
+    const after = await testDb.pool.query("select count(*)::int as c from token_usage");
+    expect(after.rows[0]!.c).toBe(0);
   });
 });

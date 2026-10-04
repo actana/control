@@ -1,14 +1,13 @@
 // Core-side mutation store — a read-write handle to the shared SQLite's
-// projects + tasks tables, owned by the Core (PTY-manager) process.
+// sessions table, owned by the Core (PTY-manager) process.
 //
 // Backs the `CoreMutationPort` consumed by `PtyCoreLinkServer` for the
-// `projectsMutate` / `tasksMutate` / `sessionsList` core-link frames (issue
+// `sessionsMutate` / `sessionsList` core-link frames (issue
 // 04, ADR 0004). On a remote Core no sibling stateful server runs, so the
 // Core itself owns writes against `missioncontrol.db` — schema bootstrap
 // (issue 02), read snapshots (issue 07), and now mutations (this file) all
 // live in the same process. Pure SQL helpers in `src/shared/core-mutations.ts`
-// are the shape; this file just owns the RW connection lifecycle and threads
-// the Node-side path probe through path validation.
+// are the shape; this file just owns the RW connection lifecycle.
 //
 // Mirrors the connection pattern in event-log-store.ts and core-query-store.ts:
 // lazy open, degrade gracefully when the DB is missing (the bootstrap step must
@@ -18,31 +17,19 @@
 
 import Database from "better-sqlite3";
 import log from "@actana/shared/log";
-import * as fs from "node:fs";
 import * as path from "node:path";
 import {
-  archiveProject as archiveProjectSql,
-  createProject as createProjectSql,
-  createTask as createTaskSql,
-  deleteTask as deleteTaskSql,
-  pinProject as pinProjectSql,
+  createSession as createSessionSql,
+  deleteSession as deleteSessionSql,
   querySessions as querySessionsSql,
-  renameProject as renameProjectSql,
-  updateProjectAppearance as updateProjectAppearanceSql,
-  updateProjectSettings as updateProjectSettingsSql,
-  updateTask as updateTaskSql,
-  validateProjectPath,
+  recordPromptBlockVersion as recordPromptBlockVersionSql,
+  updateSession as updateSessionSql,
   type CoreMutationSqlite,
+  type CoreSessionMutation,
   type LivePtyProbe,
-  type ProjectPathProbe,
 } from "@actana/shared/core-mutations";
-import type {
-  CoreLinkProjectMutation,
-  CoreLinkProjectSnapshot,
-  CoreLinkSessionSnapshot,
-  CoreLinkTaskMutation,
-  CoreLinkTaskSnapshot,
-} from "@actana/sdk/core-link-frames";
+import type { CoreSessionRow } from "@actana/shared/core-query";
+import type { CoreLinkSessionSnapshot } from "@actana/sdk/core";
 import type { CoreMutationPort } from "./pty-core-link-server";
 
 export type { CoreMutationPort };
@@ -50,17 +37,6 @@ export type { CoreMutationPort };
 let db: Database.Database | null = null;
 let dbPath: string | null = null;
 let livePtyProbe: LivePtyProbe = () => null;
-
-const NODE_PATH_PROBE: ProjectPathProbe = {
-  isAbsolute: (p) => path.isAbsolute(p),
-  statSync: (p) => {
-    try {
-      return fs.statSync(p);
-    } catch {
-      return null;
-    }
-  },
-};
 
 /**
  * Configure the mutation store to point at the shared SQLite file. Must be
@@ -74,7 +50,7 @@ export function configureCoreMutationStore(userDataDir: string): void {
 }
 
 /**
- * Register the live-PTY probe used by `listSessions` to enrich task rows with
+ * Register the live-PTY probe used by `listSessions` to enrich session rows with
  * their currently-running `ptyId`. Called from the Core entry after
  * `PtyCore` is constructed — kept as a setter so this module has no
  * import-time dependency on `PtyCore`.
@@ -104,58 +80,37 @@ function ensureConnection(): Database.Database {
  * The read-write `CoreMutationPort` backed by the shared SQLite. Throws on
  * a missing/invalid DB rather than silently returning `null` — the caller
  * (`PtyCoreLinkServer`) translates thrown errors into `error` frames so the
- * Panel sees "project path missing" instead of "nothing happened".
+ * Panel sees the reason instead of "nothing happened".
  *
  * The Core passes this to `PtyCoreLinkServer` so the Panel's
- * `projectsMutate` / `tasksMutate` / `sessionsList` frames resolve against
+ * `sessionsMutate` / `sessionsList` frames resolve against
  * the same DB the read-only query port serves — one shared SQLite, WAL keeps
  * a reader coexisting with two writers (event log + row mutations).
  */
 export const coreMutationStore: CoreMutationPort = {
-  mutateProject(mutation: CoreLinkProjectMutation): CoreLinkProjectSnapshot | null {
-    const conn = ensureConnection() as unknown as CoreMutationSqlite;
-    const now = Date.now();
-    switch (mutation.op) {
-      case "create": {
-        const validatedPath = validateProjectPath(mutation.path, NODE_PATH_PROBE);
-        return createProjectSql(conn, mutation, validatedPath, now);
-      }
-      case "rename":
-        return renameProjectSql(conn, mutation.projectId, mutation.name, now);
-      case "archive":
-        return archiveProjectSql(conn, mutation.projectId);
-      case "pin":
-        return pinProjectSql(conn, mutation.projectId, mutation.pinned, now);
-      case "settings":
-        return updateProjectSettingsSql(conn, mutation, now);
-      case "appearance":
-        return updateProjectAppearanceSql(conn, mutation, now);
-    }
-    // Runtime guard for a stale-shape frame that parsed as `projectsMutate`
-    // but carried an unknown `op`. `parseCoreLinkRequestFrame` only checks
-    // the outer `type`, so a Panel sending an older or malformed mutation
-    // payload lands here — throw so the server sends an actionable `error`
-    // frame instead of silently no-op'ing.
-    throw new Error(`unknown project mutation op: ${(mutation as { op?: string }).op}`);
-  },
-  mutateTask(mutation: CoreLinkTaskMutation): CoreLinkTaskSnapshot | null {
+  mutateSession(mutation: CoreSessionMutation): CoreSessionRow | null {
     const conn = ensureConnection() as unknown as CoreMutationSqlite;
     const now = Date.now();
     switch (mutation.op) {
       case "create":
-        return createTaskSql(conn, mutation, now);
+        return createSessionSql(conn, mutation, now);
       case "update":
-        return updateTaskSql(conn, mutation, now);
+        return updateSessionSql(conn, mutation, now);
       case "delete":
-        return deleteTaskSql(conn, mutation.taskId);
+        return deleteSessionSql(conn, mutation.sessionId);
     }
-    throw new Error(`unknown task mutation op: ${(mutation as { op?: string }).op}`);
+    throw new Error(`unknown session mutation op: ${(mutation as { op?: string }).op}`);
   },
-  listSessions(projectId?: string): CoreLinkSessionSnapshot[] {
+  listSessions(): CoreLinkSessionSnapshot[] {
     const conn = ensureConnection() as unknown as CoreMutationSqlite;
-    return querySessionsSql(conn, livePtyProbe, projectId);
+    return querySessionsSql(conn, livePtyProbe);
   },
 };
+
+/** Record which standard prompt block version a Session was handed (issue 563). */
+export function recordPromptBlockVersion(sessionId: string, version: number): void {
+  recordPromptBlockVersionSql(ensureConnection() as unknown as CoreMutationSqlite, sessionId, version);
+}
 
 /** Close the connection. Called on Core shutdown. */
 export function disposeCoreMutationStore(): void {

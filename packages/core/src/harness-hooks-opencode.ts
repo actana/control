@@ -29,7 +29,7 @@
 // The three rules the JSON writers follow apply here unchanged. The file is
 // tagged `@actana-control-managed` so a later spawn replaces exactly what an
 // earlier one wrote and never an operator's own plugin. It carries no secret —
-// the URL, the token and the task id are read from the PTY's environment, so
+// the URL, the token and the session id are read from the PTY's environment, so
 // the file stays valid across a Core restart that mints a new token. And it is
 // fail-soft in every direction: no environment means the plugin does nothing,
 // every POST swallows its own errors, and nothing it does is awaited by the
@@ -39,7 +39,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import {
   HOOK_MISS_LOG_ENV,
-  HOOK_TASK_ID_ENV,
+  HOOK_SESSION_ID_ENV,
   HOOK_TOKEN_ENV,
   HOOK_URL_ENV,
 } from "./harness-hook-env";
@@ -66,7 +66,7 @@ export function opencodePluginSource(slug: string): string {
 
 const HOOK_URL = process.env.${HOOK_URL_ENV};
 const HOOK_TOKEN = process.env.${HOOK_TOKEN_ENV};
-const HOOK_TASK_ID = process.env.${HOOK_TASK_ID_ENV};
+const HOOK_SESSION_ID = process.env.${HOOK_SESSION_ID_ENV};
 const MISS_LOG = process.env.${HOOK_MISS_LOG_ENV};
 const ENDPOINT = ${JSON.stringify(`/api/hooks/${slug}`)};
 const TIMEOUT_MS = 3000;
@@ -75,7 +75,7 @@ const ATTEMPTS = 2;
 export const ActanaControl = async () => {
   // No environment means no Core listening for this session — a plugin file
   // left behind in a workspace someone opened by hand. Do nothing at all.
-  if (!HOOK_URL || !HOOK_TOKEN || !HOOK_TASK_ID) return {};
+  if (!HOOK_URL || !HOOK_TOKEN || !HOOK_SESSION_ID) return {};
 
   // OpenCode's own session is the first one; a subagent runs in a child
   // session, and its busy/idle would otherwise report as the Session's. The
@@ -99,7 +99,7 @@ export const ActanaControl = async () => {
     try {
       const fs = await import("node:fs");
       const at = new Date().toISOString().replace(/\\.\\d+Z$/, "Z");
-      fs.appendFileSync(MISS_LOG, at + "\\t" + HOOK_TASK_ID + "\\t" + event + "\\t" + reason + "\\n");
+      fs.appendFileSync(MISS_LOG, at + "\\t" + HOOK_SESSION_ID + "\\t" + event + "\\t" + reason + "\\n");
     } catch {}
   };
 
@@ -107,8 +107,8 @@ export const ActanaControl = async () => {
     const url =
       HOOK_URL +
       ENDPOINT +
-      "?taskId=" +
-      encodeURIComponent(HOOK_TASK_ID) +
+      "?sessionId=" +
+      encodeURIComponent(HOOK_SESSION_ID) +
       "&hookEvent=" +
       encodeURIComponent(event);
     const res = await fetch(url, {
@@ -133,7 +133,7 @@ export const ActanaControl = async () => {
         await send(event, body);
         return;
       } catch (err) {
-        // A refused task (404) is settled, not transient — retrying it just
+        // A refused session (404) is settled, not transient — retrying it just
         // spends another round trip to be told the same thing.
         lastReason = String((err && err.message) || err).replace(/\\s+/g, " ");
         if (lastReason === "http-404" || lastReason === "http-401") break;

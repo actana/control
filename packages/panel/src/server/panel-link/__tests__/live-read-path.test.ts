@@ -1,4 +1,5 @@
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
+import { closePanelTestDb, openPanelTestDb } from "../../__tests__/_panel-test-db";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -15,12 +16,9 @@ import {
 import { generateCertMaterial } from "@actana/shared/core-cert-material";
 import { signBearer, verifyBearer } from "@actana/shared/core-link-bearer";
 import type { PtyCore } from "@actana/core/pty-manager";
-import { CORE_LINK_PROTOCOL_VERSION } from "@actana/sdk/core-link-frames";
-import type {
-  CoreLinkEvent,
-  CoreLinkProjectSnapshot,
-  CoreLinkTaskSnapshot,
-} from "@actana/sdk/core-link-frames";
+import { CORE_LINK_PROTOCOL_VERSION } from "@actana/sdk/core";
+import type { CoreLinkEvent } from "@actana/sdk/core";
+import type { CoreSessionRow } from "@actana/shared/core-query";
 import type { PanelLinkClientFrame, PanelLinkServerFrame } from "~/shared/panel-link";
 
 /**
@@ -28,7 +26,7 @@ import type { PanelLinkClientFrame, PanelLinkServerFrame } from "~/shared/panel-
  * dialing it, and a browser holding one panel link.
  *
  * Everything here is driven the way a tab drives it — frames on a WebSocket —
- * so "the Fleet view sees this Core's tasks" means the query actually crossed
+ * so "the Fleet view sees this Core's sessions" means the query actually crossed
  * two hops and came back, not that a fake resolved.
  */
 
@@ -37,7 +35,7 @@ process.env.AC_USER_DATA_DIR = path.join(tmpRoot, "app");
 process.env.AC_PANEL_DATA_DIR = path.join(tmpRoot, "panel");
 
 const { handleApiRequest } = await import("../../api-router");
-const { closePanelDb, getPanelDb } = await import("../../panel-db");
+const testDb = await openPanelTestDb();
 const { operatorSessionCookie } = await import("../../__tests__/_operator-session");
 const { attachPanelLink } = await import("../ws-server");
 const { coreLinkManager } = await import("../../services/core-link-manager");
@@ -69,10 +67,10 @@ class Tab {
     ws.on("message", (raw) => this.received.push(JSON.parse(String(raw)) as PanelLinkServerFrame));
   }
 
-  static open(): Promise<Tab> {
+  static async open(): Promise<Tab> {
     const ws = new WebSocket(
       `ws://127.0.0.1:${panelPort}${PANEL_LINK_PATH}?${PANEL_LINK_VERSION_PARAM}=${PANEL_LINK_PROTOCOL_VERSION}`,
-      { headers: { cookie: operatorSessionCookie() } },
+      { headers: { cookie: (await operatorSessionCookie()) } },
     );
     const tab = new Tab(ws);
     return new Promise((resolve, reject) => {
@@ -146,10 +144,10 @@ function mockCore(): PtyCore {
     kill: () => true,
     killLaunchProcesses: async () => ({ ptyCount: 0, ports: [] }),
     killPtysUnderPath: async () => ({ ptyCount: 0 }),
-    findByTask: () => ({ ptyId: null }),
+    findBySession: () => ({ ptyId: null }),
     // Which Session a `write`/`kill` would touch (issue 144) — the lookup
     // the Core's Session-lock gate resolves a ptyId through.
-    taskIdForPty: () => null,
+    sessionIdForPty: () => null,
     replay: () => ({ data: "", nextSeq: 0 }),
     killAll: () => {},
   } as unknown as PtyCore;
@@ -221,7 +219,7 @@ function growableEventLog(): EventLogPort & { push(kind: string): number } {
         ts: Date.now(),
         kind,
         ptyId: null,
-        taskId: null,
+        sessionId: null,
         payload: "{}",
       };
       events.push(event);
@@ -233,24 +231,8 @@ function growableEventLog(): EventLogPort & { push(kind: string): number } {
   };
 }
 
-const PROJECT: CoreLinkProjectSnapshot = {
-  projectId: "proj_1",
-  name: "warehouse",
-  path: "/srv/warehouse",
-  icon: "folder",
-  iconColor: "#3b6ea5",
-  pinned: false,
-  rememberHarnessSettings: false,
-  savedHarness: null,
-  savedSkipPermissions: false,
-  savedBareSession: false,
-  defaultGridView: false,
-  updatedAt: 1,
-};
-
-const TASK: CoreLinkTaskSnapshot = {
-  taskId: "task_1",
-  projectId: "proj_1",
+const SESSION: CoreSessionRow = {
+  sessionId: "session_1",
   title: "restock the shelves",
   titleManuallySet: false,
   claudeSessionId: null,
@@ -262,9 +244,8 @@ const TASK: CoreLinkTaskSnapshot = {
   updatedAt: 2,
 };
 
-const ARCHIVED_TASK: CoreLinkTaskSnapshot = {
-  taskId: "task_old",
-  projectId: "proj_1",
+const ARCHIVED_SESSION: CoreSessionRow = {
+  sessionId: "session_old",
   title: "last winter's stocktake",
   titleManuallySet: false,
   claudeSessionId: null,
@@ -277,14 +258,11 @@ const ARCHIVED_TASK: CoreLinkTaskSnapshot = {
 };
 
 function queryPort(): CoreQueryPort {
-  const scoped = (projectId: string | undefined) =>
-    projectId && projectId !== PROJECT.projectId;
   return {
-    listProjects: () => [PROJECT],
-    listTasks: (projectId) => (scoped(projectId) ? [] : [TASK]),
-    listArchivedTasks: (projectId) => (scoped(projectId) ? [] : [ARCHIVED_TASK]),
-    countArchivedTasks: (projectId) => (scoped(projectId) ? 0 : 1),
-    getTask: (taskId) => (taskId === TASK.taskId ? TASK : null),
+    listSessionRows: () => [SESSION],
+    listArchivedSessions: () => [ARCHIVED_SESSION],
+    countArchivedSessions: () => 1,
+    getSession: (sessionId) => (sessionId === SESSION.sessionId ? SESSION : null),
   };
 }
 
@@ -337,13 +315,13 @@ async function pair(
   // /api/cores` to paste a blob at any more (#287). `operatorSessionCookie`
   // first because the registry row's foreign key points at the Operator, which
   // an HTTP registration used to create on the way past.
-  operatorSessionCookie();
-  const coreId = registerCoreFromCredential(core.credential).id;
-  coreLinkManager().dial(coreId);
+  (await operatorSessionCookie());
+  const coreId = (await registerCoreFromCredential(core.credential)).id;
+  await coreLinkManager().dial(coreId);
   paired.push(coreId);
   await vi.waitFor(async () => {
     const listing = await handleApiRequest(
-      new Request(`${ORIGIN}/api/cores`, { headers: { cookie: operatorSessionCookie() } }),
+      new Request(`${ORIGIN}/api/cores`, { headers: { cookie: (await operatorSessionCookie()) } }),
     );
     const cores = ((await listing!.json()) as { cores: { id: string; dial: { state: string } }[] })
       .cores;
@@ -368,71 +346,55 @@ afterEach(async () => {
     await handleApiRequest(
       new Request(`${ORIGIN}/api/cores/${coreId}`, {
         method: "DELETE",
-        headers: { cookie: operatorSessionCookie() },
+        headers: { cookie: (await operatorSessionCookie()) },
       }),
     );
   }
   for (const server of running.splice(0)) server.close();
-  const db = getPanelDb();
-  db.prepare("DELETE FROM core_secrets").run();
-  db.prepare("DELETE FROM cores").run();
+  await testDb.pool.query("delete from core_secrets");
+  await testDb.pool.query("delete from cores");
 });
 
 afterAll(async () => {
   await new Promise<void>((resolve) => panel.close(() => resolve()));
-  closePanelDb();
+  await closePanelTestDb(testDb);
   fs.rmSync(tmpRoot, { recursive: true, force: true });
 });
 
 describe("the live read path, browser to Core", () => {
-  it("answers a project query from the Core itself", async () => {
+
+  it("answers a session query", async () => {
     const { coreId } = await pair();
     const tab = await openTab();
 
-    const answer = await tab.ask(coreId, { type: "projectsList" });
+    const answer = await tab.ask(coreId, { type: "sessionRowsList" });
 
-    expect(answer).toMatchObject({
-      type: "projectsListResult",
-      projects: [expect.objectContaining({ projectId: "proj_1", name: "warehouse" })],
-    });
+    expect(answer.sessions).toEqual([expect.objectContaining({ sessionId: "session_1" })]);
   });
 
-  it("answers a task query, scoped to a project", async () => {
-    const { coreId } = await pair();
-    const tab = await openTab();
-
-    const mine = await tab.ask(coreId, { type: "tasksList", projectId: "proj_1" });
-    const theirs = await tab.ask(coreId, { type: "tasksList", projectId: "proj_other" });
-
-    expect(mine.tasks).toEqual([expect.objectContaining({ taskId: "task_1" })]);
-    expect(theirs.tasks).toEqual([]);
-  });
-
-  // ADR 0019: the tab learns how many archived Sessions a project holds
+  // ADR 0019: the tab learns how many archived Sessions a Core holds
   // without a single archived row travelling the active answer. The rows come
   // back only when it asks for them, over their own frame.
-  it("answers a task query with the archived count but never an archived row", { timeout: 20_000 }, async () => {
+  it("answers a session query with the archived count but never an archived row", { timeout: 20_000 }, async () => {
     const { coreId } = await pair();
     const tab = await openTab();
 
-    const answer = await tab.ask(coreId, { type: "tasksList", projectId: "proj_1" });
+    const answer = await tab.ask(coreId, { type: "sessionRowsList" });
 
-    const rows = answer.tasks as Array<{ archived: boolean }>;
-    expect(rows).toEqual([expect.objectContaining({ taskId: "task_1" })]);
+    const rows = answer.sessions as Array<{ archived: boolean }>;
+    expect(rows).toEqual([expect.objectContaining({ sessionId: "session_1" })]);
     expect(rows.every((t) => !t.archived)).toBe(true);
     expect(answer.archivedCount).toBe(1);
   });
 
-  it("answers an archived task query, scoped to a project", { timeout: 20_000 }, async () => {
+  it("answers an archived session query", { timeout: 20_000 }, async () => {
     const { coreId } = await pair();
     const tab = await openTab();
 
-    const mine = await tab.ask(coreId, { type: "archivedTasksList", projectId: "proj_1" });
-    const theirs = await tab.ask(coreId, { type: "archivedTasksList", projectId: "proj_other" });
+    const answer = await tab.ask(coreId, { type: "archivedSessionRowsList" });
 
-    expect(mine).toMatchObject({ type: "archivedTasksListResult" });
-    expect(mine.tasks).toEqual([expect.objectContaining({ taskId: "task_old", archived: true })]);
-    expect(theirs.tasks).toEqual([]);
+    expect(answer).toMatchObject({ type: "archivedSessionRowsListResult" });
+    expect(answer.sessions).toEqual([expect.objectContaining({ sessionId: "session_old", archived: true })]);
   });
 
   it("carries one tab's queries to several Cores over the one link", async () => {
@@ -440,17 +402,17 @@ describe("the live read path, browser to Core", () => {
     const second = await pair("vm-b");
     const tab = await openTab();
 
-    const a = await tab.ask(first.coreId, { type: "projectsList" });
-    const b = await tab.ask(second.coreId, { type: "projectsList" });
+    const a = await tab.ask(first.coreId, { type: "sessionRowsList" });
+    const b = await tab.ask(second.coreId, { type: "sessionRowsList" });
 
-    expect(a.type).toBe("projectsListResult");
-    expect(b.type).toBe("projectsListResult");
+    expect(a.type).toBe("sessionRowsListResult");
+    expect(b.type).toBe("sessionRowsListResult");
   });
 
   it("answers for a Core it cannot reach rather than leaving the tab waiting", async () => {
     const tab = await openTab();
 
-    const answer = await tab.ask("core_nonexistent", { type: "projectsList" });
+    const answer = await tab.ask("core_nonexistent", { type: "sessionRowsList" });
 
     expect(answer).toMatchObject({ type: "error", message: expect.stringContaining("connected") });
   });
@@ -460,10 +422,10 @@ describe("the live read path, browser to Core", () => {
     const tab = await openTab();
     tab.subscribe(coreId, 0);
 
-    core.log.push("task:statusChanged");
+    core.log.push("session:statusChanged");
 
     await vi.waitFor(
-      () => expect(tab.events(coreId).map((e) => e.kind)).toContain("task:statusChanged"),
+      () => expect(tab.events(coreId).map((e) => e.kind)).toContain("session:statusChanged"),
       10_000,
     );
   });
@@ -475,7 +437,7 @@ describe("the live read path, browser to Core", () => {
     one.subscribe(coreId, 0);
     two.subscribe(coreId, 0);
 
-    core.log.push("task:created");
+    core.log.push("session:created");
 
     await vi.waitFor(() => {
       expect(one.events(coreId)).toHaveLength(1);
@@ -487,7 +449,7 @@ describe("the live read path, browser to Core", () => {
     const { coreId, core } = await pair();
     // The Panel service is up and dialing this Core; no browser is on it. The
     // Session ends anyway, and the log is the only record that it did (#388).
-    core.log.push("task:statusChanged");
+    core.log.push("session:statusChanged");
     core.log.push("session:finished");
 
     // The service is what has to have them before the question means anything:
@@ -510,19 +472,19 @@ describe("the live read path, browser to Core", () => {
       10_000,
     );
     // The finish only: the rest of what it missed is what its queries fetch.
-    expect(fresh.events(coreId).map((e) => e.kind)).not.toContain("task:statusChanged");
+    expect(fresh.events(coreId).map((e) => e.kind)).not.toContain("session:statusChanged");
   });
 
   it("replays what a tab missed while its link was down", { timeout: 20_000 }, async () => {
     const { coreId, core } = await pair();
     const before = await openTab();
     before.subscribe(coreId, 0);
-    core.log.push("task:created");
+    core.log.push("session:created");
     await vi.waitFor(() => expect(before.events(coreId)).toHaveLength(1), 5_000);
     before.close();
 
     // Off the air while the fleet keeps working.
-    core.log.push("task:statusChanged");
+    core.log.push("session:statusChanged");
     core.log.push("session:finished");
     await vi.waitFor(() => expect(core.log.getLastEventId()).toBe(3));
 
@@ -551,7 +513,7 @@ describe("a Core speaking a protocol this Panel does not", () => {
     });
 
     const listing = await handleApiRequest(
-      new Request(`${ORIGIN}/api/cores`, { headers: { cookie: operatorSessionCookie() } }),
+      new Request(`${ORIGIN}/api/cores`, { headers: { cookie: (await operatorSessionCookie()) } }),
     );
     const { cores } = (await listing!.json()) as {
       cores: { id: string; dial: { state: string; coreVersion?: string; panelVersion?: string } }[];
@@ -569,11 +531,11 @@ describe("a Core speaking a protocol this Panel does not", () => {
     });
     const tab = await openTab();
 
-    const projects = await tab.ask(coreId, { type: "projectsList" });
-    const tasks = await tab.ask(coreId, { type: "tasksList" });
+    const archived = await tab.ask(coreId, { type: "archivedSessionRowsList" });
+    const sessions = await tab.ask(coreId, { type: "sessionRowsList" });
 
-    expect(projects).toMatchObject({ type: "error", message: expect.stringMatching(/update/i) });
-    expect(tasks).toMatchObject({ type: "error", message: expect.stringMatching(/update/i) });
+    expect(archived).toMatchObject({ type: "error", message: expect.stringMatching(/update/i) });
+    expect(sessions).toMatchObject({ type: "error", message: expect.stringMatching(/update/i) });
   });
 
   it("keeps its events off every tab", { timeout: 20_000 }, async () => {
@@ -599,10 +561,10 @@ describe("a Core speaking a protocol this Panel does not", () => {
     const current = await pair("current-vm");
     const tab = await openTab();
 
-    const refused = await tab.ask(stale.coreId, { type: "projectsList" });
-    const answered = await tab.ask(current.coreId, { type: "projectsList" });
+    const refused = await tab.ask(stale.coreId, { type: "sessionRowsList" });
+    const answered = await tab.ask(current.coreId, { type: "sessionRowsList" });
 
     expect(refused.type).toBe("error");
-    expect(answered.type).toBe("projectsListResult");
+    expect(answered.type).toBe("sessionRowsListResult");
   });
 });

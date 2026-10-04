@@ -522,6 +522,17 @@ export type HarnessReadiness = {
    * {@link HarnessPromptDelivery.promptIsInComposer}.
    */
   maxPromptWrites: number;
+  /**
+   * The composer's placeholder disappears once it holds text, and this harness
+   * may draw that text in a form the echo probe cannot read (a collapsed paste
+   * block, or a long prompt scrolled so only its end shows). When set, a screen
+   * that painted after the write and shows no placeholder goes to submit, not
+   * to retype: a retype clears the screen and waits for a placeholder that
+   * cannot come back while the text is in the box, and ends `abandoned` with the
+   * prompt visible. Pair it with {@link PromptDeliveryProfile.submitRetryGapsMs},
+   * which makes a wrong guess visible instead of a false delivery.
+   */
+  textHidesComposerMarker?: boolean;
 };
 
 const NO_READINESS: HarnessReadiness = {
@@ -686,7 +697,8 @@ const NO_READINESS: HarnessReadiness = {
  * composer gate, so a harness that had taken the prompt would be re-typed at
  * and then abandoned. The failing shape would be a long prompt rendered as a
  * collapsed paste chip, because {@link PASTE_PLACEHOLDER} transcribes Claude
- * Code's `[Pasted text #1 …]` and would not match codex's wording.
+ * Code's `[Pasted text #1 …]` and OpenCode's `[Pasted ~N lines]` and would not
+ * match codex's wording.
  *
  * It does not happen. `sanitizeInitialInput` flattens a multi-line prompt to
  * one line before delivery sees it, and an 800-character sub-agent contract
@@ -725,6 +737,7 @@ export const HARNESS_READINESS: Partial<Record<Harness, HarnessReadiness>> = {
     composer: [/ask anything/i],
     confirmEcho: true,
     maxPromptWrites: 3,
+    textHidesComposerMarker: true,
   },
   "cursor-cli": {
     composer: [/plan,\s*search,\s*build/i],
@@ -778,8 +791,11 @@ export function composerOnScreen(screen: string, readiness: HarnessReadiness): b
  */
 const ECHO_PROBE_CHARS = 12;
 
-/** `[Pasted text #1 +12 lines]` — a landed prompt the composer does not echo. */
-const PASTE_PLACEHOLDER = /\[\s*pasted\s+text/i;
+/**
+ * `[Pasted text #1 +12 lines]` (Claude Code) or `[Pasted ~12 lines]` (OpenCode)
+ * — a landed prompt the composer does not echo.
+ */
+const PASTE_PLACEHOLDER = /\[\s*pasted\s+(text|~)/i;
 
 /**
  * Whitespace and the glyphs a composer draws its own frame out of.
@@ -868,6 +884,20 @@ export type PromptDeliveryProfile = {
   submitPerCharMs: number;
   /** The ceiling on that scaling. */
   submitMaxMs: number;
+  /**
+   * Gaps before each re-check of a submit, in order; the length is the number
+   * of steps this module takes, each sending one more `\r` unless the screen
+   * moved. Unset means one submit, delivered at once, and no checking.
+   *
+   * OpenCode collapses a large write into a paste block and a `\r` that lands
+   * before the TUI is ready for it is swallowed: the prompt stays in the
+   * composer and the Session stays in `needs-input` (1.18.34; a fixed second
+   * `\r` one second later, PR 669, was not enough). With this set the prompt is
+   * `delivered` only once the harness's working hint is seen ({@link turnStarted});
+   * painted chunks alone only stop further returns. If the hint never comes
+   * before the steps run out the delivery ends `abandoned`.
+   */
+  submitRetryGapsMs?: readonly number[];
   /** How many keystrokes this module will spend getting past dialogs. */
   maxDialogKeystrokes: number;
 };
@@ -915,7 +945,14 @@ export const DEFAULT_PROMPT_DELIVERY_PROFILE: PromptDeliveryProfile = {
 export const HARNESS_PROMPT_DELIVERY_PROFILES: Partial<
   Record<Harness, Partial<PromptDeliveryProfile>>
 > = {
-  opencode: { composerWaitMs: 90_000 },
+  // OpenCode collapses a long paste into a block and swallows a `\r` that comes
+  // too early, so its submit is verified and retried. Claude Code, codex,
+  // cursor-cli and pi take the single `\r` after `submitPauseMs` on a long
+  // prompt, so they get no entry.
+  opencode: {
+    composerWaitMs: 90_000,
+    submitRetryGapsMs: [1_000, 2_000, 4_000, 7_000, 10_000],
+  },
 };
 
 export function deliveryProfileFor(harness: string): PromptDeliveryProfile {
@@ -947,7 +984,9 @@ export type PromptDeliveryPhase =
   | "answering"
   /** The prompt is written; waiting to send the carriage return. */
   | "typing"
-  /** The carriage return went out. */
+  /** The carriage return went out and the harness has yet to show a turn start. */
+  | "submitted"
+  /** The carriage return went out (and, where it is verified, a turn started). */
   | "delivered"
   /** Gave up without typing anything. The session is alive and untouched. */
   | "abandoned";
@@ -1013,6 +1052,12 @@ export type PromptDeliveryOptions = {
 const SCREEN_WINDOW_CHARS = 8_000;
 /** How many recent redraw signatures count as "we have seen this frame". */
 const SIGNATURE_RING = 6;
+/** OpenCode's busy footer: `esc interrupt` while a turn is running. */
+const WORKING_HINT = /esc\s+(to\s+)?interrupt/i;
+/** Painted chunks since a `\r` that mean a turn started (one is a paste block). */
+const WORKING_PAINTS = 2;
+/** An absolute cursor move, `ESC[row;colH`: layout between words, not deletion. */
+const CURSOR_POSITION = new RegExp("\\u001B\\[[0-9]*;?[0-9]*[Hf]", "g");
 
 /**
  * Delivers one starting prompt to one harness, driven by that harness's own
@@ -1057,6 +1102,13 @@ export class HarnessPromptDelivery {
   private cancelDeadline: (() => void) | null = null;
   /** The marker ceiling (issue 483). Only ever armed for a markered harness. */
   private cancelComposerCeiling: (() => void) | null = null;
+  private cancelSubmitCheck: (() => void) | null = null;
+  // Verification of the submit, after the delivery itself is over.
+  private verifying = false;
+  private pendingDelivered: PromptDeliveryEvent | null = null;
+  private submitRetries = 0;
+  private sinceSubmit = "";
+  private sinceSubmitPaints = 0;
 
   constructor(private readonly opts: PromptDeliveryOptions) {
     this.profile = opts.profile ?? deliveryProfileFor(opts.harness);
@@ -1073,7 +1125,10 @@ export class HarnessPromptDelivery {
 
   /** Every chunk the PTY produced, in order. */
   onOutput(chunk: string): void {
-    if (this.finished) return;
+    if (this.finished) {
+      this.observeAfterSubmit(chunk);
+      return;
+    }
 
     // The quiet window opens on the harness's first byte, not on the spawn.
     // Before there is any output there is nothing that could have gone quiet,
@@ -1124,6 +1179,10 @@ export class HarnessPromptDelivery {
     this.cancelDeadline = null;
     this.cancelComposerCeiling?.();
     this.cancelComposerCeiling = null;
+    this.cancelSubmitCheck?.();
+    this.cancelSubmitCheck = null;
+    this.verifying = false;
+    this.pendingDelivered = null;
     if (!this.finished) this.phase = "abandoned";
   }
 
@@ -1133,7 +1192,9 @@ export class HarnessPromptDelivery {
   }
 
   private get finished(): boolean {
-    return this.phase === "delivered" || this.phase === "abandoned";
+    return (
+      this.phase === "delivered" || this.phase === "abandoned" || this.phase === "submitted"
+    );
   }
 
   // The one timer. Re-armed on every paint and after every keystroke we send,
@@ -1166,6 +1227,10 @@ export class HarnessPromptDelivery {
       // swallowed — submitting now would send a carriage return into an empty
       // composer and report a delivery that never happened.
       if (!this.echoConfirmed()) {
+        if (this.composerHoldsUnreadableText()) {
+          this.submit(now);
+          return;
+        }
         this.retypePrompt();
         return;
       }
@@ -1192,6 +1257,23 @@ export class HarnessPromptDelivery {
     if (this.deadlinePassed) return true;
     if (this.promptWrites >= this.readiness.maxPromptWrites) return true;
     return promptEchoed(this.screen, this.opts.prompt);
+  }
+
+  /**
+   * The harness painted after our write and the empty-composer placeholder is
+   * gone: for a harness that says its text hides the marker
+   * (`textHidesComposerMarker`) that is a composer holding the prompt, in a form
+   * {@link promptEchoed} cannot read. The screen text is not matched any
+   * further, because a long prompt scrolls inside the box and what is visible
+   * cannot be predicted. Being wrong costs a return into an empty composer, and
+   * the verify loop (see {@link turnStarted}) catches that: the delivery is
+   * reported only once a turn has started, and ends `abandoned` if none does.
+   * A repainted placeholder means "empty, retype".
+   */
+  private composerHoldsUnreadableText(): boolean {
+    if (!this.readiness.textHidesComposerMarker || this.promptWrites === 0) return false;
+    if (composerOnScreen(this.screen, this.readiness)) return false;
+    return stripAnsi(this.screen).trim() !== "";
   }
 
   /**
@@ -1383,21 +1465,117 @@ export class HarnessPromptDelivery {
 
   private submit(now: number): void {
     this.opts.write("\r");
-    this.phase = "delivered";
     this.cancelIdle?.();
     this.cancelIdle = null;
     this.cancelDeadline?.();
     this.cancelDeadline = null;
     this.cancelComposerCeiling?.();
     this.cancelComposerCeiling = null;
-    this.emit({
+    const delivered: PromptDeliveryEvent = {
       phase: "delivered",
       waitedMs: now - this.startedAt,
       promptChars: this.opts.prompt.length,
       submitPauseMs: submitPauseMs(this.opts.prompt, this.profile),
       composerObserved: this.composerObserved,
-    });
+    };
+    const gaps = this.profile.submitRetryGapsMs;
+    if (!gaps || gaps.length === 0) {
+      this.phase = "delivered";
+      this.emit(delivered);
+      return;
+    }
+    // A harness whose return can be swallowed is not reported delivered on the
+    // strength of having sent one: the event waits for the turn to start.
+    this.phase = "submitted";
+    this.pendingDelivered = delivered;
+    this.beginSubmitCheck(gaps[0]);
   }
+
+  private beginSubmitCheck(firstGapMs: number): void {
+    this.verifying = true;
+    this.armSubmitCheck(firstGapMs);
+  }
+
+  private armSubmitCheck(gapMs: number): void {
+    this.sinceSubmit = "";
+    this.sinceSubmitPaints = 0;
+    this.cancelSubmitCheck = this.timers.setTimer(() => this.onSubmitCheck(), gapMs);
+  }
+
+  private onSubmitCheck(): void {
+    this.cancelSubmitCheck = null;
+    if (!this.verifying) return;
+    const gaps = this.profile.submitRetryGapsMs ?? [];
+    if (this.turnStarted()) {
+      this.confirmSubmit();
+      return;
+    }
+    if (this.submitRetries >= gaps.length) {
+      // The last step has had its whole gap and the hint was never seen. The
+      // prompt is in the box unsubmitted, or the turn never began: say so as a
+      // Session in `needs-input`, exactly as a swallowed prompt is reported.
+      this.verifying = false;
+      this.pendingDelivered = null;
+      this.abandon(
+        `${this.opts.harness} did not start a turn after the prompt was submitted ` +
+          "(its working hint was never seen)",
+      );
+      return;
+    }
+    this.submitRetries += 1;
+    // A screen that moved is not evidence of a turn, but it is evidence that the
+    // last return did something, so no further return goes into it. The step
+    // still counts, and the hint is still what has to arrive.
+    if (!this.screenMoved()) this.opts.write("\r");
+    // After the last step there is one more gap to watch, then the verdict.
+    this.armSubmitCheck(gaps[this.submitRetries] ?? gaps[gaps.length - 1]);
+  }
+
+  /** A turn started: now, and not before, the prompt counts as delivered. */
+  private confirmSubmit(): void {
+    this.verifying = false;
+    this.cancelSubmitCheck?.();
+    this.cancelSubmitCheck = null;
+    this.phase = "delivered";
+    const event = this.pendingDelivered;
+    this.pendingDelivered = null;
+    if (event) this.emit(event);
+  }
+
+  /** Output after the delivery finished: only the submit check reads it. */
+  private observeAfterSubmit(chunk: string): void {
+    if (!this.verifying) return;
+    this.sinceSubmit = (this.sinceSubmit + chunk).slice(-SCREEN_WINDOW_CHARS);
+    // Painted chunks, not distinct frames: a spinner tick normalises to the
+    // same signature every time, and it is exactly what a working turn does.
+    if (redrawSignature(chunk) !== "") this.sinceSubmitPaints += 1;
+    if (this.turnStarted()) this.confirmSubmit();
+  }
+
+  /**
+   * Has the harness said it is working? Only its interrupt hint counts, read
+   * with an absolute cursor move as a space, because OpenCode lays the footer
+   * out with moves and `stripAnsi` would glue the words. OpenCode shows it, as
+   * the progress bar then `esc interrupt`, for the whole turn; an idle composer
+   * never does. This is the one signal that makes the prompt `delivered`.
+   *
+   * The prompt text is deliberately not consulted: a submitted prompt is
+   * echoed again in the transcript, so its presence proves nothing.
+   */
+  private turnStarted(): boolean {
+    return WORKING_HINT.test(stripAnsi(this.sinceSubmit.replace(CURSOR_POSITION, " ")));
+  }
+
+  /**
+   * Did the screen move since the last step? More than one painted chunk — a
+   * swallowed `\r` leaves an idle composer that paints nothing, and a paste
+   * block opening is one repaint. This only stops further returns: a footer or
+   * status repaint paints too, so it is never evidence of a delivery.
+   */
+  private screenMoved(): boolean {
+    return this.sinceSubmitPaints >= WORKING_PAINTS;
+  }
+
 
   /**
    * Is the prompt provably sitting in a composer, marker or no marker?

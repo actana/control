@@ -34,11 +34,11 @@ import {
   HARNESS_LAUNCH_COMMANDS,
   harnessAutoModeFlag,
   harnessLaunchCommand,
-} from "@actana/sdk/core-session.ts";
-import { KNOWN_HARNESSES } from "../session-gateway.ts";
+} from "@actana/sdk/core";
+import { KNOWN_HARNESSES } from "@actana/cli";
 import { makeCliFixture, type CliFixture } from "./cli-harness.ts";
 import { EXIT_OK } from "../exit-codes.ts";
-import type { CoreLinkPtySpawnHarness } from "@actana/sdk/core-link-frames.ts";
+import type { CoreLinkPtySpawnHarness } from "@actana/sdk/core";
 
 const PROJECT_ROOT = "/home/core/projects/web";
 
@@ -46,7 +46,7 @@ function policyDeps(): SpawnPolicyDeps {
   return {
     cwdExists: () => true,
     realpath: (p) => p,
-    projectRoots: () => [PROJECT_ROOT],
+    home: () => PROJECT_ROOT,
     resolveCommand: (name) => `/usr/local/bin/${name}`,
     resolveShell: () => ({
       shell: "/bin/zsh",
@@ -59,8 +59,7 @@ function policyDeps(): SpawnPolicyDeps {
 function planFor(harness: CoreLinkPtySpawnHarness, autoMode: boolean) {
   return resolveSpawnPlan(
     {
-      taskId: "t1",
-      cwd: PROJECT_ROOT,
+      sessionId: "t1",
       command: harnessLaunchCommand(harness, autoMode),
       agent: harness,
       ...(autoMode ? { dangerouslySkipPermissions: true } : {}),
@@ -145,8 +144,7 @@ describe("finding 2 — auto mode reaches the harness, or the spawn is refused",
     try {
       resolveSpawnPlan(
         {
-          taskId: "t1",
-          cwd: PROJECT_ROOT,
+          sessionId: "t1",
           command: "cursor-agent",
           agent: "cursor-cli",
           dangerouslySkipPermissions: true,
@@ -164,8 +162,7 @@ describe("finding 2 — auto mode reaches the harness, or the spawn is refused",
     expect(() =>
       resolveSpawnPlan(
         {
-          taskId: "t1",
-          cwd: PROJECT_ROOT,
+          sessionId: "t1",
           command: "cursor-agent --force",
           agent: "cursor-cli",
         } as SpawnRequest,

@@ -42,7 +42,6 @@ section is what each one is.
 | `DOCKERHUB_USERNAME` | Secret | Publishing `panel` and `core` to Docker Hub, and syncing each image's README |
 | `DOCKERHUB_TOKEN` | Secret | Same — one **personal** access token, `Read, Write, Delete`, not the account password |
 | `DOCKERHUB_CLEANUP_TOKEN` | Secret | The weekly `-dev` tag sweep, and nothing else — a **second** PAT, the only one pointed at a delete endpoint |
-| `NPM_TOKEN` | Secret | Publishing `@actana/sdk` and `@actana/cli` to npm from `release.yml` |
 | `APP_ID` | Secret | The GitHub App's numeric id. Every job in `promote.yml` that pushes |
 | `APP_PRIVATE_KEY` | Secret | That App's private key, the whole PEM. Same jobs — **both or neither** |
 | `DOCKERHUB_NAMESPACE` | Variable | Docker Hub org to publish under. Optional; defaults to the GitHub owner (`actana`) |
@@ -60,44 +59,14 @@ release without it fails before anything is built. PR builds never push and
 need no credentials, so a fork gets green PRs with nothing set. See
 [`ci-cd.md`](ci-cd.md).
 
-### `NPM_TOKEN` — the second registry
+### There is no `NPM_TOKEN` any more
 
-That ADR is amended
-([#159](https://github.com/actana/control/issues/159)): npm is a release
-registry too, for the two published packages rather than for any image.
-`release.yml`'s `npm` job publishes `@actana/sdk` and `@actana/cli` on the same
-tag that builds the images, at the same version as everything else
-([#129](https://github.com/actana/control/issues/129) D13).
-
-It is an **automation token** on the `@actana` scope, with **Read and write**,
-created under **Access Tokens** on an npmjs.com account that has **Owner** on
-the scope. A granular token works too and is preferable if you set one up —
-scope it to `@actana/*` with read-and-write on packages, and give it an expiry
-you will actually notice. Classic *publish* tokens work; classic *read-only*
-tokens do not, and fail at the publish rather than at the check.
-
-```bash
-gh secret set NPM_TOKEN --repo actana/control
-```
-
-Three things about this one specifically:
-
-- **The check is in `resolve`, before anything is built** — the same shape as
-  the Docker Hub check above, because the publish job is *last* and a token
-  discovered missing there would be discovered with both images already
-  published and their `:latest` moved.
-- **The token does not need 2FA-bypass configured for provenance**, but it does
-  need to be an automation or granular token if the account has 2FA on
-  publishing: an interactive token prompts for an OTP that no runner can answer.
-- **A publish is not undoable and its version number is not reusable.** Rotating
-  or fixing this secret costs nothing; publishing with a wrong package
-  configuration costs the version number. `pnpm npm:rehearse` packs and asserts
-  the real tarballs locally and publishes nothing — the same script the release
-  runs, and the same one `pnpm test` runs on every pull request.
-
-The scope itself must exist and the account must own it before the first
-release. `npm access list packages @actana` answers that, and an npm 404 on
-`@actana/sdk` before the first publish is expected rather than a problem.
+[ADR 0018](adr/0018-docker-hub-is-the-only-registry.md) was amended by
+[#159](https://github.com/actana/control/issues/159) to make npm a second release registry, for
+`@actana/sdk`. That went in #580: `@actana/sdk` and `@actana/cli` are released from
+actana/client, this repository publishes no package, and `release.yml` has no `npm` job and asks
+for no npm secret. A leftover `NPM_TOKEN` on the repository is unused and can be deleted:
+`gh secret delete NPM_TOKEN --repo actana/control`.
 
 ### It must be a *personal* access token, `Read, Write, Delete`, and one token does both jobs
 
@@ -667,8 +636,8 @@ documented exception to "no force-push".
 > App: `promote.yml`'s `next-train` job is deleted and **a train is cut by a
 > person** ([ADR 0023](adr/0023-release-trains-and-digest-promotion.md) D3 and
 > D25 as amended; 0023:179's own amendment already says so). That person pushes
-> the cut commit directly to a new `beta/x.y.z` branch, with `--no-verify`, for
-> the reason [`ci-cd.md` §Cutting a train](ci-cd.md#cutting-a-train) gives — so
+> the cut commit directly to a new `beta/x.y.z` branch, as
+> [`ci-cd.md` §Cutting a train](ci-cd.md#cutting-a-train) describes — so
 > **a human identity must also bypass this ruleset**, or no train can be cut at
 > all. Two operations stay the App's; the third became a person's.
 >
@@ -1197,21 +1166,22 @@ new "stale"               795548 "Inactive; scheduled for auto-close"
 ([`housekeeping.yml`](../.github/workflows/housekeeping.yml)'s `stale` job) — an issue waiting on a
 maintainer's question should not be closed for the reporter's silence.
 
-## 8. Local hooks (optional, per clone)
+## 8. Local hooks (installed by `pnpm install`)
 
-The hooks in `.husky/` run under plain git — husky itself is not a dependency:
+The hooks in `.husky/` run under plain git — husky itself is not a dependency.
+`pnpm install` runs the root `prepare` script, which sets `core.hooksPath` to
+`.husky` when the directory is a git checkout and does nothing where there is no
+`.git` (the image builds, a tarball):
 
 ```bash
-git config core.hooksPath .husky
+git config core.hooksPath .husky   # only if you installed with --ignore-scripts
 ```
 
 `commit-msg` checks the message against `commitlint.config.mjs`; `pre-push`
-checks the branch name. Both mirror the `Conventions` job in
-[`ci.yml`](../.github/workflows/ci.yml), so they only tell
-you earlier what CI would have told you later. `commit-msg` no-ops with a hint
-if commitlint is not installed locally; the install line is in
-[`ci-cd.md`](ci-cd.md#running-ci-locally) — it goes through a temp directory
-because npm cannot parse this pnpm workspace's root `package.json`.
+checks the branch name and every commit being pushed. Both, and the
+`Conventions` job in [`ci.yml`](../.github/workflows/ci.yml), call
+`scripts/check-conventions.sh`, so they cannot disagree. commitlint is a pinned
+root devDependency; CI installs the same pinned version beside the config copy.
 
 ## 9. Org-level reuse
 

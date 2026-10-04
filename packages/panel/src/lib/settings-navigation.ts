@@ -7,7 +7,7 @@ import { CLOSE_SETTINGS_EVENT } from "~/lib/design-meta";
 //
 // Because the app stays mounted, its global keyboard shortcuts would otherwise
 // keep firing behind the modal-style overlay. Non-React consumers (the window
-// keydown listener in `use-hotkey` and the project route's direct listener)
+// keydown listener in `use-hotkey` and the Core workspace route's direct listener)
 // read this flag synchronously to suppress those shortcuts while settings is
 // open. The Shell mirrors its React open-state here via `setSettingsOverlayOpen`.
 let overlayOpen = false;

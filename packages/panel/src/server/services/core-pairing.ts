@@ -1,11 +1,11 @@
 import { hostname } from "node:os";
 import {
-  CorePairingError,
+  PairingError,
   fetchCorePairingIdentity,
   pairWithCore,
   parseCoreAddress,
-  type CorePairingFailure,
-} from "@actana/sdk/core-pairing";
+  type PairingFailure,
+} from "@actana/sdk/pairing";
 import { CoreRegistryError, coreRegisteredAt, registerCoreFromCredential } from "./cores";
 import {
   pairingFailureMessage,
@@ -59,7 +59,7 @@ export const PANEL_PAIRING_CLIENT_LABEL = `actana-panel ${hostname()}`;
  * only place that can see both.
  */
 type SameUnion<A, B> = [A] extends [B] ? ([B] extends [A] ? true : never) : never;
-const _failureUnionsMatch: SameUnion<CorePairingFailure, CorePairingFailureCode> = true;
+const _failureUnionsMatch: SameUnion<PairingFailure, CorePairingFailureCode> = true;
 void _failureUnionsMatch;
 
 /**
@@ -126,7 +126,7 @@ export type PairCoreInput = {
  * `core-link-manager.ts` dials the result unchanged.
  */
 export async function pairCore(input: PairCoreInput): Promise<Core> {
-  refuseIfAlreadyRegistered(input.address);
+  await refuseIfAlreadyRegistered(input.address);
 
   let credential;
   try {
@@ -144,7 +144,9 @@ export async function pairCore(input: PairCoreInput): Promise<Core> {
   // Outside the catch: a registry refusal — an endpoint already spoken for — is
   // the registry's to explain, and wrapping it as a pairing failure would tell
   // the operator to mint a code they do not need.
-  return registerCoreFromCredential(credential, { label: input.label ?? "" });
+  // A Core paired from the Panel is not finished until its Shared folder is attached (#564, ADR 0041 D5): it
+  // is registered with the folder pending, and `finishPairing` in `shared-folders.ts` is the last step.
+  return await registerCoreFromCredential(credential, { label: input.label ?? "", pendingSharedFolder: true });
 }
 
 /**
@@ -162,7 +164,7 @@ export async function pairCore(input: PairCoreInput): Promise<Core> {
  * A bad address falls through to `pairWithCore`, which owns that failure and
  * words it. Nothing here dials, so nothing here is slow.
  */
-function refuseIfAlreadyRegistered(address: string): void {
+async function refuseIfAlreadyRegistered(address: string): Promise<void> {
   let endpoint: string;
   try {
     // Via `httpsOrigin` rather than by reassembling host and port: it keeps the
@@ -171,7 +173,7 @@ function refuseIfAlreadyRegistered(address: string): void {
   } catch {
     return;
   }
-  if (coreRegisteredAt(endpoint)) {
+  if (await coreRegisteredAt(endpoint)) {
     throw new CoreRegistryError(
       `A Core at ${endpoint} is already registered. Remove it first — your pairing code has not been used.`,
     );
@@ -186,7 +188,7 @@ function refuseIfAlreadyRegistered(address: string): void {
  * Neither has any business in a response, so neither is copied.
  */
 function refusalFrom(err: unknown): CorePairingRefusedError {
-  if (!(err instanceof CorePairingError)) throw err;
+  if (!(err instanceof PairingError)) throw err;
   const failure: CorePairingFailureCode = err.failure;
   const detail: CorePairingRefusalDetail = {};
   if (err.detail.expectedFingerprint) detail.expectedFingerprint = err.detail.expectedFingerprint;

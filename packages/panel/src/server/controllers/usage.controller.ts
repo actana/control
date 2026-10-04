@@ -53,6 +53,6 @@ export async function read(url: URL): Promise<Response> {
     if (budgetTimer) clearTimeout(budgetTimer);
   }
 
-  const summary = getUsageSummary(parsed.data.days);
+  const summary = await getUsageSummary(parsed.data.days);
   return json({ ...summary, syncing });
 }

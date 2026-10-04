@@ -7,17 +7,16 @@ import { useResizablePanel } from "~/lib/use-resizable-panel";
 import { useHotkey } from "~/lib/use-hotkey";
 import { useFocusWithin } from "~/lib/use-focus-within";
 import { isUserTerminalXtermFocused } from "~/lib/terminal-pane-helpers";
-import { mutateTaskForCore } from "~/lib/mutate-task-for-core";
+import { mutateSessionForCore } from "~/lib/mutate-session-for-core";
 import { useTerminals } from "~/lib/terminal-store";
 import { useUserTerminals } from "~/lib/user-terminal-store";
-import { queryKeys, tasksCacheKey } from "~/queries";
+import { sessionsCacheKey } from "~/queries";
 import { TerminalPane, type TerminalDescriptor } from "./TerminalPane";
-import type { Project, Task } from "~/db/schema";
-import { scopeKeyForProject } from "~/lib/scoped-project";
+import type { Session } from "~/db/schema";
+import { coreScopeKey } from "~/lib/core-scope";
 
 export type OpenTerminal = TerminalDescriptor & {
-  project: Project;
-  task: Task;
+  session: Session;
 };
 
 const MIN_WIDTH = 380;
@@ -31,9 +30,9 @@ export function TerminalPanel({
   onToggleExpanded,
 }: {
   active: OpenTerminal | null;
-  onClose: (taskId: string) => Promise<void> | void;
+  onClose: (sessionId: string) => Promise<void> | void;
   onHide: () => void;
-  onPtyReady: (taskId: string, ptyId: string | null, scopeKey?: string) => void;
+  onPtyReady: (sessionId: string, ptyId: string | null, scopeKey?: string) => void;
   expanded?: boolean;
   onToggleExpanded?: () => void;
 }) {
@@ -45,9 +44,9 @@ export function TerminalPanel({
   const [deleting, setDeleting] = useState(false);
   const [archiving, setArchiving] = useState(false);
   const archivingRef = useRef(false);
-  const activeScopeKey = active ? scopeKeyForProject(active.project) : null;
+  const activeScopeKey = active ? coreScopeKey(active.coreId) : null;
 
-  // Archive the open session via the project page handler so repointing,
+  // Archive the open session via the Core workspace handler so repointing,
   // optimistic cache updates, and PTY teardown stay in one place.
   const archiveActive = useCallback(() => {
     if (!active || archivingRef.current) return;
@@ -55,7 +54,7 @@ export function TerminalPanel({
     try {
       window.dispatchEvent(
         new CustomEvent(ARCHIVE_ACTIVE_SESSION_EVENT, {
-          detail: { taskId: active.taskId },
+          detail: { sessionId: active.sessionId },
         }),
       );
     } finally {
@@ -63,41 +62,30 @@ export function TerminalPanel({
     }
   }, [active]);
 
-  const currentActiveTask = useCallback((): Task | null => {
+  const currentActiveSession = useCallback((): Session | null => {
     if (!active) return null;
-    const tasks = queryClient.getQueryData<Task[]>(
-      tasksCacheKey(active.project.id, active.coreId),
-    );
-    return tasks?.find((task) => task.id === active.taskId) ?? active.task;
+    const sessions = queryClient.getQueryData<Session[]>(sessionsCacheKey(active.coreId));
+    return sessions?.find((session) => session.id === active.sessionId) ?? active.session;
   }, [active, queryClient]);
 
   // Permanently delete the open session. Used when it is already archived —
   // archiving again is a no-op, so Cmd/Ctrl+W escalates to a confirmed delete.
   const handleDelete = async () => {
     if (!active) return;
-    if (!currentActiveTask()?.archived) {
+    if (!currentActiveSession()?.archived) {
       setConfirmDelete(false);
       return;
     }
     setDeleting(true);
     try {
-      // Tear the terminal down first, then delete — not both at once, the way
-      // this ran while the delete could only 404 for a Core-owned row. Both
-      // halves now land on the same Core, and the row's delete cascades the
+      // Tear the terminal down first, then delete — not both at once: both
+      // halves land on the same Core, and the row's delete cascades the
       // terminal_logs a still-running PTY is writing to.
-      await onClose(active.taskId);
+      await onClose(active.sessionId);
       // The row lives in the owning Core's database (ADR 0004/0005), so the
-      // delete rides the panel link to that Core — the Panel's own endpoint
-      // has no such row and would 404. `active.coreId` is null for a
-      // Panel-owned row, which routes back to that endpoint.
-      await mutateTaskForCore(active.coreId, { op: "delete", taskId: active.taskId });
-      await Promise.all([
-        queryClient.invalidateQueries({
-          queryKey: tasksCacheKey(active.project.id, active.coreId),
-        }),
-        queryClient.invalidateQueries({ queryKey: queryKeys.project(active.project.id) }),
-        queryClient.invalidateQueries({ queryKey: queryKeys.projects }),
-      ]);
+      // delete rides the panel link to that Core.
+      await mutateSessionForCore(active.coreId, { op: "delete", sessionId: active.sessionId });
+      await queryClient.invalidateQueries({ queryKey: sessionsCacheKey(active.coreId) });
     } finally {
       setDeleting(false);
       setConfirmDelete(false);
@@ -123,11 +111,11 @@ export function TerminalPanel({
   const handleCloseIntent = useCallback(() => {
     if (!active) return;
     if (userTerminals.panelOpen && isUserTerminalXtermFocused()) return;
-    const task = currentActiveTask();
-    if (task?.archived) setConfirmDelete(true);
-    else if (task?.status === "running") setConfirmArchive(true);
+    const session = currentActiveSession();
+    if (session?.archived) setConfirmDelete(true);
+    else if (session?.status === "running") setConfirmArchive(true);
     else void archiveActive();
-  }, [active, userTerminals.panelOpen, currentActiveTask, archiveActive]);
+  }, [active, userTerminals.panelOpen, currentActiveSession, archiveActive]);
 
   useHotkey("session.closeWindow", handleCloseIntent, {
     enabled: !!active,
@@ -135,7 +123,7 @@ export function TerminalPanel({
   });
 
   const rootRef = useRef<HTMLElement | null>(null);
-  const focused = useFocusWithin(rootRef, [active?.taskId]);
+  const focused = useFocusWithin(rootRef, [active?.sessionId]);
 
   // Single-panel mirror of SessionGrid's focus spotlight. A focus request (e.g.
   // a screenshot dropped on the docked terminal) makes the grid move the caret
@@ -144,12 +132,12 @@ export function TerminalPanel({
   // but left the terminal unfocused. TerminalPanel and SessionGrid are never
   // mounted together (__root renders the panel only when the grid is hidden),
   // so consuming the shared request here can't race the grid.
-  const activeTaskId = active?.taskId ?? null;
+  const activeSessionId = active?.sessionId ?? null;
   useEffect(() => {
-    if (!gridFocusRequest || !activeTaskId) return;
+    if (!gridFocusRequest || !activeSessionId) return;
     // The docked panel only shows the active session, so by now the target
     // is what's docked.
-    if (gridFocusRequest.taskId !== activeTaskId) return;
+    if (gridFocusRequest.sessionId !== activeSessionId) return;
     if (!consumeGridFocusRequest(gridFocusRequest.nonce)) return;
     // Switching the active session remounts the docked pane, so poll briefly
     // and re-assert focus rather than making a single attempt that would miss a
@@ -169,14 +157,14 @@ export function TerminalPanel({
     };
     poll = window.setTimeout(step, 0);
     return () => window.clearTimeout(poll);
-  }, [gridFocusRequest, consumeGridFocusRequest, activeTaskId]);
+  }, [gridFocusRequest, consumeGridFocusRequest, activeSessionId]);
 
   const { size: width, onMouseDown: onResizeMouseDown } = useResizablePanel({
     storageKey: "mc:harnessesPanelWidth",
     axis: "x",
     defaultSize: 560,
     minSize: MIN_WIDTH,
-    // Reserve room for the ProjectBar (~96px) plus the project view's 640px
+    // Reserve room for the Cores rail (64px, with the former 96px margin kept) plus the Core workspace's 640px
     // left-panel floor so dragging the terminal wider shrinks itself rather
     // than clipping/wrapping the session columns.
     maxSize: (vw) => vw - 736,
@@ -188,14 +176,14 @@ export function TerminalPanel({
       ref={rootRef}
       focused={focused}
       data-session-terminal-panel
-      data-task-id={active.taskId}
+      data-session-id={active.sessionId}
       style={{
         width: expanded ? "100%" : width,
         flex: expanded ? 1 : undefined,
         minWidth: expanded ? 0 : MIN_WIDTH,
         // Hard cap relative to the actual flex-row width (not window.innerWidth)
-        // so the panel can never paint past the right edge: 96px ProjectBar +
-        // the project view's 640px left-panel floor = 736px reserved.
+        // so the panel can never paint past the right edge: 96px rail margin +
+        // the Core workspace's 640px left-panel floor = 736px reserved.
         maxWidth: expanded ? undefined : "calc(100% - 736px)",
         display: "flex",
         flexDirection: "column",
@@ -220,15 +208,14 @@ export function TerminalPanel({
       )}
       <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
         <TerminalPane
-          key={`${active.taskId}:${activeScopeKey ?? ""}`}
-          project={active.project}
-          task={active.task}
+          key={`${active.sessionId}:${activeScopeKey ?? ""}`}
+          session={active.session}
           descriptor={active}
           isLast
           onHide={onHide}
           expanded={expanded}
           onToggleExpanded={onToggleExpanded}
-          onPtyReady={(ptyId) => onPtyReady(active.taskId, ptyId, activeScopeKey ?? undefined)}
+          onPtyReady={(ptyId) => onPtyReady(active.sessionId, ptyId, activeScopeKey ?? undefined)}
         />
       </div>
       <ConfirmDialog

@@ -6,10 +6,7 @@ export function makeBinding(partial: Partial<Binding> & { key: string }): Bindin
 
 export const DEFAULT_BINDINGS: BindingMap = {
   "agent.new": makeBinding({ mod: true, key: "n" }),
-  "project.add": makeBinding({ mod: true, key: "o" }),
-  "project.edit": makeBinding({ mod: true, key: "e" }),
-  "project.picker": makeBinding({ mod: true, key: "u" }),
-  "project.pinnedSlot": makeBinding({ mod: true, key: "1" }),
+  "core.slot": makeBinding({ mod: true, key: "1" }),
   "nav.toggle": makeBinding({ mod: true, key: "m" }),
   "search.focus": makeBinding({ mod: true, key: "/" }),
   "terminal.toggle": makeBinding({ mod: true, key: "`" }),
@@ -31,12 +28,8 @@ export const DEFAULT_BINDINGS: BindingMap = {
   "dialog.submit": makeBinding({ mod: true, key: "Enter" }),
   // Ship reads as the "big commit & submit": mod+Shift+Enter escalates
   // dialog.submit's mod+Enter.
-  "project.ship": makeBinding({ mod: true, shift: true, key: "Enter" }),
-  "project.runToggle": makeBinding({ mod: true, key: "." }),
-  "project.openBrowser": makeBinding({ mod: true, key: "b" }),
+  "session.ship": makeBinding({ mod: true, shift: true, key: "Enter" }),
   // Alt variants of the terminal (mod) and session (mod+shift) cycle chords —
   // same ]/[ mnemonic, third modifier tier for the group context.
-  "group.next": makeBinding({ mod: true, alt: true, key: "]" }),
-  "group.prev": makeBinding({ mod: true, alt: true, key: "[" }),
 };
 

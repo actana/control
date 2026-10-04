@@ -1,9 +1,9 @@
 // Core-side query store — a read-only handle to the shared SQLite's
-// projects + tasks tables, owned by the Core (PTY-manager) process.
+// sessions table, owned by the Core (PTY-manager) process.
 //
 // Backs the `CoreQueryPort` consumed by `PtyCoreLinkServer` for the
-// `projectsList` / `tasksList` core-link frames (issue 07). The Core is the
-// single source of truth for projects and tasks; the Panel holds none. This
+// `sessionRowsList` core-link frame (issue 07). The Core is the
+// single source of truth for its Sessions; the Panel holds none. This
 // store reads the same `missioncontrol.db` the stateful server process writes
 // (WAL mode lets a reader coexist with the writer without contention).
 //
@@ -17,33 +17,29 @@ import * as path from "node:path";
 import * as fs from "node:fs";
 import { makeOpenFailedThrottle } from "./log-throttle";
 import {
-  countArchivedTasks,
-  queryActiveTasks,
-  queryArchivedTasks,
-  queryStrandedReadyTasks,
-  queryTaskProvenNeverWorked,
-  queryProjects,
-  queryTask,
-  queryTasks,
+  countArchivedSessions,
+  queryActiveSessions,
+  queryArchivedSessions,
+  queryStrandedReadySessions,
+  querySessionProvenNeverWorked,
+  querySession,
+  querySessionRows,
   type CoreQuerySqlite,
 } from "@actana/shared/core-query";
-import type {
-  CoreLinkProjectSnapshot,
-  CoreLinkTaskSnapshot,
-} from "@actana/sdk/core-link-frames";
+import type { CoreSessionRow } from "@actana/shared/core-query";
 import type { CoreQueryPort } from "./pty-core-link-server";
 
-export type { CoreLinkProjectSnapshot, CoreLinkTaskSnapshot, CoreQueryPort };
+export type { CoreSessionRow, CoreQueryPort };
 
 let db: Database.Database | null = null;
 let dbPath: string | null = null;
 // Throttle the db-missing log so a permanently-absent DB (e.g. a core-only
 // VM where the server process never bootstrapped) doesn't fill the log on every
-// query call. Mirrors project-roots.ts.
+// query call.
 let lastDbMissingAt = 0;
 const DB_MISSING_THROTTLE_MS = 60_000;
 // See event-log-store.ts — the same poll-driven spam happens here whenever
-// projectsList/tasksList repeatedly hit a broken binding.
+// sessionRowsList repeatedly hit a broken binding.
 const logOpenFailed = makeOpenFailedThrottle("core-query.open-failed");
 
 /**
@@ -67,7 +63,7 @@ function ensureConnection(): Database.Database | null {
   if (!fs.existsSync(dbPath)) {
     // The server process owns DB creation; if it hasn't bootstrapped yet the
     // query port answers with empty results — the Fleet view shows no
-    // projects/tasks for this Core rather than crashing.
+    // Sessions for this Core rather than crashing.
     if (Date.now() - lastDbMissingAt > DB_MISSING_THROTTLE_MS) {
       log.info("core-query.db-missing", { dbPath });
       lastDbMissingAt = Date.now();
@@ -97,64 +93,54 @@ function ensureConnection(): Database.Database | null {
  * The read-only `CoreQueryPort` backed by the shared SQLite. Returns empty
  * results when the DB is unavailable — the Fleet view shows a blank Core
  * rather than erroring. The Core passes this to `PtyCoreLinkServer` so the
- * Panel's `projectsList` / `tasksList` frames resolve against live data with
+ * Panel's `sessionRowsList` frames resolve against live data with
  * no Panel-side persistence.
  */
 export const coreQueryStore: CoreQueryPort = {
-  listProjects(): CoreLinkProjectSnapshot[] {
+  listSessionRows(): CoreSessionRow[] {
     const conn = ensureConnection();
     if (!conn) return [];
     try {
-      return queryProjects(conn as unknown as CoreQuerySqlite);
+      return querySessionRows(conn as unknown as CoreQuerySqlite);
     } catch (err) {
-      log.warn("core-query.list-projects-failed", { error: String(err) });
+      log.warn("core-query.list-sessions-failed", { error: String(err) });
       return [];
     }
   },
-  listTasks(projectId?: string): CoreLinkTaskSnapshot[] {
+  listArchivedSessions(): CoreSessionRow[] {
     const conn = ensureConnection();
     if (!conn) return [];
     try {
-      return queryTasks(conn as unknown as CoreQuerySqlite, projectId);
+      return queryArchivedSessions(conn as unknown as CoreQuerySqlite);
     } catch (err) {
-      log.warn("core-query.list-tasks-failed", { error: String(err) });
+      log.warn("core-query.list-archived-sessions-failed", { error: String(err) });
       return [];
     }
   },
-  listArchivedTasks(projectId?: string): CoreLinkTaskSnapshot[] {
-    const conn = ensureConnection();
-    if (!conn) return [];
-    try {
-      return queryArchivedTasks(conn as unknown as CoreQuerySqlite, projectId);
-    } catch (err) {
-      log.warn("core-query.list-archived-tasks-failed", { error: String(err) });
-      return [];
-    }
-  },
-  countArchivedTasks(projectId?: string): number {
+  countArchivedSessions(): number {
     const conn = ensureConnection();
     if (!conn) return 0;
     try {
-      return countArchivedTasks(conn as unknown as CoreQuerySqlite, projectId);
+      return countArchivedSessions(conn as unknown as CoreQuerySqlite);
     } catch (err) {
-      log.warn("core-query.count-archived-tasks-failed", { error: String(err) });
+      log.warn("core-query.count-archived-sessions-failed", { error: String(err) });
       return 0;
     }
   },
-  getTask(taskId: string): CoreLinkTaskSnapshot | null {
+  getSession(sessionId: string): CoreSessionRow | null {
     const conn = ensureConnection();
     if (!conn) return null;
     try {
-      return queryTask(conn as unknown as CoreQuerySqlite, taskId);
+      return querySession(conn as unknown as CoreQuerySqlite, sessionId);
     } catch (err) {
-      log.warn("core-query.get-task-failed", { error: String(err) });
+      log.warn("core-query.get-session-failed", { error: String(err) });
       return null;
     }
   },
 };
 
 /**
- * Every task this Core's database still claims is working — `running` or
+ * Every session this Core's database still claims is working — `running` or
  * `needs-input` (issue 243).
  *
  * Deliberately NOT a method on {@link CoreQueryPort}: that port is the surface
@@ -166,32 +152,32 @@ export const coreQueryStore: CoreQueryPort = {
  * Degrades to `[]` on an unavailable DB, like every read here — a Core that
  * cannot read its rows sweeps nothing rather than crashing its own boot.
  */
-export function listActiveTasks(): CoreLinkTaskSnapshot[] {
+export function listActiveSessions(): CoreSessionRow[] {
   const conn = ensureConnection();
   if (!conn) return [];
   try {
-    return queryActiveTasks(conn as unknown as CoreQuerySqlite);
+    return queryActiveSessions(conn as unknown as CoreQuerySqlite);
   } catch (err) {
-    log.warn("core-query.list-active-tasks-failed", { error: String(err) });
+    log.warn("core-query.list-active-sessions-failed", { error: String(err) });
     return [];
   }
 }
 
 /**
- * Every `ready` task this Core once spawned a PTY for (issue 387).
+ * Every `ready` session this Core once spawned a PTY for (issue 387).
  *
- * The companion to {@link listActiveTasks}, kept as its own read for the same
+ * The companion to {@link listActiveSessions}, kept as its own read for the same
  * reason the SQL is its own query: `ready` needs the event-log evidence that a
  * process ever existed, and a Core whose event log is unreadable must still
  * sweep the rows that need no such evidence. Degrades to `[]` on its own.
  */
-export function listStrandedReadyTasks(): CoreLinkTaskSnapshot[] {
+export function listStrandedReadySessions(): CoreSessionRow[] {
   const conn = ensureConnection();
   if (!conn) return [];
   try {
-    return queryStrandedReadyTasks(conn as unknown as CoreQuerySqlite);
+    return queryStrandedReadySessions(conn as unknown as CoreQuerySqlite);
   } catch (err) {
-    log.warn("core-query.list-stranded-ready-tasks-failed", { error: String(err) });
+    log.warn("core-query.list-stranded-ready-sessions-failed", { error: String(err) });
     return [];
   }
 }
@@ -202,12 +188,12 @@ export function listStrandedReadyTasks(): CoreLinkTaskSnapshot[] {
  *
  * The union lives here, next to the two reads, rather than in the sweep — the
  * sweep's job is to settle what it is handed, and the backstop, which shares
- * {@link listActiveTasks}, must NOT see the `ready` rows: a bare Session
+ * {@link listActiveSessions}, must NOT see the `ready` rows: a bare Session
  * waiting on its first prompt is allowed to sit silent for as long as the
  * operator likes, and settling it for being quiet would be a bug.
  */
-export function listBootSweepTasks(): CoreLinkTaskSnapshot[] {
-  return [...listActiveTasks(), ...listStrandedReadyTasks()];
+export function listBootSweepSessions(): CoreSessionRow[] {
+  return [...listActiveSessions(), ...listStrandedReadySessions()];
 }
 
 /**
@@ -219,13 +205,13 @@ export function listBootSweepTasks(): CoreLinkTaskSnapshot[] {
  * cannot read its own event log has no business overwriting a card on the
  * strength of what that log does not say.
  */
-export function taskProvenNeverWorked(taskId: string): boolean {
+export function sessionProvenNeverWorked(sessionId: string): boolean {
   const conn = ensureConnection();
   if (!conn) return false;
   try {
-    return queryTaskProvenNeverWorked(conn as unknown as CoreQuerySqlite, taskId);
+    return querySessionProvenNeverWorked(conn as unknown as CoreQuerySqlite, sessionId);
   } catch (err) {
-    log.warn("core-query.task-proven-never-worked-failed", { taskId, error: String(err) });
+    log.warn("core-query.session-proven-never-worked-failed", { sessionId, error: String(err) });
     return false;
   }
 }

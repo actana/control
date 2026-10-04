@@ -14,8 +14,8 @@ import { useCallback, useEffect, useRef } from "react";
  * per `maxWait` ms rather than once per event.
  *
  * Used to coalesce bursts of SSE-driven query invalidations: an agent doing
- * several tool calls in a second emits several `task:updated` events, and
- * without debouncing each one refetches the (heavy) projects list / tasks list.
+ * several tool calls in a second emits several `session:updated` events, and
+ * without debouncing each one refetches the (heavy) sessions list.
  */
 export function useDebouncedCallback<A extends unknown[]>(
   fn: (...args: A) => void,

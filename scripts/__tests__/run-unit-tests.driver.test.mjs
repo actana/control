@@ -100,17 +100,17 @@ describe("the driver, actually driven", () => {
   }, 60_000);
 
   it("still runs — and still reports — every stage after the first one fails", async () => {
-    // `sdk` is the first package stage. Under `pnpm -r` its failure meant
-    // shared, cli, core and panel never ran at all; #246 lost 573 lines of
+    // `shared` is the first package stage. Under `pnpm -r` its failure meant
+    // cli, core and panel never ran at all; #246 lost 573 lines of
     // Panel tests exactly this way.
-    const { exitCode, output } = await driveWith(["sdk"]);
+    const { exitCode, output } = await driveWith(["shared"]);
 
-    expect(output).toContain("FAIL  packages/sdk");
-    for (const stage of STAGES.filter((s) => s.id !== "sdk")) {
+    expect(output).toContain("FAIL  packages/shared");
+    for (const stage of STAGES.filter((s) => s.id !== "shared")) {
       expect(output).toContain(`>>> ${stage.label}:`);
       expect(output).toContain(`PASS  ${stage.label.padEnd(16)} passed`);
     }
-    expect(output).toContain("1 of 6 stages FAILED: packages/sdk");
+    expect(output).toContain("1 of 5 stages FAILED: packages/shared");
     expect(exitCode).toBe(1);
   }, 60_000);
 
@@ -127,8 +127,8 @@ describe("the driver, actually driven", () => {
   }, 60_000);
 
   it("names every failing stage, not just the first", async () => {
-    const { exitCode, output } = await driveWith(["sdk", "panel"]);
-    expect(output).toContain("2 of 6 stages FAILED: packages/sdk, packages/panel");
+    const { exitCode, output } = await driveWith(["shared", "panel"]);
+    expect(output).toContain("2 of 5 stages FAILED: packages/shared, packages/panel");
     expect(exitCode).toBe(1);
   }, 60_000);
 

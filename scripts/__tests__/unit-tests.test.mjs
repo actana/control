@@ -18,6 +18,7 @@ import {
   STAGES,
   countByPrefix,
   diskHeadroom,
+  escapeCell,
   exitCodeFor,
   failedStages,
   isLeakedName,
@@ -45,7 +46,7 @@ function result(label, ok, summary = null, exitCode = ok ? 0 : 1) {
 }
 
 describe("the stage list", () => {
-  it("covers every workspace package — a sixth package cannot be silently untested", () => {
+  it("covers every workspace package — a fifth package cannot be silently untested", () => {
     const onDisk = fs
       .readdirSync(path.join(repoRoot, "packages"), { withFileTypes: true })
       .filter((entry) => entry.isDirectory())
@@ -75,7 +76,7 @@ describe("the stage list", () => {
   });
 
   it("keeps the topological order a reader of the old logs will recognise", () => {
-    expect(STAGES.map((stage) => stage.id)).toEqual(["root", "sdk", "shared", "cli", "core", "panel"]);
+    expect(STAGES.map((stage) => stage.id)).toEqual(["root", "shared", "cli", "core", "panel"]);
   });
 });
 
@@ -149,7 +150,6 @@ describe("the exit code", () => {
 describe("the report a reviewer reads", () => {
   const mixed = [
     result("root suite", true, "Test Files  16 passed (16)"),
-    result("packages/sdk", true, "Test Files  12 passed (12)"),
     result("packages/shared", true, "Test Files  9 passed (9)"),
     result("packages/cli", false, "Test Files  1 failed | 29 passed | 1 skipped (31)"),
     result("packages/core", true, "Test Files  60 passed (60)"),
@@ -163,7 +163,7 @@ describe("the report a reviewer reads", () => {
 
   it("answers 'which packages failed' without a re-run", () => {
     const report = renderReport(mixed);
-    expect(report).toContain("2 of 6 stages FAILED: packages/cli, packages/panel");
+    expect(report).toContain("2 of 5 stages FAILED: packages/cli, packages/panel");
   });
 
   it("carries each stage's Test Files line, so 'did panel run at all' has an answer", () => {
@@ -174,7 +174,7 @@ describe("the report a reviewer reads", () => {
 
   it("says so plainly when everything passed", () => {
     expect(renderReport(mixed.map((entry) => ({ ...entry, ok: true, exitCode: 0 })))).toContain(
-      "All 6 stages passed.",
+      "All 5 stages passed.",
     );
   });
 
@@ -193,7 +193,7 @@ describe("the report a reviewer reads", () => {
   it("puts a row per stage in the job summary, so the run page names them too", () => {
     const summary = renderJobSummary(mixed);
     for (const stage of STAGES) expect(summary).toContain(`| ${stage.label} |`);
-    expect(summary).toContain("**2 of 6 stages failed:** packages/cli, packages/panel");
+    expect(summary).toContain("**2 of 5 stages failed:** packages/cli, packages/panel");
   });
 
   it("keeps each summary row to four columns — vitest's line is full of pipes", () => {
@@ -204,6 +204,13 @@ describe("the report a reviewer reads", () => {
       expect(row.replace(/\\\|/g, "").split("|").filter(Boolean)).toHaveLength(4);
     }
     expect(renderJobSummary(mixed)).toContain("1 failed \\| 29 passed \\| 1 skipped (31)");
+  });
+
+  it("escapes a backslash before a pipe, so `\\|` is not read as an escaped pipe", () => {
+    // `a\|b` escaped to `a\\|b` is an escaped backslash followed by a live `|`: a fifth column.
+    expect(escapeCell("a\\|b")).toBe("a\\\\\\|b");
+    expect(escapeCell("a|b")).toBe("a\\|b");
+    expect(escapeCell("plain")).toBe("plain");
   });
 
   it("still lists the failures when the machine was the cause", () => {

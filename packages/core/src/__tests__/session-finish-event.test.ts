@@ -27,9 +27,9 @@ import {
   type WebSocketServerLike,
 } from "../pty-core-link-server";
 import type { PtyCore } from "../pty-manager";
-import type { CoreLinkEvent } from "@actana/sdk/core-link-frames";
+import type { CoreLinkEvent } from "@actana/sdk/core";
 
-// A Session finishing on a Core, end to end inside the Core: a `tasksMutate`
+// A Session finishing on a Core, end to end inside the Core: a `sessionsMutate`
 // frame patches the row's status through the real mutation store, and the real
 // event log is what the Panel would read back. Nothing here hand-writes an
 // event — the point is that a Core *produces* `session:finished`, which it
@@ -84,7 +84,7 @@ function mockCore(): PtyCore {
     resize: () => true,
     kill: () => true,
     killLaunchProcesses: async () => ({ ptyCount: 0, ports: [] }),
-    findByTask: () => ({ ptyId: null }),
+    findBySession: () => ({ ptyId: null }),
     replay: () => ({ data: "", nextSeq: 0 }),
     killAll: () => {},
   } as unknown as PtyCore;
@@ -117,16 +117,9 @@ describe("session:finished is emitted by the Core (issue 20)", () => {
     ws = new FakeWebSocket();
     wss.connect(ws);
 
-    coreMutationStore.mutateProject({
+    coreMutationStore.mutateSession({
       op: "create",
-      projectId: "p1",
-      name: "Warehouse",
-      path: userDataDir,
-    });
-    coreMutationStore.mutateTask({
-      op: "create",
-      taskId: "t1",
-      projectId: "p1",
+      sessionId: "t1",
       title: "Rebuild the picker",
       agent: "claude-code",
       status: "running",
@@ -141,12 +134,12 @@ describe("session:finished is emitted by the Core (issue 20)", () => {
     fs.rmSync(userDataDir, { recursive: true, force: true });
   });
 
-  /** Send a task mutation over the core-link and wait for its answer. */
+  /** Send a session mutation over the core-link and wait for its answer. */
   async function mutate(
     reqId: string,
     mutation: Record<string, unknown>,
   ): Promise<void> {
-    ws.receive({ type: "tasksMutate", reqId, mutation });
+    ws.receive({ type: "sessionsMutate", reqId, mutation });
     await vi.waitFor(() =>
       expect(
         ws.sent.some((raw) => (JSON.parse(raw) as { reqId?: string }).reqId === reqId),
@@ -154,50 +147,50 @@ describe("session:finished is emitted by the Core (issue 20)", () => {
     );
   }
 
-  /** Patch a task's status, as the Panel's exit handler does. */
-  function patchStatus(taskId: string, status: string, reqId: string): Promise<void> {
-    return mutate(reqId, { op: "update", taskId, status });
+  /** Patch a session's status, as the Panel's exit handler does. */
+  function patchStatus(sessionId: string, status: string, reqId: string): Promise<void> {
+    return mutate(reqId, { op: "update", sessionId, status });
   }
 
   function finishEvents(): CoreLinkEvent[] {
     return readEventTail(0).filter((e) => e.kind === "session:finished");
   }
 
-  it("appends session:finished when a task transitions to finished", async () => {
+  it("appends session:finished when a session transitions to finished", async () => {
     await patchStatus("t1", "finished", "r1");
 
     const finishes = finishEvents();
     expect(finishes).toHaveLength(1);
-    expect(finishes[0]!.taskId).toBe("t1");
-    expect(JSON.parse(finishes[0]!.payload)).toMatchObject({
+    expect(finishes[0]!.sessionId).toBe("t1");
+    // Exactly these three: a Session has no Project to name beside it.
+    expect(JSON.parse(finishes[0]!.payload)).toEqual({
       id: "t1",
-      projectId: "p1",
-      projectName: "Warehouse",
-      taskTitle: "Rebuild the picker",
+      sessionId: "t1",
+      sessionTitle: "Rebuild the picker",
     });
   });
 
-  it("keeps emitting task:updated alongside the finish event", async () => {
+  it("keeps emitting session:updated alongside the finish event", async () => {
     await patchStatus("t1", "finished", "r1");
 
     const kinds = readEventTail(0).map((e) => e.kind);
-    expect(kinds).toContain("task:updated");
+    expect(kinds).toContain("session:updated");
     expect(kinds).toContain("session:finished");
   });
 
-  it("does not emit a second finish when an already-finished task is re-patched", async () => {
+  it("does not emit a second finish when an already-finished session is re-patched", async () => {
     await patchStatus("t1", "finished", "r1");
     await patchStatus("t1", "finished", "r2");
 
     expect(finishEvents()).toHaveLength(1);
   });
 
-  it("does not emit a second finish for an archived task either", async () => {
-    // An archived row is invisible to `listTasks` / `listSessions`, so a prior
+  it("does not emit a second finish for an archived session either", async () => {
+    // An archived row is invisible to `listSessionRows` / `listSessions`, so a prior
     // status read through either would come back empty and let the re-patch
     // through. The row still exists, and it is still finished.
     await patchStatus("t1", "finished", "r1");
-    coreMutationStore.mutateTask({ op: "update", taskId: "t1", archived: true });
+    coreMutationStore.mutateSession({ op: "update", sessionId: "t1", archived: true });
     await patchStatus("t1", "finished", "r2");
 
     expect(finishEvents()).toHaveLength(1);
@@ -206,33 +199,32 @@ describe("session:finished is emitted by the Core (issue 20)", () => {
   // Archiving, pinning and renaming a finished Session are the most routine
   // things to do with one, and each writes a row whose *resulting* status is
   // still `finished`. Only the mutation that set the status is a finish.
-  it("does not emit a second finish when a finished task is archived", async () => {
+  it("does not emit a second finish when a finished session is archived", async () => {
     await patchStatus("t1", "finished", "r1");
-    await mutate("r2", { op: "update", taskId: "t1", archived: true });
+    await mutate("r2", { op: "update", sessionId: "t1", archived: true });
 
     expect(finishEvents()).toHaveLength(1);
   });
 
-  it("does not emit a second finish when a finished task is pinned", async () => {
+  it("does not emit a second finish when a finished session is pinned", async () => {
     await patchStatus("t1", "finished", "r1");
-    await mutate("r2", { op: "update", taskId: "t1", pinned: true });
+    await mutate("r2", { op: "update", sessionId: "t1", pinned: true });
 
     expect(finishEvents()).toHaveLength(1);
   });
 
-  it("does not emit a second finish when a finished task is renamed or re-iconed", async () => {
+  it("does not emit a second finish when a finished session is renamed or re-iconed", async () => {
     await patchStatus("t1", "finished", "r1");
-    await mutate("r2", { op: "update", taskId: "t1", title: "Renamed" });
-    await mutate("r3", { op: "update", taskId: "t1", icon: "bug" });
+    await mutate("r2", { op: "update", sessionId: "t1", title: "Renamed" });
+    await mutate("r3", { op: "update", sessionId: "t1", icon: "bug" });
 
     expect(finishEvents()).toHaveLength(1);
   });
 
-  it("does not emit a finish for a task created already finished", async () => {
+  it("does not emit a finish for a session created already finished", async () => {
     await mutate("r1", {
       op: "create",
-      taskId: "t2",
-      projectId: "p1",
+      sessionId: "t2",
       title: "Imported",
       agent: "claude-code",
       status: "finished",
@@ -247,7 +239,7 @@ describe("session:finished is emitted by the Core (issue 20)", () => {
     expect(finishEvents()).toHaveLength(0);
   });
 
-  it("emits again when a task is restarted and finishes a second time", async () => {
+  it("emits again when a session is restarted and finishes a second time", async () => {
     await patchStatus("t1", "finished", "r1");
     await patchStatus("t1", "running", "r2");
     await patchStatus("t1", "finished", "r3");

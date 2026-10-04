@@ -1,4 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { closePanelTestDb, openPanelTestDb } from "./_panel-test-db";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -7,15 +8,16 @@ const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "actana-update-check-api-"
 process.env.AC_USER_DATA_DIR = tmpRoot;
 process.env.AC_PANEL_DATA_DIR = tmpRoot;
 
+const testDb = await openPanelTestDb();
 const { handleApiRequest } = await import("../api-router");
 const { operatorSessionCookie } = await import("./_operator-session");
 const { _resetPanelUpdateCheckForTests } = await import("../services/update-check");
 
 const CACHE = path.join(tmpRoot, "update-check.json");
 
-function authedRequest(): Request {
+async function authedRequest(): Promise<Request> {
   return new Request("http://localhost/api/update-check", {
-    headers: { cookie: operatorSessionCookie() },
+    headers: { cookie: await operatorSessionCookie() },
   });
 }
 
@@ -45,7 +47,7 @@ describe("GET /api/update-check", () => {
   it("reports the newest release alongside this Panel's own version", async () => {
     vi.stubGlobal("fetch", channel("9.9.9"));
 
-    const response = await handleApiRequest(authedRequest());
+    const response = await handleApiRequest((await authedRequest()));
 
     expect(response?.status).toBe(200);
     const body = await response!.json();
@@ -63,7 +65,7 @@ describe("GET /api/update-check", () => {
       }),
     );
 
-    await handleApiRequest(authedRequest());
+    await handleApiRequest((await authedRequest()));
 
     expect(asked).toEqual(["https://api.github.com/repos/actana/control/releases/latest"]);
   });
@@ -74,7 +76,7 @@ describe("GET /api/update-check", () => {
   it("answers cleanly when the channel has published nothing", async () => {
     vi.stubGlobal("fetch", channel(null));
 
-    const response = await handleApiRequest(authedRequest());
+    const response = await handleApiRequest((await authedRequest()));
 
     expect(response?.status).toBe(200);
     expect(await response!.json()).toMatchObject({ latest: null, updateAvailable: false });
@@ -88,7 +90,7 @@ describe("GET /api/update-check", () => {
       }),
     );
 
-    const response = await handleApiRequest(authedRequest());
+    const response = await handleApiRequest((await authedRequest()));
     expect(response?.status).toBe(200);
     expect(await response!.json()).toMatchObject({ latest: null, updateAvailable: false });
   });
@@ -97,9 +99,9 @@ describe("GET /api/update-check", () => {
     const fetchMock = channel("9.9.9");
     vi.stubGlobal("fetch", fetchMock);
 
-    await handleApiRequest(authedRequest());
+    await handleApiRequest((await authedRequest()));
     _resetPanelUpdateCheckForTests();
-    await handleApiRequest(authedRequest());
+    await handleApiRequest((await authedRequest()));
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(fs.existsSync(CACHE)).toBe(true);
@@ -110,7 +112,7 @@ describe("GET /api/update-check", () => {
     const fetchMock = channel("9.9.9");
     vi.stubGlobal("fetch", fetchMock);
 
-    const response = await handleApiRequest(authedRequest());
+    const response = await handleApiRequest((await authedRequest()));
 
     expect(await response!.json()).toMatchObject({ latest: null, updateAvailable: false });
     expect(fetchMock).not.toHaveBeenCalled();
@@ -121,4 +123,8 @@ describe("GET /api/update-check", () => {
     const response = await handleApiRequest(new Request("http://localhost/api/update-check"));
     expect(response?.status).toBe(401);
   });
+});
+
+afterAll(async () => {
+  await closePanelTestDb(testDb);
 });

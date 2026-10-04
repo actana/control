@@ -121,39 +121,6 @@ function Legend() {
   );
 }
 
-/** Single horizontal bar showing one project's share of the global total. */
-export function HorizontalBar({
-  value,
-  max,
-  color = "var(--accent)",
-}: {
-  value: number;
-  max: number;
-  color?: string;
-}) {
-  const pct = max > 0 ? Math.min(100, (value / max) * 100) : 0;
-  return (
-    <div
-      style={{
-        position: "relative",
-        height: 6,
-        background: "var(--surface-2, rgba(255,255,255,0.04))",
-        borderRadius: 3,
-        overflow: "hidden",
-      }}
-    >
-      <div
-        style={{
-          width: `${pct}%`,
-          height: "100%",
-          background: color,
-          transition: "width 240ms ease",
-        }}
-      />
-    </div>
-  );
-}
-
 export function formatN(n: number): string {
   if (n < 1000) return String(n);
   if (n < 1_000_000) return `${(n / 1000).toFixed(n < 10_000 ? 1 : 0)}k`;

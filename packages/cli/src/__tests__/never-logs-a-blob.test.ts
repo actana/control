@@ -13,18 +13,16 @@
 // exactly the line somebody adds without thinking.
 
 import { describe, it, expect, afterEach } from "vitest";
-import { CorePairingError } from "@actana/sdk/core-pairing.ts";
+import { PairingError } from "@actana/sdk/pairing";
 import {
   fakeAttachment,
   fakePairing,
   fakeTerminal,
   fakeCore,
-  fakeProjectFiles,
   fakeSessionGateway,
   fakeStartedSession,
   healthyProbe,
   makeCliFixture,
-  projectSnapshot,
   registerCore,
   sentinelBlobText,
   SENTINELS,
@@ -147,7 +145,7 @@ describe("no verb prints a blob, with --verbose on", () => {
         {
           pairing: fakePairing({
             fingerprint,
-            failsWith: new CorePairingError(
+            failsWith: new PairingError(
               "bad-code",
               `a pairing code is eight characters, written XXXX-XXXX — "${CODE}" is not`,
             ),
@@ -176,26 +174,19 @@ describe("no verb prints a blob, with --verbose on", () => {
   });
 
   it("sweeps the nouns that dial with the credential in hand", async () => {
-    // `project`, `harness` and `events` (#161) reach a Core, which means the
-    // blob is decoded, handed to a client and quoted back by any failure on the
-    // way. Every verb runs with `--verbose`, including the paths where the Core
-    // refuses — the diagnostic that explains a refusal is the line most likely
-    // to reach for its input.
+    // `harness` and `events` reach a Core, which means the blob is decoded,
+    // handed to a client and quoted back by any failure on the way. Every verb
+    // runs with `--verbose`, including the paths where the Core refuses — the
+    // diagnostic that explains a refusal is the line most likely to reach for
+    // its input. (Projects are gone: actana/client#10 part 3.)
     registerCore(cli().paths, "prod");
     const core = fakeCore({
-      projects: [projectSnapshot("api", "/srv/work/api")],
       availability: { opencode: { status: "missing" } },
     });
 
     const runs: Array<[string, string[]]> = [
-      ["project ls", ["project", "ls", "--verbose"]],
-      ["project ls --json", ["project", "ls", "--json", "--verbose"]],
-      ["project add", ["project", "add", "api", "/srv/work/api", "--verbose"]],
-      ["project browse", ["project", "browse", "--verbose"]],
-      ["project browse --json", ["project", "browse", "--json", "--verbose"]],
       ["harness ls", ["harness", "ls", "--verbose"]],
       ["harness ls --json", ["harness", "ls", "--json", "--verbose"]],
-      ["project --help", ["project", "--help", "--verbose"]],
       ["harness --help", ["harness", "--help", "--verbose"]],
       ["events --help", ["events", "--help", "--verbose"]],
     ];
@@ -204,49 +195,25 @@ describe("no verb prints a blob, with --verbose on", () => {
       expectNoSecrets(what, run.all);
     }
 
-    // …and the two verbs that reach a Core over HTTPS rather than the link
-    // (#168). Their gateway holds the same bearer and the same PEM material,
-    // and both of them quote paths back in every message they print — including
-    // the refusals, which is where an error that reached for its whole input
-    // would show up.
-    const files = fakeProjectFiles({
-      entries: [
-        { path: "readme.md", kind: "file", size: 6, mtime: 0, mode: 0o644, sha256: null },
-      ],
-      progressFor: () => [{ type: "done", entries: 0, bytes: 0 }],
-    });
-    const fileRuns: Array<[string, string[]]> = [
-      ["project files", ["project", "files", "api", "--verbose"]],
-      ["project files --json", ["project", "files", "api", "--json", "--verbose"]],
-      ["project cp (up)", ["project", "cp", cli().home, "api:build", "--verbose"]],
-      ["project cp (bad args)", ["project", "cp", "./a", "./b", "--verbose"]],
-    ];
-    for (const [what, argv] of fileRuns) {
-      const run = await cli().run(argv, { files: files.open });
-      expectNoSecrets(what, run.all);
-    }
-
     // …and the one that follows a stream, which has to be driven to its limit.
     const tail = cli().run(["events", "tail", "--since", "start", "--limit", "1", "--verbose"], {
       connect: core.connect,
     });
     await new Promise((resolve) => setTimeout(resolve, 0));
-    core.emitEvent({ eventId: 1, kind: "task:created" });
+    core.emitEvent({ eventId: 1, kind: "session:created" });
     expectNoSecrets("events tail", (await tail).all);
   });
 
   it("sweeps a dial that failed, where the error quotes the endpoint it could not reach", async () => {
     registerCore(cli().paths, "prod");
     for (const argv of [
-      ["project", "ls", "--verbose"],
       ["harness", "ls", "--verbose"],
       ["events", "tail", "--verbose"],
-      ["project", "files", "api", "--verbose"],
     ]) {
       const refuse = async () => {
         throw new Error("connect ECONNREFUSED");
       };
-      const run = await cli().run(argv, { connect: refuse, files: refuse });
+      const run = await cli().run(argv, { connect: refuse });
       expect(run.code).not.toBe(0);
       expectNoSecrets(argv.join(" "), run.all);
     }
@@ -271,19 +238,19 @@ describe("no verb prints a blob, with --verbose on", () => {
     const starting = fakeSessionGateway({
       start: async () => fakeStartedSession(),
       resume: async () => fakeStartedSession(),
-      logs: async () => ({ taskId: "task_1", ptyId: "pty_1", screen: "a screen", raw: "raw" }),
+      logs: async () => ({ sessionId: "session_1", ptyId: "pty_1", screen: "a screen", raw: "raw" }),
       send: async () => ({ ok: true }) as const,
     });
 
     const runs: Array<[string, string[], typeof refusing]> = [
       ["session ls", ["session", "ls", "--verbose"], refusing],
       ["session ls --json", ["session", "ls", "--json", "--verbose"], refusing],
-      ["session kill", ["session", "kill", "task_1", "--verbose"], refusing],
-      ["session start", ["session", "start", "web", "go", "--verbose"], starting],
-      ["session start --json", ["session", "start", "web", "go", "--json", "--verbose"], starting],
-      ["session resume", ["session", "resume", "task_1", "--verbose"], starting],
-      ["session logs", ["session", "logs", "task_1", "--verbose"], starting],
-      ["session send", ["session", "send", "task_1", "hi", "--verbose"], starting],
+      ["session kill", ["session", "kill", "session_1", "--verbose"], refusing],
+      ["session start", ["session", "start", "go", "--verbose"], starting],
+      ["session start --json", ["session", "start", "go", "--json", "--verbose"], starting],
+      ["session resume", ["session", "resume", "session_1", "--verbose"], starting],
+      ["session logs", ["session", "logs", "session_1", "--verbose"], starting],
+      ["session send", ["session", "send", "session_1", "hi", "--verbose"], starting],
       ["session --help", ["session", "--help", "--verbose"], refusing],
     ];
 
@@ -369,7 +336,7 @@ describe("no verb prints a blob, with --verbose on", () => {
     // chose, which never touch one.
     registerCore(cli().paths, "prod");
 
-    const refused = await cli().run(["session", "attach", "task_1", "--verbose"], {
+    const refused = await cli().run(["session", "attach", "session_1", "--verbose"], {
       terminal: fakeTerminal(),
       openAttach: async () => {
         throw new Error("connect ECONNREFUSED");
@@ -380,7 +347,7 @@ describe("no verb prints a blob, with --verbose on", () => {
 
     const readOnly = fakeAttachment({ authority: "held-by-another" });
     const terminal = fakeTerminal();
-    const attached = cli().run(["session", "attach", "task_1", "--verbose"], {
+    const attached = cli().run(["session", "attach", "session_1", "--verbose"], {
       terminal,
       openAttach: async () => readOnly,
     });

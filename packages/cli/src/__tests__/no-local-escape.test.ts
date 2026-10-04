@@ -64,30 +64,12 @@
 //
 // ─── 3. The private package, inlined (#288 D5) — rewritten, not deleted ──────
 //
-// ─── And what the dependency pin now also holds up (#320, ADR 0036 D16) ──────
+// ─── And what the dependency pin holds up ───────────────────────────────────
 //
-// The last `describe` in this file pins `dependencies` to four names, and that
-// pin acquired a second job with #320. The beta install path packs this CLI as
-// a Release asset and installs it with `npm i -g <asset-url>`, publishing
-// nothing to registry.npmjs.org — because a beta version string is `x.y.z-beta`
-// with no counter (ADR 0036 C1) and npm burns a version on first publish, so
-// the second cut of a beta could not publish at all (D15). That asset's packed
-// manifest **drops `@actana/sdk`**, on the grounds that esbuild inlines it, and
-// `scripts/rehearse-npm-publish.mjs` makes the edit in the workflow's checkout
-// and never commits it.
-//
-// So this file's list stays exactly four names — the *release* manifest needs
-// the SDK, and **this file is what says so**. `scripts/lib/npm-packages.mjs`
-// refuses a release CLI pinned to the *wrong* SDK version, but its check
-// iterates the packed dependencies and therefore has nothing to say about a
-// release manifest that dropped the SDK entirely; the pin below, on the working
-// tree the release packs from, is the only thing that refuses that. One
-// assertion is added rather than any being relaxed: the invariant that makes
-// dropping it on the beta path safe. The whole argument for the drop is that the code
-// is in the bundle, which is true only while `@actana/sdk` is absent from
-// `build.mjs`'s `external` array. That absence was already asserted here for
-// #288 D5's reasons; it now also decides whether a stranger's `npm i -g` of a
-// beta asset resolves a version that does not exist.
+// The last `describe` in this file pins `dependencies` to a fixed list. This package is private
+// and never published (#580), so nothing packs it any more; the list is what the CJS bundle the
+// Core tarball stages resolves at runtime, and `@actana/sdk` stays out of `build.mjs`'s `external`
+// array because the bundle carries the SDK's code rather than importing it from `app/node_modules`.
 //
 // See the three `describe` blocks below; each carries its own argument.
 
@@ -114,7 +96,10 @@ describe("the client half cannot shell out (#129 D9, narrowed by #288 C1)", () =
     // modules, it is also what catches a `MACHINE_MODULES` table that grew
     // until there was nothing left to check.
     expect(shippedSources().length).toBeGreaterThan(5);
-    expect(clientSources().length).toBeGreaterThan(shippedSources().length / 2);
+    // The client half used to be most of the package. Since #580 the nouns live in `@actana/cli`, so what
+    // is left of it is the dispatcher, the entry, the flag parser and the registry plumbing: still swept,
+    // still more than a handful, no longer half.
+    expect(clientSources().length).toBeGreaterThan(5);
   });
 
   it("keeps the exemption honest: every machine module is real and named with a reason", () => {
@@ -247,7 +232,7 @@ describe("the private package is inlined, not depended on (#288 D5)", () => {
 
   const cliManifest = JSON.parse(
     readFileSync(path.resolve(SRC, "..", "package.json"), "utf8"),
-  ) as { dependencies: Record<string, string>; name: string; bin: Record<string, string> };
+  ) as { dependencies: Record<string, string>; name: string };
   const sharedManifest = JSON.parse(
     readFileSync(path.resolve(SRC, "..", "..", "shared", "package.json"), "utf8"),
   ) as { private?: boolean; name: string };
@@ -269,11 +254,9 @@ describe("the private package is inlined, not depended on (#288 D5)", () => {
     // `@actana/shared` on it would turn an inlined copy into a resolvable
     // dependency, which is exactly what ADR 0025 D4 forbids.
     //
-    // The `@actana/sdk` line is the same assertion for a different reason, and
-    // since #320 it carries a third: the beta asset's manifest drops that
-    // dependency because this array does not contain it (ADR 0036 D16). An
-    // external SDK would make the drop an install-time `ERR_MODULE_NOT_FOUND`
-    // on a version registry.npmjs.org has never had and, under D15, never will.
+    // The `@actana/sdk` line is the same assertion for a different reason: the bundle carries the
+    // SDK's code, so the tarball's `app/node_modules` needs no copy of it. An external SDK would
+    // make that an `ERR_MODULE_NOT_FOUND` the first time `actana` runs in a Core.
     const externals = externalsOf(build);
     expect(externals).not.toContain("@actana/shared");
     expect(externals).not.toContain("@actana/sdk");
@@ -306,7 +289,7 @@ describe("the dependency list stays short (#129 D8, amended by #288 C2)", () => 
     readFileSync(path.resolve(SRC, "..", "package.json"), "utf8"),
   ) as { dependencies: Record<string, string> };
 
-  it("declares the SDK, the two libraries the SDK dials with, and selfsigned", () => {
+  it("declares the client CLI, the SDK, the two libraries the SDK dials with, and selfsigned", () => {
     // The list is short because a CLI must not grow a server dependency, a
     // database driver or a native addon, and a new name here is the first sign
     // that one has arrived. That purpose is unchanged; the list is one longer.
@@ -335,7 +318,12 @@ describe("the dependency list stays short (#129 D8, amended by #288 C2)", () => 
     // **`better-sqlite3` and `node-pty` must still never appear.** They are the
     // daemon's, they are native, and a published client that installed either
     // would be a client that needs a compiler.
+    //
+    // **`@actana/cli` is new, and it is the point of #580**: the client nouns come from the published
+    // client CLI, pinned exactly, and are bundled into this package's output. It depends on nothing but
+    // `@actana/sdk`, which is already on this list, so it brings no server, database or native addon.
     expect(Object.keys(manifest.dependencies).sort()).toEqual([
+      "@actana/cli",
       "@actana/sdk",
       "selfsigned",
       "undici",
@@ -345,36 +333,12 @@ describe("the dependency list stays short (#129 D8, amended by #288 C2)", () => 
     expect(Object.keys(manifest.dependencies)).not.toContain("node-pty");
   });
 
-  it("keeps the SDK in the release manifest, and droppable from the beta one", () => {
-    // #320 / ADR 0036 D16, asserted here because this is the file that pins the
-    // dependency set and the pin is what the beta path edits around.
-    //
-    // Two facts, and they are opposite on purpose:
-    //
-    //   * a **release** declares `@actana/sdk` and publishes both packages to
-    //     the registry from one tag. `scripts/lib/npm-packages.mjs` fails a
-    //     packed release manifest whose range is anything but the version being
-    //     published — but only when the range is *there*: that check iterates
-    //     the packed dependencies, so a release manifest that dropped the SDK
-    //     altogether passes it. **This assertion is what refuses that**, on the
-    //     working tree the release packs from, and it is the only thing that
-    //     does. Deleting the name below would not turn a check red anywhere
-    //     else; it would publish a CLI whose manifest and whose bundle disagree
-    //     about what a consumer is getting.
-    //   * a **beta** publishes nothing (D15), so that same range would name a
-    //     version no registry has. The beta pack drops it — in the workflow's
-    //     checkout, never committed (ADR 0023 D3) — and what makes that honest
-    //     is that the bundle carries the SDK's code rather than importing it.
-    //
-    // That second fact is one line away from being false, and the line is in
-    // `build.mjs`. If `@actana/sdk` ever appears in an `external:` array, the
-    // beta asset stops installing for a stranger and this is where it is caught
-    // — before a pack, in this package's own tests, rather than in `npm i -g`.
+  it("declares the SDK, and keeps it out of the externals so the bundle carries it", () => {
     expect(Object.keys(manifest.dependencies)).toContain("@actana/sdk");
     const build = readFileSync(path.resolve(SRC, "..", "build.mjs"), "utf8");
     expect(
       externalsOf(build),
-      "@actana/sdk is external, so the beta asset's dropped dependency is a runtime import of a version npm does not have (ADR 0036 D16)",
+      "@actana/sdk is external, so the Core tarball's actana-cli.cjs imports a package its app/node_modules does not carry",
     ).not.toContain("@actana/sdk");
   });
 
@@ -384,9 +348,6 @@ describe("the dependency list stays short (#129 D8, amended by #288 C2)", () => 
     // stranger's global install, and one declared but not external is a second
     // copy quietly inlined into the bundle. Neither shows up in a build log.
     //
-    // Both bundles are read (#288 D1: this package emits the published ESM one
-    // and the tarball's CJS one), so an external added to only one of them is a
-    // name this check would otherwise miss.
     const build = readFileSync(path.resolve(SRC, "..", "build.mjs"), "utf8");
     const externals = externalsOf(build);
 
@@ -398,23 +359,20 @@ describe("the dependency list stays short (#129 D8, amended by #288 C2)", () => 
   });
 });
 
-describe("the command is `actana` (#129 D8)", () => {
-  it("is the bin name the package installs, whatever the package is called", () => {
+describe("the package that carries the command (#129 D8)", () => {
+  it("is private and not called @actana/cli, which is the published client", () => {
     const manifest = JSON.parse(
       readFileSync(path.resolve(SRC, "..", "package.json"), "utf8"),
-    ) as { name: string; bin: Record<string, string>; description: string };
+    ) as { name: string; description: string };
 
-    // #288 D6: the name stays. A rename costs every existing install and buys a
-    // manifest field we can rewrite — so the field is what was rewritten.
-    expect(manifest.name).toBe("@actana/cli");
+    // #580: the name `@actana/cli` belongs to the published client CLI this
+    // package now depends on, so the built-in one is `@actana/core-cli` and is
+    // never published. The command it puts on the Core's PATH is still `actana`.
+    expect(manifest.name).toBe("@actana/core-cli");
+    expect((manifest as { private?: boolean }).private).toBe(true);
     // And the description no longer calls this "the `actana` command's client
     // half", because that stopped being true the day #288 landed. There is one
     // half.
     expect(manifest.description).not.toContain("client half");
-    // One binary name. Not `actana-cli`, not `ac`, and not a second command to
-    // remember: `npm i -g @actana/cli` puts `actana` on the PATH the same way
-    // `npm i -g npm` puts `npm` there.
-    expect(Object.keys(manifest.bin)).toEqual(["actana"]);
-    expect(manifest.bin.actana).toBe("bin/actana.mjs");
   });
 });

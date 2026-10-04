@@ -4,9 +4,7 @@
     "lib": ["ES2022"],
     "module": "ESNext",
     "moduleResolution": "Bundler",
-    // Relative imports carry their `.ts` extension, matching `packages/sdk` —
-    // the specifiers this package writes are the ones the SDK's own source
-    // writes, so a file can move between the two without a rewrite.
+    // Relative imports carry their `.ts` extension, as the rest of the workspace does.
     "allowImportingTsExtensions": true,
     "strict": true,
     "noFallthroughCasesInSwitch": true,
@@ -20,7 +18,6 @@
     "noEmit": true,
     "types": ["node"],
     "paths": {
-      "@actana/sdk/*": ["../sdk/src/*"],
       // Test-only, and the mate of the same two entries in `vitest.config.ts` —
       // the type checker and the test runner resolve independently, so a path
       // that exists for one and not the other is a suite that runs and does not

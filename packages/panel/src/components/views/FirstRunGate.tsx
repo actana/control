@@ -8,6 +8,7 @@ import {
   type ReactNode,
 } from "react";
 import { api } from "~/lib/api";
+import { isPairingFinished, type CoreWithDial } from "~/shared/cores";
 import { onCoreRegistryChanged } from "~/lib/core-registry-changed";
 import { readCachedCoreCount, writeCachedCoreCount } from "~/lib/shell-query-cache";
 import { CORES_POLL_MS } from "~/lib/use-fleet";
@@ -22,6 +23,14 @@ const FirstRunWizard = lazy(() =>
 );
 
 /**
+ * Cores whose pairing is finished. A Core redeemed from the Panel whose Shared folder is not attached yet (#564) is
+ * in the registry but is not a fleet: counting it would drop the wizard in the middle of step 4.
+ */
+function pairedCount(cores: readonly CoreWithDial[]): number {
+  return cores.filter(isPairingFinished).length;
+}
+
+/**
  * The gate (#358): a Panel that knows no Cores shows the pairing wizard, and
  * a Panel that knows one shows the app.
  *
@@ -33,7 +42,7 @@ const FirstRunWizard = lazy(() =>
  * and nothing to migrate.
  *
  * **It replaces the shell rather than covering it.** `children` here is the
- * entire app — top bar, project rail, router outlet, settings overlay — and at
+ * entire app — top bar, Cores rail, router outlet, settings overlay — and at
  * zero Cores none of it mounts. That is what makes this a gate rather than a
  * modal: there is no route to type, no escape key, no click-outside, and no
  * dead dashboard behind the wizard to glimpse. The only exit is a paired Core.
@@ -98,7 +107,7 @@ export function FirstRunGate({ children }: { children: ReactNode }) {
  *
  * `count` starts at whatever this browser was last told (`readCachedCoreCount`)
  * so a paired Panel paints its shell on the first client render, the same
- * bargain `installShellQueryCache` makes for projects, groups and settings. The
+ * bargain `installShellQueryCache` makes for settings. The
  * seed is never an answer: the live read lands on the same tick and corrects
  * it, and a *stale* seed can only cost one frame in either direction.
  *
@@ -135,7 +144,7 @@ function useCoreRegistry(): {
     issued.current += 1;
     const seq = issued.current;
     try {
-      let next = (await api.listCores()).cores.length;
+      let next = pairedCount((await api.listCores()).cores);
       /**
        * Tearing down a live session takes two answers, not one.
        *
@@ -154,7 +163,7 @@ function useCoreRegistry(): {
        * belongs in the wizard.
        */
       if (next === 0 && (known.current ?? 0) > 0) {
-        next = (await api.listCores()).cores.length;
+        next = pairedCount((await api.listCores()).cores);
       }
       if (!mounted.current || seq < settled.current) return;
       settled.current = seq;

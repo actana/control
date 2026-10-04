@@ -4,7 +4,7 @@ import {
   IDLE_TERMINAL_RUNNING_FALLBACK,
   noteTerminalWrite,
   type TerminalRunningFallback,
-} from "../task-status-sync";
+} from "../session-status-sync";
 
 /**
  * Issue 386. `TerminalPane`'s `onData` handler is one call to
@@ -126,9 +126,9 @@ describe("the Enter→running fallback after a Session settles", () => {
   it("PATCHes running for a turn whose bytes never came through onData", () => {
     // Acceptance 2's gap. Two ways to start a turn without typing it:
     //
-    //   1. A path dropped from the Panel's own UI. `wireTerminalFileDrop`
-    //      calls `writeToPty` → `ptyApi.write`, so the bytes reach the pty
-    //      without passing through xterm's keyboard — `onData` never sees them.
+    //   1. Text the Panel's own UI writes to the pty (`writeToPty` →
+    //      `ptyApi.write`), so the bytes reach the pty without passing
+    //      through xterm's keyboard — `onData` never sees them.
     //   2. Up-arrow prompt recall, where the harness puts a previous prompt
     //      back on the line and the pane only ever sees the cursor key.
     //

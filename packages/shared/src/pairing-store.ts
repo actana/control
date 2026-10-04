@@ -12,7 +12,8 @@
 //     never imports `@actana/core` — one binary does both jobs by keeping the
 //     daemon's bundle out of its own.
 //   • **The Core daemon** redeems it, at the pre-auth endpoint in
-//     `packages/core/src/core-pairing-routes.ts`.
+//     `createPairing` from `@actana/sdk/pairing/server`, mounted by
+//     `packages/core/src/core-pairing-wiring.ts`.
 //
 // So this sits next to `core-material-store.ts`, which is in `packages/shared`
 // for exactly that reason after #288 — the CLI writes the material and the
@@ -31,8 +32,8 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import type { PairingRefusal, PairingSession } from "./pairing-session";
-import { canRedeem, isConsumed, isRevoked, recordWrongAttempt } from "./pairing-session";
+import type { PairingSession } from "./pairing-session";
+import { isConsumed, isRevoked } from "./pairing-session";
 
 /** The filename, beside `material.json` in the same directory. */
 export const PAIRING_STORE_FILENAME = "pairing.json";
@@ -100,17 +101,13 @@ export function emptyPairingRecords(): PairingRecords {
  * spot, because they are what an operator reads when asking why a pairing
  * failed an hour ago. Beyond that they are only file size: the refusal a
  * pruned session produces is byte-identical to the one it produced while it
- * was still there (see {@link PairingStore.consume}), so pruning cannot change
- * what any client observes.
+ * was still there, so pruning cannot change what any client observes.
  */
 export const PAIRING_SESSION_RETENTION_MS = 24 * 60 * 60 * 1000;
 
-export type PairingConsumeOutcome =
-  | { ok: true; session: PairingSession }
-  | { ok: false; reason: PairingRefusal | "unknown" };
-
 /**
- * The pairing file, as the daemon and the CLI both drive it.
+ * The pairing file, as `actana pair` drives it. The daemon redeems against the same file through
+ * the SDK's store (`core-pairing-store.ts`), so this class has no redeem step of its own.
  *
  * Every method reads the file, changes what it must and writes it back, rather
  * than holding the parsed records in memory. That is a deliberate cost: the
@@ -118,15 +115,11 @@ export type PairingConsumeOutcome =
  * the daemon would go stale the moment an operator ran `actana pair new` — the
  * exact sequence pairing consists of.
  *
- * **What this gives, and what it does not.** Within one process the
- * read-mutate-write in {@link consume} runs to completion without yielding, so
- * two concurrent redemptions cannot both find the session unconsumed: the
- * second one sees `already-consumed` and the endpoint refuses it. Across
- * processes there is no lock, and a `pair new` landing in the same millisecond
- * as a redemption can lose its write. That trade is taken knowingly — the
- * alternative is a lockfile protocol between a daemon and a one-shot CLI for a
- * collision measured in milliseconds a few times in a Core's life, and the
- * failure it would prevent is "the operator runs `pair new` again".
+ * **What this gives, and what it does not.** Across processes there is no lock, and a
+ * `pair new` landing in the same millisecond as a redemption can lose its write. That trade is
+ * taken knowingly — the alternative is a lockfile protocol between a daemon and a one-shot CLI
+ * for a collision measured in milliseconds a few times in a Core's life, and the failure it would
+ * prevent is "the operator runs `pair new` again".
  *
  * **`revokeClient` is the exception, and it is tracked rather than fixed
  * here.** Every other lost write costs an operator a retry; a lost `revokedAt`
@@ -164,7 +157,7 @@ export class PairingStore {
    * Everything on disk, or throw saying why it could not be read.
    *
    * The distinction {@link read} cannot draw, for the one caller that must:
-   * `core-pairing-revocation.ts` treats an unreadable store as *everything is
+   * the SDK's revocation set (`@actana/sdk/pairing/server`, fed by `core-pairing-store.ts`) treats an unreadable store as *everything is
    * revoked*, and it can only do that if being unable to read is a different
    * outcome from reading nothing.
    *
@@ -254,54 +247,9 @@ export class PairingStore {
     this.write(records);
   }
 
-  /** One session by id, or `null`. */
-  getSession(id: string): PairingSession | null {
-    return this.read().sessions.find((session) => session.id === id) ?? null;
-  }
-
   /** Every session still on file, newest first. What `actana pair ls` reads. */
   listSessions(): PairingSession[] {
     return [...this.read().sessions].sort((a, b) => b.createdAt - a.createdAt);
-  }
-
-  /**
-   * Count a wrong code against a session and persist the count.
-   *
-   * Returns the session as it now stands — at the cap, it is dead and no later
-   * redemption can revive it. Returns `null` for a session that is not there,
-   * which the caller must treat exactly as it treats a refusal, so that a
-   * guess cannot be used to learn whether a session id exists.
-   */
-  recordWrongAttempt(id: string): PairingSession | null {
-    const records = this.read();
-    const index = records.sessions.findIndex((session) => session.id === id);
-    if (index === -1) return null;
-    const updated = recordWrongAttempt(records.sessions[index]!);
-    records.sessions[index] = updated;
-    this.write(records);
-    return updated;
-  }
-
-  /**
-   * Mark a session consumed, or say why it cannot be.
-   *
-   * **This is the step that issues.** The endpoint calls it *before* it signs
-   * anything, so the window in which two redemptions could both be signing is
-   * closed by the write below rather than by the certificate that follows it.
-   * A signature that then fails leaves the session consumed and the operator
-   * runs `pair new` again: that is the safe direction to fail, where the other
-   * one hands two clients a certificate for one code.
-   */
-  consume(id: string, now: number): PairingConsumeOutcome {
-    const records = this.read();
-    const index = records.sessions.findIndex((session) => session.id === id);
-    if (index === -1) return { ok: false, reason: "unknown" };
-    const gate = canRedeem(records.sessions[index]!, now);
-    if (!gate.ok) return { ok: false, reason: gate.reason };
-    const consumed: PairingSession = { ...records.sessions[index]!, consumedAt: now };
-    records.sessions[index] = consumed;
-    this.write(records);
-    return { ok: true, session: consumed };
   }
 
   /**
@@ -330,14 +278,6 @@ export class PairingStore {
     records.sessions[index] = cancelled;
     this.write(records);
     return cancelled;
-  }
-
-  /** Record an issued client identity. What `pair ls` and `pair revoke` read. */
-  recordClient(client: PairedClient, now: number = Date.now()): void {
-    const records = this.read();
-    records.clients = [...records.clients.filter((c) => c.certSerial !== client.certSerial), client];
-    records.sessions = prune(records.sessions, now);
-    this.write(records);
   }
 
   /** Every paired client, newest first. */
@@ -412,7 +352,7 @@ function isPairingSession(value: unknown): value is PairingSession {
     // optional, it is not load-bearing for whether a session is a session, and
     // this predicate is not a mere shape check: `parse(strict: true)` throws on
     // the first row it fails, `readStrict` propagates that, and
-    // `core-pairing-revocation.ts` reads an unreadable store as *everything is
+    // the SDK's revocation set (`@actana/sdk/pairing/server`, fed by `core-pairing-store.ts`) reads an unreadable store as *everything is
     // revoked*. So a single row with a wrong-typed `endpointHost` would lock
     // out every client the Core has ever paired — a total failure bought by a
     // field that decides nothing about session validity.

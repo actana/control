@@ -32,6 +32,8 @@ import { spawnSync } from "node:child_process";
 
 import { parseArgs } from "./lib/cli.mjs";
 import { makeDie, pickFreePort } from "./lib/core-smoke.mjs";
+import { redactDockerArgs, startPostgres } from "./lib/postgres-fixture.mjs";
+import { POSTGRES_DB, POSTGRES_USER } from "./lib/postgres-image.mjs";
 import {
   PANEL_DOCKERFILE,
   PANEL_NODE_BIN,
@@ -51,6 +53,8 @@ const timeoutMs = Number(args.timeout ?? 120_000);
 const suffix = `${process.pid}-${Date.now().toString(36)}`;
 const containerName = `actana-panel-smoke-${suffix}`;
 const volumeName = `actana-panel-smoke-data-${suffix}`;
+const networkName = `actana-panel-smoke-net-${suffix}`;
+const postgresName = `actana-panel-smoke-pg-${suffix}`;
 
 const OPERATOR = { name: "Smoke Operator", password: "smoke-operator-passphrase" };
 
@@ -58,14 +62,18 @@ function docker(dockerArgs, { allowFailure = false } = {}) {
   const result = spawnSync("docker", dockerArgs, { encoding: "utf8" });
   if (result.error) die(`docker ${dockerArgs[0]}: ${result.error.message}`);
   if (result.status !== 0 && !allowFailure) {
-    die(`docker ${dockerArgs.join(" ")} exited ${result.status}:\n${result.stderr}`);
+    die(`docker ${redactDockerArgs(dockerArgs).join(" ")} exited ${result.status}:\n${result.stderr}`);
   }
   return result;
 }
 
+let databaseUrl = null;
+
 function cleanup() {
   docker(["rm", "-f", containerName], { allowFailure: true });
+  docker(["rm", "-f", postgresName], { allowFailure: true });
   docker(["volume", "rm", "-f", volumeName], { allowFailure: true });
+  docker(["network", "rm", networkName], { allowFailure: true });
 }
 process.on("exit", cleanup);
 for (const signal of ["SIGINT", "SIGTERM"]) {
@@ -82,6 +90,10 @@ function startContainer(hostPort) {
     `127.0.0.1:${hostPort}:${PANEL_PORT}`,
     "--volume",
     `${volumeName}:/data`,
+    "--network",
+    networkName,
+    "--env",
+    `AC_PANEL_DATABASE_URL=${databaseUrl}`,
     image,
   ]);
 }
@@ -127,7 +139,9 @@ log("validating deploy/docker-compose.yml …");
 const composeCheck = spawnSync(
   "docker",
   ["compose", "-f", "deploy/docker-compose.yml", "config", "--quiet"],
-  { cwd: repoRoot, encoding: "utf8" },
+  // The compose file refuses to resolve without a database password (#567);
+  // this one is only here so `config` can read it, and opens nothing.
+  { cwd: repoRoot, encoding: "utf8", env: { ...process.env, AC_PANEL_DB_PASSWORD: "config-only" } },
 );
 if (composeCheck.status !== 0) {
   die(`docker compose config rejected the reference compose file:\n${composeCheck.stderr}`);
@@ -165,6 +179,44 @@ if (config?.User !== PANEL_RUNTIME_USER) {
 
 docker(["volume", "create", volumeName]);
 
+// The Panel refuses to start without a Postgres (#567), so one runs beside it on
+// a private network — the shape of the reference compose, where it is reached by
+// service name and publishes nothing.
+docker(["network", "create", networkName]);
+log("starting Postgres beside the Panel …");
+const postgres = await startPostgres({ name: postgresName, network: networkName }).catch((err) =>
+  die(`postgres fixture failed to start: ${err.message}`),
+);
+databaseUrl = postgres.url;
+
+// Boot 0: no database URL. The Panel must refuse to start — exit non-zero, and
+// say why on stderr — rather than come up and fail on its first query. Docker
+// keeps a container's stderr apart from its stdout, so this reads the stream the
+// message has to be on.
+log("boot 0 without AC_PANEL_DATABASE_URL — expecting a refusal to start");
+docker([
+  "run",
+  "--detach",
+  "--name",
+  containerName,
+  "--volume",
+  `${volumeName}:/data`,
+  image,
+]);
+const refusal = docker(["wait", containerName]).stdout.trim();
+const refusalLogs = docker(["logs", containerName]);
+if (refusal !== "1") {
+  die(`the Panel without a database exited ${refusal}, expected 1. Logs:\n${containerLogsTail()}`);
+}
+if (!refusalLogs.stderr.includes("AC_PANEL_DATABASE_URL is not set")) {
+  die(
+    `the Panel refused to start but not with the expected message on stderr:\n` +
+      `${refusalLogs.stderr}\n(stdout was: ${refusalLogs.stdout})`,
+  );
+}
+log("the Panel refused to start without a database, and said why on stderr");
+docker(["rm", "-f", containerName]);
+
 // Boot 1: a clean machine. First boot must ask for setup, and setup must
 // create the Operator.
 const firstPort = await pickFreePort();
@@ -180,31 +232,93 @@ const setup = await api(firstBase, "POST", "/api/auth/setup", OPERATOR);
 if (!setup.ok) die(`POST /api/auth/setup → ${setup.status}: ${await setup.text()}`);
 log("setup created the Operator");
 
-// better-sqlite3 is a native module compiled in the build stage against a
-// different Node and a different glibc from the one it dlopens under. That it
-// loads at all is the load-bearing fact behind the distroless runtime (ADR
-// 0016 D20, D25), and "the Panel answered /api/healthz" does not prove it —
-// the schema is what proves it. Read the migrated database from inside the
-// container, through the same better-sqlite3 the Panel just used.
-//
-// An absolute node: `docker exec` does not go through ENTRYPOINT, and
-// /nodejs/bin is not on the image's PATH, so a bare `node` is not found —
-// the same trap the healthcheck has.
-log("verifying the migrated schema in the volume …");
-const tables = docker([
-  "exec",
-  containerName,
-  PANEL_NODE_BIN,
-  "-e",
-  `const db=require("better-sqlite3")(process.env.AC_PANEL_DATA_DIR+"/panel.db",{readonly:true});` +
-    `console.log(db.prepare("select name from sqlite_master where type='table'").all().map(r=>r.name).join(" "))`,
-]).stdout.split(/\s+/);
+// The Panel's own state is in Postgres (#567, ADR 0041 D14): ask the server
+// beside it, not the volume. `psql` runs inside the Postgres container, on its
+// local socket, because that image is the one that carries it (the Panel image
+// is distroless and has nothing but node).
+log("verifying the migrated schema and the Operator in Postgres …");
+const psql = (sql) => {
+  const result = docker([
+    "exec",
+    postgresName,
+    "psql",
+    "-U",
+    POSTGRES_USER,
+    "-d",
+    POSTGRES_DB,
+    "--no-psqlrc",
+    "--tuples-only",
+    "--no-align",
+    "--command",
+    sql,
+  ]);
+  return result.stdout.trim();
+};
+const tables = psql("select table_name from information_schema.tables where table_schema = 'public'").split(/\s+/);
 for (const table of PANEL_TABLES) {
   if (!tables.includes(table)) {
     die(`the migrated database has no '${table}' table — found: ${tables.join(", ") || "(none)"}`);
   }
 }
-log(`better-sqlite3 loaded and migrated ${PANEL_TABLES.join(", ")} into the volume`);
+// Setup has just written the Operator and a session; both must be rows in
+// Postgres, owned by the Operator, with only the session token's hash stored.
+if (psql("select count(*) from operator") !== "1") die("setup left no Operator row in Postgres");
+if (psql("select count(*) from panel_sessions where owner_id = 1") !== "1") {
+  die("setup left no session row owned by the Operator in Postgres");
+}
+log(`the Panel migrated ${PANEL_TABLES.join(", ")} into Postgres and setup wrote its rows there`);
+
+// No SQLite file is left in the Panel's own state: the data volume holds the
+// secrets key and nothing named panel.db or missioncontrol.db (#567 PR 5).
+const dataFiles = docker([
+  "exec",
+  containerName,
+  PANEL_NODE_BIN,
+  "-e",
+  `console.log(require("fs").readdirSync(process.env.AC_PANEL_DATA_DIR).join(" "))`,
+]).stdout.split(/\s+/);
+if (dataFiles.some((name) => name.startsWith("panel.db"))) {
+  die(`the data volume still holds a panel.db — found: ${dataFiles.join(" ")}`);
+}
+if (dataFiles.some((name) => name.startsWith("missioncontrol.db"))) {
+  die(`the data volume still holds a missioncontrol.db — found: ${dataFiles.join(" ")}`);
+}
+log("the data volume holds no panel.db and no missioncontrol.db");
+
+// The Panel no longer depends on the compiled SQLite module (ADR 0041 D20): it
+// reads other apps' SQLite files through the built-in node:sqlite. This proves
+// only that the module cannot be resolved from the Panel's directory. The Core's
+// own copy can still sit in the deployed tree (the deploy installs the root
+// manifest's @actana/core), so it does not prove the bytes are absent. An absolute node: `docker
+// exec` does not go through ENTRYPOINT, and /nodejs/bin is not on PATH.
+const resolved = docker(
+  ["exec", containerName, PANEL_NODE_BIN, "-e", `require.resolve("better-sqlite3")`],
+  { allowFailure: true },
+);
+if (resolved.status === 0) die("better-sqlite3 is still resolvable from the Panel in the image");
+if (!resolved.stderr.includes("MODULE_NOT_FOUND")) {
+  die(`resolving better-sqlite3 failed for the wrong reason:\n${resolved.stderr}`);
+}
+log("better-sqlite3 is not resolvable from the Panel (its files may remain under the Core's copy)");
+
+// node:sqlite loads and runs under the distroless runtime. Whatever Node prints
+// for a bare load is Node's, not the Panel's (the Panel's own loader drops the
+// experimental-feature warning), so the log check is on the Panel container.
+const builtin = docker([
+  "exec",
+  containerName,
+  PANEL_NODE_BIN,
+  "-e",
+  `const { DatabaseSync } = require("node:sqlite");` +
+    `const db = new DatabaseSync(":memory:");` +
+    `console.log(db.prepare("select 1 as one").get().one)`,
+]);
+if (builtin.stdout.trim() !== "1") die(`node:sqlite select 1 printed ${JSON.stringify(builtin.stdout)}`);
+const panelLogs = docker(["logs", containerName]);
+if (/ExperimentalWarning|experimental feature/i.test(panelLogs.stdout + panelLogs.stderr)) {
+  die(`the Panel's logs carry an experimental-feature warning:\n${panelLogs.stdout}${panelLogs.stderr}`);
+}
+log("node:sqlite loads under the distroless runtime; the Panel's logs carry no experimental warning");
 
 // Recreate: destroy the container (the upgrade motion — the image is
 // replaceable), keep the volume (the state is not).
@@ -228,5 +342,5 @@ if (!login.headers.getSetCookie().some((c) => c.includes("HttpOnly"))) {
   die("login set no HttpOnly session cookie");
 }
 
-log("PASS — image boots, sets up, and its state survives container recreation");
+log("PASS — image boots against Postgres, sets up, and its state survives container recreation");
 process.exit(0);

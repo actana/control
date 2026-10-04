@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { asCore } from "./core-home";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { HarnessCliVersionRequirement } from "./harness-cli-version-requirements";
@@ -111,8 +112,10 @@ function spawnCliVersion(
   platform: NodeJS.Platform = os.platform(),
 ) {
   const probe = buildCliVersionProbe(binary, env, platform);
-  return spawnSync(probe.command, probe.args, {
-    env: probe.env,
+  const launch = asCore({ command: probe.command, args: probe.args, env: probe.env });
+  return spawnSync(launch.command, launch.args, {
+    cwd: launch.cwd,
+    env: launch.env,
     encoding: "utf8",
     timeout: VERSION_TIMEOUT_MS,
     windowsVerbatimArguments: platform === "win32" && isWindowsCommandScript(binary),

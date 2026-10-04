@@ -8,14 +8,21 @@
 //                           SHA-256 verified against that release's SHASUMS256.txt)
 //   app/actana-cli.cjs      the unified `actana` — the operator verbs (setup,
 //                           status, token, daemon, …) and the client nouns
-//                           (core, project, session, events, harness) (#288)
+//                           (core, session, events, files, shared, harness) — the published
+//                           @actana/cli, inlined at its pinned version (#580)
 //   app/core-entry.cjs   the esbuild-bundled Core daemon
+//   app/core-home-ops.cjs  the helper the daemon runs as `core` for work in core's home (#559)
+//   app/core-files-op.cjs  the helper the daemon runs as `core` for the Files API (#557)
+//   app/core-shared-watch.cjs  the Shared folder watcher the daemon runs as `core` in the container (#561)
 //   app/node_modules/       the runtime dependency closure, natives included
 //   core-manifest.json   version + core-link protocol version + target
 //
 // An extracted tarball needs nothing from the host: no system Node, no
 // `npm install`, no network. `scripts/smoke-core-tarball.mjs` is what
-// proves that claim.
+// proves that claim, for the daemon's boot and for the bundled `actana` with
+// the network refused. `@actana/cli` and `@actana/sdk` are inlined at the exact
+// versions the manifests pin; `assertPublishedPackagesArePinned` refuses any
+// other state (#580 T-405).
 //
 // Native modules are copied from THIS host's install, never cross-compiled —
 // so the build refuses to produce a target its host cannot honestly build.
@@ -51,16 +58,20 @@ import {
   CORE_RUNTIME_DEPENDENCIES,
   LAUNCHER_SCRIPT,
   assertCoreVersion,
+  assertPackageVersionAgreement,
   buildManifest,
   findTarget,
   hostTarget,
+  inlinedPackageVersions,
   nodeDistDirName,
   nodeDistShasumsUrl,
   nodeDistTarballUrl,
   parseCoreLinkProtocolVersion,
   parseShasums,
+  pinnedVersion,
   planDependencyLayout,
   prebuildDirName,
+  SDK_LINK_FRAMES_PATH,
   tarballName,
   tarballRootDirName,
 } from "./lib/core-tarball.mjs";
@@ -205,6 +216,71 @@ function assertEntryPointSurvivedPrune(name, destDir) {
   }
 }
 
+/**
+ * The published packages the staged bundles inline, held to one exact version each (#580 T-405).
+ *
+ * `@actana/cli` and `@actana/sdk` are not files in this repository any more; they are inlined into
+ * `actana-cli.cjs` and `core-entry.cjs` by esbuild from whatever `node_modules` held at build
+ * time. So the tarball carries the version the manifests pin if and only if three things agree:
+ * every manifest pins one exact version, `node_modules` holds that version, and the source map of
+ * each bundle names it. Any other state is refused here, on every target, before a byte is staged.
+ * The same check runs again on the extracted tarball in `scripts/smoke-core-tarball.mjs`.
+ *
+ * The protocol version is read from the installed SDK's `dist/core/link-frames.js` (never a literal)
+ * and has to be the one both bundles carry, because the manifest states it and the Core announces
+ * the bundled one on `ready`.
+ */
+function assertPublishedPackagesArePinned(stagedBundles, protocolVersion) {
+  const manifest = (...segments) =>
+    JSON.parse(fs.readFileSync(path.join(repoRoot, ...segments, "package.json"), "utf8"));
+  const manifests = {
+    "package.json": manifest(),
+    "packages/cli": manifest("packages", "cli"),
+    "packages/core": manifest("packages", "core"),
+    "packages/panel": manifest("packages", "panel"),
+    "packages/shared": manifest("packages", "shared"),
+  };
+  const bundle = (file) => stagedBundles.find((entry) => entry.file === file);
+  const mapOf = (file) => {
+    const { dist } = bundle(file);
+    const mapPath = path.join(dist, `${file}.map`);
+    if (!fs.existsSync(mapPath)) fail(`no ${file}.map at ${dist}: the source map is how the bundled versions are read`);
+    return fs.readFileSync(mapPath, "utf8");
+  };
+  const maps = { "actana-cli.cjs": mapOf("actana-cli.cjs"), "core-entry.cjs": mapOf("core-entry.cjs") };
+  const agreed = {};
+  for (const [name, holders] of [
+    ["@actana/cli", ["packages/cli", "packages/core"]],
+    ["@actana/sdk", Object.keys(manifests)],
+  ]) {
+    try {
+      const pins = Object.fromEntries(holders.map((label) => [label, pinnedVersion(manifests[label], name, label)]));
+      const installed = resolvePackageDir(name, path.join(repoRoot, "packages", "cli"))?.packageJson.version;
+      agreed[name] = assertPackageVersionAgreement({
+        name,
+        pins,
+        installed,
+        inlined: Object.fromEntries(
+          Object.entries(maps).map(([file, text]) => [file, inlinedPackageVersions(text, name)]),
+        ),
+      });
+    } catch (err) {
+      fail(err.message);
+    }
+  }
+  for (const file of ["actana-cli.cjs", "core-entry.cjs"]) {
+    const { dist } = bundle(file);
+    const carried = parseCoreLinkProtocolVersion(fs.readFileSync(path.join(dist, file), "utf8"));
+    if (carried !== protocolVersion) {
+      fail(
+        `${file} carries core-link protocol ${carried} but the installed @actana/sdk says ${protocolVersion}: ` +
+          "the manifest would state a protocol the Core does not announce — rebuild the bundles",
+      );
+    }
+  }
+  return agreed;
+}
+
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   if (args._.length > 0) fail(`unexpected argument: ${args._[0]}`);
@@ -256,7 +332,14 @@ async function main() {
   // wrong rather than shipping a tarball whose launcher execs nothing.
   const stagedBundles = [
     { file: "core-entry.cjs", dist: path.join(repoRoot, "packages", "core", "dist"), pkg: "@actana/core" },
-    { file: "actana-cli.cjs", dist: path.join(repoRoot, "packages", "cli", "dist-tarball"), pkg: "@actana/cli" },
+    // The helper the daemon starts as `core` to work in core's home (#559). It
+    // sits beside the daemon's bundle: the daemon finds it by its own __dirname.
+    { file: "core-home-ops.cjs", dist: path.join(repoRoot, "packages", "core", "dist"), pkg: "@actana/core" },
+    // The Files API's helper (#557), found the same way.
+    { file: "core-files-op.cjs", dist: path.join(repoRoot, "packages", "core", "dist"), pkg: "@actana/core" },
+    // The Shared folder watcher (#561), found the same way: the daemon cannot read `~/shared` in the container.
+    { file: "core-shared-watch.cjs", dist: path.join(repoRoot, "packages", "core", "dist"), pkg: "@actana/core" },
+    { file: "actana-cli.cjs", dist: path.join(repoRoot, "packages", "cli", "dist-tarball"), pkg: "@actana/core-cli" },
   ];
   // The message names `pnpm build:core-tarball-bundles` and not the single
   // filter that would fix this one file, because naming the single filter is
@@ -275,8 +358,9 @@ async function main() {
   }
 
   const protocolVersion = parseCoreLinkProtocolVersion(
-    fs.readFileSync(path.join(repoRoot, "packages", "sdk", "src", "core-link-frames.ts"), "utf8"),
+    fs.readFileSync(path.join(repoRoot, ...SDK_LINK_FRAMES_PATH), "utf8"),
   );
+  const bundledVersions = assertPublishedPackagesArePinned(stagedBundles, protocolVersion);
 
   // The channel is named in the log because the three surfaces below are the
   // only place it is ever written down: there is no channel field, and there
@@ -284,7 +368,8 @@ async function main() {
   log(
     `target=${descriptor.target} version=${version} channel=` +
       `${parsedVersion.prerelease === null ? "release" : parsedVersion.prerelease} ` +
-      `node=${nodeVersion} protocol=${protocolVersion}`,
+      `node=${nodeVersion} protocol=${protocolVersion} ` +
+      `@actana/cli=${bundledVersions["@actana/cli"]} @actana/sdk=${bundledVersions["@actana/sdk"]}`,
   );
 
   const nodeDir = await downloadNodeRuntime(nodeVersion, descriptor, cacheDir);

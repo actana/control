@@ -1,55 +1,43 @@
-import { beforeEach, describe, expect, it } from "vitest";
-import * as fs from "node:fs";
-import * as os from "node:os";
-import * as path from "node:path";
+import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { closePanelTestDb, openPanelTestDb, resetPanelState } from "./_panel-test-db";
 
-const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mc-opencode-hooks-test-"));
-process.env.AC_USER_DATA_DIR = tmpRoot;
+const testDb = await openPanelTestDb();
 
 const { handleApiRequest } = await import("../api-router");
 const { getOrCreateApiToken } = await import("../services/settings");
-const { createProject } = await import("../services/projects");
-const { createTask, getTask } = await import("../services/tasks");
-const { getDb } = await import("~/db/client");
-const { projects, tasks, groups, appSettings } = await import("~/db/schema");
+const { createSession, getSession } = await import("../services/sessions");
+const { createOperator } = await import("../services/operator");
 
 const LOOPBACK_HEADERS = { origin: "http://127.0.0.1:5173" };
 
-function authed(input: string, init: RequestInit = {}): Request {
+async function authed(input: string, init: RequestInit = {}): Promise<Request> {
   return new Request(`http://127.0.0.1:5173${input}`, {
     ...init,
     headers: {
       ...LOOPBACK_HEADERS,
-      authorization: `Bearer ${getOrCreateApiToken()}`,
+      authorization: `Bearer ${await getOrCreateApiToken()}`,
       ...(init.headers as Record<string, string> | undefined),
     },
   });
 }
 
 describe("OpenCode hook API", () => {
-  let taskId = "";
+  let sessionId = "";
 
-  beforeEach(() => {
-    const db = getDb();
-    db.delete(tasks).run();
-    db.delete(projects).run();
-    db.delete(groups).run();
-    db.delete(appSettings).run();
-
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mc-opencode-hooks-proj-"));
-    const project = createProject({ name: "opencode-hooks", path: dir });
-    const task = createTask({
-      projectId: project.id,
+  beforeEach(async () => {
+    await resetPanelState(testDb);
+    await createOperator({ name: "Test Operator", password: "test-password" });
+    const session = await createSession({
       title: "Waiting for initial prompt...",
       agent: "opencode",
       claudeSessionId: null,
     });
-    taskId = task.id;
+    sessionId = session.id;
   });
 
-  function postHook(body: Record<string, unknown>): Promise<Response | null> {
+  async function postHook(body: Record<string, unknown>): Promise<Response | null> {
     return handleApiRequest(
-      authed(`/api/hooks/opencode?taskId=${encodeURIComponent(taskId)}`, {
+      await authed(`/api/hooks/opencode?sessionId=${encodeURIComponent(sessionId)}`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(body),
@@ -58,38 +46,38 @@ describe("OpenCode hook API", () => {
   }
 
   /** Capture a session id and put the Session on `running`, as a turn does. */
-  async function start(sessionId: string): Promise<void> {
+  async function start(harnessSessionId: string): Promise<void> {
     const running = await postHook({
       hook_event_name: "UserPromptSubmit",
-      session_id: sessionId,
+      session_id: harnessSessionId,
       prompt: "ship opencode hooks",
     });
     expect(running?.status).toBe(200);
-    expect(getTask(taskId)).toMatchObject({ claudeSessionId: sessionId, status: "running" });
+    expect(await getSession(sessionId)).toMatchObject({ claudeSessionId: harnessSessionId, status: "running" });
   }
 
   it("captures ses_* session ids from SessionStart without changing status", async () => {
-    const sessionId = "ses_3cf7dd8d4ffeUPfENpVxfFojZ2";
+    const harnessSessionId = "ses_3cf7dd8d4ffeUPfENpVxfFojZ2";
     const res = await handleApiRequest(
-      authed(`/api/hooks/opencode?taskId=${encodeURIComponent(taskId)}`, {
+      await authed(`/api/hooks/opencode?sessionId=${encodeURIComponent(sessionId)}`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           hook_event_name: "SessionStart",
-          session_id: sessionId,
+          session_id: harnessSessionId,
         }),
       }),
     );
 
     expect(res?.status).toBe(200);
     await expect(res?.json()).resolves.toEqual({ ok: true, ignored: "SessionStart" });
-    expect(getTask(taskId)?.claudeSessionId).toBe(sessionId);
-    expect(getTask(taskId)?.status).toBe("ready");
+    expect((await getSession(sessionId))?.claudeSessionId).toBe(harnessSessionId);
+    expect((await getSession(sessionId))?.status).toBe("ready");
   });
 
-  it("marks tasks finished on Stop", async () => {
+  it("marks sessions finished on Stop", async () => {
     const res = await handleApiRequest(
-      authed(`/api/hooks/opencode?taskId=${encodeURIComponent(taskId)}`, {
+      await authed(`/api/hooks/opencode?sessionId=${encodeURIComponent(sessionId)}`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
@@ -101,12 +89,12 @@ describe("OpenCode hook API", () => {
 
     expect(res?.status).toBe(200);
     await expect(res?.json()).resolves.toEqual({ ok: true, status: "finished" });
-    expect(getTask(taskId)?.status).toBe("finished");
+    expect((await getSession(sessionId))?.status).toBe("finished");
   });
 
-  it("marks tasks running on UserPromptSubmit", async () => {
+  it("marks sessions running on UserPromptSubmit", async () => {
     const res = await handleApiRequest(
-      authed(`/api/hooks/opencode?taskId=${encodeURIComponent(taskId)}`, {
+      await authed(`/api/hooks/opencode?sessionId=${encodeURIComponent(sessionId)}`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
@@ -119,12 +107,12 @@ describe("OpenCode hook API", () => {
 
     expect(res?.status).toBe(200);
     await expect(res?.json()).resolves.toEqual({ ok: true, status: "running" });
-    expect(getTask(taskId)?.status).toBe("running");
+    expect((await getSession(sessionId))?.status).toBe("running");
   });
 
-  it("marks tasks needs-input on PermissionRequest", async () => {
+  it("marks sessions needs-input on PermissionRequest", async () => {
     const res = await handleApiRequest(
-      authed(`/api/hooks/opencode?taskId=${encodeURIComponent(taskId)}`, {
+      await authed(`/api/hooks/opencode?sessionId=${encodeURIComponent(sessionId)}`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
@@ -136,12 +124,12 @@ describe("OpenCode hook API", () => {
 
     expect(res?.status).toBe(200);
     await expect(res?.json()).resolves.toEqual({ ok: true, status: "needs-input" });
-    expect(getTask(taskId)?.status).toBe("needs-input");
+    expect((await getSession(sessionId))?.status).toBe("needs-input");
   });
 
-  it("marks tasks needs-input on QuestionRequest", async () => {
+  it("marks sessions needs-input on QuestionRequest", async () => {
     const res = await handleApiRequest(
-      authed(`/api/hooks/opencode?taskId=${encodeURIComponent(taskId)}`, {
+      await authed(`/api/hooks/opencode?sessionId=${encodeURIComponent(sessionId)}`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
@@ -153,32 +141,32 @@ describe("OpenCode hook API", () => {
 
     expect(res?.status).toBe(200);
     await expect(res?.json()).resolves.toEqual({ ok: true, status: "needs-input" });
-    expect(getTask(taskId)?.status).toBe("needs-input");
+    expect((await getSession(sessionId))?.status).toBe("needs-input");
   });
 
   it("walks the full OpenCode hook lifecycle over HTTP", async () => {
-    const sessionId = "ses_lifecycle_integration";
-    const token = getOrCreateApiToken();
+    const harnessSessionId = "ses_lifecycle_integration";
+    const token = await getOrCreateApiToken();
 
     const sessionStart = await handleApiRequest(
-      authed(`/api/hooks/opencode?taskId=${encodeURIComponent(taskId)}`, {
+      await authed(`/api/hooks/opencode?sessionId=${encodeURIComponent(sessionId)}`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           hook_event_name: "SessionStart",
-          session_id: sessionId,
+          session_id: harnessSessionId,
         }),
       }),
     );
     expect(sessionStart?.status).toBe(200);
 
     const running = await handleApiRequest(
-      authed(`/api/hooks/opencode?taskId=${encodeURIComponent(taskId)}`, {
+      await authed(`/api/hooks/opencode?sessionId=${encodeURIComponent(sessionId)}`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           hook_event_name: "UserPromptSubmit",
-          session_id: sessionId,
+          session_id: harnessSessionId,
           prompt: "ship opencode hooks",
         }),
       }),
@@ -186,19 +174,19 @@ describe("OpenCode hook API", () => {
     expect(running?.status).toBe(200);
 
     const finished = await handleApiRequest(
-      authed(`/api/hooks/opencode?taskId=${encodeURIComponent(taskId)}`, {
+      await authed(`/api/hooks/opencode?sessionId=${encodeURIComponent(sessionId)}`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           hook_event_name: "Stop",
-          session_id: sessionId,
+          session_id: harnessSessionId,
         }),
       }),
     );
     expect(finished?.status).toBe(200);
 
-    expect(getTask(taskId)).toMatchObject({
-      claudeSessionId: sessionId,
+    expect(await getSession(sessionId)).toMatchObject({
+      claudeSessionId: harnessSessionId,
       status: "finished",
     });
     expect(token.length).toBeGreaterThan(0);
@@ -209,24 +197,24 @@ describe("OpenCode hook API", () => {
     // resuming outright. Claude Code fires nothing when a permission is
     // GRANTED, which is why that family has to be healed by the next
     // PostToolUse instead — the two harnesses genuinely differ here.
-    const sessionId = "ses_permission_flow";
-    const hook = (body: Record<string, unknown>) =>
+    const harnessSessionId = "ses_permission_flow";
+    const hook = async (body: Record<string, unknown>) =>
       handleApiRequest(
-        authed(`/api/hooks/opencode?taskId=${encodeURIComponent(taskId)}`, {
+        await authed(`/api/hooks/opencode?sessionId=${encodeURIComponent(sessionId)}`, {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ ...body, session_id: sessionId }),
+          body: JSON.stringify({ ...body, session_id: harnessSessionId }),
         }),
       );
 
     await hook({ hook_event_name: "UserPromptSubmit", prompt: "run the tests" });
     await hook({ hook_event_name: "PermissionRequest" });
-    expect(getTask(taskId)?.status).toBe("needs-input");
+    expect((await getSession(sessionId))?.status).toBe("needs-input");
 
     const replied = await hook({ hook_event_name: "PermissionReplied" });
     expect(replied?.status).toBe(200);
     await expect(replied?.json()).resolves.toEqual({ ok: true, status: "running" });
-    expect(getTask(taskId)?.status).toBe("running");
+    expect((await getSession(sessionId))?.status).toBe("running");
   });
 
   it("walks the sequence the installed plugin actually produced", async () => {
@@ -235,30 +223,30 @@ describe("OpenCode hook API", () => {
     // going busy, then two Stops. The repeats matter — `session.status` idle
     // and `session.idle` both fire, and the card must settle once and stay
     // settled rather than flickering.
-    const sessionId = "ses_000c0422afferlN5ASgK5JDYj3";
-    const post = (body: Record<string, unknown>) =>
+    const harnessSessionId = "ses_000c0422afferlN5ASgK5JDYj3";
+    const post = async (body: Record<string, unknown>) =>
       handleApiRequest(
-        authed(`/api/hooks/opencode?taskId=${encodeURIComponent(taskId)}`, {
+        await authed(`/api/hooks/opencode?sessionId=${encodeURIComponent(sessionId)}`, {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ ...body, session_id: sessionId }),
+          body: JSON.stringify({ ...body, session_id: harnessSessionId }),
         }),
       );
 
     await post({ hook_event_name: "SessionStart" });
-    expect(getTask(taskId)?.claudeSessionId).toBe(sessionId);
-    expect(getTask(taskId)?.status).toBe("ready");
+    expect((await getSession(sessionId))?.claudeSessionId).toBe(harnessSessionId);
+    expect((await getSession(sessionId))?.status).toBe("ready");
 
     await post({ hook_event_name: "UserPromptSubmit", prompt: "say hello" });
-    expect(getTask(taskId)?.status).toBe("running");
+    expect((await getSession(sessionId))?.status).toBe("running");
     for (let i = 0; i < 3; i += 1) await post({ hook_event_name: "UserPromptSubmit" });
-    expect(getTask(taskId)?.status).toBe("running");
+    expect((await getSession(sessionId))?.status).toBe("running");
 
     await post({ hook_event_name: "Stop" });
     await post({ hook_event_name: "Stop" });
     // The whole point of #230: a settle the Core can report, so `--wait` and
     // the SDK's wait-for-idle resolve instead of timing out "unreported".
-    expect(getTask(taskId)?.status).toBe("finished");
+    expect((await getSession(sessionId))?.status).toBe("finished");
   });
 
   it("ignores claiming hooks from a different captured session", async () => {
@@ -267,7 +255,7 @@ describe("OpenCode hook API", () => {
 
     await start(capturedSessionId);
 
-    // A permission prompt from a session this task never captured would park
+    // A permission prompt from a session this session never captured would park
     // the card on `needs-input` for a question the operator cannot see. That
     // is what the foreign-session guard is for, and it still holds.
     const foreignAsk = await postHook({
@@ -277,7 +265,7 @@ describe("OpenCode hook API", () => {
 
     expect(foreignAsk?.status).toBe(200);
     await expect(foreignAsk?.json()).resolves.toEqual({ ok: true, ignored: "foreign-session" });
-    expect(getTask(taskId)).toMatchObject({
+    expect(await getSession(sessionId)).toMatchObject({
       claudeSessionId: capturedSessionId,
       status: "running",
     });
@@ -291,7 +279,7 @@ describe("OpenCode hook API", () => {
 
     await start(capturedSessionId);
     await postHook({ hook_event_name: "PermissionRequest", session_id: capturedSessionId });
-    expect(getTask(taskId)?.status).toBe("needs-input");
+    expect((await getSession(sessionId))?.status).toBe("needs-input");
 
     const childStop = await postHook({
       hook_event_name: "Stop",
@@ -300,7 +288,7 @@ describe("OpenCode hook API", () => {
 
     expect(childStop?.status).toBe(200);
     await expect(childStop?.json()).resolves.toEqual({ ok: true, event: "Stop" });
-    expect(getTask(taskId)).toMatchObject({
+    expect(await getSession(sessionId)).toMatchObject({
       claudeSessionId: capturedSessionId,
       status: "needs-input",
     });
@@ -310,7 +298,7 @@ describe("OpenCode hook API", () => {
     // A resumed OpenCode process, or a child session whose `idle` slipped past
     // the plugin's parent/child filter. This used to be acked and dropped, so
     // the card sat on `running` with no `session:finished` ever coming — the
-    // hook was addressed by task id out of this PTY's own environment, so the
+    // hook was addressed by session id out of this PTY's own environment, so the
     // turn that ended is this Session's whatever OpenCode calls the session.
     const capturedSessionId = "ses_captured_session";
     const foreignSessionId = "ses_foreign_session";
@@ -324,10 +312,14 @@ describe("OpenCode hook API", () => {
 
     expect(foreignStop?.status).toBe(200);
     await expect(foreignStop?.json()).resolves.toEqual({ ok: true, status: "finished" });
-    expect(getTask(taskId)).toMatchObject({
+    expect(await getSession(sessionId)).toMatchObject({
       // The stored id is untouched: a Stop is still not a capture event.
       claudeSessionId: capturedSessionId,
       status: "finished",
     });
   });
+});
+
+afterAll(async () => {
+  await closePanelTestDb(testDb);
 });

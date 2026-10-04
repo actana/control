@@ -2,7 +2,7 @@
 //
 // Every step of a harness's work reaches this file: a hook posted to the
 // Core's loopback receiver, or the PTY exiting. Each one becomes a write on
-// this Core's own task row through {@link CoreTaskWriter}, which appends the
+// this Core's own session row through {@link CoreSessionWriter}, which appends the
 // matching event, which is what the Panel's live card re-renders from — no
 // round trip through the Panel, and no Panel needed for the write to happen
 // at all (issue 84).
@@ -19,16 +19,16 @@ import {
   type HarnessHookBody,
 } from "@actana/shared/harness-hook-pipeline";
 import { HARNESS_HOOK_EVENTS } from "@actana/shared/harness-hook-events";
-import type { CoreLinkTaskStatus } from "@actana/sdk/core-link-frames";
-import type { CoreTaskWriter } from "./core-task-writer";
+import type { CoreLinkSessionStatus } from "@actana/sdk/core";
+import type { CoreSessionWriter } from "./core-session-writer";
 
 export type CoreHarnessStatusDeps = {
-  writer: CoreTaskWriter;
+  writer: CoreSessionWriter;
   /**
    * Name an unnamed Session from the prompt that started its turn. Optional so
    * a Core with no generator wired (tests) still moves status.
    */
-  generateTitle?: (taskId: string, prompt: string) => void;
+  generateTitle?: (sessionId: string, prompt: string) => void;
 };
 
 /**
@@ -39,27 +39,27 @@ export class CoreHarnessStatus {
   constructor(private readonly deps: CoreHarnessStatusDeps) {}
 
   /**
-   * Apply a hook payload to the task it names. The answer is what the receiver
+   * Apply a hook payload to the session it names. The answer is what the receiver
    * writes back to the harness — a shape the harness ignores, but a `404` is
-   * how an operator reading `curl -v` learns the task is gone.
+   * how an operator reading `curl -v` learns the session is gone.
    */
   receiveHook(
-    taskId: string,
+    sessionId: string,
     payload: HarnessHookBody,
     eventNameFallback = "",
   ): { ok: boolean; body: Record<string, unknown> } {
     const result = handleHarnessHookEvent(
-      taskId,
+      sessionId,
       payload,
       {
-        getTask: (id) => {
-          const task = this.deps.writer.readTask(id);
-          if (!task) return null;
-          return { status: task.status, claudeSessionId: task.claudeSessionId };
+        getSession: (id) => {
+          const session = this.deps.writer.readSession(id);
+          if (!session) return null;
+          return { status: session.status, claudeSessionId: session.claudeSessionId };
         },
         updateStatus: (id, status) => this.writeStatus(id, status),
-        setSessionId: (id, sessionId) => {
-          this.deps.writer.mutate({ op: "update", taskId: id, claudeSessionId: sessionId });
+        setSessionId: (id, harnessSessionId) => {
+          this.deps.writer.mutate({ op: "update", sessionId: id, claudeSessionId: harnessSessionId });
         },
         onPrompt: (id, prompt) => this.deps.generateTitle?.(id, prompt),
       },
@@ -79,9 +79,9 @@ export class CoreHarnessStatus {
    * PTY lifecycle is not the Panel's to observe, and a Session that finished
    * while the link was down must still be `finished` when it comes back.
    */
-  sessionExited(taskId: string, exitCode: number): void {
-    if (!taskId) return;
-    this.receiveHook(taskId, {
+  sessionExited(sessionId: string, exitCode: number): void {
+    if (!sessionId) return;
+    this.receiveHook(sessionId, {
       hook_event_name: HARNESS_HOOK_EVENTS.sessionProcessExited,
       exit_code: exitCode,
     });
@@ -108,11 +108,11 @@ export class CoreHarnessStatus {
    * to attend to and a client showing a Session that appears to have hung.
    */
   outputSignal(
-    taskId: string,
+    sessionId: string,
     signal: "interrupted" | "hooks-need-review" | "dialog-unanswered",
   ): void {
-    if (!taskId) return;
-    this.receiveHook(taskId, {
+    if (!sessionId) return;
+    this.receiveHook(sessionId, {
       hook_event_name:
         signal === "interrupted"
           ? HARNESS_HOOK_EVENTS.userInterrupt
@@ -120,11 +120,11 @@ export class CoreHarnessStatus {
     });
   }
 
-  private writeStatus(taskId: string, status: CoreLinkTaskStatus): boolean {
+  private writeStatus(sessionId: string, status: CoreLinkSessionStatus): boolean {
     try {
-      return Boolean(this.deps.writer.mutate({ op: "update", taskId, status }));
+      return Boolean(this.deps.writer.mutate({ op: "update", sessionId, status }));
     } catch (err) {
-      log.warn("harness-status.write-failed", { taskId, status, error: String(err) });
+      log.warn("harness-status.write-failed", { sessionId, status, error: String(err) });
       return false;
     }
   }

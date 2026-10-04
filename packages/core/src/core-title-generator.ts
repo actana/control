@@ -1,6 +1,6 @@
 // Naming a Session, on the Core.
 //
-// Decided, not open (issue 84): task metadata is Core-owned, the harness
+// Decided, not open (issue 84): session metadata is Core-owned, the harness
 // binaries this shells out to in print mode exist only on the Core, and the
 // prompt that triggers it now arrives at the Core's own hook receiver. Routing
 // the prompt back to the Panel and the title back again would buy nothing.
@@ -20,13 +20,14 @@ import {
   parseResponse,
   resolveTitleInvocation,
 } from "@actana/shared/title-generation";
-import { TITLE_GENERATING, TITLE_WAITING, isSentinelTitle } from "@actana/shared/task-sentinels";
+import { TITLE_GENERATING, TITLE_WAITING, isSentinelTitle } from "@actana/shared/session-sentinels";
 import type { Harness } from "@actana/shared/domain";
 import { runCli } from "./harness-cli-run";
-import type { CoreTaskWriter } from "./core-task-writer";
+import { stripPromptBlock } from "./prompt-standard-block";
+import type { CoreSessionWriter } from "./core-session-writer";
 
 export type CoreTitleGeneratorDeps = {
-  writer: CoreTaskWriter;
+  writer: CoreSessionWriter;
   /** Injectable for tests; defaults to the real print-mode CLI runner. */
   runCli?: (cmd: string, args: string[]) => Promise<string>;
 };
@@ -40,54 +41,59 @@ export class CoreTitleGenerator {
    * not report one. A failure to name a Session is never a reason to fail
    * what triggered it.
    */
-  schedule(taskId: string, prompt: string): void {
+  schedule(sessionId: string, promptWithBlock: string): void {
+    // The harness hands back what it was given: the user's text plus the
+    // Core's standard block (issue 563). Naming reads the user's text only —
+    // the block would be the fallback title, and an agent-run title CLI would
+    // be told to write a report. Every caller comes through here.
+    const prompt = stripPromptBlock(promptWithBlock);
     // Never name a Session from this generator's OWN meta-prompt. A headless
     // helper inherits the session's hook env, so if one ever fires these
     // hooks, generating from its prompt is a loop with no end. The guard lives
     // here rather than at each caller so a new caller cannot forget it.
     if (isTitleGenerationPrompt(prompt)) return;
-    void this.generate(taskId, prompt).catch((err) => {
-      log.warn("title-gen.failed", { taskId, error: String(err) });
+    void this.generate(sessionId, prompt).catch((err) => {
+      log.warn("title-gen.failed", { sessionId, error: String(err) });
     });
   }
 
-  async generate(taskId: string, prompt: string): Promise<void> {
-    const task = this.deps.writer.readTask(taskId);
-    if (!task) return;
+  async generate(sessionId: string, prompt: string): Promise<void> {
+    const session = this.deps.writer.readSession(sessionId);
+    if (!session) return;
     // Three ways a row is off limits, and all three are re-checked after the
     // CLI returns: the operator named it, it already has a real name, or there
     // is no prompt to name it from.
-    if (task.titleManuallySet) return;
-    if (!isSentinelTitle(task.title)) return;
+    if (session.titleManuallySet) return;
+    if (!isSentinelTitle(session.title)) return;
     if (!prompt.trim()) return;
 
-    const invocation = resolveTitleInvocation(task.agent as Harness, prompt);
+    const invocation = resolveTitleInvocation(session.agent as Harness, prompt);
     if (!invocation) {
-      if (task.title === TITLE_WAITING) this.writeTitle(taskId, fallbackTitle(prompt), null);
+      if (session.title === TITLE_WAITING) this.writeTitle(sessionId, fallbackTitle(prompt), null);
       return;
     }
 
-    if (task.title === TITLE_WAITING) this.writeTitle(taskId, TITLE_GENERATING, null);
+    if (session.title === TITLE_WAITING) this.writeTitle(sessionId, TITLE_GENERATING, null);
 
     const run = this.deps.runCli ?? runCli;
     let parsed: { title: string; icon: string | null };
     try {
       parsed = parseResponse(await run(invocation.cmd, invocation.args));
     } catch (err) {
-      log.info("title-gen.cli-failed", { taskId, error: String(err) });
-      const stale = this.deps.writer.readTask(taskId);
+      log.info("title-gen.cli-failed", { sessionId, error: String(err) });
+      const stale = this.deps.writer.readSession(sessionId);
       if (stale && !stale.titleManuallySet && isSentinelTitle(stale.title)) {
-        this.writeTitle(taskId, fallbackTitle(prompt), null);
+        this.writeTitle(sessionId, fallbackTitle(prompt), null);
       }
       return;
     }
 
     // Re-read: the operator may have renamed the Session while the CLI ran,
     // and their name wins. This is the race the row-level flag exists for.
-    const fresh = this.deps.writer.readTask(taskId);
+    const fresh = this.deps.writer.readSession(sessionId);
     if (!fresh || fresh.titleManuallySet || !isSentinelTitle(fresh.title)) return;
-    if (parsed.title) this.writeTitle(taskId, parsed.title, parsed.icon);
-    else this.writeTitle(taskId, fallbackTitle(prompt), null);
+    if (parsed.title) this.writeTitle(sessionId, parsed.title, parsed.icon);
+    else this.writeTitle(sessionId, fallbackTitle(prompt), null);
   }
 
   /**
@@ -96,10 +102,10 @@ export class CoreTitleGenerator {
    * renamed, and the generator would have locked the operator out of the very
    * protection this flag provides.
    */
-  private writeTitle(taskId: string, title: string, icon: string | null): void {
+  private writeTitle(sessionId: string, title: string, icon: string | null): void {
     this.deps.writer.mutate({
       op: "update",
-      taskId,
+      sessionId,
       title,
       titleManuallySet: false,
       ...(icon ? { icon } : {}),

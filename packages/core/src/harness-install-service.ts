@@ -25,7 +25,7 @@
 import log from "@actana/shared/log";
 import { HARNESS_CLI_CONFIG } from "@actana/shared/harness-cli-config";
 import type { Harness } from "@actana/shared/domain";
-import type { CoreLinkHarnessAvailabilityMap } from "@actana/sdk/core-link-frames";
+import type { CoreLinkHarnessAvailabilityMap } from "@actana/sdk/core";
 import {
   installAgentsNow,
   resolveHarnessId,
@@ -33,6 +33,7 @@ import {
   type HarnessInstallOutcome,
 } from "@actana/shared/actana-harnesses";
 import type { ActanaSystem } from "@actana/shared/actana-system-port";
+import { isContainerMode } from "./core-identity";
 
 /** What one install ended as. `ok` means the Harness is on this Core now. */
 export type HarnessInstallResult = { ok: true } | { ok: false; message: string };
@@ -45,11 +46,16 @@ export type HarnessInstallServiceOptions = {
    * moved. The Core's own 60s tick would find a new CLI eventually; an operator
    * watching the row they just clicked would not call that "eventually".
    */
-  reprobe: () => void;
+  reprobe: () => void | Promise<void>;
   /** Runs the vendor installer. Same port the CLI's install verb uses. */
   system: ActanaSystem;
   platform: NodeJS.Platform;
-  /** The operator's home, for the managed PATH block a successful install writes. */
+  /**
+   * The home whose login profile gets the managed PATH block after a successful
+   * install. Only used where this daemon is the user that owns that home (metal);
+   * in the container it is `core`'s, the daemon is `actana`, and the block is not
+   * written at all (see {@link profileHomeDir}).
+   */
   homeDir?: string;
   /** Injectable installer for tests. Defaults to {@link installAgentsNow}. */
   runInstall?: (
@@ -111,7 +117,7 @@ export class HarnessInstallService {
         availability: this.opts.availability(),
         platform: this.opts.platform,
         system: this.opts.system,
-        homeDir: this.opts.homeDir,
+        homeDir: profileHomeDir(this.opts.homeDir),
         out: (line) => log.info("core-harness-install.progress", { harness, line }),
       });
       outcome = outcomes.find((entry) => entry.agent === harness);
@@ -128,7 +134,7 @@ export class HarnessInstallService {
     // the Panel's row is waiting on, and it is the only honest answer about
     // this machine's PATH.
     try {
-      this.opts.reprobe();
+      await this.opts.reprobe();
     } catch (err) {
       log.warn("core-harness-install.reprobe-failed", {
         harness,
@@ -139,6 +145,22 @@ export class HarnessInstallService {
     if (this.opts.availability()[harness]?.status === "available") return { ok: true };
     return { ok: false, message: failureMessage(harness, outcome) };
   }
+}
+
+/**
+ * The home to write the managed login-PATH block into, or `undefined` for none.
+ *
+ * Never in the container (#559): the daemon is `actana`, `core`'s home is 0750
+ * `core:core`, so the write could only fail, and it did, on every install, with
+ * "could not write ~/.profile". It is also not needed there. A Session's PATH is
+ * built by `asCore` from the registry's directories, the daemon's own probe asks
+ * `core` to look in them, and a login shell gets them from the image's
+ * `/etc/profile.d/actana-harness-path.sh`, which is root-owned and written at build.
+ * Writing core's dotfiles from the daemon, even through a helper, would be a
+ * privileged edit of a file a Session's own login shell runs.
+ */
+export function profileHomeDir(homeDir: string | undefined, env: NodeJS.ProcessEnv = process.env): string | undefined {
+  return isContainerMode(env) ? undefined : homeDir;
 }
 
 /**

@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { bootstrapCoreDb } from "../core-db-bootstrap";
 import {
   configureCoreMutationStore,
@@ -12,7 +12,7 @@ import {
   configureCoreQueryStore,
   coreQueryStore,
   disposeCoreQueryStore,
-  listActiveTasks,
+  listActiveSessions,
 } from "../core-query-store";
 import {
   appendEvent,
@@ -21,7 +21,7 @@ import {
   getLastEventId,
   readEventTail,
 } from "../event-log-store";
-import { CoreTaskWriter } from "../core-task-writer";
+import { CoreSessionWriter } from "../core-session-writer";
 import { CoreSessionBackstop } from "../core-session-backstop";
 import { PtyOutputActivityWatcher } from "../pty-output-activity";
 import { CoreHarnessStatus } from "../core-harness-status";
@@ -58,31 +58,30 @@ const FRAME_MS = 1000;
 
 describe("settling a turn whose end nobody reported", () => {
   let userDataDir: string;
-  let writer: CoreTaskWriter;
+  let writer: CoreSessionWriter;
   let nowMs: number;
   let livePtys: Set<string>;
 
   const makeBackstop = () =>
     new CoreSessionBackstop({
-      listActiveTasks,
+      listActiveSessions,
       writer,
-      hasLivePty: (taskId) => livePtys.has(taskId),
+      hasLivePty: (sessionId) => livePtys.has(sessionId),
       now: () => nowMs,
       quietMs: QUIET_MS,
     });
 
-  const insert = (taskId: string, status: string) => {
-    coreMutationStore.mutateTask({
+  const insert = (sessionId: string, status: string) => {
+    coreMutationStore.mutateSession({
       op: "create",
-      taskId,
-      projectId: "p1",
-      title: taskId,
+      sessionId,
+      title: sessionId,
       agent: "claude-code",
       status,
     });
-    livePtys.add(taskId);
+    livePtys.add(sessionId);
   };
-  const statusOf = (taskId: string) => coreQueryStore.getTask(taskId)?.status;
+  const statusOf = (sessionId: string) => coreQueryStore.getSession(sessionId)?.status;
   const kindsSince = (eventId: number) => readEventTail(eventId, 100).map((e) => e.kind);
 
   beforeEach(() => {
@@ -91,22 +90,23 @@ describe("settling a turn whose end nobody reported", () => {
     configureCoreMutationStore(userDataDir);
     configureCoreQueryStore(userDataDir);
     configureEventLogStore(userDataDir);
-    writer = new CoreTaskWriter({
+    writer = new CoreSessionWriter({
       mutationPort: coreMutationStore,
       queryPort: coreQueryStore,
       eventLog: { appendEvent, getLastEventId, readEventTail },
     });
-    coreMutationStore.mutateProject({
-      op: "create",
-      projectId: "p1",
-      name: "Warehouse",
-      path: userDataDir,
-    });
     nowMs = Date.now();
+    // One clock for the store and the backstop. The store stamps a row's
+    // `updatedAt` from `Date.now()` while the backstop reads `nowMs`; pinning the
+    // first to the second puts every write exactly where the test put it, and is
+    // what lets the same-millisecond test below collide on purpose rather than by
+    // luck (issue 588). The store's revision no longer needs the pin to be safe.
+    vi.spyOn(Date, "now").mockImplementation(() => nowMs);
     livePtys = new Set();
   });
 
   afterEach(() => {
+    vi.restoreAllMocks();
     clearSubagentActivity("t-1");
     disposeCoreMutationStore();
     disposeCoreQueryStore();
@@ -218,7 +218,7 @@ describe("settling a turn whose end nobody reported", () => {
     backstop.forget("t-1");
 
     // The exit path settles the row; the backstop must not then re-settle it.
-    coreMutationStore.mutateTask({ op: "update", taskId: "t-1", status: "terminated" });
+    coreMutationStore.mutateSession({ op: "update", sessionId: "t-1", status: "terminated" });
     nowMs += QUIET_MS + MINUTE;
     expect(backstop.sweepOnce()).toEqual([]);
     expect(statusOf("t-1")).toBe("terminated");
@@ -454,18 +454,18 @@ describe("settling a turn whose end nobody reported", () => {
       insert("t-1", "running");
       let reopenFails = true;
       const flaky = {
-        readTask: (taskId: string) => writer.readTask(taskId),
+        readSession: (sessionId: string) => writer.readSession(sessionId),
         mutate: (mutation: { op: string; status?: string }) => {
           if (reopenFails && mutation.op === "update" && mutation.status === "running") {
             throw new Error("database is locked");
           }
           return writer.mutate(mutation as never);
         },
-      } as unknown as CoreTaskWriter;
+      } as unknown as CoreSessionWriter;
       const backstop = new CoreSessionBackstop({
-        listActiveTasks,
+        listActiveSessions,
         writer: flaky,
-        hasLivePty: (taskId) => livePtys.has(taskId),
+        hasLivePty: (sessionId) => livePtys.has(sessionId),
         now: () => nowMs,
         quietMs: QUIET_MS,
       });
@@ -493,13 +493,35 @@ describe("settling a turn whose end nobody reported", () => {
       settleByIdleRule(backstop);
 
       nowMs += 30 * 1000;
-      coreMutationStore.mutateTask({ op: "update", taskId: "t-1", status: "finished" });
+      coreMutationStore.mutateSession({ op: "update", sessionId: "t-1", status: "finished" });
       const after = lastEventId();
 
       nowMs += 30 * 1000;
       backstop.noteActivity("t-1", "output");
       expect(statusOf("t-1")).toBe("finished");
       // No reopen, so no re-settle, so no second `session:finished` toast.
+      expect(kindsSince(after)).toEqual([]);
+    });
+
+    it("never takes back a finish another writer wrote in the same millisecond", () => {
+      // Issue 588. The row's `updatedAt` is the backstop's only proof that the
+      // row still holds its own write, and a wall-clock millisecond is not
+      // unique: a `Stop` queued behind the synchronous sweep writes in the very
+      // millisecond the idle settle did. The clock is pinned and NOT advanced
+      // between the two writes, so both would carry one `updatedAt` if the
+      // store stamped the wall clock alone.
+      insert("t-1", "running");
+      const backstop = makeBackstop();
+      settleByIdleRule(backstop);
+      const settledAt = coreQueryStore.getSession("t-1")!.updatedAt;
+
+      coreMutationStore.mutateSession({ op: "update", sessionId: "t-1", status: "finished" });
+      expect(coreQueryStore.getSession("t-1")!.updatedAt).toBeGreaterThan(settledAt);
+      const after = lastEventId();
+
+      nowMs += 30 * 1000;
+      backstop.noteActivity("t-1", "output");
+      expect(statusOf("t-1")).toBe("finished");
       expect(kindsSince(after)).toEqual([]);
     });
 
@@ -534,7 +556,7 @@ describe("settling a turn whose end nobody reported", () => {
 
       // The operator archived it, or the PTY exit settled it. Whatever the row
       // says now, it is not this rule's `finished` any more.
-      coreMutationStore.mutateTask({ op: "update", taskId: "t-1", status: "terminated" });
+      coreMutationStore.mutateSession({ op: "update", sessionId: "t-1", status: "terminated" });
       backstop.noteActivity("t-1", "output");
       expect(statusOf("t-1")).toBe("terminated");
     });

@@ -51,7 +51,7 @@ function SetupPage() {
       error={error}
       submitLabel="Create Operator"
       busy={busy}
-      onSubmit={submit}
+      onSubmit={(e) => void submit(e)}
     >
       <TextField
         label="Your name"

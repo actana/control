@@ -5,6 +5,7 @@ import * as path from "node:path";
 import { HARNESS_CLI_CONFIG } from "../harness-cli-version-requirements";
 import { clearHarnessCliVersionCache } from "../harness-cli-version";
 import {
+  pickHarnessCandidateMeetingVersion,
   resolveHarnessCommandMeetingVersion,
   resolveHarnessCommandOnPath,
   resolveAllHarnessCommandsOnPath,
@@ -125,5 +126,35 @@ describe("resolveHarnessCommandMeetingVersion", () => {
       expect(meeting.check.reason).toBe("outdated");
       expect(meeting.check.version).toBe("0.131.0");
     }
+  });
+});
+
+describe("pickHarnessCandidateMeetingVersion", () => {
+  // The container's daemon cannot list `core`'s PATH, so core lists it and the
+  // daemon picks among the answers. The pick must be the one the local lookup makes.
+  it("picks the newer later candidate over an outdated early one, as the local lookup does", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mc-pick-multi-"));
+    const stale = path.join(root, "a", "codex");
+    const fresh = path.join(root, "b", "codex");
+    writeExecutable(stale, "#!/bin/sh\necho 'codex-cli 0.131.0'\n");
+    writeExecutable(fresh, "#!/bin/sh\necho 'codex-cli 0.144.1'\n");
+    clearHarnessCliVersionCache();
+    const picked = pickHarnessCandidateMeetingVersion([stale, fresh], HARNESS_CLI_CONFIG.codex, {}, "darwin", { fresh: true });
+    expect(picked?.binary).toBe(fresh);
+    const env = { PATH: `${path.dirname(stale)}${path.delimiter}${path.dirname(fresh)}` };
+    expect(resolveHarnessCommandMeetingVersion("codex", HARNESS_CLI_CONFIG.codex, env, "darwin", { fresh: true })?.binary).toBe(fresh);
+  });
+
+  it("returns the first candidate when all are outdated, and null when there are none", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mc-pick-stale-"));
+    const first = path.join(root, "a", "codex");
+    const second = path.join(root, "b", "codex");
+    writeExecutable(first, "#!/bin/sh\necho 'codex-cli 0.131.0'\n");
+    writeExecutable(second, "#!/bin/sh\necho 'codex-cli 0.120.0'\n");
+    clearHarnessCliVersionCache();
+    const picked = pickHarnessCandidateMeetingVersion([first, second], HARNESS_CLI_CONFIG.codex, {}, "darwin", { fresh: true });
+    expect(picked?.binary).toBe(first);
+    expect(picked?.check.ok).toBe(false);
+    expect(pickHarnessCandidateMeetingVersion([], HARNESS_CLI_CONFIG.codex, {}, "darwin")).toBeNull();
   });
 });

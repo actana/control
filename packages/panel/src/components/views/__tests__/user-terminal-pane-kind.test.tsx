@@ -1,10 +1,8 @@
 // @vitest-environment jsdom
 //
-// The other half of issue 394: the panel must hand each pane the shell the
-// *session* says it is, never the one the current scope suggests. Reading kind
-// and cwd off the ambient scope is what let a reload spawn a home shell where
-// the operator had opened a VM shell — the session is restored correctly and
-// then rendered as something else.
+// The other half of issue 394: the panel must hand each pane the Core the
+// *session* ran on, never the one the current scope suggests — the session is
+// restored correctly and then rendered somewhere else otherwise.
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -12,17 +10,15 @@ import { KeybindingsProvider } from "~/lib/keybindings/store";
 
 type PaneProps = {
   terminal: { id: string };
-  cwd: string;
-  coreId?: string;
-  isHome?: boolean;
-  shellSession?: boolean;
+  coreId: string;
 };
 
 const store = {
-  project: { id: "p1", path: "/w/p1" } as unknown,
-  homeActive: true,
+  coreId: "core_route" as string | null,
   panelOpen: true,
   setPanelOpen: vi.fn(),
+  panelMaximized: false,
+  setPanelMaximized: vi.fn(),
   sessions: [] as unknown[],
   focusedId: null,
   focusTerminal: vi.fn(),
@@ -31,7 +27,6 @@ const store = {
   hiddenIds: new Set<string>(),
   toggleHidden: vi.fn(),
   renameTerminal: vi.fn(),
-  updateLaunchUrl: vi.fn(),
   setPtyId: vi.fn(),
 };
 vi.mock("~/lib/user-terminal-store", () => ({ useUserTerminals: () => store }));
@@ -48,17 +43,17 @@ vi.mock("../UserTerminalPane", () => ({
 
 const { UserTerminalPanel } = await import("../UserTerminalPanel");
 
-function session(id: string, kind: "vm-shell" | "home" | "project", cwd: string, coreId?: string) {
-  return { terminal: { id, name: id, cwd: null }, ptyId: null, kind, cwd, coreId };
+function session(id: string, coreId: string) {
+  return { terminal: { id, name: id, cwd: null }, ptyId: null, coreId };
 }
 
-function renderPanel(coreId?: string) {
+function renderPanel() {
   paneProps.length = 0;
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={client}>
       <KeybindingsProvider>
-        <UserTerminalPanel coreId={coreId} />
+        <UserTerminalPanel />
       </KeybindingsProvider>
     </QueryClientProvider>,
   );
@@ -67,38 +62,30 @@ function renderPanel(coreId?: string) {
 afterEach(() => cleanup());
 
 describe("the panel renders the shell the session is (issue 394)", () => {
-  it("keeps a restored VM shell a VM shell, even while Home is the current scope", () => {
-    store.sessions = [session("t1", "vm-shell", "", "core_a")];
-    renderPanel("core_route");
+  it("hands a pane the Core its session ran on, not the Core in scope", () => {
+    store.sessions = [session("t1", "core_a")];
+    renderPanel();
     const pane = paneProps.at(-1)!;
-    expect(pane.shellSession).toBe(true);
-    // `isHome` used to be the ambient scope flag; a VM shell is not a home shell.
-    expect(pane.isHome).toBe(false);
-    // The session's own Core wins over the route's.
+    // The session's own Core wins over the Core the route is on: a restored
+    // terminal carries the Core its identity recorded.
     expect(pane.coreId).toBe("core_a");
-    expect(pane.cwd).toBe("");
   });
 
-  it("spawns a home shell only for a session that is one", () => {
-    store.sessions = [session("t2", "home", "", "core_a")];
-    renderPanel("core_route");
+  it("gives every pane its own session's Core", () => {
+    store.sessions = [session("t1", "core_a"), session("t2", "core_b")];
+    renderPanel();
+    expect(paneProps.map((p) => [p.terminal.id, p.coreId])).toEqual([
+      ["t1", "core_a"],
+      ["t2", "core_b"],
+    ]);
+  });
+
+  it("hands a pane no cwd and no shell kind: every terminal is a VM shell in the Core's home", () => {
+    store.sessions = [session("t3", "core_a")];
+    renderPanel();
     const pane = paneProps.at(-1)!;
-    expect(pane.isHome).toBe(true);
-    expect(pane.shellSession).toBe(false);
-  });
-
-  it("gives a project shell the cwd it was opened with, not the project in scope", () => {
-    store.sessions = [session("t3", "project", "/w/other", "core_a")];
-    renderPanel("core_route");
-    const pane = paneProps.at(-1)!;
-    expect(pane.shellSession).toBe(false);
-    expect(pane.isHome).toBe(false);
-    expect(pane.cwd).toBe("/w/other");
-  });
-
-  it("falls back to the route's Core for a session opened without one", () => {
-    store.sessions = [session("t4", "vm-shell", "", undefined)];
-    renderPanel("core_route");
-    expect(paneProps.at(-1)!.coreId).toBe("core_route");
+    expect(pane).not.toHaveProperty("cwd");
+    expect(pane).not.toHaveProperty("isHome");
+    expect(pane).not.toHaveProperty("shellSession");
   });
 });

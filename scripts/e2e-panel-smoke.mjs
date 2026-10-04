@@ -16,7 +16,7 @@
 //   • a real pairing code, redeemed through "Add Core" against a Core whose
 //     fingerprint was checked first, registers a Core — and its dial reaches
 //     `connected` over the panel link;
-//   • projects and tasks list, and a project created over the panel link shows
+//   • projects and sessions list, and a project created over the panel link shows
 //     up in the next list — the write path is mutation frames, not HTTP;
 //   • a PTY spawned over the panel link streams `coreId`-tagged output frames
 //     carrying what was typed into it;
@@ -24,14 +24,14 @@
 //     no browser is attached, and a reconnected link replaying from its cursor
 //     sees every one of them — no event loss;
 //   • the credential the pairing issued is unreadable at rest: it appears
-//     nowhere in panel.db in the clear, and a data directory restored without
-//     its `secrets.key` cannot dial the Core it still lists;
+//     nowhere in core_secrets.sealed (or the rest of the Panel's Postgres rows)
+//     in the clear, and a data directory restored without its `secrets.key`
+//     cannot dial the Core it still lists;
 //   • the `AC_SECRETS_KEY` path works: a Panel given the key by environment
 //     pairs and dials without ever writing a key file;
-//   • and a file dropped on a Project reaches that Core's disk — read back with
-//     `fs`, not taken on the Panel's word — with the overwrite named in the
-//     Core's own progress stream, and with a gigabyte crossing a Panel booted
-//     with a 256 MB heap without its memory moving (#129 F6/F11, #169).
+//   • and the Panel's old per-Project Files route is gone from the deployed service: a request
+//     to `/api/cores/:id/projects/:id/files` is the router's 404, the route a Core's files used to
+//     cross the Panel on (#580; the byte-streaming and memory-ceiling leg that drove it went with it).
 //
 // The Core it pairs with comes from `scripts/lib/core-fixture.mjs` — a local
 // Core process. The `--core-tarball` Core-in-a-box variant is gone with the
@@ -49,10 +49,8 @@
 // the Panel's and the Core's output is printed so triage doesn't need a
 // rerun.
 
-import { execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import * as fs from "node:fs";
-import * as http from "node:http";
 import * as os from "node:os";
 import * as path from "node:path";
 
@@ -67,6 +65,7 @@ import {
   pollUntil,
   startPanelService,
 } from "./lib/panel-e2e.mjs";
+import { ensurePanelDatabase, allocatePanelDatabase, queryPanelDatabase } from "./lib/postgres-fixture.mjs";
 
 const die = makeDie("panel-e2e");
 const log = (message) => console.log(`[panel-e2e] ${message}`);
@@ -77,32 +76,6 @@ const OTHER_PASSWORD = "definitely-not-the-password";
 
 const DIAL_TIMEOUT_MS = 30_000;
 
-// ─── The file-drop leg's numbers (#169) ──────────────────────────────────────
-//
-// The relationship between these three is the whole assertion, so they live
-// together: the drop is several times the heap the Panel is allowed, and the
-// resident-memory ceiling is a fraction of the drop. Move one and the leg stops
-// meaning what it says.
-
-/** The deployed Panel's heap limit for the file-drop phase, in MB. */
-const PANEL_HEAP_CAP_MB = 256;
-/**
- * How much is pushed through it — two gigabytes, because #169 says
- * *multi-gigabyte* and one is not that. `AC_E2E_FILE_DROP_BYTES` overrides it
- * for a machine that cannot spare the disk.
- */
-const BIG_DROP_BYTES = Number(process.env.AC_E2E_FILE_DROP_BYTES ?? 2 * 1024 * 1024 * 1024);
-/**
- * How much resident memory the Panel process may grow by while that crosses.
- *
- * The half of the assertion `--max-old-space-size` cannot make: `Buffer`s and
- * `ArrayBuffer`s are external memory and are not bounded by the heap cap at all,
- * so a Panel that buffered with `await request.arrayBuffer()` would sail past
- * the cap and be caught only here.
- */
-const PANEL_RSS_CEILING_BYTES = 512 * 1024 * 1024;
-/** Free space the phase needs on the Core's disk before it writes a gigabyte. */
-const BIG_DROP_DISK_HEADROOM = BIG_DROP_BYTES * 3;
 const PTY_OUTPUT_TIMEOUT_MS = 30_000;
 const REPLAY_TIMEOUT_MS = 30_000;
 
@@ -144,9 +117,14 @@ async function main() {
   );
   teardown.push(() => core.stop());
 
+  // The Panel refuses to start without a Postgres (#567), so one runs beside it.
+  // Each phase then gets a database of its own on that server: setup wants 200,
+  // and a shared database already has the Operator from the phase before.
+  teardown.push(await ensurePanelDatabase({ name: `ac-e2e-panel-pg-${process.pid}`, log }));
+
   await keyFilePhase({ panelBin, panelEntry, core });
   await envKeyPhase({ panelBin, panelEntry, core });
-  await fileDropPhase({ panelBin, panelEntry, core });
+  await retiredFilesRoutePhase({ panelBin, panelEntry, core });
 
   log("OK — the Panel service seam holds end to end");
 }
@@ -159,10 +137,18 @@ async function main() {
  * deployment is supposed to survive on.
  */
 async function keyFilePhase({ panelBin, panelEntry, core }) {
+  const { url: databaseUrl } = await allocatePanelDatabase({ label: "keyfile", log });
   const dataDir = tempDir("ac-e2e-panel-");
   const port = await pickFreePort();
   const boot = () =>
-    startPanelService({ bin: panelBin, serverEntry: panelEntry, dataDir, port, log });
+    startPanelService({
+      bin: panelBin,
+      serverEntry: panelEntry,
+      dataDir,
+      port,
+      extra: { AC_PANEL_DATABASE_URL: databaseUrl },
+      log,
+    });
 
   let panel = await boot().catch((err) => die(`panel failed to boot: ${err.message}`, err.logLines));
   teardown.push(() => panel.kill());
@@ -180,12 +166,11 @@ async function keyFilePhase({ panelBin, panelEntry, core }) {
   // From the fixture, not from `tempDir`: the fixture interface exists so
   // that a Core which cannot see this machine's filesystem still works here
   // (see scripts/lib/core-fixture.mjs).
-  const projectPath = core.makeProjectDir("ac-e2e-project-");
-  await assertProjectAndTaskLists(link, coreId, projectPath, fail);
+  await assertSessionLists(link, coreId, fail);
   await assertPtyStreams(link, coreId, fail);
   await assertReconnectReplaysMissedEvents(panel, link, coreId, fail);
 
-  await assertSecretsSealedAtRest(dataDir, core, fail);
+  await assertSecretsSealedAtRest(databaseUrl, core, fail);
 
   // …and a data directory whose key file is gone cannot read them back.
   await panel.stop();
@@ -201,7 +186,7 @@ async function keyFilePhase({ panelBin, panelEntry, core }) {
   fs.renameSync(keyBackup, keyPath);
   panel = await boot().catch((err) => die(`panel failed to reboot: ${err.message}`, err.logLines));
   await assertLoginAndDial(panel, coreId, fail);
-  log("secrets at rest: sealed in panel.db, dead without the key file, alive with it");
+  log("secrets at rest: sealed in Postgres, dead without the key file, alive with it");
 
   // Hand the Core back before the next phase pairs with it. A Core serves
   // one core-link at a time, so two live Panels dialing it would spend the run
@@ -215,6 +200,7 @@ async function keyFilePhase({ panelBin, panelEntry, core }) {
  * writing a key file beside the data.
  */
 async function envKeyPhase({ panelBin, panelEntry, core }) {
+  const { url: databaseUrl } = await allocatePanelDatabase({ label: "envkey", log });
   const dataDir = tempDir("ac-e2e-panel-envkey-");
   const port = await pickFreePort();
   const secretsKey = randomBytes(32).toString("hex");
@@ -224,6 +210,7 @@ async function envKeyPhase({ panelBin, panelEntry, core }) {
     dataDir,
     port,
     secretsKey,
+    extra: { AC_PANEL_DATABASE_URL: databaseUrl },
     log,
   }).catch((err) => die(`panel (AC_SECRETS_KEY) failed to boot: ${err.message}`, err.logLines));
   teardown.push(() => panel.kill());
@@ -238,7 +225,7 @@ async function envKeyPhase({ panelBin, panelEntry, core }) {
   if (fs.existsSync(path.join(dataDir, "secrets.key"))) {
     fail("AC_SECRETS_KEY was set but the Panel still wrote a secrets.key beside the data");
   }
-  await assertSecretsSealedAtRest(dataDir, core, fail);
+  await assertSecretsSealedAtRest(databaseUrl, core, fail);
   log("AC_SECRETS_KEY: paired and dialed with the key held outside the data directory");
   // The Core takes one core-link at a time; hand it back before the next phase
   // pairs with it, or the two Panels spend the run displacing each other.
@@ -246,30 +233,13 @@ async function envKeyPhase({ panelBin, panelEntry, core }) {
 }
 
 /**
- * Project files, through a **memory-limited deployed Panel** (#129 F6/F11, #169).
- *
- * This phase exists for one claim that cannot be made anywhere else: *"a
- * multi-gigabyte drop does not put the upload through the Panel's memory."* The
- * unit suite pins the streaming structurally — the Core reads a byte while the
- * browser is still writing — but only here is the Panel a real deployed process
- * with a real limit on it, which is what the claim is actually about.
- *
- * So this Panel is booted with `--max-old-space-size` set small and then handed
- * a file several times that size. **Both halves of the memory assertion are
- * needed and neither is redundant:**
- *
- *   • the heap cap catches a Panel that buffered into JS objects — it dies, and
- *     the request fails, loudly;
- *   • the RSS ceiling catches a Panel that buffered into `Buffer`s or
- *     `ArrayBuffer`s, which live in *external* memory that `--max-old-space-size`
- *     does not bound at all. That is the likelier accident, since it is what
- *     `await request.arrayBuffer()` and every framework body helper produce.
- *
- * And the other done-means is checked with `fs`: the file the operator dropped
- * is read straight off the Core's Project directory, which is what "`cat`-able
- * by a harness on that Core" means when you stop paraphrasing it.
+ * The Panel's Core-files route is retired (#580, ADR 0041 D27): a Core has no Projects and the Panel
+ * no longer pipes a Core's file bytes. A request for the old address is refused by the deployed
+ * service as an unknown route, after login and with a Core paired and connected, so the 404 is the
+ * router's and not "no such Core".
  */
-async function fileDropPhase({ panelBin, panelEntry, core }) {
+async function retiredFilesRoutePhase({ panelBin, panelEntry, core }) {
+  const { url: databaseUrl } = await allocatePanelDatabase({ label: "files", log });
   const dataDir = tempDir("ac-e2e-panel-files-");
   const port = await pickFreePort();
   const panel = await startPanelService({
@@ -277,12 +247,9 @@ async function fileDropPhase({ panelBin, panelEntry, core }) {
     serverEntry: panelEntry,
     dataDir,
     port,
-    // The limit the whole phase is about. A Panel container is a small one; this
-    // is smaller, so that "bigger than the Panel's memory" needs a file measured
-    // in gigabytes rather than in tens of them.
-    extra: { NODE_OPTIONS: `--max-old-space-size=${PANEL_HEAP_CAP_MB}` },
+    extra: { AC_PANEL_DATABASE_URL: databaseUrl },
     log,
-  }).catch((err) => die(`panel (file drop) failed to boot: ${err.message}`, err.logLines));
+  }).catch((err) => die(`panel (retired files route) failed to boot: ${err.message}`, err.logLines));
   teardown.push(() => panel.kill());
   const fail = (message) => die(message, [...panel.logLines(), ...core.logLines()]);
 
@@ -290,28 +257,9 @@ async function fileDropPhase({ panelBin, panelEntry, core }) {
   const coreId = await assertCoreRegisters(panel, core, fail);
   const link = await openLink(panel, fail);
   await assertDialConnects(link, coreId, fail);
-
-  const filesCapable = await pollUntil(
-    "the Core to announce its `files` capability",
-    DIAL_TIMEOUT_MS,
-    async () => {
-      const listed = await panel.client.get("/api/cores");
-      const row = listed.body?.cores?.find((c) => c.id === coreId);
-      return row?.dial?.files ? row.dial : null;
-    },
-  ).catch(() => null);
-  if (!filesCapable) {
-    fail("the Core never announced `files` on `ready` — the Panel would withhold the file view");
-  }
-
-  const projectPath = core.makeProjectDir("ac-e2e-files-");
-  const projectId = await assertProjectCreated(link, coreId, projectPath, "e2e-files", fail);
   link.close();
 
-  await assertDropIsOnTheCoresDisk(panel, coreId, projectId, projectPath, fail);
-  await assertOverwriteIsNamed(panel, coreId, projectId, projectPath, fail);
-  await assertFileViewLists(panel, coreId, projectId, fail);
-  await assertBigDropDoesNotGoThroughPanelMemory(panel, coreId, projectId, projectPath, fail);
+  await assertRetiredFilesRouteIsRefused(panel, coreId, fail);
 
   await panel.stop();
 }
@@ -334,7 +282,7 @@ async function assertUnauthenticatedIsRefused(panel, fail) {
 
   for (const probe of [
     { method: "GET", pathname: "/api/cores" },
-    { method: "GET", pathname: "/api/projects" },
+    { method: "GET", pathname: "/api/home/user-terminals" },
     { method: "GET", pathname: "/api/settings" },
     // A write, too: the reads and the writes go through the same gate, and a
     // regression that opened only one of them would be missed by either alone.
@@ -525,283 +473,56 @@ function dialFrames(link) {
 }
 
 /**
- * Read and write across the router: list projects, create one over the panel
- * link (mutation frames are the only write path — ADR 0004), list again, and
- * list that project's tasks.
+ * Read and write across the router: list Sessions, create one over the panel
+ * link (mutation frames are the only write path — ADR 0004), and list again.
+ * A Core has no Projects (ADR 0041 D1), so a Session is created with no parent.
  */
-async function assertProjectAndTaskLists(link, coreId, projectPath, fail) {
-  const before = await link.request(coreId, { type: "projectsList" });
-  if (before.type !== "projectsListResult") fail(`projectsList answered ${before.type}`);
-  if (!Array.isArray(before.projects) || before.projects.length !== 0) {
-    fail(`a fresh Core should have no projects, got ${JSON.stringify(before.projects)}`);
+async function assertSessionLists(link, coreId, fail) {
+  const before = await link.request(coreId, { type: "sessionRowsList" });
+  if (before.type !== "sessionRowsListResult") fail(`sessionRowsList answered ${before.type}`);
+  if (!Array.isArray(before.sessions) || before.sessions.length !== 0) {
+    fail(`a fresh Core should have no Sessions, got ${JSON.stringify(before.sessions)}`);
   }
 
   const created = await link.request(coreId, {
-    type: "projectsMutate",
-    mutation: { op: "create", name: "e2e", path: projectPath },
+    type: "sessionsMutate",
+    mutation: { op: "create", title: "e2e", agent: "claude-code" },
   });
-  if (created.type !== "projectsMutateResult" || !created.project?.projectId) {
-    fail(`creating a project over the panel link answered ${JSON.stringify(created).slice(0, 300)}`);
+  if (created.type !== "sessionsMutateResult" || !created.session?.sessionId) {
+    fail(`creating a Session over the panel link answered ${JSON.stringify(created).slice(0, 300)}`);
   }
-  const { projectId } = created.project;
+  const { sessionId } = created.session;
 
-  const after = await link.request(coreId, { type: "projectsList" });
-  if (!after.projects?.some((project) => project.projectId === projectId)) {
-    fail(`the created project is missing from projectsList: ${JSON.stringify(after.projects)}`);
+  const after = await link.request(coreId, { type: "sessionRowsList" });
+  if (!after.sessions?.some((session) => session.sessionId === sessionId)) {
+    fail(`the created Session is missing from sessionRowsList: ${JSON.stringify(after.sessions)}`);
   }
-
-  const tasks = await link.request(coreId, { type: "tasksList", projectId });
-  if (tasks.type !== "tasksListResult" || !Array.isArray(tasks.tasks)) {
-    fail(`tasksList answered ${JSON.stringify(tasks).slice(0, 300)}`);
-  }
-  log(`projects and tasks list over the panel link (project ${projectId})`);
+  log(`sessions list over the panel link (Session ${sessionId})`);
 }
 
-// ─── Project files (#129 F6/F11, #169) ───────────────────────────────────────
+// ─── The retired Project files route (#580) ──────────────────────────────────
 
-/** Create one Project on the Core over the panel link, and hand back its id. */
-async function assertProjectCreated(link, coreId, projectPath, name, fail) {
-  const created = await link.request(coreId, {
-    type: "projectsMutate",
-    mutation: { op: "create", name, path: projectPath },
-  });
-  if (created.type !== "projectsMutateResult" || !created.project?.projectId) {
-    fail(`creating ${name} answered ${JSON.stringify(created).slice(0, 300)}`);
-  }
-  return created.project.projectId;
-}
-
-function filesPath(coreId, projectId, relative) {
-  return (
-    `/api/cores/${encodeURIComponent(coreId)}/projects/${encodeURIComponent(projectId)}` +
-    `/files?path=${encodeURIComponent(relative)}`
-  );
-}
-
-/**
- * PUT a body at the Panel **without ever holding it**, and read the NDJSON back.
- *
- * `write` is called with the request stream and paces itself against `drain`, so
- * a gigabyte is generated a chunk at a time on this side too — a test that
- * assembled the body first would be measuring its own memory, not the Panel's.
- */
-function putStreamed(panel, pathname, write, headers = {}) {
-  return new Promise((resolve, reject) => {
-    const url = new URL(panel.origin + pathname);
-    const req = http.request(
-      {
-        host: url.hostname,
-        port: url.port,
-        method: "PUT",
-        path: url.pathname + url.search,
-        headers: {
-          "content-type": "application/octet-stream",
-          cookie: panel.client.jar.header(),
-          ...headers,
-        },
-      },
-      (res) => {
-        let text = "";
-        res.setEncoding("utf8");
-        res.on("data", (chunk) => (text += chunk));
-        res.on("end", () =>
-          resolve({
-            status: res.statusCode ?? 0,
-            lines: text
-              .split("\n")
-              .map((line) => line.trim())
-              .filter(Boolean)
-              .map((line) => {
-                try {
-                  return JSON.parse(line);
-                } catch {
-                  return { unparsed: line };
-                }
-              }),
-          }),
-        );
-      },
-    );
-    req.on("error", reject);
-    Promise.resolve(write(req)).then(
-      () => req.end(),
-      (err) => {
-        req.destroy();
-        reject(err);
-      },
-    );
-  });
-}
-
-/** One string body, written in a single chunk. */
-function putText(panel, pathname, text) {
-  return putStreamed(panel, pathname, (req) => {
-    req.write(text);
-  });
-}
-
-/**
- * Criterion (#129's done-means for the whole phase): a file dropped on a Project
- * in the Panel is on that Core's disk, readable, seconds later.
- *
- * Asserted with `fs` against the Core's own Project directory rather than
- * against anything the Panel said — the Panel answering `200` is what a
- * write-shaped bug looks like too.
- */
-async function assertDropIsOnTheCoresDisk(panel, coreId, projectId, projectPath, fail) {
-  const contents = `dropped-by-the-e2e-${Date.now()}`;
-  const answer = await putText(panel, filesPath(coreId, projectId, "notes/dropped.txt"), contents);
-  if (answer.status !== 200) {
-    fail(`dropping a file: expected 200, got ${answer.status} (${JSON.stringify(answer.lines).slice(0, 300)})`);
-  }
-  const landed = path.join(projectPath, "notes", "dropped.txt");
-  if (!fs.existsSync(landed)) fail(`the dropped file is not on the Core's disk at ${landed}`);
-  const onDisk = fs.readFileSync(landed, "utf8");
-  if (onDisk !== contents) fail(`the file on the Core reads ${onDisk.slice(0, 80)}, not what was dropped`);
-  log("a file dropped on a Project is on that Core's disk, at the path the browser named");
-}
-
-/** Criterion (F5): the second drop of the same name is reported as an overwrite. */
-async function assertOverwriteIsNamed(panel, coreId, projectId, projectPath, fail) {
-  const pathname = filesPath(coreId, projectId, "notes/dropped.txt");
-  const answer = await putText(panel, pathname, "second");
-  const entry = answer.lines.find((line) => line.result);
-  if (!entry || entry.result !== "overwritten") {
-    fail(`a second drop should be named an overwrite, got ${JSON.stringify(answer.lines).slice(0, 300)}`);
-  }
-  if (fs.readFileSync(path.join(projectPath, "notes", "dropped.txt"), "utf8") !== "second") {
-    fail("the overwrite did not reach the Core's disk");
-  }
-  log("progress comes from the Core's NDJSON stream, and names the overwrite");
-}
-
-/** Criterion: the file view lists what is actually there. */
-async function assertFileViewLists(panel, coreId, projectId, fail) {
-  const listed = await panel.client.get(
-    `/api/cores/${coreId}/projects/${projectId}/files/list?path=`,
-  );
-  if (listed.status !== 200) fail(`listing files: expected 200, got ${listed.status}`);
-  const paths = listed.text
-    .split("\n")
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .map((line) => JSON.parse(line).path);
-  if (!paths.includes("notes/dropped.txt")) {
-    fail(`the listing is missing the dropped file: ${JSON.stringify(paths).slice(0, 300)}`);
-  }
-  log("the file view lists the Project's tree off the Core");
-}
-
-/** This process's resident memory, from the OS rather than from the process. */
-function rssBytes(pid) {
-  try {
-    // Linux: field 2 of statm is resident pages.
-    const statm = fs.readFileSync(`/proc/${pid}/statm`, "utf8").split(/\s+/);
-    return Number(statm[1]) * 4096;
-  } catch {
-    try {
-      const out = execFileSync("ps", ["-o", "rss=", "-p", String(pid)], { encoding: "utf8" });
-      return Number(out.trim()) * 1024;
-    } catch {
-      return 0;
+/** Criterion: the old Panel route for a Core's files is refused, for every method it had. */
+async function assertRetiredFilesRouteIsRefused(panel, coreId, fail) {
+  const base = `/api/cores/${encodeURIComponent(coreId)}/projects/workspace/files`;
+  const answers = [
+    ["GET", `${base}/list?path=`, await panel.client.get(`${base}/list?path=`)],
+    ["GET", `${base}?path=a.txt`, await panel.client.get(`${base}?path=a.txt`)],
+    [
+      "PUT",
+      `${base}?path=a.txt`,
+      await panel.client.get(`${base}?path=a.txt`, { method: "PUT", body: "bytes" }),
+    ],
+  ];
+  for (const [method, url, answer] of answers) {
+    if (answer.status !== 404 || answer.body?.error !== "not found") {
+      fail(
+        `${method} ${url}: expected the router's 404 {"error":"not found"}, got ` +
+          `${answer.status} ${JSON.stringify(answer.body ?? answer.text).slice(0, 300)}`,
+      );
     }
   }
-}
-
-/**
- * Criterion: a multi-gigabyte drop does not put the upload through the Panel's
- * memory.
- *
- * The Panel under this leg was booted with a heap cap of
- * {@link PANEL_HEAP_CAP_MB} MB and is handed {@link BIG_DROP_BYTES}. A Panel
- * that buffers dies of the cap or blows the RSS ceiling; a Panel that streams
- * finishes with its memory flat, whatever the file's size.
- */
-async function assertBigDropDoesNotGoThroughPanelMemory(panel, coreId, projectId, projectPath, fail) {
-  const free = freeBytesOn(projectPath);
-  if (free !== null && free < BIG_DROP_DISK_HEADROOM) {
-    fail(
-      `the file-drop leg needs ~${mib(BIG_DROP_DISK_HEADROOM)} free on ${projectPath} and found ` +
-        `${mib(free)}. Set AC_E2E_FILE_DROP_BYTES to a smaller size to run it on a smaller disk — ` +
-        `it is not skipped silently, because the claim it makes is the point of the phase.`,
-    );
-  }
-
-  const baseline = rssBytes(panel.pid);
-  let peak = baseline;
-  const sampler = setInterval(() => {
-    peak = Math.max(peak, rssBytes(panel.pid));
-  }, 50);
-
-  // One buffer, reused: the generator must not be the thing under memory
-  // pressure, or the leg would be measuring itself.
-  const chunk = Buffer.alloc(4 * 1024 * 1024, 0xab);
-  const started = Date.now();
-  let answer;
-  try {
-    answer = await putStreamed(
-      panel,
-      filesPath(coreId, projectId, "big/blob.bin"),
-      async (req) => {
-        let written = 0;
-        while (written < BIG_DROP_BYTES) {
-          const size = Math.min(chunk.byteLength, BIG_DROP_BYTES - written);
-          const slice = size === chunk.byteLength ? chunk : chunk.subarray(0, size);
-          written += size;
-          if (!req.write(slice)) {
-            await new Promise((resolve) => req.once("drain", resolve));
-          }
-        }
-      },
-      { "content-length": String(BIG_DROP_BYTES) },
-    );
-  } finally {
-    clearInterval(sampler);
-  }
-
-  if (answer.status !== 200) {
-    fail(
-      `a ${mib(BIG_DROP_BYTES)} drop: expected 200, got ${answer.status} ` +
-        `(${JSON.stringify(answer.lines).slice(0, 300)}) — a Panel that died here buffered it`,
-    );
-  }
-
-  const landed = path.join(projectPath, "big", "blob.bin");
-  const size = fs.existsSync(landed) ? fs.statSync(landed).size : -1;
-  if (size !== BIG_DROP_BYTES) {
-    fail(`the big drop landed as ${size} bytes on the Core, not ${BIG_DROP_BYTES}`);
-  }
-  // Reclaimed straight away: a gigabyte left behind in a temp directory is the
-  // kind of thing that fills a runner's disk two runs later.
-  fs.rmSync(landed, { force: true });
-
-  const growth = peak - baseline;
-  log(
-    `${mib(BIG_DROP_BYTES)} crossed a Panel capped at ${PANEL_HEAP_CAP_MB} MB heap in ` +
-      `${((Date.now() - started) / 1000).toFixed(1)}s; its RSS grew ${mib(growth)} ` +
-      `(baseline ${mib(baseline)}, peak ${mib(peak)})`,
-  );
-  if (growth > PANEL_RSS_CEILING_BYTES) {
-    fail(
-      `the Panel's resident memory grew ${mib(growth)} while ${mib(BIG_DROP_BYTES)} crossed it — ` +
-        `the ceiling is ${mib(PANEL_RSS_CEILING_BYTES)}. It is buffering the upload, not streaming it.`,
-    );
-  }
-  log("a multi-gigabyte drop does not go through the Panel's memory");
-}
-
-/** Free bytes on the filesystem holding `target`, or null where it cannot be read. */
-function freeBytesOn(target) {
-  try {
-    const stats = fs.statfsSync(target);
-    return Number(stats.bavail) * Number(stats.bsize);
-  } catch {
-    return null;
-  }
-}
-
-function mib(bytes) {
-  return `${(bytes / (1024 * 1024)).toFixed(0)} MiB`;
+  log("the Panel's old per-Project Files route is refused as an unknown route");
 }
 
 /**
@@ -819,7 +540,7 @@ async function assertPtyStreams(link, coreId, fail) {
 
   const spawned = await link.request(coreId, {
     type: "spawn",
-    opts: { shellSession: true, taskId: `e2e-${randomBytes(4).toString("hex")}`, cols: 80, rows: 24 },
+    opts: { shellSession: true, sessionId: `e2e-${randomBytes(4).toString("hex")}`, cols: 80, rows: 24 },
   });
   if (spawned.type !== "spawned" || !spawned.ptyId) {
     fail(`spawn answered ${JSON.stringify(spawned).slice(0, 300)}`);
@@ -878,7 +599,7 @@ async function assertReconnectReplaysMissedEvents(panel, link, coreId, fail) {
     type: "spawn",
     opts: {
       shellSession: true,
-      taskId: `e2e-exit-${randomBytes(4).toString("hex")}`,
+      sessionId: `e2e-exit-${randomBytes(4).toString("hex")}`,
       command: `sleep ${ptyLifetimeMs / 1000}`,
       cols: 80,
       rows: 24,
@@ -946,24 +667,48 @@ async function assertReconnectReplaysMissedEvents(panel, link, coreId, fail) {
  *
  * The Panel's own client key never leaves it, so the fixture cannot hand this
  * a copy to search for — what it searches for instead is the shape: a PEM
- * header in the file at all means a credential was written unsealed, whichever
+ * header in any Panel row means a credential was written unsealed, whichever
  * one it is. The Core's own material is checked by name on top of that.
  *
- * Every `panel.db*` file, not just `panel.db`: the Panel runs in WAL mode, so a
- * row written moments ago normally lives in `panel.db-wal` and a scan of the
- * main file alone would clear a Panel that had just written a key in the clear.
+ * Reads `core_secrets.sealed` and every other Panel table row from the Postgres
+ * the phase started — the sealed blob and the rest of the state live there now,
+ * not in a SQLite file beside the data directory.
  */
-async function assertSecretsSealedAtRest(dataDir, core, fail) {
-  if (!fs.existsSync(path.join(dataDir, "panel.db"))) fail(`no panel.db in ${dataDir}`);
-  const dbFiles = fs.readdirSync(dataDir).filter((name) => name.startsWith("panel.db"));
-  for (const file of dbFiles) {
-    const raw = fs.readFileSync(path.join(dataDir, file));
-    if (raw.includes(Buffer.from("-----BEGIN", "utf8"))) {
-      fail(`${file} holds PEM material in the clear`);
+async function assertSecretsSealedAtRest(databaseUrl, core, fail) {
+  const pem = Buffer.from("-----BEGIN", "utf8");
+  const secretBytes = Object.entries(core.secrets).map(([name, secret]) => [
+    name,
+    Buffer.from(secret, "utf8"),
+  ]);
+
+  const sealedRows = await queryPanelDatabase(databaseUrl, "select sealed from core_secrets").catch(
+    (err) => fail(`could not read core_secrets from Postgres: ${err.message}`),
+  );
+  if (sealedRows.length === 0) fail("no core_secrets rows in Postgres after pairing");
+
+  const otherRows = await queryPanelDatabase(
+    databaseUrl,
+    `select 'operator'::text as table_name, row_to_json(t)::text as payload from operator t
+     union all
+     select 'panel_sessions', row_to_json(t)::text from panel_sessions t
+     union all
+     select 'cores', row_to_json(t)::text from cores t
+     union all
+     select 'core_secrets', row_to_json(t)::text from core_secrets t`,
+  ).catch((err) => fail(`could not read Panel rows from Postgres: ${err.message}`));
+
+  const blobs = [
+    ...sealedRows.map((row) => Buffer.from(row.sealed)),
+    ...otherRows.map((row) => Buffer.from(String(row.payload), "utf8")),
+  ];
+
+  for (const raw of blobs) {
+    if (raw.includes(pem)) {
+      fail("a Panel Postgres row holds PEM material in the clear");
     }
-    for (const [name, secret] of Object.entries(core.secrets)) {
-      if (raw.includes(Buffer.from(secret, "utf8"))) {
-        fail(`the Core's ${name} is stored in ${file} in the clear`);
+    for (const [name, secret] of secretBytes) {
+      if (raw.includes(secret)) {
+        fail(`the Core's ${name} is stored in Postgres in the clear`);
       }
     }
   }

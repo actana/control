@@ -11,7 +11,6 @@ import { HTTP_CREATED } from "~/shared/http-status";
 const createHomeTerminalBody = z.object({
   id: z.string().optional(),
   name: z.string().optional(),
-  cwd: z.string().nullable().optional(),
 });
 
 const renameHomeTerminalBody = z.object({
@@ -19,17 +18,16 @@ const renameHomeTerminalBody = z.object({
 });
 
 export async function listAll(_request: Request): Promise<Response> {
-  return json({ terminals: listHomeTerminals() });
+  return json({ terminals: await listHomeTerminals() });
 }
 
 export async function create(request: Request): Promise<Response> {
   const parsed = await parseJsonBody(request, createHomeTerminalBody);
   if (!parsed.ok) return parsed.response;
   try {
-    const terminal = createHomeTerminal({
+    const terminal = await createHomeTerminal({
       id: parsed.data.id,
       name: parsed.data.name,
-      cwd: parsed.data.cwd ?? null,
     });
     return json({ terminal }, { status: HTTP_CREATED });
   } catch (e) {
@@ -43,7 +41,7 @@ export async function rename(rawId: string, request: Request): Promise<Response>
   const parsed = await parseJsonBody(request, renameHomeTerminalBody);
   if (!parsed.ok) return parsed.response;
   try {
-    const terminal = renameHomeTerminal(idParsed.data, parsed.data.name);
+    const terminal = await renameHomeTerminal(idParsed.data, parsed.data.name);
     if (!terminal) return notFound();
     return json({ terminal });
   } catch (e) {
@@ -51,8 +49,8 @@ export async function rename(rawId: string, request: Request): Promise<Response>
   }
 }
 
-export async function remove(rawId: string, request: Request): Promise<Response> {
+export async function remove(rawId: string, _request: Request): Promise<Response> {
   const parsed = idParam.safeParse(rawId);
   if (!parsed.success) return notFound();
-  return deleteHomeTerminal(parsed.data) ? noContent() : notFound();
+  return (await deleteHomeTerminal(parsed.data)) ? noContent() : notFound();
 }

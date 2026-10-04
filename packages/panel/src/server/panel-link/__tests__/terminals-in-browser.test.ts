@@ -1,4 +1,5 @@
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
+import { closePanelTestDb, openPanelTestDb } from "../../__tests__/_panel-test-db";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -15,7 +16,7 @@ import { sliceReplayWindow } from "@actana/core/pty-replay-window";
 import { generateCertMaterial } from "@actana/shared/core-cert-material";
 import { signBearer, verifyBearer } from "@actana/shared/core-link-bearer";
 import type { PtyCore } from "@actana/core/pty-manager";
-import type { CoreLinkEvent, CoreLinkPtySpawnOptions } from "@actana/sdk/core-link-frames";
+import type { CoreLinkEvent, CoreLinkPtySpawnOptions } from "@actana/sdk/core";
 import type { PanelLinkClientFrame, PanelLinkServerFrame } from "~/shared/panel-link";
 import { PanelLinkClient, type PanelLinkSocketLike } from "~/lib/panel-link-client";
 import { corePtyBridgeFor } from "~/lib/core-pty-bridge";
@@ -39,7 +40,7 @@ process.env.AC_USER_DATA_DIR = path.join(tmpRoot, "app");
 process.env.AC_PANEL_DATA_DIR = path.join(tmpRoot, "panel");
 
 const { handleApiRequest } = await import("../../api-router");
-const { closePanelDb, getPanelDb } = await import("../../panel-db");
+const testDb = await openPanelTestDb();
 const { operatorSessionCookie } = await import("../../__tests__/_operator-session");
 const { attachPanelLink } = await import("../ws-server");
 const { coreLinkManager } = await import("../../services/core-link-manager");
@@ -68,10 +69,10 @@ class Tab {
     ws.on("message", (raw) => this.received.push(JSON.parse(String(raw)) as PanelLinkServerFrame));
   }
 
-  static open(): Promise<Tab> {
+  static async open(): Promise<Tab> {
     const ws = new WebSocket(
       `ws://127.0.0.1:${panelPort}${PANEL_LINK_PATH}?${PANEL_LINK_VERSION_PARAM}=${PANEL_LINK_PROTOCOL_VERSION}`,
-      { headers: { cookie: operatorSessionCookie() } },
+      { headers: { cookie: (await operatorSessionCookie()) } },
     );
     const tab = new Tab(ws);
     return new Promise((resolve, reject) => {
@@ -180,7 +181,8 @@ function adaptBrowserSocket(ws: WebSocket): PanelLinkSocketLike {
   } as PanelLinkSocketLike;
 }
 
-function openBrowser(): Browser {
+async function openBrowser(): Promise<Browser> {
+  const cookie = await operatorSessionCookie();
   let socket: WebSocket | null = null;
   // The outage is held open rather than timed: the client retries as fast as it
   // is told to, and a test that raced its backoff would assert on whichever
@@ -192,7 +194,7 @@ function openBrowser(): Browser {
     reconnectMaxMs: 20,
     createSocket: (url) => {
       if (offline) throw new Error("the tab is offline");
-      socket = new WebSocket(url, { headers: { cookie: operatorSessionCookie() } });
+      socket = new WebSocket(url, { headers: { cookie } });
       return adaptBrowserSocket(socket);
     },
   });
@@ -228,7 +230,7 @@ function freePort(): Promise<number> {
 
 type ScriptedPty = {
   id: string;
-  taskId: string;
+  sessionId: string;
   shellSession: boolean;
   ring: Array<{ seq: number; data: string }>;
   nextSeq: number;
@@ -268,7 +270,7 @@ function scriptedCore(): ScriptedCore {
       const id = `pty-${++nextId}`;
       ptys.set(id, {
         id,
-        taskId: opts.taskId,
+        sessionId: opts.sessionId,
         shellSession: opts.shellSession === true,
         ring: [],
         nextSeq: 0,
@@ -311,17 +313,17 @@ function scriptedCore(): ScriptedCore {
     },
     killLaunchProcesses: async () => ({ ptyCount: 0, ports: [] }),
     killPtysUnderPath: async () => ({ ptyCount: 0 }),
-    findByTask: (taskId: string) => {
+    findBySession: (sessionId: string) => {
       for (const p of ptys.values()) {
-        if (p.taskId === taskId && !p.shellSession) return { ptyId: p.id };
+        if (p.sessionId === sessionId && !p.shellSession) return { ptyId: p.id };
       }
       return { ptyId: null };
     },
     // The inverse (issue 144): which Session a `write`/`kill` would be
     // touching, which is what the Core resolves before consulting the Session
-    // lock. Unlike `findByTask` it answers for every PTY, VM Shell Sessions
+    // lock. Unlike `findBySession` it answers for every PTY, VM Shell Sessions
     // included.
-    taskIdForPty: (ptyId: string) => ptys.get(ptyId)?.taskId ?? null,
+    sessionIdForPty: (ptyId: string) => ptys.get(ptyId)?.sessionId ?? null,
     replay: (ptyId: string, sinceSeq?: number) => {
       const p = ptys.get(ptyId);
       if (!p) return { data: "", nextSeq: 0 };
@@ -395,14 +397,14 @@ function eventLog(): EventLogPort & { all(): CoreLinkEvent[] } {
     appendEvent: (
       kind: string,
       payload: string,
-      keys?: { ptyId?: string | null; taskId?: string | null },
+      keys?: { ptyId?: string | null; sessionId?: string | null },
     ) => {
       const stored: CoreLinkEvent = {
         eventId: events.length + 1,
         ts: Date.now(),
         kind,
         ptyId: keys?.ptyId ?? null,
-        taskId: keys?.taskId ?? null,
+        sessionId: keys?.sessionId ?? null,
         payload,
       };
       events.push(stored);
@@ -464,13 +466,13 @@ async function pair(label = "prod-vm-1"): Promise<{ coreId: string; core: CoreFi
   // /api/cores` to paste a blob at any more (#287). `operatorSessionCookie`
   // first because the registry row's foreign key points at the Operator, which
   // an HTTP registration used to create on the way past.
-  operatorSessionCookie();
-  const coreId = registerCoreFromCredential(core.credential).id;
-  coreLinkManager().dial(coreId);
+  (await operatorSessionCookie());
+  const coreId = (await registerCoreFromCredential(core.credential)).id;
+  await coreLinkManager().dial(coreId);
   paired.push(coreId);
   await vi.waitFor(async () => {
     const listing = await handleApiRequest(
-      new Request(`${ORIGIN}/api/cores`, { headers: { cookie: operatorSessionCookie() } }),
+      new Request(`${ORIGIN}/api/cores`, { headers: { cookie: (await operatorSessionCookie()) } }),
     );
     const cores = ((await listing!.json()) as { cores: { id: string; dial: { state: string } }[] })
       .cores;
@@ -486,12 +488,12 @@ async function openTab(coreId?: string): Promise<Tab> {
   return tab;
 }
 
-// `satisfies` rather than a plain object: the reconnect test hands this to the
-// real bridge's `spawn`, which is typed, while the hand-rolled `Tab` still
-// sends it as a bag of fields.
+// Typed because the reconnect test hands this to the real bridge's `spawn`,
+// while the hand-rolled `Tab` still sends it as a bag of fields. It names no cwd:
+// a Core starts every Session in its home and refuses a spawn that says
+// otherwise (ADR 0041 D2).
 const HARNESS_SPAWN = {
-  taskId: "task_1",
-  cwd: "/srv/warehouse",
+  sessionId: "session_1",
   command: "claude",
   agent: "claude-code",
   cols: 100,
@@ -505,19 +507,18 @@ afterEach(async () => {
     await handleApiRequest(
       new Request(`${ORIGIN}/api/cores/${coreId}`, {
         method: "DELETE",
-        headers: { cookie: operatorSessionCookie() },
+        headers: { cookie: (await operatorSessionCookie()) },
       }),
     );
   }
   for (const server of running.splice(0)) server.close();
-  const db = getPanelDb();
-  db.prepare("DELETE FROM core_secrets").run();
-  db.prepare("DELETE FROM cores").run();
+  await testDb.pool.query("delete from core_secrets");
+  await testDb.pool.query("delete from cores");
 });
 
 afterAll(async () => {
   await new Promise<void>((resolve) => panel.close(() => resolve()));
-  closePanelDb();
+  await closePanelTestDb(testDb);
   fs.rmSync(tmpRoot, { recursive: true, force: true });
 });
 
@@ -566,7 +567,7 @@ describe("terminals in the browser", () => {
     const second = (
       await tab.ask(coreId, {
         type: "spawn",
-        opts: { ...HARNESS_SPAWN, taskId: "task_2" },
+        opts: { ...HARNESS_SPAWN, sessionId: "session_2" },
       })
     ).ptyId as string;
 
@@ -579,14 +580,14 @@ describe("terminals in the browser", () => {
     }, 5_000);
   });
 
-  it("reattaches a live agent session by task instead of spawning a second one", async () => {
+  it("reattaches a live agent session by session instead of spawning a second one", async () => {
     const { coreId } = await pair();
     const tab = await openTab(coreId);
     const ptyId = (await tab.ask(coreId, { type: "spawn", opts: HARNESS_SPAWN })).ptyId as string;
 
-    const found = await tab.ask(coreId, { type: "findByTask", taskId: "task_1" });
+    const found = await tab.ask(coreId, { type: "findBySession", sessionId: "session_1" });
 
-    expect(found).toMatchObject({ type: "findByTaskResult", ptyId });
+    expect(found).toMatchObject({ type: "findBySessionResult", ptyId });
   });
 
   it("opens a VM Shell Session on the Core's own machine", async () => {
@@ -595,7 +596,7 @@ describe("terminals in the browser", () => {
 
     const spawned = await tab.ask(coreId, {
       type: "spawn",
-      opts: { shellSession: true, taskId: "term_vm_1", command: "" },
+      opts: { shellSession: true, sessionId: "term_vm_1", command: "" },
     });
     const ptyId = spawned.ptyId as string;
     core.core.emit(ptyId, "operator@prod-vm-1:~$ ");
@@ -607,8 +608,8 @@ describe("terminals in the browser", () => {
       () => expect(tab.output(coreId, ptyId)).toBe("operator@prod-vm-1:~$ "),
       5_000,
     );
-    // A VM shell is not agent work: reattach-by-task must not hand it back.
-    expect(await tab.ask(coreId, { type: "findByTask", taskId: "term_vm_1" })).toMatchObject({
+    // A VM shell is not agent work: reattach-by-session must not hand it back.
+    expect(await tab.ask(coreId, { type: "findBySession", sessionId: "term_vm_1" })).toMatchObject({
       ptyId: null,
     });
   });
@@ -619,7 +620,7 @@ describe("terminals in the browser", () => {
 
     await tab.ask(coreId, {
       type: "spawn",
-      opts: { shellSession: true, taskId: "term_vm_2", command: "" },
+      opts: { shellSession: true, sessionId: "term_vm_2", command: "" },
     });
 
     const spawns = core.log.all().filter((e) => e.kind === "pty:spawn");
@@ -710,7 +711,7 @@ describe("terminals in the browser", () => {
 
   it("keeps a claimed pane live when the tab's own link drops and comes back", { timeout: 20_000 }, async () => {
     const { coreId, core } = await pair();
-    const browser = openBrowser();
+    const browser = await openBrowser();
     const bridge = corePtyBridgeFor(browser.link, coreId);
     const streams = createPtyStreamRouter(bridge);
 

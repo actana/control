@@ -585,3 +585,28 @@ gating the start is the one that can be honest: a send is a raw write by design
 (#404), the Core adds no delivery machinery to it, and there is nothing there to
 report. A caller that wants to know its send will be read waits on the start
 that precedes it.
+
+## Amendment — issue 563 (2026-10-01)
+
+**The Core appends a versioned standard block to the starting prompt it
+delivers.** `packages/core/src/prompt-standard-block.ts` builds it, and
+`pty-manager.ts` appends it, after the user's text, to the one string
+`HarnessPromptDelivery` types — so there is no second delivery path and a
+re-type after a swallowed write carries the same single block. The block tells
+the harness that its workspace is `~` (subfolders only as the prompt says), that
+`~/shared` is shared with the operator and syncs within seconds, where its
+report goes (`~/shared/sessions/<session-id>/report-<turn>.md`, ending with the
+fixed last line `ACT-REPORT-END`, the contract of actana/client#8), and not to
+use sudo.
+
+- **One text for every harness.** `sanitizeInitialInput` flattens every line
+  ending to a space, so the block is a single line and there is no per-harness
+  line ending to vary. The tests snapshot the bytes each harness is typed.
+- **Versioned.** `PROMPT_BLOCK_VERSION` is bumped with any wording change. The
+  Core writes it to `sessions.prompt_block_version` when the prompt is
+  delivered (NULL when the Session had no starting prompt). The column is in the
+  0.5.0 clean-break schema: no migration.
+- **Only the starting prompt.** `session send` stays a raw write (#404, above),
+  so a follow-up turn carries no block; the builder takes the turn number, and
+  the starting prompt is turn 1.
+- **A prompt that already carries a block is not given a second.**

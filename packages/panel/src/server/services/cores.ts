@@ -1,5 +1,15 @@
 import { randomBytes } from "node:crypto";
-import { getPanelDb } from "../panel-db";
+import {
+  advanceCoreCursorRow,
+  deleteCoreWithSecrets,
+  findAllCores,
+  findCoreByEndpoint,
+  findCoreById,
+  insertCoreWithSecrets,
+  updateCoreLabel,
+  type CoreRow,
+} from "../repositories/cores.repo";
+import { findSealedSecrets } from "../repositories/core-secrets.repo";
 import { OPERATOR_ID } from "./operator";
 import { openSecret, sealSecret } from "./secrets-at-rest";
 import type { Core } from "~/shared/cores";
@@ -71,23 +81,14 @@ export type CoreCredential = {
   bearer: string;
 };
 
-type CoreRow = {
-  id: string;
-  endpoint: string;
-  label: string;
-  last_event_id: number;
-  created_at: number;
-  updated_at: number;
-};
-
 function rowToCore(row: CoreRow): Core {
   return {
     id: row.id,
     endpoint: row.endpoint,
     label: row.label,
-    lastEventId: row.last_event_id,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
+    lastEventId: row.lastEventId,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
   };
 }
 
@@ -115,11 +116,13 @@ function labelFor(rawLabel: string, endpoint: string): string {
   }
 }
 
-export function listCores(): Core[] {
-  const rows = getPanelDb()
-    .prepare("SELECT * FROM cores ORDER BY created_at ASC")
-    .all() as CoreRow[];
-  return rows.map(rowToCore);
+/**
+ * Every function below takes the owner whose Cores it reads or writes, as its
+ * last argument, defaulting to the one Operator (ADR 0011). An owner never sees,
+ * dials, renames or removes another owner's Core (ADR 0041 D15).
+ */
+export async function listCores(ownerId = OPERATOR_ID): Promise<Core[]> {
+  return (await findAllCores(ownerId)).map(rowToCore);
 }
 
 /**
@@ -135,17 +138,12 @@ export function listCores(): Core[] {
  * own, and need not be the address it was reached on. The check inside the
  * transaction stays the authority.
  */
-export function coreRegisteredAt(endpoint: string): boolean {
-  return (
-    getPanelDb().prepare("SELECT id FROM cores WHERE endpoint = ?").get(endpoint.trim()) !==
-    undefined
-  );
+export async function coreRegisteredAt(endpoint: string, ownerId = OPERATOR_ID): Promise<boolean> {
+  return (await findCoreByEndpoint(ownerId, endpoint.trim())) !== null;
 }
 
-export function getCore(id: string): Core | null {
-  const row = getPanelDb().prepare("SELECT * FROM cores WHERE id = ?").get(id) as
-    | CoreRow
-    | undefined;
+export async function getCore(id: string, ownerId = OPERATOR_ID): Promise<Core | null> {
+  const row = await findCoreById(ownerId, id);
   return row ? rowToCore(row) : null;
 }
 
@@ -157,15 +155,19 @@ export function getCore(id: string): Core | null {
  * forever with no way to fix it but a manual delete. Either the Core is
  * registered and dialable, or nothing happened.
  *
+ * `pendingSharedFolder` is set by a pairing made from the Panel (#564): the Core is registered with its
+ * Shared folder pending, in the same transaction, and its pairing is not finished until the folder is
+ * attached. The CLI's pairing never sets it.
+ *
  * `label` is the Panel's alias for the *machine* and is passed explicitly by a
  * caller that has one — pairing does, because the label it sent the Core names
  * this Panel rather than the machine, and letting that come back round as the
  * alias would fill the fleet list with the Panel's own name.
  */
-export function registerCoreFromCredential(
+export async function registerCoreFromCredential(
   credential: CoreCredential,
-  opts: { label?: string } = {},
-): Core {
+  opts: { label?: string; ownerId?: number; pendingSharedFolder?: boolean } = {},
+): Promise<Core> {
   if (
     !credential.caCert.trim() ||
     !credential.clientCert.trim() ||
@@ -204,24 +206,26 @@ export function registerCoreFromCredential(
   // fail the registration outright, not leave a half-written one to roll back.
   const sealed = sealSecret(JSON.stringify(secrets));
 
-  const db = getPanelDb();
-  const insert = db.transaction(() => {
-    if (db.prepare("SELECT id FROM cores WHERE endpoint = ?").get(endpoint)) {
-      throw new CoreRegistryError(`A Core at ${endpoint} is already registered.`);
-    }
-    db.prepare(
-      `INSERT INTO cores (id, operator_id, endpoint, label, last_event_id, created_at, updated_at)
-       VALUES (?, ?, ?, ?, 0, ?, ?)`,
-    ).run(id, OPERATOR_ID, endpoint, labelFor(opts.label ?? credential.label ?? "", endpoint), now, now);
-    db.prepare("INSERT INTO core_secrets (core_id, sealed, updated_at) VALUES (?, ?, ?)").run(
+  const ownerId = opts.ownerId ?? OPERATOR_ID;
+  // The endpoint check and the insert are one statement (`ON CONFLICT DO
+  // NOTHING` on the owner's endpoint), so two pairings racing for the same
+  // endpoint cannot both win.
+  const created = await insertCoreWithSecrets(
+    {
       id,
-      sealed,
-      now,
-    );
-  });
-  insert();
+      ownerId,
+      endpoint,
+      label: labelFor(opts.label ?? credential.label ?? "", endpoint),
+      lastEventId: 0,
+      createdAt: now,
+      updatedAt: now,
+    },
+    sealed,
+    { pendingSharedFolder: opts.pendingSharedFolder === true },
+  );
+  if (!created) throw new CoreRegistryError(`A Core at ${endpoint} is already registered.`);
 
-  const core = getCore(id);
+  const core = await getCore(id, ownerId);
   if (!core) throw new Error("failed to read back the registered Core");
   return core;
 }
@@ -238,13 +242,11 @@ export function registerCoreFromCredential(
  * uses — so an operator who clears the box gets the endpoint host back rather
  * than a blank row, and the caller is handed what was actually stored.
  */
-export function renameCore(id: string, label: string): Core | null {
-  const existing = getCore(id);
+export async function renameCore(id: string, label: string, ownerId = OPERATOR_ID): Promise<Core | null> {
+  const existing = await getCore(id, ownerId);
   if (!existing) return null;
-  getPanelDb()
-    .prepare("UPDATE cores SET label = ?, updated_at = ? WHERE id = ?")
-    .run(labelFor(label, existing.endpoint), Date.now(), id);
-  return getCore(id);
+  await updateCoreLabel(ownerId, id, labelFor(label, existing.endpoint), Date.now());
+  return getCore(id, ownerId);
 }
 
 /**
@@ -253,12 +255,10 @@ export function renameCore(id: string, label: string): Core | null {
  * its key file, say. The dialer surfaces that as a link that can't be made
  * rather than dialing with nothing.
  */
-export function getCoreSecrets(id: string): CoreSecrets | null {
-  const row = getPanelDb().prepare("SELECT sealed FROM core_secrets WHERE core_id = ?").get(id) as
-    | { sealed: Uint8Array }
-    | undefined;
-  if (!row) return null;
-  const json = openSecret(Buffer.from(row.sealed));
+export async function getCoreSecrets(id: string, ownerId = OPERATOR_ID): Promise<CoreSecrets | null> {
+  const sealed = await findSealedSecrets(ownerId, id);
+  if (!sealed) return null;
+  const json = openSecret(Buffer.from(sealed));
   if (json === null) return null;
   try {
     const parsed = JSON.parse(json) as CoreSecrets;
@@ -274,18 +274,17 @@ export function getCoreSecrets(id: string): CoreSecrets | null {
  * and rewinding would make the Core replay a stretch the Panel already
  * processed.
  */
-export function advanceCoreCursor(id: string, lastEventId: number): void {
+export async function advanceCoreCursor(
+  id: string,
+  lastEventId: number,
+  ownerId = OPERATOR_ID,
+): Promise<void> {
   if (!Number.isInteger(lastEventId) || lastEventId < 0) return;
-  getPanelDb()
-    .prepare(
-      `UPDATE cores SET last_event_id = ?, updated_at = ?
-       WHERE id = ? AND last_event_id < ?`,
-    )
-    .run(lastEventId, Date.now(), id, lastEventId);
+  await advanceCoreCursorRow(ownerId, id, lastEventId, Date.now());
 }
 
-export function getCoreCursor(id: string): number {
-  return getCore(id)?.lastEventId ?? 0;
+export async function getCoreCursor(id: string, ownerId = OPERATOR_ID): Promise<number> {
+  return (await getCore(id, ownerId))?.lastEventId ?? 0;
 }
 
 /**
@@ -293,14 +292,6 @@ export function getCoreCursor(id: string): number {
  * false for an unknown id. Core-side state is untouched — removing a Core
  * is the Panel forgetting a machine, not the machine forgetting its work.
  */
-export function removeCore(id: string): boolean {
-  const db = getPanelDb();
-  const remove = db.transaction(() => {
-    // Explicit rather than leaning on the cascade: `foreign_keys` is a
-    // per-connection pragma, and losing a row of sealed credentials to a
-    // pragma default is not a failure mode worth having.
-    db.prepare("DELETE FROM core_secrets WHERE core_id = ?").run(id);
-    return db.prepare("DELETE FROM cores WHERE id = ?").run(id).changes > 0;
-  });
-  return remove();
+export async function removeCore(id: string, ownerId = OPERATOR_ID): Promise<boolean> {
+  return deleteCoreWithSecrets(ownerId, id);
 }

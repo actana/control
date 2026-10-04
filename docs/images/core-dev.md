@@ -32,16 +32,19 @@ mode it took and the tag it pushed. Then:
 ```bash
 docker run -d --name actana-core-pr \
   -v actana-core-pr-home:/home/core \
+  -v actana-core-pr-state:/var/lib/actana \
+  --cap-drop ALL --cap-add SETUID --cap-add SETGID \
+  --security-opt no-new-privileges:true \
   -e ACTANA_PUBLIC_HOST=localhost \
   actana/core-dev:pr-116202608
-docker exec actana-core-pr actana pair new   # a code and a CA fingerprint
+docker exec -u actana actana-core-pr actana pair new   # a code and a CA fingerprint
 ```
 
-Nothing privileged, no host cgroup, one volume — the same shape the released
-image runs in. Pair it with a **throwaway Panel**, not your real one: a Core
+Nothing privileged, no host cgroup, the two capabilities the daemon keeps (`SETUID`, `SETGID`)
+and no others, two volumes — the same shape the released image runs in. Pair it with a **throwaway Panel**, not your real one: a Core
 mints its own CA and pairing identity on first boot, and a pre-merge build is
-not something to hand your fleet's Panel a certificate for. Delete the volume
-when you are done; that is what unpairs it.
+not something to hand your fleet's Panel a certificate for. Delete the volumes
+when you are done; the state volume is what unpairs it.
 
 To bring one up beside a Panel with the reference compose, add the
 dev-images override rather than editing the compose file:

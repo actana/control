@@ -1,5 +1,7 @@
 # The Panel is a dumb pipe for file bytes, and it is the end that holds the credentials
 
+> **Amended 2026-10-02 by [#580](https://github.com/actana/control/issues/580) (T-404):** the pipe is gone. `/api/cores/:coreId/projects/:projectId/files` (the route), its controller, `pipeToCore` and the three suites that drove it (`core-files-api`, `core-files-streaming`, `core-files-client-hangup`) are deleted: a Core has no Projects (ADR 0041) and nothing called the route. The Panel no longer carries a Core's file bytes at all, so the property this record argues for (bytes do not pass through the Panel's heap) holds because there is no route to pass through, and the deployed e2e leg that measured it (`scripts/e2e-panel-smoke.mjs`, a 2 GiB drop against a Panel with a 256 MB heap) is replaced by a leg that asserts the old route is refused. Nothing now covers a streaming pipe, because there is none; if one comes back it needs that test back. What stays: the Panel still holds the mTLS credentials for a Core's file routes (`filesFetchFor`, used by Shared-folder task dispatch). The text below is left as written.
+
 A file dropped on a Project in the Panel has to reach the Core that owns that
 Project's disk. Three facts decide how, and none of them is negotiable:
 
@@ -212,3 +214,7 @@ be stale the moment an agent wrote, which on these machines is constantly.
 - **`docs/external-api.md` gains no entry.** These routes are the Panel's own
   `/api/*` surface, behind the Operator session, and they forward to routes that
   document is already about. The Core's surface is the published one.
+
+## Amended by ADR 0041
+
+[ADR 0041](0041-the-0-5-0-core-model.md) D1 amends **D5** ("a file view is not presentation") and every place this record says Project. D5 argues from [ADR 0022](0022-a-core-owned-project-has-a-panel-side-presentation-row.md), which 0041 supersedes. Whether the Panel stays a dumb pipe for Shared-folder bytes is open (#565). The text is left as it was written.

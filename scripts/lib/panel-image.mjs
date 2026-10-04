@@ -55,17 +55,42 @@ export const PANEL_RUNTIME_USER = "65532:65532";
 export const PANEL_NODE_BIN = "/nodejs/bin/node";
 
 /**
- * Every table `panel-db.ts` migrates into `<data dir>/panel.db`. The smoke
- * script reads them back out of a real container to prove that better-sqlite3
- * — compiled in the build stage, against a different Node and a different
- * glibc — actually loads under the distroless runtime. A booted Panel that
- * answers `/api/healthz` does not prove that; a migrated schema does.
+ * Every table the Panel's Postgres migrations create (#567, ADR 0041 D14): the
+ * four `panel.db` tables, which are Postgres tables now, the three Task
+ * tables (#568), the Agents table (#569), the webhook tables (#574), the two API
+ * key tables (#572), the Shared folder tables (#564), and the seven
+ * `missioncontrol.db` tables (#567 PR 5) plus their token-usage rollup. The
+ * smoke script asks the Postgres beside the Panel for them after the Panel has
+ * booted and been set up. A booted Panel that answers `/api/healthz` does not
+ * prove its migrations ran against the database it was given; the tables, and
+ * the rows setup wrote into them, are what prove it. The list is held to the
+ * migration SQL by `__tests__/panel-image.test.mjs`.
  */
 export const PANEL_TABLES = Object.freeze([
   "operator",
   "panel_sessions",
   "cores",
   "core_secrets",
+  "tasks",
+  "task_comments",
+  "task_status_history",
+  "agents",
+  "webhooks",
+  "webhook_cores",
+  "webhook_outbox",
+  "webhook_deliveries",
+  "api_keys",
+  "api_key_cores",
+  "storage_config",
+  "core_shared_folders",
+  "sessions",
+  "terminal_logs",
+  "home_terminals",
+  "app_settings",
+  "token_usage",
+  "token_usage_rollup",
+  "token_usage_session_offsets",
+  "event_log",
 ]);
 
 /** The Core's default core-link port — `EXPOSE` and `ACTANA_PORT` share it. */
@@ -81,8 +106,39 @@ export const CORE_IMAGE = "actana/core";
 /** Where the Core image extracts the release tarball (ADR 0016 D13). */
 export const CORE_APP_ROOT = "/opt/actana";
 
-/** The single directory the Core image keeps all of its state under (D19). */
+/** The Core's home: its work and each Harness's own credentials (D19, narrowed by #559). */
 export const CORE_HOME = "/home/core";
+
+/**
+ * The two users of the Core image (#559, ADR 0041 D11). `core` is who every
+ * Session runs as, `actana` is the daemon. Copies of the numbers in
+ * `deploy/core.Dockerfile` and `deploy/core-entrypoint.sh`, read by the image
+ * smoke, which cannot import anything; a test holds the three together.
+ */
+export const CORE_SESSION_USER = Object.freeze({ name: "core", uid: 1000, gid: 1000 });
+export const CORE_DAEMON_USER = Object.freeze({ name: "actana", uid: 1001, gid: 1001 });
+
+/**
+ * The daemon's whole capability set, in compose's spelling and as the kernel
+ * prints it: CAP_SETGID is bit 6 and CAP_SETUID bit 7, so 0xc0. Nothing else, in
+ * any set: a third capability here is a change to the privilege model.
+ */
+export const CORE_DAEMON_CAPS = Object.freeze(["SETUID", "SETGID"]);
+export const CORE_DAEMON_CAP_MASK = "00000000000000c0";
+export const CORE_NO_CAP_MASK = "0000000000000000";
+
+/**
+ * Where the daemon keeps what only it may hold (#559): its own volume, not the
+ * home. A copy of `CORE_STATE_DIR` and friends in
+ * `packages/shared/src/actana-container-contract.ts`, and deliberately a copy
+ * for the reason `CORE_REFUSED_VERBS` is one: the image smoke runs as plain
+ * node and cannot import the Core's TypeScript. A test holds the copies to it.
+ */
+export const CORE_STATE_DIR = "/var/lib/actana";
+export const CORE_STATE_DATA_DIR = `${CORE_STATE_DIR}/data`;
+export const CORE_STATE_MATERIAL_FILE = `${CORE_STATE_DIR}/config/material.json`;
+/** The hook miss drop box, which a Session may append to (#559). */
+export const CORE_HOOK_DROP_DIR = "/run/actana";
 
 /**
  * The lifecycle verbs the image owns, which refuse in a container and name the
@@ -118,7 +174,6 @@ export const CORE_REFUSED_VERBS = Object.freeze([
  */
 export const CORE_PACKAGES = Object.freeze([
   "bash",
-  "sudo",
   "ca-certificates",
   "curl",
   "git",
@@ -262,7 +317,8 @@ export function secondCoreBlock(text) {
  * Extract services and top-level volumes from the reference compose file.
  * Understands exactly the shape we write: two-space indents, `services:` and
  * `volumes:` at the top level, scalar keys such as `image:` and `restart:`,
- * and list-form `ports:` / `volumes:` / `environment:` under each service.
+ * and list-form `ports:` / `volumes:` / `environment:` / `cap_drop:` /
+ * `cap_add:` / `security_opt:` under each service.
  *
  * Scalars land in `scalars` as well, unparsed. That is what lets a test say
  * `privileged` is absent — a key nobody models cannot be asserted missing.
@@ -294,12 +350,28 @@ export function composeFacts(text) {
 
     if (indent === 2) {
       service = body.replace(/:$/, "");
-      services[service] = { image: null, ports: [], volumes: [], environment: [], scalars: {} };
+      services[service] = {
+        image: null,
+        ports: [],
+        volumes: [],
+        environment: [],
+        cap_drop: [],
+        cap_add: [],
+        security_opt: [],
+        scalars: {},
+      };
       field = null;
     } else if (indent === 4 && service) {
       const [key, ...rest] = body.split(":");
       const value = rest.join(":").trim();
-      if (key === "ports" || key === "volumes" || key === "environment") {
+      if (
+        key === "ports" ||
+        key === "volumes" ||
+        key === "environment" ||
+        key === "cap_drop" ||
+        key === "cap_add" ||
+        key === "security_opt"
+      ) {
         field = key;
       } else {
         // Everything else this file uses is a scalar. `image` keeps its own

@@ -11,7 +11,7 @@ import type {
   CoreLinkEvent,
   CoreLinkRequestFrame,
   CoreLinkResponseFrame,
-} from "@actana/sdk/core-link-frames";
+} from "@actana/shared/sdk-link-frames";
 import type { CoreDialStatus } from "~/shared/cores";
 import type { PanelSessionLock } from "~/shared/session-write-access";
 
@@ -84,8 +84,8 @@ const DEFAULT_STALE_AFTER_MS = 15 * 60_000;
 /**
  * A request frame minus the `reqId` the client assigns. Distributed over the
  * union so each member keeps its own fields — a plain `Omit` over the union
- * would collapse them to the ones every member shares, and `tasksList`'s
- * `projectId` would stop type-checking.
+ * would collapse them to the ones every member shares, and a frame's own
+ * fields would stop type-checking.
  */
 type UnsentRequest = CoreLinkRequestFrame extends infer F
   ? F extends { reqId: string }
@@ -189,18 +189,18 @@ export class PanelLinkClient {
   private readonly dialListeners = new Set<(status: CoreDialStatus) => void>();
   private readonly connectionListeners = new Set<(connected: boolean) => void>();
   private readonly lockListeners = new Set<
-    (msg: { coreId: string; taskId: string; lock: PanelSessionLock }) => void
+    (msg: { coreId: string; sessionId: string; lock: PanelSessionLock }) => void
   >();
   private readonly driveListeners = new Set<
     (msg: {
       coreId: string;
-      taskId: string;
+      sessionId: string;
       driving: boolean;
       reason: "watch" | "handover";
     }) => void
   >();
   /**
-   * The Sessions this tab has a pane open on, as `coreId` → `taskId` → **how
+   * The Sessions this tab has a pane open on, as `coreId` → `sessionId` → **how
    * many panes** (issue 186).
    *
    * Held for the same reason the PTY claims above are: the service gives a
@@ -380,10 +380,10 @@ export class PanelLinkClient {
    * reach the service whether or not this tab is already watching — that is the
    * whole of the gesture when another tab holds the drive.
    */
-  driveSession(coreId: string, taskId: string, opts: { take?: boolean } = {}): void {
+  driveSession(coreId: string, sessionId: string, opts: { take?: boolean } = {}): void {
     const take = opts.take === true;
     if (take) {
-      this.write({ t: "drive", coreId, taskId, want: "take" });
+      this.write({ t: "drive", coreId, sessionId, want: "take" });
       return;
     }
     let driven = this.drivenSessions.get(coreId);
@@ -391,11 +391,11 @@ export class PanelLinkClient {
       driven = new Map();
       this.drivenSessions.set(coreId, driven);
     }
-    const panes = driven.get(taskId) ?? 0;
-    driven.set(taskId, panes + 1);
+    const panes = driven.get(sessionId) ?? 0;
+    driven.set(sessionId, panes + 1);
     // Only the first pane announces. The rest are this tab's own business.
     if (panes > 0) return;
-    this.write({ t: "drive", coreId, taskId, want: "watch" });
+    this.write({ t: "drive", coreId, sessionId, want: "watch" });
   }
 
   /**
@@ -409,17 +409,17 @@ export class PanelLinkClient {
    * driving. The one place the pane count is kept is here; callers ask it
    * rather than keeping a second one that can disagree.
    */
-  releaseSessionDrive(coreId: string, taskId: string): boolean {
+  releaseSessionDrive(coreId: string, sessionId: string): boolean {
     const driven = this.drivenSessions.get(coreId);
-    const panes = driven?.get(taskId) ?? 0;
+    const panes = driven?.get(sessionId) ?? 0;
     if (!driven || panes === 0) return false;
     if (panes > 1) {
-      driven.set(taskId, panes - 1);
+      driven.set(sessionId, panes - 1);
       return false;
     }
-    driven.delete(taskId);
+    driven.delete(sessionId);
     if (driven.size === 0) this.drivenSessions.delete(coreId);
-    this.write({ t: "drive", coreId, taskId, want: "drop" });
+    this.write({ t: "drive", coreId, sessionId, want: "drop" });
     return true;
   }
 
@@ -428,7 +428,7 @@ export class PanelLinkClient {
    * answer for the whole Panel, pushed on every change (ADR 0024 D8).
    */
   onSessionLock(
-    cb: (msg: { coreId: string; taskId: string; lock: PanelSessionLock }) => void,
+    cb: (msg: { coreId: string; sessionId: string; lock: PanelSessionLock }) => void,
   ): () => void {
     this.lockListeners.add(cb);
     return () => this.lockListeners.delete(cb);
@@ -443,7 +443,7 @@ export class PanelLinkClient {
   onSessionDrive(
     cb: (msg: {
       coreId: string;
-      taskId: string;
+      sessionId: string;
       driving: boolean;
       reason: "watch" | "handover";
     }) => void,
@@ -709,9 +709,9 @@ export class PanelLinkClient {
    * driving is still watching, so it keeps it.
    */
   private resendSessionDrives(): void {
-    for (const [coreId, taskIds] of this.drivenSessions) {
-      for (const taskId of taskIds.keys()) {
-        this.rawSend(encodePanelLinkFrame({ t: "drive", coreId, taskId, want: "watch" }));
+    for (const [coreId, sessionIds] of this.drivenSessions) {
+      for (const sessionId of sessionIds.keys()) {
+        this.rawSend(encodePanelLinkFrame({ t: "drive", coreId, sessionId, want: "watch" }));
       }
     }
   }
@@ -751,7 +751,7 @@ export class PanelLinkClient {
     // screen *before* a keystroke rather than discovered by one.
     if (frame.t === "lock") {
       for (const cb of this.lockListeners) {
-        cb({ coreId: frame.coreId, taskId: frame.taskId, lock: frame.lock });
+        cb({ coreId: frame.coreId, sessionId: frame.sessionId, lock: frame.lock });
       }
       return;
     }
@@ -759,7 +759,7 @@ export class PanelLinkClient {
       for (const cb of this.driveListeners) {
         cb({
           coreId: frame.coreId,
-          taskId: frame.taskId,
+          sessionId: frame.sessionId,
           driving: frame.driving,
           reason: frame.reason,
         });

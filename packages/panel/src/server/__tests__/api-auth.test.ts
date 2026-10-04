@@ -1,14 +1,11 @@
-import { describe, expect, it } from "vitest";
-import * as fs from "node:fs";
-import * as os from "node:os";
-import * as path from "node:path";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { closePanelTestDb, openPanelTestDb, resetPanelState } from "./_panel-test-db";
 
-const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mc-api-auth-test-"));
-process.env.AC_USER_DATA_DIR = tmpRoot;
-
+const testDb = await openPanelTestDb();
+const { createOperator } = await import("../services/operator");
 const { handleApiRequest, ANONYMOUS_ROUTES, redactSensitiveErrorText } = await import("../api-router");
 const { getOrCreateApiToken } = await import("../services/settings");
-const { operatorSessionCookie } = await import("./_operator-session");
+const { operatorSessionCookie, resetOperatorSessionForTests } = await import("./_operator-session");
 
 function unauth(input: string, init: RequestInit = {}): Request {
   return new Request(`http://panel.example.test${input}`, {
@@ -17,23 +14,33 @@ function unauth(input: string, init: RequestInit = {}): Request {
   });
 }
 
+beforeAll(async () => {
+  await resetPanelState(testDb);
+  resetOperatorSessionForTests();
+  await createOperator({ name: "Test Operator", password: "test-password" });
+});
+
+afterAll(async () => {
+  await closePanelTestDb(testDb);
+});
+
 /** A signed-in Operator's browser. */
-function authed(input: string, init: RequestInit = {}): Request {
+async function authed(input: string, init: RequestInit = {}): Promise<Request> {
   return new Request(`http://panel.example.test${input}`, {
     ...init,
     headers: {
-      cookie: operatorSessionCookie(),
+      cookie: await operatorSessionCookie(),
       ...(init.headers as Record<string, string> | undefined),
     },
   });
 }
 
 /** An agent's hook callback — machine token, no session. See hook-auth.ts. */
-function hookAuthed(input: string, init: RequestInit = {}): Request {
+async function hookAuthed(input: string, init: RequestInit = {}): Promise<Request> {
   return new Request(`http://panel.example.test${input}`, {
     ...init,
     headers: {
-      authorization: `Bearer ${getOrCreateApiToken()}`,
+      authorization: `Bearer ${await getOrCreateApiToken()}`,
       ...(init.headers as Record<string, string> | undefined),
     },
   });
@@ -49,43 +56,18 @@ const PROTECTED_ROUTES: ReadonlyArray<{ method: string; pathname: string }> = [
   { method: "GET", pathname: "/api/cores" },
   { method: "POST", pathname: "/api/cores" },
   { method: "DELETE", pathname: "/api/cores/abc" },
-  // Projects
-  { method: "GET", pathname: "/api/projects" },
-  { method: "POST", pathname: "/api/projects" },
-  { method: "GET", pathname: "/api/projects/abc" },
-  { method: "PATCH", pathname: "/api/projects/abc" },
-  { method: "PATCH", pathname: "/api/projects/pinned-order" },
-  { method: "DELETE", pathname: "/api/projects/abc" },
-  { method: "DELETE", pathname: "/api/projects/abc/file?path=foo" },
-  // Project tasks
-  { method: "GET", pathname: "/api/projects/abc/tasks" },
-  { method: "POST", pathname: "/api/projects/abc/tasks" },
-  // Git
-  { method: "GET", pathname: "/api/projects/abc/git/status" },
-  { method: "GET", pathname: "/api/projects/abc/git/branches" },
-  { method: "POST", pathname: "/api/projects/abc/git/stage" },
-  { method: "POST", pathname: "/api/projects/abc/git/commit" },
-  { method: "POST", pathname: "/api/projects/abc/git/push" },
-  { method: "POST", pathname: "/api/projects/abc/git/checkout" },
-  { method: "POST", pathname: "/api/projects/abc/git/create-pr" },
-  // Terminals. Every terminal is a home-terminal row since issue 266; the
-  // project-scoped routes that used to be listed here are gone.
+  // Terminals. Every terminal is a home-terminal row since issue 266.
   { method: "GET", pathname: "/api/home/user-terminals" },
   { method: "POST", pathname: "/api/home/user-terminals" },
   { method: "PATCH", pathname: "/api/home/user-terminals/xyz" },
   { method: "DELETE", pathname: "/api/home/user-terminals/xyz" },
-  // Groups
-  { method: "GET", pathname: "/api/groups" },
-  { method: "POST", pathname: "/api/groups" },
-  { method: "PATCH", pathname: "/api/groups/g1" },
-  { method: "DELETE", pathname: "/api/groups/g1" },
-  // Tasks
-  { method: "GET", pathname: "/api/tasks/t1" },
-  { method: "PATCH", pathname: "/api/tasks/t1" },
-  { method: "DELETE", pathname: "/api/tasks/t1" },
-  { method: "POST", pathname: "/api/tasks/t1/status" },
-  { method: "POST", pathname: "/api/tasks/t1/archive" },
-  { method: "POST", pathname: "/api/tasks/t1/restore" },
+  // Sessions
+  { method: "GET", pathname: "/api/sessions/t1" },
+  { method: "PATCH", pathname: "/api/sessions/t1" },
+  { method: "DELETE", pathname: "/api/sessions/t1" },
+  { method: "POST", pathname: "/api/sessions/t1/status" },
+  { method: "POST", pathname: "/api/sessions/t1/archive" },
+  { method: "POST", pathname: "/api/sessions/t1/restore" },
   // Settings
   { method: "GET", pathname: "/api/settings" },
   { method: "POST", pathname: "/api/settings" },
@@ -156,7 +138,7 @@ describe("api auth gate", () => {
     expect(body).toMatchObject({
       ok: true,
       status: "ok",
-      checks: { api: "ok", database: "disabled" },
+      checks: { api: "ok", database: "ok" },
     });
   });
 
@@ -180,12 +162,12 @@ describe("api auth gate", () => {
     });
 
     it(`${route.method} ${route.pathname} rejects the machine hook token`, async () => {
-      const res = await handleApiRequest(hookAuthed(route.pathname, { method: route.method }));
+      const res = await handleApiRequest(await hookAuthed(route.pathname, { method: route.method }));
       expect(res?.status).toBe(401);
     });
 
     it(`${route.method} ${route.pathname} lets a signed-in Operator reach dispatch`, async () => {
-      const res = await handleApiRequest(authed(route.pathname, { method: route.method }));
+      const res = await handleApiRequest(await authed(route.pathname, { method: route.method }));
       // Anything other than 401 means the gate let the call through; 400/404
       // from downstream validation/lookups is expected for these synthetic ids.
       expect(res?.status).not.toBe(401);
@@ -202,12 +184,12 @@ describe("api auth gate", () => {
     it(`${route.method} ${route.pathname} does not accept an Operator session`, async () => {
       // Hooks are a machine surface: a browser session must not be able to
       // forge agent status updates.
-      const res = await handleApiRequest(authed(route.pathname, { method: route.method }));
+      const res = await handleApiRequest(await authed(route.pathname, { method: route.method }));
       expect(res?.status).toBe(401);
     });
 
     it(`${route.method} ${route.pathname} lets a token-bearing agent through`, async () => {
-      const res = await handleApiRequest(hookAuthed(route.pathname, { method: route.method }));
+      const res = await handleApiRequest(await hookAuthed(route.pathname, { method: route.method }));
       expect(res?.status).not.toBe(401);
     });
   }
@@ -219,7 +201,7 @@ describe("api auth gate", () => {
     });
 
     it("opens for a signed-in Operator's EventSource", async () => {
-      const res = await handleApiRequest(authed("/api/events", { method: "GET" }));
+      const res = await handleApiRequest(await authed("/api/events", { method: "GET" }));
       expect(res?.status).toBe(200);
       expect(res?.headers.get("content-type")).toMatch(/event-stream/i);
       // Don't actually consume the stream — Vitest would hang.

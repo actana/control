@@ -1,4 +1,5 @@
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
+import { closePanelTestDb, openPanelTestDb } from "./_panel-test-db";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -8,7 +9,7 @@ import { generateCertMaterial } from "@actana/shared/core-cert-material";
 import { signBearer, verifyBearer } from "@actana/shared/core-link-bearer";
 import type { PtyCore } from "@actana/core/pty-manager";
 import type { EventLogPort } from "@actana/core/pty-core-link-server";
-import type { CoreLinkEvent } from "@actana/sdk/core-link-frames";
+import type { CoreLinkEvent } from "@actana/sdk/core";
 
 /**
  * The Cores surface, driven the way a browser drives it: register the
@@ -31,7 +32,7 @@ process.env.AC_USER_DATA_DIR = path.join(tmpRoot, "app");
 process.env.AC_PANEL_DATA_DIR = path.join(tmpRoot, "panel");
 
 const { handleApiRequest } = await import("../api-router");
-const { closePanelDb, getPanelDb } = await import("../panel-db");
+const testDb = await openPanelTestDb();
 const { operatorSessionCookie } = await import("./_operator-session");
 const { coreLinkManager, resetCoreLinkManagerForTests } = await import(
   "../services/core-link-manager"
@@ -47,7 +48,7 @@ async function call(
 ): Promise<Response> {
   const { json, anonymous, ...rest } = init;
   const headers: Record<string, string> = { ...(rest.headers as Record<string, string>) };
-  if (!anonymous) headers.cookie = operatorSessionCookie();
+  if (!anonymous) headers.cookie = (await operatorSessionCookie());
   if (json !== undefined) headers["content-type"] = "application/json";
   const response = await handleApiRequest(
     new Request(`${ORIGIN}${pathname}`, {
@@ -86,10 +87,10 @@ function mockCore(): PtyCore {
     kill: () => true,
     killLaunchProcesses: async () => ({ ptyCount: 0, ports: [] }),
     killPtysUnderPath: async () => ({ ptyCount: 0 }),
-    findByTask: () => ({ ptyId: null }),
+    findBySession: () => ({ ptyId: null }),
     // Which Session a `write`/`kill` would touch (issue 144) — the lookup
     // the Core's Session-lock gate resolves a ptyId through.
-    taskIdForPty: () => null,
+    sessionIdForPty: () => null,
     replay: () => ({ data: "", nextSeq: 0 }),
     killAll: () => {},
   } as unknown as PtyCore;
@@ -163,9 +164,9 @@ function fakeEventLog(count: number): EventLogPort & { subscribedFrom: number[] 
   const events: CoreLinkEvent[] = Array.from({ length: count }, (_, i) => ({
     eventId: i + 1,
     ts: i + 1,
-    kind: "task:updated",
+    kind: "session:updated",
     ptyId: null,
-    taskId: null,
+    sessionId: null,
     payload: "{}",
   }));
   const subscribedFrom: number[] = [];
@@ -224,18 +225,23 @@ async function startCore(label: string, eventCount = 0): Promise<CoreFixture> {
   return { server, credential, authAttempts: () => authAttempts, eventLog };
 }
 
+async function registryCounts(): Promise<{ cores: number; secrets: number }> {
+  const count = async (table: string) =>
+    (await testDb.pool.query(`select count(*)::int as n from ${table}`)).rows[0]!.n as number;
+  return { cores: await count("cores"), secrets: await count("core_secrets") };
+}
+
 const running: PtyCoreLinkServer[] = [];
 
-afterEach(() => {
+afterEach(async () => {
   resetCoreLinkManagerForTests();
   for (const server of running.splice(0)) server.close();
-  const db = getPanelDb();
-  db.prepare("DELETE FROM core_secrets").run();
-  db.prepare("DELETE FROM cores").run();
+  await testDb.pool.query("delete from core_secrets");
+  await testDb.pool.query("delete from cores");
 });
 
-afterAll(() => {
-  closePanelDb();
+afterAll(async () => {
+  await closePanelTestDb(testDb);
   fs.rmSync(tmpRoot, { recursive: true, force: true });
 });
 
@@ -255,9 +261,9 @@ async function pair(
   // registration used to create it on the way past. Without this the helper
   // depends on some earlier test in file order having called `call()` first,
   // and any pair-using test run on its own fails on the foreign key.
-  operatorSessionCookie();
-  const registered = registerCoreFromCredential(core.credential);
-  coreLinkManager().dial(registered.id);
+  (await operatorSessionCookie());
+  const registered = await registerCoreFromCredential(core.credential);
+  await coreLinkManager().dial(registered.id);
   return { id: registered.id, core };
 }
 
@@ -328,7 +334,7 @@ describe("Cores API", () => {
     // The service restarts. Nobody logs in, no request is made, no tab is open
     // — and the Core still gets dialed.
     resetCoreLinkManagerForTests();
-    coreLinkManager().start();
+    await coreLinkManager().start();
     await vi.waitFor(() => expect(core.authAttempts()).toBeGreaterThan(before), {
       timeout: 10_000,
     });
@@ -338,12 +344,11 @@ describe("Cores API", () => {
     it("advances in the registry as the Core replays its events", async () => {
       const { id } = await pair("prod-vm-1", 3);
       await vi.waitFor(
-        () =>
+        async () =>
           expect(
             (
-              getPanelDb().prepare("SELECT last_event_id AS n FROM cores WHERE id = ?").get(id) as {
-                n: number;
-              }
+              (await testDb.pool.query("select last_event_id::int as n from cores where id = $1", [id]))
+                .rows[0] as { n: number }
             ).n,
           ).toBe(3),
         { timeout: 10_000 },
@@ -356,12 +361,11 @@ describe("Cores API", () => {
         timeout: 10_000,
       });
       await vi.waitFor(
-        () =>
+        async () =>
           expect(
             (
-              getPanelDb().prepare("SELECT last_event_id AS n FROM cores WHERE id = ?").get(id) as {
-                n: number;
-              }
+              (await testDb.pool.query("select last_event_id::int as n from cores where id = $1", [id]))
+                .rows[0] as { n: number }
             ).n,
           ).toBe(3),
         { timeout: 10_000 },
@@ -370,7 +374,7 @@ describe("Cores API", () => {
       // The service restarts. The Core must be asked for the tail after 3,
       // not for the whole log again.
       resetCoreLinkManagerForTests();
-      coreLinkManager().start();
+      await coreLinkManager().start();
       await vi.waitFor(() => expect(core.eventLog.subscribedFrom).toEqual([0, 3]), {
         timeout: 10_000,
       });
@@ -383,7 +387,7 @@ describe("Cores API", () => {
     // matters: an endpoint already spoken for is refused whichever door asks.
     it("refuses to register the same Core twice", async () => {
       const { core } = await pair();
-      expect(() => registerCoreFromCredential(core.credential)).toThrow(/already registered/);
+      await expect(registerCoreFromCredential(core.credential)).rejects.toThrow(/already registered/);
       const body = (await (await call("/api/cores")).json()) as { cores: unknown[] };
       expect(body.cores).toHaveLength(1);
     }, 20_000);
@@ -452,9 +456,7 @@ describe("Cores API", () => {
       });
       expect((await call(`/api/cores/${id}`, { method: "DELETE" })).status).toBe(204);
       expect(await (await call("/api/cores")).json()).toEqual({ cores: [] });
-      const db = getPanelDb();
-      expect(db.prepare("SELECT COUNT(*) AS n FROM cores").get()).toEqual({ n: 0 });
-      expect(db.prepare("SELECT COUNT(*) AS n FROM core_secrets").get()).toEqual({ n: 0 });
+      expect(await registryCounts()).toEqual({ cores: 0, secrets: 0 });
     }, 20_000);
 
     it("404s on an id it doesn't know", async () => {

@@ -57,13 +57,9 @@ export function SessionNotificationsButton({
   const openNotification = (notification: AppNotification) => {
     requestSessionNotificationOpen(notification);
     setOpen(false);
-    const coreId =
-      notification.kind === "session-finished" ? notification.coreId : null;
-    const search = coreId ? { coreId } : undefined;
     void router.navigate({
-      to: "/projects/$id",
-      params: { id: notification.projectId },
-      search,
+      to: "/cores/$coreId/workspace",
+      params: { coreId: notification.coreId },
     });
   };
 
@@ -249,14 +245,12 @@ function NotificationRow({
   onOpen: () => void;
   onClear: () => void;
 }) {
-  const isRemoteSession = !!notification.coreId;
-  const coreBadge = isRemoteSession
-    ? notification.coreAlias && notification.coreAlias.length > 0
+  const coreBadge =
+    notification.coreAlias && notification.coreAlias.length > 0
       ? notification.coreAlias
-      : notification.coreId
-    : null;
-  const headline = `Session finished — ${notification.projectName}`;
-  const subtitle = notification.taskTitle;
+      : notification.coreId;
+  const headline = "Session finished";
+  const subtitle = notification.sessionTitle;
   const timestamp = notification.finishedAt;
   const openLabel = `Open ${subtitle}`;
 
@@ -370,7 +364,7 @@ function NotificationRow({
 }
 
 function notificationKey(notification: AppNotification) {
-  return `session:${notification.coreId}:${notification.projectId}:${notification.id}`;
+  return `session:${notification.coreId}:${notification.id}`;
 }
 
 function formatTimestamp(value: number) {

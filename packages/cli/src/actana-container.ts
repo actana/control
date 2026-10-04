@@ -48,6 +48,8 @@ import {
 // a verb somebody typed.
 export {
   CONTAINER_ENV,
+  CORE_STATE_DATA_DIR,
+  CORE_STATE_MATERIAL_FILE,
   CONTAINER_LABEL_ENV,
   CONTAINER_PORT_ENV,
   CONTAINER_PUBLIC_HOST_ENV,
@@ -136,6 +138,34 @@ export function containerRefusal(verb: string): string | null {
   return (
     `\`actana ${verb}\` does not run in a container — ${equivalent.why}.\n` +
     `Run this on the host instead:\n  ${equivalent.run}`
+  );
+}
+
+/**
+ * The one user that may run `actana pair` and `actana status` in the image
+ * (#559, ADR 0041 D11): the daemon's own user, uid 1001. The pairing material
+ * and the pairing store live in `/var/lib/actana`, which `core` cannot read,
+ * and a plain `docker compose exec` lands as root, which has no DAC override
+ * there either. Detection is the effective uid, never a name lookup.
+ */
+export const CONTAINER_OPERATOR_USER = "actana";
+export const CONTAINER_OPERATOR_UID = 1001;
+
+/** The command an operator types on the host to run `actana <args>` as the daemon's user. */
+export function containerOperatorCommand(args: string): string {
+  return `docker compose exec -u ${CONTAINER_OPERATOR_USER} core actana ${args}`;
+}
+
+/**
+ * The refusal for a verb that needs the daemon's user, or null when `uid` is
+ * that user. One sentence that names the exact command; the caller prints it
+ * and exits before it reads or writes anything.
+ */
+export function containerUserRefusal(args: string, uid: number): string | null {
+  if (uid === CONTAINER_OPERATOR_UID) return null;
+  return (
+    `\`actana ${args}\` must run as the ${CONTAINER_OPERATOR_USER} user (uid ${CONTAINER_OPERATOR_UID}) in this ` +
+    `container, and this is uid ${uid}: run \`${containerOperatorCommand(args)}\` on the host.`
   );
 }
 

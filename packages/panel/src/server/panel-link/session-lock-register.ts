@@ -11,7 +11,7 @@
 // Four things move the answer, and between them they cover every way a lock
 // changes without this Panel asking:
 //
-//   1. **A published snapshot** (`lock` on a task/session row, D8). The
+//   1. **A published snapshot** (`lock` on a session row, D8). The
 //      authoritative, addressed answer — `{ writable, state }` as the Core sees
 //      it for *this* connection. Every list this Panel already makes carries
 //      one, so this register is seeded and re-seeded for free, and any drift in
@@ -22,7 +22,7 @@
 //      *somebody else* moved a lock — the whole reason the event exists, and the
 //      only thing that makes a force takeover visible to its loser before its
 //      next keystroke.
-//   4. **`reclaimResult.taskIds`** (D9). After a reconnect, the Sessions whose
+//   4. **`reclaimResult.sessionIds`** (D9). After a reconnect, the Sessions whose
 //      locks came across from the socket this one replaced. Nothing else says
 //      so: the transfer is a rewrite in place, it appends no event, and without
 //      this the Panel would render its own Sessions read-only until something
@@ -36,8 +36,8 @@ import type {
   CoreLinkEvent,
   CoreLinkSessionLock,
   CoreLinkSessionLockChangedPayload,
-} from "@actana/sdk/core-link-frames";
-import { SESSION_LOCK_CHANGED_EVENT_KIND } from "@actana/sdk/core-link-frames";
+} from "@actana/shared/sdk-link-frames";
+import { SESSION_LOCK_CHANGED_EVENT_KIND } from "@actana/shared/sdk-link-frames";
 import {
   UNSUPPORTED_SESSION_LOCK,
   type PanelSessionLock,
@@ -51,7 +51,7 @@ type Known = {
   locked: boolean;
 };
 
-export type SessionLockChange = { taskId: string; lock: PanelSessionLock };
+export type SessionLockChange = { sessionId: string; lock: PanelSessionLock };
 
 /**
  * One Core's lock state, as the Panel's connection to it sees it.
@@ -97,7 +97,7 @@ export class SessionLockRegister {
   constructor(private readonly supported: () => boolean) {}
 
   /** Every Session this register has an opinion about. */
-  taskIds(): string[] {
+  sessionIds(): string[] {
     return [...this.known.keys()];
   }
 
@@ -109,9 +109,9 @@ export class SessionLockRegister {
    * "there is no lock here", which is what stops a single-connection Core
    * growing a Claim button it has nothing to claim.
    */
-  lockFor(taskId: string): PanelSessionLock {
+  lockFor(sessionId: string): PanelSessionLock {
     if (!this.supported()) return UNSUPPORTED_SESSION_LOCK;
-    const known = this.known.get(taskId);
+    const known = this.known.get(sessionId);
     if (!known || (!known.held && !known.locked)) {
       return { supported: true, writable: true, state: "unlocked" };
     }
@@ -134,10 +134,10 @@ export class SessionLockRegister {
    * that publishes no lock state, and overwriting what this register knows with
    * a Core's silence would blank the state on every list from an older Core.
    */
-  applySnapshots(rows: Array<{ taskId: string; lock?: CoreLinkSessionLock }>): void {
+  applySnapshots(rows: Array<{ sessionId: string; lock?: CoreLinkSessionLock }>): void {
     for (const row of rows) {
       if (!row.lock) continue;
-      this.set(row.taskId, {
+      this.set(row.sessionId, {
         held: row.lock.state === "held-by-you",
         locked: row.lock.state !== "unlocked",
       });
@@ -152,7 +152,7 @@ export class SessionLockRegister {
    * state that renders read-only, and learning it from the answer means the tab
    * that asked does not wait for a snapshot to find out.
    */
-  applyClaimResult(taskId: string, granted: boolean): void {
+  applyClaimResult(sessionId: string, granted: boolean): void {
     // Only a claim that *changed* something echoes. A re-claim by the
     // connection that already holds the Session is idempotent and the Core
     // publishes nothing for it (`pty-core-link-server.ts` — `granted &&
@@ -160,15 +160,15 @@ export class SessionLockRegister {
     // would leave an entry no event ever matches, waiting to eat the next real
     // `claimed` from somebody else. Two tabs both reading `unlocked` and both
     // clicking Claim is enough to reach this, and this is a two-tab feature.
-    if (granted && !this.known.get(taskId)?.held) this.expectSelfEcho(taskId, "claimed");
-    this.set(taskId, { held: granted, locked: true });
+    if (granted && !this.known.get(sessionId)?.held) this.expectSelfEcho(sessionId, "claimed");
+    this.set(sessionId, { held: granted, locked: true });
   }
 
   /** This connection gave a Session back. `released: false` means it never held it. */
-  applyReleaseResult(taskId: string, released: boolean): void {
+  applyReleaseResult(sessionId: string, released: boolean): void {
     if (!released) return;
-    this.expectSelfEcho(taskId, "released");
-    this.set(taskId, { held: false, locked: false });
+    this.expectSelfEcho(sessionId, "released");
+    this.set(sessionId, { held: false, locked: false });
   }
 
   /**
@@ -177,10 +177,10 @@ export class SessionLockRegister {
    * decides which echo to expect, since the Core publishes a takeover of an
    * unheld Session as an ordinary `claimed`.
    */
-  applyForceTakeoverResult(taskId: string, takenFrom: string): void {
-    if (takenFrom === "another-connection") this.expectSelfEcho(taskId, "taken-over");
-    else if (takenFrom === "nobody") this.expectSelfEcho(taskId, "claimed");
-    this.set(taskId, { held: true, locked: true });
+  applyForceTakeoverResult(sessionId: string, takenFrom: string): void {
+    if (takenFrom === "another-connection") this.expectSelfEcho(sessionId, "taken-over");
+    else if (takenFrom === "nobody") this.expectSelfEcho(sessionId, "claimed");
+    this.set(sessionId, { held: true, locked: true });
   }
 
   /**
@@ -188,8 +188,8 @@ export class SessionLockRegister {
    * connection now, and no event said so — the Core rewrote the table in place,
    * which is the atomicity that makes the frame worth having.
    */
-  applyReclaimed(taskIds: string[]): void {
-    for (const taskId of taskIds) this.set(taskId, { held: true, locked: true });
+  applyReclaimed(sessionIds: string[]): void {
+    for (const sessionId of sessionIds) this.set(sessionId, { held: true, locked: true });
   }
 
   /**
@@ -205,16 +205,16 @@ export class SessionLockRegister {
     if (event.kind !== SESSION_LOCK_CHANGED_EVENT_KIND) return;
     const payload = parseLockChanged(event.payload);
     if (!payload) return;
-    const taskId = payload.taskId || event.taskId || "";
-    if (!taskId) return;
-    if (this.consumeSelfEcho(taskId, payload.transition)) return;
+    const sessionId = payload.sessionId || event.sessionId || "";
+    if (!sessionId) return;
+    if (this.consumeSelfEcho(sessionId, payload.transition)) return;
     // Somebody else moved it. `locked: false` is a release — by definition not
     // ours, since our own release was suppressed above — so the Session is free
     // and this Panel holds nothing on it. `locked: true` is a claim or a
     // takeover by another client, which is the loser's notice (D8): it is why
     // this Panel stops rendering an editable terminal now rather than on the
     // keystroke that would have come back refused.
-    this.set(taskId, { held: false, locked: payload.locked });
+    this.set(sessionId, { held: false, locked: payload.locked });
   }
 
   /**
@@ -228,32 +228,32 @@ export class SessionLockRegister {
    * a lock the Core has given back.
    */
   reset(): void {
-    const taskIds = [...this.known.keys()];
+    const sessionIds = [...this.known.keys()];
     this.known.clear();
     this.selfEchoes.clear();
-    for (const taskId of taskIds) this.emit(taskId);
+    for (const sessionId of sessionIds) this.emit(sessionId);
   }
 
-  private set(taskId: string, next: Known): void {
-    const before = this.known.get(taskId);
+  private set(sessionId: string, next: Known): void {
+    const before = this.known.get(sessionId);
     if (before && before.held === next.held && before.locked === next.locked) return;
-    this.known.set(taskId, next);
-    this.emit(taskId);
+    this.known.set(sessionId, next);
+    this.emit(sessionId);
   }
 
-  private emit(taskId: string): void {
-    const lock = this.lockFor(taskId);
-    for (const cb of this.listeners) cb({ taskId, lock });
+  private emit(sessionId: string): void {
+    const lock = this.lockFor(sessionId);
+    for (const cb of this.listeners) cb({ sessionId, lock });
   }
 
-  private expectSelfEcho(taskId: string, transition: string): void {
-    const queue = this.selfEchoes.get(taskId) ?? [];
+  private expectSelfEcho(sessionId: string, transition: string): void {
+    const queue = this.selfEchoes.get(sessionId) ?? [];
     queue.push(transition);
-    this.selfEchoes.set(taskId, queue);
+    this.selfEchoes.set(sessionId, queue);
   }
 
-  private consumeSelfEcho(taskId: string, transition: string): boolean {
-    const queue = this.selfEchoes.get(taskId);
+  private consumeSelfEcho(sessionId: string, transition: string): boolean {
+    const queue = this.selfEchoes.get(sessionId);
     if (!queue?.length) return false;
     const head = queue[0];
     // Only the transition we are actually waiting for. Anything else is
@@ -268,7 +268,7 @@ export class SessionLockRegister {
     // what this connection asked for, and {@link reset} empties it with the link.
     if (head !== transition) return false;
     queue.shift();
-    if (!queue.length) this.selfEchoes.delete(taskId);
+    if (!queue.length) this.selfEchoes.delete(sessionId);
     return true;
   }
 }
@@ -277,9 +277,9 @@ function parseLockChanged(payload: string): CoreLinkSessionLockChangedPayload | 
   try {
     const parsed = JSON.parse(payload) as Partial<CoreLinkSessionLockChangedPayload>;
     if (!parsed || typeof parsed !== "object") return null;
-    if (typeof parsed.taskId !== "string") return null;
+    if (typeof parsed.sessionId !== "string") return null;
     return {
-      taskId: parsed.taskId,
+      sessionId: parsed.sessionId,
       transition: (parsed.transition ?? "claimed") as CoreLinkSessionLockChangedPayload["transition"],
       locked: parsed.locked !== false,
     };

@@ -26,8 +26,6 @@ import {
  * always drive the same persisted setting.
  */
 export type HideableElementId =
-  | "group-switcher"
-  | "project-header-group"
   | "provider-usage"
   | `session-button:${SessionHeaderButtonKey}`
   | `header-button:${HeaderButtonKey}`;
@@ -35,8 +33,6 @@ export type HideableElementId =
 type UiVisibilityPatch = Partial<
   Pick<
     AppSettings,
-    | "showGroupSwitcher"
-    | "showProjectHeaderGroup"
     | "providerUsageEnabled"
     | "sessionHeaderButtons"
     | "headerButtons"
@@ -58,18 +54,6 @@ function elementFor(id: HideableElementId): {
   label: string;
   visibilityPatch: (settings: AppSettings | undefined, visible: boolean) => UiVisibilityPatch;
 } {
-  if (id === "group-switcher") {
-    return {
-      label: "group switcher",
-      visibilityPatch: (_settings, visible) => ({ showGroupSwitcher: visible }),
-    };
-  }
-  if (id === "project-header-group") {
-    return {
-      label: "project group tag",
-      visibilityPatch: (_settings, visible) => ({ showProjectHeaderGroup: visible }),
-    };
-  }
   if (id === "provider-usage") {
     // The usage chip has no separate visibility flag: showing it IS the feature
     // toggle (hiding it also stops the polling), so Hide drives that one key.

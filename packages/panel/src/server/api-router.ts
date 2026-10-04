@@ -1,16 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { jsonError } from "./http-responses";
 import { requireHookToken } from "./hook-auth";
-import { requireOperatorSession } from "./panel-auth";
+import { authenticateApiRequest, type ApiPrincipal } from "./api-key-auth";
 import {
   HTTP_BAD_REQUEST,
   HTTP_INTERNAL_SERVER_ERROR,
   HTTP_NOT_FOUND,
 } from "~/shared/http-status";
-import * as projectsController from "./controllers/projects.controller";
-import * as projectPresentationController from "./controllers/project-presentation.controller";
-import * as tasksController from "./controllers/tasks.controller";
-import * as groupsController from "./controllers/groups.controller";
+import * as sessionsController from "./controllers/sessions.controller";
 import * as homeTerminalsController from "./controllers/home-terminals.controller";
 import * as settingsController from "./controllers/settings.controller";
 import * as keybindingsController from "./controllers/keybindings.controller";
@@ -21,37 +18,74 @@ import * as providerUsageController from "./controllers/provider-usage.controlle
 import * as harnessLaunchersController from "./controllers/harness-launchers.controller";
 import * as eventsController from "./controllers/events.controller";
 import * as healthController from "./controllers/health.controller";
+import * as jwksController from "./controllers/jwks.controller";
 import * as aiRuntimeModelsController from "./controllers/ai-runtime-models.controller";
 import * as authController from "./controllers/auth.controller";
+import * as apiKeysController from "./controllers/api-keys.controller";
 import * as coresController from "./controllers/cores.controller";
-import * as coreFilesController from "./controllers/core-files.controller";
+import * as storageController from "./controllers/storage.controller";
+import * as sharedFilesController from "./controllers/shared-files.controller";
 import * as updateCheckController from "./controllers/update-check.controller";
+import * as tasksController from "./controllers/tasks.controller";
+import * as v1Controller from "./controllers/v1.controller";
+import { handleMcpRequest, MCP_PATH } from "./mcp";
+import { OPERATOR_ID } from "./services/operator";
+import * as webhooksController from "./controllers/webhooks.controller";
 
 const HARNESS_HOOK_PATH = /^\/api\/hooks\/([a-z0-9-]+)$/;
-const PROJECT_PATH = /^\/api\/projects\/([^/]+)$/;
-const PROJECT_PATH_STATUS_PATH = /^\/api\/projects\/([^/]+)\/path-status$/;
-const PROJECT_IMAGE_PATH = /^\/api\/projects\/([^/]+)\/image$/;
-const PROJECT_PRESENTATION_PATH = /^\/api\/project-presentation\/([^/]+)$/;
-const PROJECT_TASKS_PATH = /^\/api\/projects\/([^/]+)\/tasks$/;
-const GROUP_PATH = /^\/api\/groups\/([^/]+)$/;
 const CORE_PATH = /^\/api\/cores\/([^/]+)$/;
-// A Project's files on a Core, addressed by both ids because the Panel holds no
-// row for a Core-owned Project (ADR 0005) and therefore cannot look one up from
-// the other. `files/list` is matched before `files` so the leaf is never read as
-// a path — the same order, and the same reason, as on the Core (#216).
-const CORE_PROJECT_FILES_LIST_PATH = /^\/api\/cores\/([^/]+)\/projects\/([^/]+)\/files\/list$/;
-const CORE_PROJECT_FILES_PATH = /^\/api\/cores\/([^/]+)\/projects\/([^/]+)\/files$/;
-// Literal path — checked before TASK_PATH so the id patterns never see it.
-const TASK_SWEEP_DISCONNECTED_PATH = "/api/tasks/sweep-disconnected";
+const CORE_SHARED_TEST_PATH = /^\/api\/cores\/([^/]+)\/shared\/test$/;
+// The Files tab: the Shared folder read from S3 directly, so it answers while the Core is offline (#565).
+const CORE_SHARED_FILES_PATH = /^\/api\/cores\/([^/]+)\/shared\/files(?:\/([a-z-]+))?$/;
+const CORE_PAIRING_FINISH_PATH = /^\/api\/cores\/([^/]+)\/pairing\/finish$/;
+const CORE_DELETE_PATH = /^\/api\/cores\/([^/]+)\/delete$/;
+const API_KEY_REVOKE_PATH = /^\/api\/api-keys\/([^/]+)\/revoke$/;
+const WEBHOOK_PATH = /^\/api\/webhooks\/([^/]+)$/;
+const WEBHOOK_PING_PATH = /^\/api\/webhooks\/([^/]+)\/ping$/;
+const WEBHOOK_DELIVERIES_PATH = /^\/api\/webhooks\/([^/]+)\/deliveries$/;
+// Literal path — checked before SESSION_PATH so the id patterns never see it.
+const SESSION_SWEEP_DISCONNECTED_PATH = "/api/sessions/sweep-disconnected";
 const TASK_PATH = /^\/api\/tasks\/([^/]+)$/;
 const TASK_STATUS_PATH = /^\/api\/tasks\/([^/]+)\/status$/;
-const TASK_QUESTION_PATH = /^\/api\/tasks\/([^/]+)\/question$/;
-const TASK_ARCHIVE_PATH = /^\/api\/tasks\/([^/]+)\/archive$/;
-const TASK_RESTORE_PATH = /^\/api\/tasks\/([^/]+)\/restore$/;
+const TASK_COMMENTS_PATH = /^\/api\/tasks\/([^/]+)\/comments$/;
+const CORE_AGENTS_PATH = /^\/api\/cores\/([^/]+)\/agents$/;
+// Public REST API (#572 PR 2). Versioned under `/api/v1` so the session-cookie
+// routes above stay their own path; a key never reaches those.
+const V1_CORE_PATH = /^\/api\/v1\/cores\/([^/]+)$/;
+const V1_CORE_AGENTS_PATH = /^\/api\/v1\/cores\/([^/]+)\/agents$/;
+const V1_AGENT_PATH = /^\/api\/v1\/agents\/([^/]+)$/;
+const V1_TASK_PATH = /^\/api\/v1\/tasks\/([^/]+)$/;
+const V1_TASK_STATUS_PATH = /^\/api\/v1\/tasks\/([^/]+)\/status$/;
+const V1_TASK_COMMENTS_PATH = /^\/api\/v1\/tasks\/([^/]+)\/comments$/;
+const SESSION_PATH = /^\/api\/sessions\/([^/]+)$/;
+const SESSION_STATUS_PATH = /^\/api\/sessions\/([^/]+)\/status$/;
+const SESSION_QUESTION_PATH = /^\/api\/sessions\/([^/]+)\/question$/;
+const SESSION_ARCHIVE_PATH = /^\/api\/sessions\/([^/]+)\/archive$/;
+const SESSION_RESTORE_PATH = /^\/api\/sessions\/([^/]+)\/restore$/;
 const HOME_USER_TERMINAL_PATH = /^\/api\/home\/user-terminals\/([^/]+)$/;
 const REQUEST_ID_HEADER = "x-request-id";
 const CORRELATION_ID_HEADER = "x-correlation-id";
 const REQUEST_ID_RE = /^[a-zA-Z0-9._:-]{1,128}$/;
+
+const SHARED_FILES_ROUTES: Readonly<Record<string, string>> = {
+  "GET ": "list",
+  "GET details": "details",
+  "GET media": "media",
+  "GET search": "search",
+  "GET summary": "summary",
+  "POST download-url": "download-url",
+  "POST mkdir": "mkdir",
+  "PUT upload": "upload",
+  "POST rename": "rename",
+  "POST move": "move",
+  "POST delete": "delete",
+};
+
+type SharedFilesRoute = "list" | "details" | "media" | "search" | "summary" | "download-url" | "mkdir" | "upload" | "rename" | "move" | "delete" | undefined;
+
+function sharedFilesRoute(method: string, leaf: string | undefined): SharedFilesRoute {
+  return SHARED_FILES_ROUTES[`${method} ${leaf ?? ""}`] as SharedFilesRoute;
+}
 
 function decode(segment: string | undefined): string {
   return decodeURIComponent(segment ?? "");
@@ -93,7 +127,10 @@ function getSetCookieHeaders(headers: Headers): string[] {
 // The Panel's entire anonymous surface: the three calls a browser needs before
 // it has a session. Everything else requires the Operator's session cookie.
 // Adding an entry here is the *only* way a route can be reached without a
-// session, which makes auth-bypass regressions a one-grep review surface.
+// session through `dispatch`, which makes auth-bypass regressions a one-grep
+// review surface. Two answers are given before the gate instead, in
+// `handleApiRequest`: `/api/healthz` and the token signer's public key set at
+// `/.well-known/jwks.json` (#566). Look for both when reviewing the anonymous surface.
 // Exported so __tests__/api-auth.test.ts can snapshot the list and fail CI on
 // any addition.
 export const ANONYMOUS_ROUTES: ReadonlyArray<{ method: string; pathname: string }> = [
@@ -119,17 +156,22 @@ function isAnonymousRoute(method: string, pathname: string): boolean {
 
 /**
  * Centralized auth gate. Default: every /api/* route requires the Operator's
- * session cookie. Opt-outs: the anonymous auth handoff surface above, and the
- * agent hook endpoints, which carry the machine token instead.
+ * session cookie, or an API key on the few routes that accept one (#572).
+ * Opt-outs: the anonymous auth handoff surface above, and the agent hook
+ * endpoints, which carry the machine token instead. What comes back is who the
+ * call runs as.
  */
-function requireApiAuth(
+async function requireApiAuth(
   request: Request,
   method: string,
   pathname: string,
-): { ok: true } | { ok: false; response: Response } {
-  if (isAnonymousRoute(method, pathname)) return { ok: true };
-  if (isHookRoute(pathname)) return requireHookToken(request);
-  return requireOperatorSession(request);
+): Promise<{ ok: true; principal: ApiPrincipal | null } | { ok: false; response: Response }> {
+  if (isAnonymousRoute(method, pathname)) return { ok: true, principal: null };
+  if (isHookRoute(pathname)) {
+    const hook = await requireHookToken(request);
+    return hook.ok ? { ok: true, principal: null } : hook;
+  }
+  return await authenticateApiRequest(request, method, pathname);
 }
 
 const SENSITIVE_QUERY_PARAM_RE = /([?&])(token|ticket)=[^&#\s"']+/gi;
@@ -157,11 +199,11 @@ function withApiAuth(fn: typeof dispatch) {
     method: string,
     pathname: string,
   ): Promise<Response> => {
-    const auth = requireApiAuth(request, method, pathname);
+    const auth = await requireApiAuth(request, method, pathname);
     if (!auth.ok) return auth.response;
 
     try {
-      return await fn(request, url, method, pathname);
+      return await fn(request, url, method, pathname, auth.principal);
     } catch (err) {
       const message = redactSensitiveErrorText(errorMessage(err));
       if (isCallerFacingError(err)) return jsonError(HTTP_BAD_REQUEST, message);
@@ -180,12 +222,23 @@ export async function handleApiRequest(request: Request): Promise<Response | nul
   const { pathname } = url;
   const method = request.method.toUpperCase();
 
-  if (!pathname.startsWith("/api/")) return null;
+  if (pathname !== MCP_PATH && pathname !== jwksController.JWKS_PATH && !pathname.startsWith("/api/")) return null;
   const requestId = requestHeaderId(request, REQUEST_ID_HEADER) ?? randomUUID();
   const correlationId = requestHeaderId(request, CORRELATION_ID_HEADER) ?? requestId;
 
   if (pathname === "/api/healthz" && method === "GET") {
     return applyRequestHeaders(await healthController.read(), requestId, correlationId);
+  }
+
+  // The token signer's public key set (#566): SeaweedFS fetches it with no credentials, so it is answered before
+  // the session gate. Public material only; see jwks.controller.ts.
+  if (pathname === jwksController.JWKS_PATH && (method === "GET" || method === "HEAD")) {
+    return applyRequestHeaders(await jwksController.read(), requestId, correlationId);
+  }
+
+  // The MCP server (#573) is outside `/api/` and is judged by its own key-only gate, never the session's.
+  if (pathname === MCP_PATH) {
+    return applyRequestHeaders(await handleMcpRequest(request), requestId, correlationId);
   }
 
   const response = await protectedDispatch(request, url, method, pathname);
@@ -197,6 +250,7 @@ async function dispatch(
   url: URL,
   method: string,
   pathname: string,
+  principal: ApiPrincipal | null,
 ): Promise<Response> {
   // Operator auth — first boot, login, logout, password change.
   if (pathname === "/api/auth/state" && method === "GET") return authController.state(request);
@@ -209,7 +263,68 @@ async function dispatch(
 
   // Cores — the registry the Panel service dials from.
   if (pathname === "/api/cores") {
-    if (method === "GET") return coresController.list();
+    if (method === "GET") return coresController.list(principal!);
+  }
+
+  // Public REST API under /api/v1 (#572 PR 2). Key auth (and the session when
+  // no key is presented); every call runs as the principal's owner. Matched
+  // before the unversioned session routes so `/api/v1/tasks` is never read as
+  // an unknown `/api/…` leaf.
+  if (pathname === "/api/v1/cores") {
+    if (method === "GET") return v1Controller.listCoresV1(principal!);
+  }
+  let m = pathname.match(V1_CORE_AGENTS_PATH);
+  if (m && method === "GET") return v1Controller.listCoreAgentsV1(principal!, decode(m[1]));
+  m = pathname.match(V1_CORE_PATH);
+  if (m && method === "GET") return v1Controller.getCoreV1(decode(m[1]), principal!);
+  if (pathname === "/api/v1/agents") {
+    if (method === "GET") return v1Controller.listAgentsV1(principal!);
+    if (method === "POST") return v1Controller.createAgentV1(principal!, request);
+  }
+  m = pathname.match(V1_AGENT_PATH);
+  if (m) {
+    if (method === "GET") return v1Controller.getAgentV1(principal!, decode(m[1]));
+    if (method === "DELETE") return v1Controller.deleteAgentV1(principal!, decode(m[1]));
+  }
+  if (pathname === "/api/v1/tasks") {
+    if (method === "GET") return v1Controller.listTasksV1(principal!);
+    if (method === "POST") return v1Controller.createTaskV1(principal!, request);
+  }
+  m = pathname.match(V1_TASK_STATUS_PATH);
+  if (m && method === "POST") return v1Controller.setTaskStatusV1(principal!, decode(m[1]), request);
+  m = pathname.match(V1_TASK_COMMENTS_PATH);
+  if (m && method === "GET") return v1Controller.listTaskCommentsV1(principal!, decode(m[1]));
+  if (m && method === "POST") return v1Controller.addTaskCommentV1(principal!, decode(m[1]), request);
+  m = pathname.match(V1_TASK_PATH);
+  if (m && method === "GET") return v1Controller.getTaskV1(principal!, decode(m[1]));
+
+  // API keys (#572). The Operator's session creates, lists and revokes them; a
+  // key never does, because these routes are not in API_KEY_ROUTES.
+  if (pathname === "/api/api-keys") {
+    if (method === "GET") return apiKeysController.list(principal!);
+    if (method === "POST") return apiKeysController.create(principal!, request);
+  }
+  const revokeMatch = pathname.match(API_KEY_REVOKE_PATH);
+  if (revokeMatch && method === "POST") return apiKeysController.revoke(principal!, decode(revokeMatch[1]));
+  // Webhooks (#574): signed Task event delivery. Session only; list includes
+  // each hook's newest delivery for Settings › API & integrations (screen 09).
+  if (pathname === "/api/webhooks") {
+    if (method === "GET") return webhooksController.list(principal!);
+    if (method === "POST") return webhooksController.create(principal!, request);
+  }
+  m = pathname.match(WEBHOOK_PING_PATH);
+  if (m && method === "POST") return webhooksController.ping(principal!, decode(m[1]));
+  m = pathname.match(WEBHOOK_DELIVERIES_PATH);
+  if (m && method === "GET") return webhooksController.deliveries(principal!, decode(m[1]));
+  m = pathname.match(WEBHOOK_PATH);
+  if (m && method === "DELETE") return webhooksController.remove(principal!, decode(m[1]));
+  // The Shared-folder storage config (#564, #566): the key is write-only, so there is a GET without it and a PUT.
+  if (pathname === "/api/storage") {
+    if (method === "GET") return storageController.read();
+    if (method === "PUT") return storageController.write(request);
+  }
+  if (pathname === "/api/storage/test" && method === "POST") {
+    return storageController.test(request);
   }
   // Pairing (#286). Literal paths, and matched before CORE_PATH so `pairing`
   // is never read as a Core id. Both are Node-side work the browser cannot do:
@@ -221,24 +336,56 @@ async function dispatch(
   if (pathname === "/api/cores/pairing" && method === "POST") {
     return coresController.pair(request);
   }
-  // A Project's files, on the Core that owns them (#129 F6/F11, #169). The
-  // Panel is a dumb pipe here: these three lines resolve a Core and forward a
-  // stream, and every decision about what a path means is the Core's.
-  let m = pathname.match(CORE_PROJECT_FILES_LIST_PATH);
-  if (m) {
-    if (method === "GET") return coreFilesController.list(decode(m[1]), decode(m[2]), url);
+  // Tasks (#571). Every route runs as the session's owner, and the Tasks and
+  // Agents services apply the status rules; nothing here moves a status itself.
+  // A Panel session belongs to the one Operator today (ADR 0011), so that is the owner.
+  const ownerId = OPERATOR_ID;
+  if (pathname === "/api/tasks") {
+    if (method === "GET") return tasksController.list(ownerId);
+    if (method === "POST") return tasksController.create(ownerId, request);
   }
-  m = pathname.match(CORE_PROJECT_FILES_PATH);
+  m = pathname.match(TASK_PATH);
+  if (m && method === "GET") return tasksController.read(ownerId, decode(m[1]));
+  m = pathname.match(TASK_STATUS_PATH);
+  if (m && method === "POST") return tasksController.setStatus(ownerId, decode(m[1]), request);
+  m = pathname.match(TASK_COMMENTS_PATH);
+  if (m && method === "POST") return tasksController.comment(ownerId, decode(m[1]), request);
+  m = pathname.match(CORE_AGENTS_PATH);
+  if (m && method === "GET") return tasksController.listCoreAgents(ownerId, decode(m[1]));
+
+  // The Files tab (#565): every call runs as the session's owner, on one of that owner's Cores. A key never reaches these.
+  m = pathname.match(CORE_SHARED_FILES_PATH);
   if (m) {
+    const files = sharedFilesRoute(method, m[2]);
     const coreId = decode(m[1]);
-    const projectId = decode(m[2]);
-    if (method === "GET") return coreFilesController.read(coreId, projectId, url);
-    if (method === "PUT") return coreFilesController.write(coreId, projectId, url, request);
+    const owner = principal!.ownerId;
+    switch (files) {
+      case "list": return sharedFilesController.list(owner, coreId, url);
+      case "details": return sharedFilesController.details(owner, coreId, url);
+      case "media": return sharedFilesController.media(owner, coreId, url);
+      case "search": return sharedFilesController.search(owner, coreId, url);
+      case "summary": return sharedFilesController.summary(owner, coreId, url);
+      case "download-url": return sharedFilesController.downloadUrl(owner, coreId, request);
+      case "mkdir": return sharedFilesController.mkdir(owner, coreId, request);
+      case "upload": return sharedFilesController.upload(owner, coreId, url, request);
+      case "rename": return sharedFilesController.rename(owner, coreId, request);
+      case "move": return sharedFilesController.move(owner, coreId, request);
+      case "delete": return sharedFilesController.remove(owner, coreId, request);
+    }
   }
+
+  // The Shared folder, from the pairing's last step to delete (#564).
+  m = pathname.match(CORE_SHARED_TEST_PATH);
+  if (m && method === "POST") return coresController.testSharedFolder(decode(m[1]));
+  m = pathname.match(CORE_PAIRING_FINISH_PATH);
+  if (m && method === "POST") return coresController.finishPairing(decode(m[1]), request);
+  m = pathname.match(CORE_DELETE_PATH);
+  if (m && method === "POST") return coresController.destroy(decode(m[1]), request);
 
   m = pathname.match(CORE_PATH);
   if (m) {
     const id = decode(m[1]);
+    if (method === "GET") return coresController.getOne(id, principal!);
     // PATCH is the alias, and only the alias: a Core's endpoint and credentials
     // are what its pairing produced, and pairing again is the only way to
     // change them.
@@ -246,95 +393,25 @@ async function dispatch(
     if (method === "DELETE") return coresController.remove(id);
   }
 
-  // Projects
-  if (pathname === "/api/projects") {
-    if (method === "GET") return projectsController.list(request);
-    if (method === "POST") return projectsController.create(request);
+  // Sessions
+  if (pathname === SESSION_SWEEP_DISCONNECTED_PATH && method === "POST") {
+    return sessionsController.sweepDisconnected();
   }
-  if (pathname === "/api/projects/pinned-order" && method === "PATCH") {
-    return projectsController.reorderPinned(request);
-  }
-  m = pathname.match(PROJECT_PATH);
+  m = pathname.match(SESSION_PATH);
   if (m) {
     const id = decode(m[1]);
-    if (method === "GET") return projectsController.getOne(id, request);
-    if (method === "PATCH") return projectsController.update(id, request);
-    if (method === "DELETE") return projectsController.remove(id, request);
+    if (method === "GET") return sessionsController.getOne(id, request);
+    if (method === "PATCH") return sessionsController.update(id, request);
+    if (method === "DELETE") return sessionsController.remove(id, request);
   }
-  m = pathname.match(PROJECT_PATH_STATUS_PATH);
-  if (m) {
-    const id = decode(m[1]);
-    if (method === "GET") return projectsController.pathStatus(id);
-  }
-  m = pathname.match(PROJECT_IMAGE_PATH);
-  if (m) {
-    const id = decode(m[1]);
-    if (method === "GET") return projectsController.getImage(id);
-    if (method === "PUT") return projectsController.putImage(id, request);
-    if (method === "DELETE") return projectsController.removeImage(id, request);
-  }
-
-  // Panel-local presentation for Core-owned projects (issue 98) — group, card
-  // image and launch URL for a project whose row lives on its Core.
-  if (pathname === "/api/project-presentation" && method === "GET") {
-    return projectPresentationController.list();
-  }
-  if (pathname === "/api/project-presentation/prune" && method === "POST") {
-    return projectPresentationController.prune(request);
-  }
-  // Literal path — matched before PROJECT_PRESENTATION_PATH so "pinned-order"
-  // is never read as a project id.
-  if (pathname === "/api/project-presentation/pinned-order" && method === "PATCH") {
-    return projectPresentationController.reorderPinned(request);
-  }
-  m = pathname.match(PROJECT_PRESENTATION_PATH);
-  if (m) {
-    const id = decode(m[1]);
-    if (method === "PATCH") return projectPresentationController.upsert(id, request);
-    if (method === "DELETE") return projectPresentationController.remove(id);
-  }
-
-  m = pathname.match(PROJECT_TASKS_PATH);
-  if (m) {
-    const id = decode(m[1]);
-    if (method === "GET") return tasksController.listForProject(id, request);
-    if (method === "POST") return tasksController.create(id, request);
-  }
-  // Groups
-  if (pathname === "/api/groups") {
-    if (method === "GET") return groupsController.list(request);
-    if (method === "POST") return groupsController.create(request);
-  }
-  // Must precede GROUP_PATH — otherwise "order" is captured as a group id.
-  if (pathname === "/api/groups/order" && method === "PATCH") {
-    return groupsController.reorder(request);
-  }
-  m = pathname.match(GROUP_PATH);
-  if (m) {
-    const id = decode(m[1]);
-    if (method === "PATCH") return groupsController.update(id, request);
-    if (method === "DELETE") return groupsController.remove(id, request);
-  }
-
-  // Tasks
-  if (pathname === TASK_SWEEP_DISCONNECTED_PATH && method === "POST") {
-    return tasksController.sweepDisconnected();
-  }
-  m = pathname.match(TASK_PATH);
-  if (m) {
-    const id = decode(m[1]);
-    if (method === "GET") return tasksController.getOne(id, request);
-    if (method === "PATCH") return tasksController.update(id, request);
-    if (method === "DELETE") return tasksController.remove(id, request);
-  }
-  m = pathname.match(TASK_STATUS_PATH);
-  if (m && method === "POST") return tasksController.setStatus(decode(m[1]), request);
-  m = pathname.match(TASK_QUESTION_PATH);
-  if (m && method === "GET") return tasksController.readQuestion(decode(m[1]));
-  m = pathname.match(TASK_ARCHIVE_PATH);
-  if (m && method === "POST") return tasksController.archive(decode(m[1]), request);
-  m = pathname.match(TASK_RESTORE_PATH);
-  if (m && method === "POST") return tasksController.restore(decode(m[1]), request);
+  m = pathname.match(SESSION_STATUS_PATH);
+  if (m && method === "POST") return sessionsController.setStatus(decode(m[1]), request);
+  m = pathname.match(SESSION_QUESTION_PATH);
+  if (m && method === "GET") return sessionsController.readQuestion(decode(m[1]));
+  m = pathname.match(SESSION_ARCHIVE_PATH);
+  if (m && method === "POST") return sessionsController.archive(decode(m[1]), request);
+  m = pathname.match(SESSION_RESTORE_PATH);
+  if (m && method === "POST") return sessionsController.restore(decode(m[1]), request);
 
   // Terminals. Every terminal is a `home_terminals` row and reaches the Core as
   // a VM Shell Session (issue 266); the `/api/projects/:id/user-terminals` and

@@ -56,7 +56,7 @@ describe("actana events tail", () => {
       connect: core.connect,
     });
     await settle();
-    core.emitEvent({ eventId: 1, kind: "task:created" });
+    core.emitEvent({ eventId: 1, kind: "session:created" });
     await run;
 
     expect(core.connectOptions[0]?.durable).toBe(true);
@@ -71,7 +71,7 @@ describe("actana events tail", () => {
       connect: core.connect,
     });
     await settle();
-    core.emitEvent({ eventId: 1, kind: "task:created", taskId: "t-1", payload: '{"title":"a"}' });
+    core.emitEvent({ eventId: 1, kind: "session:created", sessionId: "t-1", payload: '{"title":"a"}' });
     core.emitEvent({ eventId: 2, kind: "pty:exit", ptyId: "p-1", payload: '{"exitCode":0}' });
 
     const result = await run;
@@ -83,9 +83,9 @@ describe("actana events tail", () => {
     expect(rows[0]).toEqual({
       eventId: 1,
       ts: Date.UTC(2026, 7, 12),
-      kind: "task:created",
+      kind: "session:created",
       ptyId: null,
-      taskId: "t-1",
+      sessionId: "t-1",
       payload: '{"title":"a"}',
     });
     expect(rows[1].kind).toBe("pty:exit");
@@ -100,8 +100,8 @@ describe("actana events tail", () => {
 
     // The tail the Core streams to establish the tip. None of it is this run's
     // business — the operator asked to follow, not to read history.
-    core.emitEvent({ eventId: 1, kind: "task:created" });
-    core.emitEvent({ eventId: 2, kind: "task:updated" });
+    core.emitEvent({ eventId: 1, kind: "session:created" });
+    core.emitEvent({ eventId: 2, kind: "session:updated" });
     core.emitReplayed(2);
     await settle();
 
@@ -133,8 +133,8 @@ describe("actana events tail", () => {
     await settle();
 
     for (const round of [1, 2, 3]) {
-      core.emitEvent({ eventId: round * 2 - 1, kind: "task:created" });
-      core.emitEvent({ eventId: round * 2, kind: "task:updated" });
+      core.emitEvent({ eventId: round * 2 - 1, kind: "session:created" });
+      core.emitEvent({ eventId: round * 2, kind: "session:updated" });
       core.emitReplayed(round * 2);
       await settle();
       // Each round is history, and each re-ask carries the cursor it reached.
@@ -160,13 +160,13 @@ describe("actana events tail", () => {
       connect: core.connect,
     });
     await settle();
-    core.emitEvent({ eventId: 1, kind: "task:created" });
-    core.emitEvent({ eventId: 2, kind: "task:updated" });
+    core.emitEvent({ eventId: 1, kind: "session:created" });
+    core.emitEvent({ eventId: 2, kind: "session:updated" });
 
     const result = await run;
     expect(result.out).toHaveLength(2);
     expect(result.out[0]).toContain("#1");
-    expect(result.out[0]).toContain("task:created");
+    expect(result.out[0]).toContain("session:created");
   });
 
   it("filters by --kind, repeatably", async () => {
@@ -174,12 +174,12 @@ describe("actana events tail", () => {
     const core = fakeCore({});
 
     const run = cli().run(
-      ["events", "tail", "--json", "--since", "start", "--kind", "pty:exit", "--kind", "task:created", "--limit", "2"],
+      ["events", "tail", "--json", "--since", "start", "--kind", "pty:exit", "--kind", "session:created", "--limit", "2"],
       { connect: core.connect },
     );
     await settle();
-    core.emitEvent({ eventId: 1, kind: "task:created" });
-    core.emitEvent({ eventId: 2, kind: "task:updated" });
+    core.emitEvent({ eventId: 1, kind: "session:created" });
+    core.emitEvent({ eventId: 2, kind: "session:updated" });
     core.emitEvent({ eventId: 3, kind: "hook:fired" });
     core.emitEvent({ eventId: 4, kind: "pty:exit" });
 
@@ -196,7 +196,7 @@ describe("actana events tail", () => {
     });
     await settle();
     core.emitDisconnected("socket hang up");
-    core.emitEvent({ eventId: 1, kind: "task:created" });
+    core.emitEvent({ eventId: 1, kind: "session:created" });
 
     const result = await run;
     expect(result.err.join("\n")).toContain("reconnecting");
@@ -226,9 +226,9 @@ describe("actana events tail", () => {
     await settle();
 
     for (let eventId = 14; eventId <= 21; eventId += 1) {
-      core.emitEvent({ eventId, kind: "task:updated" });
+      core.emitEvent({ eventId, kind: "session:updated" });
     }
-    core.emitEvent({ eventId: 22, kind: "session:finished", taskId: "t-1" });
+    core.emitEvent({ eventId: 22, kind: "session:finished", sessionId: "t-1" });
     core.emitReplayed(22);
     await settle();
 
@@ -263,7 +263,7 @@ describe("actana events tail", () => {
     await vi.advanceTimersByTimeAsync(0);
 
     for (let eventId = 14; eventId <= 22; eventId += 1) {
-      core.emitEvent({ eventId, kind: eventId === 22 ? "session:finished" : "task:updated" });
+      core.emitEvent({ eventId, kind: eventId === 22 ? "session:finished" : "session:updated" });
     }
     // And now the Core says nothing at all, for as long as anyone is willing to
     // wait. Nobody is: the deadline is re-armed on every frame, so it runs from
@@ -341,7 +341,7 @@ describe("actana events tail", () => {
     for (const round of [1, 2, 3]) {
       // Most of a deadline's worth of silence, then an answer. Three times.
       await vi.advanceTimersByTimeAsync(SUBSCRIBE_ANSWER_MS - 1_000);
-      core.emitEvent({ eventId: round, kind: "task:updated" });
+      core.emitEvent({ eventId: round, kind: "session:updated" });
       core.emitReplayed(round);
       await vi.advanceTimersByTimeAsync(0);
     }
@@ -374,7 +374,7 @@ describe("actana events tail", () => {
     });
     await vi.advanceTimersByTimeAsync(0);
 
-    core.emitEvent({ eventId: 14, kind: "task:updated" });
+    core.emitEvent({ eventId: 14, kind: "session:updated" });
     core.emitDisconnected("socket hang up");
 
     // A Core restart, taking far longer than the deadline it is not subject to.
@@ -391,7 +391,7 @@ describe("actana events tail", () => {
     // finishes at the end of the log the way it would have without the drop.
     core.emitReplayed(14);
     for (let eventId = 15; eventId <= 22; eventId += 1) {
-      core.emitEvent({ eventId, kind: eventId === 22 ? "session:finished" : "task:updated" });
+      core.emitEvent({ eventId, kind: eventId === 22 ? "session:finished" : "session:updated" });
     }
     core.emitReplayed(22);
     await vi.advanceTimersByTimeAsync(0);
@@ -423,7 +423,7 @@ describe("actana events tail", () => {
     core.emitReplayed(0);
     await settle();
 
-    core.emitEvent({ eventId: 1, kind: "task:created" });
+    core.emitEvent({ eventId: 1, kind: "session:created" });
     core.emitEvent({ eventId: 2, kind: "session:finished" });
 
     const result = await run;
@@ -451,7 +451,7 @@ describe("actana events tail", () => {
     // last one it will take is where the hunt gives up. Every tail here is
     // non-empty, which is what keeps it asking.
     for (let round = 1; round <= 201; round += 1) {
-      core.emitEvent({ eventId: round, kind: "task:updated" });
+      core.emitEvent({ eventId: round, kind: "session:updated" });
       core.emitReplayed(round);
     }
 
@@ -486,8 +486,8 @@ describe("actana events tail", () => {
     );
     await settle();
 
-    core.emitEvent({ eventId: 14, kind: "task:updated" });
-    core.emitEvent({ eventId: 15, kind: "task:updated" });
+    core.emitEvent({ eventId: 14, kind: "session:updated" });
+    core.emitEvent({ eventId: 15, kind: "session:updated" });
     core.emitReplayed(15);
     await settle();
     core.emitReplayed(15);
@@ -514,9 +514,9 @@ describe("actana events tail", () => {
     );
     await settle();
 
-    core.emitEvent({ eventId: 1, kind: "task:created" });
-    core.emitEvent({ eventId: 2, kind: "session:finished", taskId: "t-1" });
-    core.emitEvent({ eventId: 3, kind: "task:updated" });
+    core.emitEvent({ eventId: 1, kind: "session:created" });
+    core.emitEvent({ eventId: 2, kind: "session:finished", sessionId: "t-1" });
+    core.emitEvent({ eventId: 3, kind: "session:updated" });
     await settle();
 
     // Nothing yet, and that is the point of the round-1 review's finding: which
@@ -555,16 +555,16 @@ describe("actana events tail", () => {
     );
     await settle();
 
-    core.emitEvent({ eventId: 1, kind: "session:finished", taskId: "t-oldest" });
-    core.emitEvent({ eventId: 2, kind: "task:updated" });
-    core.emitEvent({ eventId: 3, kind: "session:finished", taskId: "t-old" });
+    core.emitEvent({ eventId: 1, kind: "session:finished", sessionId: "t-oldest" });
+    core.emitEvent({ eventId: 2, kind: "session:updated" });
+    core.emitEvent({ eventId: 3, kind: "session:finished", sessionId: "t-old" });
     core.emitReplayed(3);
     await settle();
     // The ring survives the re-ask: it is one walk, however many tails it takes.
     expect(core.subscribes).toContain(3);
 
-    core.emitEvent({ eventId: 4, kind: "session:finished", taskId: "t-mid" });
-    core.emitEvent({ eventId: 5, kind: "session:finished", taskId: "t-new" });
+    core.emitEvent({ eventId: 4, kind: "session:finished", sessionId: "t-mid" });
+    core.emitEvent({ eventId: 5, kind: "session:finished", sessionId: "t-new" });
     core.emitReplayed(5);
     await settle();
     core.emitReplayed(5);
@@ -576,7 +576,7 @@ describe("actana events tail", () => {
     // matches through a ring of two also turns its write index over twice,
     // which is where a rotation that read from the wrong slot shows up.
     expect(result.out.map((line) => JSON.parse(line).eventId)).toEqual([4, 5]);
-    expect(result.out.map((line) => JSON.parse(line).taskId)).toEqual(["t-mid", "t-new"]);
+    expect(result.out.map((line) => JSON.parse(line).sessionId)).toEqual(["t-mid", "t-new"]);
   });
 
   it("hands over what the walk was holding when the Core stops answering", async () => {
@@ -597,7 +597,7 @@ describe("actana events tail", () => {
     await vi.advanceTimersByTimeAsync(0);
 
     core.emitEvent({ eventId: 1, kind: "session:finished" });
-    core.emitEvent({ eventId: 2, kind: "task:updated" });
+    core.emitEvent({ eventId: 2, kind: "session:updated" });
     // …and then nothing: no marker, no further event, no end of the log.
     await vi.advanceTimersByTimeAsync(SUBSCRIBE_ANSWER_MS + 1);
 
@@ -625,8 +625,8 @@ describe("actana events tail", () => {
     );
     await settle();
 
-    core.emitEvent({ eventId: 1, kind: "task:created" });
-    core.emitEvent({ eventId: 2, kind: "task:updated" });
+    core.emitEvent({ eventId: 1, kind: "session:created" });
+    core.emitEvent({ eventId: 2, kind: "session:updated" });
     core.emitReplayed(2);
     await settle();
     // A receipt, not the tip: the walk carries on from #2 (`event-tip.ts`).
@@ -667,9 +667,9 @@ describe("actana events tail", () => {
 
     // A stale finish first, then a Core that keeps the hunt asking past the
     // round it gives up on. MAX_TIP_ROUNDS is 200 and lives in `event-tip.ts`.
-    core.emitEvent({ eventId: 1, kind: "session:finished", taskId: "t-stale" });
+    core.emitEvent({ eventId: 1, kind: "session:finished", sessionId: "t-stale" });
     for (let round = 2; round <= 202; round += 1) {
-      core.emitEvent({ eventId: round, kind: "task:updated" });
+      core.emitEvent({ eventId: round, kind: "session:updated" });
       core.emitReplayed(round);
     }
 
@@ -708,7 +708,7 @@ describe("actana events tail", () => {
     // The hunt gives up on the round after the last one it will take, so 201
     // rounds of non-empty tail is where it settles and printing switches on.
     for (let round = 1; round <= 201; round += 1) {
-      core.emitEvent({ eventId: round, kind: "task:updated" });
+      core.emitEvent({ eventId: round, kind: "session:updated" });
       core.emitReplayed(round);
     }
     await settle();
@@ -740,9 +740,9 @@ describe("actana events tail", () => {
     });
     await settle();
 
-    core.emitEvent({ eventId: 1, kind: "session:finished", taskId: "t-1" });
-    core.emitEvent({ eventId: 2, kind: "task:updated" });
-    core.emitEvent({ eventId: 3, kind: "session:finished", taskId: "t-2" });
+    core.emitEvent({ eventId: 1, kind: "session:finished", sessionId: "t-1" });
+    core.emitEvent({ eventId: 2, kind: "session:updated" });
+    core.emitEvent({ eventId: 3, kind: "session:finished", sessionId: "t-2" });
     await settle();
 
     // Both matches, in order, while the walk is still going — no ring, no wait
@@ -755,8 +755,8 @@ describe("actana events tail", () => {
     await settle();
 
     // …and then it follows, which is what a tail with no ceiling does.
-    core.emitEvent({ eventId: 4, kind: "task:updated" });
-    core.emitEvent({ eventId: 5, kind: "session:finished", taskId: "t-3" });
+    core.emitEvent({ eventId: 4, kind: "session:updated" });
+    core.emitEvent({ eventId: 5, kind: "session:finished", sessionId: "t-3" });
     await settle();
     expect(printed.map((line) => JSON.parse(line).eventId)).toEqual([1, 3, 5]);
   });

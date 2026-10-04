@@ -6,12 +6,12 @@ import {
   type WebSocketLike,
   type WebSocketServerLike,
 } from "../pty-core-link-server";
+import type { CoreSessionRow } from "@actana/shared/core-query";
 import type { PtyCore, PtyCoreEvent } from "../pty-manager";
 import {
   SESSION_LOCKED_ERROR_CODE,
   type CoreLinkEvent,
-  type CoreLinkTaskSnapshot,
-} from "@actana/sdk/core-link-frames";
+} from "@actana/sdk/core";
 
 // One Session, at most one writer, named by the core-link connection
 // (issue 144, ADR 0024 D3–D7, D10).
@@ -90,7 +90,7 @@ function fakeEventLog() {
         kind,
         payload,
         ptyId: opts?.ptyId ?? null,
-        taskId: opts?.taskId ?? null,
+        sessionId: opts?.sessionId ?? null,
       });
       return eventId;
     },
@@ -102,16 +102,16 @@ function fakeEventLog() {
 }
 
 /**
- * A `PtyCore` that remembers which Task each PTY was spawned for, because that
+ * A `PtyCore` that remembers which Session each PTY was spawned for, because that
  * mapping is what the gate is built on: `write` and `kill` name a `ptyId`, and
- * the lock is keyed by the Session. A stub answering a constant taskId would
+ * the lock is keyed by the Session. A stub answering a constant sessionId would
  * pass the refusal assertions without ever proving the resolution happened.
  *
  * `writes` and `kills` record what actually reached the Core, which is the only
  * way to tell a refusal from a mutation that was served and answered unhappily.
  */
 function mockCore() {
-  const ptyTasks = new Map<string, string>();
+  const ptySessions = new Map<string, string>();
   const writes: Array<{ ptyId: string; data: string }> = [];
   const kills: string[] = [];
   const spawns: string[] = [];
@@ -121,24 +121,24 @@ function mockCore() {
     setEmitTarget: (fn: ((event: PtyCoreEvent) => void) | null) => {
       target = fn;
     },
-    spawn: async (opts: { taskId: string }) => {
-      spawns.push(opts.taskId);
+    spawn: async (opts: { sessionId: string }) => {
+      spawns.push(opts.sessionId);
       const ptyId = `pty-${++nextPty}`;
-      ptyTasks.set(ptyId, opts.taskId);
+      ptySessions.set(ptyId, opts.sessionId);
       return { ptyId, hooksReportTurnStart: true };
     },
     write: (ptyId: string, data: string) => {
       writes.push({ ptyId, data });
-      return ptyTasks.has(ptyId);
+      return ptySessions.has(ptyId);
     },
     resize: () => true,
     kill: (ptyId: string) => {
       kills.push(ptyId);
-      return ptyTasks.delete(ptyId);
+      return ptySessions.delete(ptyId);
     },
     killLaunchProcesses: async () => ({ ptyCount: 0, ports: [] }),
-    findByTask: () => ({ ptyId: null }),
-    taskIdForPty: (ptyId: string) => ptyTasks.get(ptyId) ?? null,
+    findBySession: () => ({ ptyId: null }),
+    sessionIdForPty: (ptyId: string) => ptySessions.get(ptyId) ?? null,
     replay: () => ({ data: "", nextSeq: 0 }),
     killAll: () => {},
   };
@@ -147,7 +147,7 @@ function mockCore() {
     writes,
     kills,
     spawns,
-    ptyTasks,
+    ptySessions,
     emit: (event: PtyCoreEvent) => target?.(event),
   };
 }
@@ -158,19 +158,18 @@ function mockCore() {
  * the frame's own `accepted: false` also means "no port, or an empty prompt".
  */
 function mockPromptPort() {
-  const submitted: Array<{ taskId: string; prompt: string }> = [];
+  const submitted: Array<{ sessionId: string; prompt: string }> = [];
   return {
     submitted,
-    port: { submitted: (taskId: string, prompt: string) => void submitted.push({ taskId, prompt }) },
+    port: { submitted: (sessionId: string, prompt: string) => void submitted.push({ sessionId, prompt }) },
   };
 }
 
-/** A mutation port that answers every `update`/`delete` for a known task. */
+/** A mutation port that answers every `update`/`delete` for a known session. */
 function mockMutationPort(): CoreMutationPort & { mutations: string[] } {
   const mutations: string[] = [];
-  const snapshot = (taskId: string): CoreLinkTaskSnapshot => ({
-    taskId,
-    projectId: "p1",
+  const snapshot = (sessionId: string): CoreSessionRow => ({
+    sessionId,
     title: "t",
     titleManuallySet: false,
     claudeSessionId: null,
@@ -183,10 +182,9 @@ function mockMutationPort(): CoreMutationPort & { mutations: string[] } {
   });
   return {
     mutations,
-    mutateProject: () => null,
-    mutateTask: (mutation) => {
-      mutations.push(`${mutation.op}:${"taskId" in mutation ? mutation.taskId : "-"}`);
-      return "taskId" in mutation && mutation.taskId ? snapshot(mutation.taskId) : null;
+    mutateSession: (mutation) => {
+      mutations.push(`${mutation.op}:${"sessionId" in mutation ? mutation.sessionId : "-"}`);
+      return "sessionId" in mutation && mutation.sessionId ? snapshot(mutation.sessionId) : null;
     },
     listSessions: () => [],
   };
@@ -207,8 +205,8 @@ describe("the Session write lock (issue 144, ADR 0024 D3-D7, D10)", () => {
   }
 
   /** Spawn a Session on one connection and hand back its ptyId. */
-  async function spawn(ws: FakeWebSocket, taskId: string): Promise<string> {
-    ws.receive({ type: "spawn", reqId: `spawn-${taskId}`, opts: { taskId, cwd: "/w", command: "c" } });
+  async function spawn(ws: FakeWebSocket, sessionId: string): Promise<string> {
+    ws.receive({ type: "spawn", reqId: `spawn-${sessionId}`, opts: { sessionId,  command: "c" } });
     await vi.waitFor(() => expect(ws.ofType("spawned").length).toBeGreaterThan(0));
     const spawned = ws.ofType("spawned").at(-1)!;
     return String(spawned.ptyId);
@@ -238,15 +236,15 @@ describe("the Session write lock (issue 144, ADR 0024 D3-D7, D10)", () => {
   describe("claim, release and force takeover are ordinary requests", () => {
     it("answers each one on the reqId it was asked with", async () => {
       const ws = connect();
-      await spawn(ws, "task-a");
+      await spawn(ws, "session-a");
 
-      ws.receive({ type: "claim", reqId: "q1", taskId: "task-a" });
-      ws.receive({ type: "forceTakeover", reqId: "q2", taskId: "task-a" });
-      ws.receive({ type: "release", reqId: "q3", taskId: "task-a" });
+      ws.receive({ type: "claim", reqId: "q1", sessionId: "session-a" });
+      ws.receive({ type: "forceTakeover", reqId: "q2", sessionId: "session-a" });
+      ws.receive({ type: "release", reqId: "q3", sessionId: "session-a" });
 
       expect(ws.answerTo("q1")).toMatchObject({
         type: "claimResult",
-        taskId: "task-a",
+        sessionId: "session-a",
         granted: true,
       });
       // Taking a Session this connection already holds names itself honestly
@@ -261,10 +259,10 @@ describe("the Session write lock (issue 144, ADR 0024 D3-D7, D10)", () => {
     it("denies a claim on a Session another connection holds, and changes nothing", async () => {
       const holder = connect();
       const other = connect();
-      const ptyId = await spawn(holder, "task-a");
-      holder.receive({ type: "claim", reqId: "h1", taskId: "task-a" });
+      const ptyId = await spawn(holder, "session-a");
+      holder.receive({ type: "claim", reqId: "h1", sessionId: "session-a" });
 
-      other.receive({ type: "claim", reqId: "o1", taskId: "task-a" });
+      other.receive({ type: "claim", reqId: "o1", sessionId: "session-a" });
 
       // A denied claim is an answer, not an error frame: the caller's next move
       // is the same whether or not it expected one.
@@ -276,19 +274,19 @@ describe("the Session write lock (issue 144, ADR 0024 D3-D7, D10)", () => {
 
     it("is idempotent for the connection that already holds the Session", async () => {
       const ws = connect();
-      await spawn(ws, "task-a");
-      ws.receive({ type: "claim", reqId: "c1", taskId: "task-a" });
-      ws.receive({ type: "claim", reqId: "c2", taskId: "task-a" });
+      await spawn(ws, "session-a");
+      ws.receive({ type: "claim", reqId: "c1", sessionId: "session-a" });
+      ws.receive({ type: "claim", reqId: "c2", sessionId: "session-a" });
       expect(ws.answerTo("c2")).toMatchObject({ granted: true });
     });
 
     it("ignores a release from a connection that does not hold the lock", async () => {
       const holder = connect();
       const other = connect();
-      const ptyId = await spawn(holder, "task-a");
-      holder.receive({ type: "claim", reqId: "h1", taskId: "task-a" });
+      const ptyId = await spawn(holder, "session-a");
+      holder.receive({ type: "claim", reqId: "h1", sessionId: "session-a" });
 
-      other.receive({ type: "release", reqId: "o1", taskId: "task-a" });
+      other.receive({ type: "release", reqId: "o1", sessionId: "session-a" });
 
       // Idempotent, not an error — and emphatically not a way to unlock
       // somebody else's Session.
@@ -300,23 +298,23 @@ describe("the Session write lock (issue 144, ADR 0024 D3-D7, D10)", () => {
 
   // ── Done when: a mutation without the lock is refused, distinguishably ────
   describe("a mutation from a connection that does not hold the lock", () => {
-    it("refuses write, kill and task mutations with a distinguishable code", async () => {
+    it("refuses write, kill and session mutations with a distinguishable code", async () => {
       const holder = connect();
       const other = connect();
-      const ptyId = await spawn(holder, "task-a");
-      holder.receive({ type: "claim", reqId: "h1", taskId: "task-a" });
+      const ptyId = await spawn(holder, "session-a");
+      holder.receive({ type: "claim", reqId: "h1", sessionId: "session-a" });
 
       other.receive({ type: "write", reqId: "o1", ptyId, data: "rm -rf\r" });
       other.receive({ type: "kill", reqId: "o2", ptyId });
       other.receive({
-        type: "tasksMutate",
+        type: "sessionsMutate",
         reqId: "o3",
-        mutation: { op: "update", taskId: "task-a", status: "finished" },
+        mutation: { op: "update", sessionId: "session-a", status: "finished" },
       });
       other.receive({
-        type: "tasksMutate",
+        type: "sessionsMutate",
         reqId: "o4",
-        mutation: { op: "delete", taskId: "task-a" },
+        mutation: { op: "delete", sessionId: "session-a" },
       });
 
       for (const reqId of ["o1", "o2", "o3", "o4"]) {
@@ -334,8 +332,8 @@ describe("the Session write lock (issue 144, ADR 0024 D3-D7, D10)", () => {
     it("tells 'locked by someone else' apart from 'that Session is gone'", async () => {
       const holder = connect();
       const other = connect();
-      const ptyId = await spawn(holder, "task-a");
-      holder.receive({ type: "claim", reqId: "h1", taskId: "task-a" });
+      const ptyId = await spawn(holder, "session-a");
+      holder.receive({ type: "claim", reqId: "h1", sessionId: "session-a" });
 
       other.receive({ type: "write", reqId: "locked", ptyId, data: "x" });
       other.receive({ type: "write", reqId: "gone", ptyId: "pty-vanished", data: "x" });
@@ -358,25 +356,25 @@ describe("the Session write lock (issue 144, ADR 0024 D3-D7, D10)", () => {
       // Session refused mutations, the capability's absence would yield
       // something *lesser* than today rather than exactly today.
       const ws = connect();
-      const ptyId = await spawn(ws, "task-a");
+      const ptyId = await spawn(ws, "session-a");
 
       ws.receive({ type: "write", reqId: "w1", ptyId, data: "hello" });
       ws.receive({
-        type: "tasksMutate",
+        type: "sessionsMutate",
         reqId: "m1",
-        mutation: { op: "update", taskId: "task-a", status: "running" },
+        mutation: { op: "update", sessionId: "session-a", status: "running" },
       });
 
       expect(ws.answerTo("w1")).toMatchObject({ type: "writeResult", ok: true });
-      expect(ws.answerTo("m1")).toMatchObject({ type: "tasksMutateResult" });
+      expect(ws.answerTo("m1")).toMatchObject({ type: "sessionsMutateResult" });
       expect(core.writes).toEqual([{ ptyId, data: "hello" }]);
     });
 
     it("never lets a refused mutation acquire the lock (D6)", async () => {
       const holder = connect();
       const other = connect();
-      const ptyId = await spawn(holder, "task-a");
-      holder.receive({ type: "claim", reqId: "h1", taskId: "task-a" });
+      const ptyId = await spawn(holder, "session-a");
+      holder.receive({ type: "claim", reqId: "h1", sessionId: "session-a" });
 
       other.receive({ type: "write", reqId: "o1", ptyId, data: "x" });
       other.receive({ type: "write", reqId: "o2", ptyId, data: "x" });
@@ -393,36 +391,36 @@ describe("the Session write lock (issue 144, ADR 0024 D3-D7, D10)", () => {
       // start the next.
       const holder = connect();
       const other = connect();
-      await spawn(holder, "task-a");
-      holder.receive({ type: "claim", reqId: "h1", taskId: "task-a" });
+      await spawn(holder, "session-a");
+      holder.receive({ type: "claim", reqId: "h1", sessionId: "session-a" });
 
       other.receive({
-        type: "tasksMutate",
+        type: "sessionsMutate",
         reqId: "o1",
-        mutation: { op: "create", projectId: "p1", title: "new", agent: "claude-code" },
+        mutation: { op: "create", title: "new", agent: "claude-code" },
       });
 
-      expect(other.answerTo("o1")).toMatchObject({ type: "tasksMutateResult" });
+      expect(other.answerTo("o1")).toMatchObject({ type: "sessionsMutateResult" });
     });
   });
 
   // ── The mutations D4 does not name in so many words ───────────────────────
   //
   // Neither of these appears in D4's list, and both are gated: one because it
-  // lands on the task row through the same writer a gated `tasksMutate` uses,
+  // lands on the session row through the same writer a gated `sessionsMutate` uses,
   // the other because it starts a second process on a Session somebody else is
   // driving. The ADR's consequences record both readings.
-  describe("harnessPrompt is a task mutation, whatever it reads like", () => {
+  describe("harnessPrompt is a session mutation, whatever it reads like", () => {
     it("refuses a prompt aimed at a Session another connection holds", async () => {
       // It reaches the title generator, which writes the row's title through
-      // the same writer a gated `tasksMutate` uses — so a connection holding
+      // the same writer a gated `sessionsMutate` uses — so a connection holding
       // nothing must not rename a Session another connection is driving.
       const holder = connect();
       const other = connect();
-      await spawn(holder, "task-a");
-      holder.receive({ type: "claim", reqId: "h1", taskId: "task-a" });
+      await spawn(holder, "session-a");
+      holder.receive({ type: "claim", reqId: "h1", sessionId: "session-a" });
 
-      other.receive({ type: "harnessPrompt", reqId: "o1", taskId: "task-a", prompt: "rename me" });
+      other.receive({ type: "harnessPrompt", reqId: "o1", sessionId: "session-a", prompt: "rename me" });
 
       expect(other.answerTo("o1")).toMatchObject({
         type: "error",
@@ -437,12 +435,12 @@ describe("the Session write lock (issue 144, ADR 0024 D3-D7, D10)", () => {
       // client that never claims goes on submitting prompts exactly as today.
       const holder = connect();
       const stranger = connect();
-      await spawn(holder, "task-a");
-      await spawn(stranger, "task-b");
-      holder.receive({ type: "claim", reqId: "h1", taskId: "task-a" });
+      await spawn(holder, "session-a");
+      await spawn(stranger, "session-b");
+      holder.receive({ type: "claim", reqId: "h1", sessionId: "session-a" });
 
-      holder.receive({ type: "harnessPrompt", reqId: "h2", taskId: "task-a", prompt: "mine" });
-      stranger.receive({ type: "harnessPrompt", reqId: "s1", taskId: "task-b", prompt: "unheld" });
+      holder.receive({ type: "harnessPrompt", reqId: "h2", sessionId: "session-a", prompt: "mine" });
+      stranger.receive({ type: "harnessPrompt", reqId: "s1", sessionId: "session-b", prompt: "unheld" });
 
       expect(holder.answerTo("h2")).toMatchObject({ type: "harnessPromptResult", accepted: true });
       expect(stranger.answerTo("s1")).toMatchObject({
@@ -450,8 +448,8 @@ describe("the Session write lock (issue 144, ADR 0024 D3-D7, D10)", () => {
         accepted: true,
       });
       expect(promptPort.submitted).toEqual([
-        { taskId: "task-a", prompt: "mine" },
-        { taskId: "task-b", prompt: "unheld" },
+        { sessionId: "session-a", prompt: "mine" },
+        { sessionId: "session-b", prompt: "unheld" },
       ]);
     });
   });
@@ -461,16 +459,16 @@ describe("the Session write lock (issue 144, ADR 0024 D3-D7, D10)", () => {
       // Two harnesses in one worktree is the interference the lock exists for,
       // not a lesser cousin of it. And the `resize` reading does not transfer:
       // the refusing connection could not have typed into the PTY it was
-      // asking for anyway, since the lock is keyed by taskId for every PTY kind.
+      // asking for anyway, since the lock is keyed by sessionId for every PTY kind.
       const holder = connect();
       const other = connect();
-      await spawn(holder, "task-a");
-      holder.receive({ type: "claim", reqId: "h1", taskId: "task-a" });
+      await spawn(holder, "session-a");
+      holder.receive({ type: "claim", reqId: "h1", sessionId: "session-a" });
 
       other.receive({
         type: "spawn",
         reqId: "o1",
-        opts: { taskId: "task-a", cwd: "/w", command: "c" },
+        opts: { sessionId: "session-a", command: "c" },
       });
 
       expect(other.answerTo("o1")).toMatchObject({
@@ -478,7 +476,7 @@ describe("the Session write lock (issue 144, ADR 0024 D3-D7, D10)", () => {
         code: SESSION_LOCKED_ERROR_CODE,
       });
       // Refused rather than spawned-and-reported: the Core never started one.
-      expect(core.spawns).toEqual(["task-a"]);
+      expect(core.spawns).toEqual(["session-a"]);
       expect(other.ofType("spawned")).toHaveLength(0);
     });
 
@@ -486,17 +484,17 @@ describe("the Session write lock (issue 144, ADR 0024 D3-D7, D10)", () => {
       // The creator gets no privilege, and gains no obligation either: a
       // Session starts unlocked and anybody may spawn into it. A connection
       // holding one Session can also start the next, the same carve-out
-      // `tasksMutate`'s `create` has.
+      // `sessionsMutate`'s `create` has.
       const holder = connect();
       const other = connect();
-      await spawn(holder, "task-a");
-      holder.receive({ type: "claim", reqId: "h1", taskId: "task-a" });
+      await spawn(holder, "session-a");
+      holder.receive({ type: "claim", reqId: "h1", sessionId: "session-a" });
 
-      const strangerPty = await spawn(other, "task-b");
-      const nextPty = await spawn(holder, "task-c");
+      const strangerPty = await spawn(other, "session-b");
+      const nextPty = await spawn(holder, "session-c");
 
       expect(strangerPty).not.toBe(nextPty);
-      expect(core.spawns).toEqual(["task-a", "task-b", "task-c"]);
+      expect(core.spawns).toEqual(["session-a", "session-b", "session-c"]);
       expect(server.sessionLockCount()).toBe(1);
     });
   });
@@ -506,11 +504,11 @@ describe("the Session write lock (issue 144, ADR 0024 D3-D7, D10)", () => {
     it("lets each drive its own with no interference (D4 — not Core-wide)", async () => {
       const cli = connect();
       const panel = connect();
-      const ptyA = await spawn(cli, "task-a");
-      const ptyB = await spawn(panel, "task-b");
+      const ptyA = await spawn(cli, "session-a");
+      const ptyB = await spawn(panel, "session-b");
 
-      cli.receive({ type: "claim", reqId: "c1", taskId: "task-a" });
-      panel.receive({ type: "claim", reqId: "p1", taskId: "task-b" });
+      cli.receive({ type: "claim", reqId: "c1", sessionId: "session-a" });
+      panel.receive({ type: "claim", reqId: "p1", sessionId: "session-b" });
       expect(cli.answerTo("c1")).toMatchObject({ granted: true });
       expect(panel.answerTo("p1")).toMatchObject({ granted: true });
 
@@ -536,11 +534,11 @@ describe("the Session write lock (issue 144, ADR 0024 D3-D7, D10)", () => {
     it("releases every Session the dropped connection held, not just one", async () => {
       const holder = connect();
       const other = connect();
-      const ptyA = await spawn(holder, "task-a");
-      const ptyB = await spawn(holder, "task-b");
-      const ptyC = await spawn(holder, "task-c");
-      for (const taskId of ["task-a", "task-b", "task-c"]) {
-        holder.receive({ type: "claim", reqId: `h-${taskId}`, taskId });
+      const ptyA = await spawn(holder, "session-a");
+      const ptyB = await spawn(holder, "session-b");
+      const ptyC = await spawn(holder, "session-c");
+      for (const sessionId of ["session-a", "session-b", "session-c"]) {
+        holder.receive({ type: "claim", reqId: `h-${sessionId}`, sessionId });
       }
       expect(server.sessionLockCount()).toBe(3);
 
@@ -556,10 +554,10 @@ describe("the Session write lock (issue 144, ADR 0024 D3-D7, D10)", () => {
     it("leaves another connection's locks alone when one drops", async () => {
       const a = connect();
       const b = connect();
-      const ptyB = await spawn(b, "task-b");
-      await spawn(a, "task-a");
-      a.receive({ type: "claim", reqId: "a1", taskId: "task-a" });
-      b.receive({ type: "claim", reqId: "b1", taskId: "task-b" });
+      const ptyB = await spawn(b, "session-b");
+      await spawn(a, "session-a");
+      a.receive({ type: "claim", reqId: "a1", sessionId: "session-a" });
+      b.receive({ type: "claim", reqId: "b1", sessionId: "session-b" });
 
       a.close();
 
@@ -575,8 +573,8 @@ describe("the Session write lock (issue 144, ADR 0024 D3-D7, D10)", () => {
       // lives there and not beside each individual disconnect reason.
       const holder = connect();
       const other = connect();
-      const ptyId = await spawn(holder, "task-a");
-      holder.receive({ type: "claim", reqId: "h1", taskId: "task-a" });
+      const ptyId = await spawn(holder, "session-a");
+      holder.receive({ type: "claim", reqId: "h1", sessionId: "session-a" });
 
       holder.emit("close");
 
@@ -590,10 +588,10 @@ describe("the Session write lock (issue 144, ADR 0024 D3-D7, D10)", () => {
     it("transfers the lock immediately and refuses the previous holder's next mutation", async () => {
       const stuck = connect();
       const rescuer = connect();
-      const ptyId = await spawn(stuck, "task-a");
-      stuck.receive({ type: "claim", reqId: "s1", taskId: "task-a" });
+      const ptyId = await spawn(stuck, "session-a");
+      stuck.receive({ type: "claim", reqId: "s1", sessionId: "session-a" });
 
-      rescuer.receive({ type: "forceTakeover", reqId: "r1", taskId: "task-a" });
+      rescuer.receive({ type: "forceTakeover", reqId: "r1", sessionId: "session-a" });
 
       expect(rescuer.answerTo("r1")).toMatchObject({
         type: "forceTakeoverResult",
@@ -608,8 +606,8 @@ describe("the Session write lock (issue 144, ADR 0024 D3-D7, D10)", () => {
 
     it("says when it took an unheld Session from nobody", async () => {
       const ws = connect();
-      await spawn(ws, "task-a");
-      ws.receive({ type: "forceTakeover", reqId: "f1", taskId: "task-a" });
+      await spawn(ws, "session-a");
+      ws.receive({ type: "forceTakeover", reqId: "f1", sessionId: "session-a" });
       // Taking an unlocked Session is an ordinary claim by another name, and a
       // client should not report having evicted someone when it did not.
       expect(ws.answerTo("f1")).toMatchObject({ takenFrom: "nobody" });
@@ -618,12 +616,12 @@ describe("the Session write lock (issue 144, ADR 0024 D3-D7, D10)", () => {
     it("leaves the loser able to claim again once the winner releases", async () => {
       const loser = connect();
       const winner = connect();
-      await spawn(loser, "task-a");
-      loser.receive({ type: "claim", reqId: "l1", taskId: "task-a" });
-      winner.receive({ type: "forceTakeover", reqId: "w1", taskId: "task-a" });
-      winner.receive({ type: "release", reqId: "w2", taskId: "task-a" });
+      await spawn(loser, "session-a");
+      loser.receive({ type: "claim", reqId: "l1", sessionId: "session-a" });
+      winner.receive({ type: "forceTakeover", reqId: "w1", sessionId: "session-a" });
+      winner.receive({ type: "release", reqId: "w2", sessionId: "session-a" });
 
-      loser.receive({ type: "claim", reqId: "l2", taskId: "task-a" });
+      loser.receive({ type: "claim", reqId: "l2", sessionId: "session-a" });
 
       expect(loser.answerTo("l2")).toMatchObject({ granted: true });
     });
@@ -634,14 +632,14 @@ describe("the Session write lock (issue 144, ADR 0024 D3-D7, D10)", () => {
     it("lets a second connection claim a Session the first started and did not claim", async () => {
       const creator = connect();
       const second = connect();
-      const ptyId = await spawn(creator, "task-a");
+      const ptyId = await spawn(creator, "session-a");
 
       // The creator gets nothing for having spawned it. This window is the
       // claim race, and it is accepted rather than closed: closing it means
       // reintroducing creator privilege, which was decided against.
       expect(server.sessionLockCount()).toBe(0);
 
-      second.receive({ type: "claim", reqId: "s1", taskId: "task-a" });
+      second.receive({ type: "claim", reqId: "s1", sessionId: "session-a" });
 
       expect(second.answerTo("s1")).toMatchObject({ granted: true });
       creator.receive({ type: "write", reqId: "c1", ptyId, data: "x" });
@@ -651,10 +649,10 @@ describe("the Session write lock (issue 144, ADR 0024 D3-D7, D10)", () => {
     it("gives the creator the lock only when it asks — and it can lose the race", async () => {
       const creator = connect();
       const rival = connect();
-      await spawn(creator, "task-a");
+      await spawn(creator, "session-a");
 
-      rival.receive({ type: "claim", reqId: "r1", taskId: "task-a" });
-      creator.receive({ type: "claim", reqId: "c1", taskId: "task-a" });
+      rival.receive({ type: "claim", reqId: "r1", sessionId: "session-a" });
+      creator.receive({ type: "claim", reqId: "c1", sessionId: "session-a" });
 
       expect(rival.answerTo("r1")).toMatchObject({ granted: true });
       expect(creator.answerTo("c1")).toMatchObject({ granted: false });
@@ -667,8 +665,8 @@ describe("the Session write lock (issue 144, ADR 0024 D3-D7, D10)", () => {
       vi.useFakeTimers();
       const holder = connect();
       const other = connect();
-      const ptyId = await spawn(holder, "task-a");
-      holder.receive({ type: "claim", reqId: "h1", taskId: "task-a" });
+      const ptyId = await spawn(holder, "session-a");
+      holder.receive({ type: "claim", reqId: "h1", sessionId: "session-a" });
 
       // Far past every timer in this server, including the 45s heartbeat
       // timeout. A long agent run is idle by definition: no mutation for many
@@ -683,13 +681,13 @@ describe("the Session write lock (issue 144, ADR 0024 D3-D7, D10)", () => {
 
   describe("the Core never refuses itself", () => {
     it("leaves PtyCore's own kill ungated for its non-Session callers", async () => {
-      // `kill` has callers inside the Core — the PTY exit paths, the task
+      // `kill` has callers inside the Core — the PTY exit paths, the session
       // writer — that hold no lock and are nobody's client. The gate is on the
       // client-facing frame; `PtyCore.kill` is untouched, so the Core can still
       // tear down a Session another client holds.
       const holder = connect();
-      const ptyId = await spawn(holder, "task-a");
-      holder.receive({ type: "claim", reqId: "h1", taskId: "task-a" });
+      const ptyId = await spawn(holder, "session-a");
+      holder.receive({ type: "claim", reqId: "h1", sessionId: "session-a" });
 
       expect(core.core.kill(ptyId)).toBe(true);
       expect(core.kills).toEqual([ptyId]);
@@ -698,8 +696,8 @@ describe("the Session write lock (issue 144, ADR 0024 D3-D7, D10)", () => {
     it("leaves killLaunchProcesses ungated — it is addressed at a folder, not a Session", async () => {
       const holder = connect();
       const other = connect();
-      await spawn(holder, "task-a");
-      holder.receive({ type: "claim", reqId: "h1", taskId: "task-a" });
+      await spawn(holder, "session-a");
+      holder.receive({ type: "claim", reqId: "h1", sessionId: "session-a" });
 
       other.receive({
         type: "killLaunchProcesses",
@@ -718,7 +716,7 @@ describe("the Session write lock (issue 144, ADR 0024 D3-D7, D10)", () => {
     it("refuses another connection's write to a claimed VM Shell Session", async () => {
       // ADR 0024 records this as an assumption that was never separately
       // decided, and this ticket is the one that touches it: `write`/`kill`
-      // resolve a `ptyId` to the Task it was spawned for whatever kind of PTY it
+      // resolve a `ptyId` to the Session it was spawned for whatever kind of PTY it
       // is, so a VM Shell Session is claimable and gated exactly like a harness
       // Session. Flagged for confirmation (or a D4 amendment) on the PR.
       const holder = connect();
@@ -726,11 +724,11 @@ describe("the Session write lock (issue 144, ADR 0024 D3-D7, D10)", () => {
       holder.receive({
         type: "spawn",
         reqId: "vm",
-        opts: { shellSession: true, taskId: "term_vm_1", command: "" },
+        opts: { shellSession: true, sessionId: "term_vm_1", command: "" },
       });
       await vi.waitFor(() => expect(holder.ofType("spawned").length).toBeGreaterThan(0));
       const ptyId = String(holder.ofType("spawned").at(-1)!.ptyId);
-      holder.receive({ type: "claim", reqId: "h1", taskId: "term_vm_1" });
+      holder.receive({ type: "claim", reqId: "h1", sessionId: "term_vm_1" });
 
       other.receive({ type: "write", reqId: "o1", ptyId, data: "x" });
 
@@ -741,8 +739,8 @@ describe("the Session write lock (issue 144, ADR 0024 D3-D7, D10)", () => {
   describe("locks die with the Core (D12)", () => {
     it("holds nothing after the server closes", async () => {
       const ws = connect();
-      await spawn(ws, "task-a");
-      ws.receive({ type: "claim", reqId: "c1", taskId: "task-a" });
+      await spawn(ws, "session-a");
+      ws.receive({ type: "claim", reqId: "c1", sessionId: "session-a" });
 
       server.close();
 

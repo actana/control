@@ -28,13 +28,17 @@ command. Prerequisite: a machine with Docker.
 git clone https://github.com/actana/control
 cd control/deploy
 docker compose up -d
-docker compose exec core actana pair new     # a one-time code and a fingerprint
+docker compose exec -u actana core actana pair new     # a one-time code and a fingerprint
 ```
 
 Open `http://localhost:7420`: the first boot asks you to create the Operator
 (name + password), and after logging in you give **Add Core** the address
 `core:8443` and that code, checking the fingerprint the Panel shows against the
-one `pair new` printed.
+one `pair new` printed. The `-u actana` matters: the Core container has two users, `actana` (the daemon, uid 1001,
+state in `/var/lib/actana`) and `core` (Sessions, uid 1000, home `/home/core`), and pairing belongs to the daemon's.
+`pair` and `status` refuse any other user and print this command; a plain `docker compose exec` is root and has no access to
+either directory. Use `-u core` for a shell as a Session would have it. See
+[`deploy/README.md`](deploy/README.md#two-users-in-the-core).
 The Panel dials `wss://core:8443` over the compose network — which is why the
 Core's `ACTANA_PUBLIC_HOST` is the compose service name and not a DNS name,
 and why the Core publishes no port to your machine at all.
@@ -66,12 +70,16 @@ It is not something you supply, renew, or put a proxy in front of.
 ## Localhost — no proxy needed
 
 `localhost` is a secure context without TLS, so a personal single-machine
-setup is one command:
+setup needs no proxy. The Panel needs a Postgres to start (see
+[Configuration](#configuration)); the reference
+[`deploy/docker-compose.yml`](deploy/docker-compose.yml) brings one, and is the
+way to run it. With a Postgres of your own:
 
 ```bash
 docker run -d --name actana-panel \
   -p 127.0.0.1:7420:7420 \
   -v actana-panel-data:/data \
+  -e AC_PANEL_DATABASE_URL=postgres://user:password@host:5432/dbname \
   actana/panel:latest
 ```
 
@@ -102,7 +110,8 @@ anywhere Node 24 does:
 ```bash
 pnpm install
 pnpm build                                # builds the Core bundle + the Panel
-AC_PANEL_DATA_DIR=/var/lib/actana-panel pnpm start
+AC_PANEL_DATA_DIR=/var/lib/actana-panel \
+AC_PANEL_DATABASE_URL=postgres://user:password@localhost:5432/dbname pnpm start
 ```
 
 `pnpm start` runs `packages/panel/bin/panel.mjs` — the exact file the
@@ -120,10 +129,22 @@ Everything is environment variables; there is no config file.
 | `AC_PANEL_PORT` / `PORT` | `7420` | Port to listen on |
 | `AC_PANEL_HOST` / `HOST` | `0.0.0.0` | Interface to bind (`127.0.0.1` keeps a shared machine's loopback) |
 | `AC_PANEL_DATA_DIR` | `/data` in the image; platform data dir otherwise | The one directory all Panel state lives in |
+| `AC_PANEL_DATABASE_URL` | **required** | `postgres://user:password@host:5432/dbname`. The Panel's state is moving to Postgres ([#567](https://github.com/actana/control/issues/567)). At start it opens a connection, then runs its pending migrations under an advisory lock (two Panels starting at once migrate once), recording them in a `drizzle` schema of its own in that database. The role in the URL therefore needs `CREATE` on the database, which matters for an external server; the bundled one gives it. It exits with code 1 and the reason on stderr when this is unset, malformed, the server cannot be reached, a migration fails, or the database holds migrations this Panel does not ship (a newer Panel's, or an edited one). Percent-encode any `@`, `/` or `:` in the password. A URL with no host (libpq's `postgres://u@/db?host=/run/postgresql` socket form) is refused; give a host name. The reference compose sets it for you, from `AC_PANEL_DB_PASSWORD`. |
 | `AC_SECRETS_KEY` | generated at `<data dir>/secrets.key` | 32-byte key (hex or base64) sealing each Core's stored credentials. Set it to keep the key out of the data directory — then a copied volume or backup alone cannot open the fleet credentials. Losing whichever key is in use means re-pairing every Core. |
 | `ACTANA_UPDATE_CHECK` | on | Set to `0`, `false` or `off` to stop the daily release check. It reads `https://api.github.com/repos/actana/control/releases/latest`, caches the answer for 24h under the data directory, and only ever shows a banner — it never updates anything. |
 
 Generate a key with `openssl rand -hex 32`.
+
+## Optional: SeaweedFS for the Shared folder
+
+The reference compose has one more service, `seaweedfs`, behind the `seaweedfs`
+profile: SeaweedFS with its S3 gateway and STS enabled, and a role and policy
+that limit a Core to `<prefix>/<core-id>/`. `docker compose up -d` does not
+start it; `docker compose --profile seaweedfs up -d` does, once the
+`SEAWEEDFS_*` values in `.env` are set (the OIDC issuer and JWKS URL name the
+Panel's token signer, and default to the Panel service, which serves its own
+key set at `/.well-known/jwks.json`). Setup, the pinned image, the policy and its Known gaps:
+[`deploy/seaweedfs/README.md`](deploy/seaweedfs/README.md).
 
 ## Backup
 
@@ -135,11 +156,25 @@ docker run --rm -v deploy_panel-data:/data -v "$PWD":/backup debian \
   tar czf /backup/panel-data.tar.gz -C /data .
 ```
 
-That archive is the whole Panel: Operator, sessions, Core registry, sealed
-credentials, and (unless you set `AC_SECRETS_KEY`) the secrets key. Restore
+Nothing is stored in the database yet, so that archive is still the whole
+Panel: Operator, sessions, Core registry, sealed credentials, and (unless you
+set `AC_SECRETS_KEY`) the secrets key. As the Panel's state moves into
+Postgres, a backup becomes that archive **plus** a dump of the database:
+
+```bash
+docker compose exec postgres pg_dump -U panel -d panel > panel-db.sql
+```
+
+A dump alone is not enough: the sealed credentials it will hold are opened by
+the secrets key, which is in `panel-data` or your `AC_SECRETS_KEY`. Restore
 by extracting into a fresh volume and starting the container. If you set
 `AC_SECRETS_KEY`, the key is *not* in the backup — store it wherever you
 store secrets, and provide it to the restored Panel.
+
+If you opted in to [SeaweedFS](deploy/seaweedfs/README.md), its objects are in
+the `seaweedfs-data` volume, which is not in that archive. Back it up the same
+way (`-v deploy_seaweedfs-data:/data`, with the container stopped). The STS
+signing key and the admin keys live in your `.env`, not in the volume.
 
 ## Upgrade
 

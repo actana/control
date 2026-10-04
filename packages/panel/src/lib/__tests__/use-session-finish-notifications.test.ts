@@ -17,64 +17,22 @@ describe("dedupKey", () => {
     expect(a).not.toBe(b);
   });
 
-  it("collapses a Panel-local SSE finish (null eventId) against itself", () => {
-    const a = dedupKey({ coreId: null, sessionId: "s1", eventId: null });
-    const b = dedupKey({ coreId: null, sessionId: "s1", eventId: null });
+  it("collapses a finish with no eventId against itself", () => {
+    const a = dedupKey({ coreId: "core-a", sessionId: "s1", eventId: null });
+    const b = dedupKey({ coreId: "core-a", sessionId: "s1", eventId: null });
     expect(a).toBe(b);
   });
-});
 
-describe("normalizeSessionFinishedEvent — SSE", () => {
-  it("maps a Panel-local SSE event to a NormalizedFinish", () => {
-    const finish = normalizeSessionFinishedEvent("sse", {
-      type: "session:finished",
-      id: "task-1",
-      projectId: "project-1",
-      projectName: "Core",
-      taskTitle: "Answer question",
-    });
-    expect(finish).toEqual({
-      coreId: null,
-      coreAlias: null,
-      eventId: null,
-      // The Panel's own stream is live by construction: no older time to carry,
-      // so the dispatch stamps it with the clock that is right for it.
-      finishedAt: null,
-      sessionId: "task-1",
-      projectId: "project-1",
-      projectName: "Core",
-      taskTitle: "Answer question",
-    });
-  });
-
-  it("returns null for non-session:finished SSE events", () => {
-    expect(
-      normalizeSessionFinishedEvent("sse", { type: "task:updated", id: "x" }),
-    ).toBeNull();
-  });
-
-  it("returns null when required fields are missing", () => {
-    expect(
-      normalizeSessionFinishedEvent("sse", {
-        type: "session:finished",
-        id: "",
-        projectId: "p",
-      }),
-    ).toBeNull();
-    expect(
-      normalizeSessionFinishedEvent("sse", {
-        type: "session:finished",
-        id: "t",
-        projectId: "",
-      }),
-    ).toBeNull();
+  it("tells a finish with no eventId from a numbered one", () => {
+    const a = dedupKey({ coreId: "core-a", sessionId: "s1", eventId: null });
+    const b = dedupKey({ coreId: "core-a", sessionId: "s1", eventId: 5 });
+    expect(a).not.toBe(b);
   });
 });
 
-describe("normalizeSessionFinishedEvent — fleet", () => {
+describe("normalizeSessionFinishedEvent", () => {
   it("parses a remote session:finished frame into NormalizedFinish with alias", () => {
     const finish = normalizeSessionFinishedEvent(
-      "fleet",
       {
         coreId: "core-a",
         event: {
@@ -82,12 +40,10 @@ describe("normalizeSessionFinishedEvent — fleet", () => {
           ts: 1_700_000_000_000,
           kind: "session:finished",
           ptyId: null,
-          taskId: "task-42",
+          sessionId: "session-42",
           payload: JSON.stringify({
-            id: "task-42",
-            projectId: "project-9",
-            projectName: "Remote",
-            taskTitle: "Ship it",
+            id: "session-42",
+            sessionTitle: "Ship it",
           }),
         },
       },
@@ -100,16 +56,13 @@ describe("normalizeSessionFinishedEvent — fleet", () => {
       // The Core's own `ts`, carried so a replayed finish is dated by when it
       // finished rather than by when a tab was handed it (issue 388).
       finishedAt: 1_700_000_000_000,
-      sessionId: "task-42",
-      projectId: "project-9",
-      projectName: "Remote",
-      taskTitle: "Ship it",
+      sessionId: "session-42",
+      sessionTitle: "Ship it",
     });
   });
 
-  it("falls back to event.taskId when payload lacks id", () => {
+  it("falls back to event.sessionId when payload lacks id", () => {
     const finish = normalizeSessionFinishedEvent(
-      "fleet",
       {
         coreId: "core-a",
         event: {
@@ -117,25 +70,25 @@ describe("normalizeSessionFinishedEvent — fleet", () => {
           ts: 1,
           kind: "session:finished",
           ptyId: null,
-          taskId: "task-fallback",
-          payload: JSON.stringify({ projectId: "p" }),
+          sessionId: "session-fallback",
+          payload: JSON.stringify({ sessionTitle: "t" }),
         },
       },
       null,
     );
-    expect(finish?.sessionId).toBe("task-fallback");
+    expect(finish?.sessionId).toBe("session-fallback");
     expect(finish?.coreAlias).toBeNull();
   });
 
   it("returns null when payload JSON is malformed", () => {
-    const finish = normalizeSessionFinishedEvent("fleet", {
+    const finish = normalizeSessionFinishedEvent({
       coreId: "core-a",
       event: {
         eventId: 1,
         ts: 1,
         kind: "session:finished",
         ptyId: null,
-        taskId: null,
+        sessionId: null,
         payload: "not-json",
       },
     });
@@ -143,14 +96,14 @@ describe("normalizeSessionFinishedEvent — fleet", () => {
   });
 
   it("returns null when kind is not session:finished", () => {
-    const finish = normalizeSessionFinishedEvent("fleet", {
+    const finish = normalizeSessionFinishedEvent({
       coreId: "core-a",
       event: {
         eventId: 1,
         ts: 1,
         kind: "pty:exit",
         ptyId: "p",
-        taskId: null,
+        sessionId: null,
         payload: "{}",
       },
     });

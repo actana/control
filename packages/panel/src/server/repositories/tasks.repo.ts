@@ -1,82 +1,202 @@
-import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
-import { getDb } from "~/db/client";
-import { tasks } from "~/db/schema";
-import type { Task } from "~/db/schema";
+import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
+import { ownedBy } from "~/db/owner";
+import { panelDb } from "~/db/panel-db-handle";
+import { taskComments, taskStatusHistory, tasks } from "~/db/pg-schema";
+import type { TaskStatus } from "~/shared/tasks";
+import { insertOutboxInTx, type NewOutboxRow, type PanelTx } from "./webhooks.repo";
 
-export function findAllTasks(): Task[] {
-  return getDb().select().from(tasks).all();
-}
+export type TaskRow = typeof tasks.$inferSelect;
+export type TaskCommentRow = typeof taskComments.$inferSelect;
+export type NewTaskCommentRow = typeof taskComments.$inferInsert;
+export type TaskStatusHistoryRow = typeof taskStatusHistory.$inferSelect;
 
-// Tasks whose status claims a live agent process. Used by the startup sweep:
-// at Panel boot no PTYs exist yet, so any such task is an orphan of a
-// previous run.
-export function findActiveLocalTasks(): Task[] {
-  return getDb()
+/**
+ * Every query here filters on `owner_id` (ADR 0041 D15): one owner's Tasks,
+ * comments and history are never another's. A comment or history row is only
+ * written after its Task was found under the same owner. Outbox rows for
+ * webhooks (#574) are written in the same transaction as the change.
+ */
+
+export async function findTasks(ownerId: number, statuses?: TaskStatus[]): Promise<TaskRow[]> {
+  return panelDb()
     .select()
     .from(tasks)
-    .where(inArray(tasks.status, ["running", "needs-input"]))
-    .all();
+    .where(ownedBy(tasks, ownerId, statuses?.length ? inArray(tasks.status, statuses) : undefined))
+    .orderBy(desc(tasks.createdAt), asc(tasks.id));
 }
 
-export function findTasksByProjectId(projectId: string): Task[] {
-  return getDb()
+export async function findTaskById(ownerId: number, id: string): Promise<TaskRow | null> {
+  const rows = await panelDb()
     .select()
     .from(tasks)
-    .where(eq(tasks.projectId, projectId))
-    .orderBy(desc(tasks.createdAt))
-    .all();
+    .where(ownedBy(tasks, ownerId, eq(tasks.id, id)))
+    .limit(1);
+  return rows[0] ?? null;
 }
 
-// Hot path (every task read + status poll). Hoist the prepared statement once
-// so drizzle/better-sqlite3 skips re-parsing and re-planning the query on each
-// call. Lazily built on first use because getDb() must open the connection
-// first. `sql.placeholder` binds the id per call.
-function buildFindTaskByIdStmt() {
-  return getDb()
+export async function findTaskHistory(ownerId: number, taskId: string): Promise<TaskStatusHistoryRow[]> {
+  return panelDb()
     .select()
-    .from(tasks)
-    .where(eq(tasks.id, sql.placeholder("id")))
-    .prepare();
-}
-let findTaskByIdStmt: ReturnType<typeof buildFindTaskByIdStmt> | null = null;
-
-export function findTaskById(id: string): Task | null {
-  if (!findTaskByIdStmt) findTaskByIdStmt = buildFindTaskByIdStmt();
-  return (findTaskByIdStmt.get({ id }) as Task | undefined) ?? null;
+    .from(taskStatusHistory)
+    .where(ownedBy(taskStatusHistory, ownerId, eq(taskStatusHistory.taskId, taskId)))
+    .orderBy(asc(taskStatusHistory.seq));
 }
 
-export function insertTask(row: Task): void {
-  getDb().insert(tasks).values(row).run();
+async function writeOutbox(tx: PanelTx, events: NewOutboxRow[] | undefined): Promise<void> {
+  if (!events?.length) return;
+  for (const event of events) await insertOutboxInTx(tx, event);
 }
 
-export function updateTaskRow(id: string, patch: Partial<Task>): void {
-  getDb().update(tasks).set(patch).where(eq(tasks.id, id)).run();
+/** The Task and its first history row, in one transaction, with any outbox events. */
+export async function insertTaskWithHistory(
+  row: TaskRow,
+  historyId: string,
+  outbox: NewOutboxRow[] = [],
+): Promise<void> {
+  await panelDb().transaction(async (tx) => {
+    await tx.insert(tasks).values({ ...row, ownerId: row.ownerId });
+    await tx.insert(taskStatusHistory).values({
+      id: historyId,
+      taskId: row.id,
+      ownerId: row.ownerId,
+      fromStatus: null,
+      toStatus: row.status,
+      changedAt: row.createdAt,
+    });
+    await writeOutbox(tx, outbox);
+  });
 }
 
-export function deleteTaskRow(id: string): number {
-  const result = getDb().delete(tasks).where(eq(tasks.id, id)).run();
-  return result.changes;
+export type TransitionResult =
+  | { kind: "missing" }
+  /** The Task is in `from`, which is not one of the statuses the move may leave. */
+  | { kind: "illegal"; from: TaskStatus }
+  | { kind: "ok"; task: TaskRow };
+
+/**
+ * Move a Task to `to`, if it is in one of `legalFrom` once its row is locked,
+ * and write the history row. With a `comment`, that is added first, in the same
+ * transaction, so a comment that is refused (a duplicate source file) leaves
+ * the status where it was. Outbox events ride the same transaction (#574).
+ * `legalFrom` is the service's rule, not this file's.
+ */
+export async function transitionTask(
+  ownerId: number,
+  id: string,
+  legalFrom: readonly TaskStatus[],
+  to: TaskStatus,
+  now: number,
+  historyId: string,
+  comment?: Omit<NewTaskCommentRow, "taskId" | "ownerId" | "createdAt">,
+  /** Written with the move: the dispatcher records why a start failed (#570). */
+  patch: { lastError?: string | null } = {},
+  outboxFor?: (args: { from: TaskStatus; task: TaskRow }) => NewOutboxRow[],
+): Promise<TransitionResult> {
+  return panelDb().transaction(async (tx): Promise<TransitionResult> => {
+    const locked = await tx
+      .select()
+      .from(tasks)
+      .where(ownedBy(tasks, ownerId, eq(tasks.id, id)))
+      .for("update");
+    const current = locked[0];
+    if (!current) return { kind: "missing" };
+    const from = current.status as TaskStatus;
+    if (!legalFrom.includes(from)) return { kind: "illegal", from };
+    if (comment) {
+      await tx.insert(taskComments).values({ ...comment, taskId: id, ownerId, createdAt: now });
+    }
+    const updated = await tx
+      .update(tasks)
+      .set({ status: to, updatedAt: now, ...patch })
+      .where(ownedBy(tasks, ownerId, and(eq(tasks.id, id), eq(tasks.status, from))))
+      .returning();
+    await tx
+      .insert(taskStatusHistory)
+      .values({ id: historyId, taskId: id, ownerId, fromStatus: from, toStatus: to, changedAt: now });
+    const task = updated[0]!;
+    await writeOutbox(tx, outboxFor?.({ from, task }));
+    return { kind: "ok", task };
+  });
 }
 
-export type TaskSessionRef = {
-  taskId: string;
-  projectId: string;
-  claudeSessionId: string;
-};
+/** Update title/description; outbox events ride the same transaction. Null when missing. */
+export async function updateTaskRow(
+  ownerId: number,
+  id: string,
+  patch: { title: string; description: string; updatedAt: number },
+  outbox: NewOutboxRow[] = [],
+): Promise<TaskRow | null> {
+  return panelDb().transaction(async (tx) => {
+    const updated = await tx
+      .update(tasks)
+      .set({ title: patch.title, description: patch.description, updatedAt: patch.updatedAt })
+      .where(ownedBy(tasks, ownerId, eq(tasks.id, id)))
+      .returning();
+    if (!updated[0]) return null;
+    await writeOutbox(tx, outbox);
+    return updated[0];
+  });
+}
 
-export function findTasksWithClaudeSessionId(): TaskSessionRef[] {
-  const rows = getDb()
-    .select({
-      taskId: tasks.id,
-      projectId: tasks.projectId,
-      claudeSessionId: tasks.claudeSessionId,
-    })
-    .from(tasks)
-    .where(sql`${tasks.claudeSessionId} IS NOT NULL`)
-    .all();
-  return rows.map((r) => ({
-    taskId: r.taskId,
-    projectId: r.projectId,
-    claudeSessionId: r.claudeSessionId!,
-  }));
+/** Delete a Task (cascades comments and history); outbox in the same transaction. */
+export async function deleteTaskRow(
+  ownerId: number,
+  id: string,
+  outbox: NewOutboxRow[] = [],
+): Promise<TaskRow | null> {
+  return panelDb().transaction(async (tx) => {
+    const locked = await tx
+      .select()
+      .from(tasks)
+      .where(ownedBy(tasks, ownerId, eq(tasks.id, id)))
+      .for("update");
+    const current = locked[0];
+    if (!current) return null;
+    await writeOutbox(tx, outbox);
+    await tx.delete(tasks).where(ownedBy(tasks, ownerId, eq(tasks.id, id)));
+    return current;
+  });
+}
+
+/**
+ * Claim an `assigned` Task for dispatch (#570): ONE conditional update, so two
+ * dispatchers that read the same Task cannot both start it. Only the statement
+ * that finds the row still `assigned` changes it (to `in_progress`, attempt count
+ * plus one, dispatch time set, the last error cleared); the other gets no row
+ * back. The history row and any webhook outbox events (#574) go in the same
+ * transaction, and only for the winner. Null when the owner has no such Task,
+ * or it was no longer `assigned`.
+ */
+export async function claimAssignedTask(
+  ownerId: number,
+  id: string,
+  now: number,
+  historyId: string,
+  outboxFor?: (task: TaskRow) => NewOutboxRow[],
+): Promise<TaskRow | null> {
+  return panelDb().transaction(async (tx) => {
+    const claimed = await tx
+      .update(tasks)
+      .set({
+        status: "in_progress",
+        attemptCount: sql`${tasks.attemptCount} + 1`,
+        dispatchedAt: now,
+        lastError: null,
+        updatedAt: now,
+      })
+      .where(ownedBy(tasks, ownerId, and(eq(tasks.id, id), eq(tasks.status, "assigned"))))
+      .returning();
+    const row = claimed[0];
+    if (!row) return null;
+    await tx.insert(taskStatusHistory).values({
+      id: historyId,
+      taskId: id,
+      ownerId,
+      fromStatus: "assigned",
+      toStatus: "in_progress",
+      changedAt: now,
+    });
+    await writeOutbox(tx, outboxFor?.(row));
+    return row;
+  });
 }

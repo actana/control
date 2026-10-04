@@ -150,7 +150,7 @@ describe("the branch-name convention (ci.yml Conventions, ADR 0023 D1, D46)", ()
 
   it("still refuses a fourth dot", () => {
     // The one shape D46's rationale turns on. `0.4.5.1` is not semver, so a
-    // train named that would break the six manifests, the version-agreement
+    // train named that would break the five manifests, the version-agreement
     // check and the publish rehearsal — and it would break them after the cut.
     expect(check(FOURTH_DOT).status, `${FOURTH_DOT} was accepted`).toBe(1);
   });

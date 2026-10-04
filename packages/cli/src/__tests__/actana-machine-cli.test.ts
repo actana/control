@@ -1901,6 +1901,9 @@ describe("daemon", () => {
 // ─── container mode (ADR 0016 D13/D15/D16) ────────────────────────────────
 
 describe("in a container", () => {
+  /** `actana status` runs as the daemon's user in the image (#559); every status test here is that run. */
+  const ACTANA_UID = 1001;
+
   /** The image's baked marker plus whatever the operator's compose file set. */
   function containerEnv(over: Record<string, string> = {}): Record<string, string> {
     return {
@@ -1977,6 +1980,35 @@ describe("in a container", () => {
     expect(fs.existsSync(layoutForHome().servicePath)).toBe(false);
   });
 
+  it.each([1000, 0, 501])("refuses `status` as uid %i, names the exact command and reads nothing", async (uid) => {
+    const env = containerEnv();
+    writeContainerMaterial(env);
+    const system = fakeSystem();
+
+    const code = await runActanaCli(deps(["status"], system, { env, uid }));
+
+    expect(code).toBe(1);
+    expect(out).toEqual([]);
+    expect(err).toHaveLength(1);
+    expect(err[0]).toContain("`docker compose exec -u actana core actana status`");
+    expect(err[0]).toContain(`this is uid ${uid}`);
+    // Nothing was probed: no port connect, no unit, no update-check fetch.
+    expect(system.calls).toEqual([]);
+  });
+
+  it("does not refuse `status` outside the container: same code and output for every uid", async () => {
+    const results: string[] = [];
+    for (const uid of [501, 1000, 0, 1001]) {
+      out = [];
+      err = [];
+      const code = await runActanaCli(deps(["status"], fakeSystem(), { uid }));
+      results.push(JSON.stringify({ code, out, err }));
+    }
+    expect(new Set(results).size).toBe(1);
+    expect(results[0]).not.toContain("docker compose exec");
+    expect(JSON.parse(results[0]).out.length).toBeGreaterThan(0);
+  });
+
   it("points update at pull-and-recreate rather than at a tree swap", async () => {
     await runActanaCli(deps(["update"], fakeSystem(), { env: containerEnv() }));
     expect(err.join("\n")).toContain("docker compose pull && docker compose up -d");
@@ -1995,7 +2027,7 @@ describe("in a container", () => {
     writeContainerMaterial(env);
     const system = fakeSystem();
 
-    expect(await runActanaCli(deps(["status"], system, { env }))).toBe(0);
+    expect(await runActanaCli(deps(["status"], system, { env, uid: ACTANA_UID }))).toBe(0);
 
     const text = out.join("\n");
     expect(text).toMatch(/healthy/i);
@@ -2016,7 +2048,7 @@ describe("in a container", () => {
     writeRelease({ dir: channel, version: "0.2.0", target: "linux-x64" });
 
     await runActanaCli(
-      deps(["status"], fakeSystem(), { env, fetcher: fixtureFetcher(channel, releaseChannel({})) }),
+      deps(["status"], fakeSystem(), { env, uid: ACTANA_UID, fetcher: fixtureFetcher(channel, releaseChannel({})) }),
     );
 
     const text = out.join("\n");
@@ -2025,19 +2057,32 @@ describe("in a container", () => {
     expect(text).not.toContain("run: actana update");
   });
 
+  // #559 — the image bakes AC_CORE_MATERIAL_FILE, and this is what a CLI does
+  // when it is missing: the state directory, never a path under the home, which
+  // is where the identity lived before and where a Session can read it.
+  it("looks for the material in the state directory, never under the home, when the variable is missing", async () => {
+    const env = containerEnv();
+    delete env.AC_CORE_MATERIAL_FILE;
+    const underHome = path.join(layoutForHome().configDir, "material.json");
+    writeContainerMaterial({ AC_CORE_MATERIAL_FILE: underHome });
+
+    expect(await runActanaCli(deps(["status"], fakeSystem(), { env, uid: ACTANA_UID }))).toBe(1);
+    expect(out.join("\n")).toMatch(/Pairing\s+no material/);
+  });
+
   it("is stopped, not degraded, when the daemon's port does not answer", async () => {
     const env = containerEnv();
     writeContainerMaterial(env);
     const system = fakeSystem();
     system.waitForPort = async () => false;
 
-    expect(await runActanaCli(deps(["status"], system, { env }))).toBe(1);
+    expect(await runActanaCli(deps(["status"], system, { env, uid: ACTANA_UID }))).toBe(1);
     expect(out.join("\n")).toMatch(/stopped/i);
   });
 
   it("says which variable is missing rather than guessing a public host", async () => {
     const env = containerEnv({ ACTANA_PUBLIC_HOST: "" });
-    expect(await runActanaCli(deps(["status"], fakeSystem(), { env }))).toBe(1);
+    expect(await runActanaCli(deps(["status"], fakeSystem(), { env, uid: ACTANA_UID }))).toBe(1);
     expect(err.join("\n")).toContain("ACTANA_PUBLIC_HOST");
     // The guess `choosePublicHost` would have made on metal.
     expect(out.join("\n")).not.toContain("10.0.0.5");
@@ -2050,7 +2095,7 @@ describe("in a container", () => {
     const env = containerEnv({ ACTANA_PORT: "9443", ACTANA_LABEL: "build box" });
     writeContainerMaterial(env);
 
-    expect(await runActanaCli(deps(["status"], fakeSystem(), { env }))).toBe(0);
+    expect(await runActanaCli(deps(["status"], fakeSystem(), { env, uid: ACTANA_UID }))).toBe(0);
     expect(out.join("\n")).toContain("wss://core1.example.com:9443");
   });
 
@@ -2073,8 +2118,27 @@ describe("in a container", () => {
 
     expect(out).toHaveLength(0);
     expect(err.join("\n")).toContain("docker compose restart");
-    expect(err.join("\n")).toContain("actana pair new");
+    expect(err.join("\n")).toContain("`docker compose exec -u actana core actana pair new`");
     expect(err.join("\n")).toMatch(/remove the Core first/i);
+  });
+
+  it("sends bare `token` to the daemon's user, and metal still says `here`", async () => {
+    await runActanaCli(deps(["token"], fakeSystem(), { env: containerEnv() }));
+    expect(err.join("\n")).toContain("`docker compose exec -u actana core actana pair new` on the host");
+    expect(err.join("\n")).not.toContain("`actana pair new` here");
+
+    err.length = 0;
+    await runActanaCli(deps(["token"], fakeSystem()));
+    expect(err.join("\n")).toContain("`actana pair new` here");
+    expect(err.join("\n")).not.toContain("docker compose exec");
+  });
+
+  it("names the command to run pair and status in the container help page", async () => {
+    await runActanaCli(deps(["--help"], fakeSystem(), { env: containerEnv() }));
+    expect(out.join("\n")).toContain("docker compose exec -u actana core actana pair new");
+    out.length = 0;
+    await runActanaCli(deps(["--help"], fakeSystem()));
+    expect(out.join("\n")).not.toContain("docker compose exec");
   });
 
   it("refuses to boot the daemon without a public host, naming the variable", async () => {

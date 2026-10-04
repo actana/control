@@ -1,9 +1,6 @@
 export const HOTKEY_ACTIONS = [
   "agent.new",
-  "project.add",
-  "project.edit",
-  "project.picker",
-  "project.pinnedSlot",
+  "core.slot",
   "nav.toggle",
   "search.focus",
   "terminal.toggle",
@@ -21,11 +18,7 @@ export const HOTKEY_ACTIONS = [
   "session.gridLayout",
   "session.gridView",
   "dialog.submit",
-  "project.ship",
-  "project.runToggle",
-  "project.openBrowser",
-  "group.next",
-  "group.prev",
+  "session.ship",
 ] as const;
 
 export type HotkeyAction = (typeof HOTKEY_ACTIONS)[number];
@@ -40,19 +33,16 @@ export type Binding = {
 export type BindingMap = Record<HotkeyAction, Binding>;
 
 export const ACTION_META: Record<HotkeyAction, { label: string; description: string }> = {
-  "agent.new": { label: "New agent / project", description: "Create a new agent on a project page, or a new project on the home page." },
-  "project.add": { label: "Add project", description: "Open the Add Project dialog from anywhere in the app." },
-  "project.edit": { label: "Edit project", description: "Open the edit dialog for the current project." },
-  "project.picker": { label: "Open project picker", description: "Open the cross-project quick switcher." },
-  "project.pinnedSlot": {
-    label: "Switch pinned project",
-    description: "Jump to pinned project slots 1–4 from the project bar (uses the same modifiers with keys 1–4).",
+  "agent.new": { label: "New session", description: "Create a new session on a Core's Sessions page." },
+  "core.slot": {
+    label: "Switch Core",
+    description: "Jump to the Nth Core in the rail (uses the same modifiers with keys 1–9).",
   },
   "nav.toggle": { label: "Toggle nav menu", description: "Show or hide the navigation menu." },
-  "search.focus": { label: "Focus search", description: "Focus the project search field on the home page." },
+  "search.focus": { label: "Focus search", description: "Focus the search field on the home page." },
   "terminal.toggle": { label: "Toggle terminal panel", description: "Show or hide the bottom terminal panel." },
-  "terminal.close": { label: "Toggle session panel", description: "Hide the active session panel, or show the last hidden session for the current project." },
-  "terminal.expandToggle": { label: "Expand / shrink session panel", description: "Toggle the session panel between its resizable width and full workspace width for the current project." },
+  "terminal.close": { label: "Toggle session panel", description: "Hide the active session panel, or show the last hidden session for the current Core." },
+  "terminal.expandToggle": { label: "Expand / shrink session panel", description: "Toggle the session panel between its resizable width and full workspace width for the current Core." },
   "terminal.newTab": { label: "New terminal", description: "Open a new shell tab in the terminal panel." },
   "terminal.cycleNext": { label: "Next terminal tab", description: "Switch to the next terminal tab." },
   "terminal.cyclePrev": { label: "Previous terminal tab", description: "Switch to the previous terminal tab." },
@@ -82,24 +72,11 @@ export const ACTION_META: Record<HotkeyAction, { label: string; description: str
   "session.gridView": {
     label: "Toggle grid view",
     description:
-      "Show or hide the full-width grid of every open session across all projects.",
+      "Show or hide the full-width grid of every open session across all Cores.",
   },
-  "dialog.submit": { label: "Submit dialog", description: "Submit a dialog form (New agent, edit project, etc.)." },
-  "project.ship": {
+  "dialog.submit": { label: "Submit dialog", description: "Submit a dialog form (New session, rename, etc.)." },
+  "session.ship": {
     label: "Ship",
-    description: "Open an AI session that commits, pushes, and syncs the current project with its remote.",
-  },
-  "project.runToggle": { label: "Run / Stop project", description: "Run the project's launch commands, or stop them if already running." },
-  "project.openBrowser": {
-    label: "Open in browser",
-    description: "Open the running project's launch URL in your default browser.",
-  },
-  "group.next": {
-    label: "Next group",
-    description: "Cycle the active project group forward (All → each group → Ungrouped).",
-  },
-  "group.prev": {
-    label: "Previous group",
-    description: "Cycle the active project group backward (Ungrouped → each group → All).",
+    description: "Open an AI session that commits, pushes, and syncs the current workspace with its remote.",
   },
 };

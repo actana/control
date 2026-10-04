@@ -9,6 +9,7 @@ import {
   mergeSessionFinishNotification,
   pruneSessionFinishNotifications,
   requestSessionNotificationOpen,
+  readPendingSessionOpen,
   saveSessionFinishNotifications,
   type AppNotification,
   type SessionFinishNotification,
@@ -17,76 +18,57 @@ import {
 const notifications: SessionFinishNotification[] = [
   {
     kind: "session-finished",
-    id: "task-1",
-    projectId: "project-1",
-    projectName: "Core",
-    taskTitle: "Answer name question",
+    id: "session-1",
+    sessionTitle: "Answer name question",
     finishedAt: 3,
-    coreId: null,
-    coreAlias: null,
+    coreId: "core-a",
+    coreAlias: "Core A",
   },
   {
     kind: "session-finished",
-    id: "task-2",
-    projectId: "project-1",
-    projectName: "Core",
-    taskTitle: "Investigate router error",
+    id: "session-2",
+    sessionTitle: "Investigate router error",
     finishedAt: 2,
-    coreId: null,
-    coreAlias: null,
+    coreId: "core-a",
+    coreAlias: "Core A",
   },
   {
     kind: "session-finished",
-    id: "task-1",
-    projectId: "project-2",
-    projectName: "Academy",
-    taskTitle: "Generate title",
+    id: "session-1",
+    sessionTitle: "Generate title",
     finishedAt: 1,
-    coreId: null,
-    coreAlias: null,
+    coreId: "core-b",
+    coreAlias: "Core B",
   },
 ];
 
 describe("pruneSessionFinishNotifications", () => {
-  it("removes the notification for a deleted task in the matching project", () => {
+  it("removes the notification for a deleted session on the matching Core", () => {
     const next = pruneSessionFinishNotifications(notifications, {
-      type: "task",
-      taskId: "task-1",
-      projectId: "project-1",
+      type: "session",
+      sessionId: "session-1",
+      coreId: "core-a",
     });
 
-    expect(next.map((n) => `${n.projectId}:${n.id}`)).toEqual([
-      "project-1:task-2",
-      "project-2:task-1",
+    expect(next.map((n) => `${n.coreId}:${n.id}`)).toEqual([
+      "core-a:session-2",
+      "core-b:session-1",
     ]);
   });
 
-  it("removes task notifications by id when the project is unknown", () => {
+  it("removes session notifications by id when the Core is unknown", () => {
     const next = pruneSessionFinishNotifications(notifications, {
-      type: "task",
-      taskId: "task-1",
+      type: "session",
+      sessionId: "session-1",
     });
 
-    expect(next.map((n) => `${n.projectId}:${n.id}`)).toEqual([
-      "project-1:task-2",
-    ]);
-  });
-
-  it("removes every notification for a deleted project", () => {
-    const next = pruneSessionFinishNotifications(notifications, {
-      type: "project",
-      projectId: "project-1",
-    });
-
-    expect(next.map((n) => `${n.projectId}:${n.id}`)).toEqual([
-      "project-2:task-1",
-    ]);
+    expect(next.map((n) => `${n.coreId}:${n.id}`)).toEqual(["core-a:session-2"]);
   });
 
   it("keeps the same array when nothing matches", () => {
     const next = pruneSessionFinishNotifications(notifications, {
-      type: "task",
-      taskId: "missing",
+      type: "session",
+      sessionId: "missing",
     });
 
     expect(next).toBe(notifications);
@@ -138,24 +120,22 @@ describe("notification cap", () => {
     for (let i = 0; i < 205; i += 1) {
       current = mergeSessionFinishNotification(current, {
         kind: "session-finished",
-        id: `task-${i}`,
-        projectId: "project-1",
-        projectName: "Core",
-        taskTitle: `Session ${i}`,
+        id: `session-${i}`,
+        sessionTitle: `Session ${i}`,
         finishedAt: i,
-        coreId: null,
+        coreId: "core-a",
         coreAlias: null,
       });
     }
 
     expect(current).toHaveLength(200);
     // Newest-first, and the 5 oldest (finishedAt 0..4) are dropped.
-    expect(current[0]?.id).toBe("task-204");
+    expect(current[0]?.id).toBe("session-204");
     const oldest = current[current.length - 1]!;
-    expect(oldest.id).toBe("task-5");
+    expect(oldest.id).toBe("session-5");
     const ids = new Set(current.map((n) => n.id));
-    expect(ids.has("task-0")).toBe(false);
-    expect(ids.has("task-4")).toBe(false);
+    expect(ids.has("session-0")).toBe(false);
+    expect(ids.has("session-4")).toBe(false);
   });
 });
 
@@ -187,17 +167,46 @@ describe("requestSessionNotificationOpen", () => {
 
       requestSessionNotificationOpen(notification);
 
-      expect(loadSessionFinishNotifications().map((n) => `${n.projectId}:${n.id}`))
-        .toEqual(["project-1:task-2", "project-2:task-1"]);
+      expect(loadSessionFinishNotifications().map((n) => `${n.coreId}:${n.id}`))
+        .toEqual(["core-a:session-2", "core-b:session-1"]);
       expect(dispatchedEvents.map((event) => event.type)).toEqual([
         "mc:session-notification-open",
         "mc:session-notifications-changed",
       ]);
       expect((dispatchedEvents[0] as CustomEvent).detail).toMatchObject({
         kind: "session-finished",
-        projectId: "project-1",
-        taskId: "task-1",
+        coreId: "core-a",
+        sessionId: "session-1",
       });
+    } finally {
+      globalThis.window = previousWindow;
+    }
+  });
+});
+
+describe("opening a Core's finish", () => {
+  it("scopes the open request by Core id, which is what the workspace matches on", () => {
+    const store = new Map<string, string>();
+    const previousWindow = globalThis.window;
+    globalThis.window = {
+      localStorage: {
+        getItem: (key: string) => store.get(key) ?? null,
+        setItem: (key: string, value: string) => void store.set(key, value),
+        removeItem: (key: string) => void store.delete(key),
+      },
+      dispatchEvent: () => true,
+    } as unknown as Window & typeof globalThis;
+    try {
+      requestSessionNotificationOpen({
+        ...notifications[0]!,
+        coreId: "core-x",
+        coreAlias: null,
+      });
+      expect(readPendingSessionOpen("core-x")).toMatchObject({
+        sessionId: "session-1",
+        coreId: "core-x",
+      });
+      expect(readPendingSessionOpen("core-a")).toBeNull();
     } finally {
       globalThis.window = previousWindow;
     }
@@ -208,12 +217,10 @@ describe("coreId dedup + prune", () => {
   it("keeps two rows when the same sessionId lands on two different Cores", () => {
     const base: SessionFinishNotification = {
       kind: "session-finished",
-      id: "task-shared",
-      projectId: "project-1",
-      projectName: "Core",
-      taskTitle: "Session",
+      id: "session-shared",
+      sessionTitle: "Session",
       finishedAt: 1,
-      coreId: null,
+      coreId: "core-b",
       coreAlias: null,
     };
     let current: AppNotification[] = [];
@@ -228,44 +235,40 @@ describe("coreId dedup + prune", () => {
     const coreIds = current
       .filter((n): n is SessionFinishNotification => n.kind === "session-finished")
       .map((n) => n.coreId);
-    expect(new Set(coreIds)).toEqual(new Set(["core-a", null]));
+    expect(new Set(coreIds)).toEqual(new Set(["core-a", "core-b"]));
   });
 
   it("prune scoped by coreId does not cross-delete other Cores", () => {
-    const panelLocal: SessionFinishNotification = {
+    const other: SessionFinishNotification = {
       kind: "session-finished",
-      id: "task-1",
-      projectId: "project-1",
-      projectName: "Core",
-      taskTitle: "Panel-local session",
+      id: "session-1",
+      sessionTitle: "Other Core's session",
       finishedAt: 1,
-      coreId: null,
+      coreId: "core-b",
       coreAlias: null,
     };
     const remote: SessionFinishNotification = {
-      ...panelLocal,
+      ...other,
       finishedAt: 2,
       coreId: "core-a",
       coreAlias: "Core A",
     };
-    const current: AppNotification[] = [panelLocal, remote];
+    const current: AppNotification[] = [other, remote];
     const next = pruneSessionFinishNotifications(current, {
-      type: "task",
-      taskId: "task-1",
-      projectId: "project-1",
+      type: "session",
+      sessionId: "session-1",
       coreId: "core-a",
     });
     expect(next).toHaveLength(1);
     const survivor = next[0]!;
-    expect(survivor.kind === "session-finished" && survivor.coreId).toBeNull();
+    expect(survivor.kind === "session-finished" && survivor.coreId).toBe("core-b");
   });
 });
 
-describe("legacy record backfill", () => {
-  it("defaults a missing coreId and coreAlias to null", () => {
+describe("stored records", () => {
+  function withFakeStorage(run: (store: Map<string, string>) => void) {
     const store = new Map<string, string>();
     const previousWindow = globalThis.window;
-
     globalThis.window = {
       localStorage: {
         getItem: (key: string) => store.get(key) ?? null,
@@ -278,28 +281,75 @@ describe("legacy record backfill", () => {
       },
       dispatchEvent: () => true,
     } as unknown as Window & typeof globalThis;
-
     try {
+      run(store);
+    } finally {
+      globalThis.window = previousWindow;
+    }
+  }
+
+  it("defaults a missing coreAlias to null", () => {
+    withFakeStorage((store) => {
       store.set(
         "mc:sessionFinishNotifications",
         JSON.stringify([
           {
             kind: "session-finished",
-            id: "task-legacy",
-            projectId: "project-1",
-            projectName: "Core",
-            taskTitle: "Legacy session",
+            id: "session-legacy",
+            sessionTitle: "Legacy session",
             finishedAt: 1,
+            coreId: "core-a",
           },
         ]),
       );
 
       const [loaded] = loadSessionFinishNotifications();
-      expect(loaded?.coreId).toBeNull();
+      expect(loaded?.coreId).toBe("core-a");
       expect(loaded?.coreAlias).toBeNull();
-    } finally {
-      globalThis.window = previousWindow;
-    }
+    });
+  });
+
+  it("drops a record stored with no Core: a Panel-local finish nothing can open", () => {
+    withFakeStorage((store) => {
+      store.set(
+        "mc:sessionFinishNotifications",
+        JSON.stringify([
+          {
+            kind: "session-finished",
+            id: "session-local",
+            projectId: "project-1",
+            projectName: "Core",
+            sessionTitle: "Panel-local session",
+            finishedAt: 1,
+          },
+        ]),
+      );
+
+      expect(loadSessionFinishNotifications()).toEqual([]);
+    });
+  });
+
+  it("does not carry a project onto a loaded record", () => {
+    withFakeStorage((store) => {
+      store.set(
+        "mc:sessionFinishNotifications",
+        JSON.stringify([
+          {
+            kind: "session-finished",
+            id: "session-1",
+            projectId: "project-1",
+            projectName: "Core",
+            sessionTitle: "Old shape",
+            finishedAt: 1,
+            coreId: "core-a",
+          },
+        ]),
+      );
+
+      const [loaded] = loadSessionFinishNotifications();
+      expect(loaded).not.toHaveProperty("projectId");
+      expect(loaded).not.toHaveProperty("projectName");
+    });
   });
 });
 
@@ -328,30 +378,30 @@ describe("announced finishes", () => {
 
   it("remembers a finish it announced, and forgets it on a clear", () => {
     withFakeStorage(() => {
-      expect(hasAnnouncedFinish("core-a::task-1::42")).toBe(false);
+      expect(hasAnnouncedFinish("core-a::session-1::42")).toBe(false);
 
-      recordAnnouncedFinish("core-a::task-1::42");
+      recordAnnouncedFinish("core-a::session-1::42");
 
-      expect(hasAnnouncedFinish("core-a::task-1::42")).toBe(true);
+      expect(hasAnnouncedFinish("core-a::session-1::42")).toBe(true);
       // A different finish of the same Session is a different announcement.
-      expect(hasAnnouncedFinish("core-a::task-1::77")).toBe(false);
+      expect(hasAnnouncedFinish("core-a::session-1::77")).toBe(false);
 
       clearAnnouncedFinishes();
 
-      expect(hasAnnouncedFinish("core-a::task-1::42")).toBe(false);
+      expect(hasAnnouncedFinish("core-a::session-1::42")).toBe(false);
     });
   });
 
   it("keeps the newest 500 and drops the oldest, recording each key once", () => {
     withFakeStorage(() => {
-      for (let i = 1; i <= 520; i++) recordAnnouncedFinish(`core-a::task-${i}::${i}`);
-      recordAnnouncedFinish("core-a::task-520::520");
+      for (let i = 1; i <= 520; i++) recordAnnouncedFinish(`core-a::session-${i}::${i}`);
+      recordAnnouncedFinish("core-a::session-520::520");
 
       const keys = loadAnnouncedFinishes();
       expect(keys).toHaveLength(500);
-      expect(keys.filter((key) => key === "core-a::task-520::520")).toHaveLength(1);
-      expect(hasAnnouncedFinish("core-a::task-1::1")).toBe(false);
-      expect(hasAnnouncedFinish("core-a::task-21::21")).toBe(true);
+      expect(keys.filter((key) => key === "core-a::session-520::520")).toHaveLength(1);
+      expect(hasAnnouncedFinish("core-a::session-1::1")).toBe(false);
+      expect(hasAnnouncedFinish("core-a::session-21::21")).toBe(true);
     });
   });
 });

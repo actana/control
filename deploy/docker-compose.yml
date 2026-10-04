@@ -1,11 +1,19 @@
 # The reference deployment: one Panel, one Core, one network (ADR 0016 D41).
 #
 #   docker compose up -d
-#   docker compose exec core actana pair new     # a code and a CA fingerprint
+#   docker compose exec -u actana core actana pair new   # a code and a CA fingerprint
 #
 # then open http://localhost:7420, create the Operator, and give "Add Core" the
 # address core:8443 and that code — checking the fingerprint the Panel shows
 # against the one pair new printed.
+#
+# `-u actana` is not optional (#559): the pairing identity belongs to the daemon's
+# own user, which a Session (running as `core`) cannot read, and `pair` reads it
+# from disk. A plain `docker compose exec core …` is root *without* any DAC
+# override, and reads neither the home nor that state. Use:
+#
+#   docker compose exec -u core core bash -l              # a Session's own view
+#   docker compose exec -u actana core actana pair new    # pairing
 #
 # A Panel with no Cores opens on the first-run wizard, whose first two steps are
 # about installing a Core on another machine — which the line above has already
@@ -62,7 +70,18 @@ services:
       # Change this to "7420:7420" only once a TLS proxy is the thing in
       # front of it.
       - "127.0.0.1:7420:7420"
+    depends_on:
+      # The Panel refuses to start without its database (#567), so it waits
+      # for Postgres to answer rather than crash-looping until it does.
+      postgres:
+        condition: service_healthy
     environment:
+      # The Panel's Postgres. Unset, it is the bundled `postgres` service
+      # below with the password from .env. Set it to use a Postgres of your
+      # own instead (then the bundled one is idle and you can drop it). A
+      # password with URL-special characters must be percent-encoded, which is
+      # why the generated one in deploy/.env.example is hex.
+      - AC_PANEL_DATABASE_URL=${AC_PANEL_DATABASE_URL:-postgres://panel:${AC_PANEL_DB_PASSWORD}@postgres:5432/panel}
       # Optional: hold the secrets key outside the data volume so a copied
       # volume alone can't open the Core credentials. Empty means the Panel
       # keeps the key at /data/secrets.key instead.
@@ -72,20 +91,114 @@ services:
       # `docker compose pull && docker compose up -d`, run by you, here.
       - ACTANA_UPDATE_CHECK=${ACTANA_UPDATE_CHECK:-}
     volumes:
-      # The single place all Panel state lives. Backing up this volume is
-      # backing up the Panel.
+      # The Panel's files: the Operator, sessions and Core registry still live
+      # here for now, along with the secrets key. The state is moving to the
+      # Postgres below (#567), so a backup is this volume *and* `postgres-data`.
       - panel-data:/data
+
+  # The Panel's database (#567, ADR 0041 D16). No published ports: only the
+  # Panel, on this network, reaches it. Nothing in the Panel reads it yet; the
+  # Panel only opens a connection to it at boot.
+  #
+  # The image is pinned to an exact version and its digest (never `latest`):
+  # postgres:18.6-bookworm, pushed to Docker Hub 2026-09-19, the multi-arch
+  # index digest read from the registry. Dependabot's `docker-compose` entry
+  # keeps it current. The same pin is in scripts/lib/postgres-image.mjs, which
+  # the smoke scripts boot, and a test holds the two together.
+  #
+  # The password is never in this file: set AC_PANEL_DB_PASSWORD in .env
+  # (deploy/.env.example). There is deliberately no default, so `docker
+  # compose up` stops and says so rather than start a database anyone can
+  # guess the password to.
+  postgres:
+    image: postgres:18.6-bookworm@sha256:3725f4e2499eef5134592b3b4ab79a543ed7f8e533b05b5b637af926630f6650
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      - POSTGRES_USER=panel
+      - POSTGRES_DB=panel
+      - POSTGRES_PASSWORD=${AC_PANEL_DB_PASSWORD:?set AC_PANEL_DB_PASSWORD in deploy/.env, e.g. openssl rand -hex 24}
+    volumes:
+      # Postgres 18 keeps its cluster in a versioned directory under here.
+      - postgres-data:/var/lib/postgresql
+    healthcheck:
+      # `-h 127.0.0.1`: over TCP, not the socket. On first boot the image's
+      # init-time server listens on the socket only, so a socket check can pass
+      # before the Panel's `postgres:5432` accepts a connection.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U panel -d panel"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
 
   # No published ports, deliberately: the Panel reaches this Core over the
   # compose network and nothing else needs to. Nor `privileged`, `cgroup:
   # host`, `tmpfs:` or `init:` — all four belonged to the systemd fixture this
   # replaced, and tini is PID 1 inside the image itself (ADR 0016 D14).
+  #
+  # Bind-mount ownership (#551 / #558): Docker creates a missing host `./repos`
+  # as root. Named volumes are image-seeded (the home core:core, the state
+  # actana:actana), so they need no prep. `core-init` is a root one-shot on the
+  # same volumes; it exits. The main service starts as root for one step only
+  # (the entrypoint's switch to `actana`, below) and sets no `user:`.
+  # Without compose, the equivalent is:
+  #   docker run --rm -u 0 --entrypoint /usr/local/libexec/core-fs-prep.sh \
+  #     -v <home>:/home/core -v <repos>:/home/core/repos <image>
+  core-init:
+    image: ${ACTANA_IMAGE_NAMESPACE:-actana}/core:${ACTANA_TAG:-latest}
+    user: "0:0"
+    entrypoint: ["/usr/local/libexec/core-fs-prep.sh"]
+    # Smallest capability set that can finish prep on a 0750 home:
+    #   CHOWN         — change mount-point owners to 1000:1000 (the state
+    #                   volume's to 1001:1001, the daemon's user)
+    #   DAC_OVERRIDE  — noble seeds ~/ as 0750 (HOME_MODE); without this,
+    #                   uid 0 with only CHOWN is checked as "other" and cannot
+    #                   search or mkdir under /home/core (fresh volume or an
+    #                   upgrade that still lacks ~/shared).
+    # No network; no-new-privileges keeps the set from growing.
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+    security_opt:
+      - no-new-privileges:true
+    network_mode: none
+    volumes:
+      - core-home:/home/core
+      - core-state:/var/lib/actana
+      - ./repos:/home/core/repos
+    restart: "no"
+
   core:
     # The same `ACTANA_TAG` the Panel above reads. One variable, both services
     # — they are version-locked and moving one without the other is a pair
     # that never shipped.
     image: ${ACTANA_IMAGE_NAMESPACE:-actana}/core:${ACTANA_TAG:-latest}
     restart: unless-stopped
+    depends_on:
+      core-init:
+        condition: service_completed_successfully
+    # The privilege model (#559, ADR 0041 D10 and D11). The container starts as
+    # root for the entrypoint's one step: it checks the state volume and switches
+    # to the `actana` user (uid 1001) keeping CAP_SETUID and CAP_SETGID, and
+    # nothing else, as ambient capabilities. Those two let the daemon start every
+    # Session as `core` with no capabilities of its own. This is also the
+    # container's whole capability set, i.e. its bounding set: the entrypoint
+    # refuses to start unless it is exactly these two, and a root `docker exec`
+    # has no more than they and no DAC override. tini is PID 1 as `actana`, after
+    # the switch, so `docker stop` reaches the daemon.
+    # `no-new-privileges` stays: it does not stop the setuid calls, and it keeps
+    # a setuid file (the image has none) or a file capability (none either) from
+    # adding to them. Do not add a `user:` here: the entrypoint refuses it.
+    cap_drop:
+      - ALL
+    cap_add:
+      - SETUID
+      - SETGID
+    security_opt:
+      - no-new-privileges:true
     environment:
       # The address the Panel dials, and therefore the SAN in this Core's
       # server certificate and the endpoint every pairing hands back.
@@ -104,23 +217,118 @@ services:
       # and once a day in `docker compose logs core`.
       - ACTANA_UPDATE_CHECK=${ACTANA_UPDATE_CHECK:-}
     volumes:
-      # The Core's whole home: the pairing identity, the SQLite database, and
-      # each Harness's own credentials (~/.claude, ~/.codex, …). One mount,
-      # one backup target, and the only thing `docker compose down -v`
-      # destroys. Restarts and image upgrades keep it.
+      # The Core's home: its work and each Harness's own credentials
+      # (~/.claude, ~/.codex, …). Restarts and image upgrades keep it.
       - core-home:/home/core
+      # What only the daemon may hold (#559): the pairing identity, the SQLite
+      # database and the update caches, in /var/lib/actana, owned by `actana`
+      # with mode 0700 (`core` cannot read it). A volume of its own, so a
+      # Session working in the home volume is not working beside the Core's keys. Together with `core-home`, what `docker compose down -v`
+      # destroys; a Core whose `core-state` is gone has a new identity and every
+      # client must pair it again.
+      - core-state:/var/lib/actana
       # Your checkouts, where the Panel's "Add project" will find them.
       # Swappable for a named volume — `core-repos:/home/core/repos`, with
       # `core-repos:` added under `volumes:` — if you would rather the Core
       # own them: files the Core writes here are owned by uid 1000, which is
       # your own uid only on a host whose login user was the first created.
+      # A missing host dir is created root-owned; `core-init` chowns the
+      # mount point only (not the tree).
       - ./repos:/home/core/repos
 
+# ── Shared folder storage (optional, off by default) ─────────────────────────
+#
+# SeaweedFS with its S3 gateway and STS enabled: the backend for the Shared
+# folder of our own development Cores (#566, part of #552). It sits behind the
+# `seaweedfs` compose profile, so a plain `docker compose up -d` does not
+# start it, pull its image or need any of its variables:
+#
+#   docker compose --profile seaweedfs up -d
+#
+# Set the SEAWEEDFS_* values in .env first (deploy/.env.example lists them);
+# the service refuses to start on an empty or placeholder value. The role and
+# policy that confine a Core to `<prefix>/<core-id>/` are in
+# deploy/seaweedfs/iam.json.tmpl, explained in deploy/seaweedfs/README.md.
+#
+# No required-variable interpolation below, on purpose: compose interpolates a
+# service even when its profile is off, and a required variable would break the
+# plain `up` for everyone who never opts in. The check is in deploy/seaweedfs/entrypoint.sh.
+#
+# The image is pinned to an exact version and its digest (never `latest`):
+# chrislusf/seaweedfs:4.47 (released 2026-09-14), the multi-arch index digest
+# read from the Docker Hub registry. It is kept current by Dependabot's
+# `docker-compose` ecosystem entry in .github/dependabot.yml, which is the only
+# thing that reads this file: the `docker` entry there matches Dockerfiles only.
+  seaweedfs:
+    profiles: ["seaweedfs"]
+    image: chrislusf/seaweedfs:4.47@sha256:ce9e796f1fe6f06968f4c04bdaf8f678dad9c8acdfef3d244133d71bfa6bf882
+    restart: unless-stopped
+    # Reaps create-bucket.sh: the entrypoint starts it in a subshell and then execs, so it is orphaned to this init.
+    init: true
+    security_opt:
+      - no-new-privileges:true
+    entrypoint: ["/seaweedfs-config/entrypoint.sh"]
+    # One process: master, volume server, filer and the S3 gateway (which
+    # carries STS). The IAM config is rendered by the entrypoint from the
+    # template. Iceberg and Lance ports are off; IAM writes are off, so the
+    # role below is the only one there is.
+    command:
+      - server
+      - -dir=/data
+      # Everything but the S3 gateway listens on this container's loopback:
+      # the master (9333), volume server (8080) and filer (8888) carry no
+      # authentication, and a Core on this network must reach the S3 gateway
+      # and nothing else. `-s3.ip.bind` is the one exception. Its gRPC port
+      # (18333) shares that bind address, so the entrypoint sets a filer JWT
+      # key that the gateway's gRPC IAM calls require.
+      - -ip=127.0.0.1
+      - -ip.bind=127.0.0.1
+      - -filer
+      - -s3
+      - -s3.port=8333
+      - -s3.ip.bind=0.0.0.0
+      - -s3.port.iceberg=0
+      - -s3.port.lance=0
+      - -s3.iam.config=/run/seaweedfs/iam.json
+      - -s3.iam.readOnly=true
+    environment:
+      - SEAWEEDFS_S3_ADMIN_ACCESS_KEY=${SEAWEEDFS_S3_ADMIN_ACCESS_KEY:-}
+      - SEAWEEDFS_S3_ADMIN_SECRET_KEY=${SEAWEEDFS_S3_ADMIN_SECRET_KEY:-}
+      - SEAWEEDFS_STS_SIGNING_KEY=${SEAWEEDFS_STS_SIGNING_KEY:-}
+      # The Panel's token signer: who SeaweedFS believes when it is asked to
+      # exchange a token for S3 keys. Unset, both name the `panel` service on
+      # this network, which serves its public key set at /.well-known/jwks.json
+      # (#566), so no file has to be hosted by hand. Set them in .env only when
+      # the Panel is reached by another address; Settings › Storage must name the
+      # same issuer.
+      - SEAWEEDFS_OIDC_ISSUER=${SEAWEEDFS_OIDC_ISSUER:-http://panel:7420}
+      - SEAWEEDFS_OIDC_JWKS_URL=${SEAWEEDFS_OIDC_JWKS_URL:-http://panel:7420/.well-known/jwks.json}
+      - SEAWEEDFS_OIDC_AUDIENCE=${SEAWEEDFS_OIDC_AUDIENCE:-actana-shared}
+      - SEAWEEDFS_BUCKET=${SEAWEEDFS_BUCKET:-actana-shared}
+      - SEAWEEDFS_PREFIX=${SEAWEEDFS_PREFIX:-cores}
+    ports:
+      # Loopback, like the Panel: put a TLS proxy in front before exposing it.
+      # Cores on this network reach it as seaweedfs:8333 without a published
+      # port at all.
+      - "127.0.0.1:8333:8333"
+    volumes:
+      - seaweedfs-data:/data
+      - ./seaweedfs:/seaweedfs-config:ro
+    healthcheck:
+      # Healthy only once the master answers and the bucket exists, so a missing bucket shows in `docker compose ps`.
+      test: ["CMD-SHELL", "curl -fsS http://localhost:9333/cluster/healthz >/dev/null && /seaweedfs-config/create-bucket.sh --check"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
 # A second Core is the block above again with three things changed: the
-# service name, ACTANA_PUBLIC_HOST to match it, and its own volume. Nothing
-# here is a singleton. Uncomment, add `core2-home:` and `core2-repos:` under
-# `volumes:`, and pair it the same way — `docker compose exec core2 actana
-# pair new` prints its own code and CA fingerprint.
+# service name, ACTANA_PUBLIC_HOST to match it, and its own volumes (home,
+# state and repos, including a `core2-init` one-shot on those volumes).
+# Nothing here is a singleton. Uncomment, add `core2-home:`, `core2-state:` and
+# `core2-repos:` under `volumes:`, and pair it the same way —
+# `docker compose exec -u actana core2 actana pair new` prints its own code and CA
+# fingerprint.
 #
 # Its repos are a named volume rather than a second bind mount, which is the
 # swap the first Core's comment describes: a bind mount needs a host directory
@@ -128,17 +336,48 @@ services:
 # would have neither.
 #
 # >>> second Core
+#   core2-init:
+#     image: ${ACTANA_IMAGE_NAMESPACE:-actana}/core:${ACTANA_TAG:-latest}
+#     user: "0:0"
+#     entrypoint: ["/usr/local/libexec/core-fs-prep.sh"]
+#     cap_drop:
+#       - ALL
+#     cap_add:
+#       - CHOWN
+#       - DAC_OVERRIDE
+#     security_opt:
+#       - no-new-privileges:true
+#     network_mode: none
+#     volumes:
+#       - core2-home:/home/core
+#       - core2-state:/var/lib/actana
+#       - core2-repos:/home/core/repos
+#     restart: "no"
 #   core2:
 #     image: ${ACTANA_IMAGE_NAMESPACE:-actana}/core:${ACTANA_TAG:-latest}
 #     restart: unless-stopped
+#     depends_on:
+#       core2-init:
+#         condition: service_completed_successfully
+#     cap_drop:
+#       - ALL
+#     cap_add:
+#       - SETUID
+#       - SETGID
+#     security_opt:
+#       - no-new-privileges:true
 #     environment:
 #       - ACTANA_PUBLIC_HOST=core2
 #       - ACTANA_LABEL=core2
 #     volumes:
 #       - core2-home:/home/core
+#       - core2-state:/var/lib/actana
 #       - core2-repos:/home/core/repos
 # <<< second Core
 
 volumes:
   panel-data:
+  postgres-data:
   core-home:
+  core-state:
+  seaweedfs-data:

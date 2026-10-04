@@ -1,14 +1,23 @@
 import log from "@actana/shared/log";
 import * as os from "node:os";
-import * as fs from "node:fs";
 import * as path from "node:path";
 import { spawnSync } from "node:child_process";
 import { getAppTheme } from "./app-theme";
-import { ensureStatuslineTap } from "@actana/shared/statusline-tap";
+import { asCore, coreHome, isContainerMode, killAsCore, killAsCoreQuietly } from "./core-identity";
+import {
+  ensureClaudeShiftEnterBindingViaCore,
+  ensureStatuslineTapViaCore,
+  installHarnessHooksViaCore,
+  resolveCommandViaCore,
+  spawnPathFactsViaCore,
+  CoreHomeOpRefusedError,
+  type SpawnPathFacts,
+} from "./core-home-ops-client";
 import { PtyOutputBatcher } from "./pty-output-batch";
 import { PtyOutputActivityWatcher, type PtyOutputActivityKind } from "./pty-output-activity";
 import { sliceReplayWindow, type PtyReplayWindow } from "./pty-replay-window";
 import {
+  pickHarnessCandidateMeetingVersion,
   resolveHarnessCommandMeetingVersion,
   resolveHarnessCommandOnPath,
 } from "@actana/shared/harness-cli-resolution";
@@ -17,10 +26,10 @@ import {
   sanitizedProcessEnv,
   shellArgsForCommand,
 } from "@actana/shared/shell-env";
-import { loadProjectRoots } from "./project-roots";
 import { MAX_TCP_PORT } from "@actana/shared/tcp-port";
 import { shortId } from "@actana/shared/short-id";
 import {
+  HARNESS_BINARIES,
   reconcileHookTrustFlag,
   resolveSpawnPlan,
   SpawnPolicyError,
@@ -30,10 +39,9 @@ import { type PtyHookEnv } from "./pty-hook-env";
 import { HOOK_CWD_ENV, HOOK_HARNESS_ENV } from "./harness-hook-env";
 import {
   HOOK_MISS_LOG_ENV,
-  HOOK_TASK_ID_ENV,
+  HOOK_SESSION_ID_ENV,
   HOOK_TOKEN_ENV,
   HOOK_URL_ENV,
-  installHarnessHooks,
 } from "./harness-hooks";
 import { checkHarnessCliVersionCached, harnessVersionErrorMessage } from "@actana/shared/harness-cli-version";
 import {
@@ -43,6 +51,7 @@ import {
 import { applyHarnessPtyEnv } from "@actana/shared/harness-pty-env";
 import { acquireSpawnSlot, SPAWN_SETTLE_MS } from "./pty-spawn-queue";
 import { HarnessPromptDelivery, type PromptDeliveryEvent } from "./harness-prompt-delivery";
+import { appendPromptBlock, PROMPT_BLOCK_VERSION } from "./prompt-standard-block";
 
 function sanitizeEnv(): Record<string, string> {
   const out = sanitizedProcessEnv();
@@ -59,27 +68,15 @@ function sanitizeEnv(): Record<string, string> {
 // Claude Code only treats ESC+CR (`\x1b\r`, what `terminal-keymap.ts` emits for
 // Shift+Enter) as "insert newline" when this flag is set. Normally `/terminal-
 // setup` writes it; do it eagerly so the user doesn't have to.
-export function ensureClaudeShiftEnterBinding(): void {
-  try {
-    const dir = path.join(os.homedir(), ".claude");
-    const file = path.join(dir, "settings.json");
-    let settings: Record<string, unknown> = {};
-    if (fs.existsSync(file)) {
-      const raw = fs.readFileSync(file, "utf8");
-      if (raw.trim()) settings = JSON.parse(raw);
-    }
-    if (settings.shiftEnterKeyBindingInstalled === true) return;
-    settings.shiftEnterKeyBindingInstalled = true;
-    fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(file, JSON.stringify(settings, null, 2) + "\n", "utf8");
-  } catch {
-    // best-effort — user can still run `/terminal-setup` manually.
-  }
+export async function ensureClaudeShiftEnterBinding(): Promise<void> {
+  // In the container the file is core's and the daemon is not core: the write is
+  // done by a `core` process (issue 559). The writer lives in `core-home-ops`.
+  await ensureClaudeShiftEnterBindingViaCore();
 }
 
 type Pty = {
   id: string;
-  taskId: string;
+  sessionId: string;
   proc: any;
   buffer: PtyBufferChunk[];
   bufferBytes: number;
@@ -87,13 +84,12 @@ type Pty = {
   cwd: string;
   command: string;
   agent?: string;
-  /** True for user-shell terminals; findByTask only matches agent PTYs. */
+  /** True for user-shell terminals; findBySession only matches agent PTYs. */
   shell: boolean;
   /**
    * True for VM Shell Sessions (issue 06) — a free-form shell on this Core's
-   * machine with no project folder. Like `shell`, findByTask skips it; the
-   * Panel renders it with a distinct "VM shell" surface. Gated by core-link
-   * auth, not project-root validation.
+   * machine. Like `shell`, findBySession skips it; the Panel renders it with a
+   * distinct "VM shell" surface. Gated by core-link auth.
    */
   shellSession?: boolean;
   /** Last renderer write (user keystroke) — marks the PTY as interactive so
@@ -116,7 +112,7 @@ const LSOF_PROBE_TIMEOUT_MS = 2_000;
 const SIGTERM_GRACE_MS = 1_500;
 const PORT_KILL_POLL_INTERVAL_MS = 100;
 const PTY_EXIT_POLL_INTERVAL_MS = 50;
-const TASKKILL_TIMEOUT_MS = 5_000;
+const SESSIONKILL_TIMEOUT_MS = 5_000;
 const LOG_VALUE_MAX_LENGTH = 160;
 
 function safeLogValue(value: unknown): unknown {
@@ -148,12 +144,12 @@ export function hasCodexHookReviewPrompt(text: string): boolean {
 /** Deliver an output-derived status signal without letting it break the stream. */
 function reportOutputSignal(
   deps: PtyCoreDeps,
-  taskId: string,
+  sessionId: string,
   signal: "interrupted" | "hooks-need-review" | "dialog-unanswered",
 ): void {
-  if (!taskId) return;
+  if (!sessionId) return;
   try {
-    deps.onSessionOutputSignal?.({ taskId, signal });
+    deps.onSessionOutputSignal?.({ sessionId, signal });
   } catch (err) {
     log.warn("pty.output-signal.failed", { signal, error: String(err) });
   }
@@ -162,9 +158,9 @@ function reportOutputSignal(
 /** Report an abandoned starting prompt without letting the sink break delivery. */
 function reportPromptAbandoned(
   deps: PtyCoreDeps,
-  info: { taskId: string; ptyId: string; reason: string },
+  info: { sessionId: string; ptyId: string; reason: string },
 ): void {
-  if (!info.taskId) return;
+  if (!info.sessionId) return;
   try {
     deps.onSessionPromptAbandoned?.(info);
   } catch (err) {
@@ -176,14 +172,15 @@ function reportPromptAbandoned(
 function reportPromptDelivered(
   deps: PtyCoreDeps,
   info: {
-    taskId: string;
+    sessionId: string;
     ptyId: string;
     characters: number;
     waitedMs: number;
     composerObserved: boolean;
+    promptBlockVersion: number | null;
   },
 ): void {
-  if (!info.taskId) return;
+  if (!info.sessionId) return;
   try {
     deps.onSessionPromptDelivered?.(info);
   } catch (err) {
@@ -212,7 +209,7 @@ export type PtyCoreDeps = {
    * Panel is connected, because the emit target is null while the link is
    * down and a Session that died then must still settle on this Core.
    */
-  onSessionExit?: (info: { taskId: string; exitCode: number }) => void;
+  onSessionExit?: (info: { sessionId: string; exitCode: number }) => void;
   /**
    * A harness's own output said something its hooks do not (issue 84).
    * Claude has no `UserInterrupt` settings hook, and Codex refuses to run
@@ -232,7 +229,7 @@ export type PtyCoreDeps = {
    * what `needs-input` means.
    */
   onSessionOutputSignal?: (info: {
-    taskId: string;
+    sessionId: string;
     signal: "interrupted" | "hooks-need-review" | "dialog-unanswered";
   }) => void;
   /**
@@ -250,7 +247,7 @@ export type PtyCoreDeps = {
    * keeps the status, which is exactly the behaviour that shipped before.
    */
   onSessionPromptAbandoned?: (info: {
-    taskId: string;
+    sessionId: string;
     ptyId: string;
     reason: string;
   }) => void;
@@ -278,12 +275,14 @@ export type PtyCoreDeps = {
    * keeps every behaviour that shipped before.
    */
   onSessionPromptDelivered?: (info: {
-    taskId: string;
+    sessionId: string;
     ptyId: string;
     characters: number;
     waitedMs: number;
     /** Was a composer seen, or did the quiet gap vouch for it? See issue 395. */
     composerObserved: boolean;
+    /** The standard block version the prompt carried, or null when it carried none. */
+    promptBlockVersion: number | null;
   }) => void;
   /**
    * This Session's harness is still talking (issue 243). Not a status and not
@@ -298,7 +297,7 @@ export type PtyCoreDeps = {
    * "bytes arrived" on its own can never end a turn — see
    * `pty-output-activity.ts` and the two rules in `core-session-backstop.ts`.
    */
-  onSessionOutputActivity?: (info: { taskId: string; kind: PtyOutputActivityKind }) => void;
+  onSessionOutputActivity?: (info: { sessionId: string; kind: PtyOutputActivityKind }) => void;
 };
 
 /** Event emitted by the Core for a PTY — `data` (output) or `exit`. */
@@ -396,8 +395,11 @@ function sleep(ms: number): Promise<void> {
 function killProcessTreeWindows(pid: number | undefined): void {
   if (os.platform() !== "win32" || !pid || pid <= 0) return;
   try {
-    spawnSync("taskkill", ["/pid", String(pid), "/t", "/f"], {
-      timeout: TASKKILL_TIMEOUT_MS,
+    const spec = asCore({ command: "taskkill", args: ["/pid", String(pid), "/t", "/f"] });
+    spawnSync(spec.command, spec.args, {
+      cwd: spec.cwd,
+      env: spec.env,
+      timeout: SESSIONKILL_TIMEOUT_MS,
     });
   } catch {
     /* best-effort — proc.kill() below is the fallback */
@@ -414,7 +416,7 @@ function killProcessTreeWindows(pid: number | undefined): void {
  * job), the slave stays open, the master never sees EIO, and node-pty keeps the
  * master fd open for the life of the app. Every leaked master counts against
  * macOS's system-wide `kern.tty.ptmx_max` (~511), so a long-lived window that
- * churns PTYs (e.g. the warm-session pool re-preparing on every project query
+ * churns PTYs (e.g. the warm-session pool re-preparing on every session query
  * refetch) eventually exhausts the cap and makes EVERY pty spawn on the whole
  * machine fail with posix_spawnp/ENXIO.
  *
@@ -444,11 +446,13 @@ export function disposePty(proc: import("node-pty").IPty | null | undefined): vo
   // dispose never fired and one conhost.exe (~8.5 MB, parented to our main
   // process) leaked on every create→delete of a terminal.
   const closable = proc as unknown as { destroy?: () => void };
+  armCoreKillEscalation(proc, pid);
   try {
     if (typeof closable.destroy === "function") {
       closable.destroy();
     } else {
-      proc.kill();
+      // No signal: node-pty's own default, as `proc.kill()` was.
+      killAsCoreQuietly(proc, undefined, "pty.kill");
     }
   } catch {
     /* already exited or fd already closed */
@@ -460,11 +464,39 @@ export function disposePty(proc: import("node-pty").IPty | null | undefined): vo
   killProcessTreeWindows(pid);
 }
 
+/**
+ * In the container, a Session that ignores SIGHUP survives `destroy()`, and the
+ * daemon cannot signal it itself (another uid, no CAP_KILL). So when the master
+ * is closed, give it {@link SIGTERM_GRACE_MS} and then SIGKILL its process group
+ * through {@link killAsCore}. Outside the container nothing is armed: the
+ * teardown is what it always was.
+ */
+function armCoreKillEscalation(
+  proc: import("node-pty").IPty,
+  pid: number | undefined,
+): void {
+  if (!isContainerMode() || typeof pid !== "number" || pid <= 1) return;
+  let exited = false;
+  (proc as { onExit?: (cb: () => void) => unknown }).onExit?.(() => {
+    exited = true;
+  });
+  const timer = setTimeout(() => {
+    if (exited) return;
+    killAsCoreQuietly(-pid, "SIGKILL", "pty.kill.escalation");
+  }, SIGTERM_GRACE_MS);
+  timer.unref?.();
+}
+
 function pidsListeningOnPort(port: number): number[] {
   if (!Number.isInteger(port) || port <= 0 || port > MAX_TCP_PORT) return [];
   if (os.platform() === "win32") return [];
 
-  const result = spawnSync("lsof", ["-nP", `-tiTCP:${port}`, "-sTCP:LISTEN"], {
+  // As core: listeners are Session processes, and another uid's sockets are
+  // not visible to the daemon's `lsof`.
+  const spec = asCore({ command: "lsof", args: ["-nP", `-tiTCP:${port}`, "-sTCP:LISTEN"] });
+  const result = spawnSync(spec.command, spec.args, {
+    cwd: spec.cwd,
+    env: spec.env,
     encoding: "utf8",
     timeout: LSOF_PROBE_TIMEOUT_MS,
   });
@@ -484,7 +516,7 @@ async function killPidsListeningOnPort(port: number): Promise<PortKillResult> {
 
   for (const pid of pids) {
     try {
-      process.kill(pid, "SIGTERM");
+      await killAsCore(pid, "SIGTERM");
       killed.push(pid);
     } catch (err: any) {
       errors.push(`pid ${pid}: ${err?.message ?? String(err)}`);
@@ -498,7 +530,7 @@ async function killPidsListeningOnPort(port: number): Promise<PortKillResult> {
     }
     for (const pid of pidsListeningOnPort(port).filter((pid) => killed.includes(pid))) {
       try {
-        process.kill(pid, "SIGKILL");
+        await killAsCore(pid, "SIGKILL");
       } catch {
         /* already exited or not permitted */
       }
@@ -553,6 +585,28 @@ async function killPty(p: Pty): Promise<boolean> {
   }
 }
 
+/**
+ * The spawn policy's `cwdExists` and `realpath`, answered from what `core` said
+ * about the paths. The cwd (always the Core's home) falls back to its lexical
+ * path when core could not resolve it, which is `defaultRealpath`'s own
+ * fallback and cannot matter: `cwdOk` is what rejects a home core cannot reach.
+ * A path nobody asked about is an error.
+ */
+function policyPathDeps(
+  facts: SpawnPathFacts,
+  cwd: string,
+): { cwdExists: (cwd: string) => boolean; realpath: (p: string) => string } {
+  return {
+    cwdExists: () => facts.cwdOk,
+    realpath: (p) => {
+      const real = facts.realpaths[p];
+      if (real) return real;
+      if (p === cwd && p in facts.realpaths) return path.resolve(p);
+      throw new Error("path is not one core could resolve");
+    },
+  };
+}
+
 // ─── PtyCore ─────────────────────────────────────────────────────────
 //
 // Transport-agnostic PTY manager. Owns the PTY map, the output batcher, and all
@@ -604,27 +658,60 @@ export class PtyCore {
     const platform = os.platform();
     const { userDataDir, appPath, getHookEnv } = this.deps;
 
-    // Home shell terminals: the renderer never learns the host's home path, so
-    // the handler replaces cwd with its own os.homedir() before the policy's
-    // project-root check. VM Shell Sessions (issue 06) use the same trick — a
-    // VM shell has no project folder, and the Core's own home is the only
-    // sensible place to drop the operator. The policy's `shellSession` branch
-    // skips the project-root check entirely regardless of cwd, but supplying
-    // the real home here means node-pty gets a valid cwd to chdir into.
-    const spawnReq: SpawnRequest =
-      opts.shell === true && opts.home
-        ? ({ ...opts, cwd: os.homedir() } as SpawnRequest)
-        : opts.shellSession === true
-          ? ({ ...opts, cwd: opts.cwd || os.homedir() } as SpawnRequest)
-          : opts;
+    // Every Session starts in the Core's home (ADR 0041 D2): a spawn names no
+    // cwd, and the policy takes the home from `deps.home`, never from the
+    // request.
+    const spawnReq: SpawnRequest = opts;
+    const home = coreHome();
     let plan: ReturnType<typeof resolveSpawnPlan>;
+    // The policy's two questions about the disk (is the home a directory, and
+    // where does it really lead) are answered by `core`, once, before the
+    // synchronous policy runs. In the container the daemon cannot look inside
+    // core's home (issue 559); elsewhere this is `undefined` and the policy
+    // asks `fs` itself, as it always did.
+    const pathFacts = isContainerMode()
+      ? await spawnPathFactsViaCore(home, [home]).catch((err: unknown) => {
+          // A home the helper will not look at is an invalid cwd, said the way the
+          // policy says it. (A helper that hangs or crashes is still a plain error.)
+          if (err instanceof CoreHomeOpRefusedError) {
+            log.warn("pty.spawn.rejected", { code: "invalid-cwd", sessionId: safeLogValue(opts.sessionId) });
+            throw new Error("pty:spawn rejected (invalid-cwd)");
+          }
+          throw err;
+        })
+      : undefined;
+    // The CLI lookup is the same kind of question: `~/.local/bin` is core's, so in
+    // the container core lists the matches and the daemon picks by version.
+    const lookupEnv = pathFacts ? sanitizedProcessEnv() : null;
+    const agentBinary =
+      pathFacts?.cwdOk && spawnReq.shell !== true && typeof spawnReq.agent === "string" && Object.hasOwn(HARNESS_BINARIES, spawnReq.agent)
+        ? HARNESS_BINARIES[spawnReq.agent as keyof typeof HARNESS_BINARIES]
+        : null;
+    const found: { name: string; candidates: string[] } | null =
+      agentBinary && lookupEnv
+        ? {
+            name: agentBinary,
+            candidates: await resolveCommandViaCore(agentBinary, lookupEnv.PATH ?? null).catch((err: unknown) => {
+              // A PATH the helper will not take finds nothing: the policy says binary-not-found.
+              if (!(err instanceof CoreHomeOpRefusedError)) throw err;
+              log.warn("pty.spawn.command-lookup-refused", { command: agentBinary, error: err.message });
+              return [];
+            }),
+          }
+        : null;
     try {
       plan = resolveSpawnPlan(spawnReq, {
-        projectRoots: loadProjectRoots,
-        homeShellRoots: () => [os.homedir()],
+        ...(pathFacts ? policyPathDeps(pathFacts, home) : {}),
+        home: () => home,
         resolveCommand: (name) => {
-          const env = sanitizedProcessEnv();
+          const env = lookupEnv ?? sanitizedProcessEnv();
           const requirement = HARNESS_CLI_CONFIG_BY_COMMAND[name];
+          if (lookupEnv) {
+            // Container mode: only what core found, and nothing the daemon looks up itself.
+            const candidates = found?.name === name ? found.candidates : [];
+            if (requirement) return pickHarnessCandidateMeetingVersion(candidates, requirement, env, platform)?.binary ?? null;
+            return candidates[0] ?? null;
+          }
           if (requirement) {
             return resolveHarnessCommandMeetingVersion(name, requirement, env, platform)?.binary ?? null;
           }
@@ -641,8 +728,7 @@ export class PtyCore {
           code: err.code,
           agent: safeLogValue(opts.agent ?? null),
           shell: opts.shell === true,
-          cwd: safeLogValue(opts.cwd),
-          taskId: safeLogValue(opts.taskId),
+          sessionId: safeLogValue(opts.sessionId),
         });
         throw new Error(`pty:spawn rejected (${err.code})`);
       }
@@ -663,7 +749,7 @@ export class PtyCore {
     // has no agent config to touch.
     let hooksReportTurnStart = false;
     if (plan.mode === "agent") {
-      if (plan.agent === "claude-code") ensureStatuslineTap(plan.cwd);
+      if (plan.agent === "claude-code") await ensureStatuslineTapViaCore(plan.cwd);
       // Lifecycle hooks, pointed at THIS Core's loopback receiver (issue 84).
       // Without them nothing ever moves the Session's status off `ready`. The
       // env carries the URL and token so the file on disk holds no secret and
@@ -678,7 +764,7 @@ export class PtyCore {
       if (hookEnv) {
         // Pass the same spawn env the PTY inherits so Pi's writer resolves
         // `$PI_CODING_AGENT_DIR` the way `pi` will (#518 part 1).
-        const hooks = installHarnessHooks(plan.agent, plan.cwd, env);
+        const hooks = await installHarnessHooksViaCore(plan.agent, plan.cwd, env);
         hooksReportTurnStart = hooks.reportsTurnStart;
         hookTrustBypassEarned = hooks.hookTrustBypassEarned;
         // The env goes in whenever a file landed, even for a family whose
@@ -688,7 +774,7 @@ export class PtyCore {
         if (hooks.installed) {
           env[HOOK_URL_ENV] = hookEnv.apiUrl;
           env[HOOK_TOKEN_ENV] = hookEnv.token;
-          env[HOOK_TASK_ID_ENV] = opts.taskId;
+          env[HOOK_SESSION_ID_ENV] = opts.sessionId;
           // Which harness this PTY is, so a hook file every run of that
           // harness loads (Pi's global extension) can tell its own Session
           // from a run nested inside another harness's Session.
@@ -714,7 +800,7 @@ export class PtyCore {
       if (reconciled !== plan) {
         log.info("pty.spawn.hookTrust", {
           agent: safeLogValue(plan.agent),
-          taskId: safeLogValue(opts.taskId),
+          sessionId: safeLogValue(opts.sessionId),
           // `false` here is not a failure: it is the vendor's review left
           // standing over hooks this Core cannot vouch for.
           bypassed: hookTrustBypassEarned,
@@ -737,12 +823,17 @@ export class PtyCore {
 
     let proc: import("node-pty").IPty;
     try {
-      proc = pty.spawn(spawnTarget, spawnArgs, {
+      // The only way a Session process starts. In the container it is
+      // `setpriv` -> `core` with no capabilities (node-pty's own uid/gid
+      // options keep them, so they are never passed); elsewhere it is the
+      // spec unchanged.
+      const launch = asCore({ command: spawnTarget, args: spawnArgs, cwd: plan.cwd, env });
+      proc = pty.spawn(launch.command, launch.args, {
         name: "xterm-256color",
         cols: opts.cols ?? DEFAULT_PTY_COLS,
         rows: opts.rows ?? DEFAULT_PTY_ROWS,
-        cwd: plan.cwd,
-        env,
+        cwd: launch.cwd,
+        env: launch.env as Record<string, string>,
       });
     } catch (err: any) {
       const msg = err?.message ?? String(err);
@@ -759,12 +850,12 @@ export class PtyCore {
     const id = shortId("pty");
     const p: Pty = {
       id,
-      taskId: opts.taskId,
+      sessionId: opts.sessionId,
       proc,
       buffer: [],
       bufferBytes: 0,
       nextSeq: 1,
-      cwd: opts.shellSession ? plan.cwd : (opts.cwd ?? plan.cwd),
+      cwd: plan.cwd,
       command: opts.command ?? "",
       agent: opts.agent,
       shell: opts.shell === true,
@@ -779,10 +870,17 @@ export class PtyCore {
     // answers whatever dialog is in the way, and sends the carriage return as
     // its own keystroke once the paste has settled. The client sent a string
     // and nothing else, whether it was a Panel, the CLI or an SDK automation.
-    const initialInput =
+    //
+    // The standard block (ADR 0026, issue 563) is appended here, once, to the
+    // sanitised text: this is the one string `HarnessPromptDelivery` types, and
+    // it re-types that same string when a harness swallows it, so a resend
+    // cannot carry a second block. The starting prompt is turn 1.
+    const userInput =
       plan.mode === "agent" && !opts.shell && !opts.shellSession
         ? sanitizeInitialInput(opts.initialInput)
         : undefined;
+    const initialInput =
+      userInput && opts.sessionId ? appendPromptBlock(userInput, { sessionId: opts.sessionId, turn: 1 }) : userInput;
     const promptDelivery =
       initialInput && plan.mode === "agent"
         ? new HarnessPromptDelivery({
@@ -808,7 +906,7 @@ export class PtyCore {
               // bearing** (issue 483, review of PR #487). Both of these append
               // to the same monotonic event log, and the status is the one that
               // *ends a client's wait*: `dialog-unanswered` writes the row
-              // through `CoreHarnessStatus` → `needs-input`, whose `task:updated`
+              // through `CoreHarnessStatus` → `needs-input`, whose `session:updated`
               // event resolves `waitForTurnEnd` synchronously on the client. A
               // client that resolved on event N and then read a reason that was
               // only appended as N+1 would report a clean settle for a prompt
@@ -816,13 +914,13 @@ export class PtyCore {
               // is about, moved one layer out. Appending the reason first makes
               // it strictly precede the status, so any client that hears the
               // status has already heard the reason. It costs nothing.
-              if (phase === "abandoned" && p.taskId) {
+              if (phase === "abandoned" && p.sessionId) {
                 // `reason` is the delivery module's own words — a dialog id it
                 // knows, or a composer that never arrived — and it goes through
                 // the same cleaner as the log line below, because a payload on
                 // the wire deserves at least what a log line gets.
                 reportPromptAbandoned(this.deps, {
-                  taskId: p.taskId,
+                  sessionId: p.sessionId,
                   ptyId: id,
                   reason: String(safeLogValue((detail as { reason?: unknown }).reason ?? "")),
                 });
@@ -831,7 +929,7 @@ export class PtyCore {
                 // reads this process's log. `needs-input` is what it is — a
                 // harness waiting on a human — and it is a settled status, so an
                 // SDK `waitForIdle` stops waiting instead of waiting forever.
-                reportOutputSignal(this.deps, p.taskId, "dialog-unanswered");
+                reportOutputSignal(this.deps, p.sessionId, "dialog-unanswered");
               }
               // And the other outcome, which had no wire at all until issue
               // 395: the prompt reached the harness. Said here rather than
@@ -840,13 +938,16 @@ export class PtyCore {
               // start` that read the second as the first would be claiming a
               // readiness nobody established — the defect 395 is about.
               //
-              // This runs inside `submit`, in the same synchronous tick as the
-              // carriage return, so the row is in the log before the event loop
-              // can carry a single byte of the harness's reply. Whatever status
-              // the turn produces is therefore strictly behind it.
-              if (event.phase === "delivered" && p.taskId) {
+              // For a harness whose return is not verified this runs inside
+              // `submit`, in the same synchronous tick as the carriage return, so
+              // the row is in the log before the event loop can carry a byte of
+              // the harness's reply. For opencode it runs when the delivery sees
+              // the working hint, from `onOutput` below, which is called after
+              // this chunk was appended and batched; the turn's own status is
+              // raised by later output, so the row is still ahead of it.
+              if (event.phase === "delivered" && p.sessionId) {
                 reportPromptDelivered(this.deps, {
-                  taskId: p.taskId,
+                  sessionId: p.sessionId,
                   ptyId: id,
                   characters: event.promptChars,
                   waitedMs: event.waitedMs,
@@ -854,6 +955,9 @@ export class PtyCore {
                   // matched a composer marker or typed on the quiet gap, and no
                   // client can work that out from the outside (issue 395).
                   composerObserved: event.composerObserved,
+                  // The block this prompt carried, so the Session row can say
+                  // which wording the harness was given (issue 563).
+                  promptBlockVersion: initialInput !== userInput ? PROMPT_BLOCK_VERSION : null,
                 });
               }
               // A dialog's label is harness output, so it goes through the same
@@ -862,7 +966,7 @@ export class PtyCore {
                 Object.entries(detail).map(([key, value]) => [key, safeLogValue(value)]),
               );
               log.info(`pty.prompt-delivery.${phase}`, {
-                taskId: safeLogValue(p.taskId),
+                sessionId: safeLogValue(p.sessionId),
                 agent: plan.agent,
                 ...safe,
               });
@@ -885,11 +989,11 @@ export class PtyCore {
     proc.onData((data: string) => {
       releaseSpawnHold();
       if (watchOutput) {
-        if (p.taskId) {
+        if (p.sessionId) {
           const kind = outputActivity.push(data, Date.now());
           if (kind) {
             try {
-              this.deps.onSessionOutputActivity?.({ taskId: p.taskId, kind });
+              this.deps.onSessionOutputActivity?.({ sessionId: p.sessionId, kind });
             } catch (err) {
               log.warn("pty.output-activity.failed", { error: String(err) });
             }
@@ -898,14 +1002,14 @@ export class PtyCore {
         const interrupted = hasClaudeInterruptPrompt(data);
         if (interrupted && !interruptReported) {
           interruptReported = true;
-          reportOutputSignal(this.deps, p.taskId, "interrupted");
+          reportOutputSignal(this.deps, p.sessionId, "interrupted");
         } else if (!interrupted) {
           interruptReported = false;
         }
         const hooksNeedReview = hasCodexHookReviewPrompt(data);
         if (hooksNeedReview && !hookReviewReported) {
           hookReviewReported = true;
-          reportOutputSignal(this.deps, p.taskId, "hooks-need-review");
+          reportOutputSignal(this.deps, p.sessionId, "hooks-need-review");
         } else if (!hooksNeedReview) {
           hookReviewReported = false;
         }
@@ -929,12 +1033,12 @@ export class PtyCore {
       // leaving it silent is no longer good enough.)
       if (
         promptDelivery &&
-        p.taskId &&
+        p.sessionId &&
         promptDelivery.currentPhase !== "delivered" &&
         promptDelivery.currentPhase !== "abandoned"
       ) {
         reportPromptAbandoned(this.deps, {
-          taskId: p.taskId,
+          sessionId: p.sessionId,
           ptyId: id,
           reason: "the harness exited before the prompt was delivered",
         });
@@ -943,11 +1047,11 @@ export class PtyCore {
       outputBatcher.flush(id);
       sendToEmitTarget({ type: "exit", ptyId: id, exitCode, signal });
       // The Session's process is gone; its row has to settle whether or not a
-      // Panel is watching (issue 84). Shells carry a taskId for routing but
+      // Panel is watching (issue 84). Shells carry a sessionId for routing but
       // are not agent work, so they settle nothing.
-      if (!p.shell && !p.shellSession && p.agent && p.taskId) {
+      if (!p.shell && !p.shellSession && p.agent && p.sessionId) {
         try {
-          this.deps.onSessionExit?.({ taskId: p.taskId, exitCode });
+          this.deps.onSessionExit?.({ sessionId: p.sessionId, exitCode });
         } catch (err) {
           log.warn("pty.exit.settle-failed", { error: String(err) });
         }
@@ -1013,36 +1117,36 @@ export class PtyCore {
   }
 
   /**
-   * The Task this PTY was spawned for, or null when this Core has no such PTY.
+   * The Session this PTY was spawned for, or null when this Core has no such PTY.
    *
-   * The inverse of {@link findByTask}, and the lookup the core-link server's
+   * The inverse of {@link findBySession}, and the lookup the core-link server's
    * Session-lock gate is built on (issue 144, ADR 0024 D4): `write` and `kill`
-   * name a `ptyId`, the lock is keyed by the Session, and a Session is its Task.
+   * name a `ptyId`, the lock is keyed by the Session, and a Session is its Session.
    *
    * **A read, and only a read.** The lock lives on the client-facing frame, not
    * in here: `PtyCore.kill` has callers inside the Core — the PTY exit paths and
-   * the task writer — that are nobody's client and hold nobody's lock, and a
+   * the session writer — that are nobody's client and hold nobody's lock, and a
    * gate in this class would have the Core start refusing itself.
    *
-   * Unlike `findByTask` this answers for **every** PTY, including project shells
-   * and VM Shell Sessions. `findByTask` skips those because handing a raw shell
+   * Unlike `findBySession` this answers for **every** PTY, including shells
+   * and VM Shell Sessions. `findBySession` skips those because handing a raw shell
    * back to an agent reattach would be wrong; here the question is the opposite
    * one — "whose Session would this mutation be touching?" — and a shell's
-   * answer is its own taskId, which is the id its own claim would name.
+   * answer is its own sessionId, which is the id its own claim would name.
    */
-  taskIdForPty(ptyId: string): string | null {
+  sessionIdForPty(ptyId: string): string | null {
     if (typeof ptyId !== "string" || !ptyId) return null;
-    return ptys.get(ptyId)?.taskId ?? null;
+    return ptys.get(ptyId)?.sessionId ?? null;
   }
 
-  findByTask(taskId: string): { ptyId: string | null } {
-    if (typeof taskId !== "string" || !taskId) return { ptyId: null };
+  findBySession(sessionId: string): { ptyId: string | null } {
+    if (typeof sessionId !== "string" || !sessionId) return { ptyId: null };
     let found: string | null = null;
     for (const p of ptys.values()) {
-      // Only agent sessions match by task. Shell terminals (project-scoped and
-      // VM Shell Sessions) carry a taskId for routing but are not agent work —
-      // a `findByTask` must not hand back a raw shell PTY to an agent reattach.
-      if (p.taskId === taskId && !p.shell && !p.shellSession) found = p.id;
+      // Only agent sessions match by session. Shell terminals (plain and
+      // VM Shell Sessions) carry a sessionId for routing but are not agent work —
+      // a `findBySession` must not hand back a raw shell PTY to an agent reattach.
+      if (p.sessionId === sessionId && !p.shell && !p.shellSession) found = p.id;
     }
     return { ptyId: found };
   }

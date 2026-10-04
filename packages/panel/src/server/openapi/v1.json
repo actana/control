@@ -1,0 +1,380 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Actana Control Panel public API",
+    "version": "1.0.0",
+    "description": "Public REST API for Cores, Agents, Tasks and comments. Authenticate with an API key (`Authorization: Bearer ak_…`). Every call runs as the key's owner. A key restricted to chosen Cores gets 403 outside that scope; a revoked key gets 401."
+  },
+  "servers": [{ "url": "/", "description": "The Panel origin" }],
+  "security": [{ "ApiKey": [] }],
+  "components": {
+    "securitySchemes": {
+      "ApiKey": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "ak_",
+        "description": "An API key created in Settings › API & integrations. Shown once at create time."
+      }
+    },
+    "schemas": {
+      "Error": {
+        "type": "object",
+        "required": ["error"],
+        "properties": { "error": { "type": "string" } }
+      },
+      "Core": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "label": { "type": "string" },
+          "endpoint": { "type": "string" },
+          "createdAt": { "type": "integer" },
+          "updatedAt": { "type": "integer" },
+          "dial": { "type": "object", "additionalProperties": true }
+        }
+      },
+      "Agent": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "coreId": { "type": "string" },
+          "name": { "type": "string" },
+          "harness": { "type": "string" },
+          "model": { "type": ["string", "null"] },
+          "isDefault": { "type": "boolean" }
+        }
+      },
+      "Task": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "title": { "type": "string" },
+          "description": { "type": "string" },
+          "status": {
+            "type": "string",
+            "enum": ["draft", "assigned", "in_progress", "done", "failed", "partial"]
+          },
+          "coreId": { "type": ["string", "null"] },
+          "agent": { "type": ["string", "null"] },
+          "attemptCount": { "type": "integer" },
+          "dispatchedAt": { "type": ["integer", "null"] },
+          "lastError": { "type": ["string", "null"] },
+          "createdAt": { "type": "integer" },
+          "updatedAt": { "type": "integer" }
+        }
+      },
+      "Comment": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "taskId": { "type": "string" },
+          "authorKind": { "type": "string", "enum": ["user", "agent", "system"] },
+          "authorName": { "type": "string" },
+          "sourceFile": { "type": ["string", "null"] },
+          "body": { "type": "string" },
+          "createdAt": { "type": "integer" }
+        }
+      }
+    }
+  },
+  "paths": {
+    "/api/v1/cores": {
+      "get": {
+        "operationId": "listCores",
+        "summary": "List Cores",
+        "description": "The owner's Cores. A restricted key lists only the Cores in its scope.",
+        "responses": {
+          "200": {
+            "description": "Cores",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "cores": { "type": "array", "items": { "$ref": "#/components/schemas/Core" } }
+                  }
+                }
+              }
+            }
+          },
+          "401": { "description": "Missing, unknown or revoked key", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+        }
+      }
+    },
+    "/api/v1/cores/{coreId}": {
+      "get": {
+        "operationId": "getCore",
+        "summary": "Get one Core",
+        "parameters": [{ "name": "coreId", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "responses": {
+          "200": {
+            "description": "Core",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": { "core": { "$ref": "#/components/schemas/Core" } }
+                }
+              }
+            }
+          },
+          "403": { "description": "Key does not reach this Core" },
+          "404": { "description": "No such Core of this owner" },
+          "401": { "description": "Unauthorized" }
+        }
+      }
+    },
+    "/api/v1/cores/{coreId}/agents": {
+      "get": {
+        "operationId": "listCoreAgents",
+        "summary": "List Agents on a Core",
+        "parameters": [{ "name": "coreId", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "responses": {
+          "200": {
+            "description": "Agents",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "agents": { "type": "array", "items": { "$ref": "#/components/schemas/Agent" } }
+                  }
+                }
+              }
+            }
+          },
+          "403": { "description": "Key does not reach this Core" },
+          "404": { "description": "No such Core" },
+          "401": { "description": "Unauthorized" }
+        }
+      }
+    },
+    "/api/v1/agents": {
+      "get": {
+        "operationId": "listAgents",
+        "summary": "List Agents",
+        "description": "The owner's Agents. A restricted key lists only Agents on Cores in its scope.",
+        "responses": {
+          "200": {
+            "description": "Agents",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "agents": { "type": "array", "items": { "$ref": "#/components/schemas/Agent" } }
+                  }
+                }
+              }
+            }
+          },
+          "401": { "description": "Unauthorized" }
+        }
+      },
+      "post": {
+        "operationId": "createAgent",
+        "summary": "Create an Agent",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["coreId", "name", "harness"],
+                "properties": {
+                  "coreId": { "type": "string" },
+                  "name": { "type": "string" },
+                  "harness": { "type": "string" },
+                  "model": { "type": ["string", "null"] },
+                  "flags": { "type": "array", "items": { "type": "string" } }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": { "description": "Created" },
+          "400": { "description": "Validation error" },
+          "403": { "description": "Key does not reach the Core" },
+          "404": { "description": "Core not found" },
+          "409": { "description": "Conflict" },
+          "401": { "description": "Unauthorized" }
+        }
+      }
+    },
+    "/api/v1/agents/{agentId}": {
+      "get": {
+        "operationId": "getAgent",
+        "summary": "Get one Agent",
+        "parameters": [{ "name": "agentId", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "responses": {
+          "200": { "description": "Agent" },
+          "403": { "description": "Key does not reach the Agent's Core" },
+          "404": { "description": "No such Agent" },
+          "401": { "description": "Unauthorized" }
+        }
+      },
+      "delete": {
+        "operationId": "deleteAgent",
+        "summary": "Delete an Agent",
+        "parameters": [{ "name": "agentId", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "responses": {
+          "204": { "description": "Deleted" },
+          "403": { "description": "Key does not reach the Agent's Core" },
+          "404": { "description": "No such Agent" },
+          "409": { "description": "A default Agent cannot be deleted" },
+          "401": { "description": "Unauthorized" }
+        }
+      }
+    },
+    "/api/v1/tasks": {
+      "get": {
+        "operationId": "listTasks",
+        "summary": "List Tasks",
+        "description": "The owner's Tasks. A restricted key lists only Tasks on Cores in its scope.",
+        "responses": {
+          "200": {
+            "description": "Tasks",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "tasks": { "type": "array", "items": { "$ref": "#/components/schemas/Task" } }
+                  }
+                }
+              }
+            }
+          },
+          "401": { "description": "Unauthorized" }
+        }
+      },
+      "post": {
+        "operationId": "createTask",
+        "summary": "Create a Task",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["title"],
+                "properties": {
+                  "title": { "type": "string" },
+                  "description": { "type": "string" },
+                  "coreId": { "type": ["string", "null"] },
+                  "agent": { "type": ["string", "null"] },
+                  "startNow": { "type": "boolean" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": { "description": "Created" },
+          "400": { "description": "Validation error" },
+          "403": { "description": "Key does not reach the Core" },
+          "404": { "description": "Core or Agent not found" },
+          "401": { "description": "Unauthorized" }
+        }
+      }
+    },
+    "/api/v1/tasks/{taskId}": {
+      "get": {
+        "operationId": "getTask",
+        "summary": "Get one Task with its comments",
+        "parameters": [{ "name": "taskId", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "responses": {
+          "200": { "description": "Task and comments" },
+          "403": { "description": "Key does not reach the Task's Core" },
+          "404": { "description": "No such Task" },
+          "401": { "description": "Unauthorized" }
+        }
+      }
+    },
+    "/api/v1/tasks/{taskId}/status": {
+      "post": {
+        "operationId": "setTaskStatus",
+        "summary": "Move a Task to assigned or draft",
+        "description": "Only the operator moves `assigned` and `draft` are accepted. Other statuses are the dispatcher's or the result watcher's.",
+        "parameters": [{ "name": "taskId", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["status"],
+                "properties": {
+                  "status": { "type": "string", "enum": ["assigned", "draft"] }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Updated Task" },
+          "400": { "description": "Status not allowed for a key client" },
+          "403": { "description": "Key does not reach the Task's Core" },
+          "404": { "description": "No such Task" },
+          "409": { "description": "Illegal status move" },
+          "401": { "description": "Unauthorized" }
+        }
+      }
+    },
+    "/api/v1/tasks/{taskId}/comments": {
+      "get": {
+        "operationId": "listTaskComments",
+        "summary": "List comments on a Task",
+        "parameters": [{ "name": "taskId", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "responses": {
+          "200": {
+            "description": "Comments",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "comments": { "type": "array", "items": { "$ref": "#/components/schemas/Comment" } }
+                  }
+                }
+              }
+            }
+          },
+          "403": { "description": "Key does not reach the Task's Core" },
+          "404": { "description": "No such Task" },
+          "401": { "description": "Unauthorized" }
+        }
+      },
+      "post": {
+        "operationId": "addTaskComment",
+        "summary": "Add a comment, or Comment & re-assign",
+        "parameters": [{ "name": "taskId", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["body"],
+                "properties": {
+                  "body": { "type": "string" },
+                  "reassign": { "type": "boolean" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Comment & re-assign result" },
+          "201": { "description": "Comment created" },
+          "400": { "description": "Validation error" },
+          "403": { "description": "Key does not reach the Task's Core" },
+          "404": { "description": "No such Task" },
+          "409": { "description": "Re-assign refused" },
+          "401": { "description": "Unauthorized" }
+        }
+      }
+    }
+  }
+}

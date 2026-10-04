@@ -49,7 +49,7 @@ export async function requestOsNotificationPermission(): Promise<OsNotificationP
 
 /**
  * Raise one notification for a finished Session. Clicking it focuses this tab
- * and runs `onClick`, which is what navigates to the Session's Core and Task.
+ * and runs `onClick`, which is what navigates to the Session's Core and Session.
  * The `tag` collapses a repeat of the same Session in the OS's own tray.
  */
 export async function showSessionFinishOsNotification(

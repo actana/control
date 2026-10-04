@@ -2,16 +2,47 @@
 // (#282). The end-to-end proof that a real server behaves this way is in
 // `core-pairing-redeem.test.ts`; this is the rule that server applies.
 import { describe, expect, it } from "vitest";
+import { createPairing } from "@actana/sdk/pairing/server";
 import {
   clientCertGate,
   coreLinkUpgradeGate,
   rejectUnauthorizedAtHandshake,
 } from "../core-preauth-gate";
-import { isPairingPath } from "../core-pairing-wiring";
+// The predicate production hands the server: the one `createPairing` builds for
+// the Core (`core-entry.ts` mounts `pairing.gate.isPreAuthPath`). It is the
+// exact redemption path, tighter than 0.4.5's `/v1/pair/` prefix.
+const isPairingPath = createPairing({
+  store: {} as unknown as Parameters<typeof createPairing>[0]["store"],
+  material: {
+    caCert: "", caKey: "", serverCert: "", serverKey: "", clientCert: "", clientKey: "",
+    bearerSecret: "preauth-suite-secret-at-least-32-bytes",
+    coreId: "core-1",
+    coreUuid: "3f6d0f0a-6c1f-4a5e-9c2f-1d0a5b7e9c31",
+    serverHosts: ["127.0.0.1"],
+  },
+  endpointScheme: "wss",
+  onRevoked: () => {},
+}).gate.isPreAuthPath;
+
+describe("the production pre-auth predicate", () => {
+  it("names the redemption path and nothing else", () => {
+    expect(isPairingPath("/v1/pair/redeem")).toBe(true);
+    expect(isPairingPath("/v1/pair/other")).toBe(false);
+    expect(isPairingPath("/v1/pair/")).toBe(false);
+    expect(isPairingPath("/v1/pair/redeem/extra")).toBe(false);
+    expect(isPairingPath("/v1/files")).toBe(false);
+  });
+
+  it("refuses an uncertificated client on /v1/pair/other", () => {
+    expect(clientCertGate({ pathname: "/v1/pair/other", authorized: false, isPreAuthPath: isPairingPath })).toBe(
+      "refuse",
+    );
+  });
+});
 
 describe("clientCertGate", () => {
   it("serves anything to a connection that presented a verified certificate", () => {
-    expect(clientCertGate({ pathname: "/v1/projects/p1/files", authorized: true })).toBe("serve");
+    expect(clientCertGate({ pathname: "/v1/files", authorized: true })).toBe("serve");
     expect(clientCertGate({ pathname: "/v1/pair/redeem", authorized: true, isPreAuthPath: isPairingPath })).toBe(
       "serve",
     );
@@ -24,7 +55,7 @@ describe("clientCertGate", () => {
   });
 
   it("refuses every other path to that connection", () => {
-    for (const pathname of ["/v1/projects/p1/files", "/v1/projects/p1/files/list", "/healthz", "/"]) {
+    for (const pathname of ["/v1/files", "/v1/files/list", "/healthz", "/"]) {
       expect(clientCertGate({ pathname, authorized: false, isPreAuthPath: isPairingPath })).toBe("refuse");
     }
   });

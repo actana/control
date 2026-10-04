@@ -2,7 +2,7 @@
 //
 // #166 asks for the routes ticket's confinement rules to hold here and to be
 // **tested independently rather than inherited on trust**, and this file is
-// that clause. It does not import `confineToProjectRoot`, does not assert what
+// that clause. It does not import `confineToWorkspace`, does not assert what
 // it returns, and would not notice if it were replaced — every case goes in as
 // an HTTP request and is judged by what comes back out. That is the point: the
 // listing route sharing a confinement call with the read route today is not a
@@ -35,7 +35,7 @@ let server: http.Server;
 let base: string;
 let projects: Record<string, string> = {};
 
-const filesPort: CoreFilesPort = { projectRoot: (id) => projects[id] ?? null };
+const filesPort: CoreFilesPort = { workspaceRoot: () => Object.values(projects)[0] ?? null };
 
 beforeEach(async () => {
   projects = {};
@@ -57,10 +57,10 @@ afterEach(async () => {
 
 type Listing = { status: number; body: Buffer };
 
-function list(query: string, projectId = "p1"): Promise<Listing> {
+function list(query: string): Promise<Listing> {
   return new Promise((resolve, reject) => {
     const req = http.request(
-      `${base}/v1/projects/${projectId}/files/list${query}`,
+      `${base}/v1/files/list${query}`,
       { method: "GET", agent: false },
       (res) => {
         const chunks: Buffer[] = [];

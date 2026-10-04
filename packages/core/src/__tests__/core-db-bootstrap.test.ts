@@ -10,7 +10,7 @@ import { bootstrapCoreDb } from "../core-db-bootstrap";
 // core-link server starts accepting frames. These tests pin the invariants the
 // remote-Core boot path relies on: the schema comes up healthy from every
 // starting state (missing file, missing dir, empty file, already-migrated
-// file), a real `projects` query works after bootstrap, and startup fails
+// file), a real `sessions` query works after bootstrap, and startup fails
 // loudly rather than silently degrading when the DB can't be opened.
 
 function tmpDir(): string {
@@ -28,7 +28,7 @@ describe("bootstrapCoreDb", () => {
     if (userDataDir) fs.rmSync(userDataDir, { recursive: true, force: true });
   });
 
-  it("creates missioncontrol.db and the projects schema on a fresh VM", () => {
+  it("creates missioncontrol.db and the sessions schema on a fresh VM", () => {
     const dbPath = path.join(userDataDir, "missioncontrol.db");
     expect(fs.existsSync(dbPath)).toBe(false);
 
@@ -43,10 +43,8 @@ describe("bootstrapCoreDb", () => {
     // land against a real table rather than degrade to `[]` on `db-missing`.
     const db = new Database(dbPath, { readonly: true });
     try {
-      const rows = db.prepare("SELECT * FROM projects").all();
-      expect(rows).toEqual([]);
-      const tasks = db.prepare("SELECT * FROM tasks").all();
-      expect(tasks).toEqual([]);
+      const sessions = db.prepare("SELECT * FROM sessions").all();
+      expect(sessions).toEqual([]);
     } finally {
       db.close();
     }
@@ -80,7 +78,7 @@ describe("bootstrapCoreDb", () => {
 
     const db = new Database(dbPath, { readonly: true });
     try {
-      expect(db.prepare("SELECT * FROM projects").all()).toEqual([]);
+      expect(db.prepare("SELECT * FROM sessions").all()).toEqual([]);
     } finally {
       db.close();
     }
@@ -94,8 +92,8 @@ describe("bootstrapCoreDb", () => {
     const seed = new Database(first.dbPath);
     try {
       seed.exec(`
-        INSERT INTO projects (id, name, path, icon, icon_color, created_at, updated_at)
-        VALUES ('p1', 'proj', '/tmp/p', 'Folder', '#000', 0, 0);
+        INSERT INTO sessions (id, title, agent, created_at, updated_at)
+        VALUES ('s1', 'a session', 'codex', 0, 0);
       `);
     } finally {
       seed.close();
@@ -107,8 +105,8 @@ describe("bootstrapCoreDb", () => {
 
     const db = new Database(first.dbPath, { readonly: true });
     try {
-      const rows = db.prepare("SELECT id FROM projects").all() as { id: string }[];
-      expect(rows.map((r) => r.id)).toEqual(["p1"]);
+      const rows = db.prepare("SELECT id FROM sessions").all() as { id: string }[];
+      expect(rows.map((r) => r.id)).toEqual(["s1"]);
     } finally {
       db.close();
     }
@@ -142,6 +140,47 @@ describe("bootstrapCoreDb", () => {
     } finally {
       db.close();
     }
+  });
+
+  // 0.5.0 Cores are installed fresh and nothing migrates (#555, ADR 0041). A
+  // database an earlier Core left behind is refused at boot, naming itself, and
+  // is left exactly as it was found — not adopted, not "repaired".
+  describe("a database from before 0.5.0", () => {
+    function seedOldDatabase(): string {
+      const dbPath = path.join(userDataDir, "missioncontrol.db");
+      const old = new Database(dbPath);
+      try {
+        old.exec(`
+          CREATE TABLE projects (id TEXT PRIMARY KEY, name TEXT NOT NULL, path TEXT NOT NULL);
+          CREATE TABLE sessions (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, title TEXT NOT NULL);
+          INSERT INTO projects (id, name, path) VALUES ('p1', 'old', '/srv/old');
+          INSERT INTO sessions (id, project_id, title) VALUES ('s1', 'p1', 'old session');
+        `);
+      } finally {
+        old.close();
+      }
+      return dbPath;
+    }
+
+    it("refuses to boot, and says to install fresh", () => {
+      seedOldDatabase();
+      expect(() => bootstrapCoreDb(userDataDir)).toThrow(/before Core 0\.5\.0.*install a 0\.5\.0 Core fresh/);
+    });
+
+    it("leaves the old database exactly as it found it: no table added, no row touched", () => {
+      const dbPath = seedOldDatabase();
+      expect(() => bootstrapCoreDb(userDataDir)).toThrow();
+      const db = new Database(dbPath, { readonly: true });
+      try {
+        const tables = db
+          .prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")
+          .all() as { name: string }[];
+        expect(tables.map((t) => t.name)).toEqual(["projects", "sessions"]);
+        expect(db.prepare("SELECT title FROM sessions").all()).toEqual([{ title: "old session" }]);
+      } finally {
+        db.close();
+      }
+    });
   });
 
   it("throws when userDataDir is empty (no silent degradation)", () => {

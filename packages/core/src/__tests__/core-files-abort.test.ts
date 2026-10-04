@@ -25,20 +25,20 @@ import * as fs from "node:fs";
 import * as http from "node:http";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createCoreFilesRequestHandler, type CoreFilesPort } from "../core-files-routes";
-import { ProjectWriteLocks } from "../files-transfer-locks";
+import { WorkspaceWriteLocks } from "../files-transfer-locks";
 import { packDirectory } from "../files-tar";
 import { cleanupTrees, collect, makeTree } from "./files-fixture";
 
 let server: http.Server;
 let base: string;
 let projects: Record<string, string> = {};
-let locks: ProjectWriteLocks;
+let locks: WorkspaceWriteLocks;
 
-const filesPort: CoreFilesPort = { projectRoot: (id) => projects[id] ?? null };
+const filesPort: CoreFilesPort = { workspaceRoot: () => Object.values(projects)[0] ?? null };
 
 beforeEach(async () => {
   projects = {};
-  locks = new ProjectWriteLocks();
+  locks = new WorkspaceWriteLocks();
   const routes = createCoreFilesRequestHandler({ filesPort, locks });
   server = http.createServer();
   server.on("request", (req, res) => {
@@ -54,6 +54,13 @@ afterEach(async () => {
   await new Promise<void>((resolve) => server.close(() => resolve()));
   cleanupTrees();
 });
+
+/** Every file under a directory, at any depth. */
+function countFiles(dir: string): number {
+  return fs
+    .readdirSync(dir, { withFileTypes: true })
+    .reduce((n, entry) => n + (entry.isDirectory() ? countFiles(`${dir}/${entry.name}`) : 1), 0);
+}
 
 const delay = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -75,9 +82,9 @@ async function eventually(predicate: () => boolean, timeoutMs = 5000): Promise<b
  * loopback socket buffer, not to move a lot of file bytes. 900 entries of ~250
  * bytes is roughly 220 KB of progress for 9 KB of payload.
  */
-async function backpressuringTar(): Promise<Buffer> {
+async function backpressuringTar(count = 900): Promise<Buffer> {
   const entries: Record<string, string> = {};
-  for (let i = 0; i < 900; i += 1) {
+  for (let i = 0; i < count; i += 1) {
     const name = `deeply/nested/folder/with/a/long/enough/path/to/fatten/every/progress/line/entry-${String(i).padStart(4, "0")}.txt`;
     entries[name] = "x".repeat(10);
   }
@@ -114,12 +121,12 @@ describe("a client that hangs up mid-transfer", () => {
     projects.p1 = makeTree();
     const tar = await backpressuringTar();
 
-    const upload = abortableUpload("/v1/projects/p1/files?path=drop", tar);
+    const upload = abortableUpload("/v1/files?path=drop", tar);
 
     // Wait for the handler to be genuinely in the middle of the transfer: the
     // lease taken, the 200 sent, and enough entries written that the response
     // has stopped accepting them.
-    expect(await eventually(() => locks.current("p1") !== null)).toBe(true);
+    expect(await eventually(() => locks.current() !== null)).toBe(true);
     expect(await eventually(() => upload.responded())).toBe(true);
     await delay(250);
 
@@ -128,25 +135,57 @@ describe("a client that hangs up mid-transfer", () => {
     // The assertion the review asked for. Before the fix this stayed held for
     // the lifetime of the process, because the handler was parked inside
     // `writeLine` awaiting a `'drain'` that a destroyed socket never emits.
-    expect(await eventually(() => locks.current("p1") === null)).toBe(true);
-    expect(locks.current("p1")).toBeNull();
+    expect(await eventually(() => locks.current() === null)).toBe(true);
+    expect(locks.current()).toBeNull();
   });
+
+  // Ported from `packages/sdk` (#580 T-404): the in-repo client's real-socket suite was the only
+  // test that a slow reader of the progress stream parks the Core's unpack loop, so the Core does
+  // not run a whole upload to completion ahead of a consumer that has read three lines.
+  it("stops unpacking while the reader of the progress stream has stopped reading", async () => {
+    projects.p1 = makeTree();
+    // Enough progress (a few MB) to outrun the loopback socket buffers, which swallow the 220 KB
+    // the lease tests use whole.
+    const entries = 30000;
+    const tar = await backpressuringTar(entries);
+
+    const upload = abortableUpload("/v1/files?path=drop", tar);
+    expect(await eventually(() => upload.responded(), 20_000)).toBe(true);
+
+    // Count what is on disk until it either reaches the end or stops moving. Unpacking takes
+    // however long it takes, so the answer is "it stalled short of the end", not a wall-clock cut.
+    const countNow = (): number => (fs.existsSync(`${projects.p1}/drop`) ? countFiles(`${projects.p1}/drop`) : 0);
+    let written = countNow();
+    for (let still = 0; still < 6 && written < entries; ) {
+      await delay(250);
+      const now = countNow();
+      still = now === written ? still + 1 : 0;
+      written = now;
+    }
+    upload.abort();
+
+    // Strictly short of the end, and not nothing: the Core wrote until the reader's buffers were
+    // full and then waited. A Core that buffered instead would finish every entry for a reader
+    // that read none.
+    expect(written).toBeGreaterThan(0);
+    expect(written).toBeLessThan(entries);
+  }, 60_000);
 
   it("leaves the Project writable, rather than 409 for the lifetime of the process", async () => {
     projects.p1 = makeTree();
     const tar = await backpressuringTar();
 
-    const upload = abortableUpload("/v1/projects/p1/files?path=drop", tar);
-    expect(await eventually(() => locks.current("p1") !== null)).toBe(true);
+    const upload = abortableUpload("/v1/files?path=drop", tar);
+    expect(await eventually(() => locks.current() !== null)).toBe(true);
     await delay(250);
     upload.abort();
-    expect(await eventually(() => locks.current("p1") === null)).toBe(true);
+    expect(await eventually(() => locks.current() === null)).toBe(true);
 
     // The refusal F8 asks to be immediate must not have become permanent: a
     // later write to the same Project is served, not refused.
     const after = await new Promise<{ status: number; body: string }>((resolve, reject) => {
       const req = http.request(
-        `${base}/v1/projects/p1/files?path=after.txt`,
+        `${base}/v1/files?path=after.txt`,
         { method: "PUT", headers: { "content-type": "text/plain" }, agent: false },
         (res) => {
           const chunks: Buffer[] = [];
@@ -206,7 +245,7 @@ describe("a client that hangs up mid-transfer", () => {
 
     const abortOneDownload = async (): Promise<void> => {
       await new Promise<void>((resolve, reject) => {
-        const req = http.request(`${base}/v1/projects/p1/files?path=payload`, { method: "GET", agent: false }, (res) => {
+        const req = http.request(`${base}/v1/files?path=payload`, { method: "GET", agent: false }, (res) => {
           res.pause();
           res.on("error", () => {});
           // Long enough for the server to fill the socket and park mid-file.

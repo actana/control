@@ -16,15 +16,30 @@ export { nodeRequestToFetch } from "./node-http-bridge";
 /**
  * Vite plugin that mounts the MissionControl `/api/*` Web-fetch handler
  * as a Connect middleware. Lazy-imports the handler so Vite's SSR
- * boundary keeps better-sqlite3 / native bindings on the Node side.
+ * boundary keeps native bindings on the Node side.
  */
 export function missionControlApi(): Plugin {
   return {
     name: "mission-control-api",
     configureServer(server) {
+      // The Panel's state is in Postgres, so the dev server needs the same
+      // database the built service does (AC_PANEL_DATABASE_URL). Vite cannot
+      // refuse to start from here, so a failure is logged where it will be seen
+      // and every API call then answers 500 until it is fixed.
+      const databaseReady = server
+        .ssrLoadModule("/src/server/panel-boot.ts")
+        .then(({ bootPanel }) => (bootPanel as () => Promise<unknown>)())
+        .then(
+          () => undefined,
+          (err: unknown) => {
+            console.error(`[mc-api] ${err instanceof Error ? err.message : String(err)}`);
+          },
+        );
+      // eslint-disable-next-line @typescript-eslint/no-misused-promises -- dev-only middleware; its body catches every failure and calls next()
       server.middlewares.use(async (req, res, next) => {
-        if (!req.url || !req.url.startsWith("/api/")) return next();
+        if (!req.url || !(req.url.startsWith("/api/") || req.url === "/mcp" || req.url.startsWith("/mcp?") || req.url === "/.well-known/jwks.json" || req.url.startsWith("/.well-known/jwks.json?"))) return next();
         try {
+          await databaseReady;
           const { handleApiRequest } = await server.ssrLoadModule(
             "/src/server/api-router.ts"
           );
@@ -59,9 +74,11 @@ export function missionControlApi(): Plugin {
       // The same Operator gate the built server applies (src/server.ts). Dev
       // renders SSR through Vite's own pipeline, so without this the dev Panel
       // would serve the app shell to anyone.
+      // eslint-disable-next-line @typescript-eslint/no-misused-promises -- dev-only middleware; its body catches every failure and calls next()
       server.middlewares.use(async (req, res, next) => {
         if (!req.headers.accept?.includes("text/html")) return next();
         try {
+          await databaseReady;
           const { documentAuthRedirect } = await server.ssrLoadModule(
             "/src/server/panel-auth.ts",
           );

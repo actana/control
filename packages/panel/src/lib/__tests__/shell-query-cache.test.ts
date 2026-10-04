@@ -1,11 +1,11 @@
 import { QueryClient } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { ProjectWithCounts } from "~/shared/projects";
 import {
   SHELL_QUERY_CACHE_KEYS,
   SHELL_QUERY_CACHE_VERSION,
   installShellQueryCache,
-  readCachedProjects,
+  readCachedCoreCount,
+  readCachedSettings,
 } from "../shell-query-cache";
 
 function mockWindowStorage() {
@@ -32,40 +32,6 @@ function mockWindowStorage() {
   };
 }
 
-function makeProject(overrides: Partial<ProjectWithCounts> = {}): ProjectWithCounts {
-  return {
-    id: "project-1",
-    name: "Core",
-    path: "/tmp/core",
-    icon: "folder",
-    iconColor: "#ffffff",
-    imagePath: null,
-    groupId: null,
-    pinned: true,
-    pinnedOrder: 0,
-    launchUrl: null,
-    rememberHarnessSettings: false,
-    savedHarness: null,
-    savedSkipPermissions: false,
-    savedBareSession: false,
-    defaultGridView: false,
-    createdAt: 1,
-    updatedAt: 1,
-    taskCounts: {
-      ready: 0,
-      running: 0,
-      "needs-input": 0,
-      interrupted: 0,
-      finished: 0,
-      terminated: 0,
-      disconnected: 0,
-      total: 0,
-      activeNonDone: 0,
-    },
-    ...overrides,
-  };
-}
-
 describe("shell query cache", () => {
   let storage: ReturnType<typeof mockWindowStorage>;
 
@@ -77,32 +43,40 @@ describe("shell query cache", () => {
     storage.restore();
   });
 
-  it("persists shell queries when the query cache receives fresh data", () => {
+  it("persists the settings query when the query cache receives fresh data", () => {
     const queryClient = new QueryClient();
-    const projects = [makeProject()];
+    const settings: Record<string, unknown> = { terminalZoomLevel: 3 };
 
     installShellQueryCache(queryClient);
-    queryClient.setQueryData(["projects"], projects);
+    queryClient.setQueryData(["settings"], settings);
 
-    expect(readCachedProjects()).toEqual(projects);
+    expect(readCachedSettings()).toEqual(settings);
   });
 
   it("ignores similarly-prefixed detail query keys", () => {
     const queryClient = new QueryClient();
-    const projects = [makeProject({ id: "detail" })];
 
     installShellQueryCache(queryClient);
-    queryClient.setQueryData(["projects", "detail"], projects);
+    queryClient.setQueryData(["settings", "detail"], { terminalZoomLevel: 3 });
 
-    expect(readCachedProjects()).toBeUndefined();
+    expect(readCachedSettings()).toBeUndefined();
   });
 
   it("ignores cache envelopes from older versions", () => {
     storage.store.set(
-      SHELL_QUERY_CACHE_KEYS.projects,
-      JSON.stringify({ version: 0, savedAt: Date.now(), data: [makeProject()] }),
+      SHELL_QUERY_CACHE_KEYS.coreCount,
+      JSON.stringify({ version: 0, savedAt: Date.now(), data: 3 }),
     );
 
-    expect(readCachedProjects()).toBeUndefined();
+    expect(readCachedCoreCount()).toBeUndefined();
+  });
+
+  it("reads back an envelope of the current version", () => {
+    storage.store.set(
+      SHELL_QUERY_CACHE_KEYS.coreCount,
+      JSON.stringify({ version: SHELL_QUERY_CACHE_VERSION, savedAt: Date.now(), data: 3 }),
+    );
+
+    expect(readCachedCoreCount()).toBe(3);
   });
 });

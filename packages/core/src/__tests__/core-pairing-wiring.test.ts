@@ -5,10 +5,16 @@
 // answer `/v1/pair/redeem` with the `401` a client without a bearer gets —
 // which is every client that is here to be given one.
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { describe, expect, it } from "vitest";
+import { EventEmitter } from "node:events";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import log from "@actana/shared/log";
 import type { CoreHttpRoutes } from "../core-files-routes";
-import { buildPairingEndpointResolver, composeCoreHttpRoutes, isPairingPath } from "../core-pairing-wiring";
-import { createPairingSession, type PairingSession } from "@actana/shared/pairing-session";
+import {
+  auditPairingRoutes,
+  composeCoreHttpRoutes,
+  reportUnreadableRevocations,
+  revokedHandler,
+} from "../core-pairing-wiring";
 
 /** A family that claims whatever its prefix names, and records that it did. */
 function family(prefix: string, claimed: string[]): CoreHttpRoutes {
@@ -48,7 +54,7 @@ describe("composeCoreHttpRoutes", () => {
     const claimed: string[] = [];
     const routes = composeCoreHttpRoutes(family("/v1/pair/", claimed), family("/v1/", claimed));
 
-    expect(routes.handle(request("/v1/projects/p1/files"), response())).toBe(true);
+    expect(routes.handle(request("/v1/files"), response())).toBe(true);
     expect(claimed).toEqual(["/v1/"]);
   });
 
@@ -69,72 +75,142 @@ describe("composeCoreHttpRoutes", () => {
   });
 });
 
-describe("isPairingPath", () => {
-  it("names the pairing prefix and nothing else", () => {
-    expect(isPairingPath("/v1/pair/redeem")).toBe(true);
-    expect(isPairingPath("/v1/projects/p1/files")).toBe(false);
-    expect(isPairingPath("/v1/pairing")).toBe(false);
-    expect(isPairingPath("/")).toBe(false);
+describe("auditPairingRoutes", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  /** A response that finishes with `status`, and a request from `peer`. */
+  function exchange(peer: string | undefined) {
+    const res = Object.assign(new EventEmitter(), { statusCode: 0 }) as unknown as ServerResponse & EventEmitter;
+    const req = { url: "/v1/pair/redeem", socket: { remoteAddress: peer } } as unknown as IncomingMessage;
+    return { req, res };
+  }
+
+  it("writes one line per attempt, when the response finishes", () => {
+    const info = vi.spyOn(log, "info").mockImplementation(() => {});
+    const routes = auditPairingRoutes(family("/v1/pair/", []));
+    const { req, res } = exchange("203.0.113.9");
+
+    expect(routes.handle(req, res)).toBe(true);
+    expect(info).not.toHaveBeenCalled();
+    res.statusCode = 403;
+    res.emit("finish");
+
+    expect(info).toHaveBeenCalledTimes(1);
+    expect(info).toHaveBeenCalledWith(
+      "pairing.attempt",
+      expect.objectContaining({ outcome: "refused", status: 403, peer: "203.0.113.9" }),
+    );
+  });
+
+  it.each([
+    [200, "issued"],
+    [400, "bad-request"],
+    [413, "bad-request"],
+    [429, "rate-limited"],
+    [500, "core-error"],
+  ])("calls a %i %s", (status, outcome) => {
+    const info = vi.spyOn(log, "info").mockImplementation(() => {});
+    const routes = auditPairingRoutes(family("/v1/pair/", []));
+    const { req, res } = exchange("203.0.113.9");
+    routes.handle(req, res);
+    res.statusCode = status;
+    res.emit("finish");
+    expect(info).toHaveBeenCalledWith("pairing.attempt", expect.objectContaining({ outcome }));
+  });
+
+  it("writes nothing for a request the pairing family does not claim", () => {
+    const info = vi.spyOn(log, "info").mockImplementation(() => {});
+    const routes = auditPairingRoutes(family("/v1/pair/", []));
+    const { req, res } = exchange("203.0.113.9");
+    req.url = "/v1/files";
+
+    expect(routes.handle(req, res)).toBe(false);
+    res.emit("finish");
+    expect(info).not.toHaveBeenCalled();
+  });
+
+  it("never puts anything from the request body or headers in the line", () => {
+    const info = vi.spyOn(log, "info").mockImplementation(() => {});
+    const routes = auditPairingRoutes(family("/v1/pair/", []));
+    const { req, res } = exchange(undefined);
+    Object.assign(req, { headers: { authorization: "Bearer secret" }, body: "ABCD-EFGH" });
+    routes.handle(req, res);
+    res.statusCode = 200;
+    res.emit("finish");
+
+    const line = JSON.stringify(info.mock.calls[0]);
+    expect(line).not.toContain("secret");
+    expect(line).not.toContain("ABCD-EFGH");
+    expect(line).toContain("unknown");
+  });
+
+  it("writes one line when the response finishes and then closes", () => {
+    const info = vi.spyOn(log, "info").mockImplementation(() => {});
+    const routes = auditPairingRoutes(family("/v1/pair/", []));
+    const { req, res } = exchange("203.0.113.9");
+    routes.handle(req, res);
+    res.statusCode = 200;
+    Object.assign(res, { writableFinished: true });
+    res.emit("finish");
+    res.emit("close");
+
+    expect(info).toHaveBeenCalledTimes(1);
+    expect(info).toHaveBeenCalledWith("pairing.attempt", expect.objectContaining({ outcome: "issued" }));
+  });
+
+  it("writes a line for a request that was destroyed or hung up, where finish never fires", () => {
+    const info = vi.spyOn(log, "info").mockImplementation(() => {});
+    const routes = auditPairingRoutes(family("/v1/pair/", []));
+    const { req, res } = exchange("203.0.113.9");
+    routes.handle(req, res);
+    res.statusCode = 200;
+    Object.assign(res, { writableFinished: false });
+    res.emit("close");
+    res.emit("close");
+
+    expect(info).toHaveBeenCalledTimes(1);
+    expect(info).toHaveBeenCalledWith(
+      "pairing.attempt",
+      expect.objectContaining({ outcome: "aborted", peer: "203.0.113.9" }),
+    );
   });
 });
 
-// ─── Which address a redemption hands back (#347) ───────────────────────────
-//
-// One Core, several configured addresses, and a client that has to be told the
-// one *it* can reach. The rule this suite pins is the constraint the whole
-// design rests on: the answer comes from the stored session, and it can only
-// ever be an address this Core's certificate covers.
-
-describe("buildPairingEndpointResolver", () => {
-  const session = (endpointHost?: string | null): PairingSession => ({
-    ...createPairingSession({ id: "ps_1", label: "laptop", codeHash: "h", now: 0 }),
-    endpointHost: endpointHost ?? null,
+describe("the fail-closed log line", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
   });
 
-  it("hands back the host the operator chose for this code", () => {
-    const resolve = buildPairingEndpointResolver({
-      publicHosts: ["core", "10.0.0.5"],
-      port: 8443,
+  it("is written when the seeding refresh could not read the store", () => {
+    const error = vi.spyOn(log, "error").mockImplementation(() => {});
+    expect(reportUnreadableRevocations({ ok: false, error: "pairing.json is not valid JSON" })).toBe(true);
+    expect(error).toHaveBeenCalledWith("core-pairing.revocation.unreadable", {
+      error: "pairing.json is not valid JSON",
+      effect: "every pairing refused",
     });
-
-    expect(resolve(session("10.0.0.5"))).toBe("wss://10.0.0.5:8443");
-    expect(resolve(session("core"))).toBe("wss://core:8443");
   });
 
-  // The default is today's behaviour, and it is what every code minted before
-  // there was a choice still means.
-  it("hands back the primary when the code chose nothing", () => {
-    const resolve = buildPairingEndpointResolver({
-      publicHosts: ["core", "10.0.0.5"],
-      port: 8443,
-    });
-
-    expect(resolve(session(null))).toBe("wss://core:8443");
-    // A session written before the field existed carries no `endpointHost` at
-    // all, and means the same thing.
-    const { endpointHost: _absent, ...legacy } = session(null);
-    expect(resolve(legacy as PairingSession)).toBe("wss://core:8443");
+  it("is not written when the store was read", () => {
+    const error = vi.spyOn(log, "error").mockImplementation(() => {});
+    expect(reportUnreadableRevocations({ ok: true })).toBe(false);
+    expect(error).not.toHaveBeenCalled();
   });
 
-  // **A pairing code can never introduce a host the certificate has no SAN
-  // for.** `actana pair new` refuses to mint one, and this is the second
-  // enforcement: an operator can shorten `ACTANA_PUBLIC_HOST` while a code
-  // minted against the longer list is still live, and by then the certificate
-  // no longer covers the address that code was going to name. The primary is
-  // an address the client can actually verify; the stale one is not.
-  it("falls back to the primary for a host that is no longer configured", () => {
-    const resolve = buildPairingEndpointResolver({ publicHosts: ["core"], port: 8443 });
-
-    expect(resolve(session("10.0.0.5"))).toBe("wss://core:8443");
-    expect(resolve(session("evil.example"))).toBe("wss://core:8443");
+  it("is written by onRevoked when the sweep reports fail-closed, and the links are still closed", () => {
+    const error = vi.spyOn(log, "error").mockImplementation(() => {});
+    let closed = 0;
+    revokedHandler(() => true, () => (closed += 1))();
+    expect(closed).toBe(1);
+    expect(error).toHaveBeenCalledWith("core-pairing.revocation.unreadable", expect.objectContaining({ effect: "every pairing refused" }));
   });
 
-  it("reads nothing but the session — there is nothing else to read", () => {
-    const resolve = buildPairingEndpointResolver({ publicHosts: ["core"], port: 9443 });
-    // The resolver's whole input is one `PairingSession`. A `Host` header, a
-    // peer address or a body field cannot reach it, which is the property
-    // `core-pairing-routes.ts` has always had and #347 did not spend.
-    expect(resolve.length).toBe(1);
-    expect(resolve(session("core"))).toBe("wss://core:9443");
+  it("is not written by onRevoked for an ordinary revocation", () => {
+    const error = vi.spyOn(log, "error").mockImplementation(() => {});
+    let closed = 0;
+    revokedHandler(() => false, () => (closed += 1))();
+    expect(closed).toBe(1);
+    expect(error).not.toHaveBeenCalled();
   });
 });

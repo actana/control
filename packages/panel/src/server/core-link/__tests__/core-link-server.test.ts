@@ -8,7 +8,7 @@
 // past a cursor, the mutation port's throw becoming an `error` frame.
 //
 // That client is gone: the Panel dials with `@actana/sdk`'s durable Core client
-// now (#156), and the client-side suites went with it — `packages/sdk` covers
+// now (#156), and the client-side suites went with it — the SDK's own suite (actana/client) covers
 // that half against this same server, plus a real `wss://` handshake. What is
 // left here is every server-side test, unchanged, because nothing about the
 // Core moved and coverage of it should not have been collateral.
@@ -25,7 +25,7 @@ import {
   CORE_LINK_PROTOCOL_VERSION,
   type CoreLinkEvent,
   type CoreLinkSessionLock,
-} from "@actana/sdk/core-link-frames";
+} from "@actana/sdk/core";
 import { signBearer, verifyBearer, type BearerSecret } from "@actana/shared/core-link-bearer";
 
 /**
@@ -39,7 +39,7 @@ import { signBearer, verifyBearer, type BearerSecret } from "@actana/shared/core
 const UNLOCKED: CoreLinkSessionLock = { writable: true, state: "unlocked" };
 
 /** The same rows the port handed over, as the wire carries them. */
-function published<T extends { taskId: string }>(
+function published<T extends { sessionId: string }>(
   rows: T[],
 ): Array<T & { lock: CoreLinkSessionLock }> {
   return rows.map((row) => ({ ...row, lock: UNLOCKED }));
@@ -140,11 +140,11 @@ function makeMockCore(): PtyCore & {
       ports: [{ port: 3000, pids: [123], killed: [123], errors: [] }],
     })),
     killPtysUnderPath: vi.fn(async () => ({ ptyCount: 1 })),
-    findByTask: vi.fn(() => ({ ptyId: "pty-test-1" })),
+    findBySession: vi.fn(() => ({ ptyId: "pty-test-1" })),
     // Which Session a `write`/`kill` would touch (issue 144) — the lookup the
     // Core's Session-lock gate resolves a ptyId through. Null here: this suite
     // claims nothing, so every Session it touches is unlocked and served.
-    taskIdForPty: vi.fn(() => null),
+    sessionIdForPty: vi.fn(() => null),
     replay: vi.fn(() => ({ data: "buffered", nextSeq: 42 })),
     killAll: vi.fn(),
     _emit: null,
@@ -235,7 +235,7 @@ describe("PtyCoreLinkServer", () => {
     pair.server.receive({
       type: "spawn",
       reqId: "r1",
-      opts: { taskId: "t1", cwd: "/tmp", command: "claude", agent: "claude-code" },
+      opts: { sessionId: "t1", command: "claude", agent: "claude-code" },
     });
     await vi.waitFor(() => expect(core.spawn).toHaveBeenCalled());
     expect(pair.server.lastSent()).toMatchObject({
@@ -268,11 +268,11 @@ describe("PtyCoreLinkServer", () => {
     await vi.waitFor(() => expect(core.replay).toHaveBeenCalledWith("p1", 40));
   });
 
-  it("dispatches findByTask and sends findByTaskResult", async () => {
-    pair.server.receive({ type: "findByTask", reqId: "r4", taskId: "t1" });
-    await vi.waitFor(() => expect(core.findByTask).toHaveBeenCalledWith("t1"));
+  it("dispatches findBySession and sends findBySessionResult", async () => {
+    pair.server.receive({ type: "findBySession", reqId: "r4", sessionId: "t1" });
+    await vi.waitFor(() => expect(core.findBySession).toHaveBeenCalledWith("t1"));
     expect(pair.server.lastSent()).toEqual({
-      type: "findByTaskResult",
+      type: "findBySessionResult",
       reqId: "r4",
       ptyId: "pty-test-1",
     });
@@ -307,51 +307,37 @@ describe("PtyCoreLinkServer", () => {
   });
 });
 
-// ─── projectsList / tasksList via CoreQueryPort (issue 07) ───────────────
+// ─── sessionRowsList via CoreQueryPort (issue 07) ───────────────
 
 import type { CoreQueryPort } from "@actana/core/pty-core-link-server";
-import type {
-  CoreLinkProjectSnapshot,
-  CoreLinkTaskSnapshot,
-} from "@actana/sdk/core-link-frames";
+import type { CoreSessionRow } from "@actana/shared/core-query";
 
 /** In-memory CoreQueryPort for tests. */
 class FakeQueryPort implements CoreQueryPort {
-  projects: CoreLinkProjectSnapshot[] = [];
-  tasks: CoreLinkTaskSnapshot[] = [];
-  listProjectsCalls = 0;
-  listTasksCalls: (string | undefined)[] = [];
+  sessions: CoreSessionRow[] = [];
+  listSessionRowsCalls = 0;
+  listArchivedSessionsCalls = 0;
 
-  listProjects(): CoreLinkProjectSnapshot[] {
-    this.listProjectsCalls++;
-    return this.projects;
-  }
-  listArchivedTasksCalls: (string | undefined)[] = [];
-
-  // Mirrors the real port's split: `listTasks` is the active list and has no
+  // Mirrors the real port's split: `listSessionRows` is the active list and has no
   // argument that reaches an archived row; the archived rows have their own
   // method behind their own frame (ADR 0019).
-  listTasks(projectId?: string): CoreLinkTaskSnapshot[] {
-    this.listTasksCalls.push(projectId);
-    return this.inScope(projectId).filter((t) => !t.archived);
+  listSessionRows(): CoreSessionRow[] {
+    this.listSessionRowsCalls++;
+    return this.sessions.filter((t) => !t.archived);
   }
-  listArchivedTasks(projectId?: string): CoreLinkTaskSnapshot[] {
-    this.listArchivedTasksCalls.push(projectId);
-    return this.inScope(projectId).filter((t) => t.archived);
+  listArchivedSessions(): CoreSessionRow[] {
+    this.listArchivedSessionsCalls++;
+    return this.sessions.filter((t) => t.archived);
   }
-  countArchivedTasks(projectId?: string): number {
-    return this.inScope(projectId).filter((t) => t.archived).length;
+  countArchivedSessions(): number {
+    return this.sessions.filter((t) => t.archived).length;
   }
-  getTask(taskId: string): CoreLinkTaskSnapshot | null {
-    return this.tasks.find((t) => t.taskId === taskId) ?? null;
-  }
-  private inScope(projectId?: string): CoreLinkTaskSnapshot[] {
-    if (projectId === undefined) return this.tasks;
-    return this.tasks.filter((t) => t.projectId === projectId);
+  getSession(sessionId: string): CoreSessionRow | null {
+    return this.sessions.find((t) => t.sessionId === sessionId) ?? null;
   }
 }
 
-describe("PtyCoreLinkServer projectsList / tasksList (issue 07)", () => {
+describe("PtyCoreLinkServer sessionRowsList (issue 07)", () => {
   let core: ReturnType<typeof makeMockCore>;
   let server: PtyCoreLinkServer;
   let fakeWss: FakeWebSocketServer;
@@ -376,37 +362,11 @@ describe("PtyCoreLinkServer projectsList / tasksList (issue 07)", () => {
     server.close();
   });
 
-  it("answers projectsList with the query port's project snapshots", async () => {
-    queryPort.projects = [
+  it("answers sessionRowsList with every session from the query port", async () => {
+    queryPort.sessions = [
       {
-        projectId: "p1",
-        name: "mission-control",
-        path: "/home/op/mission-control",
-        icon: "MC",
-        iconColor: "#7ce58a",
-        pinned: true,
-        rememberHarnessSettings: false,
-        savedHarness: null,
-        savedSkipPermissions: false,
-        savedBareSession: false,
-        defaultGridView: false,
-        updatedAt: 1,
-      },
-    ];
-    pair.server.receive({ type: "projectsList", reqId: "r1" });
-    await vi.waitFor(() => expect(queryPort.listProjectsCalls).toBe(1));
-    expect(pair.server.lastSent()).toEqual({
-      type: "projectsListResult",
-      reqId: "r1",
-      projects: queryPort.projects,
-    });
-  });
-
-  it("answers tasksList (no projectId) with every task from the query port", async () => {
-    queryPort.tasks = [
-      {
-        taskId: "t1",
-        projectId: "p1",
+        sessionId: "t1",
+       
         title: "fix bug",
         titleManuallySet: false,
         claudeSessionId: null,
@@ -418,8 +378,8 @@ describe("PtyCoreLinkServer projectsList / tasksList (issue 07)", () => {
         updatedAt: 2,
       },
       {
-        taskId: "t2",
-        projectId: "p2",
+        sessionId: "t2",
+       
         title: "ship",
         titleManuallySet: false,
         claudeSessionId: null,
@@ -431,77 +391,48 @@ describe("PtyCoreLinkServer projectsList / tasksList (issue 07)", () => {
         updatedAt: 3,
       },
     ];
-    pair.server.receive({ type: "tasksList", reqId: "r2" });
-    await vi.waitFor(() => expect(queryPort.listTasksCalls).toEqual([undefined]));
+    pair.server.receive({ type: "sessionRowsList", reqId: "r2" });
+    await vi.waitFor(() => expect(queryPort.listSessionRowsCalls).toBe(1));
     expect(pair.server.lastSent()).toEqual({
-      type: "tasksListResult",
+      type: "sessionRowsListResult",
       reqId: "r2",
-      tasks: published(queryPort.tasks),
-      archivedCount: 0,
-    });
-  });
-
-  it("forwards the projectId filter on tasksList to the query port", async () => {
-    queryPort.tasks = [
-      { taskId: "t1", projectId: "p1", title: "a", titleManuallySet: false, claudeSessionId: null, agent: "claude-code", status: "running", pinned: false, archived: false, icon: null, updatedAt: 1 },
-      { taskId: "t2", projectId: "p2", title: "b", titleManuallySet: false, claudeSessionId: null, agent: "claude-code", status: "running", pinned: false, archived: false, icon: null, updatedAt: 1 },
-    ];
-    pair.server.receive({ type: "tasksList", reqId: "r3", projectId: "p1" });
-    await vi.waitFor(() => expect(queryPort.listTasksCalls).toEqual(["p1"]));
-    expect(pair.server.lastSent()).toEqual({
-      type: "tasksListResult",
-      reqId: "r3",
-      tasks: published([queryPort.tasks[0]]),
+      sessions: published(queryPort.sessions),
       archivedCount: 0,
     });
   });
 
   // ─── Archived read path (issue 62, ADR 0019) ───
 
-  it("keeps archived rows off tasksListResult and reports only how many there are", async () => {
-    queryPort.tasks = [
-      { taskId: "live", projectId: "p1", title: "a", titleManuallySet: false, claudeSessionId: null, agent: "claude-code", status: "running", pinned: false, archived: false, icon: null, updatedAt: 3 },
-      { taskId: "old1", projectId: "p1", title: "b", titleManuallySet: false, claudeSessionId: null, agent: "claude-code", status: "done", pinned: false, archived: true, icon: null, updatedAt: 2 },
-      { taskId: "old2", projectId: "p1", title: "c", titleManuallySet: false, claudeSessionId: null, agent: "claude-code", status: "done", pinned: false, archived: true, icon: null, updatedAt: 1 },
+  it("keeps archived rows off sessionRowsListResult and reports only how many there are", async () => {
+    queryPort.sessions = [
+      { sessionId: "live", title: "a", titleManuallySet: false, claudeSessionId: null, agent: "claude-code", status: "running", pinned: false, archived: false, icon: null, updatedAt: 3 },
+      { sessionId: "old1", title: "b", titleManuallySet: false, claudeSessionId: null, agent: "claude-code", status: "done", pinned: false, archived: true, icon: null, updatedAt: 2 },
+      { sessionId: "old2", title: "c", titleManuallySet: false, claudeSessionId: null, agent: "claude-code", status: "done", pinned: false, archived: true, icon: null, updatedAt: 1 },
     ];
-    pair.server.receive({ type: "tasksList", reqId: "r4", projectId: "p1" });
-    await vi.waitFor(() => expect(pair.server.lastSent()?.type).toBe("tasksListResult"));
+    pair.server.receive({ type: "sessionRowsList", reqId: "r4" });
+    await vi.waitFor(() => expect(pair.server.lastSent()?.type).toBe("sessionRowsListResult"));
     expect(pair.server.lastSent()).toEqual({
-      type: "tasksListResult",
+      type: "sessionRowsListResult",
       reqId: "r4",
-      tasks: published([queryPort.tasks[0]]),
+      sessions: published([queryPort.sessions[0]]),
       archivedCount: 2,
     });
   });
 
-  it("answers archivedTasksList with the archived rows and nothing else", async () => {
-    queryPort.tasks = [
-      { taskId: "live", projectId: "p1", title: "a", titleManuallySet: false, claudeSessionId: null, agent: "claude-code", status: "running", pinned: false, archived: false, icon: null, updatedAt: 3 },
-      { taskId: "old", projectId: "p1", title: "b", titleManuallySet: false, claudeSessionId: null, agent: "claude-code", status: "done", pinned: false, archived: true, icon: null, updatedAt: 2 },
+  it("answers archivedSessionRowsList with the archived rows and nothing else", async () => {
+    queryPort.sessions = [
+      { sessionId: "live", title: "a", titleManuallySet: false, claudeSessionId: null, agent: "claude-code", status: "running", pinned: false, archived: false, icon: null, updatedAt: 3 },
+      { sessionId: "old", title: "b", titleManuallySet: false, claudeSessionId: null, agent: "claude-code", status: "done", pinned: false, archived: true, icon: null, updatedAt: 2 },
     ];
-    pair.server.receive({ type: "archivedTasksList", reqId: "r5", projectId: "p1" });
-    await vi.waitFor(() => expect(queryPort.listArchivedTasksCalls).toEqual(["p1"]));
+    pair.server.receive({ type: "archivedSessionRowsList", reqId: "r5" });
+    await vi.waitFor(() => expect(queryPort.listArchivedSessionsCalls).toBe(1));
     expect(pair.server.lastSent()).toEqual({
-      type: "archivedTasksListResult",
+      type: "archivedSessionRowsListResult",
       reqId: "r5",
-      tasks: published([queryPort.tasks[1]]),
+      sessions: published([queryPort.sessions[1]]),
     });
     // The archived read path never reaches the active one.
-    expect(queryPort.listTasksCalls).toEqual([]);
-  });
-
-  it("scopes archivedTasksList to one project, and lists every Core-wide row without one", async () => {
-    queryPort.tasks = [
-      { taskId: "o1", projectId: "p1", title: "a", titleManuallySet: false, claudeSessionId: null, agent: "claude-code", status: "done", pinned: false, archived: true, icon: null, updatedAt: 2 },
-      { taskId: "o2", projectId: "p2", title: "b", titleManuallySet: false, claudeSessionId: null, agent: "claude-code", status: "done", pinned: false, archived: true, icon: null, updatedAt: 1 },
-    ];
-    pair.server.receive({ type: "archivedTasksList", reqId: "r6", projectId: "p2" });
-    await vi.waitFor(() => expect(pair.server.lastSent()?.type).toBe("archivedTasksListResult"));
-    expect(pair.server.lastSent()).toMatchObject({ tasks: [queryPort.tasks[1]] });
-
-    pair.server.receive({ type: "archivedTasksList", reqId: "r7" });
-    await vi.waitFor(() => expect(queryPort.listArchivedTasksCalls).toEqual(["p2", undefined]));
-    expect(pair.server.lastSent()).toMatchObject({ reqId: "r7", tasks: queryPort.tasks });
+    expect(queryPort.listSessionRowsCalls).toBe(0);
   });
 
   it("returns empty results when no queryPort is configured (backward compat)", async () => {
@@ -526,25 +457,21 @@ describe("PtyCoreLinkServer projectsList / tasksList (issue 07)", () => {
     wss.simulateConnection(p.server);
     p.openClient();
 
-    p.server.receive({ type: "projectsList", reqId: "r1" });
-    await vi.waitFor(() => expect(p.server.lastSent()?.type).toBe("projectsListResult"));
-    expect(p.server.lastSent()).toMatchObject({ type: "projectsListResult", reqId: "r1", projects: [] });
-
-    p.server.receive({ type: "tasksList", reqId: "r2" });
-    await vi.waitFor(() => expect(p.server.lastSent()?.type).toBe("tasksListResult"));
+    p.server.receive({ type: "sessionRowsList", reqId: "r2" });
+    await vi.waitFor(() => expect(p.server.lastSent()?.type).toBe("sessionRowsListResult"));
     expect(p.server.lastSent()).toMatchObject({
-      type: "tasksListResult",
+      type: "sessionRowsListResult",
       reqId: "r2",
-      tasks: [],
+      sessions: [],
       archivedCount: 0,
     });
 
-    p.server.receive({ type: "archivedTasksList", reqId: "r3" });
-    await vi.waitFor(() => expect(p.server.lastSent()?.type).toBe("archivedTasksListResult"));
+    p.server.receive({ type: "archivedSessionRowsList", reqId: "r3" });
+    await vi.waitFor(() => expect(p.server.lastSent()?.type).toBe("archivedSessionRowsListResult"));
     expect(p.server.lastSent()).toMatchObject({
-      type: "archivedTasksListResult",
+      type: "archivedSessionRowsListResult",
       reqId: "r3",
-      tasks: [],
+      sessions: [],
     });
     s.close();
   });
@@ -561,14 +488,14 @@ class FakeEventLog implements EventLogPort {
   appendEvent(
     kind: string,
     payload: string,
-    opts: { ptyId?: string | null; taskId?: string | null } = {},
+    opts: { ptyId?: string | null; sessionId?: string | null } = {},
   ): number {
     const event: CoreLinkEvent = {
       eventId: this.nextId++,
       ts: Date.now(),
       kind,
       ptyId: opts.ptyId ?? null,
-      taskId: opts.taskId ?? null,
+      sessionId: opts.sessionId ?? null,
       payload,
     };
     this.events.push(event);
@@ -586,7 +513,7 @@ class FakeEventLog implements EventLogPort {
   }
 
   /** Test helper: seed an event as if the server process recorded it. */
-  seed(kind: string, payload: string, opts?: { ptyId?: string; taskId?: string }): number {
+  seed(kind: string, payload: string, opts?: { ptyId?: string; sessionId?: string }): number {
     return this.appendEvent(kind, payload, opts);
   }
 }
@@ -633,11 +560,11 @@ describe("PtyCoreLinkServer event log", () => {
     pair.server.receive({
       type: "spawn",
       reqId: "r1",
-      opts: { taskId: "t1", cwd: "/tmp", command: "claude", agent: "claude-code" },
+      opts: { sessionId: "t1", command: "claude", agent: "claude-code" },
     });
     await vi.waitFor(() => expect(core.spawn).toHaveBeenCalled());
     expect(eventLog.readEventTail(0)).toContainEqual(
-      expect.objectContaining({ kind: "pty:spawn", ptyId: "pty-test-1", taskId: "t1" }),
+      expect.objectContaining({ kind: "pty:spawn", ptyId: "pty-test-1", sessionId: "t1" }),
     );
   });
 
@@ -649,13 +576,13 @@ describe("PtyCoreLinkServer event log", () => {
     pair.server.receive({
       type: "spawn",
       reqId: "r2",
-      opts: { shellSession: true, taskId: "vm1" },
+      opts: { shellSession: true, sessionId: "vm1" },
     });
     await vi.waitFor(() => expect(core.spawn).toHaveBeenCalled());
     const spawns = eventLog.readEventTail(0).filter((e) => e.kind === "pty:spawn");
     expect(spawns).toHaveLength(1);
     expect(spawns[0]!.ptyId).toBe("pty-test-1");
-    expect(spawns[0]!.taskId).toBe("vm1");
+    expect(spawns[0]!.sessionId).toBe("vm1");
     expect(JSON.parse(spawns[0]!.payload).shellSession).toBe(true);
   });
 
@@ -665,7 +592,7 @@ describe("PtyCoreLinkServer event log", () => {
     pair.server.receive({
       type: "spawn",
       reqId: "r3",
-      opts: { taskId: "t1", cwd: "/tmp", command: "claude", agent: "claude-code" },
+      opts: { sessionId: "t1", command: "claude", agent: "claude-code" },
     });
     await vi.waitFor(() => expect(core.spawn).toHaveBeenCalled());
     const spawns = eventLog.readEventTail(0).filter((e) => e.kind === "pty:spawn");
@@ -674,9 +601,9 @@ describe("PtyCoreLinkServer event log", () => {
   });
 
   it("replays the event tail on subscribe then sends eventsReplayed", () => {
-    // Seed events from the "server process" (task lifecycle).
-    eventLog.seed("task:created", '{"id":"t1"}', { taskId: "t1" });
-    eventLog.seed("task:updated", '{"id":"t1","status":"running"}', { taskId: "t1" });
+    // Seed events from the "server process" (session lifecycle).
+    eventLog.seed("session:created", '{"id":"t1"}', { sessionId: "t1" });
+    eventLog.seed("session:updated", '{"id":"t1","status":"running"}', { sessionId: "t1" });
 
     // Drain the `ready` frame sent on connection so only the replay frames
     // are inspected.
@@ -689,8 +616,8 @@ describe("PtyCoreLinkServer event log", () => {
     // Then two event frames
     const eventFrames = frames.filter((f) => f.type === "event");
     expect(eventFrames).toHaveLength(2);
-    expect((eventFrames[0] as { event: CoreLinkEvent }).event.kind).toBe("task:created");
-    expect((eventFrames[1] as { event: CoreLinkEvent }).event.kind).toBe("task:updated");
+    expect((eventFrames[0] as { event: CoreLinkEvent }).event.kind).toBe("session:created");
+    expect((eventFrames[1] as { event: CoreLinkEvent }).event.kind).toBe("session:updated");
     // Then the eventsReplayed marker carrying the new cursor
     const replayed = frames.filter((f) => f.type === "eventsReplayed");
     expect(replayed).toHaveLength(1);
@@ -698,8 +625,8 @@ describe("PtyCoreLinkServer event log", () => {
   });
 
   it("replays only events past the lastEventId cursor", () => {
-    const first = eventLog.seed("task:created", "{}", { taskId: "t1" });
-    eventLog.seed("task:updated", "{}", { taskId: "t1" });
+    const first = eventLog.seed("session:created", "{}", { sessionId: "t1" });
+    eventLog.seed("session:updated", "{}", { sessionId: "t1" });
 
     pair.server.sent.length = 0;
     pair.server.receive({ type: "subscribe", reqId: "sub1", lastEventId: first });
@@ -707,7 +634,7 @@ describe("PtyCoreLinkServer event log", () => {
     const frames = sentFrames();
     const eventFrames = frames.filter((f) => f.type === "event");
     expect(eventFrames).toHaveLength(1);
-    expect((eventFrames[0] as { event: CoreLinkEvent }).event.kind).toBe("task:updated");
+    expect((eventFrames[0] as { event: CoreLinkEvent }).event.kind).toBe("session:updated");
     const replayed = frames.find((f) => f.type === "eventsReplayed") as
       | { lastEventId: number }
       | undefined;
@@ -730,18 +657,18 @@ describe("PtyCoreLinkServer event log", () => {
     // Drain the immediate replay frames.
     pair.server.sent.length = 0;
 
-    // A task event lands "after" the replay — the poll must push it live.
-    eventLog.seed("task:updated", '{"status":"running"}', { taskId: "t1" });
+    // A session event lands "after" the replay — the poll must push it live.
+    eventLog.seed("session:updated", '{"status":"running"}', { sessionId: "t1" });
 
     await vi.waitFor(() => {
       expect(sentFrames().some((f) => f.type === "event")).toBe(true);
     });
     const eventFrames = sentFrames().filter((f) => f.type === "event");
-    expect((eventFrames[0] as { event: CoreLinkEvent }).event.kind).toBe("task:updated");
+    expect((eventFrames[0] as { event: CoreLinkEvent }).event.kind).toBe("session:updated");
   });
 
   it("does not push live events before the connection subscribes", async () => {
-    eventLog.seed("task:updated", "{}", { taskId: "t1" });
+    eventLog.seed("session:updated", "{}", { sessionId: "t1" });
     // Give the poll a chance to run — it must stay silent (not subscribed).
     await new Promise((r) => setTimeout(r, 20));
     expect(sentFrames().some((f) => f.type === "event")).toBe(false);
@@ -824,7 +751,7 @@ describe("PtyCoreLinkServer bearer auth", () => {
   });
 
   it("does not stream the event tail until authenticated", () => {
-    eventLog.seed("task:created", "{}", { taskId: "t1" });
+    eventLog.seed("session:created", "{}", { sessionId: "t1" });
     // Subscribe before auth → rejected, no event frames sent.
     pair.server.receive({ type: "subscribe", reqId: "s1", lastEventId: 0 });
     const frames = pair.server.sent.map((s) => JSON.parse(s) as Record<string, unknown>);
@@ -832,7 +759,7 @@ describe("PtyCoreLinkServer bearer auth", () => {
   });
 
   it("streams the event tail after auth → subscribe", () => {
-    eventLog.seed("task:created", "{}", { taskId: "t1" });
+    eventLog.seed("session:created", "{}", { sessionId: "t1" });
     const bearer = signBearer({ coreId: "core_1", exp: Date.now() + 60_000 }, AUTH_SECRET);
     pair.server.receive({ type: "auth", reqId: "a1", bearer });
     pair.server.sent.length = 0;
@@ -848,7 +775,7 @@ describe("PtyCoreLinkServer bearer auth", () => {
     pair.server.receive({
       type: "spawn",
       reqId: "r1",
-      opts: { taskId: "t1", cwd: "/tmp", command: "claude", agent: "claude-code" },
+      opts: { sessionId: "t1", command: "claude", agent: "claude-code" },
     });
     await vi.waitFor(() => expect(core.spawn).toHaveBeenCalled());
     expect(pair.server.lastSent()).toMatchObject({ type: "spawned", reqId: "r1" });
@@ -856,90 +783,39 @@ describe("PtyCoreLinkServer bearer auth", () => {
 });
 
 
-// ─── projectsMutate / tasksMutate / sessionsList via CoreMutationPort ────
+// ─── sessionsMutate / sessionsList via CoreMutationPort ────
 // Issue 04 (ADR 0004): the Core process owns the write path against its
 // SQLite. The server dispatches these frames to the mutation port; a null
 // port keeps backward-compat stubs.
 
 import type { CoreMutationPort } from "@actana/core/pty-core-link-server";
-import type {
-  CoreLinkProjectMutation,
-  CoreLinkSessionSnapshot,
-  CoreLinkTaskMutation,
-} from "@actana/sdk/core-link-frames";
+import type { CoreLinkSessionSnapshot } from "@actana/sdk/core";
+import type { CoreSessionMutation } from "@actana/shared/core-mutations";
 
 /** In-memory CoreMutationPort for tests. Records every call so assertions
  *  can verify the server threaded the frame through unchanged. */
 class FakeMutationPort implements CoreMutationPort {
-  projects: CoreLinkProjectSnapshot[] = [];
-  tasks: CoreLinkTaskSnapshot[] = [];
+  sessionRows: CoreSessionRow[] = [];
   sessions: CoreLinkSessionSnapshot[] = [];
-  mutateProjectCalls: CoreLinkProjectMutation[] = [];
-  mutateTaskCalls: CoreLinkTaskMutation[] = [];
-  listSessionsCalls: (string | undefined)[] = [];
-  throwOnNextMutateProject: string | null = null;
-  throwOnNextMutateTask: string | null = null;
+  mutateSessionCalls: CoreSessionMutation[] = [];
+  listSessionsCalls = 0;
+  throwOnNextMutateSession: string | null = null;
 
-  mutateProject(mutation: CoreLinkProjectMutation): CoreLinkProjectSnapshot | null {
-    this.mutateProjectCalls.push(mutation);
-    if (this.throwOnNextMutateProject) {
-      const msg = this.throwOnNextMutateProject;
-      this.throwOnNextMutateProject = null;
-      throw new Error(msg);
-    }
-    if (mutation.op === "create") {
-      const snap: CoreLinkProjectSnapshot = {
-        projectId: mutation.projectId ?? `p-${this.projects.length + 1}`,
-        name: mutation.name,
-        path: mutation.path,
-        icon: mutation.icon ?? "PR",
-        iconColor: mutation.iconColor ?? "#7ce58a",
-        pinned: mutation.pinned === true,
-        rememberHarnessSettings: false,
-        savedHarness: null,
-        savedSkipPermissions: false,
-        savedBareSession: false,
-        defaultGridView: false,
-        updatedAt: 1,
-      };
-      this.projects.push(snap);
-      return snap;
-    }
-    if (mutation.op === "rename") {
-      const p = this.projects.find((x) => x.projectId === mutation.projectId);
-      if (!p) return null;
-      p.name = mutation.name;
-      return p;
-    }
-    if (mutation.op === "pin") {
-      const p = this.projects.find((x) => x.projectId === mutation.projectId);
-      if (!p) return null;
-      p.pinned = mutation.pinned;
-      return p;
-    }
-    // archive
-    const idx = this.projects.findIndex((x) => x.projectId === mutation.projectId);
-    if (idx < 0) return null;
-    const [removed] = this.projects.splice(idx, 1);
-    return removed ?? null;
-  }
-
-  mutateTask(mutation: CoreLinkTaskMutation): CoreLinkTaskSnapshot | null {
-    this.mutateTaskCalls.push(mutation);
-    if (this.throwOnNextMutateTask) {
-      const msg = this.throwOnNextMutateTask;
-      this.throwOnNextMutateTask = null;
+  mutateSession(mutation: CoreSessionMutation): CoreSessionRow | null {
+    this.mutateSessionCalls.push(mutation);
+    if (this.throwOnNextMutateSession) {
+      const msg = this.throwOnNextMutateSession;
+      this.throwOnNextMutateSession = null;
       throw new Error(msg);
     }
     // Mirror the real store's runtime guard: an unknown `op` throws so the
     // server sends an actionable `error` frame instead of silently no-op'ing.
     if (mutation.op !== "create" && mutation.op !== "update") {
-      throw new Error(`unknown task mutation op: ${(mutation as { op?: string }).op}`);
+      throw new Error(`unknown session mutation op: ${(mutation as { op?: string }).op}`);
     }
     if (mutation.op === "create") {
-      const snap: CoreLinkTaskSnapshot = {
-        taskId: mutation.taskId ?? `t-${this.tasks.length + 1}`,
-        projectId: mutation.projectId,
+      const snap: CoreSessionRow = {
+        sessionId: mutation.sessionId ?? `t-${this.sessionRows.length + 1}`,
         title: mutation.title,
         titleManuallySet: false,
         claudeSessionId: null,
@@ -950,10 +826,10 @@ class FakeMutationPort implements CoreMutationPort {
         icon: mutation.icon ?? null,
         updatedAt: 1,
       };
-      this.tasks.push(snap);
+      this.sessionRows.push(snap);
       return snap;
     }
-    const t = this.tasks.find((x) => x.taskId === mutation.taskId);
+    const t = this.sessionRows.find((x) => x.sessionId === mutation.sessionId);
     if (!t) return null;
     if (mutation.status !== undefined) t.status = mutation.status;
     if (mutation.title !== undefined) t.title = mutation.title;
@@ -963,14 +839,13 @@ class FakeMutationPort implements CoreMutationPort {
     return t;
   }
 
-  listSessions(projectId?: string): CoreLinkSessionSnapshot[] {
-    this.listSessionsCalls.push(projectId);
-    if (projectId === undefined) return this.sessions;
-    return this.sessions.filter((s) => this.tasks.find((t) => t.taskId === s.taskId)?.projectId === projectId);
+  listSessions(): CoreLinkSessionSnapshot[] {
+    this.listSessionsCalls++;
+    return this.sessions;
   }
 }
 
-describe("PtyCoreLinkServer projectsMutate / tasksMutate / sessionsList (issue 04)", () => {
+describe("PtyCoreLinkServer sessionsMutate / sessionsList (issue 04)", () => {
   let core: ReturnType<typeof makeMockCore>;
   let server: PtyCoreLinkServer;
   let fakeWss: FakeWebSocketServer;
@@ -998,271 +873,160 @@ describe("PtyCoreLinkServer projectsMutate / tasksMutate / sessionsList (issue 0
     server.close();
   });
 
-  it("round-trips projectsMutate create → response carries the new snapshot", async () => {
+  it("round-trips sessionsMutate create → response carries the new session", async () => {
     pair.server.receive({
-      type: "projectsMutate",
-      reqId: "r1",
-      mutation: { op: "create", name: "New Project", path: "/home/op/np" },
-    });
-    await vi.waitFor(() =>
-      expect(mutationPort.mutateProjectCalls).toHaveLength(1),
-    );
-    expect(pair.server.lastSent()).toMatchObject({
-      type: "projectsMutateResult",
-      reqId: "r1",
-      project: { name: "New Project", path: "/home/op/np" },
-    });
-  });
-
-  it("appends a project:created event on a successful create", async () => {
-    pair.server.receive({
-      type: "projectsMutate",
-      reqId: "r1",
-      mutation: { op: "create", projectId: "p-x", name: "X", path: "/x" },
-    });
-    await vi.waitFor(() =>
-      expect(mutationPort.mutateProjectCalls).toHaveLength(1),
-    );
-    const events = eventLog.readEventTail(0);
-    expect(events).toContainEqual(
-      expect.objectContaining({ kind: "project:created" }),
-    );
-    const created = events.find((e) => e.kind === "project:created");
-    expect(JSON.parse(created!.payload)).toEqual({ projectId: "p-x" });
-  });
-
-  it("does not append an event when the mutation returns null (unknown row)", async () => {
-    pair.server.receive({
-      type: "projectsMutate",
-      reqId: "r1",
-      mutation: { op: "rename", projectId: "missing", name: "y" },
-    });
-    await vi.waitFor(() =>
-      expect(pair.server.lastSent()?.type).toBe("projectsMutateResult"),
-    );
-    expect(pair.server.lastSent()).toMatchObject({ project: null });
-    expect(eventLog.readEventTail(0)).toEqual([]);
-  });
-
-  it("translates a mutation-store throw into an error frame with the message", async () => {
-    mutationPort.throwOnNextMutateProject =
-      "project path does not exist on the Core: /nowhere";
-    pair.server.receive({
-      type: "projectsMutate",
-      reqId: "r1",
-      mutation: { op: "create", name: "X", path: "/nowhere" },
-    });
-    await vi.waitFor(() => expect(pair.server.lastSent()?.type).toBe("error"));
-    expect(pair.server.lastSent()).toMatchObject({
-      type: "error",
-      reqId: "r1",
-      message: expect.stringContaining("does not exist on the Core"),
-    });
-    expect(eventLog.readEventTail(0)).toEqual([]);
-  });
-
-  it("round-trips tasksMutate create → response carries the new task", async () => {
-    pair.server.receive({
-      type: "tasksMutate",
+      type: "sessionsMutate",
       reqId: "r1",
       mutation: {
         op: "create",
-        projectId: "p1",
         title: "fix bug",
-        titleManuallySet: false,
-        claudeSessionId: null,
         agent: "claude-code",
       },
     });
-    await vi.waitFor(() => expect(mutationPort.mutateTaskCalls).toHaveLength(1));
+    await vi.waitFor(() => expect(mutationPort.mutateSessionCalls).toHaveLength(1));
     expect(pair.server.lastSent()).toMatchObject({
-      type: "tasksMutateResult",
+      type: "sessionsMutateResult",
       reqId: "r1",
-      task: { projectId: "p1", title: "fix bug", titleManuallySet: false, claudeSessionId: null, agent: "claude-code" },
+      session: { title: "fix bug", agent: "claude-code" },
     });
   });
 
-  it("appends project:renamed on a rename (not project:updated — matches ADR-0004)", async () => {
-    // Seed a project.
+  it("translates a session mutation-store throw into an error frame with the message", async () => {
+    mutationPort.throwOnNextMutateSession = "session title is required";
     pair.server.receive({
-      type: "projectsMutate",
-      reqId: "seed",
-      mutation: { op: "create", projectId: "p1", name: "old", path: "/p" },
-    });
-    await vi.waitFor(() => expect(mutationPort.mutateProjectCalls).toHaveLength(1));
-    pair.server.receive({
-      type: "projectsMutate",
-      reqId: "r2",
-      mutation: { op: "rename", projectId: "p1", name: "new" },
-    });
-    await vi.waitFor(() => expect(mutationPort.mutateProjectCalls).toHaveLength(2));
-    const kinds = eventLog.readEventTail(0).map((e) => e.kind);
-    expect(kinds).toEqual(["project:created", "project:renamed"]);
-  });
-
-  it("appends project:archived on an archive", async () => {
-    pair.server.receive({
-      type: "projectsMutate",
-      reqId: "seed",
-      mutation: { op: "create", projectId: "p1", name: "x", path: "/p" },
-    });
-    await vi.waitFor(() => expect(mutationPort.mutateProjectCalls).toHaveLength(1));
-    pair.server.receive({
-      type: "projectsMutate",
-      reqId: "r2",
-      mutation: { op: "archive", projectId: "p1" },
-    });
-    await vi.waitFor(() => expect(mutationPort.mutateProjectCalls).toHaveLength(2));
-    const kinds = eventLog.readEventTail(0).map((e) => e.kind);
-    expect(kinds).toEqual(["project:created", "project:archived"]);
-  });
-
-  it("appends project:pinnedChanged on a pin (issue 10)", async () => {
-    pair.server.receive({
-      type: "projectsMutate",
-      reqId: "seed",
-      mutation: { op: "create", projectId: "p1", name: "x", path: "/p" },
-    });
-    await vi.waitFor(() => expect(mutationPort.mutateProjectCalls).toHaveLength(1));
-    pair.server.receive({
-      type: "projectsMutate",
-      reqId: "r2",
-      mutation: { op: "pin", projectId: "p1", pinned: true },
-    });
-    await vi.waitFor(() => expect(mutationPort.mutateProjectCalls).toHaveLength(2));
-    // Dedicated kind so a Panel listening for pin-only events can subscribe
-    // distinctly from other project edits (see subscribe-core-project-events).
-    const kinds = eventLog.readEventTail(0).map((e) => e.kind);
-    expect(kinds).toEqual(["project:created", "project:pinnedChanged"]);
-  });
-
-  it("translates a stale-shape tasksMutate (missing op) into an error frame, not a silent no-op", async () => {
-    // parseCoreLinkRequestFrame only checks `type`; the mutation store's
-    // runtime `op` guard is what surfaces this as an actionable error.
-    pair.server.receive({
-      type: "tasksMutate",
+      type: "sessionsMutate",
       reqId: "r1",
-      // Missing `op` — the old flat shape a stale Panel might still send.
-      mutation: { taskId: "t1", status: "running" } as unknown as CoreLinkTaskMutation,
+      mutation: { op: "create", title: "", agent: "claude-code" },
     });
     await vi.waitFor(() => expect(pair.server.lastSent()?.type).toBe("error"));
     expect(pair.server.lastSent()).toMatchObject({
       type: "error",
       reqId: "r1",
-      message: expect.stringContaining("unknown task mutation op"),
+      message: expect.stringContaining("title is required"),
     });
     expect(eventLog.readEventTail(0)).toEqual([]);
   });
 
-  it("appends a task:updated event on an update", async () => {
-    // Seed a task first via create.
+  it("translates a stale-shape sessionsMutate (missing op) into an error frame, not a silent no-op", async () => {
+    // parseCoreLinkRequestFrame only checks `type`; the mutation store's
+    // runtime `op` guard is what surfaces this as an actionable error.
     pair.server.receive({
-      type: "tasksMutate",
-      reqId: "seed",
-      mutation: { op: "create", taskId: "t1", projectId: "p1", title: "a", titleManuallySet: false, claudeSessionId: null, agent: "claude-code" },
+      type: "sessionsMutate",
+      reqId: "r1",
+      // Missing `op` — the old flat shape a stale Panel might still send.
+      mutation: { sessionId: "t1", status: "running" } as unknown as CoreSessionMutation,
     });
-    await vi.waitFor(() => expect(mutationPort.mutateTaskCalls).toHaveLength(1));
-    pair.server.receive({
-      type: "tasksMutate",
-      reqId: "r2",
-      mutation: { op: "update", taskId: "t1", status: "running" },
+    await vi.waitFor(() => expect(pair.server.lastSent()?.type).toBe("error"));
+    expect(pair.server.lastSent()).toMatchObject({
+      type: "error",
+      reqId: "r1",
+      message: expect.stringContaining("unknown session mutation op"),
     });
-    await vi.waitFor(() => expect(mutationPort.mutateTaskCalls).toHaveLength(2));
-    const kinds = eventLog.readEventTail(0).map((e) => e.kind);
-    expect(kinds).toEqual(["task:created", "task:updated"]);
+    expect(eventLog.readEventTail(0)).toEqual([]);
   });
 
-  it("appends task:iconChanged on an icon-only update (issue 09)", async () => {
+  it("appends a session:updated event on an update", async () => {
+    // Seed a session first via create.
+    pair.server.receive({
+      type: "sessionsMutate",
+      reqId: "seed",
+      mutation: { op: "create", sessionId: "t1", title: "a", agent: "claude-code" },
+    });
+    await vi.waitFor(() => expect(mutationPort.mutateSessionCalls).toHaveLength(1));
+    pair.server.receive({
+      type: "sessionsMutate",
+      reqId: "r2",
+      mutation: { op: "update", sessionId: "t1", status: "running" },
+    });
+    await vi.waitFor(() => expect(mutationPort.mutateSessionCalls).toHaveLength(2));
+    const kinds = eventLog.readEventTail(0).map((e) => e.kind);
+    expect(kinds).toEqual(["session:created", "session:updated"]);
+  });
+
+  it("appends session:iconChanged on an icon-only update (issue 09)", async () => {
     // Seed.
     pair.server.receive({
-      type: "tasksMutate",
+      type: "sessionsMutate",
       reqId: "seed",
-      mutation: { op: "create", taskId: "t1", projectId: "p1", title: "a", titleManuallySet: false, claudeSessionId: null, agent: "claude-code" },
+      mutation: { op: "create", sessionId: "t1", title: "a", agent: "claude-code" },
     });
-    await vi.waitFor(() => expect(mutationPort.mutateTaskCalls).toHaveLength(1));
+    await vi.waitFor(() => expect(mutationPort.mutateSessionCalls).toHaveLength(1));
     // Icon-only patch → dedicated kind.
     pair.server.receive({
-      type: "tasksMutate",
+      type: "sessionsMutate",
       reqId: "r2",
-      mutation: { op: "update", taskId: "t1", icon: "bug" },
+      mutation: { op: "update", sessionId: "t1", icon: "bug" },
     });
-    await vi.waitFor(() => expect(mutationPort.mutateTaskCalls).toHaveLength(2));
+    await vi.waitFor(() => expect(mutationPort.mutateSessionCalls).toHaveLength(2));
     const kinds = eventLog.readEventTail(0).map((e) => e.kind);
-    expect(kinds).toEqual(["task:created", "task:iconChanged"]);
+    expect(kinds).toEqual(["session:created", "session:iconChanged"]);
   });
 
-  it("appends task:pinnedChanged on a pinned-only update (issue 10)", async () => {
+  it("appends session:pinnedChanged on a pinned-only update (issue 10)", async () => {
     pair.server.receive({
-      type: "tasksMutate",
+      type: "sessionsMutate",
       reqId: "seed",
-      mutation: { op: "create", taskId: "t1", projectId: "p1", title: "a", titleManuallySet: false, claudeSessionId: null, agent: "claude-code" },
+      mutation: { op: "create", sessionId: "t1", title: "a", agent: "claude-code" },
     });
-    await vi.waitFor(() => expect(mutationPort.mutateTaskCalls).toHaveLength(1));
+    await vi.waitFor(() => expect(mutationPort.mutateSessionCalls).toHaveLength(1));
     // Pin-only patch → dedicated kind so consumers that only track pinned
     // state (e.g. the SessionGrid pinned filter) can subscribe distinctly.
     pair.server.receive({
-      type: "tasksMutate",
+      type: "sessionsMutate",
       reqId: "r2",
-      mutation: { op: "update", taskId: "t1", pinned: true },
+      mutation: { op: "update", sessionId: "t1", pinned: true },
     });
-    await vi.waitFor(() => expect(mutationPort.mutateTaskCalls).toHaveLength(2));
+    await vi.waitFor(() => expect(mutationPort.mutateSessionCalls).toHaveLength(2));
     const kinds = eventLog.readEventTail(0).map((e) => e.kind);
-    expect(kinds).toEqual(["task:created", "task:pinnedChanged"]);
+    expect(kinds).toEqual(["session:created", "session:pinnedChanged"]);
   });
 
-  it("degrades to task:updated when pinned rides with other patched fields", async () => {
+  it("degrades to session:updated when pinned rides with other patched fields", async () => {
     pair.server.receive({
-      type: "tasksMutate",
+      type: "sessionsMutate",
       reqId: "seed",
-      mutation: { op: "create", taskId: "t1", projectId: "p1", title: "a", titleManuallySet: false, claudeSessionId: null, agent: "claude-code" },
+      mutation: { op: "create", sessionId: "t1", title: "a", agent: "claude-code" },
     });
-    await vi.waitFor(() => expect(mutationPort.mutateTaskCalls).toHaveLength(1));
+    await vi.waitFor(() => expect(mutationPort.mutateSessionCalls).toHaveLength(1));
     pair.server.receive({
-      type: "tasksMutate",
+      type: "sessionsMutate",
       reqId: "r2",
-      mutation: { op: "update", taskId: "t1", pinned: true, status: "running" },
+      mutation: { op: "update", sessionId: "t1", pinned: true, status: "running" },
     });
-    await vi.waitFor(() => expect(mutationPort.mutateTaskCalls).toHaveLength(2));
+    await vi.waitFor(() => expect(mutationPort.mutateSessionCalls).toHaveLength(2));
     const kinds = eventLog.readEventTail(0).map((e) => e.kind);
-    expect(kinds).toEqual(["task:created", "task:updated"]);
+    expect(kinds).toEqual(["session:created", "session:updated"]);
   });
 
-  it("degrades to task:updated when icon rides with other patched fields", async () => {
+  it("degrades to session:updated when icon rides with other patched fields", async () => {
     pair.server.receive({
-      type: "tasksMutate",
+      type: "sessionsMutate",
       reqId: "seed",
-      mutation: { op: "create", taskId: "t1", projectId: "p1", title: "a", titleManuallySet: false, claudeSessionId: null, agent: "claude-code" },
+      mutation: { op: "create", sessionId: "t1", title: "a", agent: "claude-code" },
     });
-    await vi.waitFor(() => expect(mutationPort.mutateTaskCalls).toHaveLength(1));
+    await vi.waitFor(() => expect(mutationPort.mutateSessionCalls).toHaveLength(1));
     pair.server.receive({
-      type: "tasksMutate",
+      type: "sessionsMutate",
       reqId: "r2",
-      mutation: { op: "update", taskId: "t1", icon: "bug", status: "running" },
+      mutation: { op: "update", sessionId: "t1", icon: "bug", status: "running" },
     });
-    await vi.waitFor(() => expect(mutationPort.mutateTaskCalls).toHaveLength(2));
+    await vi.waitFor(() => expect(mutationPort.mutateSessionCalls).toHaveLength(2));
     const kinds = eventLog.readEventTail(0).map((e) => e.kind);
-    expect(kinds).toEqual(["task:created", "task:updated"]);
+    expect(kinds).toEqual(["session:created", "session:updated"]);
   });
 
   it("answers sessionsList by delegating to the mutation port", async () => {
     mutationPort.sessions = [
-      { taskId: "t1", ptyId: "pty-abc", status: "running", updatedAt: 10 },
-      { taskId: "t2", ptyId: null, status: "ready", updatedAt: 5 },
+      { sessionId: "t1", ptyId: "pty-abc", status: "running", updatedAt: 10 },
+      { sessionId: "t2", ptyId: null, status: "ready", updatedAt: 5 },
     ];
     pair.server.receive({ type: "sessionsList", reqId: "r1" });
-    await vi.waitFor(() => expect(mutationPort.listSessionsCalls).toEqual([undefined]));
+    await vi.waitFor(() => expect(mutationPort.listSessionsCalls).toBe(1));
     expect(pair.server.lastSent()).toEqual({
       type: "sessionsListResult",
       reqId: "r1",
       sessions: published(mutationPort.sessions),
     });
-  });
-
-  it("forwards a projectId filter on sessionsList", async () => {
-    pair.server.receive({ type: "sessionsList", reqId: "r1", projectId: "p9" });
-    await vi.waitFor(() =>
-      expect(mutationPort.listSessionsCalls).toEqual(["p9"]),
-    );
   });
 
   it("falls back to stubs when no mutationPort is configured (backward compat)", async () => {
@@ -1278,24 +1042,14 @@ describe("PtyCoreLinkServer projectsMutate / tasksMutate / sessionsList (issue 0
     p.openClient();
 
     p.server.receive({
-      type: "projectsMutate",
-      reqId: "r1",
-      mutation: { op: "create", name: "x", path: "/x" },
-    });
-    await vi.waitFor(() =>
-      expect(p.server.lastSent()?.type).toBe("projectsMutateResult"),
-    );
-    expect(p.server.lastSent()).toMatchObject({ project: null });
-
-    p.server.receive({
-      type: "tasksMutate",
+      type: "sessionsMutate",
       reqId: "r2",
-      mutation: { op: "create", projectId: "p1", title: "x", titleManuallySet: false, claudeSessionId: null, agent: "claude-code" },
+      mutation: { op: "create", title: "x", agent: "claude-code" },
     });
     await vi.waitFor(() =>
-      expect(p.server.lastSent()?.type).toBe("tasksMutateResult"),
+      expect(p.server.lastSent()?.type).toBe("sessionsMutateResult"),
     );
-    expect(p.server.lastSent()).toMatchObject({ task: null });
+    expect(p.server.lastSent()).toMatchObject({ session: null });
 
     p.server.receive({ type: "sessionsList", reqId: "r3" });
     await vi.waitFor(() =>
@@ -1306,86 +1060,6 @@ describe("PtyCoreLinkServer projectsMutate / tasksMutate / sessionsList (issue 0
     bareServer.close();
   });
 
-  it("round-trips the full create-project → list → create-task → list → sessions flow", async () => {
-    // 1. Create a project.
-    pair.server.receive({
-      type: "projectsMutate",
-      reqId: "r1",
-      mutation: { op: "create", projectId: "p1", name: "MC", path: "/mc" },
-    });
-    await vi.waitFor(() =>
-      expect(mutationPort.mutateProjectCalls).toHaveLength(1),
-    );
-
-    // 2. projectsList must include the new project — served from a query port
-    // sharing the same in-memory rows. Wire a query port that reads from the
-    // fake mutation port's projects[] so the round-trip flows through both.
-    server.close();
-    const queryPort: CoreQueryPort = {
-      listProjects: () => mutationPort.projects,
-      listTasks: (projectId?: string) =>
-        (projectId
-          ? mutationPort.tasks.filter((t) => t.projectId === projectId)
-          : mutationPort.tasks
-        ).filter((t) => !t.archived),
-      listArchivedTasks: (projectId?: string) =>
-        (projectId
-          ? mutationPort.tasks.filter((t) => t.projectId === projectId)
-          : mutationPort.tasks
-        ).filter((t) => t.archived),
-      countArchivedTasks: (projectId?: string) =>
-        (projectId
-          ? mutationPort.tasks.filter((t) => t.projectId === projectId)
-          : mutationPort.tasks
-        ).filter((t) => t.archived).length,
-      getTask: (taskId: string) =>
-        mutationPort.tasks.find((t) => t.taskId === taskId) ?? null,
-    };
-    const wss2 = new FakeWebSocketServer();
-    const server2 = new PtyCoreLinkServer(core, {
-      port: 0,
-      createServer: () => wss2 as unknown as WebSocketServerLike,
-      queryPort,
-      mutationPort,
-      eventLog,
-    });
-    const p2 = new FakeWebSocketPair();
-    wss2.simulateConnection(p2.server);
-    p2.openClient();
-
-    p2.server.receive({ type: "projectsList", reqId: "r2" });
-    await vi.waitFor(() => expect(p2.server.lastSent()?.type).toBe("projectsListResult"));
-    expect(p2.server.lastSent()).toMatchObject({
-      projects: [expect.objectContaining({ projectId: "p1", name: "MC" })],
-    });
-
-    // 3. Create a task.
-    p2.server.receive({
-      type: "tasksMutate",
-      reqId: "r3",
-      mutation: { op: "create", taskId: "t1", projectId: "p1", title: "fix", titleManuallySet: false, claudeSessionId: null, agent: "claude-code" },
-    });
-    await vi.waitFor(() => expect(mutationPort.mutateTaskCalls).toHaveLength(1));
-
-    // 4. tasksList must include the new task.
-    p2.server.receive({ type: "tasksList", reqId: "r4", projectId: "p1" });
-    await vi.waitFor(() => expect(p2.server.lastSent()?.type).toBe("tasksListResult"));
-    expect(p2.server.lastSent()).toMatchObject({
-      tasks: [expect.objectContaining({ taskId: "t1", title: "fix" })],
-    });
-
-    // 5. sessionsList must include the new task as a session (no PTY yet → ptyId null).
-    mutationPort.sessions = [
-      { taskId: "t1", ptyId: null, status: "ready", updatedAt: 1 },
-    ];
-    p2.server.receive({ type: "sessionsList", reqId: "r5" });
-    await vi.waitFor(() => expect(p2.server.lastSent()?.type).toBe("sessionsListResult"));
-    expect(p2.server.lastSent()).toMatchObject({
-      sessions: [{ taskId: "t1", ptyId: null, status: "ready", updatedAt: 1 }],
-    });
-
-    server2.close();
-  });
 });
 
 // ─── Heartbeat / dead-connection detection ──────────────────────────────────

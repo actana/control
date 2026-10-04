@@ -57,9 +57,6 @@ export function GeneralSettingsPage() {
     sessionFinishToastEnabled: toastEnabled,
     sessionFinishOsNotificationEnabled: osNotificationEnabled,
     notificationSoundEnabled,
-    projectsDashboardView: settings?.projectsDashboardView ?? null,
-    activeProjectGroup: settings?.activeProjectGroup ?? null,
-    collapsedProjectGroups: settings?.collapsedProjectGroups ?? null,
     terminalZoomLevel: settings?.terminalZoomLevel ?? DEFAULT_TERMINAL_ZOOM_LEVEL,
     sessionHeaderButtons:
       settings?.sessionHeaderButtons ?? DEFAULT_SESSION_HEADER_BUTTON_VISIBILITY,
@@ -76,8 +73,6 @@ export function GeneralSettingsPage() {
     providerUsageEnabled: settings?.providerUsageEnabled ?? false,
     providerUsageIds: settings?.providerUsageIds ?? ["claude", "codex", "cursor"],
     harnessLauncherConfig: settings?.harnessLauncherConfig ?? DEFAULT_AGENT_LAUNCHER_CONFIG,
-    showGroupSwitcher: settings?.showGroupSwitcher ?? true,
-    showProjectHeaderGroup: settings?.showProjectHeaderGroup ?? true,
     ...queryClient.getQueryData<AppSettings>(queryKeys.settings),
     ...patch,
   });
@@ -105,6 +100,10 @@ export function GeneralSettingsPage() {
       throw error;
     }
   };
+
+  // `updateSettings` has already put the previous value back when it rejects, so
+  // the toggle shows the truth; a handler has no one to rethrow to.
+  const ignoreRolledBack = () => {};
 
   const setMouseGradientEnabled = async (enabled: boolean) => {
     await updateSettings({ mouseGradientDisabled: !enabled });
@@ -178,21 +177,21 @@ export function GeneralSettingsPage() {
             title="Show mouse gradient"
             description="Cursor and card gradients follow the pointer across the workspace."
             checked={mouseGradientEnabled}
-            onChange={setMouseGradientEnabled}
+            onChange={(v) => void setMouseGradientEnabled(v).catch(ignoreRolledBack)}
             label="Enable"
           />
         </Field>
       </SettingsSection>
       <SettingsSection
         title="Session finish notifications"
-        subtitle="Get notified when a Claude session finishes in any project."
+        subtitle="Get notified when a Claude session finishes on any Core."
       >
         <Field label="Sound">
           <ToggleRow
             title="Notification sound"
             description="Play a short ding when a session finishes."
             checked={notificationSoundEnabled}
-            onChange={setNotificationSoundEnabled}
+            onChange={(v) => void setNotificationSoundEnabled(v).catch(ignoreRolledBack)}
             label="Play sound"
           />
         </Field>
@@ -201,7 +200,7 @@ export function GeneralSettingsPage() {
             title="Show toast"
             description="A toast appears in the bottom-right when a session finishes."
             checked={toastEnabled}
-            onChange={setToastEnabled}
+            onChange={(v) => void setToastEnabled(v).catch(ignoreRolledBack)}
             label="Show toast"
           />
         </Field>
@@ -214,7 +213,7 @@ export function GeneralSettingsPage() {
                 : "Your browser raises a notification when a session finishes — including while this tab is in the background. Clicking it brings you back to that session."
             }
             checked={osNotificationEnabled}
-            onChange={setOsNotificationEnabled}
+            onChange={(v) => void setOsNotificationEnabled(v).catch(ignoreRolledBack)}
             disabled={permission === "unsupported"}
             label="Enable"
           />

@@ -36,7 +36,7 @@
 // The three rules the JSON writers follow apply here unchanged. The file is
 // tagged `@actana-control-managed` so a later spawn replaces exactly what an
 // earlier one wrote and never an operator's own extension. It carries no
-// secret — the URL, the token and the task id are read from the PTY's
+// secret — the URL, the token and the session id are read from the PTY's
 // environment. And it is fail-soft in every direction: no `AC_HOOK_URL` means
 // the extension does nothing (so `pi` run by hand posts nothing), neither does
 // an `AC_HOOK_HARNESS` other than `pi` (a `pi` nested in another harness's
@@ -45,14 +45,14 @@
 
 import { randomBytes } from "node:crypto";
 import * as fs from "node:fs";
-import * as os from "node:os";
+import { coreHome } from "./core-identity";
 import * as path from "node:path";
 import { piAgentDir } from "@actana/shared/pi-agent-dir";
 import {
   HOOK_CWD_ENV,
   HOOK_HARNESS_ENV,
   HOOK_MISS_LOG_ENV,
-  HOOK_TASK_ID_ENV,
+  HOOK_SESSION_ID_ENV,
   HOOK_TOKEN_ENV,
   HOOK_URL_ENV,
 } from "./harness-hook-env";
@@ -79,7 +79,7 @@ export const piExtensionFs = {
 /** Absolute path of the managed extension file. */
 export function piExtensionPath(
   env: NodeJS.ProcessEnv = process.env,
-  home: string = os.homedir(),
+  home: string = coreHome(),
 ): string {
   return path.join(piAgentDir(env, home), "extensions", PI_EXTENSION_FILENAME);
 }
@@ -103,7 +103,7 @@ export function piExtensionSource(slug: string): string {
 
 const HOOK_URL = process.env.${HOOK_URL_ENV};
 const HOOK_TOKEN = process.env.${HOOK_TOKEN_ENV};
-const HOOK_TASK_ID = process.env.${HOOK_TASK_ID_ENV};
+const HOOK_SESSION_ID = process.env.${HOOK_SESSION_ID_ENV};
 const MISS_LOG = process.env.${HOOK_MISS_LOG_ENV};
 const HOOK_HARNESS = process.env.${HOOK_HARNESS_ENV};
 const HOOK_CWD = process.env.${HOOK_CWD_ENV};
@@ -115,11 +115,11 @@ export default function (pi) {
   // No AC_HOOK_URL means no Core listening for this session — a global
   // extension left behind that an operator opened by hand. Do nothing at all.
   if (!HOOK_URL) return;
-  if (!HOOK_TOKEN || !HOOK_TASK_ID) return;
+  if (!HOOK_TOKEN || !HOOK_SESSION_ID) return;
   // A pi an agent started from inside another harness's Session inherits
-  // that Session's URL, token and task id. Only a PTY the Core spawned as pi
+  // that Session's URL, token and session id. Only a PTY the Core spawned as pi
   // is this extension's to report; anything else would post into, and
-  // re-key, a task that is not a Pi Session.
+  // re-key, a session that is not a Pi Session.
   if (HOOK_HARNESS !== "pi") return;
 
   // Captured on session_start so later events can address the Core even when
@@ -143,7 +143,7 @@ export default function (pi) {
     try {
       const fs = await import("node:fs");
       const at = new Date().toISOString().replace(/\\.\\d+Z$/, "Z");
-      fs.appendFileSync(MISS_LOG, at + "\\t" + HOOK_TASK_ID + "\\t" + event + "\\t" + reason + "\\n");
+      fs.appendFileSync(MISS_LOG, at + "\\t" + HOOK_SESSION_ID + "\\t" + event + "\\t" + reason + "\\n");
     } catch {}
   };
 
@@ -151,8 +151,8 @@ export default function (pi) {
     const url =
       HOOK_URL +
       ENDPOINT +
-      "?taskId=" +
-      encodeURIComponent(HOOK_TASK_ID) +
+      "?sessionId=" +
+      encodeURIComponent(HOOK_SESSION_ID) +
       "&hookEvent=" +
       encodeURIComponent(event);
     const res = await fetch(url, {

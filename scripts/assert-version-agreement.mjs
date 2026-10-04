@@ -7,7 +7,7 @@
 // string: the image tag from the branch name, the release version from the tag
 // name, the tarball's filename and archive root and `core-manifest.json` from
 // `RELEASE_VERSION`. Those comparisons are tautologies — they can all pass
-// while the six manifests inside the bytes say something else entirely.
+// while the five manifests inside the bytes say something else entirely.
 //
 // So every writer of a version string runs this against the tree it is about,
 // **before** it writes:
@@ -19,7 +19,7 @@
 //
 // and a beta cut runs it the same way, with `--expected vx.y.z-beta` — the
 // manifests carry the line, so the beta and the release of a line are checked
-// against exactly the same six numbers (ADR 0036 D1, C1).
+// against exactly the same five numbers (ADR 0036 D1, C1).
 //
 // Usage:
 //
@@ -165,7 +165,7 @@ console.log(
     `${where} against ${expected}, from ${source}.`,
 );
 
-// Two failures must not be dressed up as six drifting manifests. A bad version
+// Two failures must not be dressed up as five drifting manifests. A bad version
 // string is one problem with the string, and a ref this clone does not have is
 // one problem with the ref; the per-file listing below is only meaningful when
 // there is a line to compare against and a tree that answered.
@@ -193,9 +193,9 @@ if (problems.length === 0) {
 }
 
 // The other half of the same sentence. `problems` holds one entry per manifest
-// — six of them, each saying a file in the version set is missing and asking
-// whether the package was deleted — and annotating all six sends the reader to
-// the wrong six files immediately after the accurate one-line diagnosis above.
+// — five of them, each saying a file in the version set is missing and asking
+// whether the package was deleted — and annotating all five sends the reader to
+// the wrong five files immediately after the accurate one-line diagnosis above.
 // One problem with the ref is reported as one problem, and the exit code is
 // the same either way.
 if (unreadableRef) {

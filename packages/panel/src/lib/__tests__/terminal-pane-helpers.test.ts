@@ -3,10 +3,8 @@ import {
   attachTerminalKeyHandler,
   setTerminalReadOnly,
   stripTerminalSelectionFormatting,
-  terminalExitTaskStatus,
-  wireTerminalFileDrop,
+  terminalExitSessionStatus,
 } from "../terminal-pane-helpers";
-import { PROJECT_PATH_DRAG_MIME } from "../project-path-drag";
 
 function keyEvent(overrides: Partial<KeyboardEvent>): KeyboardEvent {
   return {
@@ -69,14 +67,14 @@ describe("stripTerminalSelectionFormatting", () => {
   });
 });
 
-describe("terminalExitTaskStatus", () => {
+describe("terminalExitSessionStatus", () => {
   it("marks a clean agent exit as finished", () => {
-    expect(terminalExitTaskStatus(0)).toBe("finished");
+    expect(terminalExitSessionStatus(0)).toBe("finished");
   });
 
   it("marks failed or unknown exits as terminated", () => {
-    expect(terminalExitTaskStatus(1)).toBe("terminated");
-    expect(terminalExitTaskStatus(undefined)).toBe("terminated");
+    expect(terminalExitSessionStatus(1)).toBe("terminated");
+    expect(terminalExitSessionStatus(undefined)).toBe("terminated");
   });
 });
 
@@ -164,86 +162,6 @@ describe("attachTerminalKeyHandler clipboard handling", () => {
 
     expect(handler(event)).toBe(false);
     expect(write).toHaveBeenCalledWith("\x1b\r");
-  });
-});
-
-describe("wireTerminalFileDrop", () => {
-  function dropFixture() {
-    const listeners = new Map<string, EventListener>();
-    const host = {
-      addEventListener: vi.fn((type: string, listener: EventListener) => {
-        listeners.set(type, listener);
-      }),
-      removeEventListener: vi.fn(),
-    };
-    const write = vi.fn(async () => true);
-    const onFocus = vi.fn();
-    wireTerminalFileDrop({ host: host as never, write, onFocus });
-    return { listeners, host, write, onFocus };
-  }
-
-  it("pastes a project path dragged from the Panel's own rail", async () => {
-    const { listeners, write, onFocus } = dropFixture();
-    const event = {
-      preventDefault: vi.fn(),
-      dataTransfer: {
-        types: [PROJECT_PATH_DRAG_MIME],
-        files: [],
-        getData: vi.fn(() => "/srv/checkout a"),
-      },
-    } as unknown as DragEvent;
-
-    listeners.get("drop")?.(event);
-    await flushPromises();
-
-    expect(event.preventDefault).toHaveBeenCalledOnce();
-    // Quoted: the path has a space, and the shell on the other end is real.
-    expect(write).toHaveBeenCalledWith('"/srv/checkout a" ');
-    expect(onFocus).toHaveBeenCalledOnce();
-  });
-
-  it("ignores files dragged in from the operator's own machine", async () => {
-    const { listeners, write, onFocus } = dropFixture();
-    const file = new File([new Uint8Array([1, 2, 3])], "screenshot.png", {
-      type: "image/png",
-    });
-    const event = {
-      preventDefault: vi.fn(),
-      dataTransfer: {
-        types: ["Files"],
-        files: [file],
-        getData: vi.fn(() => ""),
-      },
-    } as unknown as DragEvent;
-
-    listeners.get("drop")?.(event);
-    await flushPromises();
-
-    // The browser hands over bytes, never a path — and the path that would
-    // matter is one on the Core's machine (ADR 0010). Leave the event alone so
-    // the page's default handling applies.
-    expect(event.preventDefault).not.toHaveBeenCalled();
-    expect(write).not.toHaveBeenCalled();
-    expect(onFocus).not.toHaveBeenCalled();
-  });
-
-  it("only claims the dragover for project-path drags", () => {
-    const { listeners } = dropFixture();
-    const dataTransfer = { types: ["Files"], dropEffect: "none" };
-    const fileDrag = {
-      preventDefault: vi.fn(),
-      dataTransfer,
-    } as unknown as DragEvent;
-
-    listeners.get("dragover")?.(fileDrag);
-    expect(fileDrag.preventDefault).not.toHaveBeenCalled();
-
-    const pathDrag = {
-      preventDefault: vi.fn(),
-      dataTransfer: { types: [PROJECT_PATH_DRAG_MIME], dropEffect: "none" },
-    } as unknown as DragEvent;
-    listeners.get("dragover")?.(pathDrag);
-    expect(pathDrag.preventDefault).toHaveBeenCalledOnce();
   });
 });
 

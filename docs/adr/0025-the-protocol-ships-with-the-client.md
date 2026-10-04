@@ -1,5 +1,7 @@
 # The protocol ships with the client
 
+> **Amended 2026-10-02 by [#580](https://github.com/actana/control/issues/580) (T-404):** `packages/sdk` is deleted. The SDK is the published `@actana/sdk`, released from actana/client, and D6 (the fifth manifest) no longer applies.
+
 `packages/shared` was created to hold the Panel↔Core wire contract, and [ADR 0016 D3](0016-the-0-1-0-shape.md) says exactly why: folding it into either side would make one image depend on the other and break the two-image split. That argument is still sound, and this ADR does not reverse it. What it settles is a question ADR 0016 D3 could not have asked, because there were only two clients and both were in this repository: **when a third party installs one package to talk to a Core, which package is it, and where is the frame schema they are typing against?**
 
 [#129](https://github.com/actana/control/issues/129) answers "one package": `@actana/sdk`. The Panel's core-link client becomes that package by extraction, the CLI is built on it, and automations use it. So the frame schema has to be reachable from it. There are only two ways to arrange that, and they are not close: the SDK depends on `@actana/shared` and drags a private package into a published dependency graph, or **the protocol definition moves into the SDK and the SDK is where it lives.** This record takes the second. `core-link-frames.ts` moves out of `packages/shared` into `packages/sdk`, and everything that was importing it — the Core included — imports it from there.

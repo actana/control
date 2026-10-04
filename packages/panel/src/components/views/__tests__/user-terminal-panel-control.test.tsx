@@ -16,10 +16,11 @@ import { KeybindingsProvider } from "~/lib/keybindings/store";
 
 const createVmShellTerminal = vi.fn(async () => null);
 const store = {
-  project: null as unknown,
-  homeActive: true,
+  coreId: null as string | null,
   panelOpen: false,
   setPanelOpen: vi.fn(),
+  panelMaximized: false,
+  setPanelMaximized: vi.fn(),
   sessions: [] as unknown[],
   focusedId: null,
   focusTerminal: vi.fn(),
@@ -28,7 +29,6 @@ const store = {
   hiddenIds: new Set<string>(),
   toggleHidden: vi.fn(),
   renameTerminal: vi.fn(),
-  updateLaunchUrl: vi.fn(),
   setPtyId: vi.fn(),
 };
 
@@ -48,12 +48,13 @@ const { UserTerminalPanel } = await import("../UserTerminalPanel");
  * reads the binding for `terminal.newTab`; both are ambient providers rather
  * than anything this suite is asserting on.
  */
-function renderPanel(coreId?: string) {
+function renderPanel(coreId: string | null = null) {
+  store.coreId = coreId;
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={client}>
       <KeybindingsProvider>
-        <UserTerminalPanel coreId={coreId} />
+        <UserTerminalPanel />
       </KeybindingsProvider>
     </QueryClientProvider>,
   );
@@ -74,12 +75,27 @@ function buttonNames(): string[] {
 }
 
 describe("the terminal panel's one control (issue 266)", () => {
+  beforeEach(() => {
+    store.panelMaximized = false;
+    store.setPanelMaximized.mockClear();
+  });
+
   it("offers exactly one control that opens a terminal, in each place it offers one", () => {
     renderPanel("core_a");
-    const opens = buttonNames().filter((n) => /terminal/i.test(n) && !/collapse|expand/i.test(n));
+    const opens = buttonNames().filter((n) => /terminal/i.test(n) && !/collapse|expand|maximise/i.test(n));
     // The header toolbar and the empty state, one each — never a second
     // spelling of the same thing beside either.
     expect(opens).toEqual(["New Terminal", "New Terminal"]);
+  });
+
+  it("can be maximised as well as collapsed (issue 560)", () => {
+    renderPanel("core_a");
+    const maximise = screen.getByRole("button", { name: /maximise terminal/i });
+    expect(maximise).toBeTruthy();
+    expect(maximise.getAttribute("aria-pressed")).toBe("false");
+    maximise.click();
+    expect(store.setPanelMaximized).toHaveBeenCalledWith(true);
+    expect(screen.getByRole("button", { name: /collapse|expand/i })).toBeTruthy();
   });
 
   it("has no `New VM shell` button any more — the surviving control is that button", () => {
@@ -87,7 +103,7 @@ describe("the terminal panel's one control (issue 266)", () => {
     expect(screen.queryByRole("button", { name: /vm shell/i })).toBeNull();
   });
 
-  it("opens a VM Shell Session on the route's Core when the toolbar control is clicked", () => {
+  it("opens a VM Shell Session on the Core in scope when the toolbar control is clicked", () => {
     renderPanel("core_a");
     screen.getAllByRole("button", { name: "New Terminal" })[0]!.click();
     expect(createVmShellTerminal).toHaveBeenCalledExactlyOnceWith("core_a");
@@ -107,10 +123,8 @@ describe("the terminal panel's one control (issue 266)", () => {
     expect(text).toMatch(/shell on this Core/i);
   });
 
-  it("disables the control with no Core in scope — there is no machine to open a shell on", () => {
+  it("renders no panel at all with no Core in scope — there is no machine to open a shell on", () => {
     renderPanel();
-    for (const button of screen.getAllByRole("button", { name: "New Terminal" })) {
-      expect((button as HTMLButtonElement).disabled).toBe(true);
-    }
+    expect(screen.queryByRole("button", { name: "New Terminal" })).toBeNull();
   });
 });

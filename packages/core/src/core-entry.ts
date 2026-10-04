@@ -28,7 +28,11 @@
 //                                     endpoint a pairing hands back unless the
 //                                     code chose another of them
 //                                     (default: AC_CORE_LINK_HOST)
-//   AC_CORE_BEARER_DAYS=<n>     — bearer validity in days (default: 365)
+//   AC_CORE_BEARER_DAYS=<n>     — validity in days of the bearer this Core signs for itself
+//                                 (default: 365). It does NOT bound the bearer a pairing
+//                                 redemption issues: that one is the SDK's and always lives
+//                                 365 days, whatever this says. A regression from 0.4.5, where
+//                                 it bounded both; tracked in actana/client#12.
 //   AC_CORE_MATERIAL_FILE=<path> — persisted cert material + bearer secret.
 //                                     **Required in remote mode.** The daemon
 //                                     restarts with the same CA + certs +
@@ -58,7 +62,6 @@
 // pasted into the Panel's "Add Core", and #287 removed the hand-carry it
 // belonged to. A client enrolls with a code from `actana pair new`.
 
-import * as os from "node:os";
 import * as path from "node:path";
 import {
   PtyCore,
@@ -68,21 +71,21 @@ import {
 import { PtyCoreLinkServer } from "./pty-core-link-server";
 import { buildCoreFileRoutes, shouldAnnounceFiles } from "./core-files-wiring";
 import {
-  buildCorePairingRoutes,
-  buildPairingEndpointResolver,
+  CORE_PAIRING_NAMES,
+  auditPairingRoutes,
   composeCoreHttpRoutes,
-  isPairingPath,
+  reportUnreadableRevocations,
+  revokedHandler,
 } from "./core-pairing-wiring";
-import type { CorePairingRoutesOptions } from "./core-pairing-routes";
-import { PairingStore, pairingStorePath } from "@actana/shared/pairing-store";
-import {
-  PairingRevocations,
-  startPairingRevocationSweep,
-  type PairingRevocationSweep,
-} from "./core-pairing-revocation";
-import { createDirectory, listDirectory } from "./directory-browse";
+import { createPairing } from "@actana/sdk/pairing/server";
+import { pairingStorePath } from "@actana/sdk/pairing/stores/json-file";
+import { corePairingStore } from "./core-pairing-store";
 import { runCoreExec } from "./core-exec";
-import { configureProjectRootsDb } from "./project-roots";
+import { coreHome } from "./core-identity";
+import { startSharedFolder } from "./shared-folder-feed";
+import { announceShared } from "./shared-capability";
+import { createSharedHome } from "./shared-home-io";
+import { createSharedSync } from "./shared-sync";
 import {
   configureEventLogStore,
   disposeEventLogStore,
@@ -94,12 +97,13 @@ import {
   configureCoreQueryStore,
   disposeCoreQueryStore,
   coreQueryStore,
-  listActiveTasks,
-  listBootSweepTasks,
-  taskProvenNeverWorked,
+  listActiveSessions,
+  listBootSweepSessions,
+  sessionProvenNeverWorked,
 } from "./core-query-store";
 import {
   configureCoreMutationStore,
+  recordPromptBlockVersion,
   disposeCoreMutationStore,
   coreMutationStore,
   setLivePtyProbe,
@@ -110,12 +114,16 @@ import {
   SESSION_PROMPT_DELIVERED_EVENT_KIND,
   type CoreLinkSessionPromptAbandonedPayload,
   type CoreLinkSessionPromptDeliveredPayload,
-} from "@actana/sdk/core-link-frames";
-import { CoreTaskWriter } from "./core-task-writer";
+} from "@actana/sdk/core";
+import { CoreSessionWriter } from "./core-session-writer";
 import { CoreHarnessStatus } from "./core-harness-status";
 import { CoreTitleGenerator } from "./core-title-generator";
 import { startHarnessHookReceiver, type HarnessHookReceiver } from "./harness-hook-receiver";
-import { HookDeliveryMonitor, hookMissLogPath } from "./harness-hook-delivery";
+import {
+  HookDeliveryMonitor,
+  ensureHookMissDropBox,
+  hookMissLogPath,
+} from "./harness-hook-delivery";
 import { sweepStrandedSessions } from "./core-session-sweep";
 import { readySessionOnAgentSpawn } from "./core-session-relaunch";
 import { CoreSessionBackstop } from "./core-session-backstop";
@@ -139,7 +147,8 @@ import log from "@actana/shared/log";
 import { bootstrapCoreDb } from "./core-db-bootstrap";
 import { HarnessAvailabilityStore } from "@actana/shared/harness-availability-store";
 import { HarnessSkillWatcher } from "./harness-skill-watcher";
-import { ensureOrchestrationSkill } from "./orchestration-skill";
+import { ensureOrchestrationSkillViaCore } from "./core-home-ops-client";
+import { coreAvailabilityProbe } from "./harness-availability-probe";
 import { HarnessInstallService } from "./harness-install-service";
 import { daemonHarnessSystem } from "./core-harness-system";
 import { legacyEnvRefusal, plaintextExposureRefusal } from "./core-boot-refusals";
@@ -210,31 +219,26 @@ async function startCore(): Promise<void> {
     }
   }
 
-  // The project-roots DB is read by the spawn policy to validate cwd. Configure
-  // it the same way main.ts does — the core shares the same SQLite file.
-  configureProjectRootsDb(userDataDir);
   // The event log lives in the same SQLite file. The Core appends PTY
   // lifecycle events (pty:spawn / pty:exit) and serves the reconnect replay
-  // tail; the stateful server process appends task/session/hook events to the
+  // tail; the stateful server process appends session/hook events to the
   // same append-only table.
   configureEventLogStore(userDataDir);
-  // The query store reads projects + tasks from the same SQLite (read-only) so
-  // the `projectsList` / `tasksList` core-link frames return live snapshots
-  // with no Panel-side persistence (issue 07 — per-Core navigation + Fleet
-  // view).
+  // The query store reads sessions from the same SQLite (read-only) so the
+  // `sessionRowsList` core-link frame returns live snapshots with no
+  // Panel-side persistence (issue 07 — Fleet view).
   configureCoreQueryStore(userDataDir);
-  // The mutation store writes projects + tasks against the same SQLite
-  // (read-write) so the `projectsMutate` / `tasksMutate` / `sessionsList`
-  // core-link frames execute the write path directly on the Core (issue
+  // The mutation store writes sessions against the same SQLite (read-write)
+  // so the `sessionsMutate` / `sessionsList` core-link frames execute the write path directly on the Core (issue
   // 04, ADR 0004). WAL absorbs coexistence with the event-log writer.
   configureCoreMutationStore(userDataDir);
 
   // ─── Harness status detection (issue 84) ───
-  // The Core owns its task rows, so the Core is what a harness's hooks report
+  // The Core owns its session rows, so the Core is what a harness's hooks report
   // to and what settles a Session whose process died. One writer underneath
   // all of it, so every change appends the event the Panel's card re-renders
   // from — and does so whether or not a Panel is connected.
-  const taskWriter = new CoreTaskWriter({
+  const sessionWriter = new CoreSessionWriter({
     mutationPort: coreMutationStore,
     queryPort: coreQueryStore,
     eventLog: { appendEvent, readEventTail, getLastEventId },
@@ -246,15 +250,15 @@ async function startCore(): Promise<void> {
   // Panel re-renders from) and before the PTY core, the hook receiver or the
   // core-link server can produce a Session of THIS run that would be in scope.
   //
-  // `listBootSweepTasks` widens that read by the one class of orphan the
+  // `listBootSweepSessions` widens that read by the one class of orphan the
   // status filter could never see: a bare Session left on `ready`, whose PTY
   // spawned and died without a single hook ever firing for it (issue 387).
-  sweepStrandedSessions({ listBootSweepTasks, writer: taskWriter });
+  sweepStrandedSessions({ listBootSweepSessions, writer: sessionWriter });
 
-  const titleGenerator = new CoreTitleGenerator({ writer: taskWriter });
+  const titleGenerator = new CoreTitleGenerator({ writer: sessionWriter });
   const harnessStatus = new CoreHarnessStatus({
-    writer: taskWriter,
-    generateTitle: (taskId, prompt) => titleGenerator.schedule(taskId, prompt),
+    writer: sessionWriter,
+    generateTitle: (sessionId, prompt) => titleGenerator.schedule(sessionId, prompt),
   });
 
   // Loopback only, ephemeral port, token minted here — see the decisions
@@ -267,8 +271,8 @@ async function startCore(): Promise<void> {
 
   let hookReceiver: HarnessHookReceiver | null = null;
   try {
-    hookReceiver = await startHarnessHookReceiver((taskId, payload, eventNameFallback) => {
-      const result = harnessStatus.receiveHook(taskId, payload, eventNameFallback);
+    hookReceiver = await startHarnessHookReceiver((sessionId, payload, eventNameFallback) => {
+      const result = harnessStatus.receiveHook(sessionId, payload, eventNameFallback);
       // A hook that landed is this Session talking, whatever it said — that is
       // what keeps the quiet-Session backstop off a turn that is really
       // running (issue 243) — and it is also the end of the idle rule's claim
@@ -282,7 +286,7 @@ async function startCore(): Promise<void> {
       // positive test — it is already false for a row this Core does not have
       // — and `foreign-session` is the one rejection that answers `ok`.
       if (result.ok && result.body?.ignored !== "foreign-session") {
-        sessionBackstop?.noteActivity(taskId, "hook");
+        sessionBackstop?.noteActivity(sessionId, "hook");
       }
       return result;
     });
@@ -295,7 +299,12 @@ async function startCore(): Promise<void> {
   // Core's log with a running total, starting with whatever was recorded while
   // this process was not running — a restart is exactly when hooks are
   // refused, and those are the drops nobody could otherwise hear about.
-  const hookDelivery = new HookDeliveryMonitor({ missLogPath: hookMissLogPath(userDataDir) });
+  // In the container the file is a drop box outside the state directory, which
+  // Sessions can append to (#559): the daemon makes it, then reads it as
+  // untrusted input.
+  const hookMissLog = hookMissLogPath(userDataDir, containerMode);
+  if (containerMode) ensureHookMissDropBox(hookMissLog);
+  const hookDelivery = new HookDeliveryMonitor({ missLogPath: hookMissLog });
   hookDelivery.start();
 
   const deps: PtyCoreDeps = {
@@ -306,28 +315,28 @@ async function startCore(): Promise<void> {
         ? {
             apiUrl: hookReceiver.url,
             token: hookReceiver.token,
-            missLogPath: hookMissLogPath(userDataDir),
+            missLogPath: hookMissLog,
           }
         : null,
     // Protect the core-link WS port so killLaunchProcesses never touches it —
     // and the hook receiver's, for the same reason: killing it would silently
     // strand every running Session's status.
     getProtectedPorts: () => [port, hookReceiver?.port],
-    onSessionExit: ({ taskId, exitCode }) => {
-      harnessStatus.sessionExited(taskId, exitCode);
-      sessionBackstop?.forget(taskId);
+    onSessionExit: ({ sessionId, exitCode }) => {
+      harnessStatus.sessionExited(sessionId, exitCode);
+      sessionBackstop?.forget(sessionId);
     },
-    onSessionOutputSignal: ({ taskId, signal }) => harnessStatus.outputSignal(taskId, signal),
+    onSessionOutputSignal: ({ sessionId, signal }) => harnessStatus.outputSignal(sessionId, signal),
     // Issue 483. The status the signal above writes is what a client renders;
     // this row is what lets it say *why*. It goes into the same monotonic log
     // every other Session event does, so a CLI or an SDK automation waiting on
     // the start reads it on the connection it already has — no new frame, no
     // poll, and nothing for a client that has never heard of the kind to do.
-    onSessionPromptAbandoned: ({ taskId, ptyId, reason }) => {
-      const payload: CoreLinkSessionPromptAbandonedPayload = { taskId, ptyId, reason };
+    onSessionPromptAbandoned: ({ sessionId, ptyId, reason }) => {
+      const payload: CoreLinkSessionPromptAbandonedPayload = { sessionId, ptyId, reason };
       try {
         appendEvent(SESSION_PROMPT_ABANDONED_EVENT_KIND, JSON.stringify(payload), {
-          taskId,
+          sessionId,
           ptyId,
         });
       } catch (err) {
@@ -340,9 +349,16 @@ async function startCore(): Promise<void> {
     // evidence there is that the composer is listening — nobody outside this
     // process sees the screen (ADR 0026), and #191 removed the last client that
     // tried to infer it from quietness.
-    onSessionPromptDelivered: ({ taskId, ptyId, characters, waitedMs, composerObserved }) => {
+    onSessionPromptDelivered: ({ sessionId, ptyId, characters, waitedMs, composerObserved, promptBlockVersion }) => {
+      // Issue 563: the Session row says which block version it was handed. Its
+      // own try, so a failed write never costs the delivered row below.
+      try {
+        if (promptBlockVersion !== null) recordPromptBlockVersion(sessionId, promptBlockVersion);
+      } catch (err) {
+        console.error(`[core-entry] prompt-block-version.record-failed: ${err}`);
+      }
       const payload: CoreLinkSessionPromptDeliveredPayload = {
-        taskId,
+        sessionId,
         ptyId,
         characters,
         waitedMs,
@@ -350,7 +366,7 @@ async function startCore(): Promise<void> {
       };
       try {
         appendEvent(SESSION_PROMPT_DELIVERED_EVENT_KIND, JSON.stringify(payload), {
-          taskId,
+          sessionId,
           ptyId,
         });
       } catch (err) {
@@ -363,19 +379,19 @@ async function startCore(): Promise<void> {
     // spinner that is all that is left, with nothing new on screen behind it,
     // is what it reads as an idle TUI nobody will ever hear a `Stop` from
     // (issue 391). The PTY core says which of the two arrived.
-    onSessionOutputActivity: ({ taskId, kind }) => sessionBackstop?.noteActivity(taskId, kind),
+    onSessionOutputActivity: ({ sessionId, kind }) => sessionBackstop?.noteActivity(sessionId, kind),
   };
 
   // Eagerly install Claude Code's Shift+Enter keybinding flag for terminals
   // spawned by this Core (best-effort; see ensureClaudeShiftEnterBinding).
-  ensureClaudeShiftEnterBinding();
+  await ensureClaudeShiftEnterBinding();
 
   const core = new PtyCore(deps);
 
-  // Enrich `sessionsList` with live PTY ids: a task is "reattachable" when the
+  // Enrich `sessionsList` with live PTY ids: a session is "reattachable" when the
   // Core's PTY core currently has a running PTY for it. Wired here so the
   // mutation store has no import-time dependency on `PtyCore`.
-  setLivePtyProbe((taskId) => core.findByTask(taskId).ptyId);
+  setLivePtyProbe((sessionId) => core.findBySession(sessionId).ptyId);
 
   // The unconditional half of issue 243. `armDeferredFinish` only ever fires
   // for a Session whose hook ARRIVED; when the terminal `Stop` is the POST
@@ -384,16 +400,16 @@ async function startCore(): Promise<void> {
   // the ones that have gone quiet — no hook, no output — for long enough that
   // the turn is provably over.
   sessionBackstop = new CoreSessionBackstop({
-    listActiveTasks,
-    writer: taskWriter,
-    hasLivePty: (taskId) => Boolean(core.findByTask(taskId).ptyId),
+    listActiveSessions,
+    writer: sessionWriter,
+    hasLivePty: (sessionId) => Boolean(core.findBySession(sessionId).ptyId),
   });
   sessionBackstop.start();
 
   // Issue 11: this Core probes its own PATH for every managed Harness and
   // publishes the resulting map as (a) a live snapshot readable via the
   // `agentsAvailabilityList` frame and (b) an `agents:availabilityChanged`
-  // event appended to the same monotonic event log the PTY / project / task
+  // event appended to the same monotonic event log the PTY / session
   // lifecycle events use. Loopback and remote Cores emit the identical shape
   // so the Panel's per-Core availability store is oblivious to which Core
   // answered. Started after `configureEventLogStore` has run — the first
@@ -408,9 +424,10 @@ async function startCore(): Promise<void> {
   // hold: it sees each event once, in order, as it is produced. The guard is
   // there anyway, because "this is only ever fed live events" is a property of
   // this one call site and not of the class.
-  ensureOrchestrationSkill(os.homedir());
+  await ensureOrchestrationSkillViaCore();
   const skillWatcher = new HarnessSkillWatcher({
-    ensure: () => ensureOrchestrationSkill(os.homedir()),
+    // Fire and forget: the helper has its own deadline and the wrapper never rejects.
+    ensure: () => void ensureOrchestrationSkillViaCore(),
   });
   const availabilityStore = new HarnessAvailabilityStore({
     appendEvent: (kind, payload, opts) => {
@@ -418,6 +435,9 @@ async function startCore(): Promise<void> {
       skillWatcher.observe(kind, payload, eventId);
       return eventId;
     },
+    // In the container the daemon cannot look into core's home, so core does
+    // the lookup (#559); undefined elsewhere, which keeps the in-process probe.
+    probeAsync: coreAvailabilityProbe(),
   });
   availabilityStore.start();
 
@@ -425,19 +445,20 @@ async function startCore(): Promise<void> {
   // this daemon is running. The 60s tick would find it eventually; SIGHUP is
   // how the CLI says "now", so a Panel sees the agent it just installed
   // without a restart and without a wait. Unknown senders cost one probe.
-  process.on("SIGHUP", () => availabilityStore.runProbe());
+  process.on("SIGHUP", () => void availabilityStore.refresh());
 
   // Issue 83 (ADR 0021): the Panel can now ask this Core to install a Harness
   // it found missing. Same non-interactive path `actana harnesses install <id>`
   // takes, and the same re-probe afterwards — the difference is only who asked.
-  // `os.homedir()` is the daemon's own operator, whose login PATH the install
-  // writes; the daemon runs as that operator on metal and in the container.
+  // `coreHome()` is the home the Sessions (and the Harness CLIs) live in: the
+  // operator's on metal, `core`'s in the container, where the daemon is another
+  // user and the daemon's own home would be the wrong place to install into.
   const harnessInstalls = new HarnessInstallService({
     availability: () => availabilityStore.snapshot(),
-    reprobe: () => availabilityStore.runProbe(),
+    reprobe: () => availabilityStore.refresh(),
     system: daemonHarnessSystem(),
     platform: process.platform,
-    homeDir: os.homedir(),
+    homeDir: coreHome(),
   });
 
   // ─── mTLS + bearer auth (issue 04) ───
@@ -449,11 +470,15 @@ async function startCore(): Promise<void> {
   // the only shape of Core that can pair (#282). Left null otherwise, which is
   // what keeps a loopback Core's TLS posture and route list exactly as they
   // were.
-  let pairing: CorePairingRoutesOptions | null = null;
-  // Set beside `pairing`, and for the same reason: a Core with no persisted
-  // material has no pairing store, so there is nothing on this machine that
-  // could have been revoked.
-  let revocations: PairingRevocations | null = null;
+  let pairing: ReturnType<typeof createPairing> | null = null;
+
+  // The Shared folder (#561): made here if missing, and its changes fed into the event log.
+  const sharedFolder = await startSharedFolder({ home: coreHome(), appendEvent });
+  // Its sync with S3 (#562, ADR 0041 D33): run here, by the daemon, which alone holds the key in
+  // `userDataDir`; every read and write in `~/shared` is done by the Files helper as `core`.
+  // Idle until a controller attaches this Core, and again after it detaches.
+  const sharedSync = createSharedSync({ stateDir: userDataDir, home: createSharedHome({ home: coreHome() }) });
+  sharedSync.start();
 
   const serverOpts: import("./pty-core-link-server").PtyCoreLinkServerOptions = {
     port,
@@ -463,32 +488,31 @@ async function startCore(): Promise<void> {
       readEventTail,
       getLastEventId,
     },
-    // Issue 07: back the `projectsList` / `tasksList` frames with the shared
-    // SQLite so the Panel renders live project/task snapshots per Core.
+    // Issue 07: back the `sessionRowsList` frames with the shared SQLite so the
+    // Panel renders live Session snapshots per Core.
     queryPort: coreQueryStore,
-    // Issue 04 (ADR 0004): back the `projectsMutate` / `tasksMutate` /
-    // `sessionsList` frames with the same SQLite (read-write). The Core
+    // Issue 04 (ADR 0004): back the `sessionsMutate` / `sessionsList` frames with the same SQLite (read-write). The Core
     // process is the sole VM-side writer; WAL keeps the event-log writer
     // and this writer coexisting on one DB.
     mutationPort: coreMutationStore,
-    // One write seam for the Panel's `tasksMutate` and the Core's own hook /
+    // One write seam for the Panel's `sessionsMutate` and the Core's own hook /
     // exit / title writes (issue 84).
-    taskWriter,
+    sessionWriter,
     // Cursor never fires `beforeSubmitPrompt`, so the Panel reads the prompt
     // off the terminal and hands it here — the only way a Core-owned Cursor
     // Session gets named at all (issue 84).
     promptPort: {
-      submitted: (taskId, prompt) => titleGenerator.schedule(taskId, prompt),
+      submitted: (sessionId, prompt) => titleGenerator.schedule(sessionId, prompt),
     },
     // The other side of issue 387's sweep: a bare Session that settled while
     // it had never run a turn is put back on `ready` when a harness is spawned
     // for it again. Nothing else would — no hook fires until the first prompt,
     // so the card would read `disconnected` over a healthy harness.
     relaunchPort: {
-      agentSpawned: (taskId) =>
+      agentSpawned: (sessionId) =>
         void readySessionOnAgentSpawn(
-          { writer: taskWriter, provenNeverWorked: taskProvenNeverWorked },
-          taskId,
+          { writer: sessionWriter, provenNeverWorked: sessionProvenNeverWorked },
+          sessionId,
         ),
     },
     // Issue 11: back the `agentsAvailabilityList` frame with the current
@@ -503,14 +527,6 @@ async function startCore(): Promise<void> {
     installPort: {
       installable: (harnessId) => harnessInstalls.installable(harnessId),
       install: (harnessId) => harnessInstalls.install(harnessId),
-    },
-    // Web-panel issue 06: the Panel's folder picker browses THIS machine's
-    // disk. The browser has none to offer and the operator's laptop is the
-    // wrong one — a Project's path is a VM path, so the Core serves and
-    // validates every listing.
-    directoryPort: {
-      list: (requestedPath) => listDirectory(requestedPath),
-      create: (parent, name) => createDirectory(parent, name),
     },
     // Issue 266: `actana core exec` runs one command here, non-interactively.
     // It grants nothing `core shell` does not already grant — same credential,
@@ -614,31 +630,48 @@ async function startCore(): Promise<void> {
       // operator's `actana pair new` and this daemon can both see — all three
       // are the persisted material, and a daemon started without one has
       // nowhere for a session to live.
-      const pairingStore = new PairingStore(pairingStorePath(materialFile));
-      pairing = {
-        material: {
-          caCert: material.caCert,
-          caKey: material.caKey,
-          bearerSecret: material.bearerSecret,
-          coreId: material.coreId,
-          coreUuid: material.coreUuid,
-        },
-        sessions: pairingStore,
-        // Per redeemed session, not one string for the route: which of this
-        // Core's addresses a client is told to dial is the operator's choice at
-        // `actana pair new` time, and the resolver reads it off the stored
-        // session and off nothing in the request (#347).
-        endpointFor: buildPairingEndpointResolver({ publicHosts, port }),
-        bearerDays,
-      };
+      //
+      // `@actana/sdk/pairing/server` owns the endpoint, the rate limit, the
+      // redemption and the revocation set; the JSON-file store is the same
+      // `pairing.json` beside the material file that `actana pair new` writes.
+      // Which of this Core's addresses a client is told to dial is still the
+      // operator's choice at `actana pair new` time, read off the stored
+      // session and off nothing in the request (#347): `publicHosts` and
+      // `port` are what the SDK's resolver chooses from.
+      pairing = createPairing({
+        store: corePairingStore(pairingStorePath(materialFile)),
+        material,
+        endpointScheme: "wss",
+        port,
+        publicHosts,
+        names: CORE_PAIRING_NAMES,
+        // A label the operator left off `actana pair new` falls back to the
+        // one the client sent, then to the session id, as it always has.
+        clientLabel: "session-or-client",
+        // What a fresh revocation does: close that client's open links, and say
+        // so when the sweep found the store unreadable. The server does not
+        // exist yet, so this reaches it through the binding below rather than
+        // by name, and the set through `pairing`, which this call assigns.
+        onRevoked: revokedHandler(
+          () => pairing?.gate.revocations.isFailClosed() ?? false,
+          () => server.closeRevoked(),
+        ),
+      });
       // The other half of `actana pair revoke` (#283). That command runs in the
       // CLI and can only stamp a row; this is the process that makes the stamp
       // mean something — refusing the certificate at the gate, refusing the
       // bearer at the `auth` frame, and closing the link a revoked client
-      // already has open. Built here, next to the store it reads, and armed
+      // already has open. The set is built with the pairing surface and armed
       // below once there is a server for it to close connections on.
-      revocations = new PairingRevocations(pairingStore);
-      serverOpts.revocation = revocations;
+      serverOpts.revocation = pairing.gate.revocations;
+      // Seeded here, before the server is built and so before anything listens:
+      // `startRevocationSweep` below schedules its own first read but does not
+      // return it, so it is no guarantee that a revocation already on file is
+      // known when the first request arrives. Awaiting one refresh ourselves is.
+      // An unreadable store leaves the set failing closed, as it should, and
+      // says so in the log: every paired client is about to be refused, and the
+      // only other lines would name serials nobody revoked.
+      reportUnreadableRevocations(await pairing.gate.revocations.refresh());
 
       serverOpts.tls = {
         caCert: material.caCert,
@@ -691,14 +724,14 @@ async function startCore(): Promise<void> {
       // volume that predates this has material but no registry entry, and this
       // is the boot that fixes it. See `core-self-register.ts`.
       if (containerMode) {
-        const registered = registerSelfWithLocalCli({
+        const registered = await registerSelfWithLocalCli({
           material,
           bindHost: host,
           port,
           label,
           bearerDays,
           env: process.env,
-          home: os.homedir(),
+          home: coreHome(),
         });
         if (!registered.ok) {
           // Serving Panels does not depend on this, so a registry that cannot
@@ -726,9 +759,8 @@ async function startCore(): Promise<void> {
   }
 
   // Issue 165: the `/v1/…` file routes, mounted on the same HTTPS server the
-  // core link is on (ADR 0028). Built here rather than inside the server, next
-  // to the query store they read Project roots from — the core-link server
-  // mounts whatever HTTP surface it is handed and never imports the tar codec.
+  // core link is on (ADR 0028). Built here rather than inside the server —
+  // the core-link server mounts whatever HTTP surface it is handed and never imports the tar codec.
   //
   // **After** the remote-mode block, not before it, and that ordering is the
   // fix for a real defect rather than tidiness. Built earlier, the routes could
@@ -740,18 +772,11 @@ async function startCore(): Promise<void> {
   // can be passed by value, and "loopback" can be the absence it is documented
   // to be. `buildCoreFileRoutes` holds the rule and is tested directly.
   //
-  // The lookup is a scan of the project list rather than a `WHERE id = ?`, and
-  // deliberately: a Core holds a handful of Projects, `listProjects` is the read
-  // seam that already exists and already degrades to `[]` on a broken DB, and a
-  // second by-id query in `@actana/shared` would be a second thing to keep in
-  // step with the first. If a Core ever holds enough Projects for this to
-  // matter, the fix is an index in SQLite, not a cache here — the filesystem is
-  // the model (ADR 0027) and this is the one lookup that is not the filesystem.
+  // The one thing the routes need from the Core is where the workspace is: the
+  // home of the Core's user (ADR 0041 D1). There is no lookup to make and no
+  // table to read. The filesystem is the model (ADR 0027).
   const fileRoutes = buildCoreFileRoutes({
-    filesPort: {
-      projectRoot: (projectId) =>
-        coreQueryStore.listProjects().find((project) => project.projectId === projectId)?.path ?? null,
-    },
+    filesPort: { workspaceRoot: () => coreHome() },
     ...(serverOpts.authVerifier ? { authVerifier: serverOpts.authVerifier } : {}),
   });
   // The pairing family goes first, and `composeCoreHttpRoutes` documents why:
@@ -763,25 +788,25 @@ async function startCore(): Promise<void> {
   // surface is no longer only them, so the default ("yes if any HTTP surface is
   // mounted") would now be announcing a capability on the strength of a
   // pairing endpoint — the exact confusion ADR 0028 D4 warns about.
-  serverOpts.httpRoutes = pairing
-    ? composeCoreHttpRoutes(buildCorePairingRoutes(pairing), fileRoutes)
-    : fileRoutes;
+  serverOpts.httpRoutes = pairing ? composeCoreHttpRoutes(auditPairingRoutes(pairing.redeem), fileRoutes) : fileRoutes;
   serverOpts.announceFiles = shouldAnnounceFiles(fileRoutes);
+  // A function, so a watcher that comes up after the server is announced to the next connection.
+  serverOpts.shared = () => announceShared(sharedSync.attached, sharedFolder.capability, sharedSync.keyIsolated);
+  serverOpts.sharedPort = sharedSync;
   // What the mTLS gate is allowed to serve without a client certificate. Absent
   // unless pairing is mounted, and absent means the handshake keeps refusing
   // uncertificated clients outright — see `core-preauth-gate.ts`.
-  if (pairing) serverOpts.isPreAuthPath = isPairingPath;
+  if (pairing) serverOpts.isPreAuthPath = pairing.gate.isPreAuthPath;
 
   const server = new PtyCoreLinkServer(core, serverOpts);
 
   // Armed after the server exists, because what it does when it finds a fresh
-  // revocation is close that client's connections. Its first read runs here and
-  // is deliberately not dispatched — see `startPairingRevocationSweep` — so a
-  // Core that boots with revocations already on file refuses them from its
-  // first request rather than from one second in.
-  const revocationSweep: PairingRevocationSweep | null = revocations
-    ? startPairingRevocationSweep({ revocations, onRevoked: () => server.closeRevoked() })
-    : null;
+  // revocation is close that client's connections. The set was already seeded
+  // by the awaited refresh above, so a Core that boots with revocations on file
+  // refuses them from its first request; the sweep's own boot read is only a
+  // repeat, and it is not dispatched (the SDK's boot tick never calls
+  // `onRevoked`).
+  const revocationSweep = pairing ? pairing.startRevocationSweep() : null;
 
   // Alert-only, once a day, into this daemon's log — never a frame the Panel
   // raises and never an update this process applies (ADR 0010).
@@ -804,7 +829,10 @@ async function startCore(): Promise<void> {
     : null;
 
   // Clean up on shutdown.
-  const shutdown = () => {
+  const shutdown = (signal: string) => {
+    // The line `docker stop` is checked against by the image smoke: it proves the
+    // signal reached the daemon (tini forwards it) and not only that the container ended.
+    log.info("core.shutdown", { signal });
     core.killAll();
     server.close();
     hookReceiver?.close();
@@ -813,13 +841,15 @@ async function startCore(): Promise<void> {
     availabilityStore.stop();
     updateNotice?.stop();
     revocationSweep?.stop();
+    sharedFolder.stop();
+    sharedSync.stop();
     disposeEventLogStore();
     disposeCoreQueryStore();
     disposeCoreMutationStore();
     process.exit(0);
   };
-  process.on("SIGTERM", shutdown);
-  process.on("SIGINT", shutdown);
+  process.on("SIGTERM", () => shutdown("SIGTERM"));
+  process.on("SIGINT", () => shutdown("SIGINT"));
 
   // The sentinel is printed on the next tick so the WS server has definitely
   // bound the port before the parent resolves readiness.

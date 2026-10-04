@@ -1,4 +1,5 @@
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
+import { closePanelTestDb, openPanelTestDb } from "../../__tests__/_panel-test-db";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -12,20 +13,16 @@ import {
   type EventLogPort,
   type CoreMutationPort,
 } from "@actana/core/pty-core-link-server";
-import { createDirectory, listDirectory } from "@actana/core/directory-browse";
 import { generateCertMaterial } from "@actana/shared/core-cert-material";
 import { signBearer, verifyBearer } from "@actana/shared/core-link-bearer";
 import type { PtyCore } from "@actana/core/pty-manager";
-import type {
-  CoreLinkEvent,
-  CoreLinkProjectSnapshot,
-  CoreLinkTaskSnapshot,
-} from "@actana/sdk/core-link-frames";
+import type { CoreLinkEvent } from "@actana/sdk/core";
+import type { CoreSessionRow } from "@actana/shared/core-query";
 import type { PanelLinkClientFrame, PanelLinkServerFrame } from "~/shared/panel-link";
 
 /**
- * The write path, end to end: a browser tab creates a project, starts a
- * session, pins and renames and re-icons things, and browses folders — all as
+ * The write path, end to end: a browser tab starts a
+ * session, pins and renames and re-icons things — all as
  * frames on one panel link, across the router, down a real mTLS core-link, to
  * a Core that owns the rows and the disk.
  *
@@ -39,7 +36,7 @@ process.env.AC_USER_DATA_DIR = path.join(tmpRoot, "app");
 process.env.AC_PANEL_DATA_DIR = path.join(tmpRoot, "panel");
 
 const { handleApiRequest } = await import("../../api-router");
-const { closePanelDb, getPanelDb } = await import("../../panel-db");
+const testDb = await openPanelTestDb();
 const { operatorSessionCookie } = await import("../../__tests__/_operator-session");
 const { attachPanelLink } = await import("../ws-server");
 const { coreLinkManager } = await import("../../services/core-link-manager");
@@ -74,10 +71,10 @@ class Tab {
     ws.on("message", (raw) => this.received.push(JSON.parse(String(raw)) as PanelLinkServerFrame));
   }
 
-  static open(): Promise<Tab> {
+  static async open(): Promise<Tab> {
     const ws = new WebSocket(
       `ws://127.0.0.1:${panelPort}${PANEL_LINK_PATH}?${PANEL_LINK_VERSION_PARAM}=${PANEL_LINK_PROTOCOL_VERSION}`,
-      { headers: { cookie: operatorSessionCookie() } },
+      { headers: { cookie: (await operatorSessionCookie()) } },
     );
     const tab = new Tab(ws);
     return new Promise((resolve, reject) => {
@@ -150,10 +147,10 @@ function mockCore(): PtyCore {
     kill: () => true,
     killLaunchProcesses: async () => ({ ptyCount: 0, ports: [] }),
     killPtysUnderPath: async () => ({ ptyCount: 0 }),
-    findByTask: () => ({ ptyId: null }),
+    findBySession: () => ({ ptyId: null }),
     // Which Session a `write`/`kill` would touch (issue 144) — the lookup
     // the Core's Session-lock gate resolves a ptyId through.
-    taskIdForPty: () => null,
+    sessionIdForPty: () => null,
     replay: () => ({ data: "", nextSeq: 0 }),
     killAll: () => {},
   } as unknown as PtyCore;
@@ -225,7 +222,7 @@ function eventLog(): EventLogPort {
         ts: events.length + 1,
         kind,
         ptyId: opts?.ptyId ?? null,
-        taskId: opts?.taskId ?? null,
+        sessionId: opts?.sessionId ?? null,
         payload,
       };
       events.push(event);
@@ -237,59 +234,17 @@ function eventLog(): EventLogPort {
 }
 
 /**
- * A Core's project/task tables, standing in for its SQLite. It validates the
- * project path against the real filesystem the same way the store does — that
- * is the point of the write living here rather than in the Panel.
+ * A Core's sessions table, standing in for its SQLite.
  */
 function mutationPort(): CoreMutationPort {
-  const projects = new Map<string, CoreLinkProjectSnapshot>();
-  const tasks = new Map<string, CoreLinkTaskSnapshot>();
+  const sessions = new Map<string, CoreSessionRow>();
   let seq = 0;
   return {
-    mutateProject(mutation) {
+    mutateSession(mutation) {
       if (mutation.op === "create") {
-        if (!fs.existsSync(mutation.path) || !fs.statSync(mutation.path).isDirectory()) {
-          throw new Error(`Not a folder on this machine: ${mutation.path}`);
-        }
-        const projectId = mutation.projectId ?? `proj_${++seq}`;
-        const snapshot: CoreLinkProjectSnapshot = {
-          projectId,
-          name: mutation.name,
-          path: mutation.path,
-          icon: mutation.icon ?? "PR",
-          iconColor: mutation.iconColor ?? "#3b6ea5",
-          pinned: mutation.pinned ?? false,
-          rememberHarnessSettings: false,
-          savedHarness: null,
-          savedSkipPermissions: false,
-          savedBareSession: false,
-          defaultGridView: false,
-          updatedAt: ++seq,
-        };
-        projects.set(projectId, snapshot);
-        return snapshot;
-      }
-      const existing = projects.get(mutation.projectId);
-      if (!existing) return null;
-      const next: CoreLinkProjectSnapshot = {
-        ...existing,
-        ...(mutation.op === "rename" ? { name: mutation.name } : {}),
-        ...(mutation.op === "pin" ? { pinned: mutation.pinned } : {}),
-        updatedAt: ++seq,
-      };
-      if (mutation.op === "archive") {
-        projects.delete(mutation.projectId);
-        return existing;
-      }
-      projects.set(next.projectId, next);
-      return next;
-    },
-    mutateTask(mutation) {
-      if (mutation.op === "create") {
-        const taskId = mutation.taskId ?? `task_${++seq}`;
-        const snapshot: CoreLinkTaskSnapshot = {
-          taskId,
-          projectId: mutation.projectId,
+        const sessionId = mutation.sessionId ?? `session_${++seq}`;
+        const snapshot: CoreSessionRow = {
+          sessionId,
           title: mutation.title,
           titleManuallySet: false,
           claudeSessionId: null,
@@ -300,16 +255,16 @@ function mutationPort(): CoreMutationPort {
           icon: mutation.icon ?? null,
           updatedAt: ++seq,
         };
-        tasks.set(taskId, snapshot);
+        sessions.set(sessionId, snapshot);
         return snapshot;
       }
-      const existing = tasks.get(mutation.taskId);
+      const existing = sessions.get(mutation.sessionId);
       if (!existing) return null;
       if (mutation.op === "delete") {
-        tasks.delete(mutation.taskId);
+        sessions.delete(mutation.sessionId);
         return existing;
       }
-      const next: CoreLinkTaskSnapshot = {
+      const next: CoreSessionRow = {
         ...existing,
         ...(mutation.title === undefined ? {} : { title: mutation.title }),
         ...(mutation.pinned === undefined ? {} : { pinned: mutation.pinned }),
@@ -317,12 +272,12 @@ function mutationPort(): CoreMutationPort {
         ...(mutation.status === undefined ? {} : { status: mutation.status }),
         updatedAt: ++seq,
       };
-      tasks.set(next.taskId, next);
+      sessions.set(next.sessionId, next);
       return next;
     },
     listSessions: () =>
-      [...tasks.values()].map((t) => ({
-        taskId: t.taskId,
+      [...sessions.values()].map((t) => ({
+        sessionId: t.sessionId,
         ptyId: null,
         status: t.status,
         updatedAt: t.updatedAt,
@@ -331,21 +286,12 @@ function mutationPort(): CoreMutationPort {
 }
 
 type CoreCredential = Parameters<typeof registerCoreFromCredential>[0];
-type CoreFixture = { server: PtyCoreLinkServer; credential: CoreCredential; disk: string };
-
-/** The folder tree this Core owns — the one the picker will walk. */
-function coreDisk(): string {
-  const home = fs.realpathSync(fs.mkdtempSync(path.join(tmpRoot, "vm-home-")));
-  fs.mkdirSync(path.join(home, "Documents"));
-  fs.mkdirSync(path.join(home, "projects", "warehouse"), { recursive: true });
-  fs.mkdirSync(path.join(home, ".hidden"));
-  return home;
-}
+type CoreFixture = { server: PtyCoreLinkServer; credential: CoreCredential };
 
 /**
  * Cert material is generated once for the file. Every Core here presents the
  * same CA and accepts the same client cert; what makes them distinct Cores is
- * the port they listen on and the disk they own. Regenerating keys per test is
+ * the port they listen on. Regenerating keys per test is
  * seconds of CPU that prove nothing this suite is about.
  */
 let sharedMaterial: Awaited<ReturnType<typeof generateCertMaterial>> | null = null;
@@ -357,14 +303,9 @@ async function certMaterial() {
 async function startCore(label: string): Promise<CoreFixture> {
   const material = await certMaterial();
   const bound = { port: await freePort() };
-  const disk = coreDisk();
   const server = new PtyCoreLinkServer(mockCore(), {
     eventLog: eventLog(),
     mutationPort: mutationPort(),
-    directoryPort: {
-      list: (requested) => listDirectory(requested, { home: disk }),
-      create: (parent, name) => createDirectory(parent, name),
-    },
     port: bound.port,
     host: "127.0.0.1",
     createServer: tlsCreateServer(bound),
@@ -384,7 +325,7 @@ async function startCore(label: string): Promise<CoreFixture> {
     clientKey: material.client.key,
     bearer: signBearer({ coreId: "core_fixture", exp: Date.now() + 600_000 }, BEARER_SECRET),
   };
-  return { server, credential, disk };
+  return { server, credential };
 }
 
 const running: PtyCoreLinkServer[] = [];
@@ -399,13 +340,13 @@ async function pair(label = "prod-vm-1"): Promise<{ coreId: string; core: CoreFi
   // /api/cores` to paste a blob at any more (#287). `operatorSessionCookie`
   // first because the registry row's foreign key points at the Operator, which
   // an HTTP registration used to create on the way past.
-  operatorSessionCookie();
-  const coreId = registerCoreFromCredential(core.credential).id;
-  coreLinkManager().dial(coreId);
+  (await operatorSessionCookie());
+  const coreId = (await registerCoreFromCredential(core.credential)).id;
+  await coreLinkManager().dial(coreId);
   paired.push(coreId);
   await vi.waitFor(async () => {
     const listing = await handleApiRequest(
-      new Request(`${ORIGIN}/api/cores`, { headers: { cookie: operatorSessionCookie() } }),
+      new Request(`${ORIGIN}/api/cores`, { headers: { cookie: (await operatorSessionCookie()) } }),
     );
     const cores = ((await listing!.json()) as { cores: { id: string; dial: { state: string } }[] })
       .cores;
@@ -426,128 +367,73 @@ afterEach(async () => {
     await handleApiRequest(
       new Request(`${ORIGIN}/api/cores/${coreId}`, {
         method: "DELETE",
-        headers: { cookie: operatorSessionCookie() },
+        headers: { cookie: (await operatorSessionCookie()) },
       }),
     );
   }
   for (const server of running.splice(0)) server.close();
-  const db = getPanelDb();
-  db.prepare("DELETE FROM core_secrets").run();
-  db.prepare("DELETE FROM cores").run();
+  await testDb.pool.query("delete from core_secrets");
+  await testDb.pool.query("delete from cores");
 });
 
 afterAll(async () => {
   await new Promise<void>((resolve) => panel.close(() => resolve()));
-  closePanelDb();
+  await closePanelTestDb(testDb);
   fs.rmSync(tmpRoot, { recursive: true, force: true });
 });
 
 describe("writing to a Core from the browser", () => {
-  it("creates a project at a path the Core accepts", async () => {
-    const { coreId, core } = await pair();
-    const tab = await openTab();
-
-    const answer = await tab.ask(coreId, {
-      type: "projectsMutate",
-      mutation: {
-        op: "create",
-        name: "warehouse",
-        path: path.join(core.disk, "projects", "warehouse"),
-      },
-    });
-
-    expect(answer).toMatchObject({
-      type: "projectsMutateResult",
-      project: expect.objectContaining({ name: "warehouse" }),
-    });
-  });
-
-  it("refuses a path that machine says is not a folder, with the Core's own words", async () => {
-    const { coreId, core } = await pair();
-    const tab = await openTab();
-
-    const answer = await tab.ask(coreId, {
-      type: "projectsMutate",
-      mutation: { op: "create", name: "ghost", path: path.join(core.disk, "nowhere") },
-    });
-
-    expect(answer.type).toBe("error");
-    expect(String(answer.message)).toContain("Not a folder on this machine");
-  });
 
   it("starts a session and hands back the row the Core recorded", async () => {
     const { coreId } = await pair();
     const tab = await openTab();
 
     const answer = await tab.ask(coreId, {
-      type: "tasksMutate",
-      mutation: { op: "create", projectId: "proj_1", title: "restock", agent: "claude-code" },
+      type: "sessionsMutate",
+      mutation: { op: "create", title: "restock", agent: "claude-code" },
     });
 
     expect(answer).toMatchObject({
-      type: "tasksMutateResult",
-      task: expect.objectContaining({ title: "restock", agent: "claude-code", status: "ready" }),
+      type: "sessionsMutateResult",
+      session: expect.objectContaining({ title: "restock", agent: "claude-code", status: "ready" }),
     });
   });
 
   it("shows a pin, a rename and an icon made in one tab to a second tab", async () => {
-    const { coreId, core } = await pair();
+    const { coreId } = await pair();
     const author = await openTab();
     const observer = await openTab();
 
-    const created = (
+    const session = (
       await author.ask(coreId, {
-        type: "projectsMutate",
-        mutation: {
-          op: "create",
-          name: "warehouse",
-          path: path.join(core.disk, "projects", "warehouse"),
-        },
+        type: "sessionsMutate",
+        mutation: { op: "create", title: "restock", agent: "claude-code" },
       })
-    ).project as CoreLinkProjectSnapshot;
-    const task = (
-      await author.ask(coreId, {
-        type: "tasksMutate",
-        mutation: {
-          op: "create",
-          projectId: created.projectId,
-          title: "restock",
-          titleManuallySet: false,
-          claudeSessionId: null,
-          agent: "claude-code",
-        },
-      })
-    ).task as CoreLinkTaskSnapshot;
+    ).session as CoreSessionRow;
 
     await author.ask(coreId, {
-      type: "projectsMutate",
-      mutation: { op: "pin", projectId: created.projectId, pinned: true },
+      type: "sessionsMutate",
+      mutation: { op: "update", sessionId: session.sessionId, pinned: true },
     });
     await author.ask(coreId, {
-      type: "projectsMutate",
-      mutation: { op: "rename", projectId: created.projectId, name: "depot" },
+      type: "sessionsMutate",
+      mutation: { op: "update", sessionId: session.sessionId, title: "depot" },
     });
     await author.ask(coreId, {
-      type: "tasksMutate",
-      mutation: { op: "update", taskId: task.taskId, icon: "rocket" },
+      type: "sessionsMutate",
+      mutation: { op: "update", sessionId: session.sessionId, icon: "rocket" },
     });
 
     // The second tab asks the same Core and gets the same answers — there is
     // only one copy of this state and neither tab is holding it.
     const sessions = await observer.ask(coreId, { type: "sessionsList" });
-    expect(sessions.sessions).toEqual([expect.objectContaining({ taskId: task.taskId })]);
+    expect(sessions.sessions).toEqual([expect.objectContaining({ sessionId: session.sessionId })]);
 
-    const renamed = await observer.ask(coreId, {
-      type: "projectsMutate",
-      mutation: { op: "pin", projectId: created.projectId, pinned: true },
+    const reRead = await observer.ask(coreId, {
+      type: "sessionsMutate",
+      mutation: { op: "update", sessionId: session.sessionId, status: "ready" },
     });
-    expect(renamed.project).toMatchObject({ name: "depot", pinned: true });
-
-    const reIconed = await observer.ask(coreId, {
-      type: "tasksMutate",
-      mutation: { op: "update", taskId: task.taskId, title: "restock" },
-    });
-    expect(reIconed.task).toMatchObject({ icon: "rocket" });
+    expect(reRead.session).toMatchObject({ title: "depot", pinned: true, icon: "rocket" });
   });
 
   it("deletes a session on the Core and tells a watching tab it is gone", async () => {
@@ -555,28 +441,28 @@ describe("writing to a Core from the browser", () => {
     const tab = await openTab();
     tab.subscribe(coreId, 0);
 
-    const task = (
+    const session = (
       await tab.ask(coreId, {
-        type: "tasksMutate",
-        mutation: { op: "create", projectId: "proj_1", title: "restock", agent: "claude-code" },
+        type: "sessionsMutate",
+        mutation: { op: "create", title: "restock", agent: "claude-code" },
       })
-    ).task as CoreLinkTaskSnapshot;
+    ).session as CoreSessionRow;
 
     const removed = await tab.ask(coreId, {
-      type: "tasksMutate",
-      mutation: { op: "delete", taskId: task.taskId },
+      type: "sessionsMutate",
+      mutation: { op: "delete", sessionId: session.sessionId },
     });
 
     // The Core answers with the row it removed, and it is out of the sessions
     // list the next read returns.
     expect(removed).toMatchObject({
-      type: "tasksMutateResult",
-      task: expect.objectContaining({ taskId: task.taskId, title: "restock" }),
+      type: "sessionsMutateResult",
+      session: expect.objectContaining({ sessionId: session.sessionId, title: "restock" }),
     });
     expect((await tab.ask(coreId, { type: "sessionsList" })).sessions).toEqual([]);
 
     await vi.waitFor(() => {
-      expect(tab.events(coreId).map((e) => e.kind)).toContain("task:deleted");
+      expect(tab.events(coreId).map((e) => e.kind)).toContain("session:deleted");
     }, 5_000);
   });
 
@@ -585,109 +471,47 @@ describe("writing to a Core from the browser", () => {
     const tab = await openTab();
 
     const answer = await tab.ask(coreId, {
-      type: "tasksMutate",
-      mutation: { op: "delete", taskId: "task_gone" },
+      type: "sessionsMutate",
+      mutation: { op: "delete", sessionId: "session_gone" },
     });
 
-    expect(answer).toMatchObject({ type: "tasksMutateResult", task: null });
+    expect(answer).toMatchObject({ type: "sessionsMutateResult", session: null });
   });
 
   it("tells a watching tab which kind of change happened", async () => {
-    const { coreId, core } = await pair();
+    const { coreId } = await pair();
     const tab = await openTab();
     tab.subscribe(coreId, 0);
 
     const created = (
       await tab.ask(coreId, {
-        type: "projectsMutate",
-        mutation: {
-          op: "create",
-          name: "warehouse",
-          path: path.join(core.disk, "projects", "warehouse"),
-        },
+        type: "sessionsMutate",
+        mutation: { op: "create", title: "restock", agent: "claude-code" },
       })
-    ).project as CoreLinkProjectSnapshot;
+    ).session as CoreSessionRow;
     await tab.ask(coreId, {
-      type: "projectsMutate",
-      mutation: { op: "pin", projectId: created.projectId, pinned: true },
+      type: "sessionsMutate",
+      mutation: { op: "update", sessionId: created.sessionId, pinned: true },
     });
 
     await vi.waitFor(() => {
       expect(tab.events(coreId).map((e) => e.kind)).toEqual(
-        expect.arrayContaining(["project:created", "project:pinnedChanged"]),
+        expect.arrayContaining(["session:created", "session:pinnedChanged"]),
       );
     }, 5_000);
   });
 });
 
-describe("browsing the Core's filesystem from the browser", () => {
-  it("lists the Core's home when the tab names no path", async () => {
-    const { coreId, core } = await pair();
+describe("the folder picker's frames, retired with Projects (#555)", () => {
+  it.each([
+    [{ type: "dirList", path: null }],
+    [{ type: "dirCreate", parent: "/home/core", name: "atlas" }],
+  ])("reaches the browser as the Core's refusal by name for %j", async (frame) => {
+    const { coreId } = await pair();
     const tab = await openTab();
 
-    const answer = await tab.ask(coreId, { type: "dirList", path: null });
+    const answer = await tab.ask(coreId, frame);
 
-    expect(answer.type).toBe("dirListResult");
-    const listing = answer.listing as { path: string; entries: Array<{ name: string }> };
-    expect(listing.path).toBe(core.disk);
-    // The VM's own folders — dotfolders stay out of the picker.
-    expect(listing.entries.map((e) => e.name)).toEqual(["Documents", "projects"]);
-  });
-
-  it("drills into a folder on that machine", async () => {
-    const { coreId, core } = await pair();
-    const tab = await openTab();
-
-    const answer = await tab.ask(coreId, {
-      type: "dirList",
-      path: path.join(core.disk, "projects"),
-    });
-
-    const listing = answer.listing as { entries: Array<{ name: string }>; parent: string };
-    expect(listing.entries.map((e) => e.name)).toEqual(["warehouse"]);
-    expect(listing.parent).toBe(core.disk);
-  });
-
-  it("creates a folder on that machine, then finds it in the next listing", async () => {
-    const { coreId, core } = await pair();
-    const tab = await openTab();
-    const parent = path.join(core.disk, "projects");
-
-    const created = await tab.ask(coreId, { type: "dirCreate", parent, name: "atlas" });
-    expect(created).toMatchObject({
-      type: "dirCreateResult",
-      path: path.join(parent, "atlas"),
-    });
-
-    const listing = (await tab.ask(coreId, { type: "dirList", path: parent })).listing as {
-      entries: Array<{ name: string }>;
-    };
-    expect(listing.entries.map((e) => e.name)).toEqual(["atlas", "warehouse"]);
-  });
-
-  it("says why a listing failed, in words meant for the operator", async () => {
-    const { coreId, core } = await pair();
-    const tab = await openTab();
-
-    const answer = await tab.ask(coreId, {
-      type: "dirList",
-      path: path.join(core.disk, "nowhere"),
-    });
-
-    expect(answer).toMatchObject({ type: "error", message: "Folder not found" });
-  });
-
-  it("refuses a folder name that would escape the parent", async () => {
-    const { coreId, core } = await pair();
-    const tab = await openTab();
-
-    const answer = await tab.ask(coreId, {
-      type: "dirCreate",
-      parent: path.join(core.disk, "projects"),
-      name: "../escaped",
-    });
-
-    expect(answer).toMatchObject({ type: "error", message: "Invalid folder name" });
-    expect(fs.existsSync(path.join(core.disk, "escaped"))).toBe(false);
+    expect(answer).toMatchObject({ type: "error", message: `unhandled frame type: ${frame.type}` });
   });
 });

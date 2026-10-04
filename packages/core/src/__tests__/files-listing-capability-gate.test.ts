@@ -19,11 +19,12 @@
 //
 // What this file deliberately does not do is stand up an `@actana/sdk`
 // `CoreClient` — the socket rig for one lives in that package's own tests, and
-// both mismatch directions are already covered there (`files-capability.test.ts`
-// in `packages/sdk`). The reader used here is the one that client is built on.
+// both mismatch directions were covered by the in-repo `files-capability.test.ts`, deleted with
+// `packages/sdk` (#580); actana/client has no counterpart, so the reader's gate is held here and by
+// `core-link-ready-files-capability.test.ts`. The reader used here is the one that client is built on.
 import * as http from "node:http";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { readFilesCapability, type CoreLinkEvent } from "@actana/sdk/core-link-frames";
+import { readFilesCapability, type CoreLinkEvent } from "@actana/sdk/core";
 import { createCoreFilesRequestHandler, type CoreFilesPort } from "../core-files-routes";
 import {
   PtyCoreLinkServer,
@@ -88,7 +89,7 @@ function fakeEventLog(): EventLogPort {
   return {
     appendEvent: (kind, payload, opts) => {
       const eventId = events.length + 1;
-      events.push({ eventId, ts: eventId, kind, payload, ptyId: opts?.ptyId ?? null, taskId: opts?.taskId ?? null });
+      events.push({ eventId, ts: eventId, kind, payload, ptyId: opts?.ptyId ?? null, sessionId: opts?.sessionId ?? null });
       return eventId;
     },
     readEventTail: (afterEventId, limit = 1_000) => events.filter((e) => e.eventId > afterEventId).slice(0, limit),
@@ -104,7 +105,7 @@ function mockCore(): PtyCore {
     resize: () => true,
     kill: () => true,
     killLaunchProcesses: async () => ({ ptyCount: 0, ports: [] }),
-    findByTask: () => ({ ptyId: null }),
+    findBySession: () => ({ ptyId: null }),
     replay: () => ({ data: "", nextSeq: 0, from: 0 }),
     killAll: () => {},
   } as unknown as PtyCore;
@@ -117,7 +118,7 @@ let base: string;
 let projects: Record<string, string> = {};
 let linkServer: PtyCoreLinkServer | null = null;
 
-const filesPort: CoreFilesPort = { projectRoot: (id) => projects[id] ?? null };
+const filesPort: CoreFilesPort = { workspaceRoot: () => Object.values(projects)[0] ?? null };
 
 beforeEach(async () => {
   arrived = [];
@@ -166,12 +167,11 @@ function readyFrameFrom(opts: Partial<PtyCoreLinkServerOptions>): Record<string,
  */
 async function listIfOffered(
   ready: Record<string, unknown>,
-  projectId: string,
 ): Promise<{ asked: boolean; reason?: string; status?: number; body?: string }> {
   if (readFilesCapability(ready.files) === null) {
     return { asked: false, reason: "this Core announces no file surface on `ready`" };
   }
-  const res = await fetch(`${base}/v1/projects/${projectId}/files/list`);
+  const res = await fetch(`${base}/v1/files/list`);
   return { asked: true, status: res.status, body: await res.text() };
 }
 
@@ -184,12 +184,12 @@ describe("a Core that serves the listing route", () => {
   });
 
   it("is asked, and answers the listing", async () => {
-    const result = await listIfOffered(readyFrameFrom({ httpRoutes: fileRoutes() }), "p1");
+    const result = await listIfOffered(readyFrameFrom({ httpRoutes: fileRoutes() }));
 
     expect(result.asked).toBe(true);
     expect(result.status).toBe(200);
     expect(result.body).toContain('"path":"a.txt"');
-    expect(arrived).toEqual(["GET /v1/projects/p1/files/list"]);
+    expect(arrived).toEqual(["GET /v1/files/list"]);
   });
 
   it("announces version 1 for listing too, because no Core has ever shipped a version 1 without it", () => {
@@ -210,7 +210,7 @@ describe("a Core with no file surface — every Core that shipped before this", 
   });
 
   it("is not asked: the client withholds the affordance and issues no request at all", async () => {
-    const result = await listIfOffered(readyFrameFrom({}), "p1");
+    const result = await listIfOffered(readyFrameFrom({}));
 
     expect(result.asked).toBe(false);
     // The assertion the clause is actually about. Not "the request was refused"
@@ -220,7 +220,7 @@ describe("a Core with no file surface — every Core that shipped before this", 
   });
 
   it("gives a reason, so the affordance is missing rather than mysteriously broken", async () => {
-    const result = await listIfOffered(readyFrameFrom({}), "p1");
+    const result = await listIfOffered(readyFrameFrom({}));
 
     expect(result.reason).toContain("no file surface");
   });
@@ -230,19 +230,19 @@ describe("a Core with no file surface — every Core that shipped before this", 
     // request would have succeeded. It is still not made: the client believes
     // `ready`, which is the contract, and a client that probes anyway is one
     // that has stopped feature-detecting.
-    const result = await listIfOffered(readyFrameFrom({}), "p1");
+    const result = await listIfOffered(readyFrameFrom({}));
 
     expect(result.asked).toBe(false);
     expect(arrived).toEqual([]);
 
-    const proof = await fetch(`${base}/v1/projects/p1/files/list`);
+    const proof = await fetch(`${base}/v1/files/list`);
     expect(proof.status).toBe(200);
   });
 });
 
 describe("a capability version this build has never seen", () => {
   it("is read as no file surface, so a client stays off the routes rather than guessing at a superset", async () => {
-    const result = await listIfOffered({ type: "ready", files: { version: 7 } }, "p1");
+    const result = await listIfOffered({ type: "ready", files: { version: 7 } });
 
     expect(result.asked).toBe(false);
     expect(arrived).toEqual([]);

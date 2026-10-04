@@ -2,33 +2,24 @@ import { EventEmitter } from "node:events";
 import type { HarnessQuestion } from "~/shared/harness-questions";
 
 export type AppEvent =
-  | { type: "project:created"; id: string }
-  | { type: "project:updated"; id: string }
-  | { type: "project:deleted"; id: string }
-  | { type: "group:created"; id: string }
-  | { type: "group:updated"; id: string }
-  | { type: "group:deleted"; id: string }
-  | { type: "task:created"; id: string; projectId: string }
-  | { type: "task:updated"; id: string; projectId: string }
-  | { type: "task:archived"; id: string; projectId: string }
-  | { type: "task:restored"; id: string; projectId: string }
-  | { type: "task:deleted"; id: string; projectId: string }
+  | { type: "session:created"; id: string }
+  | { type: "session:updated"; id: string }
+  | { type: "session:archived"; id: string }
+  | { type: "session:restored"; id: string }
+  | { type: "session:deleted"; id: string }
   | {
       type: "session:finished";
       id: string;
-      projectId: string;
-      projectName: string;
-      taskTitle: string;
+      sessionTitle: string;
     }
   | {
-      type: "task:question";
-      taskId: string;
-      projectId: string;
+      type: "session:question";
+      sessionId: string;
       questionId: string;
       questions: HarnessQuestion[];
     }
-  | { type: "task:question-cleared"; taskId: string; projectId: string }
-  | { type: "prompt:submitted"; taskId: string; projectId: string; snippet: string };
+  | { type: "session:question-cleared"; sessionId: string }
+  | { type: "prompt:submitted"; sessionId: string; snippet: string };
 
 class TypedEmitter {
   private inner = new EventEmitter();

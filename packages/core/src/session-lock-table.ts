@@ -7,8 +7,8 @@
 // this module knows nothing about sockets, auth or PTYs, which is what lets the
 // server hand it an `ActiveConnection` and a test hand it `{}`.
 //
-// A Session is keyed by its **taskId**. That is the one identifier every
-// mutation the lock covers can be reduced to: `tasksMutate` names it directly,
+// A Session is keyed by its **sessionId**. That is the one identifier every
+// mutation the lock covers can be reduced to: `sessionsMutate` names it directly,
 // and `write`/`kill` name a `ptyId` the server resolves to the Session it was
 // spawned for. Keying on `ptyId` would give a Session as many locks as it has
 // had processes.
@@ -46,7 +46,7 @@
 // bookkeeping — reference comparison inside this process — and nothing puts its
 // answer on the wire.
 
-import type { CoreLinkSessionLock } from "@actana/sdk/core-link-frames";
+import type { CoreLinkSessionLock } from "@actana/sdk/core";
 
 /**
  * A lock holder, as this table sees one: an identity to compare by reference.
@@ -69,14 +69,14 @@ export type SessionLockTakenFrom = "nobody" | "another-connection" | "this-conne
 export class SessionLockTable {
   private readonly holders = new Map<string, SessionLockHolder>();
 
-  /** The connection holding `taskId`, or null when the Session is unlocked. */
-  holderOf(taskId: string): SessionLockHolder | null {
-    return this.holders.get(taskId) ?? null;
+  /** The connection holding `sessionId`, or null when the Session is unlocked. */
+  holderOf(sessionId: string): SessionLockHolder | null {
+    return this.holders.get(sessionId) ?? null;
   }
 
   /** Does `holder` hold this Session's lock right now? */
-  isHeldBy(taskId: string, holder: SessionLockHolder): boolean {
-    return this.holders.get(taskId) === holder;
+  isHeldBy(sessionId: string, holder: SessionLockHolder): boolean {
+    return this.holders.get(sessionId) === holder;
   }
 
   /**
@@ -95,15 +95,15 @@ export class SessionLockTable {
    * acquisition — a mutation never becomes a claim — not about making an
    * unclaimed Session unwritable.
    *
-   * `taskId` may be null for a mutation the server could not resolve to a
+   * `sessionId` may be null for a mutation the server could not resolve to a
    * Session (a `ptyId` this Core has no PTY for). That answers true: there is no
    * Session to be holding, and the underlying call is about to report "gone" on
    * its own, which is exactly the answer the caller needs to tell apart from a
    * refusal.
    */
-  mayMutate(taskId: string | null | undefined, holder: SessionLockHolder): boolean {
-    if (!taskId) return true;
-    const current = this.holders.get(taskId);
+  mayMutate(sessionId: string | null | undefined, holder: SessionLockHolder): boolean {
+    if (!sessionId) return true;
+    const current = this.holders.get(sessionId);
     return current === undefined || current === holder;
   }
 
@@ -126,9 +126,9 @@ export class SessionLockTable {
    * identity (D3, D10). The asker is the only connection this answer is true
    * for, which is why it is a parameter and not a snapshot of the table.
    */
-  stateFor(taskId: string, asker: SessionLockHolder): CoreLinkSessionLock {
-    const writable = this.mayMutate(taskId, asker);
-    const current = this.holders.get(taskId);
+  stateFor(sessionId: string, asker: SessionLockHolder): CoreLinkSessionLock {
+    const writable = this.mayMutate(sessionId, asker);
+    const current = this.holders.get(sessionId);
     if (current === undefined) return { writable, state: "unlocked" };
     if (current === asker) return { writable, state: "held-by-you" };
     return { writable, state: "held-by-another" };
@@ -144,10 +144,10 @@ export class SessionLockTable {
    * Session out from under a working client is never something a retry loop does
    * by accident.
    */
-  claim(taskId: string, holder: SessionLockHolder): { granted: boolean } {
-    const current = this.holders.get(taskId);
+  claim(sessionId: string, holder: SessionLockHolder): { granted: boolean } {
+    const current = this.holders.get(sessionId);
     if (current !== undefined && current !== holder) return { granted: false };
-    this.holders.set(taskId, holder);
+    this.holders.set(sessionId, holder);
     return { granted: true };
   }
 
@@ -158,9 +158,9 @@ export class SessionLockTable {
    * Releasing is not a way to unlock someone else's Session; a release from a
    * non-holder is a stale client talking, not an instruction.
    */
-  release(taskId: string, holder: SessionLockHolder): boolean {
-    if (this.holders.get(taskId) !== holder) return false;
-    this.holders.delete(taskId);
+  release(sessionId: string, holder: SessionLockHolder): boolean {
+    if (this.holders.get(sessionId) !== holder) return false;
+    this.holders.delete(sessionId);
     return true;
   }
 
@@ -178,9 +178,9 @@ export class SessionLockTable {
    * infer it: taking an unheld Session is an ordinary claim by another name, and
    * a client should not report having evicted somebody when it did not.
    */
-  forceTakeover(taskId: string, holder: SessionLockHolder): { takenFrom: SessionLockTakenFrom } {
-    const current = this.holders.get(taskId);
-    this.holders.set(taskId, holder);
+  forceTakeover(sessionId: string, holder: SessionLockHolder): { takenFrom: SessionLockTakenFrom } {
+    const current = this.holders.get(sessionId);
+    this.holders.set(sessionId, holder);
     if (current === undefined) return { takenFrom: "nobody" };
     return { takenFrom: current === holder ? "this-connection" : "another-connection" };
   }
@@ -202,10 +202,10 @@ export class SessionLockTable {
    */
   releaseAll(holder: SessionLockHolder): string[] {
     const released: string[] = [];
-    for (const [taskId, current] of this.holders) {
-      if (current === holder) released.push(taskId);
+    for (const [sessionId, current] of this.holders) {
+      if (current === holder) released.push(sessionId);
     }
-    for (const taskId of released) this.holders.delete(taskId);
+    for (const sessionId of released) this.holders.delete(sessionId);
     return released;
   }
 
@@ -239,10 +239,10 @@ export class SessionLockTable {
   transferAll(from: SessionLockHolder, to: SessionLockHolder): string[] {
     if (from === to) return [];
     const moved: string[] = [];
-    for (const [taskId, current] of this.holders) {
-      if (current === from) moved.push(taskId);
+    for (const [sessionId, current] of this.holders) {
+      if (current === from) moved.push(sessionId);
     }
-    for (const taskId of moved) this.holders.set(taskId, to);
+    for (const sessionId of moved) this.holders.set(sessionId, to);
     return moved;
   }
 

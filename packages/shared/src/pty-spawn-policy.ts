@@ -15,8 +15,7 @@ export type HarnessSpawn = Harness;
 export const HARNESS_BINARIES = HARNESS_SPAWN_COMMANDS;
 
 export type BaseSpawnRequest = {
-  taskId: string;
-  cwd: string;
+  sessionId: string;
   command: string;
   args?: string[];
   cols?: number;
@@ -52,29 +51,15 @@ export type ShellSpawnRequest = BaseSpawnRequest & {
   shell: true;
   agent?: never;
   dangerouslySkipPermissions?: never;
-  // Project-less "home" shell terminal (the dashboard terminals). When set, the
-  // spawn HANDLER — not this pure policy — replaces cwd with its own
-  // os.homedir() and passes that dir through `homeShellRoots` so the cwd-root
-  // check accepts it. This lets a dashboard terminal open at ~ on whichever
-  // runtime it lands on (local host or remote agent) without the renderer ever
-  // learning or supplying a host filesystem path.
-  home?: boolean;
 };
 
 /**
  * A VM Shell Session spawn (issue 06) — a free-form interactive shell on the
- * Core's machine, distinct from agent workspaces and project-scoped shells.
- * `shellSession: true` is its own spawn mode: no `agent`, no project-root
- * requirement (a VM shell has no project folder). The Core skips the
- * project-root validation it applies to agent spawns and starts a login shell
- * at its own home — the renderer never supplies a host filesystem path. Gated
- * by core-link auth (mTLS + bearer), never auto-spawned; opened by an explicit
- * Panel gesture. The "SSH-equivalent" escape hatch.
- *
- * `cwd` is optional/empty from the renderer; the spawn handler
- * ({@link PtyCore.spawn}) replaces it with its own `os.homedir()`
- * before calling {@link resolveSpawnPlan}, so the plan's `cwd` is the real
- * home path on the Core machine.
+ * Core's machine, distinct from an agent. `shellSession: true` is its own spawn
+ * mode: no `agent`. Like every spawn it starts in the Core's home, which the
+ * policy supplies; the client never sends a path. Gated by core-link auth (mTLS
+ * + bearer), never auto-spawned; opened by an explicit Panel gesture. The
+ * "SSH-equivalent" escape hatch.
  *
  * **Not every process a Core runs comes through here.** `actana core exec`
  * (issue 266) starts a plain child with pipes and no terminal, so it is not a
@@ -84,22 +69,13 @@ export type ShellSpawnRequest = BaseSpawnRequest & {
  * so nothing here needed relaxing for it.
  */
 export type ShellSessionSpawnRequest = {
-  taskId: string;
-  /**
-   * Optional cwd on the Core machine. The renderer never knows a host
-   * path, so it sends "" (or omits); the spawn handler
-   * ({@link PtyCore.spawn}) replaces it with its own `os.homedir()`.
-   * A non-empty value (e.g. handler-supplied home) is passed through verbatim
-   * — the project-root check is skipped for VM shells regardless.
-   */
-  cwd?: string;
+  sessionId: string;
   /** Optional starting command; empty (or omitted) → interactive login shell. */
   command?: string;
   shellSession: true;
   agent?: never;
   shell?: never;
   dangerouslySkipPermissions?: never;
-  home?: never;
   initialInput?: never;
   cols?: number;
   rows?: number;
@@ -120,19 +96,19 @@ export type SpawnPlan =
       argv: string[];        // already-tokenized agent arguments, no shell parsing
       spawnTarget: string;  // executable passed to node-pty
       spawnArgs: string[] | string;  // argv/command line passed to node-pty
-      cwd: string;          // canonical (realpath'd) cwd — pass this to spawn, not the original request
+      cwd: string;          // the Core's home, canonical (realpath'd)
     }
   | {
       mode: "shell";
       shellPath: string;     // absolute path to the user's login shell
       shellArgs: string[];   // argv passed to that shell
       command: string;       // the user-supplied shell command (may be empty)
-      cwd: string;          // canonical (realpath'd) cwd — pass this to spawn, not the original request
+      cwd: string;          // the Core's home, canonical (realpath'd)
     }
   | {
-      // A VM Shell Session (issue 06): a login shell on the Core's machine
-      // with no project-root containment. cwd is the Core's own home dir
-      // (handler-supplied); the command is passed to the login shell verbatim.
+      // A VM Shell Session (issue 06): a login shell on the Core's machine.
+      // cwd is the Core's own home dir; the command is passed to the login
+      // shell verbatim.
       // See CONTEXT.md "VM Shell Session".
       mode: "shell-session";
       shellPath: string;
@@ -146,13 +122,10 @@ export type SpawnPolicyDeps = {
   cwdExists?: (cwd: string) => boolean;
   // Resolve a cwd to its canonical absolute path. Tests inject identity.
   realpath?: (p: string) => string;
-  // Snapshot of registered project roots. Already canonicalized by caller.
-  projectRoots: () => string[];
-  // Extra roots a *shell* terminal may start in beyond the project roots —
-  // currently just the host's home directory, which enables project-less "home"
-  // terminals (req.home === true). Harness spawns ignore this list and stay
-  // confined to project roots. Resolved through realpath like project roots.
-  homeShellRoots?: () => string[];
+  // The Core's home directory: where every spawn starts. There is no other
+  // place a Session can start (ADR 0041 D1, D2), so the policy takes it from
+  // here and never from the request.
+  home: () => string;
   // Resolve a command name (claude/codex/cursor-agent) to an absolute path on PATH.
   resolveCommand: (name: string) => string | null;
   // Returns the user's login shell and its argv for the given command.
@@ -172,7 +145,6 @@ export class SpawnPolicyError extends Error {
 
 export type SpawnPolicyErrorCode =
   | "invalid-cwd"
-  | "cwd-outside-project-roots"
   | "missing-agent-or-shell-flag"
   | "unknown-agent"
   | "command-not-on-allowlist"
@@ -379,11 +351,6 @@ function nodePtySpawnTarget(
   return { spawnTarget: binary, spawnArgs: argv };
 }
 
-function withinRoot(real: string, root: string): boolean {
-  if (real === root) return true;
-  return real.startsWith(root + path.sep);
-}
-
 function tokenizeHarnessCommand(cmd: string): string[] {
   return cmd.trim().split(/\s+/).filter(Boolean);
 }
@@ -521,16 +488,20 @@ export function resolveSpawnPlan(req: SpawnRequest, deps: SpawnPolicyDeps): Spaw
   const cwdExists = deps.cwdExists ?? defaultCwdExists;
   const realpath = deps.realpath ?? defaultRealpath;
 
+  // Every spawn starts in the Core's home. The request carries no cwd, so
+  // there is nothing to confine: the one thing checked is that the home itself
+  // is a directory this Core can enter.
+  const home = deps.home();
+  if (!home || !cwdExists(home)) {
+    throw new SpawnPolicyError("invalid-cwd", "the home directory is not an accessible directory");
+  }
+  const realCwd = realpath(home);
+
   // ─── VM Shell Session (issue 06) ───
-  // A `shellSession: true` spawn is a free-form shell on the Core's machine
-  // with NO project-root requirement. It is gated by core-link auth (mTLS +
-  // bearer), not by cwd containment, so the project-root check below is
-  // skipped entirely. The handler (PtyCore.spawn) supplies the real
-  // cwd (its own os.homedir()); the renderer never sends a host path.
   if (req.shellSession === true) {
     // Mutually exclusive with the agent and shell modes — forces every
     // callsite to declare which boundary it's on, mirroring the shell/agent
-    // exclusivity above. `agent`/`shell` are `never` on this variant, so cast
+    // exclusivity below. `agent`/`shell` are `never` on this variant, so cast
     // to read them (the check is defensive — a misbuilt request that sets
     // both is rejected with a clear error rather than silently misrouting).
     const agent = (req as { agent?: string }).agent;
@@ -546,11 +517,6 @@ export function resolveSpawnPlan(req: SpawnRequest, deps: SpawnPolicyDeps): Spaw
         "pty:spawn cannot set shellSession=true and shell=true at the same time",
       );
     }
-    // When the handler pre-fills cwd with its own home, the plan carries it
-    // through; an empty renderer-supplied cwd is passed to the login shell
-    // (the handler always overrides it before spawning, so the empty value
-    // never reaches node-pty — kept here only so the plan typechecks).
-    const realCwd = req.cwd ? realpath(req.cwd) : "";
     const { shell, shellArgs } = deps.resolveShell();
     const command = (req.command ?? "").trim();
     return {
@@ -560,46 +526,6 @@ export function resolveSpawnPlan(req: SpawnRequest, deps: SpawnPolicyDeps): Spaw
       command,
       cwd: realCwd,
     };
-  }
-
-  // 1. cwd must be a readable directory.
-  if (!req.cwd) {
-    throw new SpawnPolicyError("invalid-cwd", "cwd is required");
-  }
-  if (!cwdExists(req.cwd)) {
-    throw new SpawnPolicyError("invalid-cwd", "cwd is not an accessible directory");
-  }
-
-  // 2. cwd must resolve into one of the registered project roots. Resolving
-  //    both sides through realpath prevents symlink escapes (cwd=/tmp/link →
-  //    /etc, root=/Users/me/proj).
-  const realCwd = realpath(req.cwd);
-  const roots = deps.projectRoots().map((r) => {
-    try {
-      return realpath(r);
-    } catch {
-      return null;
-    }
-  }).filter((r): r is string => !!r);
-
-  // An explicit project-less "home" shell terminal (shell + home) may also start
-  // in an allowed home root. Gated on req.home so ordinary shell terminals stay
-  // confined to project roots, and on req.shell so agent spawns never qualify.
-  if (req.shell === true && req.home === true && deps.homeShellRoots) {
-    for (const r of deps.homeShellRoots()) {
-      try {
-        roots.push(realpath(r));
-      } catch {
-        /* unresolvable home root — skip it rather than widen the check */
-      }
-    }
-  }
-
-  if (!roots.some((root) => withinRoot(realCwd, root))) {
-    throw new SpawnPolicyError(
-      "cwd-outside-project-roots",
-      "cwd is not within any registered project root",
-    );
   }
 
   // 3. Branch: shell terminal vs. agent terminal. Exactly one must be true.
@@ -621,7 +547,7 @@ export function resolveSpawnPlan(req: SpawnRequest, deps: SpawnPolicyDeps): Spaw
   }
 
   // 4. Shell mode: the command is user-supplied and intentionally goes through
-  //    the login shell. Cwd was already pinned to a project root above.
+  //    the login shell, started in the Core's home.
   if (wantsShell) {
     const { shell, shellArgs } = deps.resolveShell();
     const command = (req.command ?? "").trim();

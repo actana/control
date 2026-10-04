@@ -1,8 +1,8 @@
 // The Panel's Core registry, as the browser sees it.
 //
 // A Core is the Panel's handle for "this Core I can talk to": an endpoint,
-// an alias, and a replay cursor. Everything else about a Core — its projects,
-// tasks, sessions, events — lives on the Core and is read over the
+// an alias, and a replay cursor. Everything else about a Core — its
+// sessions, events — lives on the Core and is read over the
 // core-link. The registry is the only Core state the Panel persists.
 //
 // The secret half of a registration (CA, client cert/key, bearer) never
@@ -55,7 +55,7 @@ export type CoreDialStatus = {
   lastSeenAt: number | null;
   /** Why we're unreachable / which auth failure. Operator-facing, never a secret. */
   detail?: string;
-  /** On `needs-update`: the protocol version the Core advertised, if any. */
+  /** Core-link protocol version from the last `ready` frame; on connected dials too (#560 pill). */
   coreVersion?: string | null;
   /** On `needs-update`: the protocol version this Panel speaks. */
   panelVersion?: string;
@@ -112,7 +112,7 @@ export const CORE_UPDATE_COMMAND = "actana update";
  * (ADR 0010). It runs on the host beside `deploy/docker-compose.yml`, never
  * inside the Panel — pulling and recreating the container is the operator's
  * gesture, and a service that could do it to itself would be the in-app updater
- * this project deliberately does not have.
+ * this Panel deliberately does not have.
  */
 export const PANEL_UPDATE_COMMAND = "docker compose pull && docker compose up -d";
 
@@ -146,8 +146,27 @@ function parseMinor(version: string | null | undefined): { major: number; minor:
   return m ? { major: Number(m[1]), minor: Number(m[2]) } : null;
 }
 
+/**
+ * Where a Core's Shared folder stands (#564). `pending` is a Core whose pairing is not finished: it was
+ * redeemed but its folder is not attached. `error` is an attached folder whose key could not be pushed;
+ * `error` carries why. A Core registered before 0.5.0 has none of this (`sharedFolder` is absent).
+ */
+export type CoreSharedFolder = {
+  state: "pending" | "attached" | "error";
+  /** `<prefix>/<core id>/` once attached; null before. The text a delete asks to be typed back. */
+  prefix: string | null;
+  /** When the key the Core holds ends, epoch ms. */
+  keyExpiresAt: number | null;
+  error: string | null;
+};
+
+/** A pairing from the Panel is finished when its Shared folder is attached; a Core with no folder row never needed one. */
+export function isPairingFinished(core: { sharedFolder?: { state: string } }): boolean {
+  return core.sharedFolder?.state !== "pending";
+}
+
 /** A registry row plus its live link state — one row of the Cores list. */
-export type CoreWithDial = Core & { dial: CoreDialStatus };
+export type CoreWithDial = Core & { dial: CoreDialStatus; sharedFolder?: CoreSharedFolder };
 
 export type CoreListResponse = { cores: CoreWithDial[] };
 

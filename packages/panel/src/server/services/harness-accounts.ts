@@ -75,7 +75,7 @@ function readOpenCodeAccount(): HarnessAccountStatus {
  * `@earendil-works/pi-ai` `env-api-keys` / Pi providers docs). Presence of any
  * non-empty value counts as a credential even when `auth.json` is empty.
  */
-const PI_PROVIDER_API_KEY_ENVS = [
+export const PI_PROVIDER_API_KEY_ENVS = [
   "ANTHROPIC_API_KEY",
   "ANTHROPIC_AUTH_TOKEN",
   "ANTHROPIC_OAUTH_TOKEN",

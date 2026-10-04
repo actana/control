@@ -42,14 +42,14 @@ import { hookEndpointSlug } from "@actana/shared/mission-control-hook-env";
 import { ASK_USER_QUESTION_TOOL } from "@actana/shared/harness-questions";
 import {
   HOOK_MISS_LOG_ENV,
-  HOOK_TASK_ID_ENV,
+  HOOK_SESSION_ID_ENV,
   HOOK_TOKEN_ENV,
   HOOK_URL_ENV,
 } from "./harness-hook-env";
 import { HARNESS_HOOK_TRUST_FLAGS } from "@actana/shared/harness-cli-config";
 import type { Harness } from "@actana/shared/domain";
-import { installOpencodeHooks } from "./harness-hooks-opencode";
-import { installPiHooks } from "./harness-hooks-pi";
+import { installOpencodeHooks, OPENCODE_PLUGIN_PATH } from "./harness-hooks-opencode";
+import { installPiHooks, piExtensionPath } from "./harness-hooks-pi";
 
 /** Marks an entry this Core wrote, so the next spawn can replace just those. */
 const MANAGED_FLAG = "_acManaged";
@@ -67,13 +67,13 @@ const LEGACY_MANAGED_FLAG = "_mcManaged";
 export {
   HOOK_URL_ENV,
   HOOK_TOKEN_ENV,
-  HOOK_TASK_ID_ENV,
+  HOOK_SESSION_ID_ENV,
   HOOK_MISS_LOG_ENV,
 } from "./harness-hook-env";
 
 /**
  * The shell command a managed hook entry runs: POST the payload the harness
- * pipes on stdin to this Core's loopback receiver, tagged with the task it
+ * pipes on stdin to this Core's loopback receiver, tagged with the session it
  * belongs to. Short timeout and a `|| true` at the end — see the fail-soft
  * rule above.
  *
@@ -121,10 +121,10 @@ export function hookCommand(slug: string, event: string): string {
     `-H "Content-Type: application/json" ` +
     `--data-binary @- ` +
     `"$${HOOK_URL_ENV}/api/hooks/${slug}` +
-    `?taskId=$${HOOK_TASK_ID_ENV}&hookEvent=${encodeURIComponent(event)}"; ` +
+    `?sessionId=$${HOOK_SESSION_ID_ENV}&hookEvent=${encodeURIComponent(event)}"; ` +
     `s=$?; [ "$s" = 0 ] || ` +
     `printf "%s\\t%s\\t%s\\t%s\\n" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" ` +
-    `"$${HOOK_TASK_ID_ENV}" "${event}" "$s" ` +
+    `"$${HOOK_SESSION_ID_ENV}" "${event}" "$s" ` +
     `>> "$\{${HOOK_MISS_LOG_ENV}:-/dev/null}" || true'`
   );
 }
@@ -467,6 +467,30 @@ const HOOK_FAMILIES: Record<string, HookFamily> = {
  */
 function hasHookTrustReview(harness: string): boolean {
   return (HARNESS_HOOK_TRUST_FLAGS[harness as Harness] ?? null) !== null;
+}
+
+/**
+ * Every file `installHarnessHooks` may write for `harness` in `cwd`, derived the
+ * way the writers derive them. The helper confines each of these, through
+ * `realpath`, before the install runs: confining `cwd` alone would let a linked
+ * `.claude` or `.codex` inside it carry the write out of the home. Keep it in
+ * step with the writers above; `core-home-ops.test.ts` plants a link at each.
+ */
+export function hookWritePaths(harness: string, cwd: string, env: NodeJS.ProcessEnv): string[] {
+  switch (harness) {
+    case "claude-code":
+      return [path.join(cwd, ".claude", "settings.local.json")];
+    case "codex":
+      return [path.join(cwd, ".codex", "hooks.json")];
+    case "cursor-cli":
+      return [path.join(cwd, ".cursor", "hooks.json")];
+    case "opencode":
+      return [path.join(cwd, OPENCODE_PLUGIN_PATH)];
+    case "pi":
+      return [piExtensionPath(env)];
+    default:
+      return [];
+  }
 }
 
 /** Does this Core know how to install hooks for `harness`? */

@@ -17,8 +17,10 @@
 # the container's namespaces.
 
 # Same Node CI tests against (scripts/__tests__/panel-image.test.mjs pins the
-# match). The full image carries the toolchain better-sqlite3's native build
-# needs; none of it — and none of its CVEs — reaches the runtime stage.
+# match). The full image carries the toolchain the workspace install's native
+# builds need (the Core's better-sqlite3, node-pty); none of it — and none of
+# its CVEs — reaches the runtime stage. The Panel itself has no native addon:
+# its provider-usage readers use the built-in node:sqlite (ADR 0041 D20).
 #
 # trixie, not bookworm, so both stages are Debian 13 (D25). The prototype built
 # on bookworm's glibc 2.36 and ran on trixie's 2.41, which works only because
@@ -36,7 +38,6 @@ COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY scripts/require-node-24.mjs scripts/
 COPY packages/core/package.json packages/core/
 COPY packages/panel/package.json packages/panel/
-COPY packages/sdk/package.json packages/sdk/
 COPY packages/shared/package.json packages/shared/
 RUN pnpm install --frozen-lockfile
 

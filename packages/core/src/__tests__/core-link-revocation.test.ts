@@ -17,7 +17,7 @@ import {
   type WebSocketLike,
   type WebSocketServerLike,
 } from "../pty-core-link-server";
-import { PairingRevocations, pairingBearerSubject } from "../core-pairing-revocation";
+import { createPairing } from "@actana/sdk/pairing/server";
 import type { PairedClient } from "@actana/shared/pairing-store";
 import type { PtyCore } from "../pty-manager";
 
@@ -80,7 +80,7 @@ function mockCore(): PtyCore {
     resize: () => true,
     kill: () => true,
     killLaunchProcesses: async () => ({ ptyCount: 0, ports: [] }),
-    findByTask: () => ({ ptyId: null }),
+    findBySession: () => ({ ptyId: null }),
     replay: () => ({ data: "", nextSeq: 0, from: 0 }),
     killAll: () => {},
   } as unknown as PtyCore;
@@ -107,13 +107,13 @@ function client(certSerial: string, revokedAt: number | null): PairedClient {
 
 let rows: PairedClient[];
 let storeReadable: boolean;
-let revocations: PairingRevocations;
+let revocations: ReturnType<typeof createPairing>["gate"]["revocations"];
 let wss: FakeWebSocketServer;
 let server: PtyCoreLinkServer;
 
 /** A bearer verifier that answers for whichever pairing the test names. */
 function verifierFor(serial: string) {
-  return () => ({ ok: true as const, coreId: "core-1", exp: NOW + 1, sub: pairingBearerSubject(serial) });
+  return () => ({ ok: true as const, coreId: "core-1", exp: NOW + 1, sub: `pair:${serial}` });
 }
 
 type ServerOptions = ConstructorParameters<typeof PtyCoreLinkServer>[1];
@@ -134,16 +134,36 @@ function connect(peer?: CoreLinkPeer): FakeWebSocket {
   return ws;
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   rows = [client(LIVE_SERIAL, null), client(REVOKED_SERIAL, NOW)];
   storeReadable = true;
-  revocations = new PairingRevocations({
-    readStrict: () => {
+  // The revocation set the daemon uses is the SDK's, reached the way the daemon
+  // reaches it: through the pairing composition's gate. Only the store's
+  // `revokedSerials` is read, so that is the only method the stub implements.
+  const store = {
+    revokedSerials: async () => {
       if (!storeReadable) throw new Error("pairing.json is not valid JSON");
-      return { clients: rows };
+      return new Set(rows.filter((row) => row.revokedAt !== null).map((row) => row.certSerial));
     },
-  });
-  revocations.refresh();
+  };
+  revocations = createPairing({
+    store: store as unknown as Parameters<typeof createPairing>[0]["store"],
+    material: {
+      caCert: "",
+      caKey: "",
+      serverCert: "",
+      serverKey: "",
+      clientCert: "",
+      clientKey: "",
+      bearerSecret: "revocation-suite-secret-at-least-32-bytes",
+      coreId: "core-1",
+      coreUuid: "3f6d0f0a-6c1f-4a5e-9c2f-1d0a5b7e9c31",
+      serverHosts: ["127.0.0.1"],
+    },
+    endpointScheme: "wss",
+    onRevoked: () => {},
+  }).gate.revocations;
+  await revocations.refresh();
 });
 
 afterEach(() => {
@@ -163,8 +183,8 @@ describe("a revoked certificate never becomes a connection", () => {
   it("does not answer frames sent on it anyway", () => {
     start();
     const ws = connect({ certSerial: REVOKED_SERIAL });
-    ws.receive({ type: "findByTask", reqId: "a1", taskId: "t1" });
-    expect(ws.ofType("findByTaskResult")).toEqual([]);
+    ws.receive({ type: "findBySession", reqId: "a1", sessionId: "t1" });
+    expect(ws.ofType("findBySessionResult")).toEqual([]);
   });
 
   it("leaves an unrevoked client alone", () => {
@@ -212,8 +232,8 @@ describe("a revoked bearer never passes the auth frame", () => {
     start({ authVerifier: verifierFor(REVOKED_SERIAL) });
     const ws = connect({ certSerial: null });
     ws.receive({ type: "auth", reqId: "a1", bearer: "whatever" });
-    ws.receive({ type: "findByTask", reqId: "b1", taskId: "t1" });
-    expect(ws.ofType("findByTaskResult")).toEqual([]);
+    ws.receive({ type: "findBySession", reqId: "b1", sessionId: "t1" });
+    expect(ws.ofType("findBySessionResult")).toEqual([]);
   });
 
   it("lets an unrevoked pairing's bearer through", () => {
@@ -235,29 +255,29 @@ describe("a revoked bearer never passes the auth frame", () => {
 });
 
 describe("a link a revoked client already holds", () => {
-  it("is closed rather than left running until the next handshake", () => {
+  it("is closed rather than left running until the next handshake", async () => {
     start();
     const ws = connect({ certSerial: LIVE_SERIAL });
     expect(ws.closed).toBe(false);
 
     // What the sweep calls one second after `actana pair revoke`.
     rows[0] = client(LIVE_SERIAL, NOW);
-    revocations.refresh();
+    await revocations.refresh();
     expect(server.closeRevoked()).toBe(1);
     expect(ws.closed).toBe(true);
   });
 
-  it("stops dispatching that client's frames on the way out", () => {
+  it("stops dispatching that client's frames on the way out", async () => {
     start();
     const ws = connect({ certSerial: LIVE_SERIAL });
     rows[0] = client(LIVE_SERIAL, NOW);
-    revocations.refresh();
+    await revocations.refresh();
     server.closeRevoked();
-    ws.receive({ type: "findByTask", reqId: "a1", taskId: "t1" });
-    expect(ws.ofType("findByTaskResult")).toEqual([]);
+    ws.receive({ type: "findBySession", reqId: "a1", sessionId: "t1" });
+    expect(ws.ofType("findBySessionResult")).toEqual([]);
   });
 
-  it("closes a link identified only by the bearer it authenticated with", () => {
+  it("closes a link identified only by the bearer it authenticated with", async () => {
     // A client behind a terminating proxy presents this Core no certificate.
     // The pairing its bearer names is still the pairing that was revoked.
     start({ authVerifier: verifierFor(LIVE_SERIAL) });
@@ -266,33 +286,33 @@ describe("a link a revoked client already holds", () => {
     expect(ws.ofType("authOk")).toHaveLength(1);
 
     rows[0] = client(LIVE_SERIAL, NOW);
-    revocations.refresh();
+    await revocations.refresh();
     expect(server.closeRevoked()).toBe(1);
     expect(ws.closed).toBe(true);
   });
 
-  it("leaves every other client connected", () => {
+  it("leaves every other client connected", async () => {
     start();
     const revoked = connect({ certSerial: LIVE_SERIAL });
     const other = connect({ certSerial: "beef" });
     const loopback = connect();
 
     rows[0] = client(LIVE_SERIAL, NOW);
-    revocations.refresh();
+    await revocations.refresh();
     expect(server.closeRevoked()).toBe(1);
     expect(revoked.closed).toBe(true);
     expect(other.closed).toBe(false);
     expect(loopback.closed).toBe(false);
-    other.receive({ type: "findByTask", reqId: "b1", taskId: "t1" });
-    expect(other.ofType("findByTaskResult")).toHaveLength(1);
+    other.receive({ type: "findBySession", reqId: "b1", sessionId: "t1" });
+    expect(other.ofType("findBySessionResult")).toHaveLength(1);
   });
 
-  it("closes every link that pairing holds, not just the first", () => {
+  it("closes every link that pairing holds, not just the first", async () => {
     start();
     const first = connect({ certSerial: LIVE_SERIAL });
     const second = connect({ certSerial: LIVE_SERIAL });
     rows[0] = client(LIVE_SERIAL, NOW);
-    revocations.refresh();
+    await revocations.refresh();
     expect(server.closeRevoked()).toBe(2);
     expect(first.closed).toBe(true);
     expect(second.closed).toBe(true);
@@ -306,7 +326,7 @@ describe("a link a revoked client already holds", () => {
     expect(server.closeRevoked()).toBe(0);
   });
 
-  it("closes every pairing's link when the store becomes unreadable", () => {
+  it("closes every pairing's link when the store becomes unreadable", async () => {
     // The fail-closed direction, at the layer the gates cannot reach. This is
     // the case a list of newly-revoked serials could never have carried:
     // nothing was named, and everything is revoked.
@@ -317,7 +337,7 @@ describe("a link a revoked client already holds", () => {
     const loopback = connect();
 
     storeReadable = false;
-    expect(revocations.refresh().ok).toBe(false);
+    expect((await revocations.refresh()).ok).toBe(false);
 
     expect(server.closeRevoked()).toBe(2);
     expect(byCert.closed).toBe(true);
@@ -327,31 +347,31 @@ describe("a link a revoked client already holds", () => {
     expect(loopback.closed).toBe(false);
   });
 
-  it("refuses a new connection from any pairing while the store is unreadable", () => {
+  it("refuses a new connection from any pairing while the store is unreadable", async () => {
     start();
     storeReadable = false;
-    revocations.refresh();
+    await revocations.refresh();
     expect(connect({ certSerial: LIVE_SERIAL }).closed).toBe(true);
     expect(connect({ certSerial: "some-other-pairing" }).closed).toBe(true);
     expect(connect().closed).toBe(false);
   });
 
-  it("refuses a bearer from any pairing while the store is unreadable", () => {
+  it("refuses a bearer from any pairing while the store is unreadable", async () => {
     start({ authVerifier: verifierFor(LIVE_SERIAL) });
     storeReadable = false;
-    revocations.refresh();
+    await revocations.refresh();
     const ws = connect({ certSerial: null });
     ws.receive({ type: "auth", reqId: "a1", bearer: "whatever" });
     expect(ws.ofType("authOk")).toEqual([]);
     expect(ws.ofType<{ reason: string }>("authError")[0]!.reason).toBe("expired");
   });
 
-  it("still lets a hand-carried bearer through while the store is unreadable", () => {
+  it("still lets a hand-carried bearer through while the store is unreadable", async () => {
     // It names no pairing, so no row about it could have gone unread — and it
     // is what the operator's own Panel holds while they go and fix the file.
     start({ authVerifier: () => ({ ok: true as const, coreId: "core-1", exp: NOW + 1 }) });
     storeReadable = false;
-    revocations.refresh();
+    await revocations.refresh();
     const ws = connect({ certSerial: null });
     ws.receive({ type: "auth", reqId: "a1", bearer: "whatever" });
     expect(ws.ofType("authOk")).toHaveLength(1);

@@ -12,7 +12,7 @@ import type { PtyCore, PtyCoreEvent } from "../pty-manager";
 // comes up for it again. The decision of WHETHER to reset is the port's
 // (`core-session-relaunch.ts`, tested there against real rows); the decision
 // of whether to ask it at all is here, and it is a narrow one: an agent spawn
-// asks, and the two shell variants — which carry a `taskId` for routing and
+// asks, and the two shell variants — which carry a `sessionId` for routing and
 // are not harness work — never do.
 
 type Listener = (...args: unknown[]) => void;
@@ -68,8 +68,8 @@ function mockCore() {
     resize: () => true,
     kill: () => true,
     killLaunchProcesses: async () => ({ ptyCount: 0, ports: [] }),
-    findByTask: () => ({ ptyId: null }),
-    taskIdForPty: () => null,
+    findBySession: () => ({ ptyId: null }),
+    sessionIdForPty: () => null,
     replay: () => ({ data: "", nextSeq: 0 }),
     killAll: () => {},
   };
@@ -94,7 +94,7 @@ describe("which spawns ask the relaunch port (issue 387)", () => {
     server = new PtyCoreLinkServer(mockCore(), {
       port: 0,
       createServer: () => wss as unknown as WebSocketServerLike,
-      relaunchPort: { agentSpawned: (taskId) => void asked.push(taskId) },
+      relaunchPort: { agentSpawned: (sessionId) => void asked.push(sessionId) },
       liveEventPollMs: 10_000,
     });
   });
@@ -104,17 +104,17 @@ describe("which spawns ask the relaunch port (issue 387)", () => {
   });
 
   it("asks for an agent spawn — the relaunch a settled bare Session gets", async () => {
-    await spawn({ taskId: "t-1", cwd: "/w", command: "claude", agent: "claude-code" }, "a1");
+    await spawn({ sessionId: "t-1", command: "claude", agent: "claude-code" }, "a1");
     expect(asked).toEqual(["t-1"]);
   });
 
   it("never asks for a plain shell, which is not harness work", async () => {
-    await spawn({ taskId: "t-1", cwd: "/w", command: "bash", shell: true }, "s1");
+    await spawn({ sessionId: "t-1", command: "bash", shell: true }, "s1");
     expect(asked).toEqual([]);
   });
 
   it("never asks for a VM Shell Session, for the same reason", async () => {
-    await spawn({ taskId: "term_vm_1", command: "", shellSession: true }, "v1");
+    await spawn({ sessionId: "term_vm_1", command: "", shellSession: true }, "v1");
     expect(asked).toEqual([]);
   });
 
@@ -126,7 +126,7 @@ describe("which spawns ask the relaunch port (issue 387)", () => {
       createServer: () => wss as unknown as WebSocketServerLike,
       liveEventPollMs: 10_000,
     });
-    await spawn({ taskId: "t-1", cwd: "/w", command: "claude", agent: "claude-code" }, "n1");
+    await spawn({ sessionId: "t-1", command: "claude", agent: "claude-code" }, "n1");
     expect(asked).toEqual([]);
   });
 });

@@ -12,7 +12,7 @@ import {
   SESSION_LOCK_CHANGED_EVENT_KIND,
   type CoreLinkEvent,
   type CoreLinkSessionLockChangedPayload,
-} from "@actana/sdk/core-link-frames";
+} from "@actana/sdk/core";
 
 // A connection presents a stable client id, and it is used for reaping and
 // nothing else (issue 146, ADR 0024 D9).
@@ -93,29 +93,29 @@ class FakeWebSocketServer {
 }
 
 /**
- * A `PtyCore` that remembers which Task each PTY belongs to — the resolution
+ * A `PtyCore` that remembers which Session each PTY belongs to — the resolution
  * the lock gate is built on, so a `write` refusal proves the Session was found
  * rather than a constant being echoed back.
  */
 function mockCore() {
-  const ptyTasks = new Map<string, string>();
+  const ptySessions = new Map<string, string>();
   let nextPty = 0;
   let target: ((event: PtyCoreEvent) => void) | null = null;
   const core = {
     setEmitTarget: (fn: ((event: PtyCoreEvent) => void) | null) => {
       target = fn;
     },
-    spawn: async (opts: { taskId: string }) => {
+    spawn: async (opts: { sessionId: string }) => {
       const ptyId = `pty-${++nextPty}`;
-      ptyTasks.set(ptyId, opts.taskId);
+      ptySessions.set(ptyId, opts.sessionId);
       return { ptyId, hooksReportTurnStart: true };
     },
-    write: (ptyId: string) => ptyTasks.has(ptyId),
+    write: (ptyId: string) => ptySessions.has(ptyId),
     resize: () => true,
-    kill: (ptyId: string) => ptyTasks.delete(ptyId),
+    kill: (ptyId: string) => ptySessions.delete(ptyId),
     killLaunchProcesses: async () => ({ ptyCount: 0, ports: [] }),
-    findByTask: () => ({ ptyId: null }),
-    taskIdForPty: (ptyId: string) => ptyTasks.get(ptyId) ?? null,
+    findBySession: () => ({ ptyId: null }),
+    sessionIdForPty: (ptyId: string) => ptySessions.get(ptyId) ?? null,
     replay: () => ({ data: "", nextSeq: 0 }),
     killAll: () => {},
   };
@@ -137,7 +137,7 @@ function fakeEventLog() {
         kind,
         payload,
         ptyId: opts?.ptyId ?? null,
-        taskId: opts?.taskId ?? null,
+        sessionId: opts?.sessionId ?? null,
       });
       return eventId;
     },
@@ -168,14 +168,14 @@ describe("the stable client id, for reaping only (issue 146, ADR 0024 D9)", () =
     return ws;
   }
 
-  async function spawn(ws: FakeWebSocket, taskId: string): Promise<string> {
+  async function spawn(ws: FakeWebSocket, sessionId: string): Promise<string> {
     ws.receive({
       type: "spawn",
-      reqId: `spawn-${taskId}`,
-      opts: { taskId, cwd: "/w", command: "c" },
+      reqId: `spawn-${sessionId}`,
+      opts: { sessionId, command: "c" },
     });
     await vi.waitFor(() => expect(ws.frames().some((f) => f.type === "spawned")).toBe(true));
-    return String(ws.answerTo(`spawn-${taskId}`)!.ptyId);
+    return String(ws.answerTo(`spawn-${sessionId}`)!.ptyId);
   }
 
   /** Present a client id and hand back the Core's answer. */
@@ -211,8 +211,8 @@ describe("the stable client id, for reaping only (issue 146, ADR 0024 D9)", () =
     it("closes the predecessor and moves its Sessions to the successor", async () => {
       const first = connect();
       reclaim(first, "panel-1");
-      const ptyId = await spawn(first, "task-a");
-      first.receive({ type: "claim", reqId: "c1", taskId: "task-a" });
+      const ptyId = await spawn(first, "session-a");
+      first.receive({ type: "claim", reqId: "c1", sessionId: "session-a" });
 
       const second = connect();
       const answer = reclaim(second, "panel-1");
@@ -221,7 +221,7 @@ describe("the stable client id, for reaping only (issue 146, ADR 0024 D9)", () =
         type: "reclaimResult",
         clientId: "panel-1",
         replaced: true,
-        taskIds: ["task-a"],
+        sessionIds: ["session-a"],
       });
       expect(first.closed).toBe(true);
       // The lock did not merely survive the handover — it is the successor's.
@@ -233,19 +233,19 @@ describe("the stable client id, for reaping only (issue 146, ADR 0024 D9)", () =
     it("carries every Session the predecessor held, not the first one", async () => {
       const first = connect();
       reclaim(first, "panel-1");
-      await spawn(first, "task-a");
-      await spawn(first, "task-b");
-      await spawn(first, "task-c");
-      first.receive({ type: "claim", reqId: "c1", taskId: "task-a" });
-      first.receive({ type: "claim", reqId: "c2", taskId: "task-b" });
-      first.receive({ type: "claim", reqId: "c3", taskId: "task-c" });
+      await spawn(first, "session-a");
+      await spawn(first, "session-b");
+      await spawn(first, "session-c");
+      first.receive({ type: "claim", reqId: "c1", sessionId: "session-a" });
+      first.receive({ type: "claim", reqId: "c2", sessionId: "session-b" });
+      first.receive({ type: "claim", reqId: "c3", sessionId: "session-c" });
 
       const second = connect();
       const answer = reclaim(second, "panel-1");
 
       // A partial sweep would leave a Session held by a socket that has just
       // been closed — nothing left to release it but a Core restart.
-      expect((answer.taskIds as string[]).sort()).toEqual(["task-a", "task-b", "task-c"]);
+      expect((answer.sessionIds as string[]).sort()).toEqual(["session-a", "session-b", "session-c"]);
       expect(server.sessionLockCount()).toBe(3);
     });
 
@@ -255,12 +255,12 @@ describe("the stable client id, for reaping only (issue 146, ADR 0024 D9)", () =
       // turn an ordinary re-presentation into a closed socket and lost locks.
       const only = connect();
       reclaim(only, "panel-1");
-      const ptyId = await spawn(only, "task-a");
-      only.receive({ type: "claim", reqId: "c1", taskId: "task-a" });
+      const ptyId = await spawn(only, "session-a");
+      only.receive({ type: "claim", reqId: "c1", sessionId: "session-a" });
 
       const answer = reclaim(only, "panel-1", "rc-again");
 
-      expect(answer).toMatchObject({ replaced: false, taskIds: [] });
+      expect(answer).toMatchObject({ replaced: false, sessionIds: [] });
       expect(only.closed).toBe(false);
       only.receive({ type: "write", reqId: "w1", ptyId, data: "x" });
       expect(only.answerTo("w1")).toMatchObject({ ok: true });
@@ -270,7 +270,7 @@ describe("the stable client id, for reaping only (issue 146, ADR 0024 D9)", () =
       const fresh = connect();
       expect(reclaim(fresh, "panel-never-seen")).toMatchObject({
         replaced: false,
-        taskIds: [],
+        sessionIds: [],
       });
       expect(fresh.closed).toBe(false);
     });
@@ -281,10 +281,10 @@ describe("the stable client id, for reaping only (issue 146, ADR 0024 D9)", () =
       // would otherwise fan output into for the full heartbeat timeout.
       const first = connect();
       reclaim(first, "panel-1");
-      await spawn(first, "task-a");
+      await spawn(first, "session-a");
 
       const second = connect();
-      expect(reclaim(second, "panel-1")).toMatchObject({ replaced: true, taskIds: [] });
+      expect(reclaim(second, "panel-1")).toMatchObject({ replaced: true, sessionIds: [] });
       expect(first.closed).toBe(true);
     });
   });
@@ -294,8 +294,8 @@ describe("the stable client id, for reaping only (issue 146, ADR 0024 D9)", () =
     it("leaves nothing claimable at the moment the predecessor is dropped", async () => {
       const first = connect();
       reclaim(first, "panel-1");
-      const ptyId = await spawn(first, "task-a");
-      first.receive({ type: "claim", reqId: "c1", taskId: "task-a" });
+      const ptyId = await spawn(first, "session-a");
+      first.receive({ type: "claim", reqId: "c1", sessionId: "session-a" });
 
       const third = connect();
       const stolen: Array<Record<string, unknown>> = [];
@@ -309,7 +309,7 @@ describe("the stable client id, for reaping only (issue 146, ADR 0024 D9)", () =
       // third client tries both ways in: the explicit claim, and the write an
       // unlocked Session serves to anybody (D5, D11).
       first.on("close", () => {
-        third.receive({ type: "claim", reqId: "steal-claim", taskId: "task-a" });
+        third.receive({ type: "claim", reqId: "steal-claim", sessionId: "session-a" });
         third.receive({ type: "write", reqId: "steal-write", ptyId, data: "rm -rf" });
         stolen.push(third.answerTo("steal-claim")!, third.answerTo("steal-write")!);
       });
@@ -332,8 +332,8 @@ describe("the stable client id, for reaping only (issue 146, ADR 0024 D9)", () =
       // back out of the table on its way past.
       const first = connect();
       reclaim(first, "panel-1");
-      await spawn(first, "task-a");
-      first.receive({ type: "claim", reqId: "c1", taskId: "task-a" });
+      await spawn(first, "session-a");
+      first.receive({ type: "claim", reqId: "c1", sessionId: "session-a" });
 
       const second = connect();
       reclaim(second, "panel-1");
@@ -343,7 +343,7 @@ describe("the stable client id, for reaping only (issue 146, ADR 0024 D9)", () =
 
       expect(server.sessionLockCount()).toBe(1);
       const third = connect();
-      third.receive({ type: "claim", reqId: "t1", taskId: "task-a" });
+      third.receive({ type: "claim", reqId: "t1", sessionId: "session-a" });
       expect(third.answerTo("t1")).toMatchObject({ granted: false });
     });
 
@@ -361,17 +361,17 @@ describe("the stable client id, for reaping only (issue 146, ADR 0024 D9)", () =
       // consequence. The published lock is addressed (D8): a third party read
       // `held-by-another` before the transfer and reads it after, so nothing
       // changed for the connection an event would reach. The successor's own
-      // view did change, and it is told by `reclaimResult.taskIds` in this same
+      // view did change, and it is told by `reclaimResult.sessionIds` in this same
       // round trip — more precisely than an event could, since none of
       // `claimed` / `released` / `taken-over` is true of a transfer.
       const first = connect();
       reclaim(first, "panel-1");
-      await spawn(first, "task-a");
-      first.receive({ type: "claim", reqId: "c1", taskId: "task-a" });
+      await spawn(first, "session-a");
+      first.receive({ type: "claim", reqId: "c1", sessionId: "session-a" });
       // The log is live, and this is what a lock change looks like in it —
       // without this the assertion below would hold on a Core that publishes
       // nothing at all.
-      expect(lockChanges()).toEqual([{ taskId: "task-a", transition: "claimed", locked: true }]);
+      expect(lockChanges()).toEqual([{ sessionId: "session-a", transition: "claimed", locked: true }]);
 
       const second = connect();
       reclaim(second, "panel-1");
@@ -379,7 +379,7 @@ describe("the stable client id, for reaping only (issue 146, ADR 0024 D9)", () =
       // second trip through `dropConnection`, and it must stay silent too.
       first.emit("close");
 
-      expect(lockChanges()).toEqual([{ taskId: "task-a", transition: "claimed", locked: true }]);
+      expect(lockChanges()).toEqual([{ sessionId: "session-a", transition: "claimed", locked: true }]);
       // And the silence is not a lock quietly lost — it is still held, by the
       // successor, which is the state that made publishing unnecessary.
       expect(server.sessionLockCount()).toBe(1);
@@ -391,19 +391,19 @@ describe("the stable client id, for reaping only (issue 146, ADR 0024 D9)", () =
     it("leaves the other client's connection and its Sessions alone", async () => {
       const panel = connect();
       reclaim(panel, "panel-1");
-      const ptyId = await spawn(panel, "task-a");
-      panel.receive({ type: "claim", reqId: "c1", taskId: "task-a" });
+      const ptyId = await spawn(panel, "session-a");
+      panel.receive({ type: "claim", reqId: "c1", sessionId: "session-a" });
 
       // The CLI is a Core client of its own, and mints its own id per
       // invocation — the Panel's id is not the CLI's.
       const cli = connect();
       const answer = reclaim(cli, "cli-7");
 
-      expect(answer).toMatchObject({ replaced: false, taskIds: [] });
+      expect(answer).toMatchObject({ replaced: false, sessionIds: [] });
       expect(panel.closed).toBe(false);
       panel.receive({ type: "write", reqId: "w1", ptyId, data: "x" });
       expect(panel.answerTo("w1")).toMatchObject({ ok: true });
-      cli.receive({ type: "claim", reqId: "cli-c", taskId: "task-a" });
+      cli.receive({ type: "claim", reqId: "cli-c", sessionId: "session-a" });
       expect(cli.answerTo("cli-c")).toMatchObject({ granted: false });
     });
 
@@ -412,8 +412,8 @@ describe("the stable client id, for reaping only (issue 146, ADR 0024 D9)", () =
       // whose reclaim is still in flight. It is reaped by the heartbeat when it
       // dies and by nothing else — a reclaim must not take it out.
       const silent = connect();
-      const ptyId = await spawn(silent, "task-a");
-      silent.receive({ type: "claim", reqId: "c1", taskId: "task-a" });
+      const ptyId = await spawn(silent, "session-a");
+      silent.receive({ type: "claim", reqId: "c1", sessionId: "session-a" });
 
       const other = connect();
       expect(reclaim(other, "panel-1")).toMatchObject({ replaced: false });
@@ -425,7 +425,7 @@ describe("the stable client id, for reaping only (issue 146, ADR 0024 D9)", () =
         type: "reclaimResult",
         clientId: "",
         replaced: false,
-        taskIds: [],
+        sessionIds: [],
       });
 
       expect(silent.closed).toBe(false);
@@ -459,8 +459,8 @@ describe("the stable client id, for reaping only (issue 146, ADR 0024 D9)", () =
 
     it("does not authenticate: presented before a bearer it is refused like any other frame", async () => {
       const holder = authed();
-      const ptyId = await spawn(holder, "task-a");
-      holder.receive({ type: "claim", reqId: "c1", taskId: "task-a" });
+      const ptyId = await spawn(holder, "session-a");
+      holder.receive({ type: "claim", reqId: "c1", sessionId: "session-a" });
       reclaim(holder, "panel-1");
 
       // A connection with no bearer, presenting the holder's id. The id is not
@@ -484,18 +484,18 @@ describe("the stable client id, for reaping only (issue 146, ADR 0024 D9)", () =
       // what one connection held, and nothing reads the id anywhere else.
       const victim = authed("good-1");
       reclaim(victim, "panel-1");
-      await spawn(victim, "task-a");
-      victim.receive({ type: "claim", reqId: "v1", taskId: "task-a" });
+      await spawn(victim, "session-a");
+      victim.receive({ type: "claim", reqId: "v1", sessionId: "session-a" });
 
       const bystander = authed("good-2");
       reclaim(bystander, "cli-7");
-      const bystanderPty = await spawn(bystander, "task-b");
-      bystander.receive({ type: "claim", reqId: "b1", taskId: "task-b" });
+      const bystanderPty = await spawn(bystander, "session-b");
+      bystander.receive({ type: "claim", reqId: "b1", sessionId: "session-b" });
 
       const forger = authed("good-3");
       const answer = reclaim(forger, "panel-1", "forge");
 
-      expect(answer).toMatchObject({ replaced: true, taskIds: ["task-a"] });
+      expect(answer).toMatchObject({ replaced: true, sessionIds: ["session-a"] });
       // The bystander is untouched, and the forger cannot write its Session.
       expect(bystander.closed).toBe(false);
       forger.receive({ type: "write", reqId: "w1", ptyId: bystanderPty, data: "x" });
@@ -509,11 +509,11 @@ describe("the stable client id, for reaping only (issue 146, ADR 0024 D9)", () =
       // between a client and somebody else's Session.
       const victim = authed("good-1");
       reclaim(victim, "panel-1");
-      const ptyId = await spawn(victim, "task-a");
-      victim.receive({ type: "claim", reqId: "v1", taskId: "task-a" });
+      const ptyId = await spawn(victim, "session-a");
+      victim.receive({ type: "claim", reqId: "v1", sessionId: "session-a" });
 
       const blunt = authed("good-2");
-      blunt.receive({ type: "forceTakeover", reqId: "ft", taskId: "task-a" });
+      blunt.receive({ type: "forceTakeover", reqId: "ft", sessionId: "session-a" });
 
       expect(blunt.answerTo("ft")).toMatchObject({ takenFrom: "another-connection" });
       blunt.receive({ type: "write", reqId: "w1", ptyId, data: "x" });
@@ -528,13 +528,13 @@ describe("the stable client id, for reaping only (issue 146, ADR 0024 D9)", () =
       // this test and the ADR behind it rather than land quietly.
       const first = authed("good-1");
       reclaim(first, "  ../weird id 🙂  ");
-      await spawn(first, "task-a");
-      first.receive({ type: "claim", reqId: "c1", taskId: "task-a" });
+      await spawn(first, "session-a");
+      first.receive({ type: "claim", reqId: "c1", sessionId: "session-a" });
 
       const second = authed("good-2-different-bearer-different-coreId");
       const answer = reclaim(second, "  ../weird id 🙂  ", "rc-2");
 
-      expect(answer).toMatchObject({ replaced: true, taskIds: ["task-a"] });
+      expect(answer).toMatchObject({ replaced: true, sessionIds: ["session-a"] });
       expect(first.closed).toBe(true);
     });
   });

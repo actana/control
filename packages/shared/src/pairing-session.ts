@@ -21,7 +21,7 @@
 // These are internals, not wire types: `packages/shared` is private and stays
 // private ([ADR 0025][adr] D4). The redemption request and response are the
 // SDK's to declare, for the reason written out at the top of
-// `packages/sdk/src/core-registration-blob.ts`.
+// the SDK's `core-registration-blob.ts` (published `@actana/sdk`, actana/client).
 //
 // [adr]: ../../../docs/adr/0025-the-protocol-ships-with-the-client.md
 
@@ -87,7 +87,7 @@ export type PairingSession = {
    * tell *this* client to dial me?" from something it stored when the operator
    * minted the code — never from the request. A `Host` header is chosen by the
    * caller, and a client that pinned it would have pinned whatever an attacker
-   * wrote there; `core-pairing-routes.ts` says so at the option that reads this.
+   * wrote there; the SDK's `createPairing` (`endpointScheme`, `publicHosts`) says so at the option that reads this.
    *
    * **It can only ever name a host the certificate already covers.** `actana
    * pair new --public-host` refuses an address that is not in the Core's
@@ -210,35 +210,4 @@ export function canRedeem(session: PairingSession, now: number): PairingRedeemab
   if (isDead(session)) return { ok: false, reason: "attempts-exhausted" };
   if (isExpired(session, now)) return { ok: false, reason: "expired" };
   return { ok: true };
-}
-
-/**
- * Record a wrong code. Returns the next session — the input is never mutated,
- * so a caller that fails to persist has not already changed its in-memory copy.
- *
- * The counter stops at the cap rather than climbing past it: past the cap the
- * session is dead and the exact number of attempts beyond it says nothing,
- * while an unbounded counter invites `attempts > attemptCap` states that every
- * later reader has to reason about.
- */
-export function recordWrongAttempt(session: PairingSession): PairingSession {
-  return { ...session, attempts: Math.min(session.attempts + 1, session.attemptCap) };
-}
-
-export type PairingConsumeResult =
-  | { ok: true; session: PairingSession }
-  | { ok: false; reason: PairingRefusal };
-
-/**
- * Redeem the session once, stamping `consumedAt`. A second consume is refused
- * with `already-consumed`, which is the whole of single use: the Core writes
- * the returned session back and any replay of the same code meets this branch.
- */
-export function consumePairingSession(
-  session: PairingSession,
-  now: number,
-): PairingConsumeResult {
-  const gate = canRedeem(session, now);
-  if (!gate.ok) return gate;
-  return { ok: true, session: { ...session, consumedAt: now } };
 }

@@ -1,14 +1,19 @@
 import { z } from "zod";
-import { json, noContent, notFound, parseJsonBody } from "./_helpers";
+import { forbidden, json, noContent, notFound, parseJsonBody, rethrowUnlessDomain } from "./_helpers";
 import { HTTP_BAD_REQUEST, HTTP_CREATED } from "~/shared/http-status";
-import { listCores, removeCore, renameCore } from "../services/cores";
+import { getCore, listCores, removeCore, renameCore } from "../services/cores";
+import { scopeReaches } from "../services/api-keys";
+import type { ApiPrincipal } from "../api-key-auth";
 import {
   CorePairingRefusedError,
   inspectCoreForPairing,
   pairCore,
 } from "../services/core-pairing";
 import { coreLinkManager } from "../services/core-link-manager";
-import type { Core, CoreWithDial } from "~/shared/cores";
+import { describeSharedFolder, describeSharedFolders, sharedFolders } from "../services/shared-folders";
+import { findSharedFolder } from "../repositories/core-shared-folders.repo";
+import { OPERATOR_ID } from "../services/operator";
+import type { Core, CoreSharedFolder, CoreWithDial } from "~/shared/cores";
 
 /**
  * The Cores surface: list the fleet with live link state, add a Core by pairing
@@ -36,12 +41,33 @@ const pairBody = z.object({
   label: z.string().optional(),
 });
 
-function withDial(core: Core): CoreWithDial {
-  return { ...core, dial: coreLinkManager().status(core.id) };
+/** The row, its live link, and where its Shared folder stands (absent for a Core registered before 0.5.0). */
+async function withDial(core: Core, sharedFolder?: CoreSharedFolder): Promise<CoreWithDial> {
+  const folder = sharedFolder ?? (await describeSharedFolder(core.id));
+  return { ...core, dial: coreLinkManager().status(core.id), ...(folder ? { sharedFolder: folder } : {}) };
 }
 
-export function list(): Response {
-  return json({ cores: listCores().map(withDial) });
+/**
+ * The Cores a call may see, as the principal it runs as (#572): the Operator's
+ * session sees all of its Cores, and an API key sees its owner's Cores inside
+ * its scope. A restricted key's list holds only the Cores it was restricted to.
+ */
+export async function list(principal: ApiPrincipal): Promise<Response> {
+  const all = await listCores(principal.ownerId);
+  const visible = principal.kind === "api-key" ? all.filter((c) => scopeReaches(principal.scope, c.id)) : all;
+  // One query for every Core's folder, not one per Core on every poll.
+  const folders = await describeSharedFolders(principal.ownerId);
+  return json({ cores: await Promise.all(visible.map((core) => withDial(core, folders.get(core.id)))) });
+}
+
+/** One Core. A key restricted to other Cores gets a 403 whether or not the Core exists, so it learns nothing about it. */
+export async function getOne(id: string, principal: ApiPrincipal): Promise<Response> {
+  if (principal.kind === "api-key" && !scopeReaches(principal.scope, id)) {
+    return forbidden("this API key does not reach that Core");
+  }
+  const core = await getCore(id, principal.ownerId);
+  if (!core) return notFound("no such Core");
+  return json({ core: await withDial(core) });
 }
 
 /**
@@ -90,8 +116,8 @@ export async function pair(request: Request): Promise<Response> {
   } catch (err) {
     return refusal(err);
   }
-  coreLinkManager().dial(core.id);
-  return json({ core: withDial(core) }, { status: HTTP_CREATED });
+  await coreLinkManager().dial(core.id);
+  return json({ core: await withDial(core) }, { status: HTTP_CREATED });
 }
 
 /**
@@ -117,14 +143,69 @@ function refusal(err: unknown): Response {
 export async function rename(id: string, request: Request): Promise<Response> {
   const body = await parseJsonBody(request, renameBody);
   if (!body.ok) return body.response;
-  const core = renameCore(id, body.data.label);
+  const core = await renameCore(id, body.data.label);
   if (!core) return notFound("no such Core");
-  return json({ core: withDial(core) });
+  return json({ core: await withDial(core) });
 }
 
-/** Forget a Core: hang up first, then drop the registry row, secrets, and cursor. */
-export function remove(id: string): Response {
+const finishBody = z.object({}).passthrough();
+const deleteBody = z.object({ confirmPrefix: z.string() });
+
+/**
+ * Test the Shared folder connection (#564, step 4 of the pairing): issue a 1-hour key for this Core and prove it
+ * can read, write and list its own folder and cannot reach another Core's. Nothing is stored or sent to the
+ * Core; the answer carries the result and when the key would end, never the key.
+ */
+export async function testSharedFolder(id: string): Promise<Response> {
+  try {
+    return json({ result: await sharedFolders().testConnection(id) });
+  } catch (err) {
+    return rethrowUnlessDomain(err);
+  }
+}
+
+/**
+ * Finish a pairing from the Panel (#564): the last step, the one that cannot be skipped. It repeats the test,
+ * attaches the Core's folder and only then reports the Core as paired. Any refusal leaves the Core pending.
+ */
+export async function finishPairing(id: string, request: Request): Promise<Response> {
+  const body = await parseJsonBody(request, finishBody);
+  if (!body.ok) return body.response;
+  try {
+    await sharedFolders().finishPairing(id);
+  } catch (err) {
+    return rethrowUnlessDomain(err);
+  }
+  const core = await getCore(id);
+  if (!core) return notFound("no such Core");
+  return json({ core: await withDial(core) });
+}
+
+/**
+ * Unpair: tell the Core to let go of S3 (`sharedDetach`, the Core keeps `~/shared` and its contents), hang up, then
+ * drop the registry row, secrets and cursor. The S3 prefix is left as it is. Answers 204; a Core that could not
+ * be told is still forgotten, and the answer is then a 200 that says so (`detachError`).
+ */
+export async function remove(id: string): Promise<Response> {
+  // A pending folder was never attached: there is nothing to tell the Core.
+  const attached = ((await findSharedFolder(OPERATOR_ID, id))?.state ?? "pending") !== "pending";
+  const detach = attached ? await sharedFolders().detach(id) : { detached: true };
   coreLinkManager().hangup(id);
-  if (!removeCore(id)) return notFound("no such Core");
-  return noContent();
+  if (!(await removeCore(id))) return notFound("no such Core");
+  if (detach.detached) return noContent();
+  return json({ detached: false, detachError: detach.error });
+}
+
+/**
+ * Delete a Core and its Shared folder (#564): empty `~/shared` on the machine (while the Core is connected), the Core row, then its S3 prefix. Only after a confirmation that is
+ * exactly the prefix (`sharedFolder.prefix` on the Core, `<prefix>/<core id>/`); anything else is a 409 and nothing is removed.
+ */
+export async function destroy(id: string, request: Request): Promise<Response> {
+  const body = await parseJsonBody(request, deleteBody);
+  if (!body.ok) return body.response;
+  try {
+    return json(await sharedFolders().deleteCore(id, body.data.confirmPrefix));
+  } catch (err) {
+    return rethrowUnlessDomain(err);
+  }
 }

@@ -6,7 +6,7 @@ import {
   type WebSocketServerLike,
 } from "../pty-core-link-server";
 import type { PtyCore, PtyCoreEvent } from "../pty-manager";
-import type { CoreLinkEvent } from "@actana/sdk/core-link-frames";
+import type { CoreLinkEvent } from "@actana/sdk/core";
 
 // Many core-link connections on one Core (issue 141, ADR 0024 D1).
 //
@@ -88,7 +88,7 @@ function fakeEventLog() {
         kind,
         payload,
         ptyId: opts?.ptyId ?? null,
-        taskId: opts?.taskId ?? null,
+        sessionId: opts?.sessionId ?? null,
       });
       return eventId;
     },
@@ -121,7 +121,7 @@ function mockCore() {
       return true;
     },
     killLaunchProcesses: async () => ({ ptyCount: 0, ports: [] }),
-    findByTask: () => ({ ptyId: null }),
+    findBySession: () => ({ ptyId: null }),
     replay: () => ({ data: "", nextSeq: 0, from: 0 }),
     killAll: () => {},
   } as unknown as PtyCore;
@@ -187,11 +187,11 @@ describe("a Core accepts many concurrent core-link connections (issue 141)", () 
     const first = connect();
     const second = connect();
 
-    first.receive({ type: "findByTask", reqId: "a1", taskId: "t1" });
-    second.receive({ type: "findByTask", reqId: "b1", taskId: "t1" });
+    first.receive({ type: "findBySession", reqId: "a1", sessionId: "t1" });
+    second.receive({ type: "findBySession", reqId: "b1", sessionId: "t1" });
 
-    expect(first.ofType<{ reqId: string }>("findByTaskResult").map((f) => f.reqId)).toEqual(["a1"]);
-    expect(second.ofType<{ reqId: string }>("findByTaskResult").map((f) => f.reqId)).toEqual(["b1"]);
+    expect(first.ofType<{ reqId: string }>("findBySessionResult").map((f) => f.reqId)).toEqual(["a1"]);
+    expect(second.ofType<{ reqId: string }>("findBySessionResult").map((f) => f.reqId)).toEqual(["b1"]);
   });
 
   it("authenticates each connection independently", () => {
@@ -205,7 +205,7 @@ describe("a Core accepts many concurrent core-link connections (issue 141)", () 
 
     // The other connection is still a stranger — one client's bearer is not
     // the Core's door held open for everybody behind it.
-    anonymous.receive({ type: "findByTask", reqId: "b1", taskId: "t1" });
+    anonymous.receive({ type: "findBySession", reqId: "b1", sessionId: "t1" });
     expect(anonymous.ofType<{ message: string }>("error")[0]?.message).toBe("not-authenticated");
     expect(anonymous.closed).toBe(true);
     expect(authed.closed).toBe(false);
@@ -373,7 +373,7 @@ describe("a Core accepts many concurrent core-link connections (issue 141)", () 
     ws.receive({
       type: "spawn",
       reqId: "s1",
-      opts: { taskId: "t1", cwd: "/tmp", command: "sh", agent: "claude-code" },
+      opts: { sessionId: "t1", command: "sh", agent: "claude-code" },
     });
     ws.receive({ type: "kill", reqId: "k1", ptyId: "pty-1" });
     await Promise.resolve();

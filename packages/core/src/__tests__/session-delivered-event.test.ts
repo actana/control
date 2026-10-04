@@ -7,8 +7,8 @@
 //
 // What is asserted here is the Core's half of that, against the real event-log
 // store rather than a fake: a stamped write appends one `session:delivered`
-// carrying the Task id and answers with its event id; an unstamped write
-// appends nothing; and neither a refused write nor a PTY with no Task behind it
+// carrying the Session id and answers with its event id; an unstamped write
+// appends nothing; and neither a refused write nor a PTY with no Session behind it
 // produces a cursor, because a cursor for a delivery that did not happen is
 // worse than none.
 
@@ -31,8 +31,8 @@ import {
   type WebSocketServerLike,
 } from "../pty-core-link-server";
 import type { PtyCore } from "../pty-manager";
-import type { CoreLinkEvent } from "@actana/sdk/core-link-frames";
-import { SESSION_DELIVERED_EVENT_KIND } from "@actana/sdk/core-link-frames";
+import type { CoreLinkEvent } from "@actana/sdk/core";
+import { SESSION_DELIVERED_EVENT_KIND } from "@actana/sdk/core";
 
 type Listener = (...args: unknown[]) => void;
 
@@ -77,8 +77,8 @@ class FakeWebSocketServer {
 /**
  * One live PTY belonging to `t1`, and a second belonging to nothing.
  *
- * The second is not an exotic case: a VM shell Session and a PTY whose Task row
- * has gone are both PTYs the Core can write to and cannot name a Task for.
+ * The second is not an exotic case: a VM shell Session and a PTY whose Session row
+ * has gone are both PTYs the Core can write to and cannot name a Session for.
  */
 const writes: string[] = [];
 function mockCore(): PtyCore {
@@ -93,8 +93,8 @@ function mockCore(): PtyCore {
     resize: () => true,
     kill: () => true,
     killLaunchProcesses: async () => ({ ptyCount: 0, ports: [] }),
-    findByTask: () => ({ ptyId: "pty-1" }),
-    taskIdForPty: (ptyId: string) => (ptyId === "pty-1" ? "t1" : null),
+    findBySession: () => ({ ptyId: "pty-1" }),
+    sessionIdForPty: (ptyId: string) => (ptyId === "pty-1" ? "t1" : null),
     replay: () => ({ data: "", nextSeq: 0 }),
     killAll: () => {},
   } as unknown as PtyCore;
@@ -150,13 +150,13 @@ describe("the Core stamps an accepted write it was asked to stamp (#289 A)", () 
     return readEventTail(0).filter((e) => e.kind === SESSION_DELIVERED_EVENT_KIND);
   }
 
-  it("appends one delivery event carrying the task id, and answers with its event id", async () => {
+  it("appends one delivery event carrying the session id, and answers with its event id", async () => {
     const answer = await write("w1", { ptyId: "pty-1", data: "carry on", stamp: true });
 
     expect(answer.ok).toBe(true);
     const appended = deliveries();
     expect(appended).toHaveLength(1);
-    expect(appended[0]!.taskId).toBe("t1");
+    expect(appended[0]!.sessionId).toBe("t1");
     expect(appended[0]!.ptyId).toBe("pty-1");
     // The id on the wire *is* the id in the log. A cursor that named a
     // different row than the one appended would be a cursor into somebody
@@ -171,7 +171,7 @@ describe("the Core stamps an accepted write it was asked to stamp (#289 A)", () 
     await write("w1", { ptyId: "pty-1", data: "the password is hunter2", stamp: true });
 
     const payload = JSON.parse(deliveries()[0]!.payload) as Record<string, unknown>;
-    expect(payload).toEqual({ taskId: "t1", ptyId: "pty-1", characters: 23 });
+    expect(payload).toEqual({ sessionId: "t1", ptyId: "pty-1", characters: 23 });
     expect(JSON.stringify(payload)).not.toContain("hunter2");
   });
 
@@ -196,8 +196,8 @@ describe("the Core stamps an accepted write it was asked to stamp (#289 A)", () 
     expect(deliveries()).toHaveLength(0);
   });
 
-  it("stamps nothing for a PTY it cannot name a Task for", async () => {
-    // The wait is per Session, and the events it counts against carry a task
+  it("stamps nothing for a PTY it cannot name a Session for", async () => {
+    // The wait is per Session, and the events it counts against carry a session
     // id. A stamp with none could never be compared with anything.
     const answer = await write("w1", { ptyId: "pty-shell", data: "ls\r", stamp: true });
 

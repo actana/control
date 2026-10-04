@@ -54,7 +54,7 @@ promises about what happens next.
 ```bash
 docker compose up -d
 docker compose logs core
-docker compose exec core actana pair new     # the code, and the CA fingerprint
+docker compose exec -u actana core actana pair new     # the code, and the CA fingerprint
 ```
 
 - [ ] Both containers reach `running` and stay there for a minute
@@ -104,13 +104,13 @@ docker compose restart
 ## 6. Version surfaces agree
 
 - [ ] Every manifest says `x.y.z` — root, `packages/cli`, `packages/core`,
-      `packages/panel`, `packages/sdk`, `packages/shared`. The `Train rules`
+      `packages/panel`, `packages/shared`. The `Train rules`
       check asserts this, so it should already be green; look if it is not
 - [ ] `actana status` inside the Core reports the same version
 - [ ] The Panel's UI reports the same version
 
 ```bash
-docker compose exec core actana status
+docker compose exec -u actana core actana status
 ```
 
 Those versions are `x.y.z` — the train's version, with no suffix. A beta *cut*

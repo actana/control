@@ -5,60 +5,69 @@ import {
   setAppSetting,
 } from "../repositories/app-settings.repo";
 import { safeJsonParse } from "@actana/shared/safe-json";
+import { OPERATOR_ID } from "./operator";
 
-export function getSetting(key: string): string | null {
-  return getAppSetting(key);
+export async function getSetting(key: string, ownerId = OPERATOR_ID): Promise<string | null> {
+  return getAppSetting(ownerId, key);
 }
 
-export function setSetting(key: string, value: string): void {
-  setAppSetting(key, value);
+export async function setSetting(key: string, value: string, ownerId = OPERATOR_ID): Promise<void> {
+  await setAppSetting(ownerId, key, value);
 }
 
-export function deleteSetting(key: string): void {
-  deleteAppSetting(key);
+export async function deleteSetting(key: string, ownerId = OPERATOR_ID): Promise<void> {
+  await deleteAppSetting(ownerId, key);
 }
 
-export function getBooleanSetting(key: string, defaultValue = false): boolean {
-  const value = getAppSetting(key);
+export async function getBooleanSetting(
+  key: string,
+  defaultValue = false,
+  ownerId = OPERATOR_ID,
+): Promise<boolean> {
+  const value = await getAppSetting(ownerId, key);
   if (value === null) return defaultValue;
   return value === "true";
 }
 
-export function setBooleanSetting(key: string, value: boolean): void {
-  setAppSetting(key, value ? "true" : "false");
+export async function setBooleanSetting(
+  key: string,
+  value: boolean,
+  ownerId = OPERATOR_ID,
+): Promise<void> {
+  await setAppSetting(ownerId, key, value ? "true" : "false");
 }
 
-export function readJsonSetting<T>(key: string): T | null {
-  return safeJsonParse<T | null>(getAppSetting(key), null);
+export async function readJsonSetting<T>(key: string, ownerId = OPERATOR_ID): Promise<T | null> {
+  return safeJsonParse<T | null>(await getAppSetting(ownerId, key), null);
 }
 
 const API_TOKEN_KEY = "api_token";
 const AUTH_SECRET_KEY = "auth_secret";
 
-export function getOrCreateApiToken(): string {
-  let token = getAppSetting(API_TOKEN_KEY);
+export async function getOrCreateApiToken(ownerId = OPERATOR_ID): Promise<string> {
+  let token = await getAppSetting(ownerId, API_TOKEN_KEY);
   if (!token) {
     token = randomBytes(32).toString("hex");
-    setAppSetting(API_TOKEN_KEY, token);
+    await setAppSetting(ownerId, API_TOKEN_KEY, token);
   }
   return token;
 }
 
-export function getOrCreateAuthSecret(): string {
-  let secret = getAppSetting(AUTH_SECRET_KEY);
+export async function getOrCreateAuthSecret(ownerId = OPERATOR_ID): Promise<string> {
+  let secret = await getAppSetting(ownerId, AUTH_SECRET_KEY);
   if (!secret) {
     secret = randomBytes(32).toString("hex");
-    setAppSetting(AUTH_SECRET_KEY, secret);
+    await setAppSetting(ownerId, AUTH_SECRET_KEY, secret);
   }
   return secret;
 }
 
 const SKILLS_INITIALIZED_AT_KEY = "skills_initialized_at";
 
-export function getSkillsInitializedAt(): string | null {
-  return getAppSetting(SKILLS_INITIALIZED_AT_KEY);
+export async function getSkillsInitializedAt(ownerId = OPERATOR_ID): Promise<string | null> {
+  return getAppSetting(ownerId, SKILLS_INITIALIZED_AT_KEY);
 }
 
-export function setSkillsInitializedAt(iso: string): void {
-  setAppSetting(SKILLS_INITIALIZED_AT_KEY, iso);
+export async function setSkillsInitializedAt(iso: string, ownerId = OPERATOR_ID): Promise<void> {
+  await setAppSetting(ownerId, SKILLS_INITIALIZED_AT_KEY, iso);
 }

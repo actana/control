@@ -3,8 +3,8 @@ import * as path from "node:path";
 
 /**
  * Per-platform default for the directory the Panel keeps its state in when the
- * operator names none. Also the legacy app database's home (see db/client.ts),
- * which is why it lives here rather than inside either database module.
+ * operator names none. Secrets key and other non-database files live here;
+ * the Panel's database is Postgres (#567).
  */
 export function defaultAppDataDir(): string {
   const home = os.homedir();

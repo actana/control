@@ -24,7 +24,7 @@ import {
   DUPLICATE_ACTIVE_SESSION_EVENT,
   STATUS_META,
 } from "~/lib/design-meta";
-import { mutateTaskForCore } from "~/lib/mutate-task-for-core";
+import { mutateSessionForCore } from "~/lib/mutate-session-for-core";
 import { useHideableMenu } from "~/lib/hideable-elements";
 import { takePendingInitialInput } from "~/lib/pending-initial-input";
 import { consumeIntentionalSessionClose } from "~/lib/intentional-session-close";
@@ -32,8 +32,7 @@ import { getCorePtyBridge, getPanelBridge } from "~/lib/panel-bridge";
 import {
   attachTerminalKeyHandler,
   setTerminalReadOnly,
-  terminalExitTaskStatus,
-  wireTerminalFileDrop,
+  terminalExitSessionStatus,
 } from "~/lib/terminal-pane-helpers";
 import {
   applyTerminalFontSize,
@@ -50,7 +49,6 @@ import {
 } from "~/lib/use-terminal-zoom";
 import { useHotkey } from "~/lib/use-hotkey";
 import { TerminalZoomControls } from "~/components/views/TerminalZoomControls";
-import { api } from "~/lib/api";
 import { errMsg } from "~/shared/err-msg";
 import {
   harnessUsesPersistedSession,
@@ -65,7 +63,7 @@ import {
   IDLE_TERMINAL_RUNNING_FALLBACK,
   noteTerminalWrite,
   type TerminalRunningFallback,
-} from "~/lib/task-status-sync";
+} from "~/lib/session-status-sync";
 import { accumulateTerminalPrompt } from "~/lib/terminal-prompt-capture";
 import { prefetchTerminalModules } from "~/lib/prefetch-terminal-modules";
 import { createTerminalGpuLease } from "~/lib/terminal-webgl";
@@ -80,13 +78,13 @@ import {
   dismissQuestionLocally,
   getCurrentQuestionId,
   getHoldQuestion,
-  hydrateTaskQuestion,
+  hydrateSessionQuestion,
   isQuestionDesynced,
   markQuestionDesynced,
   subscribeQuestionStore,
   useQuestionDesynced,
   useQuestionDismissed,
-  useTaskQuestion,
+  useSessionQuestion,
 } from "~/lib/harness-question-store";
 import {
   buildPayloadAnswerKeySequence,
@@ -118,7 +116,7 @@ import {
 } from "~/lib/terminal-replay";
 import { getPtyStreamRouter, type PtyStreamHandlers } from "~/lib/pty-stream-router";
 import { createTerminalInputWiring } from "~/lib/terminal-input-wiring";
-import { queryKeys, tasksCacheKey, useSettings, useTask } from "~/queries";
+import { sessionsCacheKey, useSettings, useSession } from "~/queries";
 import {
   DEFAULT_SESSION_HEADER_BUTTON_VISIBILITY,
   type SessionHeaderButtonVisibility,
@@ -139,29 +137,28 @@ import {
   readOnlyDetail,
   readOnlyLabel,
 } from "~/shared/session-write-access";
-import type { CoreLinkSessionLockState } from "@actana/sdk/core-link-frames";
-import type { Project, Task } from "~/db/schema";
+import type { CoreLinkSessionLockState } from "@actana/shared/sdk-link-frames";
+import type { Session } from "~/db/schema";
 import { normalizePtySize } from "~/shared/pty-size";
 import { HARNESS_REGISTRY } from "@actana/shared/harnesses";
 import { toast } from "sonner";
 
 export type TerminalDescriptor = {
-  taskId: string;
+  sessionId: string;
   ptyId: string | null;
   startCommand: string;
   dangerouslySkipPermissions: boolean;
-  cwd: string;
   awaitingCreate?: boolean;
-  /** Restored from localStorage; spawn waits until the task is revalidated. */
+  /** Restored from localStorage; spawn waits until the session is revalidated. */
   pendingValidation?: boolean;
   /**
    * The Core this pane's PTY runs on. Spawn/write/resize/kill/replay/onData/
    * onExit are all frames on that Core's link; the Panel persists no
-   * task-shaped state (CONTEXT.md — reads come from the Core's
-   * `projectsList` / `tasksList` / `sessionsList`). Null means the pane has no
-   * machine to run on and never spawns.
+   * session-shaped state (CONTEXT.md — reads come from the Core's
+   * `sessionRowsList` / `sessionsList`). A Core starts every Session in its home
+   * folder, so there is no cwd.
    */
-  coreId?: string | null;
+  coreId: string;
 };
 
 type SessionTerminalSurface = PaneTerminalSurface;
@@ -302,7 +299,7 @@ function HeaderMoreMenu({
             role="menu"
             aria-label={`Session actions for ${title}`}
             solid
-            className="mc-project-actions-menu"
+            className="mc-actions-menu"
             style={{
               position: "fixed",
               top: menuRect.top,
@@ -396,8 +393,7 @@ function HeaderMoreMenu({
 }
 
 export function TerminalPane({
-  project,
-  task,
+  session,
   onHide,
   expanded = false,
   onToggleExpanded,
@@ -410,8 +406,7 @@ export function TerminalPane({
   onTogglePin,
   pinBusy = false,
 }: {
-  project: Project;
-  task: Task;
+  session: Session;
   onHide?: () => void;
   expanded?: boolean;
   onToggleExpanded?: () => void;
@@ -424,7 +419,7 @@ export function TerminalPane({
   /** Focused Session Mode renders its own window chrome instead. */
   hideHeader?: boolean;
   /** Pin/unpin this session (session grid only). Pinned state is read live from
-   *  the task, so no separate flag is needed. Omit to hide the control. */
+   *  the session, so no separate flag is needed. Omit to hide the control. */
   onTogglePin?: () => void;
   /** True while a pin toggle is in flight — disables the control. */
   pinBusy?: boolean;
@@ -441,17 +436,17 @@ export function TerminalPane({
   const [startError, setStartError] = useState<string | null>(null);
   const [retryNonce, setRetryNonce] = useState(0);
   const [renameOpen, setRenameOpen] = useState(false);
-  const [titleDraft, setTitleDraft] = useState(task.title);
+  const [titleDraft, setTitleDraft] = useState(session.title);
   const [savingTitle, setSavingTitle] = useState(false);
   const savingTitleRef = useRef(false);
   // The PTY onData handler is wired once per surface build and must read the
-  // latest task status without rebuilding the terminal. Used to re-arm the
+  // latest session status without rebuilding the terminal. Used to re-arm the
   // Cursor/Codex Enter→running fallback after a turn finishes.
-  const liveTaskStatusRef = useRef(task.status);
+  const liveSessionStatusRef = useRef(session.status);
   // May this pane write to its Session, and if not, which of the two reasons
   // (issue 147). Same ref shape and same reason as the status above: every
   // write path in the surface closure reads it, and the surface is built once.
-  const writeState = useSessionWriteState(descriptor.coreId, descriptor.taskId);
+  const writeState = useSessionWriteState(descriptor.coreId, descriptor.sessionId);
   const mayWriteRef = useRef(true);
   mayWriteRef.current = writeState.access.writable;
   const readOnlyReason = writeState.access.writable ? null : writeState.access.reason;
@@ -476,7 +471,7 @@ export function TerminalPane({
     resetZoom,
     canZoomIn,
     canZoomOut,
-  } = useTerminalZoom(descriptor.taskId);
+  } = useTerminalZoom(descriptor.sessionId);
   useTerminalPaneZoomShortcuts(paneRef, zoomIn, zoomOut, resetZoom);
   useTerminalPaneWheelZoom(paneRef, zoomBy);
 
@@ -523,46 +518,42 @@ export function TerminalPane({
   const showMoreMenu = compactHeader && (tinyHeader || anyDiscretionaryButton);
 
   // Per-row subscription: with N panes mounted, a whole-array subscription
-  // re-rendered every pane's header on any task change.
-  // Core-tagged, like `tasksKey` below: a Core-owned Session's row lives in
-  // that bucket, and asking the untagged one left this header subscribed to a
-  // list nothing fills.
-  const { data: selectedLiveTask } = useTask(project.id, task.id, {
-    coreId: descriptor.coreId,
-  });
-  const liveTask = selectedLiveTask ?? task;
-  liveTaskStatusRef.current = liveTask.status;
+  // re-rendered every pane's header on any session change.
+  // The same bucket as `sessionsKey` below: the Session's row lives in its
+  // Core's list.
+  const { data: selectedLiveSession } = useSession(descriptor.coreId, session.id);
+  const liveSession = selectedLiveSession ?? session;
+  liveSessionStatusRef.current = liveSession.status;
   // The Session's name as the operator last saw it, for copy written from
   // effects that must not re-subscribe every time somebody renames a Session.
-  const liveTitleRef = useRef(liveTask.title);
-  liveTitleRef.current = liveTask.title;
-  const meta = HARNESS_META[liveTask.agent];
-  const statusMeta = STATUS_META[liveTask.status];
-  const sessionRunning = liveTask.status === "running";
-  // The card reads from the Core-tagged bucket (issue 84) — invalidating the
-  // untagged key left a Core-owned row on screen exactly as stale as before.
-  const tasksKey = tasksCacheKey(project.id, descriptor.coreId);
+  const liveTitleRef = useRef(liveSession.title);
+  liveTitleRef.current = liveSession.title;
+  const meta = HARNESS_META[liveSession.agent];
+  const statusMeta = STATUS_META[liveSession.status];
+  const sessionRunning = liveSession.status === "running";
+  // The card reads from its Core's bucket (issue 84).
+  const sessionsKey = sessionsCacheKey(descriptor.coreId);
 
   // Native AskUserQuestion overlay: pending question data arrives over SSE
   // (see harness-question-store); hydrate covers panes that mount after the
-  // event fired (e.g. reopening a project mid-question).
-  const pendingQuestion = useTaskQuestion(task.id);
+  // event fired (e.g. reopening a Core mid-question).
+  const pendingQuestion = useSessionQuestion(session.id);
   const questionDismissed = useQuestionDismissed(pendingQuestion?.id);
   const questionDesynced = useQuestionDesynced(pendingQuestion?.id);
   const answeredQuestionsRef = useRef<Set<string>>(new Set());
   useEffect(() => {
     if (
-      liveTask.agent === "claude-code" &&
-      liveTask.status === "needs-input" &&
+      liveSession.agent === "claude-code" &&
+      liveSession.status === "needs-input" &&
       pendingQuestion === undefined
     ) {
-      void hydrateTaskQuestion(task.id);
+      void hydrateSessionQuestion(session.id);
     }
-  }, [liveTask.agent, liveTask.status, pendingQuestion, task.id]);
+  }, [liveSession.agent, liveSession.status, pendingQuestion, session.id]);
   const showQuestionOverlay =
     !!pendingQuestion &&
     !questionDismissed &&
-    liveTask.status === "needs-input" &&
+    liveSession.status === "needs-input" &&
     !startError &&
     // Answering a question is a write — it walks the TUI menu with injected
     // keys. A Reader is offered no input affordance at all, and an overlay full
@@ -586,9 +577,9 @@ export function TerminalPane({
   useEffect(() => {
     const coreId = descriptor.coreId;
     if (!coreId) return;
-    watchSessionDrive(coreId, descriptor.taskId);
-    return () => releaseSessionDrive(coreId, descriptor.taskId);
-  }, [descriptor.coreId, descriptor.taskId]);
+    watchSessionDrive(coreId, descriptor.sessionId);
+    return () => releaseSessionDrive(coreId, descriptor.sessionId);
+  }, [descriptor.coreId, descriptor.sessionId]);
 
   // Read-only is a *state of this terminal*, applied to the surface this pane
   // already has (CONTEXT.md — Singular UI). `bindMount` applies it on attach;
@@ -606,11 +597,11 @@ export function TerminalPane({
     const coreId = descriptor.coreId;
     if (!coreId) return;
     return onSessionDriveHandover((msg) => {
-      if (msg.coreId !== coreId || msg.taskId !== descriptor.taskId) return;
+      if (msg.coreId !== coreId || msg.sessionId !== descriptor.sessionId) return;
       const copy = driveMovedToast(liveTitleRef.current);
       toast.message(copy.title, { description: copy.detail });
     });
-  }, [descriptor.coreId, descriptor.taskId]);
+  }, [descriptor.coreId, descriptor.sessionId]);
 
   // The loser of a cross-client change. The other event, and deliberately not
   // the same sentence: a Core client that is not this Panel now holds the
@@ -644,7 +635,7 @@ export function TerminalPane({
     setLockBusy(true);
     try {
       const bridge = getPanelBridge();
-      const result = await bridge?.claimSession(coreId, descriptor.taskId);
+      const result = await bridge?.claimSession(coreId, descriptor.sessionId);
       // A denied claim is an answer, not a failure — somebody else has it, and
       // the way past is the takeover, which the header is already offering by
       // the time this resolves (the register learned it from the same answer).
@@ -666,7 +657,7 @@ export function TerminalPane({
     if (!coreId) return;
     setLockBusy(true);
     try {
-      await getPanelBridge()?.releaseSessionLock(coreId, descriptor.taskId);
+      await getPanelBridge()?.releaseSessionLock(coreId, descriptor.sessionId);
     } catch (err) {
       toast.error(errMsg(err));
     } finally {
@@ -680,7 +671,7 @@ export function TerminalPane({
     if (!coreId) return;
     setLockBusy(true);
     try {
-      const result = await getPanelBridge()?.forceTakeoverSession(coreId, descriptor.taskId);
+      const result = await getPanelBridge()?.forceTakeoverSession(coreId, descriptor.sessionId);
       setTakeoverOpen(false);
       // Only report an eviction that happened. A takeover of a Session that had
       // been let go in the meantime is an ordinary claim, and saying otherwise
@@ -703,7 +694,7 @@ export function TerminalPane({
     if (answeredQuestionsRef.current.has(q.id)) return false;
     // The store is the live source of truth; a cleared/replaced question means
     // the TUI menu underneath is gone and injected keys would hit the REPL.
-    if (getCurrentQuestionId(task.id) !== q.id) return false;
+    if (getCurrentQuestionId(session.id) !== q.id) return false;
     const write = termSurfaceRef.current?.writeToPty;
     if (!write) return false;
     const plan = buildPayloadAnswerKeySequence(
@@ -718,7 +709,7 @@ export function TerminalPane({
     // Abort if the question resolved some other way, or the user started
     // typing in the terminal (injected keys would interleave with theirs).
     const walkInvalid = () =>
-      getCurrentQuestionId(task.id) !== q.id || isQuestionDesynced(q.id);
+      getCurrentQuestionId(session.id) !== q.id || isQuestionDesynced(q.id);
     const settle = q.createdAt + MENU_READY_MS - Date.now();
     if (settle > 0) {
       await new Promise((resolve) => setTimeout(resolve, settle));
@@ -751,22 +742,22 @@ export function TerminalPane({
     // positions the clone next to) the session whose button was clicked — not
     // whatever session happens to be active in the current scope.
     window.dispatchEvent(
-      new CustomEvent(DUPLICATE_ACTIVE_SESSION_EVENT, { detail: { taskId: task.id } }),
+      new CustomEvent(DUPLICATE_ACTIVE_SESSION_EVENT, { detail: { sessionId: session.id } }),
     );
   };
 
   useEffect(() => {
-    if (!renameOpen) setTitleDraft(liveTask.title);
-  }, [renameOpen, liveTask.title]);
+    if (!renameOpen) setTitleDraft(liveSession.title);
+  }, [renameOpen, liveSession.title]);
 
   const openRenameDialog = () => {
-    setTitleDraft(liveTask.title);
+    setTitleDraft(liveSession.title);
     setRenameOpen(true);
   };
 
   const closeRenameDialog = () => {
     if (savingTitleRef.current) return;
-    setTitleDraft(liveTask.title);
+    setTitleDraft(liveSession.title);
     setRenameOpen(false);
   };
 
@@ -774,53 +765,53 @@ export function TerminalPane({
     if (savingTitleRef.current) return;
     const nextTitle = titleDraft.trim();
     if (!nextTitle) return;
-    if (nextTitle === liveTask.title) {
+    if (nextTitle === liveSession.title) {
       setRenameOpen(false);
       return;
     }
 
     savingTitleRef.current = true;
     setSavingTitle(true);
-    await queryClient.cancelQueries({ queryKey: tasksKey });
-    const previousTasks = queryClient.getQueryData<Task[]>(tasksKey);
-    const previousTask = previousTasks?.find((t) => t.id === liveTask.id) ?? liveTask;
-    const optimisticTask = {
-      ...liveTask,
+    await queryClient.cancelQueries({ queryKey: sessionsKey });
+    const previousSessions = queryClient.getQueryData<Session[]>(sessionsKey);
+    const previousSession = previousSessions?.find((t) => t.id === liveSession.id) ?? liveSession;
+    const optimisticSession = {
+      ...liveSession,
       title: nextTitle,
       titleManuallySet: true,
       updatedAt: Date.now(),
     };
-    queryClient.setQueryData<Task[]>(tasksKey, (current) =>
-      (current ?? []).map((t) => (t.id === liveTask.id ? optimisticTask : t)),
+    queryClient.setQueryData<Session[]>(sessionsKey, (current) =>
+      (current ?? []).map((t) => (t.id === liveSession.id ? optimisticSession : t)),
     );
-    terminals.syncTask(optimisticTask);
+    terminals.syncSession(optimisticSession);
 
     try {
       // A rename is Core-owned state, so it travels the same mutation frame
       // pin and icon do (ADR-0005): the Core that owns the row is the one that
       // renames it, and every other tab watching that Core sees the new title.
-      const snapshot = await mutateTaskForCore(descriptor.coreId, {
+      const snapshot = await mutateSessionForCore(descriptor.coreId, {
         op: "update",
-        taskId: liveTask.id,
+        sessionId: liveSession.id,
         title: nextTitle,
       });
-      const nextTask: Task = snapshot
+      const nextSession: Session = snapshot
         ? {
-            ...liveTask,
+            ...liveSession,
             title: snapshot.title,
             titleManuallySet: true,
             updatedAt: snapshot.updatedAt,
           }
-        : optimisticTask;
-      queryClient.setQueryData<Task[]>(tasksKey, (current) =>
-        (current ?? []).map((t) => (t.id === liveTask.id ? nextTask : t)),
+        : optimisticSession;
+      queryClient.setQueryData<Session[]>(sessionsKey, (current) =>
+        (current ?? []).map((t) => (t.id === liveSession.id ? nextSession : t)),
       );
-      terminals.syncTask(nextTask);
+      terminals.syncSession(nextSession);
       setRenameOpen(false);
-      void queryClient.invalidateQueries({ queryKey: tasksKey });
+      void queryClient.invalidateQueries({ queryKey: sessionsKey });
     } catch (e: unknown) {
-      if (previousTasks) queryClient.setQueryData<Task[]>(tasksKey, previousTasks);
-      terminals.syncTask(previousTask);
+      if (previousSessions) queryClient.setQueryData<Session[]>(sessionsKey, previousSessions);
+      terminals.syncSession(previousSession);
       toast.error(e instanceof Error ? e.message : "Could not rename session");
     } finally {
       savingTitleRef.current = false;
@@ -838,9 +829,9 @@ export function TerminalPane({
 
   useEffect(() => {
     const cache = terminalSurfaceCache;
-    // Surfaces are cached by task id (one live xterm per session).
-    const surfaceId = descriptor.taskId;
-    // awaitingCreate (task row not yet persisted), pendingValidation (restored
+    // Surfaces are cached by session id (one live xterm per session).
+    const surfaceId = descriptor.sessionId;
+    // awaitingCreate (session row not yet persisted), pendingValidation (restored
     // session not yet revalidated) and the retry nonce all mean "build fresh";
     // a plain remount (navigating back to this session) keeps the same buildKey
     // and reattaches the existing surface instantly — no replay.
@@ -888,7 +879,7 @@ export function TerminalPane({
       const detach = bindMount(existing);
       return () => detach();
     }
-    // A stale build (Retry / task just persisted) must not reattach the old one.
+    // A stale build (Retry / session just persisted) must not reattach the old one.
     if (existing) cache.destroy(surfaceId);
 
     // Held while this pane does its heavy renderer work (Terminal + open() +
@@ -909,7 +900,7 @@ export function TerminalPane({
       const ptyApi = corePtyBridge;
 
       // A grid mounts every pane in one commit; building all their xterm
-      // surfaces in one task blocks the route transition's first paint. Take
+      // surfaces in one session blocks the route transition's first paint. Take
       // per-frame turns instead so the page shows instantly and cells fill in.
       releaseBuildTurn = await acquireSurfaceBuildTurn();
       if (cancelled || !containerRef.current) return;
@@ -961,7 +952,7 @@ export function TerminalPane({
       // The pane's one input subscription, across every attach this surface
       // makes (issue 393). `ensurePty` can wire more than once for a single
       // surface — a reattach that comes back empty falls through to
-      // `findByTask` and then to a spawn — and an undisposed handler from the
+      // `findBySession` and then to a spawn — and an undisposed handler from the
       // failed attempt writes every later keystroke to the PTY a second time.
       const inputWiring = createTerminalInputWiring();
       subscriptions.push(() => inputWiring.dispose());
@@ -990,7 +981,9 @@ export function TerminalPane({
       // agent SIGWINCH after the drag settles; targets the then-active pty.
       const settledPtyResize = createSettledPtyResize((cols, rows) => {
         const id = activePtyId;
-        if (id && ptyApi) ptyApi.resize(id, cols, rows);
+        // A resize lost to a dropped link is harmless: the next settled resize
+        // or the re-attach re-sends the size.
+        if (id && ptyApi) ptyApi.resize(id, cols, rows).catch(() => {});
       });
       const PENDING_OUTPUT_MAX_CHARS = 64_000;
       let replayingPtyId: string | null = null;
@@ -1025,7 +1018,7 @@ export function TerminalPane({
         const ptyId = activePtyId;
         if (!ptyId || !ptyApi || !mayWriteRef.current) return false;
         // Every byte on this path skips xterm's keyboard, so `onData` never
-        // sees it: the dropped project path, the key map's Cmd+Backspace. Fold
+        // sees it: the key map's Cmd+Backspace. Fold
         // it into the same turn the fallback watches, or a dropped path
         // followed by Enter starts a real turn against a card still reading
         // `finished` (issue 386). It composes only — the Enter that submits it
@@ -1034,12 +1027,6 @@ export function TerminalPane({
         return ptyApi.write(ptyId, data);
       };
 
-      const detachFileDrop = wireTerminalFileDrop({
-        host,
-        write: writeToPty,
-        onFocus: () => term.focus(),
-      });
-
       attachTerminalKeyHandler({ term, write: writeToPty });
 
       // If an agent process exits before it has had a chance to render its
@@ -1047,7 +1034,7 @@ export function TerminalPane({
       const START_FAILURE_EXIT_MS = 3000;
       // If a resume spawn dies almost immediately, the session file is gone or
       // unreadable. Per the persistence design we start fresh instead of
-      // deleting the task card.
+      // deleting the session card.
       let spawnAt = 0;
       let spawnedAsResume = false;
       // Whether a hook will announce the START of a turn for THIS Session,
@@ -1065,7 +1052,7 @@ export function TerminalPane({
         const elapsed = Date.now() - spawnAt;
         if (
           spawnedAsResume &&
-          harnessUsesPersistedSession(task.agent) &&
+          harnessUsesPersistedSession(session.agent) &&
           elapsed < START_FAILURE_EXIT_MS
         ) {
           void (async () => {
@@ -1074,28 +1061,28 @@ export function TerminalPane({
             // spawn start fresh and the next SessionStart refill the column
             // (ADO #4986).
             const fresh =
-              task.agent === "codex" || task.agent === "opencode" || task.agent === "pi"
+              session.agent === "codex" || session.agent === "opencode" || session.agent === "pi"
                 ? null
                 : newSessionId();
             try {
               // The row is the Core's (ADR 0004/0005) — the Panel's own HTTP
-              // task API has no such row, so writing the fresh session id
+              // session API has no such row, so writing the fresh session id
               // there left the Core's column holding a dead id (issue 84).
-              await mutateTaskForCore(descriptor.coreId, {
+              await mutateSessionForCore(descriptor.coreId, {
                 op: "update",
-                taskId: descriptor.taskId,
+                sessionId: descriptor.sessionId,
                 claudeSessionId: fresh,
               });
             } catch {
               /* best effort — even if patch fails, spawn with fresh id */
             }
             term.writeln(
-              `\x1b[33m[resume failed; starting a fresh ${HARNESS_REGISTRY[task.agent].label} session]\x1b[0m`
+              `\x1b[33m[resume failed; starting a fresh ${HARNESS_REGISTRY[session.agent].label} session]\x1b[0m`
             );
             const cmd = buildFreshHarnessLaunchCommand(
-              { ...task, claudeSessionId: fresh },
+              { ...session, claudeSessionId: fresh },
               fresh ?? "",
-              { model: getDefaultModelForHarness(task.agent) },
+              { model: getDefaultModelForHarness(session.agent) },
             );
             try {
               await spawnAndWire(cmd, false);
@@ -1119,11 +1106,11 @@ export function TerminalPane({
           term.writeln(`\x1b[31m[${message}]\x1b[0m`);
           return;
         }
-        if (surface.destroyed || consumeIntentionalSessionClose(descriptor.taskId)) {
+        if (surface.destroyed || consumeIntentionalSessionClose(descriptor.sessionId)) {
           return;
         }
         clearActivePty();
-        const status = terminalExitTaskStatus(exitCode);
+        const status = terminalExitSessionStatus(exitCode);
         const code = exitCode ?? "unknown";
         const message =
           status === "finished"
@@ -1136,39 +1123,15 @@ export function TerminalPane({
           // A Core settles its own Session's exit (issue 84): the Core watches
           // the PTY it spawned, so it sees the exit whether or not this tab is
           // open, and it settles *conditionally* — a Session already
-          // `interrupted` keeps that status. This unconditional patch would
-          // overwrite it with `finished` and raise a spurious
-          // `session:finished` besides, so it stays on the arm that still
-          // needs it: the Panel's own rows, whose PTYs no Core watches.
-          if (!descriptor.coreId) {
-            try {
-              const patched = await mutateTaskForCore(null, {
-                op: "update",
-                taskId: descriptor.taskId,
-                status,
-              });
-              // A null snapshot is the mutation finding no such row — the card
-              // would go on claiming the Session is running, so say so.
-              if (!patched) {
-                toast.error("This session is gone — its exit status was not recorded");
-              }
-            } catch (e: unknown) {
-              toast.error(
-                e instanceof Error ? e.message : "Could not record the session's exit status",
-              );
-            }
-          }
-          await Promise.all([
-            queryClient.invalidateQueries({
-              queryKey: tasksCacheKey(project.id, descriptor.coreId),
-            }),
-            queryClient.invalidateQueries({ queryKey: queryKeys.project(project.id) }),
-            queryClient.invalidateQueries({ queryKey: queryKeys.projects }),
-          ]);
+          // `interrupted` keeps that status. A patch from here would overwrite
+          // it with `finished`, so the Panel only refreshes what it shows.
+          await queryClient.invalidateQueries({
+            queryKey: sessionsCacheKey(descriptor.coreId),
+          });
           // A clean shell exit (the user typed `exit`) should dismiss the pane
           // just like clicking the header's close button — otherwise a dead
           // "Session finished" cell lingers in the grid. Fire after the status
-          // patch + invalidation so the close path sees a non-running task and
+          // patch + invalidation so the close path sees a non-running session and
           // archives without a confirm prompt. Terminated (crashed) sessions
           // stay put so their output can be inspected.
           if (status === "finished") onHideRef.current?.();
@@ -1182,7 +1145,7 @@ export function TerminalPane({
       let holdSignatures: { id: string; sigs: string[] } | null = null;
       const questionHold = createQuestionMenuHold({
         getSignatures: () => {
-          const q = getHoldQuestion(descriptor.taskId);
+          const q = getHoldQuestion(descriptor.sessionId);
           if (!q) return null;
           if (holdSignatures?.id !== q.id) {
             holdSignatures = { id: q.id, sigs: questionMenuSignatures(q) };
@@ -1275,8 +1238,8 @@ export function TerminalPane({
             // onData also carries terminal-generated replies (focus reports,
             // query responses) which must NOT count as typing; injected answers
             // bypass onData entirely. No-op when no question is pending.
-            if (!isTerminalAutoReply(data)) markQuestionDesynced(descriptor.taskId);
-            const usesPromptFallback = harnessUsesTerminalPromptFallback(task.agent);
+            if (!isTerminalAutoReply(data)) markQuestionDesynced(descriptor.sessionId);
+            const usesPromptFallback = harnessUsesTerminalPromptFallback(session.agent);
             let submittedPrompt: string | null = null;
             if (usesPromptFallback && !promptTitlePosted) {
               const captured = accumulateTerminalPrompt(promptCaptureBuffer, data);
@@ -1286,7 +1249,7 @@ export function TerminalPane({
 
             // Cursor CLI still does not fire beforeSubmitPrompt, so a submitted
             // prompt is the per-turn running signal. "Submitted" is the whole
-            // point of issue 386: the latch re-arms once the task leaves
+            // point of issue 386: the latch re-arms once the session leaves
             // "running" (stop → finished, needs-input, …) so a second prompt in
             // the same session updates the card again — but on its own that made
             // every newline after settlement a new turn, so a stray Enter or a
@@ -1294,18 +1257,18 @@ export function TerminalPane({
             // operator to actually enter something and submit it.
             const fallbackStep = advanceTerminalRunningFallback(runningFallback, {
               data,
-              currentStatus: liveTaskStatusRef.current,
+              currentStatus: liveSessionStatusRef.current,
               hooksReportTurnStart,
             });
             runningFallback = fallbackStep.state;
             if (fallbackStep.postRunning) {
               void (async () => {
                 try {
-                  // Same routing as the exit patch above: a turn-start status is
-                  // Core-owned state like any other column on the row.
-                  await mutateTaskForCore(descriptor.coreId, {
+                  // A turn-start status is Core-owned state like any other column
+                  // on the row.
+                  await mutateSessionForCore(descriptor.coreId, {
                     op: "update",
-                    taskId: descriptor.taskId,
+                    sessionId: descriptor.sessionId,
                     status: "running",
                   });
                 } catch {
@@ -1320,28 +1283,19 @@ export function TerminalPane({
                 }
                 try {
                   // The prompt patches no column of its own: it only asks a
-                  // title generator to name the session. Which generator depends
-                  // on who owns the row — the Core's, for a Core-owned Session
-                  // (issue 84), reached by the frame that exists because Cursor
-                  // never fires `beforeSubmitPrompt` for the Core's own hook
-                  // receiver to catch.
+                  // title generator to name the session: the Core's (issue 84),
+                  // reached by the frame that exists because Cursor never fires
+                  // `beforeSubmitPrompt` for the Core's own hook receiver to
+                  // catch.
                   if (submittedPrompt) {
-                    if (descriptor.coreId && corePtyBridge) {
-                      await corePtyBridge.submitPrompt(descriptor.taskId, submittedPrompt);
-                    } else if (!descriptor.coreId) {
-                      await api.updateTaskStatus(descriptor.taskId, {
-                        prompt: submittedPrompt,
-                      });
+                    if (corePtyBridge) {
+                      await corePtyBridge.submitPrompt(descriptor.sessionId, submittedPrompt);
                     }
                     promptTitlePosted = true;
                   }
-                  await Promise.all([
-                    queryClient.invalidateQueries({
-                      queryKey: tasksCacheKey(project.id, descriptor.coreId),
-                    }),
-                    queryClient.invalidateQueries({ queryKey: queryKeys.project(project.id) }),
-                    queryClient.invalidateQueries({ queryKey: queryKeys.projects }),
-                  ]);
+                  await queryClient.invalidateQueries({
+                    queryKey: sessionsCacheKey(descriptor.coreId),
+                  });
                 } catch {
                   // The row is already `running`; a missed title or a stale cache
                   // is not worth un-latching a turn that did start.
@@ -1349,7 +1303,9 @@ export function TerminalPane({
               })();
             }
             if (ptyApi) {
-              ptyApi.write(ptyId, data);
+              // Keystrokes lost to a dropped link have no caller to tell; the
+              // link layer reports the disconnect itself.
+              ptyApi.write(ptyId, data).catch(() => {});
             }
           }),
           term.onResize((size) => settledPtyResize.schedule(size)),
@@ -1423,7 +1379,7 @@ export function TerminalPane({
         // to the PTY. Only seed fresh launches — resumes carry the prompt
         // history already.
         const initialInput = !isResume
-          ? takePendingInitialInput(descriptor.taskId)
+          ? takePendingInitialInput(descriptor.sessionId)
           : undefined;
         // Spawn on the Core over the panel link: the Panel service forwards
         // the frame down that Core's core-link, and the PTY's output streams
@@ -1431,12 +1387,11 @@ export function TerminalPane({
         // router. An unreachable Core throws with an actionable message so the
         // pane's "failed to start pty" catch surfaces it — no silent no-op.
         const spawnResult = await ptyApi.spawn({
-          taskId: descriptor.taskId,
-          cwd: descriptor.cwd,
+          sessionId: descriptor.sessionId,
           command,
           cols: ptySize.cols,
           rows: ptySize.rows,
-          agent: task.agent,
+          agent: session.agent,
           dangerouslySkipPermissions: descriptor.dangerouslySkipPermissions,
           missionControlTheme: getTerminalColorScheme(),
           initialInput,
@@ -1456,7 +1411,7 @@ export function TerminalPane({
         if (surface.destroyed) return;
         if (descriptor.awaitingCreate) return;
         // Restored session not yet revalidated — the store either clears the
-        // gate (task alive; effect re-runs via deps) or closes the session.
+        // gate (session alive; effect re-runs via deps) or closes the session.
         if (descriptor.pendingValidation) return;
         setStartError(null);
         try {
@@ -1473,18 +1428,18 @@ export function TerminalPane({
           }
 
           // Pty ids are lost when the tab reloads, but the agent processes
-          // survive on the Core. Reattach to a live PTY for this task
+          // survive on the Core. Reattach to a live PTY for this session
           // instead of spawning a duplicate — agents that pin a session id die
           // with "Session ID ... is already in use" when a second copy
-          // launches. `findByTask` is answered by the Core the pane is bound
+          // launches. `findBySession` is answered by the Core the pane is bound
           // to, so this holds across the panel link as well as in-process.
           if (ptyApi) {
             let livePtyId: string | null = null;
-            const findByTask = ptyApi.findByTask;
+            const findBySession = ptyApi.findBySession;
             try {
-              livePtyId = (await findByTask(descriptor.taskId)).ptyId;
+              livePtyId = (await findBySession(descriptor.sessionId)).ptyId;
             } catch {
-              /* older main process without findByTask — fall through to spawn */
+              /* older main process without findBySession — fall through to spawn */
             }
             if (surface.destroyed) return;
             if (livePtyId && livePtyId !== descriptor.ptyId) {
@@ -1496,7 +1451,7 @@ export function TerminalPane({
             }
           }
 
-          const isResume = isHarnessResumeCommand(task.agent, descriptor.startCommand);
+          const isResume = isHarnessResumeCommand(session.agent, descriptor.startCommand);
           await spawnAndWire(descriptor.startCommand, isResume);
         } catch (err: any) {
           const message = errMsg(err ?? "unknown error");
@@ -1513,7 +1468,6 @@ export function TerminalPane({
         for (const off of subscriptions) off();
         stopWatchingColorScheme();
         detachLinks();
-        detachFileDrop();
         fitRef.current = null;
         gpu.dispose();
         term.dispose();
@@ -1521,7 +1475,10 @@ export function TerminalPane({
 
       cache.set(surface);
       term.focus();
-      rafHandle = window.requestAnimationFrame(() => ensurePty());
+      rafHandle = window.requestAnimationFrame(() => {
+        // `ensurePty` reports its own failure through `setStartError`.
+        void ensurePty();
+      });
       detachMount = bindMount(surface);
     })().finally(() => releaseBuildTurn?.());
 
@@ -1529,7 +1486,7 @@ export function TerminalPane({
       cancelled = true;
       detachMount?.();
     };
-  }, [descriptor.taskId, descriptor.awaitingCreate, descriptor.pendingValidation, retryNonce]);
+  }, [descriptor.sessionId, descriptor.awaitingCreate, descriptor.pendingValidation, retryNonce]);
 
   return (
     <>
@@ -1658,7 +1615,7 @@ export function TerminalPane({
                 variant="ghost"
                 size="sm"
                 onClick={() => {
-                  takeSessionDrive(descriptor.coreId, descriptor.taskId);
+                  takeSessionDrive(descriptor.coreId, descriptor.sessionId);
                   termSurfaceRef.current?.focus();
                 }}
               >
@@ -1696,18 +1653,16 @@ export function TerminalPane({
           touchAction: onHeaderPointerDown ? "none" : undefined,
         }}
       >
-        {/* Session icon chip — a miniature of the TaskCard tile. In the tiny
+        {/* Session icon chip — a miniature of the SessionCard tile. In the tiny
             tier the title text is gone, so the chip is the cell's only identity
             marker (the title moves to its tooltip); below micro it yields the
             last few pixels to the "…" menu.
             Issue 09: the chip doubles as an icon picker. The mutation routes
-            through `mutateTaskForCore(coreId, …)` so every Core
-            share the same write path (ADR-0005). `descriptor.coreId` is
-            null means a row the Panel still owns, so this stays a picker for
-            call sites that don't thread a Core through. */}
+            through `mutateSessionForCore(coreId, …)`, the one write path
+            every Core shares (ADR-0005). */}
         {!microHeader && (
           <div
-            title={tinyHeader ? liveTask.title : undefined}
+            title={tinyHeader ? liveSession.title : undefined}
             className={sessionRunning ? "mc-session-icon-running" : undefined}
             style={{
               width: 30,
@@ -1720,15 +1675,15 @@ export function TerminalPane({
             }}
           >
             <SessionIconPicker
-              coreId={descriptor.coreId ?? null}
-              taskId={liveTask.id}
-              currentIcon={liveTask.icon}
+              coreId={descriptor.coreId}
+              sessionId={liveSession.id}
+              currentIcon={liveSession.icon}
               size={24}
               strokeWidth={1.6}
               animate={sessionRunning}
-              ariaLabel={`Change icon for session ${liveTask.title}`}
+              ariaLabel={`Change icon for session ${liveSession.title}`}
               onPicked={() => {
-                void queryClient.invalidateQueries({ queryKey: tasksKey });
+                void queryClient.invalidateQueries({ queryKey: sessionsKey });
               }}
             />
           </div>
@@ -1747,7 +1702,7 @@ export function TerminalPane({
                   whiteSpace: "nowrap",
                 }}
               >
-                {liveTask.title}
+                {liveSession.title}
               </div>
               <div
                 style={{
@@ -1769,7 +1724,7 @@ export function TerminalPane({
           {compactHeader ? (
             showMoreMenu ? (
             <HeaderMoreMenu
-              title={liveTask.title}
+              title={liveSession.title}
               statusLabel={statusMeta.label}
               statusColor={statusMeta.color}
               showTitle={tinyHeader}
@@ -1777,7 +1732,7 @@ export function TerminalPane({
               onToggleExpanded={tinyHeader ? onToggleExpanded : undefined}
               onHide={microHeader ? onHide : undefined}
               onTogglePin={microHeader ? onTogglePin : undefined}
-              pinned={liveTask.pinned}
+              pinned={liveSession.pinned}
               pinBusy={pinBusy}
               buttons={sessionButtons}
               onRename={openRenameDialog}
@@ -1805,7 +1760,7 @@ export function TerminalPane({
                     icon="shield"
                     disabled={lockBusy}
                     onClick={() => void claimSessionLock()}
-                    aria-label={`Claim session ${liveTask.title}`}
+                    aria-label={`Claim session ${liveSession.title}`}
                     style={{ width: 34, padding: 0 }}
                   />
                 </Tooltip>
@@ -1818,7 +1773,7 @@ export function TerminalPane({
                     icon="pencil"
                     onClick={openRenameDialog}
                     onContextMenu={hideElementContextMenu("session-button:rename")}
-                    aria-label={`Rename session ${liveTask.title}`}
+                    aria-label={`Rename session ${liveSession.title}`}
                     style={{ width: 34, padding: 0 }}
                   />
                 </Tooltip>
@@ -1856,20 +1811,20 @@ export function TerminalPane({
               so collapsing the pane mid-open can't strand the menu's state. */}
           {hideableMenu}
           {onTogglePin && !microHeader && (
-            <Tooltip content={liveTask.pinned ? "Unpin session" : "Pin session"}>
+            <Tooltip content={liveSession.pinned ? "Unpin session" : "Pin session"}>
               <Btn
                 variant="ghost"
                 size="sm"
-                icon={liveTask.pinned ? "pin-fill" : "pin"}
+                icon={liveSession.pinned ? "pin-fill" : "pin"}
                 onClick={onTogglePin}
                 disabled={pinBusy}
                 aria-busy={pinBusy}
-                aria-pressed={liveTask.pinned}
-                aria-label={liveTask.pinned ? "Unpin session" : "Pin session"}
+                aria-pressed={liveSession.pinned}
+                aria-label={liveSession.pinned ? "Unpin session" : "Pin session"}
                 style={{
                   width: 34,
                   padding: 0,
-                  color: liveTask.pinned ? "var(--accent)" : undefined,
+                  color: liveSession.pinned ? "var(--accent)" : undefined,
                 }}
               />
             </Tooltip>
@@ -1944,13 +1899,13 @@ export function TerminalPane({
         open={takeoverOpen}
         onClose={() => setTakeoverOpen(false)}
         onConfirm={() => void forceTakeoverSessionLock()}
-        title={forceTakeoverConfirmation(liveTask.title).title}
-        confirmLabel={forceTakeoverConfirmation(liveTask.title).confirmLabel}
+        title={forceTakeoverConfirmation(liveSession.title).title}
+        confirmLabel={forceTakeoverConfirmation(liveSession.title).confirmLabel}
         variant="danger"
         icon="shield"
         loading={lockBusy}
       >
-        {forceTakeoverConfirmation(liveTask.title).body}
+        {forceTakeoverConfirmation(liveSession.title).body}
       </ConfirmDialog>
       <Modal
         open={renameOpen}

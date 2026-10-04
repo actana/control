@@ -27,9 +27,10 @@
 // Harness-install path calls them, and a silent stub would make a future
 // caller's bug look like a machine with no systemd on it.
 
-import { spawn, spawnSync } from "node:child_process";
+import { spawn, spawnSync, type SpawnSyncReturns } from "node:child_process";
 import type { ActanaSystem } from "@actana/shared/actana-system-port";
 import log from "@actana/shared/log";
+import { asCore } from "./core-identity";
 
 /** The port the daemon hands `installAgentsNow`. Non-interactive by construction. */
 export function daemonHarnessSystem(): ActanaSystem {
@@ -38,7 +39,19 @@ export function daemonHarnessSystem(): ActanaSystem {
   };
   return {
     run(command, args) {
-      const result = spawnSync(command, args, { encoding: "utf8" });
+      // A refusal (no setpriv, a broken identity) is a failed run like any
+      // other, not an exception out of a method that has always returned a status.
+      let result: SpawnSyncReturns<string>;
+      try {
+        const launch = asCore({ command, args });
+        result = spawnSync(launch.command, launch.args, {
+          cwd: launch.cwd,
+          env: launch.env,
+          encoding: "utf8",
+        });
+      } catch (err) {
+        return { status: 127, stdout: "", stderr: err instanceof Error ? err.message : String(err) };
+      }
       if (result.error || result.status === null) {
         return {
           status: 127,
@@ -54,7 +67,19 @@ export function daemonHarnessSystem(): ActanaSystem {
     },
     passthrough(command, args) {
       return new Promise((resolve) => {
-        const child = spawn(command, args, { stdio: "inherit" });
+        let child: ReturnType<typeof spawn>;
+        try {
+          const launch = asCore({ command, args });
+          child = spawn(launch.command, launch.args, {
+            cwd: launch.cwd,
+            env: launch.env,
+            stdio: "inherit",
+          });
+        } catch (err) {
+          log.error(`could not run ${command}: ${err instanceof Error ? err.message : String(err)}`);
+          resolve(127);
+          return;
+        }
         child.on("error", (err) => {
           log.error(`could not run ${command}: ${err.message}`);
           resolve(127);

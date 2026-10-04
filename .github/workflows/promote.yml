@@ -374,9 +374,9 @@ jobs:
       #
       # `version` above is the train's own branch name with `beta/` cut off it,
       # and until this step nothing on the push path ever compared that name to
-      # the six manifests inside the commit: `Train rules` does exactly this
+      # the five manifests inside the commit: `Train rules` does exactly this
       # comparison and runs on `pull_request` only, so the cut commit — the one
-      # commit whose entire purpose is writing six versions — reached here
+      # commit whose entire purpose is writing five versions — reached here
       # unasserted. `ci.yml`'s `Train versions` now covers the push; this covers
       # the promotion, which is the moment the name becomes `vx.y.z`.
       #
@@ -491,7 +491,7 @@ jobs:
 
           # The revision label says which commit these bytes came from. It says
           # nothing about what version they think they are, and that silence is
-          # the gap: an image whose six manifests say `9.9.9` promoted to
+          # the gap: an image whose five manifests say `9.9.9` promoted to
           # `x.y.z` and to `latest` with this job green, because the only thing
           # compared was a SHA (ADR 0037 D4).
           #
@@ -664,18 +664,16 @@ jobs:
         env:
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
           DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           set -euo pipefail
           missing=()
           [[ -n "$DOCKERHUB_USERNAME" ]] || missing+=(DOCKERHUB_USERNAME)
           [[ -n "$DOCKERHUB_TOKEN" ]] || missing+=(DOCKERHUB_TOKEN)
-          [[ -n "$NPM_TOKEN" ]] || missing+=(NPM_TOKEN)
           if [[ "${#missing[@]}" -gt 0 ]]; then
             echo "::error title=A release credential is missing::${missing[*]} not set. \`release.yml\` refuses on exactly these in its own \`resolve\` job — but that job does not start until \`main\` has been fast-forwarded and \`vx.y.z\` pushed, so its refusal would arrive after the irreversible half of this promotion (#326). Nothing has been published. See docs/REPO_SETUP.md section 2."
             exit 1
           fi
-          echo "✅ Docker Hub and npm credentials are present. release.yml checks them again in its own resolve."
+          echo "✅ Docker Hub credentials are present. release.yml checks them again in its own resolve."
 
       # `advance` makes this check too, immediately before it pushes the tag —
       # and by then it has already fast-forwarded `main`. Asking here as well
@@ -889,7 +887,7 @@ jobs:
     # Six hours, which is GitHub's own ceiling for a job and therefore the
     # largest honest number this can be. It is deliberately far above what a
     # release takes — both Linux tarball legs, the macOS leg at 10x and however
-    # long it queues, the arm64 installer e2e, both image jobs, the npm publish
+    # long it queues, the arm64 installer e2e, both image jobs
     # and the GitHub Release — because the two sides of this cap are not
     # symmetrical. Too long costs an idle ubuntu runner. Too short **fails a
     # promotion whose release succeeded**: the wait below exits non-zero,
@@ -1270,7 +1268,7 @@ jobs:
             echo "proposed* — is kept honest without a workflow that invents a number."
             echo ""
             echo "**The procedure is [\`docs/ci-cd.md\` § \"Cutting a train\"](https://github.com/${GH_REPO}/blob/main/docs/ci-cd.md#cutting-a-train).**"
-            echo "It is six manifests, one commit, one push, and the version in the branch name is"
+            echo "It is five manifests, one commit, one push, and the version in the branch name is"
             echo "the decision being made — the next release may be a patch, a minor or a major, and"
             echo "only a person knows which."
             echo ""

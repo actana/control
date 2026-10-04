@@ -53,7 +53,7 @@ async function loadPlugin(env: Record<string, string | undefined>): Promise<Open
 const WIRED = {
   AC_HOOK_URL: "http://127.0.0.1:45111",
   AC_HOOK_TOKEN: "hook-token-abc",
-  AC_HOOK_TASK_ID: "task_live_1",
+  AC_HOOK_SESSION_ID: "session_live_1",
 };
 
 /** Posts are queued, not awaited by the harness — let the chain drain. */
@@ -131,11 +131,11 @@ describe("the OpenCode plugin the Core writes (issue 230)", () => {
     expect(posts.map((p) => p.body.hook_event_name)).toEqual(["SessionStart", "Stop"]);
   });
 
-  it("addresses the Core's receiver, with the task and the event on the URL", async () => {
+  it("addresses the Core's receiver, with the session and the event on the URL", async () => {
     const hooks = await loadPlugin(WIRED);
     await events(hooks)({ type: "session.idle", properties: { sessionID: SESSION } });
     expect(posts[0]!.url).toBe(
-      "http://127.0.0.1:45111/api/hooks/opencode?taskId=task_live_1&hookEvent=Stop",
+      "http://127.0.0.1:45111/api/hooks/opencode?sessionId=session_live_1&hookEvent=Stop",
     );
     expect(posts[0]!.auth).toBe("Bearer hook-token-abc");
   });
@@ -173,12 +173,12 @@ describe("the OpenCode plugin the Core writes (issue 230)", () => {
 
   it("does nothing at all when no Core is listening for this session", async () => {
     // The file outlives the spawn that wrote it. Opened by hand, or by another
-    // tool, there is no receiver and no task — and a plugin that posted anyway
+    // tool, there is no receiver and no session — and a plugin that posted anyway
     // would be a workspace file making unexplained network calls.
     const hooks = await loadPlugin({
       AC_HOOK_URL: undefined,
       AC_HOOK_TOKEN: undefined,
-      AC_HOOK_TASK_ID: undefined,
+      AC_HOOK_SESSION_ID: undefined,
     });
     expect(hooks).toEqual({});
     expect(posts).toEqual([]);

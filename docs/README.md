@@ -72,26 +72,26 @@ routing around it.
 | [0007](adr/0007-scope-narrowing-and-rebrand.md) | Scope narrowing and rebrand |
 | [0008](adr/0008-cross-core-session-finish-notifications.md) | Cross-core session-finish notifications |
 | [0009](adr/0009-remove-managed-sandbox.md) | Remove the managed sandbox |
-| [0010](adr/0010-panel-becomes-a-self-hosted-web-service.md) | The Panel becomes a self-hosted web service |
-| [0011](adr/0011-operator-identity-and-panel-auth.md) | Operator identity and Panel auth |
+| [0010](adr/0010-panel-becomes-a-self-hosted-web-service.md) | The Panel becomes a self-hosted web service — amended by 0041 (D16, D20) |
+| [0011](adr/0011-operator-identity-and-panel-auth.md) | Operator identity and Panel auth — amended by 0041 (D14, D16; D15 builds on it) |
 | [0012](adr/0012-panel-link-browser-transport.md) | Panel link browser transport |
 | [0013](adr/0013-core-is-the-machine-harness-is-the-cli.md) | Core is the machine, Harness is the CLI |
-| [0016](adr/0016-the-0-1-0-shape.md) | The 0.1.0 shape: two images, one installer, three workflows |
+| [0016](adr/0016-the-0-1-0-shape.md) | The 0.1.0 shape: two images, one installer, three workflows — amended by 0041 (D6 `sudo`, D12 sudo and headline, D19, D20, D25) |
 | [0017](adr/0017-remembered-session-settings-are-core-facts.md) | Remembered session settings are Core facts |
 | [0018](adr/0018-docker-hub-is-the-only-registry.md) | Docker Hub is the only registry — GHCR is retired. **Amended:** npm is a second registry, for the published packages |
 | [0018](adr/0018-the-task-mutation-frame-carries-delete.md) | The task mutation frame carries delete |
 | [0019](adr/0019-archived-rows-cross-the-core-link-on-their-own-path.md) | Archived rows cross the core-link on their own path |
 | [0020](adr/0020-the-core-detects-its-own-harness-status.md) | The Core detects its own Harness status |
 | [0021](adr/0021-installing-a-harness-is-a-panel-gesture.md) | Installing a Harness is a Panel gesture |
-| [0022](adr/0022-a-core-owned-project-has-a-panel-side-presentation-row.md) | A Core-owned project has a Panel-side presentation row |
+| [0022](adr/0022-a-core-owned-project-has-a-panel-side-presentation-row.md) | A Core-owned project has a Panel-side presentation row — **superseded by 0041** |
 | [0023](adr/0023-release-trains-and-digest-promotion.md) | Release trains and digest promotion |
 | [0024](adr/0024-a-core-serves-many-clients-one-holds-a-sessions-write-lock.md) | A Core serves many clients, and one connection holds a Session's write lock |
 | [0025](adr/0025-the-protocol-ships-with-the-client.md) | The protocol ships with the client |
 | [0026](adr/0026-prompt-delivery-is-a-core-responsibility.md) | Prompt delivery is a Core responsibility |
-| [0027](adr/0027-the-filesystem-is-the-model.md) | The filesystem is the model |
-| [0028](adr/0028-file-bytes-cross-https-not-the-core-link.md) | File bytes cross HTTPS, not the core link |
+| [0027](adr/0027-the-filesystem-is-the-model.md) | The filesystem is the model — amended by 0041 (D1 superseded, D2 and D6 amended) |
+| [0028](adr/0028-file-bytes-cross-https-not-the-core-link.md) | File bytes cross HTTPS, not the core link — amended by 0041 (the parts that address a Project) |
 | [0029](adr/0029-a-folder-crosses-as-one-streamed-tar.md) | A folder crosses as one streamed tar |
-| [0030](adr/0030-the-panel-is-a-dumb-pipe-for-file-bytes.md) | The Panel is a dumb pipe for file bytes, and it is the end that holds the credentials |
+| [0030](adr/0030-the-panel-is-a-dumb-pipe-for-file-bytes.md) | The Panel is a dumb pipe for file bytes, and it is the end that holds the credentials — amended by 0041 (D5) |
 | [0031](adr/0031-the-product-ships-one-skill.md) | The product ships one skill, and installs it into the operator's home — **PROPOSED**, amends 0006 |
 | [0032](adr/0032-one-actana-cli.md) | There is one `actana`, and it is both the Core manager and the client — supersedes #265 §6 and 0031 D8's two-binaries premise |
 | [0033](adr/0033-turn-end-is-the-one-mandatory-harness-signal.md) | Turn-end reporting is the one mandatory harness signal; turn-start, auto-mode flags and resume ids may never gate a feature — D5 (#405) gives `send --wait` a default deadline and D6 (#396) ends a wait whose link dropped as unknown, both amending D4 |
@@ -101,6 +101,7 @@ routing around it.
 | [0038](adr/0038-a-core-has-several-addresses.md) | A Core has several addresses: multi-SAN certificates, and a per-pairing endpoint — **PROPOSED**, amends 0016 (D15, D18) and adds to 0034 |
 | [0039](adr/0039-pi-hooks-install-globally.md) | Pi's status hooks install globally, not in the workspace — so the turn-end signal loads before project trust — **PROPOSED**, depends on 0033 (D1) |
 | [0040](adr/0040-pi-project-trust-answered-by-extension.md) | Pi's project-trust prompt is answered by the global extension — no dialog and no `--approve` on Actana spawns — **PROPOSED**, depends on 0039 and 0026 |
+| [0041](adr/0041-the-0-5-0-core-model.md) | The 0.5.0 Core model: no Projects, one workspace, a Shared folder, Tasks on the Panel — **ACCEPTED**, supersedes 0022, 0016 (D6 `sudo` package, D12 headline and sudo) and 0027 D1; amends 0016 (D19, D20, D25), 0010, 0011, 0027 (D2, D6), 0028, 0030; D14–D21 put the Panel's state in Postgres only |
 
 **Two files claim 0018**, as the table shows. It is a pre-existing collision,
 not breakage, and **nothing is renumbered** — every citation in the CI files

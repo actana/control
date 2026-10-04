@@ -4,7 +4,7 @@ import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   HOOK_MISS_LOG_ENV,
-  HOOK_TASK_ID_ENV,
+  HOOK_SESSION_ID_ENV,
   HOOK_TOKEN_ENV,
   HOOK_URL_ENV,
   harnessSupportsHooks,
@@ -57,7 +57,7 @@ describe("installing a harness's lifecycle hooks (issue 84)", () => {
     expect(command).toContain("hookEvent=Stop");
     expect(command).toContain(`$${HOOK_URL_ENV}`);
     expect(command).toContain(`$${HOOK_TOKEN_ENV}`);
-    expect(command).toContain(`$${HOOK_TASK_ID_ENV}`);
+    expect(command).toContain(`$${HOOK_SESSION_ID_ENV}`);
   });
 
   it("carries no secret on disk — the token comes from the PTY's environment", () => {
@@ -462,7 +462,7 @@ describe("installing a harness's lifecycle hooks (issue 84)", () => {
     // and may be committed, so it names the env vars and holds no secret.
     expect(plugin).toContain(`process.env.${HOOK_URL_ENV}`);
     expect(plugin).toContain(`process.env.${HOOK_TOKEN_ENV}`);
-    expect(plugin).toContain(`process.env.${HOOK_TASK_ID_ENV}`);
+    expect(plugin).toContain(`process.env.${HOOK_SESSION_ID_ENV}`);
   });
 
   it("replaces its own plugin on the next spawn and leaves the operator's alone", () => {
@@ -507,7 +507,7 @@ describe("installing a harness's lifecycle hooks (issue 84)", () => {
       expect(extension).toContain("/api/hooks/pi");
       expect(extension).toContain(`process.env.${HOOK_URL_ENV}`);
       expect(extension).toContain(`process.env.${HOOK_TOKEN_ENV}`);
-      expect(extension).toContain(`process.env.${HOOK_TASK_ID_ENV}`);
+      expect(extension).toContain(`process.env.${HOOK_SESSION_ID_ENV}`);
       expect(extension).toContain('pi.on("agent_settled"');
       expect(extension).toContain('pi.on("agent_start"');
       expect(extension).toContain('pi.on("ui_prompt_start"');

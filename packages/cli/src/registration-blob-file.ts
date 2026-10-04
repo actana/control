@@ -4,7 +4,7 @@
 // `base64(JSON({endpoint, label, caCert, clientCert, clientKey, bearer}))`
 // in a 0600 file (CONTEXT.md "Registration blob"). The SDK takes that decoded,
 // as an object, and says so at length in
-// `packages/sdk/src/core-registration-blob.ts`: **where a blob is kept and how
+// the SDK's `core-registration-blob.ts` (published `@actana/sdk`): **where a blob is kept and how
 // it is encoded at rest is the CLI's business** (#129 D9). This file is that
 // business, and it is deliberately the only place in this package that turns
 // bytes into credentials.
@@ -26,7 +26,7 @@
 //
 // [adr]: ../../../docs/adr/0025-the-protocol-ships-with-the-client.md
 
-import type { CoreRegistrationBlob } from "@actana/sdk/core-registration-blob.ts";
+import type { CoreRegistrationBlob } from "@actana/sdk/pairing";
 
 /** A decode that worked, or the one line to print at the operator. */
 export type BlobDecodeResult =

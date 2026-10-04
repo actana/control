@@ -5,7 +5,7 @@
 // off the branch name, `RELEASE_VERSION` came off the tag name, the tarball's
 // filename and archive root and `core-manifest.json` all came off
 // `RELEASE_VERSION` — so all of them agreed with each other by construction and
-// with the six manifests by coincidence. Every one of those comparisons passes
+// with the five manifests by coincidence. Every one of those comparisons passes
 // on a repository whose versions do not agree.
 //
 // So the assertions here are of two kinds and neither is a unit test of a
@@ -213,8 +213,8 @@ describe("the comparison reads content, not a name (ADR 0037 D3)", () => {
     expect(problems.map((p) => p.file)).toEqual(["packages/cli/package.json", "packages/core/package.json"]);
   });
 
-  // A bad string is one problem with the string. Reporting it as six drifting
-  // manifests would send the reader to the wrong six files.
+  // A bad string is one problem with the string. Reporting it as five drifting
+  // manifests would send the reader to the wrong five files.
   it("does not dress a bad version string up as manifest drift", () => {
     const versions = readManifestVersions({ root: repoRoot });
     const { problems } = checkAgreement({ expected: "0.4.1-beta.1", versions });
@@ -309,7 +309,7 @@ describe("every writer reads the tree before it writes (ADR 0037 D3)", () => {
     expect(code(jobBlock(source, "train-rules"))).toContain("github.event_name == 'pull_request'");
   });
 
-  // The gap, stated as the issue states it: a train whose six manifests all say
+  // The gap, stated as the issue states it: a train whose five manifests all say
   // 9.9.9 published actana/core:beta-0.4.1 with a green CI. The dependency is
   // what makes that impossible rather than merely checked somewhere.
   it("gates the beta-x.y.z image tag on that assertion", () => {
@@ -331,7 +331,7 @@ describe("every writer reads the tree before it writes (ADR 0037 D3)", () => {
     expect(resolve).toContain("--git-ref");
     // Before the tarballs and before the images: every other job needs
     // `resolve`, so being in it is being first.
-    for (const job of ["tarball", "tarball-macos", "panel", "core", "npm"]) {
+    for (const job of ["tarball", "tarball-macos", "panel", "core"]) {
       expect(code(jobBlock(source, job)), `${job} does not wait on resolve`).toMatch(/needs: \[?resolve/);
     }
   });
@@ -465,13 +465,13 @@ describe("the checker refuses from the command line, as a workflow runs it", () 
   });
 
   // A ref this clone cannot read is one problem with the ref. Six annotations
-  // about six manifests point the reader at the wrong six files, immediately
+  // about five manifests point the reader at the wrong five files, immediately
   // after an accurate one-line diagnosis says the ref is the problem.
   it("reports an unreadable ref once, not once per manifest", () => {
     const result = run(["--expected", "0.4.1", "--git-ref", "deadbeef".repeat(5)]);
     expect(result.status).toBe(1);
     const annotations = [...result.stdout.matchAll(/^::error /gm)];
-    expect(annotations, `six manifests annotated for one bad ref\n${result.stdout}`).toHaveLength(1);
+    expect(annotations, `five manifests annotated for one bad ref\n${result.stdout}`).toHaveLength(1);
     expect(result.stdout).toContain("::error title=The git ref could not be read::");
     expect(result.stdout).not.toContain("A manifest in the version set is missing");
   });
@@ -482,7 +482,7 @@ describe("the checker refuses from the command line, as a workflow runs it", () 
   it("still names every drifting manifest when the ref reads", () => {
     const result = run(["--expected", "v9.9.9", "--git-ref", "HEAD"]);
     expect(result.status).toBe(1);
-    // The six manifests and the installer's stamp: seven surfaces in this tree
+    // The five manifests and the installer's stamp: six surfaces in this tree
     // carry the line, and every one that disagrees is named (ADR 0036 D4).
     expect([...result.stdout.matchAll(/^::error /gm)]).toHaveLength(MANIFESTS.length + 1);
     expect(result.stdout).toContain(INSTALLER_STAMP_FILE);

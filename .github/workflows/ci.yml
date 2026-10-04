@@ -33,6 +33,24 @@ on:
       # `landing.yml` keeps its own `push: main` trigger, which is what still
       # deploys the front door.
       - "beta/**"
+      # A release's integration branch, `feat/x.y.z` (#584). Every ticket pull
+      # request lands there, and only the final `feat/x.y.z → beta/x.y.z` pull
+      # request goes to the train — so without this, a merge into it is never
+      # verified on the merged result, and two pull requests that pass alone can
+      # break together unseen until that final one.
+      #
+      # These pushes run the pull-request verification and **publish nothing**:
+      # every publishing job below is keyed to `refs/heads/beta/`, and the
+      # image jobs are handed `push=false` by `pr-image-mode` on this event.
+      #
+      # Filters are globs, not regexes. `feat/*` would also match a ticket
+      # branch such as `feat/553-adopt-actana-client`, which must start no push
+      # run. Here `+` means "one or more of the preceding character" and `.` is
+      # a literal dot, so this matches `feat/` and three dot-separated digit
+      # runs and nothing else: not `feat/553-adopt-actana-client`, not
+      # `feat/0.5`, not `feat/0.5.0-rc1`. `scripts/__tests__/integration-branch-push.test.mjs`
+      # holds the table of names.
+      - "feat/[0-9]+.[0-9]+.[0-9]+"
   # Republishing a train's images without a new commit, for when a registry
   # was down or a run was cancelled. On a dispatch the gate jobs run too —
   # that is the cheap half, and a dispatch is rare.
@@ -45,6 +63,11 @@ concurrency:
   # green. `release.yml` and `housekeeping.yml` take `false` for exactly this
   # reason; a pull request keeps cancelling, because a superseded push has
   # nothing to publish and nobody is waiting on its check.
+  #
+  # A push to `feat/x.y.z` takes the second arm (#584). The group carries the
+  # full ref, so `feat/0.5.0` and `feat/0.6.0` cancel only their own superseded
+  # runs, never each other's and never a train's, and cancelling is safe
+  # because those runs publish nothing.
   group: ${{ startsWith(github.ref, 'refs/heads/beta/') && format('ci-train-{0}', github.ref) || format('ci-{0}', github.ref) }}
   cancel-in-progress: ${{ !startsWith(github.ref, 'refs/heads/beta/') }}
 
@@ -83,7 +106,10 @@ jobs:
   # `--cwd` points commitlint back at the checkout for its git queries.
   conventions:
     name: Conventions
-    if: github.event_name == 'pull_request'
+    # A pull request, or a push to an integration branch (#584). The `push`
+    # trigger only ever starts on `beta/**` and `feat/x.y.z`, and the `feat/`
+    # test keeps a train push out of here as it is today.
+    if: github.event_name == 'pull_request' || (github.event_name == 'push' && startsWith(github.ref, 'refs/heads/feat/'))
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -103,7 +129,11 @@ jobs:
           cp commitlint.config.mjs "$RUNNER_TEMP/commitlint/"
           cd "$RUNNER_TEMP/commitlint"
           npm init -y >/dev/null
-          npm install --silent @commitlint/cli @commitlint/config-conventional
+          # The versions the repo pins in package.json, so CI and a developer's
+          # hook run the same commitlint.
+          cli="$(node -p "require('$GITHUB_WORKSPACE/package.json').devDependencies['@commitlint/cli']")"
+          conv="$(node -p "require('$GITHUB_WORKSPACE/package.json').devDependencies['@commitlint/config-conventional']")"
+          npm install --silent "@commitlint/cli@$cli" "@commitlint/config-conventional@$conv"
 
       # Held in a shell variable and piped, never interpolated into the script
       # — a PR title is attacker-controlled text.
@@ -116,77 +146,51 @@ jobs:
       # a subject describing a train, not a change. Commit linting below is
       # deliberately kept — the train's commits *are* what lands on `main`.
       - name: Lint the PR title
-        if: ${{ !(github.base_ref == 'main' && startsWith(github.head_ref, 'beta/')) }}
+        if: ${{ github.event_name == 'pull_request' && !(github.base_ref == 'main' && startsWith(github.head_ref, 'beta/')) }}
         env:
+          COMMITLINT_BIN: ${{ runner.temp }}/commitlint/node_modules/.bin/commitlint
+          COMMITLINT_CONFIG: ${{ runner.temp }}/commitlint/commitlint.config.mjs
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           set -euo pipefail
           title="$(gh api "repos/$REPO/pulls/$PR_NUMBER" --jq .title)"
-          printf '%s' "$title" | "$RUNNER_TEMP/commitlint/node_modules/.bin/commitlint" \
-            --config "$RUNNER_TEMP/commitlint/commitlint.config.mjs" \
-            --cwd "$GITHUB_WORKSPACE" --verbose
+          printf '%s' "$title" | sh scripts/check-conventions.sh message -
 
       - name: Lint commits in PR
         env:
+          COMMITLINT_BIN: ${{ runner.temp }}/commitlint/node_modules/.bin/commitlint
+          COMMITLINT_CONFIG: ${{ runner.temp }}/commitlint/commitlint.config.mjs
+          EVENT_NAME: ${{ github.event_name }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BEFORE_SHA: ${{ github.event.before }}
+          AFTER_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
-          "$RUNNER_TEMP/commitlint/node_modules/.bin/commitlint" \
-            --config "$RUNNER_TEMP/commitlint/commitlint.config.mjs" \
-            --cwd "$GITHUB_WORKSPACE" \
-            --from "$BASE_SHA" --to "$HEAD_SHA" --verbose
+          lint=(sh scripts/check-conventions.sh)
+          if [[ "$EVENT_NAME" == "pull_request" ]]; then
+            "${lint[@]}" range "$BASE_SHA" "$HEAD_SHA"
+          # A push to an integration branch (#584): the commits it brought. A
+          # new branch has an all-zero `before`, and a forced one can name a
+          # commit that is no longer here; both have no range to lint, so the
+          # tip alone is read rather than the branch's whole history.
+          elif [[ "$BEFORE_SHA" =~ ^0+$ ]] || ! git cat-file -e "${BEFORE_SHA}^{commit}" 2>/dev/null; then
+            "${lint[@]}" last
+          else
+            "${lint[@]}" range "$BEFORE_SHA" "$AFTER_SHA"
+          fi
 
       - name: Check branch name
         env:
-          BRANCH: ${{ github.head_ref }}
+          # `head_ref` is empty on a push, where the branch is `ref_name`.
+          BRANCH: ${{ github.head_ref || github.ref_name }}
         run: |
           set -euo pipefail
-          # Allowed: <type>/<kebab-case-description>
-          # Examples: feat/proj-123-oauth-device-flow, fix/header-crash, release/v1.4.0
-          PATTERN='^(feat|feature|fix|bugfix|hotfix|release|chore|docs|refactor|perf|test|ci|revert)\/[a-z0-9]+([._-][a-z0-9]+)*$'
-
-          # Bots name their own branches and cannot be asked to stop. Dependabot
-          # opens `dependabot/npm_and_yarn/<dep>-<version>`; without this the
-          # convention check fails on every dependency PR forever, which trains
-          # everyone to ignore a red check. Their *commit messages* are still
-          # linted by the step above — that is the part that reaches main.
-          if echo "$BRANCH" | grep -qE '^(dependabot|renovate)/'; then
-            echo "✅ Branch name '$BRANCH' is bot-generated — convention not enforced."
-            exit 0
-          fi
-
-          # The train (ADR 0023 D1, D3, D46). A promotion pull request's head
-          # *is* `beta/x.y.z`, which is a branch class the convention above does
-          # not know about — without this every promotion fails a required check
-          # and the train can never reach `main`. The shape is asserted rather
-          # than waved through: `beta/` plus a bare `x.y.z`, optionally followed
-          # by a `-fN` sub-beta suffix (D46) — and nothing else.
-          #
-          # `-fN` and not `.N`: a fourth dot is not semver, and `0.4.5.1` would
-          # be refused by npm, by the version-agreement checker and by the
-          # publish rehearsal alike. `0.4.5-f1` is a legal prerelease of the
-          # same line, which is the whole reason the suffix has that shape.
-          # This widening is exactly `-f` plus digits — no other prerelease
-          # identifier is a train name.
-          if echo "$BRANCH" | grep -qE '^beta/[0-9]+\.[0-9]+\.[0-9]+(-f[0-9]+)?$'; then
-            echo "✅ Branch name '$BRANCH' is a release train (ADR 0023 D1, D46)."
-            exit 0
-          fi
-
-          if echo "$BRANCH" | grep -qE "$PATTERN"; then
-            echo "✅ Branch name '$BRANCH' is valid."
-          else
-            echo "❌ Branch name '$BRANCH' violates the convention."
-            echo ""
-            echo "Expected: <type>/<kebab-case-description>"
-            echo "Types: feat|feature|fix|bugfix|hotfix|release|chore|docs|refactor|perf|test|ci|revert"
-            echo "Examples: feat/proj-123-oauth-device-flow, fix/header-crash, release/v1.4.0"
-            echo "Rules: lowercase only; words separated by hyphens; no consecutive/leading/trailing separators."
-            exit 1
-          fi
+          # The rule — types, the bot and train exemptions — is in the script the
+          # local pre-push hook runs too (#614).
+          sh scripts/check-conventions.sh branch "$BRANCH"
 
   # The branch model, enforced (ADR 0023 D1, D3, D19, D21, D26, D31).
   #
@@ -228,14 +232,13 @@ jobs:
 
           # D3, as amended by #152 and #157. The cut writes one version into
           # every manifest; this is what makes drift afterwards impossible
-          # rather than discouraged. Hand-editing six files is how five of them
+          # rather than discouraged. Hand-editing five files is how four of them
           # end up disagreeing, and the one that disagrees is found at
           # promotion, by a person.
           #
-          # `packages/sdk` is the fifth (#152, ADR 0025) — it was four until the
-          # core-link frames moved out of `packages/shared`. `packages/cli` is
-          # the sixth (#157): the `actana` command's client half, and the second
-          # package #129 publishes.
+          # `packages/cli` is the Core's built-in `actana` (private). There
+          # is no `packages/sdk` any more: the SDK is the published
+          # `@actana/sdk` (#580).
           #
           # The list below and the one a train is cut from are the same set by
           # construction, and the assertion under it is what keeps them that
@@ -252,7 +255,7 @@ jobs:
           # with a manifest missed.
           MANIFESTS=(package.json packages/cli/package.json \
                      packages/core/package.json packages/panel/package.json \
-                     packages/sdk/package.json packages/shared/package.json)
+                     packages/shared/package.json)
 
           # The failure mode this guards is not drift — it is a check that
           # quietly stops covering the repository. A manifest deleted or renamed
@@ -268,7 +271,7 @@ jobs:
             for file in "${MANIFESTS[@]}"; do
               if [[ ! -f "$file" ]]; then
                 intact=0
-                fail "A manifest in the version set is missing" "$file is in this check's list and does not exist. Either the file moved and this list was not updated, or the package was deleted — the version assertion below would otherwise cover a smaller set than ADR 0023 D3 describes (amended by #152 and #157)."
+                fail "A manifest in the version set is missing" "$file is in this check's list and does not exist. Either the file moved and this list was not updated, or the package was deleted — the version assertion below would otherwise cover a smaller set than ADR 0023 D3 describes (amended by #152, #157 and #580)."
               fi
             done
             for file in packages/*/package.json; do
@@ -278,7 +281,7 @@ jobs:
               done
               if [[ "$found" != "1" ]]; then
                 intact=0
-                fail "A workspace package is outside the version set" "$file is a workspace package and is not in this check's list, so nothing asserts it carries the train's version. Add it here and to the \`files=()\` array in docs/ci-cd.md § \"Cutting a train\", and amend ADR 0023 D3 — that is what #152 did for \`packages/sdk\` and #157 for \`packages/cli\`."
+                fail "A workspace package is outside the version set" "$file is a workspace package and is not in this check's list, so nothing asserts it carries the train's version. Add it here and to the \`files=()\` array in docs/ci-cd.md § \"Cutting a train\", and amend ADR 0023 D3 — that is what #152 did for the fifth package and #157 for \`packages/cli\`."
               fi
             done
             # An `if`, not `[[ … ]] && echo`: the `&&` form makes the function
@@ -408,7 +411,7 @@ jobs:
               version="${BASE#beta/}"
               # D46. A sub-beta is a train, so a pull request may target it.
               # `line` is the version the *tree* carries: the suffix names a
-              # variation of the train and never a version, so the six
+              # variation of the train and never a version, so the five
               # manifests and `install.sh`'s stamp still say `x.y.z` on a
               # `-fN` branch exactly as they do on the plain one. That is what
               # makes a merge back into the plain train a diff of the fixes
@@ -594,6 +597,27 @@ jobs:
       # packages in an annotation and in the job summary, so a reviewer sees
       # which package failed without opening this log (#257).
       - run: pnpm test
+      # The real `asCore` wrapper (#559). It needs root to set up its caller: a
+      # non-root uid that holds only ambient CAP_SETUID and CAP_SETGID, which is
+      # what the daemon is in the container (PR 4). The test becomes that daemon
+      # with `setpriv`, then reads the child's own /proc/self/status. Under the
+      # plain `pnpm test` above it is skipped, because the runner user is not
+      # root. This is CI, not a Core: hosted runners have passwordless sudo, and
+      # nothing here runs on an operator's machine. `vitest` is called directly,
+      # not through pnpm, so root does not try to manage a pnpm version of its
+      # own. ACTANA_REQUIRE_ROOT_TESTS turns "not root" into a failure instead of
+      # a skip, so this step cannot pass without having run the wrapper.
+      - name: Real asCore wrapper (root, from a daemon holding only SETUID and SETGID)
+        working-directory: packages/shared
+        run: sudo env "PATH=$PATH" CI=1 ACTANA_REQUIRE_ROOT_TESTS=1 node_modules/.bin/vitest run src/__tests__/core-home.test.ts
+      # The Shared folder's key is unreadable by `core` (#562, ADR 0041 D33): the daemon
+      # (uid 1001) stores the key with the real sync code and `core` (uid 1000) is refused it
+      # by the kernel. Same arrangement as the step above: it needs root to be two users, is
+      # skipped under the plain `pnpm test`, and ACTANA_REQUIRE_ROOT_TESTS turns "not root"
+      # into a failure so this step cannot pass without having run.
+      - name: Shared-folder key is unreadable by core (root, two real users)
+        working-directory: packages/core
+        run: sudo env "PATH=$PATH" CI=1 ACTANA_REQUIRE_ROOT_TESTS=1 node_modules/.bin/vitest run src/__tests__/shared-key-store-uids.test.ts --reporter=verbose
       # The second opinion on the temp leak, at job scope rather than run
       # scope: the runner sandboxes its own `TMPDIR` and removes it, so
       # anything matching `mc-*`/`actana-*` still standing here came from a
@@ -740,6 +764,236 @@ jobs:
       # always runs against freshly built code rather than a stale dist.
       - name: E2E — the Panel service, driven as a browser
         run: pnpm panel:e2e
+
+  # The Panel's database tests, against a real Postgres (#567, ADR 0041 D19).
+  # `Unit Tests` runs the same files on PGlite, Postgres compiled to
+  # WebAssembly in the test's own process, which has one connection and one
+  # backend: it cannot show a pool, a second session or the migration's advisory
+  # lock behaving. This job points `AC_TEST_DATABASE_URL` at a server and the
+  # tests that skip without it (the lock, `createTestDb`) run, each on a fresh
+  # database that `createTestDb` drops again.
+  #
+  # The image is the one `deploy/docker-compose.yml` pins, by the same digest;
+  # `scripts/__tests__/workflows.test.mjs` fails if the two drift. Nothing is
+  # built, one package runs, and `--maxWorkers=1` keeps it to one process.
+  #
+  # NOT a required check by itself: a new job is a new context that no ruleset
+  # names, so it reports beside a mergeable pull request until the owner adds
+  # `Panel DB tests — real Postgres` to `docs/rulesets/*.json` and the live
+  # rulesets. The step after the tests fails the job if any of them was skipped,
+  # so a green run cannot mean "the real-Postgres tests were not selected".
+  panel-postgres:
+    name: Panel DB tests — real Postgres
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:18.6-bookworm@sha256:3725f4e2499eef5134592b3b4ab79a543ed7f8e533b05b5b637af926630f6650
+        env:
+          POSTGRES_USER: panel
+          POSTGRES_DB: panel
+          # A throwaway server that lives for this job and listens on the
+          # runner's loopback only.
+          POSTGRES_PASSWORD: ci-only-not-a-secret
+        ports:
+          - 127.0.0.1:5432:5432
+        options: >-
+          --health-cmd "pg_isready -h 127.0.0.1 -U panel -d panel"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      AC_TEST_DATABASE_URL: postgres://panel:ci-only-not-a-secret@127.0.0.1:5432/postgres
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 24.15.0
+          package-manager-cache: false
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          version: 11.1.2
+          cache: true
+      - run: pnpm install --frozen-lockfile
+      - name: Panel DB tests against Postgres
+        working-directory: packages/panel
+        run: >-
+          pnpm exec vitest run --maxWorkers=1
+          --reporter=default --reporter=json --outputFile=${{ runner.temp }}/panel-pg.json
+          src/db/__tests__/pg-migrate.test.ts
+          src/db/__tests__/pg-boot.test.ts
+          src/db/__tests__/pg.test.ts
+          src/db/__tests__/test-db.test.ts
+          src/server/__tests__/task-claim.test.ts
+      # Most of these files pin `env: {}` and stay on PGlite on purpose, so the
+      # total says little. What this job is for are the tests that name a real
+      # server ("real server" in their title); at least two must have passed.
+      - name: The real-server tests ran, and none was skipped
+        run: |
+          node -e '
+            const r = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+            const all = r.testResults.flatMap((f) => f.assertionResults);
+            const real = all.filter((t) => /real server/.test(t.fullName) && t.status === "passed");
+            console.log(`${r.numPassedTests} passed, ${r.numFailedTests} failed, ${r.numPendingTests} skipped of ${r.numTotalTests}; ${real.length} ran against the real server:`);
+            for (const t of real) console.log(`  - ${t.fullName}`);
+            if (r.numFailedTests > 0 || r.numPendingTests > 0 || real.length < 2) process.exit(1);
+          ' "$RUNNER_TEMP/panel-pg.json"
+
+  # The Shared folder's sync against a real SeaweedFS with real STS keys (#562, ADR 0041
+  # D33): machine A cannot list, read or write machine B's prefix, a key refresh during an
+  # upload does not break it, and unpair keeps the folder's contents. The image and its
+  # digest are the ones in deploy/docker-compose.yml, and the service is deploy/seaweedfs itself (its entrypoint renders the
+  # role and creates the bucket, #566) with throwaway values. The keys are issued
+  # by the controller's own issuer (`@actana/sdk/shared-key`), which is what a Panel will run.
+  #
+  # A `services:` container cannot take a command, an entrypoint or the checked-out config, and
+  # SeaweedFS needs all three, so the same pinned image is started in a step. SEAWEEDFS_REQUIRED
+  # makes the test fail rather than skip when the variables are missing, and the last step
+  # fails the job if any test of the file was skipped, so a green run cannot mean "the real
+  # server was not used".
+  #
+  # NOT a required check by itself: a new job is a new context that no ruleset names, so it
+  # reports beside a mergeable pull request until the owner adds `Core Shared folder —
+  # real SeaweedFS` to `docs/rulesets/*.json` and the live rulesets.
+  core-shared-seaweedfs:
+    name: Core Shared folder — real SeaweedFS
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      SEAWEEDFS_IMAGE: chrislusf/seaweedfs:4.47@sha256:ce9e796f1fe6f06968f4c04bdaf8f678dad9c8acdfef3d244133d71bfa6bf882
+      SEAWEEDFS_ENDPOINT: http://127.0.0.1:8333
+      SEAWEEDFS_JWKS_PORT: "18999"
+      SEAWEEDFS_OIDC_ISSUER: http://127.0.0.1:18999
+      SEAWEEDFS_OIDC_AUDIENCE: actana-shared
+      SEAWEEDFS_BUCKET: actana-shared
+      SEAWEEDFS_PREFIX: cores
+      SEAWEEDFS_REQUIRED: "1"
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 24.15.0
+          package-manager-cache: false
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          version: 11.1.2
+          cache: true
+      - run: pnpm install --frozen-lockfile
+      # The deployed service itself, not a look-alike: deploy/seaweedfs is mounted where the compose file mounts it and its
+      # entrypoint renders the role and creates the bucket (#566). None of the SeaweedFS tests below creates the bucket (each
+      # asserts it exists with a HEAD), so a service that leaves it missing fails here and in every one of them.
+      - name: Start SeaweedFS (the deploy/seaweedfs service itself, with its role and its bucket)
+        run: |
+          set -euo pipefail
+          sts_key="$(openssl rand -base64 32)"
+          admin_key="admin$(openssl rand -hex 8)"
+          admin_secret="$(openssl rand -hex 24)"
+          echo "::add-mask::$sts_key"
+          echo "::add-mask::$admin_secret"
+          echo "SEAWEEDFS_ADMIN_ACCESS_KEY=$admin_key" >>"$GITHUB_ENV"
+          echo "SEAWEEDFS_ADMIN_SECRET_KEY=$admin_secret" >>"$GITHUB_ENV"
+          # The healthcheck is the compose service's own (deploy/docker-compose.yml), at a shorter interval.
+          docker run -d --name seaweedfs --init --network host \
+            --health-cmd 'curl -fsS http://localhost:9333/cluster/healthz >/dev/null && /seaweedfs-config/create-bucket.sh --check' \
+            --health-interval 5s --health-timeout 5s --health-retries 5 --health-start-period 20s \
+            -e SEAWEEDFS_S3_ADMIN_ACCESS_KEY="$admin_key" -e SEAWEEDFS_S3_ADMIN_SECRET_KEY="$admin_secret" \
+            -e SEAWEEDFS_STS_SIGNING_KEY="$sts_key" \
+            -e SEAWEEDFS_OIDC_ISSUER="$SEAWEEDFS_OIDC_ISSUER" \
+            -e SEAWEEDFS_OIDC_JWKS_URL="$SEAWEEDFS_OIDC_ISSUER/.well-known/jwks.json" \
+            -e SEAWEEDFS_OIDC_AUDIENCE="$SEAWEEDFS_OIDC_AUDIENCE" \
+            -e SEAWEEDFS_BUCKET="$SEAWEEDFS_BUCKET" -e SEAWEEDFS_PREFIX="$SEAWEEDFS_PREFIX" \
+            -v "$PWD/deploy/seaweedfs:/seaweedfs-config:ro" \
+            --entrypoint /seaweedfs-config/entrypoint.sh "$SEAWEEDFS_IMAGE" \
+            server -dir=/data -ip=127.0.0.1 -ip.bind=127.0.0.1 -filer -s3 -s3.port=8333 -s3.ip.bind=0.0.0.0 \
+            -s3.port.iceberg=0 -s3.port.lance=0 -s3.iam.config=/run/seaweedfs/iam.json -s3.iam.readOnly=true
+          # Up means Docker reports the container healthy: the master answers and the bucket exists, checked by the same
+          # script and within the same timeout as the compose service, so a check that hangs never passes here.
+          for _ in $(seq 1 60); do
+            state="$(docker inspect --format '{{.State.Health.Status}}' seaweedfs)"
+            if [ "$state" = healthy ]; then
+              echo "SeaweedFS is healthy and created $SEAWEEDFS_BUCKET"; exit 0
+            fi
+            sleep 2
+          done
+          docker inspect --format '{{json .State.Health}}' seaweedfs || true
+          docker logs seaweedfs || true
+          echo "SeaweedFS did not become healthy with its bucket" >&2
+          exit 1
+      # SeaweedFS may keep the JWKS it first read, so every test file signs with this one key.
+      - name: Make the controller's signing key
+        run: |
+          set -euo pipefail
+          openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "$RUNNER_TEMP/controller-signing.pem"
+          echo "SEAWEEDFS_SIGNING_KEY_FILE=$RUNNER_TEMP/controller-signing.pem" >>"$GITHUB_ENV"
+      # The Panel's side of the same Shared folder (#564), against the same server and the same signing key: a key
+      # issued for one Core is refused on another's prefix, and deleting a Core empties its prefix and not one object of
+      # any other (read back with the bucket's admin identity). The master key goes in sealed, as the Panel stores it.
+      - name: Run the Panel's Shared folders against SeaweedFS
+        working-directory: packages/panel
+        run: >-
+          pnpm exec vitest run --maxWorkers=1 --reporter=verbose
+          --reporter=json --outputFile=${{ runner.temp }}/panel-shared-sw.json
+          src/server/__tests__/shared-folders-seaweedfs.test.ts
+      - name: Every Panel test ran against the real server, none was skipped
+        run: |
+          node -e '
+            const r = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+            const all = r.testResults.flatMap((f) => f.assertionResults);
+            console.log(`${r.numPassedTests} passed, ${r.numFailedTests} failed, ${r.numPendingTests} skipped of ${r.numTotalTests}`);
+            if (r.numFailedTests > 0 || r.numPendingTests > 0 || all.length < 2) process.exit(1);
+          ' "$RUNNER_TEMP/panel-shared-sw.json"
+      # The Files tab's routes (#565) against the same server: a Core's folder through the router with real keys, the
+      # 5-minute signed URL downloaded with nothing else, no Core reaching another's prefix, and a Task's attachments
+      # (#568) written under tasks/<id>/attachments/ before it is assigned.
+      - name: Run the Panel's Files routes against SeaweedFS
+        working-directory: packages/panel
+        run: >-
+          pnpm exec vitest run --maxWorkers=1 --reporter=verbose
+          --reporter=json --outputFile=${{ runner.temp }}/panel-files-sw.json
+          src/server/__tests__/shared-files-seaweedfs.test.ts
+      - name: Every Files test ran against the real server, none was skipped
+        run: |
+          node -e '
+            const r = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+            const all = r.testResults.flatMap((f) => f.assertionResults);
+            console.log(`${r.numPassedTests} passed, ${r.numFailedTests} failed, ${r.numPendingTests} skipped of ${r.numTotalTests}`);
+            if (r.numFailedTests > 0 || r.numPendingTests > 0 || all.length < 4) process.exit(1);
+          ' "$RUNNER_TEMP/panel-files-sw.json"
+      # The Task result watcher (#570) against the same server, with the Core unreachable: a result file written with the
+      # Core's own key moves the Task, and the Panel's fail.md lands in that Core's folder in the bucket.
+      - name: Run the Panel's Task result watcher against SeaweedFS
+        working-directory: packages/panel
+        run: >-
+          pnpm exec vitest run --maxWorkers=1 --reporter=verbose
+          --reporter=json --outputFile=${{ runner.temp }}/panel-task-watch-sw.json
+          src/server/__tests__/task-watch-seaweedfs.test.ts
+      - name: Every Task watcher test ran against the real server, none was skipped
+        run: |
+          node -e '
+            const r = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+            const all = r.testResults.flatMap((f) => f.assertionResults);
+            console.log(`${r.numPassedTests} passed, ${r.numFailedTests} failed, ${r.numPendingTests} skipped of ${r.numTotalTests}`);
+            if (r.numFailedTests > 0 || r.numPendingTests > 0 || all.length < 2) process.exit(1);
+          ' "$RUNNER_TEMP/panel-task-watch-sw.json"
+      # The Core's own sync runs last on purpose: SeaweedFS may keep the JWKS it first read, so the first read must be
+      # the Panel's /.well-known/jwks.json (#566) in the Panel tests above, not the copy this package serves by hand.
+      - name: Run the Shared-folder sync against SeaweedFS
+        working-directory: packages/core
+        run: >-
+          pnpm exec vitest run --maxWorkers=1 --reporter=verbose
+          --reporter=json --outputFile=${{ runner.temp }}/shared-sync-sw.json
+          src/__tests__/shared-sync-seaweedfs.test.ts
+      - name: Every test ran against the real server, none was skipped
+        run: |
+          node -e '
+            const r = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+            const all = r.testResults.flatMap((f) => f.assertionResults);
+            console.log(`${r.numPassedTests} passed, ${r.numFailedTests} failed, ${r.numPendingTests} skipped of ${r.numTotalTests}`);
+            if (r.numFailedTests > 0 || r.numPendingTests > 0 || all.length < 3) process.exit(1);
+          ' "$RUNNER_TEMP/shared-sync-sw.json"
+      - name: SeaweedFS log
+        if: failure()
+        run: docker logs seaweedfs || true
 
   # The release-tarball seam (core-installer issue 01): the artifact
   # operators actually download must extract and boot on its own — bundled Node,
@@ -941,7 +1195,11 @@ jobs:
   # leave Pending costs the repository.
   pr-image-mode:
     name: Resolve PR image mode
-    if: github.event_name == 'pull_request'
+    # Also a push to an integration branch (#584), which has no pull request to
+    # read a draft flag from. It is resolved here rather than skipped so the
+    # image jobs below get an explicit `build` + `push=false`, and never the
+    # vacuous `pass` a draft gets.
+    if: github.event_name == 'pull_request' || (github.event_name == 'push' && startsWith(github.ref, 'refs/heads/feat/'))
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -969,6 +1227,8 @@ jobs:
           HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           DRAFT: ${{ github.event.pull_request.draft }}
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
           MERGE_SHA: ${{ github.sha }}
           CHANGED_FILES: ${{ github.event.pull_request.changed_files }}
           RESOLVED: ${{ runner.temp }}/pr-image-mode.env
@@ -992,14 +1252,20 @@ jobs:
           # The PR payload's own `changed_files` is the count that does not
           # truncate, so a short list is treated as no list at all.
           docs_only=false
-          files="$(gh api --paginate "repos/$REPO/pulls/$PR/files" --jq '.[].filename' || true)"
-          listed="$(grep -c . <<<"$files" || true)"
-          if [[ -n "$files" && "$listed" -lt "${CHANGED_FILES:-0}" ]]; then
-            echo "::notice title=File list truncated::The API returned $listed of $CHANGED_FILES changed files, so the documentation-only test cannot be trusted and this build runs. GitHub truncates this endpoint past 300 files."
-            files=""
-          fi
-          if [[ -n "$files" ]] && ! grep -qvE '(\.md$|^docs/|^\.scratch/|^designs/|^landing/)' <<<"$files"; then
-            docs_only=true
+          files=""
+          # A push has no pull request, so there is no file list to ask for:
+          # `pulls//files` would fail and be swallowed, and the answer below
+          # would then rest on a failed call instead of on a decision.
+          if [[ "$EVENT_NAME" != "push" ]]; then
+            files="$(gh api --paginate "repos/$REPO/pulls/$PR/files" --jq '.[].filename' || true)"
+            listed="$(grep -c . <<<"$files" || true)"
+            if [[ -n "$files" && "$listed" -lt "${CHANGED_FILES:-0}" ]]; then
+              echo "::notice title=File list truncated::The API returned $listed of $CHANGED_FILES changed files, so the documentation-only test cannot be trusted and this build runs. GitHub truncates this endpoint past 300 files."
+              files=""
+            fi
+            if [[ -n "$files" ]] && ! grep -qvE '(\.md$|^docs/|^\.scratch/|^designs/|^landing/)' <<<"$files"; then
+              docs_only=true
+            fi
           fi
 
           mode=build
@@ -1016,7 +1282,23 @@ jobs:
           # builds pushed nothing; corrupting from the moment they do.
           stage="pr-$PR"
 
-          if [[ "$DRAFT" == "true" ]]; then
+          if [[ "$EVENT_NAME" == "push" ]]; then
+            # A push to an integration branch `feat/x.y.z` (#584), and the first
+            # branch on purpose: a push carries no `pull_request` payload, so
+            # `DRAFT` is empty and every test below would be asking a pull
+            # request questions of an event that has none. Left to fall
+            # through, this would build only by accident (an empty `HEAD_REPO`
+            # happens to differ from `REPO`). It is decided here instead: the
+            # real build and smoke, the merged commit, and nothing published.
+            # Never `pass` — that is the vacuous ten-second skip a draft gets,
+            # and this push exists to be the run that is not.
+            #
+            # `integration-feat-x.y.z`, not `pr-<n>`: per-arch tags are keyed on the stage
+            # (D12), so it names the branch rather than a pull request.
+            mode=build
+            stage="integration-${REF_NAME//\//-}"
+            why="a push to the integration branch $REF_NAME: full verification, nothing published"
+          elif [[ "$DRAFT" == "true" ]]; then
             mode=pass
             why="the pull request is a draft"
           elif [[ "$BASE" == "main" && "$HEAD" == beta/* ]]; then
@@ -1091,6 +1373,8 @@ jobs:
           RESOLVED: ${{ runner.temp }}/pr-image-mode.env
           PR: ${{ github.event.pull_request.number }}
           MERGE_SHA: ${{ github.sha }}
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
         run: |
           value() { sed -n "s/^$1=//p" "${RESOLVED:-/nonexistent}" 2>/dev/null | tail -n 1; }
 
@@ -1128,6 +1412,18 @@ jobs:
             why="the resolver did not finish"
           fi
           [[ "$push" == "true" ]] || push=false
+          if [[ "$EVENT_NAME" == "push" ]]; then
+            # An integration-branch push publishes nothing, whatever the
+            # resolver wrote or failed to write (#584): this is the one line
+            # that makes "never publish" a property of the output rather than
+            # of the resolver having been right. Its stage is the branch's, not
+            # `pr-0`, when the resolver did not finish.
+            push=false
+            tags=""
+            dev_tags=""
+            version=""
+            [[ -n "$stage" ]] || stage="integration-${REF_NAME//\//-}"
+          fi
           [[ -n "$stage" ]] || stage="pr-${PR:-0}"
           [[ -n "$ref" ]] || ref="$MERGE_SHA"
 
@@ -1150,8 +1446,8 @@ jobs:
   #
   # amd64 only (D35): the train and release builds cover arm64 natively, and
   # paying for a second runner on every PR buys little — the two legs share a
-  # Dockerfile, and arch-specific breakage is almost always in better-sqlite3's
-  # native build, which this leg already exercises. Emulation on Apple silicon
+  # Dockerfile, and arch-specific breakage is almost always in a native build
+  # (node-pty, the Core's better-sqlite3), which this leg already exercises. Emulation on Apple silicon
   # is acceptable for a developer poking at a change; it is not acceptable for
   # anything an operator deploys.
   #
@@ -1159,7 +1455,9 @@ jobs:
   # is the build and the smoke. A Docker Hub outage must not freeze merging.
   panel-image:
     name: Panel image
-    if: github.event_name == 'pull_request'
+    # Also the integration branch's push (#584): the same build and smoke,
+    # `push=false` from `pr-image-mode`, so nothing is published.
+    if: github.event_name == 'pull_request' || (github.event_name == 'push' && startsWith(github.ref, 'refs/heads/feat/'))
     needs: pr-image-mode
     uses: ./.github/workflows/container-image.yml
     permissions:
@@ -1199,7 +1497,9 @@ jobs:
   # a side effect of this ticket. The scan JSON is uploaded either way.
   core-image:
     name: Core image
-    if: github.event_name == 'pull_request'
+    # Also the integration branch's push (#584): the same build and smoke,
+    # `push=false` from `pr-image-mode`, so nothing is published.
+    if: github.event_name == 'pull_request' || (github.event_name == 'push' && startsWith(github.ref, 'refs/heads/feat/'))
     needs: pr-image-mode
     uses: ./.github/workflows/container-image.yml
     permissions:
@@ -1251,9 +1551,9 @@ jobs:
   # publishes nothing.
   # The train's version, asserted on the push that publishes its image.
   #
-  # `Train rules` above asserts the same six manifests, and carries
+  # `Train rules` above asserts the same five manifests, and carries
   # `if: github.event_name == 'pull_request'` — so **the one commit whose entire
-  # purpose is writing six versions has never been asserted by anything.** A cut
+  # purpose is writing five versions has never been asserted by anything.** A cut
   # is a direct push (docs/ci-cd.md § "Cutting a train"), and every merge into a
   # train is a push too. `beta/0.4.1`'s cut and `beta/0.4.0`'s were both verified
   # by hand and by nothing else.
@@ -1267,7 +1567,7 @@ jobs:
   # pull request in it (ADR 0037 D3).
   #
   # **`train-tags` needs it, which is the point.** The `beta-x.y.z` image tag is
-  # computed from the branch name and reads no manifest, so a train whose six
+  # computed from the branch name and reads no manifest, so a train whose five
   # manifests all say `9.9.9` used to publish `actana/core:beta-0.4.1` green.
   # Now the job that resolves that tag cannot start until the tree it is naming
   # has been read (ADR 0037 D4).
@@ -1310,7 +1610,7 @@ jobs:
     if: startsWith(github.ref, 'refs/heads/beta/')
     # The image tag is derived from the branch name and reads no manifest, so
     # this dependency is what ties it to the tree it was built from: no train
-    # image is published under a version the six manifests do not carry
+    # image is published under a version the five manifests do not carry
     # (ADR 0037 D4).
     needs: train-versions
     runs-on: ubuntu-24.04
@@ -1364,7 +1664,7 @@ jobs:
       image: panel
       ref: ${{ github.sha }}
       stage: ${{ needs.train-tags.outputs.stage }}
-      # The line these bytes must carry. The build asserts the six manifests
+      # The line these bytes must carry. The build asserts the five manifests
       # against it and stamps it into the image, so `beta-x.y.z` stops being a
       # name derived from a branch and starts being a claim about a tree
       # (ADR 0037 D4).
@@ -1385,7 +1685,7 @@ jobs:
       image: core
       ref: ${{ github.sha }}
       stage: ${{ needs.train-tags.outputs.stage }}
-      # The line these bytes must carry. The build asserts the six manifests
+      # The line these bytes must carry. The build asserts the five manifests
       # against it and stamps it into the image, so `beta-x.y.z` stops being a
       # name derived from a branch and starts being a claim about a tree
       # (ADR 0037 D4).

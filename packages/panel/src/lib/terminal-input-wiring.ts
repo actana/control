@@ -4,7 +4,7 @@
 // A pane wires its xterm `onData`/`onResize` handlers when it attaches to a
 // PTY, and it can attach more than once for one surface: `ensurePty` tries the
 // descriptor's pty, and when that reattach comes back empty it falls through to
-// `findByTask`, and when *that* finds nothing it spawns. Each attempt wired a
+// `findBySession`, and when *that* finds nothing it spawns. Each attempt wired a
 // fresh handler and none of them disposed the last, so after a reload against a
 // dead pty the surviving handlers all fired on one keystroke — every byte
 // written to the PTY twice, which a shell reads as the operator typing it

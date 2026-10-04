@@ -20,7 +20,7 @@
 
 import * as fs from "node:fs";
 import { decodeRegistrationBlobText, summarizeBlob, type BlobSummary } from "./registration-blob-file.ts";
-import type { CoreRegistrationBlob } from "@actana/sdk/core-registration-blob.ts";
+import type { CoreRegistrationBlob } from "@actana/sdk/pairing";
 import {
   coreBlobPath,
   coreNameError,

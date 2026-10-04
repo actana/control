@@ -21,7 +21,7 @@ import type {
   CoreLinkRequestFrame,
   CoreLinkResponseFrame,
   CoreLinkStreamFrame,
-} from "@actana/sdk/core-link-frames";
+} from "@actana/shared/sdk-link-frames";
 import type { CoreDialStatus } from "~/shared/cores";
 import type { PanelSessionLock } from "~/shared/session-write-access";
 
@@ -53,8 +53,12 @@ export const PANEL_LINK_PATH = "/panel-link";
  * because {@link decodeServerFrame} answers null for an unknown `t` and the
  * client ignores that. Both halves ship from one build, so the reverse pairing
  * (a new tab against an old service) is not a state this can reach.
+ *
+ * 2 is the Task-to-Session rename (#556): every frame that names a Session says
+ * `sessionId`, where version 1 said `taskId`. That is not additive, so a tab
+ * still on 1 is refused at the upgrade instead of being half-understood.
  */
-export const PANEL_LINK_PROTOCOL_VERSION = 1;
+export const PANEL_LINK_PROTOCOL_VERSION = 2;
 
 /** Upgrade query parameter carrying {@link PANEL_LINK_PROTOCOL_VERSION}. */
 export const PANEL_LINK_VERSION_PARAM = "v";
@@ -138,7 +142,7 @@ export type PanelLinkClientFrame =
   | {
       t: "drive";
       coreId: string;
-      taskId: string;
+      sessionId: string;
       /**
        * `watch` — this tab has the Session on screen and will drive it if
        * nobody else in this Panel is (first-come). `take` — the operator asked
@@ -171,11 +175,11 @@ export type PanelLinkServerFrame =
   // `drive` is the **Session drive**, Panel-scoped and per tab: whether *this*
   // tab holds the keyboard for that Session among this Panel's tabs. It never
   // crosses a core-link and no Core has an opinion about it.
-  | { t: "lock"; coreId: string; taskId: string; lock: PanelSessionLock }
+  | { t: "lock"; coreId: string; sessionId: string; lock: PanelSessionLock }
   | {
       t: "drive";
       coreId: string;
-      taskId: string;
+      sessionId: string;
       driving: boolean;
       /**
        * Why this tab is being told. `handover` means the drive moved while this
@@ -203,11 +207,11 @@ export function decodeClientFrame(raw: unknown): PanelLinkClientFrame | null {
   if (!msg) return null;
   if (msg.t === "drive") {
     const coreId = typeof msg.coreId === "string" ? msg.coreId : "";
-    const taskId = typeof msg.taskId === "string" ? msg.taskId : "";
+    const sessionId = typeof msg.sessionId === "string" ? msg.sessionId : "";
     const want = msg.want;
-    if (!coreId || !taskId) return null;
+    if (!coreId || !sessionId) return null;
     if (want !== "watch" && want !== "take" && want !== "drop") return null;
-    return { t: "drive", coreId, taskId, want };
+    return { t: "drive", coreId, sessionId, want };
   }
   if (msg.t !== "core") return null;
   const coreId = typeof msg.coreId === "string" ? msg.coreId : "";
@@ -225,15 +229,15 @@ export function decodeServerFrame(raw: unknown): PanelLinkServerFrame | null {
   if (!msg) return null;
   if (msg.t === "lock") {
     const coreId = typeof msg.coreId === "string" ? msg.coreId : "";
-    const taskId = typeof msg.taskId === "string" ? msg.taskId : "";
+    const sessionId = typeof msg.sessionId === "string" ? msg.sessionId : "";
     const lock = msg.lock as Partial<PanelSessionLock> | undefined;
     const state = lock?.state;
-    if (!coreId || !taskId || !lock) return null;
+    if (!coreId || !sessionId || !lock) return null;
     if (state !== "unlocked" && state !== "held-by-you" && state !== "held-by-another") return null;
     return {
       t: "lock",
       coreId,
-      taskId,
+      sessionId,
       lock: {
         supported: lock.supported === true,
         // Read from the state when the flag is missing, never defaulted to
@@ -248,12 +252,12 @@ export function decodeServerFrame(raw: unknown): PanelLinkServerFrame | null {
   }
   if (msg.t === "drive") {
     const coreId = typeof msg.coreId === "string" ? msg.coreId : "";
-    const taskId = typeof msg.taskId === "string" ? msg.taskId : "";
-    if (!coreId || !taskId) return null;
+    const sessionId = typeof msg.sessionId === "string" ? msg.sessionId : "";
+    if (!coreId || !sessionId) return null;
     return {
       t: "drive",
       coreId,
-      taskId,
+      sessionId,
       driving: msg.driving === true,
       reason: msg.reason === "handover" ? "handover" : "watch",
     };

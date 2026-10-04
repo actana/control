@@ -35,18 +35,18 @@ export function matchBinding(e: KeyboardEvent, b: Binding): boolean {
   return keyMatches(e, b);
 }
 
-/** Number of pinned-project slots that get a number badge + Cmd+N shortcut. */
-export const PINNED_SLOT_COUNT = 9;
+/** Number of Core slots that get a number badge + Cmd+N shortcut. */
+export const CORE_SLOT_COUNT = 9;
 
-/** Match pinned-project slots that share modifiers with the slot-1 binding. */
-export function matchPinnedSlotBinding(e: KeyboardEvent, base: Binding, slot: number): boolean {
-  if (slot < 1 || slot > PINNED_SLOT_COUNT) return false;
+/** Match Core slots that share modifiers with the slot-1 binding. */
+export function matchCoreSlotBinding(e: KeyboardEvent, base: Binding, slot: number): boolean {
+  if (slot < 1 || slot > CORE_SLOT_COUNT) return false;
   return matchBinding(e, { ...base, key: String(slot) });
 }
 
-export function matchAnyPinnedSlot(e: KeyboardEvent, base: Binding): number | null {
-  for (let slot = 1; slot <= PINNED_SLOT_COUNT; slot += 1) {
-    if (matchPinnedSlotBinding(e, base, slot)) return slot;
+export function matchAnyCoreSlot(e: KeyboardEvent, base: Binding): number | null {
+  for (let slot = 1; slot <= CORE_SLOT_COUNT; slot += 1) {
+    if (matchCoreSlotBinding(e, base, slot)) return slot;
   }
   return null;
 }

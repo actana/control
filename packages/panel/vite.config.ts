@@ -22,7 +22,6 @@ export default defineConfig({
   resolve: {
     alias: {
       "~": path.resolve(__dirname, "./src"),
-      "@actana/sdk": path.resolve(__dirname, "../sdk/src"),
       "@actana/shared": path.resolve(__dirname, "../shared/src"),
     },
     // Language packages and @uiw/react-codemirror can otherwise pull distinct
@@ -38,10 +37,10 @@ export default defineConfig({
     }),
   ],
   optimizeDeps: {
-    exclude: ["better-sqlite3", "node-pty"],
+    exclude: ["node-pty"],
   },
   ssr: {
-    external: ["better-sqlite3", "node-pty"],
+    external: ["node-pty"],
     noExternal: ["@xterm/xterm", "@xterm/addon-fit", "@xterm/addon-web-links"],
   },
 });

@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, lazy, Suspense } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState, lazy, Suspense } from "react";
 import {
   ClientOnly,
   Outlet,
@@ -9,14 +9,8 @@ import {
   useRouterState,
 } from "@tanstack/react-router";
 import type { QueryClient } from "@tanstack/react-query";
-import {
-  getRailClusters,
-  mergeRailProjects,
-  railNavigateSearch,
-  resolveRailChordTarget,
-  usesDirectRailProjectShortcuts,
-  type RailTarget,
-} from "~/lib/rail-projects";
+import { FleetProvider, useFleet } from "~/lib/fleet-context";
+import { useCoreHotkeys } from "~/lib/use-core-hotkeys";
 import { isAuthPath } from "~/lib/auth-paths";
 import { TopBar, type Crumb } from "~/components/ui/TopBar";
 import { Btn } from "~/components/ui/Btn";
@@ -40,19 +34,12 @@ import {
 } from "~/lib/user-terminal-store";
 import { TerminalPanel } from "~/components/views/TerminalPanel";
 import { UserTerminalPanel } from "~/components/views/UserTerminalPanel";
-import { ProjectPicker } from "~/components/views/ProjectPicker";
-import { ProjectBar } from "~/components/views/ProjectBar";
-import { AddProjectProvider } from "~/lib/add-project-store";
-import { GroupsDialogProvider } from "~/lib/groups-dialog-store";
-import { ACTIVE_GROUP_ALL, ACTIVE_GROUP_UNGROUPED, useActiveGroup } from "~/lib/active-group";
-import { GroupSwitcher } from "~/components/views/GroupSwitcher";
-import { projectIdFromPath } from "~/lib/project-id-from-path";
+import { CoreRail } from "~/components/views/CoreRail";
+import { routeCoreIdFromLocation, workspaceCoreIdFromPath } from "~/lib/workspace-core-id";
 import {
   HeaderActionsProvider,
   HeaderActionsSlot,
 } from "~/components/ui/HeaderActionsSlot";
-import { useSettings, useProjects } from "~/queries";
-import { useRemotePinnedProjects } from "~/lib/use-fleet";
 import { ProviderUsageIndicator } from "~/components/views/ProviderUsageIndicator";
 import { UpdateBanner } from "~/components/views/UpdateBanner";
 import { FirstRunGate } from "~/components/views/FirstRunGate";
@@ -142,8 +129,6 @@ function RootComponent() {
         <KeybindingsProvider>
           <TerminalProvider>
             <UserTerminalProvider>
-              <AddProjectProvider>
-                <GroupsDialogProvider>
                   <HeaderActionsProvider>
                     {/*
                      * The entire app shell reads client-only state — react-query
@@ -151,7 +136,7 @@ function RootComponent() {
                      * plus direct localStorage reads (theme, minimal mode).
                      * The server has none of that, so server HTML and the first
                      * client render disagree → hydration mismatch on every data-driven
-                     * node (ProjectPicker, …). ClientOnly renders the
+                     * node (CoreRail, …). ClientOnly renders the
                      * fallback on the server AND the first client render so they match,
                      * then mounts the real shell after hydration. Past this boundary
                      * there's no SSR markup to match, so children are free to show
@@ -170,12 +155,12 @@ function RootComponent() {
                        * form it mounts is the same one Settings mounts.
                        */}
                       <FirstRunGate>
-                        <Shell />
+                        <FleetProvider>
+                          <Shell />
+                        </FleetProvider>
                       </FirstRunGate>
                     </ClientOnly>
                   </HeaderActionsProvider>
-                </GroupsDialogProvider>
-              </AddProjectProvider>
             </UserTerminalProvider>
           </TerminalProvider>
         </KeybindingsProvider>
@@ -187,30 +172,30 @@ function RootComponent() {
 
 // The active-session tail lives in its own leaf so the per-tick re-render from
 // subscribing to the terminal data slice (`activeFor` returns a fresh session
-// object whenever that session's task row updates) is confined here, instead of
-// re-rendering the whole Shell + TopBar + ProjectBar. Props are all stable
+// object whenever that session's session row updates) is confined here, instead of
+// re-rendering the whole Shell + TopBar + CoreRail. Props are all stable
 // (actions + booleans) so it re-renders only on its own subscription.
-const ProjectTerminalPanel = memo(function ProjectTerminalPanel({
-  projectId,
+const CoreTerminalPanel = memo(function CoreTerminalPanel({
+  coreId,
   onClose,
   onHide,
   onPtyReady,
   expanded,
   onToggleExpanded,
 }: {
-  projectId: string;
-  onClose: (taskId: string, opts?: { activateTaskId?: string | null }) => Promise<void>;
-  onHide: (projectId: string) => void;
-  onPtyReady: (taskId: string, ptyId: string | null, scopeKey?: string) => void;
+  coreId: string;
+  onClose: (sessionId: string, opts?: { activateSessionId?: string | null }) => Promise<void>;
+  onHide: (coreId: string) => void;
+  onPtyReady: (sessionId: string, ptyId: string | null, scopeKey?: string) => void;
   expanded: boolean;
   onToggleExpanded: () => void;
 }) {
   const { activeFor } = useTerminals();
   return (
     <TerminalPanel
-      active={activeFor(projectId)}
+      active={activeFor(coreId)}
       onClose={onClose}
-      onHide={() => onHide(projectId)}
+      onHide={() => onHide(coreId)}
       onPtyReady={onPtyReady}
       expanded={expanded}
       onToggleExpanded={onToggleExpanded}
@@ -237,7 +222,7 @@ function Shell() {
   const closeSettingsPanel = () => setSettingsRequest(null);
 
   // Mirror the React open-state into the module flag that non-React global
-  // keydown listeners (use-hotkey, the project route) read to suppress app
+  // keydown listeners (use-hotkey, the Core workspace route) read to suppress app
   // shortcuts while the modal-style overlay is open.
   useEffect(() => {
     setSettingsOverlayOpen(settingsOpen);
@@ -263,28 +248,13 @@ function Shell() {
   // rows last heard about before the gap. Mounted here, once, for the whole
   // shell — the stream is shared, and so is everything it feeds.
   useEventStreamReconcile();
-  const { data: settings } = useSettings();
-  const { data: projects } = useProjects();
-  // The rail draws its badges from the Panel's own rows PLUS every Core's pins
-  // (ProjectBar merges the same two lists). The rail chords below address that
-  // merged list, or a Core pin's badge would open whatever Panel-local project
-  // happened to sit in that slot — or nothing at all (#379).
-  const { projects: remotePinnedProjects } = useRemotePinnedProjects();
-  const railProjects = useMemo(
-    () => mergeRailProjects(projects, remotePinnedProjects),
-    [projects, remotePinnedProjects],
-  );
-  const { activeGroup, setActiveGroup, groups } = useActiveGroup();
+  const { cores } = useFleet();
   // Pure actions (stable identity) + narrow flip-only subscriptions, so a
   // background session-status tick doesn't re-render the whole shell. The active
-  // session itself lives in the ProjectTerminalPanel leaf below.
+  // session itself lives in the CoreTerminalPanel leaf below.
   const { close, deselect, setPtyId } = useTerminalActions();
   const gridView = useGridView();
   const workspaceRef = useRef<HTMLDivElement>(null);
-  // First digit of a group→project rail chord (Cmd held, group digit pressed,
-  // awaiting the project digit or a Cmd release). Only used in "All" mode
-  // when at least one real group exists.
-  const pendingRailGroupRef = useRef<number | null>(null);
   const userTerminals = useUserTerminals();
   const {
     togglePanel,
@@ -315,20 +285,24 @@ function Shell() {
   // level pre-warm needed.
 
   const path = useRouterState({ select: (state) => state.location.pathname });
-  const projectId = projectIdFromPath(path);
+  const workspaceCoreId = workspaceCoreIdFromPath(path);
   // Which Core owns the currently-mounted shell (issue 08 — Singular UI across
-  // Cores). Only the /projects/$id route sets `coreId`; every other route
-  // implicitly means the Panel's own rows, which ProjectBar defaults to.
+  // Cores): the Core page names it in the path, the session workspace in the
+  // `coreId` search param; every other route has none.
   const routeCoreId = useRouterState({
-    select: (state) => {
-      const search = state.location.search as { coreId?: unknown } | undefined;
-      return typeof search?.coreId === "string" ? search.coreId : undefined;
-    },
+    select: (state) => routeCoreIdFromLocation(state.location),
   });
-  // Flip-only: true iff this project has a materialized active session. Gates
+
+  // The Core drawer's terminals belong to whichever Core this route is on.
+  const { setCore: setUserTerminalCore } = userTerminals;
+  useEffect(() => {
+    setUserTerminalCore(routeCoreId ?? null);
+  }, [routeCoreId, setUserTerminalCore]);
+
+  // Flip-only: true iff this Core has a materialized active session. Gates
   // the expanded-terminal layout without subscribing to the churning data slice.
-  const hasActiveSession = useHasActiveSession(projectId);
-  const expandedKey = projectId ? `mc:terminalExpanded:${projectId}` : null;
+  const hasActiveSession = useHasActiveSession(workspaceCoreId);
+  const expandedKey = workspaceCoreId ? `mc:terminalExpanded:${workspaceCoreId}` : null;
   const [terminalExpanded, setTerminalExpanded] = useState<boolean>(false);
   useEffect(() => {
     if (!expandedKey) {
@@ -354,46 +328,33 @@ function Shell() {
     });
   }, [expandedKey]);
   const sessionExpanded =
-    !!projectId && terminalExpanded && hasActiveSession;
+    !!workspaceCoreId && terminalExpanded && hasActiveSession;
   // Grid view takes over the whole workspace: the Outlet (which renders the
-  // grid below the project header) spans full width and the single right-hand
+  // grid below the Core header) spans full width and the single right-hand
   // terminal panel is hidden.
-  const gridActive = !!projectId && gridView;
-  // The group is the broadest context, so it leads the breadcrumb:
-  // Group › Project › Scope. Omitted (not just null-rendered) when no groups
-  // exist so no dangling separator renders, and absent on the app-global
-  // Settings/Usage screens where a group scope is meaningless. Also omitted
-  // when hidden via Settings → Interface (right-click the pill → Hide);
-  // groups stay reachable through the dashboard chips and the cycle hotkey.
-  const groupCrumb: Crumb[] =
-    groups.length > 0 && (settings?.showGroupSwitcher ?? true)
-      ? [{ label: "Group", node: <GroupSwitcher /> }]
-      : [];
-  const crumbs: Crumb[] = settingsOpen
-    ? [{ label: "Settings" }]
-    : projectId
-    ? [
-        ...groupCrumb,
-        // The switcher is scoped to the Core that owns this shell, so it gets
-        // the same `?coreId=` the rest of the shell reads its data with.
-        {
-          label: "Project",
-          node: <ProjectPicker projectId={projectId} coreId={routeCoreId ?? null} />,
-        },
-      ]
-      : activePanel === "usage"
-        ? [{ label: "Usage" }]
-      // Outside a Project there is no Project to switch away from, so no
-      // switcher — the root path used to render an empty one (issue 231).
-      : groupCrumb;
-
-  const closePanel = () => setActivePanel(null);
-
+  const gridActive = !!workspaceCoreId && gridView;
   const goHome = () => {
     setActivePanel(null);
     if (settingsOpen) requestCloseSettings();
-    router.navigate({ to: "/" });
+    // void: a failed navigation shows in the router's own error state.
+    void router.navigate({ to: "/" });
   };
+
+  // Cores › <Core>. The Core's own switcher lives in its header (screen 02);
+  // the breadcrumb only says where we are.
+  const crumbCore = routeCoreId ? cores.find((c) => c.id === routeCoreId) : undefined;
+  const crumbs: Crumb[] = settingsOpen
+    ? [{ label: "Settings" }]
+    : activePanel === "usage"
+      ? [{ label: "Usage" }]
+      : crumbCore
+        ? [
+            { label: "Cores", onClick: goHome },
+            { label: crumbCore.label },
+          ]
+        : [];
+
+  const closePanel = () => setActivePanel(null);
 
   // Recompute + re-observe the workspace bounds whenever the workspace div is
   // (un)mounted.
@@ -430,21 +391,6 @@ function Shell() {
     };
   }, []);
 
-  // Cycle the active group context: All → each group → Ungrouped → All.
-  const cycleActiveGroup = useCallback(
-    (direction: 1 | -1) => {
-      const order: string[] = [ACTIVE_GROUP_ALL, ...groups.map((g) => g.id)];
-      if ((projects ?? []).some((p) => p.groupId == null)) order.push(ACTIVE_GROUP_UNGROUPED);
-      if (order.length <= 1) return;
-      const index = order.indexOf(activeGroup);
-      const next = order[(index + direction + order.length) % order.length]!;
-      setActiveGroup(next);
-    },
-    [activeGroup, groups, projects, setActiveGroup],
-  );
-  useHotkey("group.next", () => cycleActiveGroup(1));
-  useHotkey("group.prev", () => cycleActiveGroup(-1));
-
   useHotkey("terminal.toggle", () => togglePanel());
   // `terminal.newTab` (⌘T by default) opens the same thing the panel's one
   // "New Terminal" button opens: a VM Shell Session on the Core this route is
@@ -475,7 +421,7 @@ function Shell() {
         window.dispatchEvent(new Event(GRID_EXPAND_TOGGLE_EVENT));
         return;
       }
-      if (projectId && hasActiveSession) toggleTerminalExpanded();
+      if (workspaceCoreId && hasActiveSession) toggleTerminalExpanded();
     },
     { capture: true },
   );
@@ -500,19 +446,14 @@ function Shell() {
     window.addEventListener("keydown", onKeyDown, true);
     return () => window.removeEventListener("keydown", onKeyDown, true);
   }, []);
-  // One place every rail chord navigates through, so a Core-owned pin can never
-  // lose its `?coreId=`: without it the project route falls back to the Panel's
-  // own DB and the page 404s or shows the wrong project (#379).
-  const navigateToRailTarget = useCallback(
-    (target: RailTarget) => {
-      router.navigate({
-        to: "/projects/$id",
-        params: { id: target.id },
-        search: railNavigateSearch(target),
-      });
+  const openCore = useCallback(
+    (coreId: string) => {
+      // void: a failed navigation shows in the router's own error state.
+      void router.navigate({ to: "/cores/$coreId", params: { coreId } });
     },
     [router],
   );
+  useCoreHotkeys(cores, openCore);
   // Cmd/Ctrl + [ / ] are non-rebindable terminal-focused shortcuts.
   // Capture phase: a focused xterm textarea swallows these on bubble.
   // ⌘T used to be in here too; it is `terminal.newTab` above now, so the
@@ -533,81 +474,17 @@ function Shell() {
         cycleNext();
         return;
       }
-      if (!e.shiftKey && !e.altKey && /^[1-9]$/.test(e.key)) {
-        if (e.repeat) {
-          // Ignore auto-repeat so a held digit doesn't re-fire the chord.
-          e.preventDefault();
-          return;
-        }
-        const digit = Number(e.key);
-        // Same clusters the rail renders — badges and hotkeys must agree.
-        const clusters = getRailClusters(railProjects, groups, activeGroup);
-        const navigateTo = (target: RailTarget) => {
-          e.preventDefault();
-          e.stopPropagation();
-          navigateToRailTarget(target);
-        };
-
-        // A single group is active, or no real groups exist: the rail is one
-        // flat project list, so the digit addresses a project directly.
-        if (usesDirectRailProjectShortcuts(groups, activeGroup)) {
-          pendingRailGroupRef.current = null;
-          const target = resolveRailChordTarget(clusters, null, digit);
-          if (target) navigateTo(target);
-          else e.preventDefault();
-          return;
-        }
-
-        // "All" mode: two-level chord. First digit picks the group cluster;
-        // the second digit (this handler, next press) picks the project. A
-        // Cmd release before the second digit jumps to the group's first
-        // project (see the keyup handler below).
-        e.preventDefault();
-        e.stopPropagation();
-        if (pendingRailGroupRef.current == null) {
-          // First digit — remember the group if it exists; otherwise ignore.
-          if (clusters[digit - 1]) pendingRailGroupRef.current = digit;
-          return;
-        }
-        const groupDigit = pendingRailGroupRef.current;
-        pendingRailGroupRef.current = null;
-        const target = resolveRailChordTarget(clusters, groupDigit, digit);
-        if (target) navigateTo(target);
-        return;
-      }
-    };
-    // Releasing Cmd/Ctrl with a group digit still pending jumps to that
-    // group's first project (a single-digit chord).
-    const onKeyUp = (e: KeyboardEvent) => {
-      if (e.key !== "Meta" && e.key !== "Control") return;
-      const pending = pendingRailGroupRef.current;
-      pendingRailGroupRef.current = null;
-      if (pending == null || usesDirectRailProjectShortcuts(groups, activeGroup)) return;
-      const clusters = getRailClusters(railProjects, groups, activeGroup);
-      const target = resolveRailChordTarget(clusters, pending, 1);
-      if (target) navigateToRailTarget(target);
-    };
-    // Losing focus mid-chord (e.g. clicking away while Cmd is held) would
-    // otherwise leave a group digit pending and misread the next chord.
-    const onBlur = () => {
-      pendingRailGroupRef.current = null;
     };
     window.addEventListener("keydown", onKeyDown, true);
-    window.addEventListener("keyup", onKeyUp, true);
-    window.addEventListener("blur", onBlur);
-    return () => {
-      window.removeEventListener("keydown", onKeyDown, true);
-      window.removeEventListener("keyup", onKeyUp, true);
-      window.removeEventListener("blur", onBlur);
-    };
-  }, [activeGroup, cycleNext, cyclePrev, groups, navigateToRailTarget, railProjects]);
+    return () => window.removeEventListener("keydown", onKeyDown, true);
+  }, [cycleNext, cyclePrev]);
 
   return (
     <>
       <div id="root">
         {/* Banner hidden for now — toggle also removed from Settings. */}
         {/* Above the top bar and across the full width: it is about the
-         * deployment, not about whatever project is open below it. Renders
+         * deployment, not about whatever Core is open below it. Renders
          * nothing at all unless a newer release exists and this browser has
          * not dismissed that release. */}
         <UpdateBanner />
@@ -616,9 +493,8 @@ function Shell() {
           onHome={goHome}
           centerActions={
             <>
-              {/* Project cockpit, one grouped band: context (which project)
-               * then the project actions (run, grid) portalled in by the
-               * project route. */}
+              {/* One grouped band of the Core's actions (grid), portalled in
+               * by the Core workspace route. */}
               <HeaderActionsSlot />
             </>
           }
@@ -654,30 +530,30 @@ function Shell() {
           }}
         >
           <div style={{ flex: 1, display: "flex", overflow: "hidden", minHeight: 0 }}>
-            <ProjectBar coreId={routeCoreId} />
+            <CoreRail />
             <div
               style={{
                 position: "relative",
                 flex: 1,
                 // Grid view lives inside the Outlet, so the expanded-terminal
                 // flag must never hide it — both can be true at once (the
-                // expand flag persists per project, the grid flag globally).
+                // expand flag persists per Core, the grid flag globally).
                 display: sessionExpanded && !gridActive ? "none" : "flex",
                 flexDirection: "column",
                 overflow: "hidden",
-                // On the project detail view the terminal panel sits to the
+                // On the Core workspace the terminal panel sits to the
                 // right; floor the left panel so dragging the terminal wider
                 // shrinks the terminal instead of wrapping the session columns.
                 // In grid view the panel is hidden, so let the Outlet go full width.
-                minWidth: projectId && !gridActive ? 640 : 0,
+                minWidth: workspaceCoreId && !gridActive ? 640 : 0,
                 minHeight: 0,
               }}
             >
               <Outlet />
             </div>
-            {projectId && !gridActive && (
-              <ProjectTerminalPanel
-                projectId={projectId}
+            {workspaceCoreId && !gridActive && (
+              <CoreTerminalPanel
+                coreId={workspaceCoreId}
                 onClose={close}
                 onHide={deselect}
                 onPtyReady={setPtyId}
@@ -686,7 +562,7 @@ function Shell() {
               />
             )}
           </div>
-          <UserTerminalPanel coreId={routeCoreId} />
+          <UserTerminalPanel />
         </div>
         {activePanel === "usage" && <UsagePanel onBack={closePanel} />}
         {settingsOpen && (

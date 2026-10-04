@@ -16,7 +16,7 @@ import { spawnSync } from "node:child_process";
 import type { ActanaCliDeps } from "../cli-deps.ts";
 import type { ActanaSystem, CommandResult } from "../actana-system.ts";
 import type { ReleaseFetcher } from "../actana-release.ts";
-import { nonInteractiveTerminal } from "../cli-terminal.ts";
+import { nonInteractiveTerminal } from "@actana/cli";
 
 /** The `ActanaSystem` a suite drives `systemctl` and `tar` through. */
 export type FakeSystem = ActanaSystem & {
@@ -170,11 +170,12 @@ export type ClientHalf = Pick<
   | "connect"
   | "pairing"
   | "openSessions"
-  | "openFiles"
   | "now"
   | "terminal"
   | "openShell"
   | "openAttach"
+  | "openFiles"
+  | "openShared"
 >;
 
 /** The client half, filled with fakes that refuse to reach a Core. */
@@ -197,10 +198,11 @@ export function stubClientHalf(
     connect: refuse("dial a Core"),
     pairing: { identify: refuse("identify a Core"), pair: refuse("pair with a Core") },
     openSessions: refuse("open a session gateway"),
-    openFiles: refuse("open a file gateway"),
     now,
     terminal: nonInteractiveTerminal(),
     openShell: refuse("open a shell"),
     openAttach: refuse("attach to a session"),
+    openFiles: refuse("open a home folder"),
+    openShared: refuse("open a Shared folder"),
   };
 }

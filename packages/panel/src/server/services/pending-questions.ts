@@ -7,38 +7,32 @@ import { events } from "../events";
 const pending = new Map<string, PendingQuestion>();
 
 export function setPendingQuestion(input: {
-  taskId: string;
-  projectId: string;
+  sessionId: string;
   questions: HarnessQuestion[];
   id?: string;
 }): PendingQuestion {
   const question: PendingQuestion = {
     id: input.id?.trim() || randomUUID(),
-    taskId: input.taskId,
-    projectId: input.projectId,
+    sessionId: input.sessionId,
     questions: input.questions,
     createdAt: Date.now(),
   };
-  pending.set(input.taskId, question);
-  events.emit("task:question", {
-    taskId: question.taskId,
-    projectId: question.projectId,
+  pending.set(input.sessionId, question);
+  events.emit("session:question", {
+    sessionId: question.sessionId,
     questionId: question.id,
     questions: question.questions,
   });
   return question;
 }
 
-export function getPendingQuestion(taskId: string): PendingQuestion | null {
-  return pending.get(taskId) ?? null;
+export function getPendingQuestion(sessionId: string): PendingQuestion | null {
+  return pending.get(sessionId) ?? null;
 }
 
-export function clearPendingQuestion(taskId: string): void {
-  const existing = pending.get(taskId);
+export function clearPendingQuestion(sessionId: string): void {
+  const existing = pending.get(sessionId);
   if (!existing) return;
-  pending.delete(taskId);
-  events.emit("task:question-cleared", {
-    taskId,
-    projectId: existing.projectId,
-  });
+  pending.delete(sessionId);
+  events.emit("session:question-cleared", { sessionId });
 }

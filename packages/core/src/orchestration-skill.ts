@@ -8,12 +8,16 @@
 // Harness this Core had not seen before becoming available
 // (`harness-skill-watcher.ts`).
 //
-// The writer itself is `@actana/shared/orchestration-skill-install`, which is a
-// byte-identical twin of a file in `packages/cli` because those two packages
-// may not share a module (ADR 0031 D8). This file is the Core's side of the
-// seam: it supplies the home directory, reads the fan-out table off
-// `HARNESS_CLI_CONFIG`, and turns the result into log lines.
+// The writer itself is `@actana/shared/orchestration-skill-install`. The payload it
+// writes is the published one: imported from `@actana/cli/skill-payload`, the payload-only
+// subpath of the pinned package. It loads nothing but the data, so the standalone
+// `core-home-ops` helper bundle stays free of the client and `ws`. They are the same
+// constants the client nouns install from, so there is one payload source and a
+// Core's boot install and its `actana` cannot disagree about the text (#580). This file
+// is the Core's side of the seam: it supplies the home directory, reads the fan-out
+// table off `HARNESS_CLI_CONFIG`, and turns the result into log lines.
 
+import * as path from "node:path";
 import log from "@actana/shared/log";
 import { HARNESS_SKILL_TARGETS } from "@actana/shared/harness-cli-config";
 import { withPiHomeMarkersResolved } from "@actana/shared/pi-agent-dir";
@@ -23,10 +27,10 @@ import {
   type SkillInstallEntry,
 } from "@actana/shared/orchestration-skill-install";
 import {
-  ORCHESTRATION_SKILL_MARKER,
   ORCHESTRATION_SKILL_FILES,
+  ORCHESTRATION_SKILL_MARKER,
   ORCHESTRATION_SKILL_NAMES,
-} from "@actana/shared/orchestration-skill-payload";
+} from "@actana/cli/skill-payload";
 
 /**
  * Write or repair every copy on this machine, and log what happened.
@@ -55,30 +59,59 @@ import {
 export function ensureOrchestrationSkill(homeDir: string): SkillInstallEntry[] {
   let entries: SkillInstallEntry[];
   try {
-    // Pi's `$PI_CODING_AGENT_DIR` is resolved here against the sanitized
-    // process env (login-shell overlay included), never frozen from
-    // `process.env` at module load in the shared table (#518 part 3).
-    const targets = withPiHomeMarkersResolved(
-      HARNESS_SKILL_TARGETS,
-      sanitizedProcessEnv(),
-      homeDir,
-    );
-    entries = ORCHESTRATION_SKILL_NAMES.flatMap((skillName) =>
-      installOrchestrationSkill({
-        home: homeDir,
-        targets,
-        skillName,
-        marker: ORCHESTRATION_SKILL_MARKER,
-        files: ORCHESTRATION_SKILL_FILES[skillName] ?? {},
-      }),
-    );
+    entries = installOrchestrationSkills(homeDir);
   } catch (err) {
     log.warn("core-skill.install-failed", {
       error: err instanceof Error ? err.message : String(err),
     });
     return [];
   }
+  reportSkillEntries(entries);
+  return entries;
+}
 
+/**
+ * Every Harness skill folder `installOrchestrationSkills` may write under
+ * `homeDir`, resolved the way it resolves them. The helper confines each through
+ * `realpath` first, so a linked `~/.claude/skills` cannot carry the write out of
+ * the home.
+ */
+export function orchestrationSkillFolders(homeDir: string): string[] {
+  const targets = withPiHomeMarkersResolved(HARNESS_SKILL_TARGETS, sanitizedProcessEnv(), homeDir);
+  return targets.flatMap((target) =>
+    ORCHESTRATION_SKILL_NAMES.map((name) =>
+      // An absolute skillDir stays absolute, as the installer's own `homePath` has it.
+      path.isAbsolute(target.skillDir)
+        ? path.join(target.skillDir, name)
+        : path.join(homeDir, ...target.skillDir.split("/"), name),
+    ),
+  );
+}
+
+/**
+ * The install itself, with no logging: the half that touches `homeDir`. It is
+ * what `core-home-ops` runs as `core` in the container (issue 559), where the
+ * daemon reads the entries back and calls {@link reportSkillEntries} itself.
+ * Throws when the install cannot run at all.
+ */
+export function installOrchestrationSkills(homeDir: string): SkillInstallEntry[] {
+  // Pi's `$PI_CODING_AGENT_DIR` is resolved here against the sanitized
+  // process env (login-shell overlay included), never frozen from
+  // `process.env` at module load in the shared table (#518 part 3).
+  const targets = withPiHomeMarkersResolved(HARNESS_SKILL_TARGETS, sanitizedProcessEnv(), homeDir);
+  return ORCHESTRATION_SKILL_NAMES.flatMap((skillName) =>
+    installOrchestrationSkill({
+      home: homeDir,
+      targets,
+      skillName,
+      marker: ORCHESTRATION_SKILL_MARKER,
+      files: ORCHESTRATION_SKILL_FILES[skillName] ?? {},
+    }),
+  );
+}
+
+/** One log line per write, refusal or failure; `current` is silent (see above). */
+export function reportSkillEntries(entries: readonly SkillInstallEntry[]): void {
   for (const entry of entries) {
     if (entry.outcome === "written") {
       log.info("core-skill.written", { harness: entry.harness, path: entry.path });
@@ -96,5 +129,4 @@ export function ensureOrchestrationSkill(homeDir: string): SkillInstallEntry[] {
       });
     }
   }
-  return entries;
 }

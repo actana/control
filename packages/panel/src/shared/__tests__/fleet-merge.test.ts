@@ -1,21 +1,21 @@
 import { describe, it, expect } from "vitest";
 import {
-  mergeFleetTasks,
-  fanOutTasks,
+  mergeFleetSessions,
+  fanOutSessions,
   type CoreFanOutResult,
   type CoreFanOutTarget,
 } from "../fleet-merge";
-import type { CoreLinkTaskSnapshot } from "@actana/sdk/core-link-frames";
+import type { CoreLinkSessionRow } from "@actana/sdk/core";
 
-// The Fleet view fans out `tasksList` to every connected Core in parallel and
-// merges results keyed by `coreId/taskId` (CONTEXT.md "Fleet view"). Offline
-// Cores show "unreachable + last-seen" with no task rows — the Panel caches
+// The Fleet view fans out `sessionRowsList` to every connected Core in parallel and
+// merges results keyed by `coreId/sessionId` (CONTEXT.md "Fleet view"). Offline
+// Cores show "unreachable + last-seen" with no session rows — the Panel caches
 // nothing beyond the Core registry, so a downed Core is honestly blank, not
 // stale. With a single registered Core the Fleet view degenerates to per-Core
 // navigation.
 
-const task = (over: Partial<CoreLinkTaskSnapshot> & Pick<CoreLinkTaskSnapshot, "taskId" | "projectId">): CoreLinkTaskSnapshot => ({
-  title: over.title ?? "task",
+const session = (over: Partial<CoreLinkSessionRow> & Pick<CoreLinkSessionRow, "sessionId">): CoreLinkSessionRow => ({
+  title: over.title ?? "session",
   titleManuallySet: over.titleManuallySet ?? false,
   claudeSessionId: over.claudeSessionId ?? null,
   agent: over.agent ?? "claude-code",
@@ -27,11 +27,11 @@ const task = (over: Partial<CoreLinkTaskSnapshot> & Pick<CoreLinkTaskSnapshot, "
   ...over,
 });
 
-const online = (coreId: string, coreLabel: string, tasks: CoreLinkTaskSnapshot[], lastSeenAt = 5_000): CoreFanOutResult => ({
+const online = (coreId: string, coreLabel: string, sessions: CoreLinkSessionRow[], lastSeenAt = 5_000): CoreFanOutResult => ({
   coreId,
   coreLabel,
   ok: true,
-  tasks,
+  sessions,
   lastSeenAt,
 });
 
@@ -42,27 +42,27 @@ const offline = (coreId: string, coreLabel: string, lastSeenAt: number | null = 
   lastSeenAt,
 });
 
-describe("mergeFleetTasks", () => {
-  it("merges tasks from multiple online Cores, keyed by coreId/taskId", () => {
-    const result = mergeFleetTasks([
-      online("core-home", "This Mac", [task({ taskId: "t1", projectId: "p1", title: "a" })]),
-      online("core_x", "prod-vm-1", [task({ taskId: "t2", projectId: "p9", title: "b" })]),
+describe("mergeFleetSessions", () => {
+  it("merges sessions from multiple online Cores, keyed by coreId/sessionId", () => {
+    const result = mergeFleetSessions([
+      online("core-home", "This Mac", [session({ sessionId: "t1", title: "a" })]),
+      online("core_x", "prod-vm-1", [session({ sessionId: "t2", title: "b" })]),
     ]);
     expect(result.rows).toHaveLength(2);
-    expect(result.rows.map((r) => `${r.coreId}/${r.taskId}`).sort()).toEqual([
+    expect(result.rows.map((r) => `${r.coreId}/${r.sessionId}`).sort()).toEqual([
       "core-home/t1",
       "core_x/t2",
     ]);
     // Each row carries its Core's label so the Fleet view can show it.
-    expect(result.rows.find((r) => r.taskId === "t1")?.coreLabel).toBe("This Mac");
-    expect(result.rows.find((r) => r.taskId === "t2")?.coreLabel).toBe("prod-vm-1");
+    expect(result.rows.find((r) => r.sessionId === "t1")?.coreLabel).toBe("This Mac");
+    expect(result.rows.find((r) => r.sessionId === "t2")?.coreLabel).toBe("prod-vm-1");
     expect(result.offlineCores).toEqual([]);
     expect(result.singleCore).toBe(false);
   });
 
-  it("an offline Core shows in offlineCores with no task rows", () => {
-    const result = mergeFleetTasks([
-      online("core-home", "This Mac", [task({ taskId: "t1", projectId: "p1" })]),
+  it("an offline Core shows in offlineCores with no session rows", () => {
+    const result = mergeFleetSessions([
+      online("core-home", "This Mac", [session({ sessionId: "t1" })]),
       offline("core_x", "prod-vm-1", 1_700_000_000_000),
     ]);
     expect(result.rows).toHaveLength(1);
@@ -73,25 +73,25 @@ describe("mergeFleetTasks", () => {
   });
 
   it("an offline Core that was never seen has lastSeenAt null", () => {
-    const result = mergeFleetTasks([offline("core_y", "never-up", null)]);
+    const result = mergeFleetSessions([offline("core_y", "never-up", null)]);
     expect(result.rows).toEqual([]);
     expect(result.offlineCores).toEqual([
       { coreId: "core_y", coreLabel: "never-up", lastSeenAt: null },
     ]);
   });
 
-  it("does not cache task rows for an offline Core (honestly blank)", () => {
-    // Even if a previous fan-out returned tasks for core_x, the merge only
+  it("does not cache session rows for an offline Core (honestly blank)", () => {
+    // Even if a previous fan-out returned sessions for core_x, the merge only
     // sees the current result — a downed Core contributes zero rows, not stale
     // labels or state.
-    const result = mergeFleetTasks([offline("core_x", "prod-vm-1", 999)]);
+    const result = mergeFleetSessions([offline("core_x", "prod-vm-1", 999)]);
     expect(result.rows).toEqual([]);
     expect(result.offlineCores).toHaveLength(1);
   });
 
   it("degenerates to single-Core navigation when only one Core is registered", () => {
-    const result = mergeFleetTasks([
-      online("core-home", "This Mac", [task({ taskId: "t1", projectId: "p1" })]),
+    const result = mergeFleetSessions([
+      online("core-home", "This Mac", [session({ sessionId: "t1" })]),
     ]);
     expect(result.singleCore).toBe(true);
     expect(result.rows).toHaveLength(1);
@@ -99,24 +99,24 @@ describe("mergeFleetTasks", () => {
   });
 
   it("degenerates to single-Core when the only registered Core is offline", () => {
-    const result = mergeFleetTasks([offline("core-home", "This Mac", 123)]);
+    const result = mergeFleetSessions([offline("core-home", "This Mac", 123)]);
     expect(result.singleCore).toBe(true);
     expect(result.offlineCores).toHaveLength(1);
   });
 
   it("sorts rows by updatedAt descending (most recent first)", () => {
-    const result = mergeFleetTasks([
+    const result = mergeFleetSessions([
       online("c1", "C1", [
-        task({ taskId: "old", projectId: "p1", updatedAt: 100 }),
-        task({ taskId: "new", projectId: "p1", updatedAt: 999 }),
+        session({ sessionId: "old", updatedAt: 100 }),
+        session({ sessionId: "new", updatedAt: 999 }),
       ]),
-      online("c2", "C2", [task({ taskId: "mid", projectId: "p9", updatedAt: 500 })]),
+      online("c2", "C2", [session({ sessionId: "mid", updatedAt: 500 })]),
     ]);
-    expect(result.rows.map((r) => r.taskId)).toEqual(["new", "mid", "old"]);
+    expect(result.rows.map((r) => r.sessionId)).toEqual(["new", "mid", "old"]);
   });
 
   it("sorts offline Cores by label for stable display", () => {
-    const result = mergeFleetTasks([
+    const result = mergeFleetSessions([
       offline("z", "zeta", null),
       offline("a", "alpha", null),
       offline("m", "middle", null),
@@ -129,50 +129,50 @@ describe("mergeFleetTasks", () => {
   });
 
   it("handles an empty fan-out (no Cores registered)", () => {
-    const result = mergeFleetTasks([]);
+    const result = mergeFleetSessions([]);
     expect(result.rows).toEqual([]);
     expect(result.offlineCores).toEqual([]);
     expect(result.singleCore).toBe(false);
   });
 
-  it("excludes archived tasks from the merged rows", () => {
-    // The Fleet view is for active work; archived tasks stay on the Core
+  it("excludes archived sessions from the merged rows", () => {
+    // The Fleet view is for active work; archived sessions stay on the Core
     // and are not fanned out into the dashboard. The merge trusts the Core
     // to omit them, but defensively drops any that slip through so a stale
     // Core never pollutes the active dashboard.
-    const result = mergeFleetTasks([
+    const result = mergeFleetSessions([
       online("c1", "C1", [
-        task({ taskId: "live", projectId: "p1", archived: false }),
-        task({ taskId: "done", projectId: "p1", archived: true }),
+        session({ sessionId: "live", archived: false }),
+        session({ sessionId: "done", archived: true }),
       ]),
     ]);
-    expect(result.rows.map((r) => r.taskId)).toEqual(["live"]);
+    expect(result.rows.map((r) => r.sessionId)).toEqual(["live"]);
   });
 });
 
-describe("fanOutTasks", () => {
+describe("fanOutSessions", () => {
   const target = (coreId: string, coreLabel: string, lastSeenAt: number | null = null): CoreFanOutTarget => ({
     coreId,
     coreLabel,
     lastSeenAt,
   });
-  const tasks = (taskId: string, projectId = "p1"): CoreLinkTaskSnapshot[] => [
-    { taskId, projectId, title: "t", titleManuallySet: false, claudeSessionId: null, agent: "claude-code", status: "running", pinned: false, archived: false, icon: null, updatedAt: 1 },
+  const sessions = (sessionId: string): CoreLinkSessionRow[] => [
+    { sessionId, title: "t", titleManuallySet: false, claudeSessionId: null, agent: "claude-code", status: "running", pinned: false, archived: false, icon: null, updatedAt: 1 },
   ];
 
-  it("returns ok+tasks for Cores whose query resolves", async () => {
-    const results = await fanOutTasks(
+  it("returns ok+sessions for Cores whose query resolves", async () => {
+    const results = await fanOutSessions(
       [target("c1", "C1"), target("c2", "C2")],
-      async (coreId) => (coreId === "c1" ? tasks("t1") : tasks("t2", "p2")),
+      async (coreId) => (coreId === "c1" ? sessions("t1") : sessions("t2")),
     );
     expect(results).toHaveLength(2);
     const c1 = results.find((r) => r.coreId === "c1")!;
     expect(c1.ok).toBe(true);
-    if (c1.ok) expect(c1.tasks.map((t) => t.taskId)).toEqual(["t1"]);
+    if (c1.ok) expect(c1.sessions.map((t) => t.sessionId)).toEqual(["t1"]);
   });
 
   it("returns offline (ok:false) for a Core whose query rejects", async () => {
-    const results = await fanOutTasks(
+    const results = await fanOutSessions(
       [target("c1", "C1", 999)],
       async () => {
         throw new Error("core-link down");
@@ -182,9 +182,9 @@ describe("fanOutTasks", () => {
   });
 
   it("returns offline (ok:false) for a Core whose query times out", async () => {
-    const results = await fanOutTasks(
+    const results = await fanOutSessions(
       [target("slow", "Slow", 100)],
-      async () => new Promise<CoreLinkTaskSnapshot[]>((resolve) => setTimeout(() => resolve(tasks("late")), 1000)),
+      async () => new Promise<CoreLinkSessionRow[]>((resolve) => setTimeout(() => resolve(sessions("late")), 1000)),
       50,
     );
     expect(results).toEqual([{ coreId: "slow", coreLabel: "Slow", ok: false, lastSeenAt: 100 }]);
@@ -192,9 +192,9 @@ describe("fanOutTasks", () => {
 
   it("carries lastSeenAt through to online results (fallback to now)", async () => {
     const before = Date.now();
-    const results = await fanOutTasks(
+    const results = await fanOutSessions(
       [target("c1", "C1", null), target("c2", "C2", 5000)],
-      async () => tasks("t1"),
+      async () => sessions("t1"),
     );
     const after = Date.now();
     const c1 = results.find((r) => r.coreId === "c1")!;
@@ -207,14 +207,14 @@ describe("fanOutTasks", () => {
   it("fans out in parallel (not sequentially)", async () => {
     let active = 0;
     let maxActive = 0;
-    const results = await fanOutTasks(
+    const results = await fanOutSessions(
       [target("a", "A"), target("b", "B"), target("c", "C")],
       async () => {
         active++;
         maxActive = Math.max(maxActive, active);
         await new Promise((r) => setTimeout(r, 20));
         active--;
-        return tasks("t");
+        return sessions("t");
       },
     );
     expect(maxActive).toBeGreaterThan(1);
@@ -223,14 +223,14 @@ describe("fanOutTasks", () => {
   });
 
   it("returns an empty array for an empty target list", async () => {
-    const results = await fanOutTasks([], async () => tasks("t"));
+    const results = await fanOutSessions([], async () => sessions("t"));
     expect(results).toEqual([]);
   });
 
   it("preserves target order in the results", async () => {
-    const results = await fanOutTasks(
+    const results = await fanOutSessions(
       [target("z", "Z"), target("a", "A"), target("m", "M")],
-      async (coreId) => tasks(coreId),
+      async (coreId) => sessions(coreId),
     );
     expect(results.map((r) => r.coreId)).toEqual(["z", "a", "m"]);
   });

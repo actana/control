@@ -36,7 +36,7 @@ export const HARNESS_REGISTRY: Record<Harness, HarnessRegistryEntry> = {
   },
   codex: {
     label: "Codex",
-    description: "OpenAI's terminal coder. Best for test-driven, narrow tasks.",
+    description: "OpenAI's terminal coder. Best for test-driven, narrow sessions.",
     color: "#8ab4ff",
     glyph: "◇",
     command: HARNESS_CLI_CONFIG.codex.command,
@@ -127,7 +127,7 @@ export const harnessSkipPermissionsFlag = (agent: Harness): string | null =>
  * Does a session launched for this Harness carry its skip-permissions flag?
  *
  * Auto-mode is unconditional (issue 22): the New session dialog no longer asks,
- * and no project or task field feeds this. Having a flag at all is the only
+ * and no session field feeds this. Having a flag at all is the only
  * condition — OpenCode has none, and passing it one would be an argument the
  * spawn policy rejects.
  *

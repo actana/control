@@ -1,0 +1,3 @@
+-- The clean baseline of the Panel's Postgres schema (#567, ADR 0041 D17).
+-- It holds no tables: the migrations table is the migrator's own, and each later
+-- pull request of #567 adds the tables it moves in a migration of its own.

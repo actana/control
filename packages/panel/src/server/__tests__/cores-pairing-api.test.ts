@@ -1,4 +1,5 @@
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
+import { closePanelTestDb, openPanelTestDb } from "./_panel-test-db";
 import * as fs from "node:fs";
 import * as https from "node:https";
 import * as os from "node:os";
@@ -8,16 +9,13 @@ import { X509Certificate } from "node:crypto";
 import { generateCertMaterial } from "@actana/shared/core-cert-material";
 import { verifyBearer } from "@actana/shared/core-link-bearer";
 import { generatePairingCode } from "@actana/shared/pairing-code";
-import { createPairingSession } from "@actana/shared/pairing-session";
-import { PairingStore, derivePairingCodeKey, hashPairingCode } from "@actana/shared/pairing-store";
+import { derivePairingCodeKey, hashPairingCode } from "@actana/shared/pairing-store";
 import { createCoreFilesRequestHandler } from "@actana/core/core-files-routes";
-import {
-  buildCorePairingRoutes,
-  composeCoreHttpRoutes,
-  isPairingPath,
-} from "@actana/core/core-pairing-wiring";
+import { CORE_PAIRING_NAMES, composeCoreHttpRoutes } from "@actana/core/core-pairing-wiring";
+import { corePairingStore } from "@actana/core/core-pairing-store";
+import { createPairing } from "@actana/sdk/pairing/server";
 import { PtyCoreLinkServer } from "@actana/core/pty-core-link-server";
-import { fingerprintOf } from "@actana/sdk/core-pairing";
+import { fingerprintOf } from "@actana/sdk/pairing";
 import type { PtyCore } from "@actana/core/pty-manager";
 import type { EventLogPort } from "@actana/core/pty-core-link-server";
 
@@ -26,7 +24,7 @@ import type { EventLogPort } from "@actana/core/pty-core-link-server";
  *
  * The Core here is real: the Core's own `PtyCoreLinkServer` with the Core's own
  * pairing routes mounted through the Core's own wiring, behind a real TLS
- * socket, with sessions in the `PairingStore` that `actana pair new` writes. So
+ * socket, with sessions in the JSON-file store that `actana pair new` writes. So
  * "the code was redeemed" means a CSR was signed by that CA, and "the Panel can
  * dial what it paired" means an mTLS handshake and a bearer both actually
  * worked — not that a fake resolved a promise.
@@ -42,7 +40,7 @@ process.env.AC_USER_DATA_DIR = path.join(tmpRoot, "app");
 process.env.AC_PANEL_DATA_DIR = path.join(tmpRoot, "panel");
 
 const { handleApiRequest } = await import("../api-router");
-const { closePanelDb, getPanelDb } = await import("../panel-db");
+const testDb = await openPanelTestDb();
 const { operatorSessionCookie } = await import("./_operator-session");
 const { resetCoreLinkManagerForTests } = await import("../services/core-link-manager");
 
@@ -56,7 +54,7 @@ async function call(
 ): Promise<Response> {
   const { json, anonymous, ...rest } = init;
   const headers: Record<string, string> = { ...(rest.headers as Record<string, string>) };
-  if (!anonymous) headers.cookie = operatorSessionCookie();
+  if (!anonymous) headers.cookie = (await operatorSessionCookie());
   if (json !== undefined) headers["content-type"] = "application/json";
   const response = await handleApiRequest(
     new Request(`${ORIGIN}${pathname}`, {
@@ -97,8 +95,8 @@ function mockCore(): PtyCore {
     kill: () => true,
     killLaunchProcesses: async () => ({ ptyCount: 0, ports: [] }),
     killPtysUnderPath: async () => ({ ptyCount: 0 }),
-    findByTask: () => ({ ptyId: null }),
-    taskIdForPty: () => null,
+    findBySession: () => ({ ptyId: null }),
+    sessionIdForPty: () => null,
     replay: () => ({ data: "", nextSeq: 0 }),
     killAll: () => {},
   } as unknown as PtyCore;
@@ -113,7 +111,7 @@ type Rig = {
   origin: string;
   fingerprint: string;
   caCert: string;
-  openSession(label?: string): { sessionId: string; code: string };
+  openSession(label?: string): Promise<{ sessionId: string; code: string }>;
 };
 
 const running: PtyCoreLinkServer[] = [];
@@ -124,22 +122,33 @@ async function startCore(): Promise<Rig> {
   const port = await freePort();
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ac-panel-pairing-store-"));
   tempDirs.push(dir);
-  const store = new PairingStore(path.join(dir, "pairing.json"));
+  const store = corePairingStore(path.join(dir, "pairing.json"));
   const codeKey = derivePairingCodeKey(SECRET);
 
-  const pairingRoutes = buildCorePairingRoutes({
+  const pairing = createPairing({
+    store,
     material: {
       caCert: material.ca.cert,
       caKey: material.ca.key,
+      serverCert: material.server.cert,
+      serverKey: material.server.key,
+      clientCert: material.client.cert,
+      clientKey: material.client.key,
       bearerSecret: SECRET,
       coreId: "core_paired",
       coreUuid: CORE_UUID,
+      serverHosts: ["127.0.0.1"],
     },
-    sessions: store,
-    endpointFor: () => `wss://127.0.0.1:${port}`,
+    endpointScheme: "wss",
+    port,
+    publicHosts: ["127.0.0.1"],
+    names: CORE_PAIRING_NAMES,
+    clientLabel: "session-or-client",
+    onRevoked: () => {},
   });
+  const pairingRoutes = pairing.redeem;
   const fileRoutes = createCoreFilesRequestHandler({
-    filesPort: { projectRoot: () => null },
+    filesPort: { workspaceRoot: () => null },
     authVerifier: (bearer) => verifyBearer(bearer, SECRET),
   });
 
@@ -154,7 +163,7 @@ async function startCore(): Promise<Rig> {
     },
     authVerifier: (bearer) => verifyBearer(bearer, SECRET),
     httpRoutes: composeCoreHttpRoutes(pairingRoutes, fileRoutes),
-    isPreAuthPath: isPairingPath,
+    isPreAuthPath: pairing.gate.isPreAuthPath,
   });
   running.push(server);
 
@@ -165,18 +174,15 @@ async function startCore(): Promise<Rig> {
     origin: `https://127.0.0.1:${port}`,
     fingerprint: fingerprintOf(new X509Certificate(material.ca.cert).raw),
     caCert: material.ca.cert,
-    openSession: (label = "the-panel") => {
+    openSession: async (label = "the-panel") => {
       const code = generatePairingCode();
       const sessionId = `ps_${running.length}_${Date.now().toString(16)}`;
-      store.createSession(
-        createPairingSession({
-          id: sessionId,
-          label,
-          codeHash: hashPairingCode({ key: codeKey, sessionId, code }),
-          now: Date.now(),
-        }),
-        Date.now(),
-      );
+      await store.createSession({
+        id: sessionId,
+        label,
+        codeHash: hashPairingCode({ key: codeKey, sessionId, code }),
+        now: Date.now(),
+      });
       return { sessionId, code };
     },
   };
@@ -209,17 +215,16 @@ async function waitForListening(port: number, caCert: string): Promise<void> {
   }
 }
 
-afterEach(() => {
+afterEach(async () => {
   resetCoreLinkManagerForTests();
   for (const server of running.splice(0)) server.close();
   while (tempDirs.length > 0) fs.rmSync(tempDirs.pop()!, { recursive: true, force: true });
-  const db = getPanelDb();
-  db.prepare("DELETE FROM core_secrets").run();
-  db.prepare("DELETE FROM cores").run();
+  await testDb.pool.query("delete from core_secrets");
+  await testDb.pool.query("delete from cores");
 });
 
-afterAll(() => {
-  closePanelDb();
+afterAll(async () => {
+  await closePanelTestDb(testDb);
   fs.rmSync(tmpRoot, { recursive: true, force: true });
 });
 
@@ -233,11 +238,10 @@ async function pair(body: Record<string, unknown>): Promise<Response> {
   return call("/api/cores/pairing", { method: "POST", json: body });
 }
 
-function registryCounts(): { cores: number; secrets: number } {
-  const db = getPanelDb();
-  const cores = (db.prepare("SELECT COUNT(*) AS n FROM cores").get() as { n: number }).n;
-  const secrets = (db.prepare("SELECT COUNT(*) AS n FROM core_secrets").get() as { n: number }).n;
-  return { cores, secrets };
+async function registryCounts(): Promise<{ cores: number; secrets: number }> {
+  const count = async (table: string) =>
+    (await testDb.pool.query(`select count(*)::int as n from ${table}`)).rows[0]!.n as number;
+  return { cores: await count("cores"), secrets: await count("core_secrets") };
 }
 
 async function dialOf(id: string): Promise<{ state: string; lastSeenAt: number | null }> {
@@ -286,7 +290,7 @@ describe("first contact: what the Core presents, before anything is sent", () =>
 describe("a code redeemed against a Core the operator verified", () => {
   it("registers a Core the Panel then reaches over mTLS", async () => {
     const rig = await startCore();
-    const { sessionId, code } = rig.openSession();
+    const { sessionId, code } = await rig.openSession();
 
     const response = await pair({
       address: rig.address,
@@ -302,7 +306,7 @@ describe("a code redeemed against a Core the operator verified", () => {
 
     // The registry row and the sealed secrets are both there, and the dialer
     // gets all the way to an authenticated core-link with them.
-    expect(registryCounts()).toEqual({ cores: 1, secrets: 1 });
+    expect(await registryCounts()).toEqual({ cores: 1, secrets: 1 });
     await vi.waitFor(async () => expect((await dialOf(core.id)).state).toBe("connected"), {
       timeout: 10_000,
     });
@@ -310,7 +314,7 @@ describe("a code redeemed against a Core the operator verified", () => {
 
   it("takes the code hyphenated or not, and in any case", async () => {
     const rig = await startCore();
-    const { sessionId, code } = rig.openSession();
+    const { sessionId, code } = await rig.openSession();
     const mangled = code.replace("-", "").toLowerCase();
     expect(mangled).not.toBe(code);
 
@@ -325,7 +329,7 @@ describe("a code redeemed against a Core the operator verified", () => {
 
   it("takes the fingerprint the way a human copies it — no colons, any case", async () => {
     const rig = await startCore();
-    const { sessionId, code } = rig.openSession();
+    const { sessionId, code } = await rig.openSession();
     const response = await pair({
       address: rig.address,
       code,
@@ -337,7 +341,7 @@ describe("a code redeemed against a Core the operator verified", () => {
 
   it("names the machine, not this Panel, when no alias is typed", async () => {
     const rig = await startCore();
-    const { sessionId, code } = rig.openSession();
+    const { sessionId, code } = await rig.openSession();
     const response = await pair({
       address: rig.address,
       code,
@@ -352,7 +356,7 @@ describe("a code redeemed against a Core the operator verified", () => {
 
   it("never lets the code or the issued key back into a response", async () => {
     const rig = await startCore();
-    const { sessionId, code } = rig.openSession();
+    const { sessionId, code } = await rig.openSession();
     const created = await (
       await pair({ address: rig.address, code, sessionId, expectedFingerprint: rig.fingerprint })
     ).text();
@@ -368,7 +372,7 @@ describe("a code redeemed against a Core the operator verified", () => {
 
   it("refuses a second Core at an endpoint already registered, without spending the code", async () => {
     const rig = await startCore();
-    const first = rig.openSession();
+    const first = await rig.openSession();
     const created = await pair({
       address: rig.address,
       code: first.code,
@@ -378,7 +382,7 @@ describe("a code redeemed against a Core the operator verified", () => {
     expect(created.status).toBe(201);
     const firstId = ((await created.json()) as { core: { id: string } }).core.id;
 
-    const second = rig.openSession();
+    const second = await rig.openSession();
     const response = await pair({
       address: rig.address,
       code: second.code,
@@ -387,7 +391,7 @@ describe("a code redeemed against a Core the operator verified", () => {
     });
     expect(response.status).toBe(400);
     expect(((await response.json()) as { error: string }).error).toContain("already registered");
-    expect(registryCounts()).toEqual({ cores: 1, secrets: 1 });
+    expect(await registryCounts()).toEqual({ cores: 1, secrets: 1 });
 
     // The collision was seen *before* the redemption, so the operator still has
     // their code: remove the Core that was in the way and the same code pairs.
@@ -406,10 +410,10 @@ describe("a code redeemed against a Core the operator verified", () => {
 
   it("says so plainly, without telling the operator to mint a code they still hold", async () => {
     const rig = await startCore();
-    const first = rig.openSession();
+    const first = await rig.openSession();
     await pair({ address: rig.address, code: first.code, sessionId: first.sessionId, expectedFingerprint: rig.fingerprint });
 
-    const second = rig.openSession();
+    const second = await rig.openSession();
     const body = (await (
       await pair({
         address: rig.address,
@@ -440,7 +444,7 @@ describe("a code redeemed against a Core the operator verified", () => {
 describe("a fingerprint that does not match", () => {
   it("stores nothing, and shows both fingerprints", async () => {
     const rig = await startCore();
-    const { sessionId, code } = rig.openSession();
+    const { sessionId, code } = await rig.openSession();
     const wrong = rig.fingerprint.startsWith("AA")
       ? `BB${rig.fingerprint.slice(2)}`
       : `AA${rig.fingerprint.slice(2)}`;
@@ -459,7 +463,7 @@ describe("a fingerprint that does not match", () => {
 
     // Nothing was written, and — the part that matters — the code was not
     // spent, so the same session still redeems.
-    expect(registryCounts()).toEqual({ cores: 0, secrets: 0 });
+    expect(await registryCounts()).toEqual({ cores: 0, secrets: 0 });
     expect(
       (await pair({ address: rig.address, code, sessionId, expectedFingerprint: rig.fingerprint }))
         .status,
@@ -468,11 +472,11 @@ describe("a fingerprint that does not match", () => {
 
   it("refuses to send a code with no fingerprint to compare at all", async () => {
     const rig = await startCore();
-    const { sessionId, code } = rig.openSession();
+    const { sessionId, code } = await rig.openSession();
     const response = await pair({ address: rig.address, code, sessionId, expectedFingerprint: "" });
     expect(response.status).toBe(400);
     expect(((await response.json()) as Refusal).failure).toBe("fingerprint-unconfirmed");
-    expect(registryCounts()).toEqual({ cores: 0, secrets: 0 });
+    expect(await registryCounts()).toEqual({ cores: 0, secrets: 0 });
     // Still redeemable: an unconfirmed fingerprint costs the session nothing.
     expect(
       (await pair({ address: rig.address, code, sessionId, expectedFingerprint: rig.fingerprint }))
@@ -484,7 +488,7 @@ describe("a fingerprint that does not match", () => {
 describe("the failures an operator has to tell apart", () => {
   it("distinguishes a wrong code from a bad address, a bad code and an unreachable Core", async () => {
     const rig = await startCore();
-    const { sessionId } = rig.openSession();
+    const { sessionId } = await rig.openSession();
 
     const wrongCode = await pair({
       address: rig.address,
@@ -518,12 +522,12 @@ describe("the failures an operator has to tell apart", () => {
     });
     expect(((await unreachable.json()) as Refusal).failure).toBe("unreachable");
 
-    expect(registryCounts()).toEqual({ cores: 0, secrets: 0 });
+    expect(await registryCounts()).toEqual({ cores: 0, secrets: 0 });
   }, 40_000);
 
   it("never quotes the code back, even when the code is what was wrong", async () => {
     const rig = await startCore();
-    const { sessionId } = rig.openSession();
+    const { sessionId } = await rig.openSession();
     // The SDK's own message for this failure quotes the string it was handed.
     // The Panel writes its sentence from the failure code instead, and this is
     // what stops a mistyped code landing in an error box, a log, or a report.

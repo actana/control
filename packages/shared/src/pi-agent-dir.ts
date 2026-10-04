@@ -1,5 +1,5 @@
-import * as os from "node:os";
 import * as path from "node:path";
+import { coreHome } from "./core-home";
 
 /**
  * Pi's agent config directory, resolved the way Pi resolves it:
@@ -9,7 +9,7 @@ import * as path from "node:path";
  */
 export function piAgentDir(
   env: NodeJS.ProcessEnv = process.env,
-  home: string = os.homedir(),
+  home: string = coreHome(),
 ): string {
   const fromEnv = env.PI_CODING_AGENT_DIR?.trim();
   if (fromEnv) return path.resolve(fromEnv.replace(/^~(?=$|[/\\])/, home));
@@ -29,7 +29,7 @@ export function piAgentDir(
  */
 export function piHomeMarkers(
   env: NodeJS.ProcessEnv = process.env,
-  home: string = os.homedir(),
+  home: string = coreHome(),
 ): readonly string[] {
   if (!env.PI_CODING_AGENT_DIR?.trim()) return [".pi"];
 
@@ -54,7 +54,7 @@ export function withPiHomeMarkersResolved<
 >(
   targets: readonly T[],
   env: NodeJS.ProcessEnv = process.env,
-  home: string = os.homedir(),
+  home: string = coreHome(),
 ): T[] {
   return targets.map((target) =>
     target.harness === "pi"

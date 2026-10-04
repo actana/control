@@ -10,13 +10,17 @@
  *   AC_PANEL_HOST / HOST   interface to bind (default 0.0.0.0; the container
  *                          and reverse-proxy case — bind 127.0.0.1 to keep it
  *                          on the loopback of a shared machine)
- *   AC_PANEL_DATA_DIR      directory holding panel.db and everything else the
- *                          Panel must survive a restart with
+ *   AC_PANEL_DATA_DIR      directory for non-database state the Panel must
+ *                          survive a restart with (secrets key and similar;
+ *                          the database is Postgres via AC_PANEL_DATABASE_URL)
  *   AC_SECRETS_KEY         32-byte key (hex or base64) for the Cores' stored
  *                          credentials. Unset, the Panel generates and keeps
  *                          one at <data dir>/secrets.key; set it to hold the
  *                          key somewhere other than beside the data. Losing it
  *                          means re-pairing every Core.
+ *   AC_PANEL_DATABASE_URL  Postgres connection URL (postgres://user:pass@host/db).
+ *                          Required: the Panel checks it can connect and exits
+ *                          with a message, before listening, when it cannot.
  *   AC_PANEL_SERVER_ENTRY  override the built server bundle (tests, dev builds)
  *
  * The Panel speaks plain HTTP and trusts a reverse proxy for TLS (ADR 0010).
@@ -63,6 +67,22 @@ if (!handler || typeof handler.fetch !== "function") {
 const serveNodeRequest = mod.serveNodeRequest;
 if (typeof serveNodeRequest !== "function") {
   console.error(`[panel] server entry exports no serveNodeRequest bridge: ${entry}`);
+  process.exit(1);
+}
+
+// The Panel's own state is in Postgres (#567). `connectPanelDatabase` opens the
+// pool, checks it, runs the pending migrations under an advisory lock, and only
+// then dials the registered Cores, whose registry is in that database. No
+// database, or a migration that fails, or a database that does not match this
+// Panel, and the Panel exits with the reason instead of listening.
+if (typeof mod.connectPanelDatabase !== "function") {
+  console.error(`[panel] server entry exports no connectPanelDatabase: ${entry}`);
+  process.exit(1);
+}
+try {
+  await mod.connectPanelDatabase();
+} catch (err) {
+  console.error(`[panel] ${err instanceof Error ? err.message : String(err)}`);
   process.exit(1);
 }
 
@@ -160,6 +180,9 @@ server.listen(port, host, () => {
 
 for (const signal of ["SIGINT", "SIGTERM"]) {
   process.on(signal, () => {
-    server.close(() => process.exit(0));
+    server.close(() => {
+      // `closePanel` stops the Task dispatcher and watcher, then closes the database they read.
+      Promise.resolve((mod.closePanel ?? mod.closePanelDatabase)?.()).finally(() => process.exit(0));
+    });
   });
 }

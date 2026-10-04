@@ -9,6 +9,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import type { ClientDeps } from "@actana/cli";
 import { runActanaCli } from "../actana-cli.ts";
 import {
   readCurrentCore,
@@ -17,44 +18,31 @@ import {
   writeCurrentCore,
   type RegistryPaths,
 } from "../blob-registry.ts";
-import type { CoreProbe, CoreProbeFn } from "../core-probe.ts";
-import { nonInteractiveTerminal, type CliTerminal, type TerminalSignal } from "../cli-terminal.ts";
+import type { CoreProbe, CoreProbeFn } from "@actana/cli";
+import { nonInteractiveTerminal, type CliTerminal } from "@actana/cli";
+
+/** The signals a terminal reports, read off the published `CliTerminal` rather than a copy of its module. */
+type TerminalSignal = Parameters<CliTerminal["onSignal"]>[0];
 import { stubMachineHalf, type MachineHalf } from "./machine-fixture.ts";
-import type { OpenCoreShellFn } from "../core-shell-channel.ts";
-import { SessionWriteRefused } from "../session-attach-channel.ts";
+import type { OpenCoreShellFn } from "@actana/cli";
+import { SessionWriteRefused } from "@actana/cli";
 import type {
   AttachAuthority,
   OpenSessionAttachFn,
   SessionAttachExit,
   SessionAttachment,
-} from "../session-attach-channel.ts";
-import type { CoreConnectFn, CoreConnectOptions, CoreLinkClient } from "../core-connection.ts";
-import type { CorePairingPort } from "../core-pair.ts";
-import { CorePairingError, type CorePairingFailure } from "@actana/sdk/core-pairing.ts";
-import type { CoreRegistrationBlob } from "@actana/sdk/core-registration-blob.ts";
-import type { OpenSessionGateway, SessionGateway, StartedSession } from "../session-gateway.ts";
-import { projectFilesErrorFrom } from "../project-files-gateway.ts";
+} from "@actana/cli";
+import type { CoreConnectFn, CoreConnectOptions, CoreLinkClient } from "@actana/cli";
+import type { CorePairingPort } from "@actana/cli";
+import { PairingError, type PairingFailure } from "@actana/sdk/pairing";
+import type { CoreRegistrationBlob } from "@actana/sdk/pairing";
+import type { OpenSessionGateway, SessionGateway, StartedSession } from "@actana/cli";
 import type {
-  OpenProjectFilesFn,
-  ProjectFileTransfers,
-  ProjectFilesGateway,
-} from "../project-files-gateway.ts";
-import type {
-  CoreFileDownload,
-  CoreFileEntry,
-  CoreFileListOptions,
-  CoreFileProgress,
-  CoreFileSource,
-} from "@actana/sdk/core-files.ts";
-import type {
-  CoreLinkDirListing,
   CoreLinkEvent,
   CoreLinkHarnessAvailabilityMap,
-  CoreLinkProjectMutation,
-  CoreLinkProjectSnapshot,
   CoreLinkRequestFrame,
   CoreLinkResponseFrame,
-} from "@actana/sdk/core-link-frames.ts";
+} from "@actana/sdk/core";
 
 /** One run's captured output, plus the exit code. */
 export type CliRun = {
@@ -100,8 +88,6 @@ export type RunOptions = {
   pairing?: CorePairingPort;
   /** What the `session` noun's verbs get back, or a throw. */
   sessions?: OpenSessionGateway;
-  /** What `project cp` and `project files` get back, or a throw. */
-  files?: OpenProjectFilesFn;
   /** Overrides for the machine half — a suite about a client noun rarely needs one. */
   machine?: Partial<MachineHalf>;
   /**
@@ -133,6 +119,10 @@ export type RunOptions = {
   openShell?: OpenCoreShellFn;
   /** What `session attach` gets back, or a throw. */
   openAttach?: OpenSessionAttachFn;
+  /** What `files` gets back, or a throw. */
+  openFiles?: ClientDeps["openFiles"];
+  /** What `shared` and `session start --shared` get back, or a throw. */
+  openShared?: ClientDeps["openShared"];
 };
 
 /**
@@ -143,7 +133,7 @@ export type RunOptions = {
  */
 export function fakeStartedSession(overrides: Partial<StartedSession> = {}): StartedSession {
   return {
-    taskId: "task_1",
+    sessionId: "session_1",
     ptyId: "pty_1",
     harness: "claude-code",
     command: "claude",
@@ -151,8 +141,6 @@ export function fakeStartedSession(overrides: Partial<StartedSession> = {}): Sta
     // default fake is the quiet case — a test asking about the caveat has to
     // say `reportsTurnStart: false` and mean it.
     reportsTurnStart: true,
-    projectId: "proj_1",
-    project: "web",
     wait: async () => ({ status: "finished", exited: false }),
     screen: () => "the transcript",
     // The default is a prompt that landed. A test about #483's outcome says
@@ -214,7 +202,7 @@ export type FakePairing = CorePairingPort & {
  * The SDK's pairing surface, without a Core.
  *
  * `identify` answers with the fingerprint the test says the Core presents;
- * `pair` hands back a credential or throws the `CorePairingError` the suite is
+ * `pair` hands back a credential or throws the `PairingError` the suite is
  * about. Both are recorded, because half of what this verb has to get right is
  * *not* reaching the second one.
  */
@@ -223,9 +211,9 @@ export function fakePairing(
     fingerprint?: string;
     identifyFails?: unknown;
     blob?: CoreRegistrationBlob;
-    fails?: CorePairingFailure;
+    fails?: PairingFailure;
     failsWith?: unknown;
-    detail?: ConstructorParameters<typeof CorePairingError>[2];
+    detail?: ConstructorParameters<typeof PairingError>[2];
   } = {},
 ): FakePairing {
   const fingerprint = opts.fingerprint ?? PAIRED_FINGERPRINT;
@@ -247,7 +235,7 @@ export function fakePairing(
       state.paired.push(pairOpts);
       if (opts.failsWith) throw opts.failsWith;
       if (opts.fails) {
-        throw new CorePairingError(opts.fails, `the fake Core answered ${opts.fails}`, opts.detail ?? {});
+        throw new PairingError(opts.fails, `the fake Core answered ${opts.fails}`, opts.detail ?? {});
       }
       // **The label is echoed, because `pairWithCore` echoes it.** The real
       // function copies `opts.label` straight into the blob it returns — the
@@ -363,11 +351,6 @@ export function makeCliFixture(): CliFixture {
           (async () => {
             throw new Error("this test did not expect to open a session gateway");
           }),
-        openFiles:
-          opts.files ??
-          (async () => {
-            throw new Error("this test did not expect to open a file gateway");
-          }),
         now: () => opts.now ?? Date.UTC(2026, 7, 12),
         // Terminal bytes are swept for credentials alongside the line sinks, so
         // a `core shell` that ever echoed a blob back would fail the same test
@@ -382,6 +365,16 @@ export function makeCliFixture(): CliFixture {
           opts.openAttach ??
           (async () => {
             throw new Error("this test did not expect to attach to a session");
+          }),
+        openFiles:
+          opts.openFiles ??
+          (async () => {
+            throw new Error("this test did not expect to open a home folder");
+          }),
+        openShared:
+          opts.openShared ??
+          (async () => {
+            throw new Error("this test did not expect to open a Shared folder");
           }),
         // `actana` is one program, so its deps bag has one shape (#288). A
         // suite about the client nouns still has to fill the machine half; it
@@ -400,8 +393,7 @@ export type FakeCore = {
   connect: CoreConnectFn;
   /** Every frame that went through `request`, in order. */
   requests: CoreLinkRequestFrame[];
-  /** Every project mutation, in order. */
-  mutations: CoreLinkProjectMutation[];
+  mutations: unknown[];
   /** The cursor each `subscribe` carried. */
   subscribes: number[];
   /** True once the command hung up — a link left open is a defect worth failing on. */
@@ -417,15 +409,9 @@ export type FakeCore = {
 };
 
 export type FakeCoreOptions = {
-  projects?: CoreLinkProjectSnapshot[];
   availability?: CoreLinkHarnessAvailabilityMap;
-  listing?: CoreLinkDirListing;
-  /** Answer `request` yourself — for `dirList` / `harnessInstall` shapes. */
+  /** Answer `request` yourself — for `harnessInstall` shapes. */
   respond?: (frame: CoreLinkRequestFrame) => CoreLinkResponseFrame | Promise<CoreLinkResponseFrame>;
-  /** Reject `projectsMutate` the way a Core rejecting a path does. */
-  refuseMutation?: string;
-  /** What `projectsMutate` answers when it is not refused. Default: echo the create. */
-  mutationResult?: CoreLinkProjectSnapshot | null;
 };
 
 /**
@@ -454,7 +440,7 @@ export function fakeCore(opts: FakeCoreOptions = {}): FakeCore {
       const full: CoreLinkEvent = {
         ts: Date.UTC(2026, 7, 12),
         ptyId: null,
-        taskId: null,
+        sessionId: null,
         payload: "{}",
         ...event,
       };
@@ -472,21 +458,7 @@ export function fakeCore(opts: FakeCoreOptions = {}): FakeCore {
     request: async (frame) => {
       state.requests.push(frame);
       if (opts.respond) return opts.respond(frame);
-      if (frame.type === "dirList") {
-        return {
-          type: "dirListResult",
-          reqId: "r",
-          listing: opts.listing ?? emptyListing(),
-        };
-      }
       return { type: "error", reqId: "r", message: `fake Core has no answer for ${frame.type}` };
-    },
-    projectsList: async () => opts.projects ?? [],
-    projectsMutate: async (mutation) => {
-      state.mutations.push(mutation);
-      if (opts.refuseMutation !== undefined) throw new Error(opts.refuseMutation);
-      if (opts.mutationResult !== undefined) return opts.mutationResult;
-      return mutation.op === "create" ? projectSnapshot(mutation.name, mutation.path) : null;
     },
     agentsAvailabilityList: async () => opts.availability ?? {},
     onEvent: (cb) => {
@@ -514,210 +486,6 @@ export function fakeCore(opts: FakeCoreOptions = {}): FakeCore {
   return state;
 }
 
-/** What a {@link fakeProjectFiles} was asked to transfer, and what it answered. */
-export type FakeProjectFiles = {
-  /** What `deps.openFiles` hands the verb under test. */
-  open: OpenProjectFilesFn;
-  /** Every Project name or id a verb asked to resolve, in order. */
-  resolved: string[];
-  /** Every listing, with the options it carried. */
-  lists: CoreFileListOptions[];
-  /**
-   * Every upload, **with its body drained to a buffer**.
-   *
-   * Draining rather than counting is what makes the round-trip suites possible:
-   * a `cp ./dir project:path` produces a real tar here, and a test can unpack it
-   * with `local-tar.ts` and assert on the modes that came out. The Core is
-   * faked; the archive is not.
-   */
-  uploads: Array<{
-    path: string;
-    kind: "file" | "tar";
-    mode: number | null;
-    mtime: number | null;
-    contentLength: number | null;
-    body: Buffer;
-  }>;
-  /** Every download, by the path it asked for. */
-  downloads: string[];
-  /** True once the verb hung up. A gateway left open is a defect worth failing on. */
-  closed: boolean;
-};
-
-export type FakeProjectFilesOptions = {
-  /** The Project every resolution answers with. */
-  project?: { projectId: string; name: string; path: string };
-  /** What `list` streams. */
-  entries?: CoreFileEntry[];
-  /** Refuse to resolve the Project — a bad name, or a Core that has none. */
-  refuseProject?: Error;
-  /**
-   * What an upload reports back, given what it was handed.
-   *
-   * The default reports nothing, because the *Core* is what decides whether an
-   * entry was an overwrite and a fake that guessed would be asserting on its own
-   * opinion. A suite about F5 supplies the `overwritten` lines it means to test.
-   */
-  progressFor?: (upload: FakeProjectFiles["uploads"][number]) => CoreFileProgress[];
-  /** Throw instead of streaming progress — the F8 conflict, a refusal, a stream error. */
-  uploadFails?: Error;
-  /**
-   * Stream the progress `progressFor` supplies, **then** throw.
-   *
-   * The part-way failure the Core models with `CoreFileStreamError`: entries
-   * really landed, and then the transfer died. Distinct from `uploadFails`,
-   * which dies before anything crosses — the difference is the whole point of
-   * the test, because what is at stake is what the CLI does with the entries it
-   * already knows about.
-   */
-  uploadFailsAfterProgress?: Error;
-  /** What a download answers with, given the path. */
-  downloadWith?: (path: string) => CoreFileDownload;
-  /** Throw instead of answering a download. */
-  downloadFails?: Error;
-  /** Throw instead of streaming a listing. */
-  listFails?: Error;
-};
-
-/**
- * A Project's file surface that never opens a socket.
- *
- * The counterpart to {@link fakeCore} for the two verbs that do not use the
- * core link for their bytes. What the `cp` and `files` suites are about — the
- * direction parse, the progress rule, the overwrite naming, the `--json` shapes,
- * the exit codes — is none of it a fact about HTTPS, and
- * `project-files-live.test.ts` is where a real Core answers instead.
- */
-export function fakeProjectFiles(opts: FakeProjectFilesOptions = {}): FakeProjectFiles {
-  const project = opts.project ?? { projectId: "p-api", name: "api", path: "/srv/api" };
-  const state: FakeProjectFiles = {
-    open: async () => gateway,
-    resolved: [],
-    lists: [],
-    uploads: [],
-    downloads: [],
-    closed: false,
-  };
-
-  const transfers: ProjectFileTransfers = {
-    projectId: project.projectId,
-    name: project.name,
-    path: project.path,
-    list: (listOpts = {}) => {
-      state.lists.push(listOpts);
-      return {
-        async *[Symbol.asyncIterator]() {
-          if (opts.listFails) throw projectFilesErrorFrom(opts.listFails);
-          for (const entry of opts.entries ?? []) yield entry;
-        },
-      };
-    },
-    upload: (uploadOpts) => ({
-      async *[Symbol.asyncIterator]() {
-        // Drained first and always, exactly as a real transfer does: a body the
-        // caller never read is a file handle nobody closed, and a `cp` whose
-        // upload was abandoned half-way is a different test.
-        const upload = {
-          path: uploadOpts.path,
-          kind: uploadOpts.kind ?? ("file" as const),
-          mode: uploadOpts.mode ?? null,
-          mtime: uploadOpts.mtime ?? null,
-          contentLength: uploadOpts.contentLength ?? null,
-          body: await drain(uploadOpts.body),
-        };
-        state.uploads.push(upload);
-        if (opts.uploadFails) throw projectFilesErrorFrom(opts.uploadFails);
-        for (const line of opts.progressFor?.(upload) ?? []) yield line;
-        if (opts.uploadFailsAfterProgress) throw projectFilesErrorFrom(opts.uploadFailsAfterProgress);
-      },
-    }),
-    download: async (downloadOpts) => {
-      state.downloads.push(downloadOpts.path);
-      if (opts.downloadFails) throw projectFilesErrorFrom(opts.downloadFails);
-      if (!opts.downloadWith) throw new Error("this test did not say what a download answers with");
-      return opts.downloadWith(downloadOpts.path);
-    },
-  };
-
-  const gateway: ProjectFilesGateway = {
-    project: async (wanted) => {
-      state.resolved.push(wanted);
-      if (opts.refuseProject) throw projectFilesErrorFrom(opts.refuseProject);
-      return transfers;
-    },
-    close: () => {
-      state.closed = true;
-    },
-  };
-
-  return state;
-}
-
-/** A `CoreFileSource` as one buffer — both shapes the SDK accepts. */
-async function drain(body: CoreFileSource): Promise<Buffer> {
-  const chunks: Buffer[] = [];
-  if (typeof (body as ReadableStream<Uint8Array>).getReader === "function") {
-    const reader = (body as ReadableStream<Uint8Array>).getReader();
-    for (;;) {
-      const next = await reader.read();
-      if (next.done) break;
-      if (next.value) chunks.push(Buffer.from(next.value));
-    }
-    return Buffer.concat(chunks);
-  }
-  for await (const chunk of body as AsyncIterable<Uint8Array | string>) {
-    chunks.push(typeof chunk === "string" ? Buffer.from(chunk, "utf8") : Buffer.from(chunk));
-  }
-  return Buffer.concat(chunks);
-}
-
-/** Bytes as the `ReadableStream` a download hands back. */
-export function streamOf(bytes: Uint8Array | AsyncIterable<Uint8Array>): ReadableStream<Uint8Array> {
-  if (bytes instanceof Uint8Array) {
-    return new ReadableStream<Uint8Array>({
-      start(controller) {
-        controller.enqueue(bytes);
-        controller.close();
-      },
-    });
-  }
-  const iterator = bytes[Symbol.asyncIterator]();
-  return new ReadableStream<Uint8Array>({
-    async pull(controller) {
-      const next = await iterator.next();
-      if (next.done) controller.close();
-      else controller.enqueue(next.value);
-    },
-  });
-}
-
-/** A project row with the columns a CLI renders and defaults for the rest. */
-export function projectSnapshot(
-  name: string,
-  projectPath: string,
-  overrides: Partial<CoreLinkProjectSnapshot> = {},
-): CoreLinkProjectSnapshot {
-  return {
-    projectId: `p-${name}`,
-    name,
-    path: projectPath,
-    icon: "PR",
-    iconColor: "#7ce58a",
-    pinned: false,
-    rememberHarnessSettings: false,
-    savedHarness: null,
-    savedSkipPermissions: false,
-    savedBareSession: false,
-    defaultGridView: false,
-    updatedAt: Date.UTC(2026, 7, 12),
-    ...overrides,
-  };
-}
-
-function emptyListing(): CoreLinkDirListing {
-  return { path: "/", parent: null, home: "/root", roots: [], entries: [], truncated: false };
-}
-
 /**
  * A registration blob whose every secret field is a sentinel.
  *
@@ -733,14 +501,6 @@ export const SENTINEL_BEARER = "bearer-SENTINEL-YYY.signature-SENTINEL-XXX";
 /** Every secret the sentinel blob carries, for an absence sweep. */
 export const SENTINELS = [SENTINEL_CA, SENTINEL_CERT, SENTINEL_KEY, SENTINEL_BEARER];
 
-/**
- * A terminal that behaves like one, without being one.
- *
- * What `core shell` must be tested against: raw mode is recorded rather than
- * performed, keystrokes and resizes and signals are things a test *does*, and
- * the promise says when the command has finished wiring itself up — which is
- * the only moment from which sending it a `SIGINT` proves anything.
- */
 export type FakeTerminal = CliTerminal & {
   /** Every `setRawMode` call, in order. `[true, false]` is a session done right. */
   rawModeCalls: boolean[];
@@ -851,7 +611,7 @@ export type FakeAttachment = SessionAttachment & {
 };
 
 export function fakeAttachment(
-  opts: { authority?: AttachAuthority; backlog?: string; taskId?: string } = {},
+  opts: { authority?: AttachAuthority; backlog?: string; sessionId?: string } = {},
 ): FakeAttachment {
   const authority = opts.authority ?? "held";
   const sent: string[] = [];
@@ -866,7 +626,7 @@ export function fakeAttachment(
   let writeError: Error | null = null;
 
   return {
-    taskId: opts.taskId ?? "task_1",
+    sessionId: opts.sessionId ?? "session_1",
     ptyId: "pty_1",
     authority,
     backlog: opts.backlog ?? "",

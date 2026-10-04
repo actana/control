@@ -6,7 +6,7 @@
 // file added next year — or `stale.yml` quietly restored — fails here instead
 // of being noticed by whoever happens to look.
 //
-// **D34's count is now six entry points**, and every revision was deliberate:
+// **D34's count is now seven entry points**, and every revision was deliberate:
 //
 //   ci.yml           gates every pull request, and publishes the train's image
 //                    on every push to `beta/**` (ADR 0023 D41)
@@ -23,6 +23,9 @@
 //                    cut — the moving `vx.y.z-beta` tag, a prerelease GitHub
 //                    Release, three tarballs, `SHA256SUMS` and `install.sh`
 //                    (ADR 0036 D9, D10, amending 0016 D34 in its turn)
+//   codeql.yml       the seventh: CodeQL code scanning on every pull request and
+//                    on the integration branches, in a file of its own so
+//                    `ci.yml`'s jobs and required checks are untouched (#599)
 //
 // `beta-release.yml` is an entry point rather than a third mode of
 // `release.yml`, and ADR 0036 D9 records the refactor that would merge them as
@@ -59,6 +62,7 @@ import * as path from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { CORE_TARGETS } from "../lib/core-tarball.mjs";
+import { POSTGRES_IMAGE } from "../lib/postgres-image.mjs";
 
 const repoRoot = path.resolve(import.meta.dirname, "..", "..");
 const workflowDir = path.join(repoRoot, ".github/workflows");
@@ -81,10 +85,11 @@ const code = (block) =>
     .join("\n");
 
 describe("the workflow inventory (ADR 0016 D34)", () => {
-  it("is six entry points plus one reusable workflow — nothing else", () => {
+  it("is seven entry points plus one reusable workflow — nothing else", () => {
     expect(fs.readdirSync(workflowDir).sort()).toEqual([
       "beta-release.yml",
       "ci.yml",
+      "codeql.yml",
       "container-image.yml",
       "housekeeping.yml",
       "landing.yml",
@@ -340,208 +345,51 @@ describe("release.yml's trigger and its two modes (ADR 0023 D17, D26, D28, D40)"
   });
 });
 
-// npm, the second release registry (#129 D12, D13; #159; ADR 0018 as amended).
-//
-// Everything in this block is invisible in a green run, and one of them is
-// invisible *forever*: a publish that stopped passing `--provenance`, or that
-// moved to a job without `id-token: write`, **succeeds**. It prints the same
-// lines, exits 0, and puts a package on the registry that is silently
-// unattested — and the version cannot be republished to fix it.
-//
-// The rest of the release recovers from a bad step by re-running it. This one
-// does not: an npm version number is burned by its first publish, and
-// unpublishing inside the 72-hour window frees the bytes and not the name. So
-// the ordering, the permission and the flag are pinned here rather than
-// reviewed by eye.
-describe("npm publishing (#129 D13, ADR 0018 as amended)", () => {
+// npm is not a release registry of this repository any more (#580 T-404). `@actana/sdk` and
+// `@actana/cli` are published from actana/client; this repository has no package to publish, so
+// the `npm` job, its token, its dist-tag and the scripts behind them are gone. The block pins
+// the absence: a publish that comes back (or a token a release would refuse without) is a release
+// that spends a version number nothing here can take back.
+describe("nothing in the release publishes to npm (#580)", () => {
   const source = read("release.yml");
+  const body = code(source);
 
-  // D13's "fails loudly", and *where* it fails is the requirement. `npm` is the
-  // last job in the graph, so a token checked at the publish would be a token
-  // checked after both images and their `:latest` were already re-pointed —
-  // a half-published release, in the direction that does not undo.
-  it("decides a missing NPM_TOKEN in resolve, before anything is built", () => {
-    const job = code(jobBlock(source, "resolve"));
-    expect(job).toContain("secrets.NPM_TOKEN");
-    expect(job).toContain("::error title=Missing npm token::");
-    // The same shape as the Docker Hub check it was modelled on: both are in
-    // this job, both are a bare emptiness test, both exit 1.
-    expect(job).toContain("::error title=Missing Docker Hub credential::");
-    expect(job).toMatch(/if \[\[ -n "\$NPM_TOKEN" \]\]; then\n\s+exit 0\n\s+fi/);
-    // And it is genuinely upstream: every publishing job needs `resolve`.
-    for (const publisher of ["panel", "core", "npm", "github-release"]) {
-      expect(jobBlock(source, publisher), `${publisher} does not wait on resolve`).toMatch(
-        /needs: \[?[^\]\n]*resolve/,
-      );
-    }
+  it("has no npm job, no npm token and no npm dist-tag", () => {
+    expect(source).not.toMatch(/^ {2}npm:$/m);
+    expect(body).not.toContain("NPM_TOKEN");
+    expect(body).not.toContain("npm publish");
+    expect(body).not.toContain("npm_tag");
+    expect(body).not.toContain("id-token");
   });
 
-  // The trap #159 names. `npm publish --provenance` from a job without this
-  // permission fails; a publish that quietly dropped the flag does not. Both
-  // halves are asserted, plus the read-back that catches the case neither
-  // covers.
-  it("publishes with id-token: write, and with the flag", () => {
-    const job = jobBlock(source, "npm");
-    expect(job).toMatch(/^ {4}permissions:\n(?: {6}.+\n)* {6}id-token: write$/m);
-    expect(code(job)).toContain(
-      'npm publish "$tarball" --provenance --access public --tag "$NPM_TAG"',
+  it("does not run the retired publish scripts", () => {
+    expect(body).not.toContain("rehearse-npm-publish");
+    expect(body).not.toContain("npm-packages");
+    for (const retired of ["scripts/rehearse-npm-publish.mjs", "scripts/lib/npm-packages.mjs"]) {
+      expect(fs.existsSync(path.join(repoRoot, retired)), `${retired} is back`).toBe(false);
+    }
+    const pkg = JSON.parse(fs.readFileSync(path.join(repoRoot, "package.json"), "utf8"));
+    expect(Object.keys(pkg.scripts)).not.toContain("npm:rehearse");
+  });
+
+  it("announces the Release after the images and tarballs, without waiting on an npm job", () => {
+    const needs = /needs: \[([^\]]*)\]/.exec(code(jobBlock(source, "github-release")));
+    expect(needs, "github-release has no needs list").not.toBeNull();
+    expect(needs[1].split(",").map((name) => name.trim()).sort()).toEqual(
+      ["core", "installer-e2e", "panel", "resolve", "tarball", "tarball-macos"],
     );
   });
 
-  // D28's third surface. `npm publish` with no `--tag` takes `latest`, which is
-  // the same default this file already refuses for the docker tag list and for
-  // `gh release create --latest`. The assertion is in two halves because the
-  // interesting failure is not "the flag is gone" but "the flag is there and
-  // hard-coded": a literal `--tag latest` would satisfy a check that only
-  // looked for `--tag`.
-  it("never lets npm default the dist-tag, and takes it from resolve", () => {
-    const job = jobBlock(source, "npm");
-    const publish = code(job);
-    // Every `npm publish` *command* in the job carries an explicit `--tag` —
-    // the job's own `name:` says "npm publish" too, and it is not one.
-    const commands = publish.split("\n").filter((line) => /^\s*npm publish /.test(line));
-    expect(commands.length, "no npm publish command in the npm job").toBeGreaterThan(0);
-    for (const line of commands) {
-      expect(line, `npm publish with no --tag: ${line.trim()}`).toMatch(/--tag /);
-      expect(line, `npm publish with a hard-coded dist-tag: ${line.trim()}`).not.toMatch(
-        /--tag +"?(latest|next)"?/,
-      );
-    }
-    // And the value is the one `resolve` decided, not a second opinion.
-    expect(job).toContain("NPM_TAG: ${{ needs.resolve.outputs.npm_tag }}");
-    expect(jobBlock(source, "resolve")).toContain("npm_tag: ${{ steps.tags.outputs.npm_tag }}");
+  it("asks promote.yml's preflight for the Docker Hub credentials and no npm one", () => {
+    const preflight = code(jobBlock(read("promote.yml"), "preflight"));
+    expect(preflight).toContain("secrets.DOCKERHUB_TOKEN");
+    expect(preflight).not.toContain("NPM_TOKEN");
   });
 
-  // The guard step covers all three surfaces in one place, so a backport cannot
-  // move `latest` on any of them. The docker and GitHub arms predate #159; the
-  // npm arm is the one that was missing.
-  it("guards the npm dist-tag in resolve, beside the other two surfaces", () => {
-    const job = code(jobBlock(source, "resolve"));
-    expect(job).toContain("::error title=A backport must never take the npm latest dist-tag::");
-    expect(job).toContain("::error title=A backport must never move latest::");
-    expect(job).toContain("::error title=A backport must never be the GitHub latest release::");
-    // An empty dist-tag is not "no tag" — `npm publish --tag ""` fails, and it
-    // would fail after both images had shipped.
-    expect(job).toContain("::error title=No npm dist-tag resolved::");
-  });
-
-  // The read-back after the publish is the one check that can catch a publish
-  // that already succeeded unattested — and it runs at the only point in this
-  // workflow where a false alarm costs a version number. "The registry said no
-  // attestation" and "the registry never answered" must therefore be different
-  // failures with different advice.
-  it("tells an unattested publish apart from a registry it could not reach", () => {
-    const job = jobBlock(source, "npm");
-    const step = job.slice(job.indexOf("Every published package is attested"));
-    // The read is authenticated, for the same reason the publish is: the
-    // `.npmrc` setup-node wrote references NODE_AUTH_TOKEN, and an unset one is
-    // sent as a literal bearer token.
-    expect(step).toContain("NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}");
-    // The exit status is captured apart from the output. `2>/dev/null || true`
-    // is precisely what collapsed the two cases into one empty string.
-    expect(step).not.toContain("2>/dev/null || true");
-    expect(step).toMatch(/if output="\$\(npm view "\$spec" dist\.attestations/);
-    // Two errors, two messages, and the advice differs on the point that
-    // matters: one says cut the next version, the other says do not.
-    expect(step).toContain("::error title=Published without provenance::");
-    expect(step).toContain("::error title=Could not verify provenance::");
-    expect(step).toMatch(/Could not verify provenance::[^\n]*Do NOT cut a new version/);
-    // And it still fails the release either way.
-    expect(step).toContain('exit "$fail"');
-    expect(step).not.toContain("continue-on-error");
-  });
-
-  // The other half of separating the status from the output: what lands in the
-  // output has to be the field. `npm view <spec> <field>` exits 0 and prints
-  // nothing when the field is absent, so `2>&1` turns any `npm warn` line into
-  // a non-empty answer — and non-empty is this step's whole definition of
-  // attested. A warning would be reported as provenance, by the one check that
-  // exists to catch a publish that has none.
-  it("does not let a warning on stderr read as an attestation", () => {
-    const job = jobBlock(source, "npm");
-    const step = code(job.slice(job.indexOf("Every published package is attested")));
-    // stderr has its own file, and is still kept for the failure message.
-    expect(step).toContain('2>"$stderr"');
-    expect(step).toMatch(/error="\$\(tail -n 3 "\$stderr"/);
-    expect(step, "npm's stderr is folded back into the value being tested").not.toMatch(
-      /npm view "\$spec" dist\.attestations[^\n]*2>&1/,
-    );
-    // And the value has to look like what a predicateType is.
-    expect(step).toContain('"$predicate" != https://*');
-  });
-
-  // Least privilege, and a second reading of the same line: `id-token: write`
-  // is a token-minting permission, and it belongs to the one job that mints a
-  // token. Its appearance anywhere else in this file would most likely be
-  // somebody moving the publish.
-  it("grants id-token to that job and to nothing else", () => {
-    for (const other of ["resolve", "tarball", "tarball-macos", "installer-e2e", "github-release"]) {
-      expect(code(jobBlock(source, other)), `${other} can mint an OIDC token`).not.toContain(
-        "id-token: write",
-      );
-    }
-  });
-
-  // Downstream of the human, and downstream of every gate. The approval itself
-  // is no longer in this file (ADR 0023 D15 moved it to the head of
-  // promote.yml, upstream of the whole workflow), so what is assertable here is
-  // the ordering that survived the move — and it is the ordering that matters
-  // for a publish that cannot be undone: nothing is burned until the images are
-  // out, the tarballs exist, and the installer e2e is green.
-  it("waits on every other publish, because it is the one that cannot be redone", () => {
-    const job = jobBlock(source, "npm");
-    for (const upstream of ["tarball", "tarball-macos", "installer-e2e", "panel", "core"]) {
-      expect(job, `npm publishes ahead of ${upstream}`).toMatch(
-        new RegExp(`needs: \\[[^\\]]*\\b${upstream}\\b[^\\]]*\\]`),
-      );
-    }
-    // And the announcement waits on it, so a GitHub Release never points at an
-    // `npm i` that 404s.
-    expect(jobBlock(source, "github-release")).toMatch(/needs: \[[^\]]*\bnpm\b[^\]]*\]/);
-  });
-
-  // The credential reaches exactly one job. `github-release` is in this list
-  // for a specific reason: it is the job with `contents: write`, and the two
-  // powerful credentials in this workflow should not meet.
-  it("keeps the npm token out of every job but the publish", () => {
-    for (const other of ["tarball", "tarball-macos", "installer-e2e", "github-release"]) {
-      expect(code(jobBlock(source, other)), `${other} can reach NPM_TOKEN`).not.toContain(
-        "secrets.NPM_TOKEN",
-      );
-    }
-    // `resolve` sees it, and only as an emptiness test — it never publishes.
+  it("keeps the latest guard on the two surfaces that remain", () => {
     const resolve = code(jobBlock(source, "resolve"));
-    expect(resolve).not.toContain("npm publish");
-  });
-
-  // `pnpm pack`, not `npm pack`, and the difference is not a preference:
-  // `publishConfig.exports` is applied by pnpm and ignored by npm, and it is
-  // what turns the SDK's source-pointing `exports` map into the compiled one a
-  // consumer resolves. An `npm pack` here would publish a package whose every
-  // subpath resolves to a file that is not in the tarball.
-  it("packs through the rehearsal script, which is what pull requests run", () => {
-    const job = code(jobBlock(source, "npm"));
-    expect(job).toContain("node scripts/rehearse-npm-publish.mjs");
-    expect(job).toContain('--version "$RELEASE_VERSION"');
-    expect(job).not.toMatch(/\bnpm pack\b/);
-  });
-
-  // The last brace, and the only one that can catch an unattested publish after
-  // the fact: read the attestation back off the registry and fail if it is not
-  // there.
-  it("reads the attestation back rather than trusting the flag", () => {
-    const job = code(jobBlock(source, "npm"));
-    expect(job).toContain("dist.attestations.provenance.predicateType");
-    expect(job).toContain("::error title=Published without provenance::");
-  });
-
-  // A re-run is a supported path (`workflow_dispatch` on the same tag), and on
-  // it the registry already holds this version. `npm publish` answers 403 to
-  // that, which would fail a release whose only fault is having worked.
-  it("treats an already-published version as published", () => {
-    const job = code(jobBlock(source, "npm"));
-    expect(job).toContain("::notice title=Already on npm::");
-    expect(job).toMatch(/npm view "\$spec" version/);
+    expect(resolve).toContain("::error title=A backport must never move latest::");
+    expect(resolve).toContain("::error title=A backport must never be the GitHub latest release::");
   });
 });
 
@@ -799,8 +647,8 @@ describe("no automatic train cut (ADR 0023 D25, as amended by #325)", () => {
 //
 // So the name is asserted against the rulesets rather than against a literal,
 // and the manifest list is asserted against the workspace rather than against a
-// count. `packages/sdk` is the fifth (#152, ADR 0025) and `packages/cli` the
-// sixth (#157); the seventh fails here, which is the design working.
+// count. `packages/sdk` was the fifth (#152, ADR 0025) until #580 deleted it; a new
+// package fails here until it is added, which is the design working.
 //
 // The second half of that wiring moved in #325. The set the *cut* writes used
 // to be an array inside `promote.yml`, and is now the array in the runbook a
@@ -1524,86 +1372,28 @@ describe("the beta cut (ADR 0036 C1, C3, D7, D9-D11, D13, D14)", () => {
     }
   });
 
-  // ── #320: the CLI asset, landed from #337's pull request comment ────────────
+  // ── #580: the CLI is no longer a beta asset ─────────────────────────────────
 
-  // D15 and D16. The line, never the beta string — the script appends `-beta`,
-  // which is what leaves no parameter a counter could arrive through — and the
-  // real `npm i -g`, run against the bytes that are attached rather than
-  // against a copy of them.
-  it("packs the CLI as an asset from the line, and installs it for real (D16)", () => {
+  // #320 packed the in-repo `@actana/cli` as a Release asset. That package is the
+  // private `@actana/core-cli` now, which rides inside the Core tarball, and the
+  // client CLI is published from actana/client. A leg that still packed an asset
+  // would fail on a private package at the next cut, after three tarballs had
+  // been paid for.
+  it("packs no CLI asset: the CLI rides inside the Core tarball (#580)", () => {
     const job = code(jobBlock(source, "publish"));
-    const call = invocation(job, "rehearse-npm-publish.mjs");
-    expect(call).toContain('--beta "$BETA_LINE"');
-    expect(call, "the pack must not reach the release path's publish flags").not.toContain(
-      "--version",
-    );
-    expect(call, "the asset must not be staged where the Core guards sweep").toContain(
-      "--out-dir artifacts/beta",
-    );
-    expect(call, "#320's acceptance criterion is the install, not the pack").toContain(
-      "--install-check",
-    );
-    // `BETA_LINE` is the line (`0.4.1`), not `beta_version` (`0.4.1-beta`).
-    // `betaVersion("0.4.1-beta")` throws, so the wrong one is caught at
-    // runtime — but only after a macOS leg and three tarballs have been paid
-    // for, and the point of C1 is that no surface derives a second time.
-    //
-    // It is `line` and not `version`: on a sub-beta train `version` is the
-    // branch name `0.4.5-f1` (ADR 0023 D46), which `betaVersion` rejects for
-    // the same reason it rejects a counted beta — and there is no `-f1`
-    // release to pack for. `line` is `0.4.5` on both kinds of train.
-    expect(job).toContain("BETA_LINE: ${{ needs.resolve.outputs.line }}");
-    expect(job).not.toContain("BETA_LINE: ${{ needs.resolve.outputs.beta_version }}");
-    expect(job).not.toContain("BETA_LINE: ${{ needs.resolve.outputs.version }}");
-  });
-
-  // The guard on the flag rather than on the artifact. `install=ok` is emitted
-  // by the script only when `--install-check` actually ran, so dropping the
-  // flag leaves a green run with an attached asset and the one assertion #320
-  // calls the whole ticket never made.
-  it("refuses an asset that was packed but never installed (D16)", () => {
-    const job = code(jobBlock(source, "publish"));
-    expect(job).toContain("INSTALL: ${{ steps.beta-cli.outputs.install }}");
-    expect(job).toContain('if [[ "$INSTALL" != "ok" ]]; then');
-    // And the filename, which is what an operator pastes into a terminal (C1).
-    expect(job).toContain('if [[ "$ASSET" != "actana-cli-$BETA_VERSION.tgz" ]]; then');
-  });
-
-  // ADR 0036 D10 puts `SHA256SUMS` over exactly the three Core tarballs and
-  // this file's `--expect` is derived from `CORE_TARGETS`, so #320's checksum
-  // is its own file rather than a fourth row — the option that ticket names
-  // beside the row and leaves both the record and the derivation intact.
-  //
-  // Ordering is asserted, not assumed: `compose-core-shasums.mjs` and the
-  // foreign-asset guard both sweep `core-tarballs/`, so the CLI asset is
-  // staged in after them.
-  it("gives the CLI asset its own checksum file, staged after the Core guards (D10)", () => {
-    const job = code(jobBlock(source, "publish"));
-    expect(job).toContain(
-      `compose-core-shasums.mjs --dir core-tarballs --expect ${CORE_TARGETS.length}`,
-    );
-    expect(job).toContain(`printf '%s  %s\\n' "$SHA256" "$ASSET" > "core-tarballs/$ASSET.sha256"`);
-    expect(job, "the sidecar is verified the way an operator verifies it").toContain(
-      'sha256sum -c "$ASSET.sha256"',
-    );
-    const compose = job.indexOf("compose-core-shasums.mjs");
-    const guard = job.indexOf("A foreign asset is in the tarball directory");
-    const stage = job.indexOf('cp "$TARBALL" "core-tarballs/$ASSET"');
-    expect(compose).toBeGreaterThan(-1);
-    expect(guard).toBeGreaterThan(-1);
-    expect(stage, "the CLI asset is staged before the Core guards sweep the directory")
-      .toBeGreaterThan(Math.max(compose, guard));
-    // And before the tag moves, which is this job's own ordering principle: a
-    // failed pack must leave `vx.y.z-beta` where it was.
-    expect(stage, "the asset is assembled after the tag has already moved").toBeLessThan(
-      job.indexOf('git push --force origin "refs/tags/$TAG"'),
+    expect(job).not.toContain("rehearse-npm-publish.mjs");
+    expect(job).not.toContain("beta-cli");
+    expect(job).not.toContain("actana-cli-");
+    expect(job).not.toContain("npm i -g");
+    expect(job, "nothing in this job packs a workspace package any more").not.toContain(
+      "pnpm install",
     );
   });
 
   // `EXPECTED` is the one list the create, the clobbering upload and the prune
-  // all read. An asset uploaded outside it is an asset the next cut deletes,
-  // which is the trap this file's own comment warned #320 about.
-  it("names the CLI asset and its checksum in the asset contract (D7, D16)", () => {
+  // all read: five names, and the first cut after this change deletes the CLI
+  // asset and its checksum a previous cut attached.
+  it("names exactly the three Core tarballs, SHA256SUMS and install.sh in the asset contract (D7)", () => {
     const job = code(jobBlock(source, "publish"));
     const expected = /EXPECTED=\(([\s\S]*?)\)\n/.exec(job);
     expect(expected, "no EXPECTED list").not.toBeNull();
@@ -1611,33 +1401,17 @@ describe("the beta cut (ADR 0036 C1, C3, D7, D9-D11, D13, D14)", () => {
     expect(names).toEqual([
       ...CORE_TARGETS.map(({ target }) => `actana-core-$BETA_VERSION-${target}.tar.gz`),
       "SHA256SUMS",
-      "actana-cli-$BETA_VERSION.tgz",
-      "actana-cli-$BETA_VERSION.tgz.sha256",
       "install.sh",
     ]);
   });
-
-  // #320's last criterion: the printed command is the one an operator runs,
-  // built from the pack's own outputs and this job's tag rather than
-  // re-derived — and it says there is no attestation, because ADR 0036 D17
-  // says #323's instructions must not imply one.
-  it("prints the exact install command, and claims no attestation (D17)", () => {
-    const job = code(jobBlock(source, "publish"));
-    expect(job).toContain('url="https://github.com/$REPO/releases/download/$TAG/$ASSET"');
-    expect(job).toContain('echo "npm i -g $url"');
-    expect(job).toContain("ASSET: ${{ steps.beta-cli.outputs.asset }}");
-    expect(job).toContain("SHA256: ${{ steps.beta-cli.outputs.sha256 }}");
-    expect(job).toMatch(/no provenance attestation/);
-  });
 });
 
-describe("the manifest version assertion (ADR 0023 D3, amended by #152 and #157)", () => {
+describe("the manifest version assertion (ADR 0023 D3, amended by #152, #157 and #580)", () => {
   const MANIFESTS = [
     "package.json",
     "packages/cli/package.json",
     "packages/core/package.json",
     "packages/panel/package.json",
-    "packages/sdk/package.json",
     "packages/shared/package.json",
   ];
 
@@ -1765,7 +1539,7 @@ describe("sub-beta trains (ADR 0023 D46)", () => {
 
   it("accepts a sub-beta as a base, and asserts the tree against the line", () => {
     // The clause that keeps D3 untouched: the suffix names the branch, so the
-    // six manifests and the installer stamp on `beta/0.4.5-f1` still say
+    // five manifests and the installer stamp on `beta/0.4.5-f1` still say
     // `0.4.5`. Asserting `$version` here would demand a version no cut writes
     // and fail every pull request into a sub-beta.
     expect(rules).toContain('"$version" =~ ^[0-9]+\\.[0-9]+\\.[0-9]+(-f[0-9]+)?$');
@@ -1982,7 +1756,7 @@ describe("the promotion runs the promoted commit's own release workflow (#326)",
     expect(job).toMatch(/\/\^ {4}inputs:\[ \\t\]\*\$\//);
     expect(job).toContain("grep -qx 'tag'");
     // The credentials `release.yml` refuses on, refused earlier.
-    for (const secret of ["DOCKERHUB_USERNAME", "DOCKERHUB_TOKEN", "NPM_TOKEN"]) {
+    for (const secret of ["DOCKERHUB_USERNAME", "DOCKERHUB_TOKEN"]) {
       expect(job, `preflight does not check ${secret}`).toContain(`secrets.${secret}`);
     }
     expect(job).toContain("::error title=A release credential is missing::");
@@ -2072,7 +1846,7 @@ describe("the promotion runs the promoted commit's own release workflow (#326)",
     expect(recovery, "does not say what is safe to re-run").toMatch(
       /gh workflow run release\.yml[^\n]*--ref/,
     );
-    expect(recovery, "does not say an npm version number is burned").toMatch(/npm version number/i);
+    expect(recovery, "still talks about an npm publish").not.toMatch(/npm version number/i);
     expect(recovery, "does not say how to finish a promotion whose tag already moved").toContain(
       "git push origin --delete",
     );
@@ -2096,5 +1870,63 @@ describe("the promotion runs the promoted commit's own release workflow (#326)",
     expect(code(promote), "promote.yml does not name the recovery").toContain(
       "When a promotion half-runs",
     );
+  });
+});
+
+// The Panel's real-Postgres job (#567, ADR 0041 D19). PGlite runs the Panel's db
+// tests in `Unit Tests`; this one runs them against a server, which is the only
+// place the migration lock and `createTestDb`'s real-server path execute. What
+// a green run cannot show is that these things hold, so they are pinned here.
+describe("the real-Postgres job (#567, ADR 0041 D19)", () => {
+  const ci = read("ci.yml");
+  const job = code(jobBlock(ci, "panel-postgres"));
+
+  it("runs Postgres from the image the compose file pins, by the same digest", () => {
+    expect(job).toContain(`image: ${POSTGRES_IMAGE}\n`);
+    const compose = fs.readFileSync(path.join(repoRoot, "deploy/docker-compose.yml"), "utf8");
+    expect(compose).toContain(`image: ${POSTGRES_IMAGE}\n`);
+    expect(job).toMatch(/image: postgres:\d+\.\d+-[a-z]+@sha256:[0-9a-f]{64}\n/);
+  });
+
+  it("waits for Postgres on TCP before the tests start", () => {
+    expect(job).toContain('--health-cmd "pg_isready -h 127.0.0.1 -U panel -d panel"');
+  });
+
+  it("hands the tests the server through AC_TEST_DATABASE_URL, on the loopback", () => {
+    expect(job).toMatch(/AC_TEST_DATABASE_URL: postgres:\/\/panel:[^@\s]+@127\.0\.0\.1:5432\/postgres\n/);
+  });
+
+  it("runs only the Panel's db test files, in one worker, and builds nothing", () => {
+    const run = job.slice(job.indexOf("- name: Panel DB tests against Postgres"));
+    expect(run).toContain("working-directory: packages/panel");
+    expect(run).toContain("vitest run --maxWorkers=1");
+    for (const file of ["pg-migrate", "pg-boot", "pg", "test-db"]) {
+      expect(run, file).toContain(`src/db/__tests__/${file}.test.ts`);
+    }
+    expect(job).not.toMatch(/\b(?:build|typecheck|docker|pnpm test|pnpm -r)\b/);
+    expect(job).not.toContain("needs:");
+  });
+
+  it("fails when a real-server test was skipped, instead of passing without it", () => {
+    const check = job.slice(job.indexOf("- name: The real-server tests ran, and none was skipped"));
+    expect(check).toContain("real server");
+    expect(check).toContain("numPendingTests > 0");
+    expect(check).toContain("real.length < 2");
+    expect(job).toContain("--reporter=json --outputFile=");
+  });
+
+  it("has no job-level `if:`, so it runs on pull requests and on feat and beta pushes like the others", () => {
+    expect(job).not.toMatch(/^ {4}if:/m);
+  });
+
+  // The change that makes this job required (adds its name to `docs/rulesets/*.json`) must remove or invert this
+  // test in the same change: it fails as soon as any ruleset file names the job. `Unit Tests` is required on main
+  // and beta, so leaving it would block every pull request.
+  it("is not required by any ruleset yet: making it required is the owner's call", () => {
+    const name = job.match(/^ {4}name: (.+)$/m)[1];
+    const dir = path.join(repoRoot, "docs/rulesets");
+    for (const file of fs.readdirSync(dir).filter((f) => f.endsWith(".json"))) {
+      expect(fs.readFileSync(path.join(dir, file), "utf8"), file).not.toContain(name);
+    }
   });
 });

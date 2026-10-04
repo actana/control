@@ -26,7 +26,7 @@ import { scopeKeyFor } from "./SessionGrid";
 const MENU_WIDTH = 288;
 
 /**
- * Grid-view layout control in the project header: pick how many sessions a row
+ * Grid-view layout control in the Core header: pick how many sessions a row
  * holds (a per-scope lock — new sessions flow into the next row with space, or
  * a fresh one, once a row is full; picking a width also reflows the current
  * cells), and one-shot "sort by agent" actions that group the grid's cells with
@@ -115,7 +115,7 @@ export function GridLayoutButton({ scopeKey }: { scopeKey: string }) {
   // section only shows once two kinds of sessions coexist.
   const harnessesPresent = useMemo(() => {
     const present = new Set(
-      sessions.filter((s) => scopeKeyFor(s) === scopeKey).map((s) => s.task.agent),
+      sessions.filter((s) => scopeKeyFor(s) === scopeKey).map((s) => s.session.agent),
     );
     return (Object.keys(HARNESS_META) as Harness[]).filter((a) => present.has(a));
   }, [sessions, scopeKey]);
@@ -181,7 +181,7 @@ export function GridLayoutButton({ scopeKey }: { scopeKey: string }) {
             role="menu"
             aria-label="Grid layout"
             solid
-            className="mc-project-actions-menu"
+            className="mc-actions-menu"
             style={{
               position: "fixed",
               top: menuRect.top,

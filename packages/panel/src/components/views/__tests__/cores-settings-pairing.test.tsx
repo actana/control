@@ -43,6 +43,32 @@ function paired(label = "prod-vm-1"): CoreWithDial {
   };
 }
 
+const STORAGE = {
+  configured: true,
+  backend: "seaweedfs" as const,
+  endpoint: "http://seaweedfs:8333",
+  bucket: "actana-shared",
+  prefix: "cores",
+  region: "us-east-1",
+  oidcIssuer: "https://panel.example.test",
+  oidcAudience: "actana-shared",
+  keyId: "k1",
+  roleArn: null,
+  accountId: null,
+  parentAccessKeyId: null,
+  anonKey: null,
+  masterKeySet: true,
+  masterKeyRotatedAt: 1,
+  uploadSizeLimitBytes: 512 * 1024 * 1024,
+  updatedAt: 1,
+};
+const PASSED_TEST = { folder: "cores/core_new/", expiresAt: 1_790_000_000_000, read: true, write: true, listOwn: true, reachOther: false };
+
+/** What a pairing from the Panel returns: registered, its Shared folder pending. */
+function pendingCore(): CoreWithDial {
+  return { ...paired(), sharedFolder: { state: "pending", prefix: null, keyExpiresAt: null, error: null } };
+}
+
 const api = {
   listCores: vi.fn(async (): Promise<{ cores: CoreWithDial[] }> => ({ cores: CORES })),
   inspectCoreForPairing: vi.fn(async (_address: string) => ({
@@ -50,6 +76,11 @@ const api = {
   })),
   pairCore: vi.fn(async (_body: unknown): Promise<{ core: CoreWithDial }> => ({ core: paired() })),
   renameCore: vi.fn(),
+  // Step 4 (#564): a pairing from the Panel is registered pending and finished by attaching its Shared folder.
+  getStorage: vi.fn(async () => ({ storage: STORAGE, cores: [] })),
+  putStorage: vi.fn(async () => ({ storage: STORAGE })),
+  testSharedFolder: vi.fn(async () => ({ result: PASSED_TEST })),
+  finishCorePairing: vi.fn(async (): Promise<{ core: CoreWithDial }> => ({ core: paired() })),
   removeCore: vi.fn(async () => undefined),
   getKeybindings: vi.fn(async () => ({ bindings: {} })),
   // Not this suite's subject: `ConfirmDialog` renders a `CardFrame`, whose glow
@@ -136,7 +167,7 @@ describe("adding a Core by short code (#286)", () => {
     api.inspectCoreForPairing.mockImplementation(async () => ({
       identity: { fingerprint: PRESENTED, httpsOrigin: ORIGIN },
     }));
-    api.pairCore.mockImplementation(async () => ({ core: paired() }));
+    api.pairCore.mockImplementation(async () => ({ core: pendingCore() }));
   });
 
   afterEach(() => {
@@ -262,6 +293,11 @@ describe("adding a Core by short code (#286)", () => {
         expectedFingerprint: PRESENTED,
         label: "prod-vm-1",
       });
+      // Registered is not paired: the Core is announced once step 4 has attached its folder.
+      expect(document.querySelector('[data-step="shared-folder"]')).not.toBeNull();
+      expect(toasts.success).not.toHaveBeenCalled();
+      await click("Test connection");
+      await click("Connect and finish pairing");
       expect(toasts.success).toHaveBeenCalledWith('Core "prod-vm-1" paired.');
     });
 
@@ -288,16 +324,16 @@ describe("adding a Core by short code (#286)", () => {
       expect(screen.getByRole("button", { name: "Pair Core" })).toHaveProperty("disabled", true);
     });
 
-    it("clears the form once the Core is in the fleet", async () => {
+    it("replaces the form with the Shared folder step once the code is redeemed", async () => {
       await openPage();
       await verify();
       type("Session", "ps_abc");
       type("Pairing code", "k7rp-9x4t");
       await click("Pair Core");
 
-      expect((screen.getByLabelText("Core address") as HTMLInputElement).value).toBe("");
-      expect(state()).toBe("unchecked");
+      expect(screen.queryByLabelText("Core address")).toBeNull();
       expect(screen.queryByLabelText("Pairing code")).toBeNull();
+      expect(document.querySelector('[data-step="shared-folder"]')).not.toBeNull();
     });
   });
 
@@ -513,6 +549,10 @@ describe("telling the rest of the tab that the registry moved (#358)", () => {
     await click("Pair Core");
 
     expect(api.pairCore).toHaveBeenCalled();
+    // Not yet: the Core is registered but not paired until its Shared folder is attached.
+    expect(announced).not.toHaveBeenCalled();
+    await click("Test connection");
+    await click("Connect and finish pairing");
     expect(announced).toHaveBeenCalledTimes(1);
   });
 

@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
-import { HarnessInstallService } from "../harness-install-service";
+import { HarnessInstallService, profileHomeDir } from "../harness-install-service";
 import type { HarnessInstallOutcome } from "@actana/shared/actana-harnesses";
-import type { CoreLinkHarnessAvailabilityMap } from "@actana/sdk/core-link-frames";
+import type { CoreLinkHarnessAvailabilityMap } from "@actana/sdk/core";
 import type { ActanaSystem } from "@actana/shared/actana-system-port";
 
 // The Core's half of "install this Harness for me" (issue 83). What matters
@@ -165,5 +165,61 @@ describe("HarnessInstallService", () => {
     const result = await service.install("claude-code");
     expect(result.ok).toBe(false);
     expect((result as { message: string }).message).toContain("spawn ENOMEM");
+  });
+});
+
+// #559: the daemon is `actana` in the container and core's home is 0750 core:core, so the
+// managed login-PATH block could only fail there ("could not write ~/.profile"). It is
+// written on metal, where the daemon owns the home, and never in the container.
+describe("profileHomeDir", () => {
+  const CONTAINER = { AC_CORE_HOME: "/home/core", AC_CORE_UID: "1000", AC_CORE_GID: "1000" };
+
+  it("keeps the home outside the container", () => {
+    expect(profileHomeDir("/home/dev", {})).toBe("/home/dev");
+  });
+
+  it("drops the home in the container, so no profile is written", () => {
+    expect(profileHomeDir("/home/core", CONTAINER)).toBeUndefined();
+  });
+
+  it("hands the installer no home in the container", async () => {
+    vi.stubEnv("AC_CORE_HOME", CONTAINER.AC_CORE_HOME);
+    vi.stubEnv("AC_CORE_UID", CONTAINER.AC_CORE_UID);
+    vi.stubEnv("AC_CORE_GID", CONTAINER.AC_CORE_GID);
+    try {
+      const seen: Array<string | undefined> = [];
+      const service = new HarnessInstallService({
+        availability: () => AVAILABLE,
+        reprobe: () => undefined,
+        system,
+        platform: "linux",
+        homeDir: "/home/core",
+        runInstall: async (_agents, context) => {
+          seen.push(context.homeDir);
+          return [{ agent: "claude-code", status: "installed" } as HarnessInstallOutcome];
+        },
+      });
+      await service.install("claude-code");
+      expect(seen).toEqual([undefined]);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+});
+
+describe("HarnessInstallService re-probe", () => {
+  it("waits for an asynchronous re-probe before judging", async () => {
+    let availability = MISSING;
+    const service = new HarnessInstallService({
+      availability: () => availability,
+      reprobe: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        availability = AVAILABLE;
+      },
+      system,
+      platform: "linux",
+      runInstall: async () => [{ agent: "claude-code", status: "installed" } as HarnessInstallOutcome],
+    });
+    await expect(service.install("claude-code")).resolves.toEqual({ ok: true });
   });
 });

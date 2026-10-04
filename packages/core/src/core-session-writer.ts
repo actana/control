@@ -1,0 +1,205 @@
+// The Core's one way to change a session row.
+//
+// A Core-owned Session's status, title and icon are Core state (ADR 0004/0005),
+// and two callers now change them: the Panel, over the core-link's
+// `sessionsMutate` frame, and the Core itself — the hook receiver settling a
+// harness's status, the PTY exit settling a dead session, the title generator
+// naming a new one (issue 84). Both go through here, so a row never changes
+// without the matching event landing in the log the Panel replays from.
+//
+// The write is Core-local by construction: the mutation port writes this
+// Core's SQLite and the event port appends to this Core's event log. Nothing
+// here round-trips through the Panel, and nothing here needs a Panel to be
+// connected — an event appended while the link is down is replayed off the
+// cursor when it comes back.
+
+import type { CoreSessionMutation } from "@actana/shared/core-mutations";
+import type { CoreSessionRow } from "@actana/shared/core-query";
+import type { SessionStatus } from "@actana/shared/domain";
+import type { CoreMutationPort, CoreQueryPort, EventLogPort } from "./pty-core-link-server";
+
+const FINISHED_SESSION_STATUS: SessionStatus = "finished";
+
+export type CoreSessionWriterPorts = {
+  /** Writes the row. Absent on a PTY-only Core; every write then answers `null`. */
+  mutationPort: CoreMutationPort | null;
+  /** Reads the row's prior facts. Absent means "no prior status known". */
+  queryPort: CoreQueryPort | null;
+  /** Appends the events. Absent means no event is recorded (tests, PTY-only Core). */
+  eventLog: EventLogPort | null;
+};
+
+/**
+ * Apply a session mutation to this Core's database and append the events that
+ * describe it. Returns the resulting snapshot, or `null` when the mutation
+ * targeted a row this Core does not have — the same answer the core-link
+ * frame carries, so a caller never has to tell "wrote nothing" from "no such
+ * row" by a different route. Throws what the mutation port throws (invalid
+ * input); the core-link server turns that into an `error` frame.
+ */
+export class CoreSessionWriter {
+  constructor(private readonly ports: CoreSessionWriterPorts) {}
+
+  mutate(mutation: CoreSessionMutation): CoreSessionRow | null {
+    const { mutationPort } = this.ports;
+    if (!mutationPort) return null;
+    const previousStatus = this.priorSessionStatus(mutation);
+    const session = mutationPort.mutateSession(mutation);
+    if (session) this.recordSessionMutation(mutation, session, previousStatus);
+    return session;
+  }
+
+  /** This Core's current row for `sessionId`, or `null` when it has none. */
+  readSession(sessionId: string): CoreSessionRow | null {
+    return this.ports.queryPort?.getSession(sessionId) ?? null;
+  }
+
+  /**
+   * Record a session mutation in the event log so a reconnecting Panel learns
+   * about the change via the same `subscribe` / `event` / `eventsReplayed`
+   * replay path the PTY lifecycle events use (issue 04).
+   *
+   * On `update`, the kind depends on which fields the frame carried:
+   *  - `icon` set (with no other patched field) → `session:iconChanged` — the
+   *    Panel's live query wants to route icon-only edits distinctly from other
+   *    session updates so a reconnecting Panel replays the change through the
+   *    existing `subscribe`/`event`/`eventsReplayed` path (issue 09).
+   *  - `pinned` set (with no other patched field) → `session:pinnedChanged` —
+   *    same rationale as icon (issue 10). Pin toggles are frequent and
+   *    consumers that only track pinned state (e.g. the SessionGrid pinned
+   *    filter) can subscribe distinctly.
+   *  - anything else → `session:updated` (unchanged).
+   *
+   * On `create`, the kind is always `session:created` — a new row's icon is part
+   * of the initial snapshot the sessions list carries, not a discrete change.
+   *
+   * On `delete`, the kind is `session:deleted` — the same name the Panel server
+   * emits when it deletes a Panel-owned row, so a reconnecting Panel replays a
+   * Core-owned delete through the handler it already has (it prunes that
+   * session's stored finish notifications keyed on the event's `sessionId`).
+   *
+   * A transition into `finished` additionally appends `session:finished`
+   * (issue 20) — the event ADR 0008 built the Panel's notification on and no
+   * Core ever produced. It is additional, not a replacement: the live query
+   * still needs the `session:updated` event for the same mutation.
+   */
+  private recordSessionMutation(
+    mutation: CoreSessionMutation,
+    session: CoreSessionRow,
+    previousStatus: string | null,
+  ): void {
+    const { eventLog } = this.ports;
+    if (!eventLog) return;
+    const kind =
+      mutation.op === "create"
+        ? "session:created"
+        : mutation.op === "delete"
+          ? "session:deleted"
+          : isOnlyPatchedField(mutation, "icon")
+            ? "session:iconChanged"
+            : isOnlyPatchedField(mutation, "pinned")
+              ? "session:pinnedChanged"
+              : "session:updated";
+    // The **patched** status, when the mutation carried one — never the status
+    // the resulting row happens to have (#289 A). That distinction is the whole
+    // value of the field: a rename of a Session sitting at `finished` produces a
+    // `session:updated` whose row still reads `finished`, and a waiter that took
+    // the row's status from it would call the rename the end of a turn. A patch
+    // that sets the status is a report about a turn even when it sets the status
+    // it already had — which is the ordinary case on a harness that never moved
+    // the row to `running`, and the one a follow-up turn depends on.
+    const status = mutation.op === "update" ? mutation.status : undefined;
+    const payload = JSON.stringify({
+      sessionId: session.sessionId,
+      ...(status === undefined ? {} : { status }),
+    });
+    eventLog.appendEvent(kind, payload, { sessionId: session.sessionId });
+    this.recordSessionFinish(mutation, session, previousStatus);
+  }
+
+  /**
+   * Append `session:finished` when a mutation moved a session into `finished` —
+   * and only then. Two things have to hold, and both are load-bearing.
+   *
+   * The mutation must be the one that set the status: the resulting snapshot
+   * alone would say `finished` for every later write to the same row, so
+   * archiving, pinning, or renaming a finished Session — the most routine
+   * things to do with one — would each raise a fresh notification.
+   *
+   * And the row must not have been finished already, so a retried exit patch
+   * or a second tab racing the first cannot raise a second notification. That
+   * is what the prior status is for; the snapshot cannot tell the two apart.
+   *
+   * The payload carries what the Panel's finish normalizer reads: the session id
+   * (as `id`, its preferred key) and the session title; nothing else about the
+   * Session's whereabouts, because it has none (ADR 0041 D1).
+   */
+  private recordSessionFinish(
+    mutation: CoreSessionMutation,
+    session: CoreSessionRow,
+    previousStatus: string | null,
+  ): void {
+    const { eventLog } = this.ports;
+    if (!eventLog) return;
+    if (!patchesFinishedStatus(mutation)) return;
+    if (session.status !== FINISHED_SESSION_STATUS) return;
+    if (previousStatus === FINISHED_SESSION_STATUS) return;
+    const payload = JSON.stringify({
+      id: session.sessionId,
+      sessionId: session.sessionId,
+      sessionTitle: session.title,
+    });
+    eventLog.appendEvent("session:finished", payload, { sessionId: session.sessionId });
+  }
+
+  /**
+   * The status a session carried before a mutation is applied, or `null` when
+   * there is nothing to read — an unknown row, a Core with no query port, or
+   * a mutation that could not produce a finish. Only a patch that could pays
+   * for the read; nothing else consults the prior status.
+   */
+  private priorSessionStatus(mutation: CoreSessionMutation): string | null {
+    if (!patchesFinishedStatus(mutation)) return null;
+    return this.ports.queryPort?.getSession(mutation.sessionId)?.status ?? null;
+  }
+}
+
+/**
+ * Is this the mutation that sets `finished`? A snapshot that says `finished`
+ * is not enough — every later write to a finished row says the same.
+ */
+function patchesFinishedStatus(
+  mutation: CoreSessionMutation,
+): mutation is Extract<CoreSessionMutation, { op: "update" }> {
+  return mutation.op === "update" && mutation.status === FINISHED_SESSION_STATUS;
+}
+
+/**
+ * Which columns an `update` mutation actually patches. One list, so a new
+ * field on the mutation cannot be forgotten by the "was this the only thing
+ * that changed?" checks below — which is exactly how an icon-plus-something
+ * patch would otherwise keep announcing itself as an icon-only change.
+ */
+function patchedFields(mutation: CoreSessionMutation): string[] {
+  if (mutation.op !== "update") return [];
+  const { op: _op, sessionId: _sessionId, ...patch } = mutation;
+  return Object.entries(patch)
+    .filter(([, value]) => value !== undefined)
+    .map(([field]) => field)
+    // `titleManuallySet` qualifies the `title` beside it rather than being a
+    // change of its own; counting it would make every rename a mixed edit.
+    .filter((field) => field !== "titleManuallySet");
+}
+
+/**
+ * Detect an update mutation whose only patched column is `field` — the
+ * narrowing that keeps the dedicated `session:iconChanged` (issue 09) and
+ * `session:pinnedChanged` (issue 10) kinds meaningful. Anything patched alongside
+ * degrades the frame back to `session:updated`, which is fine: a consumer that
+ * only cares about icon subscribes to the dedicated kind, and a mixed edit
+ * already invalidates the whole row through the generic one.
+ */
+function isOnlyPatchedField(mutation: CoreSessionMutation, field: string): boolean {
+  const patched = patchedFields(mutation);
+  return patched.length === 1 && patched[0] === field;
+}

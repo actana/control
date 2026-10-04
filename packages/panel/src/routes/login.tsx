@@ -43,7 +43,7 @@ function LoginPage() {
       error={error}
       submitLabel="Sign in"
       busy={busy}
-      onSubmit={submit}
+      onSubmit={(e) => void submit(e)}
     >
       <TextField
         label="Password"

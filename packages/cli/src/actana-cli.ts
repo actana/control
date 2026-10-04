@@ -14,7 +14,7 @@
 //     actana daemon    run the Core in the foreground (what the unit execs)
 //
 //   Client nouns — what Cores, near or far, are asked to do
-//     actana core | project | harness | events | session
+//     actana core | harness | events | session
 //
 // **There is one `actana` and this is it (#288).** Until 0.4.0 there were two
 // different programs under this name — the operator CLI inside the Core
@@ -72,7 +72,11 @@ import {
   CONTAINER_LABEL_ENV,
   CONTAINER_PORT_ENV,
   CONTAINER_PUBLIC_HOST_ENV,
+  containerOperatorCommand,
   containerRefusal,
+  containerUserRefusal,
+  CORE_STATE_DATA_DIR,
+  CORE_STATE_MATERIAL_FILE,
   DEFAULT_CONTAINER_PORT,
   inContainer,
   readContainerContract,
@@ -131,15 +135,9 @@ import { formatActanaStatus, summarizeHealth, type ActanaStatusReport } from "./
 import { runActanaUninstall } from "./actana-uninstall.ts";
 import { runActanaUpdate } from "./actana-update.ts";
 import { parseArgs } from "./cli-args.ts";
+import { runClient } from "@actana/cli";
 import { registryPaths } from "./blob-registry.ts";
-import { runCoreCommand } from "./core-command.ts";
 import { runPairCommand } from "./actana-pair.ts";
-import { runProjectCommand } from "./project-command.ts";
-import { runHarnessCommand } from "./harness-command.ts";
-import { runEventsCommand } from "./events-command.ts";
-import { runSessionCommand } from "./session-command.ts";
-import { CORE_BLOB_ENV } from "./core-resolution.ts";
-import { ensureOrchestrationSkillQuietly } from "./orchestration-skill.ts";
 import { EXIT_OK, EXIT_UNIMPLEMENTED, EXIT_USAGE } from "./exit-codes.ts";
 import { runActanaInstall } from "./actana-install.ts";
 import type { ActanaCliDeps } from "./cli-deps.ts";
@@ -165,8 +163,16 @@ export const CLI_VERSION: string = manifest.version;
  */
 const RESERVED_NOUNS: Record<string, string> = {};
 
-/** The nouns that talk to a Core. Never refused in a container. */
-const CLIENT_NOUNS = ["core", "project", "harness", "events", "session"] as const;
+/**
+ * The nouns the published `@actana/cli` answers: they talk to a Core, and are
+ * never refused in a container. `search` is the general CLI's too, and is left
+ * out on purpose — it is not part of this release, so `actana search` is an
+ * unknown command here exactly as it was before the client half moved (#580).
+ */
+const CLIENT_NOUNS = ["core", "harness", "events", "session", "files", "shared"] as const;
+
+/** The environment variable that names a Core's blob, or a path to it (single-Core mode). */
+const CORE_BLOB_ENV = "ACTANA_CORE_BLOB";
 
 
 /** Default core-link port. Matches the port the docs and install script use. */
@@ -183,10 +189,11 @@ Usage:
 
 Cores this machine can reach
   core       Pair with a Core, register, select and inspect them
-  project    The Projects a Core owns: ls, add, browse, files, cp
   harness    The coding agents a Core can run: ls, install, skills
   events     Follow a Core's event log: tail
   session    Start, ls, logs, resume, attach, kill and send to Sessions on one
+  files      ls, get, put, rm — in a Core's home folder
+  shared     ls, get, put, rm, mkdir, watch — a Core's Shared folder
 
 This machine's own Core
   install    Fetch a release, verify it, install the Core and start it
@@ -274,6 +281,10 @@ const CONTAINER_USAGE = `This Core is a container, so its lifecycle belongs to D
   ${refusedContainerVerbs().join(", ")}
                         not available here — run the Docker command each one
                         names (\`docker compose up -d\`, \`docker compose logs -f\`, …)
+
+  pair, status          read what only the daemon's user, \`actana\`, may read: run them on
+                        the host with \`${containerOperatorCommand("pair new")}\`
+                        (a plain \`docker compose exec\` is root, and \`-u core\` is a Session's user)
 
 The image reads three variables:
   ${CONTAINER_PUBLIC_HOST_ENV}    required — the address your Panel dials, or a comma-separated
@@ -430,7 +441,7 @@ function containerInstall(deps: ActanaCliDeps): InstalledCore | null {
       publicHosts: contract.publicHosts,
       label: contract.label,
       installDir: deps.installRoot,
-      dataDir: deps.env.AC_USER_DATA_DIR ?? layout.dataDir,
+      dataDir: deps.env.AC_USER_DATA_DIR ?? CORE_STATE_DATA_DIR,
     },
   };
 }
@@ -447,13 +458,14 @@ function requireInstall(deps: ActanaCliDeps): InstalledCore | null {
 /**
  * Where this Core's material lives.
  *
- * In the image it is in the mounted volume, named by the same
+ * In the image it is in the state volume (`/var/lib/actana`), named by the same
  * `AC_CORE_MATERIAL_FILE` the daemon loads from — so the CLI and the daemon
- * cannot end up disagreeing about which identity this Core has.
+ * cannot end up disagreeing about which identity this Core has. If the variable
+ * is missing the answer is still the state volume, never a path under `~`.
  */
 function materialPathFor(deps: ActanaCliDeps, layout: ActanaLayout): string {
-  const fromImage = inContainer(deps.env) ? deps.env.AC_CORE_MATERIAL_FILE : undefined;
-  return fromImage || materialFilePath(layout.configDir);
+  if (inContainer(deps.env)) return deps.env.AC_CORE_MATERIAL_FILE || CORE_STATE_MATERIAL_FILE;
+  return materialFilePath(layout.configDir);
 }
 
 /** Read the manifest of the installed tree, falling back to the running tree. */
@@ -1039,7 +1051,14 @@ async function cmdStatus(deps: ActanaCliDeps, argv: string[]): Promise<number> {
     deps.err(parsed.error);
     return EXIT_USAGE;
   }
-  if (inContainer(deps.env)) return containerStatus(deps);
+  if (inContainer(deps.env)) {
+    const refusal = containerUserRefusal("status", deps.uid);
+    if (refusal) {
+      deps.err(refusal);
+      return 1;
+    }
+    return containerStatus(deps);
+  }
 
   const installed = findInstall(deps);
   const layout = installed?.layout ?? resolveActanaLayout(deps.env, deps.home, deps.platform);
@@ -1075,6 +1094,17 @@ async function cmdStatus(deps: ActanaCliDeps, argv: string[]): Promise<number> {
 
   deps.out(formatActanaStatus(report).trimEnd());
   return summarizeHealth(report) === "healthy" ? 0 : 1;
+}
+
+/**
+ * What an operator types to mint a code: `actana pair new` here on metal, and
+ * on the host, as the daemon's user, for the container (#559). A message that
+ * said "run it here" in the image would send them to the wrong user.
+ */
+function pairNewCommand(deps: ActanaCliDeps): string {
+  return inContainer(deps.env)
+    ? `\`${containerOperatorCommand("pair new")}\` on the host`
+    : "`actana pair new` here";
 }
 
 /**
@@ -1126,7 +1156,7 @@ async function cmdToken(deps: ActanaCliDeps, argv: string[]): Promise<number> {
   }
   deps.err(
     "There is no pairing token to print. A client enrolls with a one-time code: run " +
-      "`actana pair new` here, read the code and CA fingerprint it prints out to the " +
+      `${pairNewCommand(deps)}, read the code and CA fingerprint it prints out to the ` +
       "machine being paired, and spend them there — in your Panel's Add Core, or with " +
       "`actana core pair`.",
   );
@@ -1219,7 +1249,7 @@ async function cmdTokenRegenerate(deps: ActanaCliDeps, argv: string[]): Promise<
     deps.err(
       "New pairing credentials are written. This Core is still serving the old ones " +
         "until you restart the container — `docker compose restart`. After that, " +
-        "pair every client again: `actana pair new` here, and spend the code it prints " +
+        `pair every client again: ${pairNewCommand(deps)}, and spend the code it prints ` +
         `on the client.\n${REPAIR_NOTE}`,
     );
     return 0;
@@ -1632,46 +1662,10 @@ export async function runActanaCli(deps: ActanaCliDeps): Promise<number> {
   // dishonesty #288 exists to end — the Core installs a skill that teaches
   // these verbs onto the machine it is itself running on.
   if ((CLIENT_NOUNS as readonly string[]).includes(head)) {
-    if (args.missingValue) {
-      deps.err(`actana: ${args.missingValue} needs a value.`);
-      return EXIT_USAGE;
-    }
-    if (args.unknown.length > 0) {
-      deps.err(`actana: unknown flag ${args.unknown[0]}.`);
-      deps.err("`actana --help` lists the flags this build knows.");
-      return EXIT_USAGE;
-    }
-
-    // ADR 0031 D6: there is no npm lifecycle hook to install the product's own
-    // skill from — this package has no `postinstall`, `preinstall` or `prepare`
-    // and gains none — so "installed with the CLI" is delivered here instead,
-    // in front of the first noun the operator runs. It is a no-op when the
-    // copies are current, it writes nothing on a machine where no Harness has a
-    // directory of its own, and it cannot fail: nothing it does reaches the
-    // exit code or either output stream.
-    //
-    // `actana harness skills` is the one verb it does not run in front of: that
-    // verb does the same work and reports it, and an ensure that had already
-    // repaired the copy would leave the explicit path with nothing to say but
-    // "current" — a repair verb that can never report a repair.
-    if (!(head === "harness" && args.positionals[1] === "skills")) {
-      ensureOrchestrationSkillQuietly(deps.home);
-    }
-
-    const paths = registryPaths(deps.env, deps.home);
-
-    switch (head) {
-      case "core":
-        return runCoreCommand(deps, args, paths);
-      case "project":
-        return runProjectCommand(deps, args, paths);
-      case "harness":
-        return runHarnessCommand(deps, args, paths);
-      case "events":
-        return runEventsCommand(deps, args, paths);
-      default:
-        return runSessionCommand(deps, args, paths);
-    }
+    // Flag validation, the quiet skill install in front of the first noun, and
+    // the verbs themselves are the published CLI's (#580). This package binds its
+    // ports in `actana-cli-entry.ts` and keeps only what is the machine's.
+    return runClient(deps.argv, deps);
   }
 
   // Checked before the machine-side dispatch, not inside each verb: the answer

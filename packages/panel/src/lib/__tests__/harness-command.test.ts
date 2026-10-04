@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { Task } from "~/db/schema";
+import type { Session } from "~/db/schema";
 import {
   harnessLaunchMode,
   buildHarnessLaunchCommand,
@@ -11,10 +11,9 @@ import {
   isOpencodeSessionId,
 } from "../harness-command";
 
-const baseTask = {
-  id: "task-1",
-  projectId: "project-1",
-  title: "Task",
+const baseSession = {
+  id: "session-1",
+  title: "Session",
   titleManuallySet: false,
   icon: null,
   status: "ready",
@@ -28,7 +27,7 @@ const baseTask = {
   claudeBareSession: false,
   createdAt: 1,
   updatedAt: 1,
-} satisfies Omit<Task, "agent">;
+} satisfies Omit<Session, "agent">;
 
 const OPENCODE_SESSION_ID = "ses_3cf7dd8d4ffeUPfENpVxfFojZ2";
 
@@ -147,101 +146,101 @@ describe("buildCodexCommand", () => {
 });
 
 describe("buildHarnessLaunchCommand", () => {
-  it("uses Claude session-id for ready tasks", () => {
-    const task = { ...baseTask, agent: "claude-code" } satisfies Task;
-    expect(buildHarnessLaunchCommand(task, task.claudeSessionId!, "new")).toBe(
+  it("uses Claude session-id for ready sessions", () => {
+    const session = { ...baseSession, agent: "claude-code" } satisfies Session;
+    expect(buildHarnessLaunchCommand(session, session.claudeSessionId!, "new")).toBe(
       "claude --session-id 00000000-0000-4000-8000-000000000000 --dangerously-skip-permissions",
     );
   });
 
   it("passes a configured Claude model", () => {
-    const task = { ...baseTask, agent: "claude-code" } satisfies Task;
+    const session = { ...baseSession, agent: "claude-code" } satisfies Session;
     expect(
-      buildHarnessLaunchCommand(task, task.claudeSessionId!, "new", { model: "sonnet" }),
+      buildHarnessLaunchCommand(session, session.claudeSessionId!, "new", { model: "sonnet" }),
     ).toBe("claude --session-id 00000000-0000-4000-8000-000000000000 --model sonnet --dangerously-skip-permissions");
   });
 
   it("uses Cursor resume for every launch", () => {
-    const task = { ...baseTask, agent: "cursor-cli" } satisfies Task;
-    expect(buildHarnessLaunchCommand(task, task.claudeSessionId!, "resume")).toBe(
+    const session = { ...baseSession, agent: "cursor-cli" } satisfies Session;
+    expect(buildHarnessLaunchCommand(session, session.claudeSessionId!, "resume")).toBe(
       "cursor-agent --resume 00000000-0000-4000-8000-000000000000 --force",
     );
   });
 
   it("starts OpenCode without a session id until one is captured", () => {
-    const task = {
-      ...baseTask,
+    const session = {
+      ...baseSession,
       agent: "opencode",
       claudeSessionId: null,
-    } satisfies Task;
-    expect(buildHarnessLaunchCommand(task, "", "new")).toBe("opencode");
+    } satisfies Session;
+    expect(buildHarnessLaunchCommand(session, "", "new")).toBe("opencode");
   });
 
   it("resumes OpenCode only with a captured ses_* session id", () => {
-    const task = {
-      ...baseTask,
+    const session = {
+      ...baseSession,
       agent: "opencode",
       status: "running",
       claudeSessionId: OPENCODE_SESSION_ID,
-    } satisfies Task;
-    expect(buildHarnessLaunchCommand(task, OPENCODE_SESSION_ID, "resume")).toBe(
+    } satisfies Session;
+    expect(buildHarnessLaunchCommand(session, OPENCODE_SESSION_ID, "resume")).toBe(
       `opencode --session ${OPENCODE_SESSION_ID}`,
     );
   });
 
   it("starts Pi without a session id until one is captured", () => {
-    const task = {
-      ...baseTask,
+    const session = {
+      ...baseSession,
       agent: "pi",
       claudeSessionId: null,
-    } satisfies Task;
-    expect(buildHarnessLaunchCommand(task, "", "new")).toBe("pi");
+    } satisfies Session;
+    expect(buildHarnessLaunchCommand(session, "", "new")).toBe("pi");
   });
 
   it("resumes Pi with a captured session UUID", () => {
     const sessionId = "00000000-0000-4000-8000-000000000001";
-    const task = {
-      ...baseTask,
+    const session = {
+      ...baseSession,
       agent: "pi",
       status: "running",
       claudeSessionId: sessionId,
-    } satisfies Task;
-    expect(buildHarnessLaunchCommand(task, sessionId, "resume")).toBe(
+    } satisfies Session;
+    expect(buildHarnessLaunchCommand(session, sessionId, "resume")).toBe(
       `pi --session ${sessionId}`,
     );
   });
 
   it("passes a model on a fresh Pi launch", () => {
-    const task = {
-      ...baseTask,
+    const session = {
+      ...baseSession,
       agent: "pi",
       claudeSessionId: null,
-    } satisfies Task;
-    expect(buildHarnessLaunchCommand(task, "", "new", { model: "anthropic/claude-sonnet-4-5" })).toBe(
+    } satisfies Session;
+    expect(buildHarnessLaunchCommand(session, "", "new", { model: "anthropic/claude-sonnet-4-5" })).toBe(
       "pi --model anthropic/claude-sonnet-4-5",
     );
   });
 });
 
 describe("harnessLaunchMode", () => {
-  it("resumes Codex only after a session id is known and the task has started", () => {
+  it("resumes Codex only after a session id is known and the session has started", () => {
     expect(
-      harnessLaunchMode({ ...baseTask, agent: "codex", status: "ready" } satisfies Task),
+      harnessLaunchMode({ ...baseSession, agent: "codex", status: "ready" } satisfies Session),
     ).toBe("new");
     expect(
       harnessLaunchMode({
-        ...baseTask,
+        ...baseSession,
         agent: "codex",
         status: "running",
         claudeSessionId: null,
-      } satisfies Task),
+      } satisfies Session),
     ).toBe("new");
     expect(
       harnessLaunchMode({
-        ...baseTask,
+        ...baseSession,
         agent: "codex",
         status: "running",
-      } satisfies Task),
+      } satisfies Session),
     ).toBe("resume");
   });
 
@@ -251,94 +250,94 @@ describe("harnessLaunchMode", () => {
     // would be `claude --resume` into a conversation that never existed.
     expect(
       harnessLaunchMode({
-        ...baseTask,
+        ...baseSession,
         agent: "claude-code",
         status: "disconnected",
         claudeSessionId: null,
-      } satisfies Task),
+      } satisfies Session),
     ).toBe("new");
     expect(
       harnessLaunchMode({
-        ...baseTask,
+        ...baseSession,
         agent: "claude-code",
         status: "finished",
         claudeSessionId: null,
-      } satisfies Task),
+      } satisfies Session),
     ).toBe("new");
     // A Session that did have a turn still resumes off its captured id, and a
     // fresh one still starts new — neither half of the gate moved.
     expect(
       harnessLaunchMode({
-        ...baseTask,
+        ...baseSession,
         agent: "claude-code",
         status: "disconnected",
-      } satisfies Task),
+      } satisfies Session),
     ).toBe("resume");
     expect(
-      harnessLaunchMode({ ...baseTask, agent: "claude-code", status: "ready" } satisfies Task),
+      harnessLaunchMode({ ...baseSession, agent: "claude-code", status: "ready" } satisfies Session),
     ).toBe("new");
   });
 
   it("starts OpenCode fresh until a ses_* id is captured", () => {
     expect(
       harnessLaunchMode({
-        ...baseTask,
+        ...baseSession,
         agent: "opencode",
         status: "ready",
         claudeSessionId: null,
-      } satisfies Task),
+      } satisfies Session),
     ).toBe("new");
     expect(
       harnessLaunchMode({
-        ...baseTask,
+        ...baseSession,
         agent: "opencode",
         status: "ready",
         claudeSessionId: "00000000-0000-4000-8000-000000000000",
-      } satisfies Task),
+      } satisfies Session),
     ).toBe("new");
     expect(
       harnessLaunchMode({
-        ...baseTask,
+        ...baseSession,
         agent: "opencode",
         status: "running",
         claudeSessionId: OPENCODE_SESSION_ID,
-      } satisfies Task),
+      } satisfies Session),
     ).toBe("resume");
   });
 
-  it("resumes Pi only after a session UUID is captured and the task has started (ADO #4986)", () => {
+  it("resumes Pi only after a session UUID is captured and the session has started (ADO #4986)", () => {
     const piSession = "a1b2c3d4-e5f6-7890-abcd-ef1234567890";
     expect(
       harnessLaunchMode({
-        ...baseTask,
+        ...baseSession,
         agent: "pi",
         status: "ready",
         claudeSessionId: null,
-      } satisfies Task),
+      } satisfies Session),
     ).toBe("new");
     expect(
       harnessLaunchMode({
-        ...baseTask,
+        ...baseSession,
         agent: "pi",
         status: "running",
         claudeSessionId: null,
-      } satisfies Task),
+      } satisfies Session),
     ).toBe("new");
     expect(
       harnessLaunchMode({
-        ...baseTask,
+        ...baseSession,
         agent: "pi",
         status: "ready",
         claudeSessionId: piSession,
-      } satisfies Task),
+      } satisfies Session),
     ).toBe("new");
     expect(
       harnessLaunchMode({
-        ...baseTask,
+        ...baseSession,
         agent: "pi",
         status: "finished",
         claudeSessionId: piSession,
-      } satisfies Task),
+      } satisfies Session),
     ).toBe("resume");
   });
 });
@@ -372,32 +371,32 @@ describe("isHarnessResumeCommand", () => {
 
 describe("buildFreshHarnessLaunchCommand", () => {
   it("falls back to a fresh Codex session without resume", () => {
-    const task = {
-      ...baseTask,
+    const session = {
+      ...baseSession,
       agent: "codex",
       status: "running",
-    } satisfies Task;
-    expect(buildFreshHarnessLaunchCommand(task, "fresh-id")).toBe("codex --enable hooks --yolo");
+    } satisfies Session;
+    expect(buildFreshHarnessLaunchCommand(session, "fresh-id")).toBe("codex --enable hooks --yolo");
   });
 
   it("falls back to a fresh OpenCode session without session flags", () => {
-    const task = {
-      ...baseTask,
+    const session = {
+      ...baseSession,
       agent: "opencode",
       status: "running",
       claudeSessionId: OPENCODE_SESSION_ID,
-    } satisfies Task;
-    expect(buildFreshHarnessLaunchCommand(task, OPENCODE_SESSION_ID)).toBe("opencode");
+    } satisfies Session;
+    expect(buildFreshHarnessLaunchCommand(session, OPENCODE_SESSION_ID)).toBe("opencode");
   });
 
   it("falls back to a fresh Pi session without --session (ADO #4986)", () => {
-    const task = {
-      ...baseTask,
+    const session = {
+      ...baseSession,
       agent: "pi",
       status: "running",
       claudeSessionId: "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
-    } satisfies Task;
-    expect(buildFreshHarnessLaunchCommand(task, "a1b2c3d4-e5f6-7890-abcd-ef1234567890")).toBe(
+    } satisfies Session;
+    expect(buildFreshHarnessLaunchCommand(session, "a1b2c3d4-e5f6-7890-abcd-ef1234567890")).toBe(
       "pi",
     );
   });

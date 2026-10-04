@@ -27,7 +27,7 @@ export const PANEL_LISTENING_SENTINEL = "@@AC_CORE_LISTENING@@";
 export const PANEL_LINK_PATH = "/panel-link";
 
 /** The panel-link protocol version this test speaks — a browser sends it as `?v=`. */
-export const PANEL_LINK_PROTOCOL_VERSION = 1;
+export const PANEL_LINK_PROTOCOL_VERSION = 2;
 
 /** The Operator's session cookie (packages/panel/src/server/panel-auth.ts). */
 export const PANEL_SESSION_COOKIE = "ac_panel_session";
@@ -352,9 +352,7 @@ export async function startPanelService({
   port,
   secretsKey,
   /**
-   * Extra environment for this Panel — `NODE_OPTIONS` in particular, which is
-   * how the file-drop leg gives the service a memory limit small enough that
-   * pushing a gigabyte through it means something (#169).
+   * Extra environment for this Panel (the database URL of the leg).
    */
   extra = {},
   timeoutMs = 60_000,

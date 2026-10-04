@@ -13,6 +13,7 @@ import {
   highlightIsOn,
   lastScreenClearIndex,
   matchBlockingDialog,
+  promptEchoProbe,
   promptEchoed,
   readDialogOptions,
   readinessFor,
@@ -1484,6 +1485,249 @@ describe("promptEchoed", () => {
   });
 });
 
+const NO_TURN =
+  "opencode did not start a turn after the prompt was submitted (its working hint was never seen)";
+
+describe("verifying opencode's submit (paste block, issue 563)", () => {
+  const LONG = "Refactor the authentication module and report back. ".repeat(12);
+  const SHORT = "say hello";
+  const COMPOSERS: Record<string, string> = {
+    opencode: OPENCODE_COMPOSER,
+    codex: "Ask Codex to do anything",
+    "cursor-cli": "Plan, search, build anything",
+    pi: "0.0%/1.0M (auto)",
+  };
+  /** A turn starting: the user message, the footer, the spinner line. */
+  const WORKING_FRAMES = [
+    `${ESC}[2K\rYou: Refactor the authentication module`,
+    `${ESC}[2K\rbuild  big-pickle  esc interrupt`,
+    `${ESC}[2K\r⠋ Thinking… (1s)`,
+  ];
+
+  function deliver(prompt: string, harness: string): Fixture {
+    const h = startDelivery(prompt, { harness });
+    h.delivery.onOutput(COMPOSERS[harness] ?? READY_SCREEN);
+    h.clock.advance(PROFILE.quietGapMs + 1);
+    h.delivery.onOutput(`${ESC}[2K\r[Pasted ~12 lines] ${promptEchoProbe(prompt)}`);
+    h.clock.advance(submitPauseMs(prompt, PROFILE) + PROFILE.quietGapMs + 1);
+    return h;
+  }
+
+  const returns = (h: Fixture): number => h.writes.filter((w) => w === "\r").length;
+
+  it("keeps pressing return, with growing gaps, until a composer that wakes at 3 s takes it", () => {
+    const h = deliver(LONG, "opencode");
+    // The composer swallows every return before it is ready, and says nothing.
+    // Step the clock to see when each return goes out.
+    const at: number[] = [];
+    let seen = returns(h);
+    for (let i = 0; i < 50 && seen < 3; i += 1) {
+      h.clock.advance(100);
+      if (returns(h) > seen) {
+        seen = returns(h);
+        at.push(h.clock.time);
+      }
+    }
+    expect(at).toHaveLength(2);
+    expect(at[0]).toBeGreaterThan(0);
+    // The gaps grow: a second to the first retry, two more to the next.
+    expect(at[1] - at[0]).toBeGreaterThanOrEqual(2_000);
+    expect(at[1] - at[0]).toBeLessThanOrEqual(2_100);
+    // This one lands: the harness starts working.
+    for (const frame of WORKING_FRAMES) h.delivery.onOutput(frame);
+    h.clock.advance(60_000);
+    expect(returns(h)).toBe(3);
+  });
+
+  it("never sends a return once the harness is working", () => {
+    const h = deliver(LONG, "opencode");
+    h.delivery.onOutput(WORKING_FRAMES[1]);
+    h.clock.advance(60_000);
+    expect(h.writes).toEqual([LONG, "\r"]);
+  });
+
+  it("stops after a bounded number of returns when nothing ever takes it", () => {
+    const h = deliver(LONG, "opencode");
+    h.clock.advance(120_000);
+    const gaps = deliveryProfileFor("opencode").submitRetryGapsMs ?? [];
+    expect(returns(h)).toBe(1 + gaps.length);
+    expect(Math.max(...gaps)).toBeLessThanOrEqual(10_000);
+  });
+
+  it("stops pressing return on a screen that moved, but never calls it delivered without the hint", () => {
+    const h = deliver(LONG, "opencode");
+    h.delivery.onOutput(`${ESC}[2K\rYou: Refactor the authentication module\n⠋ Thinking… (0s)`);
+    h.clock.advance(300);
+    h.delivery.onOutput(`${ESC}[2K\r⠙ Thinking… (1s)`);
+    h.clock.advance(300);
+    h.delivery.onOutput(`${ESC}[2K\r⠹ Thinking… (2s)`);
+    h.clock.advance(1_000);
+    expect(h.writes).toEqual([LONG, "\r"]);
+    expect(h.events.some((e) => e.phase === "delivered")).toBe(false);
+    expect(h.delivery.currentPhase).toBe("submitted");
+  });
+
+  it("is not delivered when a swallowed write is followed only by footer repaints", () => {
+    // The reviewer's probe: the write never landed, and the footer repaints.
+    const h = deliver(LONG, "opencode");
+    for (let i = 0; i < 40; i += 1) {
+      h.delivery.onOutput(`${ESC}[40;1H${ESC}[2K  Build  big-pickle  Tip: use /help ${i % 2}`);
+      h.clock.advance(1_000);
+    }
+    expect(h.events.some((e) => e.phase === "delivered")).toBe(false);
+    expect(h.delivery.currentPhase).toBe("abandoned");
+    expect(h.events.at(-1)).toEqual({ phase: "abandoned", reason: NO_TURN });
+  });
+
+  it("reads the hint across absolute cursor moves between its words", () => {
+    const h = deliver(LONG, "opencode");
+    h.delivery.onOutput(`${ESC}[40;3H▀▀▀▀▀▀  esc${ESC}[40;12Hinterrupt${ESC}[40;30H1.2K`);
+    h.clock.advance(120_000);
+    expect(h.writes).toEqual([LONG, "\r"]);
+  });
+
+  it("still retries into an idle screen that repainted once", () => {
+    const h = deliver(LONG, "opencode");
+    h.delivery.onOutput(`${ESC}[2K\r[Pasted ~12 lines] Build  big-pickle`);
+    h.clock.advance(1_001);
+    expect(returns(h)).toBe(2);
+  });
+
+  it("is not delivered at the first return, only once a turn starts", () => {
+    const h = deliver(LONG, "opencode");
+    expect(h.delivery.currentPhase).toBe("submitted");
+    expect(h.events.some((e) => e.phase === "delivered")).toBe(false);
+    h.delivery.onOutput(WORKING_FRAMES[1]);
+    expect(h.delivery.currentPhase).toBe("delivered");
+    expect(h.events.filter((e) => e.phase === "delivered")).toHaveLength(1);
+  });
+
+  it("ends abandoned, with a reason, when the retries run out and no turn started", () => {
+    const h = deliver(LONG, "opencode");
+    h.clock.advance(120_000);
+    expect(h.delivery.currentPhase).toBe("abandoned");
+    expect(h.events.some((e) => e.phase === "delivered")).toBe(false);
+    expect(h.events.at(-1)).toEqual({
+      phase: "abandoned",
+      reason: NO_TURN,
+    });
+  });
+
+  it("does not repeat a short prompt that the first return took", () => {
+    const h = deliver(SHORT, "opencode");
+    for (const frame of WORKING_FRAMES) h.delivery.onOutput(frame);
+    h.clock.advance(60_000);
+    expect(h.writes).toEqual([SHORT, "\r"]);
+  });
+
+  it("leaves every other harness at one submit", () => {
+    for (const harness of ["claude-code", "codex", "cursor-cli", "pi"]) {
+      const h = deliver(LONG, harness);
+      // Delivered at the return, as before: nothing waits on a turn start.
+      expect(h.delivery.currentPhase, harness).toBe("delivered");
+      expect(h.events.some((e) => e.phase === "delivered"), harness).toBe(true);
+      h.clock.advance(120_000);
+      expect(returns(h), harness).toBe(1);
+    }
+  });
+
+  it("sends nothing more once the Session is disposed", () => {
+    const h = deliver(LONG, "opencode");
+    h.delivery.dispose();
+    h.clock.advance(60_000);
+    expect(h.writes).toEqual([LONG, "\r"]);
+  });
+
+  it("sends nothing more when disposed after one retry, with the next check armed", () => {
+    const h = deliver(LONG, "opencode");
+    h.clock.advance(1_001);
+    expect(returns(h)).toBe(2);
+    h.delivery.dispose();
+    h.clock.advance(120_000);
+    expect(returns(h)).toBe(2);
+    expect(h.events.some((e) => e.phase === "abandoned" || e.phase === "delivered")).toBe(false);
+  });
+});
+
+describe("opencode with the prompt still in the composer (issue 563)", () => {
+  // A long prompt scrolls inside the box: the start is gone, the standard block shows.
+  const TAIL_TEXT =
+    "and write the report to sessions/t-1/report-1.md ending with ACT-REPORT-END. [/Actana standard block v1]  ";
+  const LONG = `Dispatch alpha-bravo-charlie: ${"Refactor the authentication module. ".repeat(12)}${TAIL_TEXT}`;
+  const WORKING = [
+    `${ESC}[2K\rYou: Refactor the authentication module`,
+    `${ESC}[2K\rbuild  big-pickle  esc interrupt`,
+    `${ESC}[2K\r⠋ Thinking… (1s)`,
+  ];
+  const returns = (h: Fixture): number => h.writes.filter((w) => w === "\r").length;
+
+  /** Composer up, prompt typed, and the harness paints the box holding it. */
+  function typedInto(box: string): Fixture {
+    const h = startDelivery(LONG, { harness: "opencode" });
+    h.delivery.onOutput(OPENCODE_COMPOSER);
+    h.clock.advance(PROFILE.quietGapMs + 1);
+    expect(h.writes).toEqual([LONG]);
+    h.delivery.onOutput(box);
+    h.clock.advance(submitPauseMs(LONG, PROFILE) + PROFILE.quietGapMs + 1);
+    return h;
+  }
+
+  /** The live run: the text, wrapped over rows inside the composer box, or a paste chip. */
+  it.each([
+    ["a collapsed paste block", `${ESC}[2K\r┃ [Pasted ~14 lines] ┃\n  Build  big-pickle`],
+    [
+      "only the tail of a long prompt, its start scrolled out of the box",
+      [0, 1, 2]
+        .map((i) => `${ESC}[${10 + i};1H┃ ${TAIL_TEXT.slice(i * 40, i * 40 + 40).padEnd(40)} ┃`)
+        .join("") + `${ESC}[40;1H  Build  big-pickle  Tip: use /help`,
+    ],
+  ])("submits instead of retyping when the composer shows %s", (_name, box) => {
+    const h = typedInto(box);
+    expect(h.writes).toEqual([LONG, "\r"]);
+    expect(h.events.some((e) => e.phase === "prompt-swallowed")).toBe(false);
+
+    // The return was swallowed: the box is unchanged and silent. The verify path
+    // keeps pressing return, and one finally lands.
+    h.clock.advance(3_100);
+    expect(returns(h)).toBeGreaterThanOrEqual(3);
+    for (const frame of WORKING) h.delivery.onOutput(frame);
+    const settled = returns(h);
+    h.clock.advance(120_000);
+
+    expect(returns(h)).toBe(settled);
+    expect(h.writes.filter((w) => w === LONG)).toHaveLength(1);
+    expect(h.delivery.currentPhase).toBe("delivered");
+    expect(h.events.some((e) => e.phase === "abandoned")).toBe(false);
+    expect(h.events.some((e) => e.phase === "delivered")).toBe(true);
+  });
+
+  it.each([
+    ["a bare footer repaint", `${ESC}[40;1H${ESC}[2K  Build  big-pickle  Tip: use /help`],
+    ["a framed footer with no prompt text", `${ESC}[40;1H┃  Build  big-pickle  Tip: use /help ┃`],
+  ])("ends abandoned, not delivered, when the write was swallowed and only %s repainted", (_name, footer) => {
+    const h = typedInto(footer);
+    // The screen is not matched: the return goes out, and the verify loop is
+    // what notices that nothing started.
+    expect(h.writes).toEqual([LONG, "\r"]);
+    expect(h.delivery.currentPhase).toBe("submitted");
+    expect(h.events.some((e) => e.phase === "delivered")).toBe(false);
+    h.clock.advance(120_000);
+    expect(h.delivery.currentPhase).toBe("abandoned");
+    expect(h.events.some((e) => e.phase === "delivered")).toBe(false);
+    expect(h.events.at(-1)).toEqual({
+      phase: "abandoned",
+      reason: NO_TURN,
+    });
+    expect(h.writes.filter((w) => w === LONG)).toHaveLength(1);
+  });
+
+  it("still retypes when the composer is really empty after the write", () => {
+    const h = typedInto(OPENCODE_COMPOSER);
+    expect(h.events).toContainEqual({ phase: "prompt-swallowed", attempt: 1 });
+    expect(h.writes).toEqual([LONG]);
+  });
+});
+
 describe("delivering to opencode (issue 229)", () => {
   /**
    * The live boot, replayed at its captured timings:
@@ -1536,6 +1780,9 @@ describe("delivering to opencode (issue 229)", () => {
     h.delivery.onOutput(`${ESC}[2J${ESC}[H┃ say hello ┃\n`);
     h.clock.advance(submitPauseMs("say hello", PROFILE) + PROFILE.quietGapMs);
     expect(h.writes).toEqual(["say hello", "\r"]);
+    // Sent, not yet delivered: opencode is reported only once a turn starts.
+    expect(h.delivery.currentPhase).toBe("submitted");
+    h.delivery.onOutput(`${ESC}[2K\rbuild  big-pickle  esc interrupt`);
     expect(h.delivery.currentPhase).toBe("delivered");
   });
 
@@ -1597,6 +1844,7 @@ describe("delivering to opencode (issue 229)", () => {
     h.delivery.onOutput(`${ESC}[2J${ESC}[H┃ say hello ┃\n`);
     h.clock.advance(submitPauseMs("say hello", PROFILE) + PROFILE.quietGapMs);
     expect(h.writes).toEqual(["say hello", "\r"]);
+    h.delivery.onOutput(`${ESC}[2K\rbuild  big-pickle  esc interrupt`);
     expect(h.delivery.currentPhase).toBe("delivered");
   });
 
@@ -2069,6 +2317,7 @@ describe("did the Core see a composer, or did the clock vouch for it (issue 395)
     h.clock.advance(PROFILE.quietGapMs + 1);
     h.delivery.onOutput(`${ESC}[2J${ESC}[H┃ say hello ┃\n`);
     h.clock.advance(submitPauseMs("say hello", PROFILE) + PROFILE.quietGapMs);
+    h.delivery.onOutput(`${ESC}[2K\rbuild  big-pickle  esc interrupt`);
     expect(h.delivery.currentPhase).toBe("delivered");
     expect(h.events.at(-1)).toMatchObject({ phase: "delivered", composerObserved: true });
   });

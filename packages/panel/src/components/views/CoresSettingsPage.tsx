@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Btn } from "~/components/ui/Btn";
+import { TextField } from "~/components/ui/TextField";
 import { ConfirmDialog } from "~/components/ui/ConfirmDialog";
 import { Field, SettingsSection } from "~/components/views/SettingsParts";
 import { AddCoreByPairing } from "~/components/views/AddCoreByPairing";
@@ -39,6 +40,11 @@ export function CoresSettingsPage() {
   const [removing, setRemoving] = useState(false);
 
   const [renamingId, setRenamingId] = useState<string | null>(null);
+
+  // Delete (#564): the Core, its S3 folder and the machine's ~/shared, after the operator has typed the folder's exact prefix.
+  const [pendingDeletion, setPendingDeletion] = useState<CoreWithDial | null>(null);
+  const [confirmPrefix, setConfirmPrefix] = useState("");
+  const [deleting, setDeleting] = useState(false);
 
   // A poll that lands after unmount must not write to a dead component.
   const mounted = useRef(true);
@@ -128,6 +134,33 @@ export function CoresSettingsPage() {
     }
   };
 
+  const handleDelete = async () => {
+    const core = pendingDeletion;
+    if (!core) return;
+    setDeleting(true);
+    try {
+      const result = await api.deleteCoreWithStorage(core.id, confirmPrefix);
+      setPendingDeletion(null);
+      setConfirmPrefix("");
+      await refresh();
+      announceCoreRegistryChanged();
+      if (result.machineFolder?.state === "kept") {
+        // The Core was gone from the Panel either way: say plainly that its copy on the machine is still there.
+        toast.warning(
+          result.machineFolder.removed > 0
+            ? `Core "${core.label}" deleted. Its ~/shared on the machine was only partly emptied and the rest stays: ${result.machineFolder.reason}.`
+            : `Core "${core.label}" deleted. Its ~/shared on the machine was not emptied and stays: ${result.machineFolder.reason}.`,
+        );
+      } else {
+        toast.success(`Core "${core.label}" and its Shared folder deleted, on the Panel and on the machine.`);
+      }
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to delete Core.");
+    } finally {
+      setDeleting(false);
+    }
+  };
+
   return (
     <SettingsSection
       title="Cores"
@@ -165,6 +198,14 @@ export function CoresSettingsPage() {
                     key={core.id}
                     core={core}
                     onRemove={() => setPendingRemoval(core)}
+                    onDelete={
+                      core.sharedFolder?.prefix
+                        ? () => {
+                            setConfirmPrefix("");
+                            setPendingDeletion(core);
+                          }
+                        : undefined
+                    }
                     removing={removing && pendingRemoval?.id === core.id}
                     onRename={(label) => handleRename(core, label)}
                     renaming={renamingId === core.id}
@@ -191,9 +232,37 @@ export function CoresSettingsPage() {
         loading={removing}
       >
         The Panel stops dialing this Core and forgets its credentials and its place in the event
-        log. Nothing on the machine itself is touched — its projects, tasks, and running sessions
-        keep going. To manage it again, run <code>actana pair new</code> on the machine and pair it
+        log. Nothing on the machine itself is touched — its sessions and running sessions
+        keep going, and its <code>~/shared</code> stays with its contents. To manage it again, run <code>actana pair new</code> on the machine and pair it
         here with the code it prints.
+      </ConfirmDialog>
+      <ConfirmDialog
+        open={pendingDeletion !== null}
+        onClose={() => setPendingDeletion(null)}
+        onConfirm={handleDelete}
+        title={`Delete ${pendingDeletion?.label ?? "Core"} and its Shared folder?`}
+        confirmLabel="Delete Core and folder"
+        loading={deleting}
+        confirmDisabled={confirmPrefix !== pendingDeletion?.sharedFolder?.prefix}
+      >
+        <p>
+          This removes the Core from the Panel, empties every file under its S3 prefix{" "}
+          <code>{pendingDeletion?.sharedFolder?.prefix}</code> and empties the <code>~/shared</code> folder on the machine.
+          Nothing else in the bucket or in the machine's home is touched. If the Core is not connected, the delete is refused
+          until the key it holds ends (within the hour); it is then removed from the Panel, but its <code>~/shared</code> stays on
+          the machine. This cannot be undone. Type the
+          prefix to confirm.
+        </p>
+        <TextField
+          label="Prefix"
+          value={confirmPrefix}
+          onChange={setConfirmPrefix}
+          placeholder={pendingDeletion?.sharedFolder?.prefix ?? ""}
+          mono
+          autoComplete="off"
+          spellCheck={false}
+          disabled={deleting}
+        />
       </ConfirmDialog>
     </SettingsSection>
   );
@@ -240,12 +309,15 @@ function endpointHost(endpoint: string): string {
 function CoreRow({
   core,
   onRemove,
+  onDelete,
   removing,
   onRename,
   renaming,
 }: {
   core: CoreWithDial;
   onRemove: () => void;
+  /** Present when the Core has a Shared folder in S3 to delete with it. */
+  onDelete?: (() => void) | undefined;
   removing: boolean;
   onRename: (label: string) => Promise<boolean>;
   renaming: boolean;
@@ -324,6 +396,16 @@ function CoreRow({
             </span>
           )}
           <DialBadge dial={core.dial} />
+          {core.sharedFolder?.state === "pending" && (
+            <span data-shared-folder="pending" style={BADGE_STYLE} title="Pairing is not finished: attach this Core's Shared folder">
+              Shared folder pending
+            </span>
+          )}
+          {core.sharedFolder?.state === "error" && (
+            <span data-shared-folder="error" style={{ ...BADGE_STYLE, color: "var(--danger, #e5484d)" }} title={core.sharedFolder.error ?? ""}>
+              Shared folder error
+            </span>
+          )}
         </div>
         <div
           style={{
@@ -340,6 +422,11 @@ function CoreRow({
             <> · last seen {formatRelativeTime(core.dial.lastSeenAt)}</>
           )}
         </div>
+        {core.sharedFolder?.state === "error" && core.sharedFolder.error && (
+          <div role="alert" style={{ fontFamily: "var(--mono)", fontSize: 11.5, color: "var(--danger, #e5484d)", marginTop: 3 }}>
+            The Shared folder key could not be refreshed: {core.sharedFolder.error}
+          </div>
+        )}
       </div>
       {editing ? (
         <div style={{ display: "flex", alignItems: "center", gap: 4, flexShrink: 0 }}>
@@ -379,6 +466,18 @@ function CoreRow({
           >
             {removing ? "Removing…" : "Remove"}
           </Btn>
+          {onDelete && (
+            <Btn
+              variant="ghost"
+              size="sm"
+              icon="trash"
+              onClick={onDelete}
+              disabled={removing}
+              aria-label={`Delete Core ${core.label} and its Shared folder`}
+            >
+              Delete
+            </Btn>
+          )}
         </div>
       )}
     </div>
@@ -392,6 +491,19 @@ function CoreRow({
     </div>
   );
 }
+
+const BADGE_STYLE = {
+  fontFamily: "var(--mono)",
+  fontSize: 10,
+  fontWeight: 600,
+  letterSpacing: "0.05em",
+  textTransform: "uppercase",
+  color: "var(--text-dim)",
+  background: "var(--surface-0)",
+  border: "1px solid var(--border)",
+  borderRadius: 4,
+  padding: "2px 6px",
+} as const;
 
 /** The Core's link state, as the service last reported it. */
 function DialBadge({ dial }: { dial: CoreDialStatus }) {

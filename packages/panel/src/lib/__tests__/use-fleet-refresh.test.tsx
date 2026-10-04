@@ -13,26 +13,24 @@
 // an event-driven one — which is exactly the claim under test.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, renderHook, waitFor } from "@testing-library/react";
-import type { CoreLinkTaskSnapshot } from "@actana/sdk/core-link-frames";
+import type { CoreLinkSessionRow } from "@actana/sdk/core";
 
 const CORE_ID = "core-a";
-const PROJECT_ID = "project-1";
 
 const h = vi.hoisted(() => ({
   /** Every `onEvent` subscriber currently mounted. */
   eventHandlers: new Set<(msg: { coreId: string; event: { kind: string } }) => void>(),
-  /** One entry per in-flight `listTasks`, oldest first. */
+  /** One entry per in-flight `listSessionRows`, oldest first. */
   inFlight: [] as { settle: () => void }[],
-  listTasksCalls: 0,
+  listSessionRowsCalls: 0,
   /** What the Core would answer *right now*. Mutated by the tests. */
-  tasks: [] as CoreLinkTaskSnapshot[],
+  sessions: [] as CoreLinkSessionRow[],
 }));
 
-function task(taskId: string, status: string): CoreLinkTaskSnapshot {
+function session(sessionId: string, status: string): CoreLinkSessionRow {
   return {
-    taskId,
-    projectId: PROJECT_ID,
-    title: taskId,
+    sessionId,
+    title: sessionId,
     titleManuallySet: false,
     claudeSessionId: null,
     agent: "claude-code",
@@ -74,10 +72,10 @@ const bridge = {
   onDialStatus: () => () => {},
   onConnectionChange: () => () => {},
   // Held open until the test says so: the whole bug lives in this window.
-  listTasks: () => {
-    h.listTasksCalls++;
-    const snapshot = () => ({ tasks: [...h.tasks], archivedCount: 0 });
-    return new Promise<{ tasks: CoreLinkTaskSnapshot[]; archivedCount: number }>((resolve) => {
+  listSessionRows: () => {
+    h.listSessionRowsCalls++;
+    const snapshot = () => ({ sessions: [...h.sessions], archivedCount: 0 });
+    return new Promise<{ sessions: CoreLinkSessionRow[]; archivedCount: number }>((resolve) => {
       h.inFlight.push({ settle: () => resolve(snapshot()) });
     });
   },
@@ -85,12 +83,12 @@ const bridge = {
 
 vi.mock("~/lib/panel-bridge", () => ({ getPanelBridge: () => bridge }));
 
-const { useFleetTasks } = await import("~/lib/use-fleet");
+const { useFleetSessions } = await import("~/lib/use-fleet");
 
-/** Let the oldest held `listTasks` answer, with the Core's current rows. */
+/** Let the oldest held `listSessionRows` answer, with the Core's current rows. */
 async function settleOldestRead(): Promise<void> {
   const call = h.inFlight.shift();
-  if (!call) throw new Error("no listTasks in flight");
+  if (!call) throw new Error("no listSessionRows in flight");
   await act(async () => {
     call.settle();
     // Two turns: the fan-out's `Promise.all`, then the state it sets.
@@ -109,23 +107,23 @@ async function emit(kind: string): Promise<void> {
 
 /** Wait until the fan-out the hook starts on mount is the one in flight. */
 async function waitForRead(n: number): Promise<void> {
-  await waitFor(() => expect(h.listTasksCalls).toBeGreaterThanOrEqual(n));
+  await waitFor(() => expect(h.listSessionRowsCalls).toBeGreaterThanOrEqual(n));
 }
 
 beforeEach(() => {
   h.eventHandlers.clear();
   h.inFlight = [];
-  h.listTasksCalls = 0;
-  h.tasks = [task("task-1", "running")];
+  h.listSessionRowsCalls = 0;
+  h.sessions = [session("session-1", "running")];
 });
 
 afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe("useFleetTasks — a finish that lands during an in-flight refresh", () => {
+describe("useFleetSessions — a finish that lands during an in-flight refresh", () => {
   it("shows the finish after that refresh, without waiting for the 15s poll", async () => {
-    const { result } = renderHook(() => useFleetTasks());
+    const { result } = renderHook(() => useFleetSessions());
 
     // First fan-out: the Session is running.
     await waitForRead(1);
@@ -133,59 +131,59 @@ describe("useFleetTasks — a finish that lands during an in-flight refresh", ()
     await waitFor(() => expect(result.current.fleet.rows).toHaveLength(1));
     expect(result.current.fleet.rows[0]?.status).toBe("running");
 
-    // A task event opens a second fan-out and we hold it open.
-    await emit("task:updated");
+    // A session event opens a second fan-out and we hold it open.
+    await emit("session:updated");
     await waitForRead(2);
 
     // The Session finishes *inside* that window. The read already in flight
     // was launched before it, so its answer cannot carry the finish.
-    h.tasks = [task("task-1", "finished")];
+    h.sessions = [session("session-1", "finished")];
     await emit("session:finished");
 
     // The stale answer lands first — this is the state the old code settled on.
     await settleOldestRead();
 
     // ...and the dropped event has to have re-armed the fan-out.
-    await waitFor(() => expect(h.listTasksCalls).toBe(3));
+    await waitFor(() => expect(h.listSessionRowsCalls).toBe(3));
     await settleOldestRead();
 
     await waitFor(() => expect(result.current.fleet.rows[0]?.status).toBe("finished"));
     // Three reads: mount, the event, and the trailing re-run. No poll tick.
-    expect(h.listTasksCalls).toBe(3);
+    expect(h.listSessionRowsCalls).toBe(3);
   });
 
   it("re-runs exactly once for a burst of events landing in one refresh", async () => {
-    const { result } = renderHook(() => useFleetTasks());
+    const { result } = renderHook(() => useFleetSessions());
 
     await waitForRead(1);
     await settleOldestRead();
     await waitFor(() => expect(result.current.fleet.rows).toHaveLength(1));
 
-    await emit("task:updated");
+    await emit("session:updated");
     await waitForRead(2);
 
     // Six more events while that one read is in flight — a burst, not six
     // refreshes. Coalescing them is the other half of the fix.
-    h.tasks = [task("task-1", "finished")];
+    h.sessions = [session("session-1", "finished")];
     for (const kind of [
-      "task:updated",
-      "task:updated",
+      "session:updated",
+      "session:updated",
       "session:finished",
       "pty:exit",
-      "task:updated",
+      "session:updated",
       "session:finished",
     ]) {
       await emit(kind);
     }
-    expect(h.listTasksCalls).toBe(2);
+    expect(h.listSessionRowsCalls).toBe(2);
 
     await settleOldestRead();
-    await waitFor(() => expect(h.listTasksCalls).toBe(3));
+    await waitFor(() => expect(h.listSessionRowsCalls).toBe(3));
     await settleOldestRead();
     await waitFor(() => expect(result.current.fleet.rows[0]?.status).toBe("finished"));
 
     // One trailing pass for the whole burst, and nothing behind it.
-    expect(h.listTasksCalls).toBe(3);
+    expect(h.listSessionRowsCalls).toBe(3);
     expect(h.inFlight).toHaveLength(0);
   });
 
@@ -195,63 +193,63 @@ describe("useFleetTasks — a finish that lands during an in-flight refresh", ()
     // most one extra read" passes every other test in this file while quietly
     // re-narrowing #389 to the second event — so this case is what stops that
     // refactor at CI rather than in an operator's Fleet view.
-    h.tasks = [task("task-1", "running"), task("task-2", "running")];
-    const { result } = renderHook(() => useFleetTasks());
+    h.sessions = [session("session-1", "running"), session("session-2", "running")];
+    const { result } = renderHook(() => useFleetSessions());
 
     await waitForRead(1);
     await settleOldestRead();
     await waitFor(() => expect(result.current.fleet.rows).toHaveLength(2));
 
     // Read 2 opens, and the first Session finishes inside it.
-    await emit("task:updated");
+    await emit("session:updated");
     await waitForRead(2);
-    h.tasks = [task("task-1", "finished"), task("task-2", "running")];
+    h.sessions = [session("session-1", "finished"), session("session-2", "running")];
     await emit("session:finished");
 
     // Read 2 answers with the pre-finish snapshot, which arms the trailing
     // pass — read 3.
     await settleOldestRead();
-    await waitFor(() => expect(h.listTasksCalls).toBe(3));
+    await waitFor(() => expect(h.listSessionRowsCalls).toBe(3));
 
     // The second Session finishes while *that trailing pass* is in flight.
     // A single-trailing-pass implementation has nowhere left to put this.
-    h.tasks = [task("task-1", "finished"), task("task-2", "finished")];
+    h.sessions = [session("session-1", "finished"), session("session-2", "finished")];
     await emit("session:finished");
 
     // Read 3 answers with a snapshot that predates the second finish...
     await settleOldestRead();
     // ...so a fourth read has to follow it.
-    await waitFor(() => expect(h.listTasksCalls).toBe(4));
+    await waitFor(() => expect(h.listSessionRowsCalls).toBe(4));
     await settleOldestRead();
 
     await waitFor(() =>
-      expect(result.current.fleet.rows.map((row) => [row.taskId, row.status]).sort()).toEqual([
-        ["task-1", "finished"],
-        ["task-2", "finished"],
+      expect(result.current.fleet.rows.map((row) => [row.sessionId, row.status]).sort()).toEqual([
+        ["session-1", "finished"],
+        ["session-2", "finished"],
       ]),
     );
     // Four reads and no more: mount, the event, and one trailing pass for each
     // of the two bursts — not one per event, and not one left running.
-    expect(h.listTasksCalls).toBe(4);
+    expect(h.listSessionRowsCalls).toBe(4);
     expect(h.inFlight).toHaveLength(0);
   });
 
   it("settles after the trailing pass instead of re-reading forever", async () => {
-    const { result } = renderHook(() => useFleetTasks());
+    const { result } = renderHook(() => useFleetSessions());
 
     await waitForRead(1);
     await settleOldestRead();
     await waitFor(() => expect(result.current.fleet.rows).toHaveLength(1));
 
-    await emit("task:updated");
+    await emit("session:updated");
     await waitForRead(2);
     await emit("session:finished");
     await settleOldestRead();
 
     // The trailing pass runs and then stops. A coalescing loop that cleared
     // its flag *after* the read instead of before would keep re-reading here.
-    await waitFor(() => expect(h.listTasksCalls).toBe(3));
+    await waitFor(() => expect(h.listSessionRowsCalls).toBe(3));
     await settleOldestRead();
-    expect(h.listTasksCalls).toBe(3);
+    expect(h.listSessionRowsCalls).toBe(3);
   });
 });

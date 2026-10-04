@@ -1,6 +1,6 @@
 ---
 name: release
-description: Cut an Actana Control release. A release is a promotion of a train, not a tag push — promote.yml is dispatched against beta/x.y.z, its first job waits on a human, and the digest check, the fast-forward of main, the tag, release.yml and the npm publish are all downstream of that approval. The procedure lives in docs/ci-cd.md § "Cutting a release"; this skill is the pointer to it, the two rules that are expensive to learn by doing, the preconditions no workflow checks for you, and the places ADR 0023 and the workflows do not agree.
+description: Cut an Actana Control release. A release is a promotion of a train, not a tag push — promote.yml is dispatched against beta/x.y.z, its first job waits on a human, and the digest check, the fast-forward of main, the tag, release.yml and the Docker Hub images are all downstream of that approval. The procedure lives in docs/ci-cd.md § "Cutting a release"; this skill is the pointer to it, the two rules that are expensive to learn by doing, the preconditions no workflow checks for you, and the places ADR 0023 and the workflows do not agree.
 ---
 
 # Release
@@ -56,11 +56,6 @@ Things no workflow will check for you.
   `release.yml`'s `resolve` job fails the whole run outright when either is
   missing on `actana/control` — before anything is built. See
   [`docs/REPO_SETUP.md`](../../../docs/REPO_SETUP.md) §1.
-- **`NPM_TOKEN` exists as a repo secret.** Since
-  [#159](https://github.com/actana/control/issues/159) a release also publishes
-  `@actana/sdk` and `@actana/cli` to npm, and `resolve` fails the whole run when
-  the token is missing — in the same place and the same shape as the Docker Hub
-  check, before anything is built. `REPO_SETUP.md` §2.
 - **The `macos-release` environment exists, with required reviewers on it.**
   Check with `gh api repos/actana/control/environments --jq
   '.environments[].name'`. If it is absent, GitHub auto-creates an unprotected
@@ -96,7 +91,7 @@ stays there until a required reviewer approves it in the run's UI.
 
 **Nothing has happened yet when it waits.** No digest is verified, `main` does
 not advance, no tag is pushed, `release.yml` is never dispatched — so no image
-moves, no `:latest` moves, no package reaches npm, and no GitHub Release
+moves, no `:latest` moves, and no GitHub Release
 appears. The old shape published everything downstream of the approval; this
 shape *decides* everything downstream of it, and that is the difference that
 makes "reject" a real answer.
@@ -136,8 +131,8 @@ after the clause that licensed it was written.
 The procedure is
 [`docs/ci-cd.md` § "Cutting a train"](../../../docs/ci-cd.md#cutting-a-train).
 Follow it rather than improvising: **the cut is the version stamp.** It rewrites
-the version in **all six manifests** — `package.json`, `packages/cli`,
-`packages/core`, `packages/panel`, `packages/sdk`, `packages/shared` — in one
+the version in **all five manifests** — `package.json`, `packages/cli`,
+`packages/core`, `packages/panel`, `packages/shared` — in one
 commit whose subject is `chore(release): cut beta/x.y.z`, Conventional Commits
 on purpose, because that commit reaches `main` through the next promotion pull
 request where `ci.yml`'s `Conventions` job lints every commit in it, not just
@@ -151,13 +146,13 @@ Nothing goes red at that moment, which is the trap. `Train rules` is
 `if: github.event_name == 'pull_request'`, so an unstamped train sits green and
 empty until somebody opens the first pull request into it — and then
 `assert_versions` compares each manifest against the version in the branch name
-and calls `fail` once per manifest. **Six errors, one per manifest**, on the
+and calls `fail` once per manifest. **Five errors, one per manifest**, on the
 pull request of whoever happened to be first, who did not cut the branch and
 has no reason to connect the two. This has already cost a train an hour.
 
-The count is the tell: **six errors is a missing stamp; one is real drift in one
-file.** The fix is not to hand-edit the six files back one at a time — it is to
-redo the cut commit exactly: the same version rewritten in the same six
+The count is the tell: **five errors is a missing stamp; one is real drift in one
+file.** The fix is not to hand-edit the five files back one at a time — it is to
+redo the cut commit exactly: the same version rewritten in the same five
 manifests, as one commit, with the subject above. Before anything has merged,
 deleting the branch and cutting again is cheaper and is the documented path.
 
@@ -189,21 +184,11 @@ released. [`docs/REPO_SETUP.md`](../../../docs/REPO_SETUP.md) §6 is current on
 this and says how to clear them.
 
 **A published release is never unpublished.** Once the approval lands, the run
-fast-forwards `main`, moves `:latest` on both images, publishes the npm
-packages, and creates the GitHub Release. Nothing here rolls that back — an
+fast-forwards `main`, moves `:latest` on both images, and creates the
+GitHub Release. Nothing here rolls that back — an
 image push is not undoable and `:latest` has no history — so a bad release is
 fixed by promoting the next version, never by moving or deleting a published
 tag. The approval pause is the last point at which "no" is still cheap.
-
-**npm is stricter than that, and it is the one irreversibility with no
-workaround at all.** A container tag can at least be re-pointed at better bytes.
-An npm version number is consumed by its first publish: unpublishing inside the
-72-hour window frees the bytes and not the name, so `@actana/sdk@0.2.2` can
-never mean anything else, and the recovery from a bad publish is to burn the
-next version too. This is why the `npm` job is last in the graph — nothing is
-burned until every other gate has passed — and why `pnpm npm:rehearse` exists:
-run it locally, on any branch, before a promotion is anywhere near the picture.
-It packs and asserts the real tarballs and publishes nothing.
 
 ## What the tag decides
 
@@ -215,7 +200,7 @@ calling.
 
 No job reads a `package.json`. That is not the same as "the manifests do not
 matter": on the promote path they already carry the version, because the cut
-wrote all six and `Train rules` asserted them on every pull request into the
+wrote all five and `Train rules` asserted them on every pull request into the
 train. `release.yml` does not re-check what the branch model has already
 guaranteed.
 
@@ -242,7 +227,7 @@ rather than a checksum file that quietly covers part of one.
   running, so the fast-forward is no longer possible. A squash is not the
   fallback (D5); the train needs re-cutting from `main`.
 - **Red on `preflight`** — the release could not have run: a missing Docker Hub
-  or npm secret, a promoted commit with no dispatchable `release.yml`, a version
+  secret, a promoted commit with no dispatchable `release.yml`, a version
   tag already naming another commit. Nothing has been published and `main` has
   not moved; that is the point of the job (#326).
 - **Red before anything builds, inside `release.yml`** — the same class of
@@ -263,17 +248,19 @@ This file describes what the workflows do today. One place where the ADR and
 the workflows genuinely disagree, and one where D3's headline number looks like
 a disagreement and is not:
 
-**D3's opening sentence says four manifests. The set is six — and D3 says so
+**D3's opening sentence says four manifests. The set is five — and D3 says so
 itself, a few lines further down.** The clause opens "all four manifests —
 root, `packages/core`, `packages/panel`, `packages/shared`", and that sentence
 has never been rewritten. What sits directly under it has: D3 is amended twice,
 by [#152](https://github.com/actana/control/issues/152), which added
 `packages/sdk` as the fifth when the core-link frames moved out of
-`packages/shared`, and by [#157](https://github.com/actana/control/issues/157),
-which added `packages/cli` as the sixth. Both `ci.yml`'s `Train rules` and the
+`packages/shared`, by [#157](https://github.com/actana/control/issues/157),
+which added `packages/cli` as the sixth, and by
+[#580](https://github.com/actana/control/issues/580), which deleted `packages/sdk`
+when the SDK became the published `@actana/sdk`. Both `ci.yml`'s `Train rules` and the
 cut procedure in
 [`docs/ci-cd.md` § "Cutting a train"](../../../docs/ci-cd.md#cutting-a-train)
-carry the six-entry list — the second of those was `promote.yml`'s cut until
+carry the five-entry list — the second of those was `promote.yml`'s cut until
 #325 moved the cut into a person's hands, and a test still binds the two lists
 to each other. So the number is stale, not uncorrected — and stale by
 design: D3 asks you to read its count as "derived rather than declared", says

@@ -2,7 +2,7 @@ import { useCallback, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { CardFrame } from "~/components/ui/CardFrame";
 import { SessionIcon } from "~/components/ui/SessionIcon";
-import { mutateTaskForCore } from "~/lib/mutate-task-for-core";
+import { mutateSessionForCore } from "~/lib/mutate-session-for-core";
 import { useDismissableMenu } from "~/lib/use-dismissable-menu";
 import {
   DEFAULT_SESSION_ICON,
@@ -14,17 +14,16 @@ import { Z_INDEX } from "~/lib/z-index";
 /**
  * A miniature chip that renders the current session icon and, on click, opens
  * a portal-anchored popover for picking a new one. The mutation is routed
- * through the coreId-parameterized {@link mutateTaskForCore} dispatcher so
- * every Core shares one code path (ADR-0005) — the
- * picker itself never conditions on `coreId`.
+ * through {@link mutateSessionForCore}, the one code path every Core shares
+ * (ADR-0005).
  *
- * `currentIcon` is the value from the Task snapshot the Core emits. `onPicked`
+ * `currentIcon` is the value from the Session snapshot the Core emits. `onPicked`
  * is invoked after the Core confirms the write so the caller can refresh
- * whatever view mirrors the row (e.g. invalidate the tasks query).
+ * whatever view mirrors the row (e.g. invalidate the sessions query).
  */
 export function SessionIconPicker({
   coreId,
-  taskId,
+  sessionId,
   currentIcon,
   size = 24,
   strokeWidth = 1.6,
@@ -34,8 +33,8 @@ export function SessionIconPicker({
   wrapperStyle,
   onPicked,
 }: {
-  coreId: string | null;
-  taskId: string;
+  coreId: string;
+  sessionId: string;
   currentIcon: string | null | undefined;
   size?: number;
   strokeWidth?: number;
@@ -68,9 +67,9 @@ export function SessionIconPicker({
       setBusyIcon(nextIcon);
       setError(null);
       try {
-        await mutateTaskForCore(coreId, {
+        await mutateSessionForCore(coreId, {
           op: "update",
-          taskId,
+          sessionId,
           icon: nextIcon,
         });
         onPicked?.(nextIcon);
@@ -81,7 +80,7 @@ export function SessionIconPicker({
         setBusyIcon(null);
       }
     },
-    [busyIcon, coreId, taskId, onPicked],
+    [busyIcon, coreId, sessionId, onPicked],
   );
 
   return (

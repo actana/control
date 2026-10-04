@@ -5,20 +5,8 @@
 // environment, the real streams, the real system port and the real Core dial
 // get bound to it — and the only place `process.exit` is called.
 //
-// One entry for one program (#288). It is compiled twice, and the two bundles
-// are what the two doors onto `actana` load:
-//
-//   dist/actana-cli.mjs          ESM — what `bin/actana.mjs` loads, and what
-//                                `npm i -g @actana/cli` puts on an operator's
-//                                PATH.
-//   dist-tarball/actana-cli.cjs  CJS — staged into the Core tarball as
-//                                `app/actana-cli.cjs`, which `bin/actana` in
-//                                the tarball execs on the bundled Node. It is
-//                                emitted outside `dist/` so the npm package
-//                                does not publish a second copy of itself.
-//
-// Same source, same verbs, same help: which of the two answers `actana` on a
-// machine that has both is no longer a question with consequences.
+// One entry for one program (#288), compiled to `dist-tarball/actana-cli.cjs`: CJS, staged into the
+// Core tarball as `app/actana-cli.cjs`, which `bin/actana` in the tarball execs on the bundled Node.
 //
 // **The `daemon` verb loads `core-entry.cjs` in-process rather than spawning
 // it**: systemd's `Type=simple` and launchd both expect the daemon to BE the
@@ -39,14 +27,17 @@ import { resolveActanaLayout } from "./actana-layout.ts";
 import { nodeReleaseFetcher } from "./actana-release.ts";
 import { nodeActanaSystem } from "./actana-system.ts";
 import { HarnessAvailabilityStore } from "@actana/shared/harness-availability-store";
-import { probeCore } from "./core-probe.ts";
-import { openCoreShell } from "./core-shell-channel.ts";
-import { terminalFromProcess } from "./cli-terminal.ts";
-import { connectCore } from "./core-connection.ts";
-import { sdkCorePairing } from "./core-pair.ts";
-import { openSessionGateway } from "./session-gateway.ts";
-import { openProjectFiles } from "./project-files-gateway.ts";
-import { openSessionAttach } from "./session-attach-channel.ts";
+import {
+  connectCore,
+  openCoreShell,
+  openFilesAtHome,
+  openSessionAttach,
+  openSessionGateway,
+  openSharedThroughCore,
+  probeCore,
+  sdkCorePairing,
+  terminalFromProcess,
+} from "@actana/cli";
 import { EXIT_FAILURE } from "./exit-codes.ts";
 
 /** Read stdin to end. Only called by a verb that was told to read it. */
@@ -151,10 +142,6 @@ async function main(): Promise<void> {
     // machine on a Core it has no credential for yet (#285).
     pairing: sdkCorePairing,
     openSessions: openSessionGateway,
-    // The file surface, which is the one thing in this program that does not
-    // cross the core link: `project cp` and `project files` reach the Core's
-    // HTTPS routes through the SDK (ADR 0028, #129 F12).
-    openFiles: openProjectFiles,
     now: () => Date.now(),
     // The real terminal, and the only place one is built. `core shell` is what
     // uses it; every other verb is handed it and never asks. It takes `process`
@@ -165,6 +152,11 @@ async function main(): Promise<void> {
     // The other command that holds the terminal, and the only one that holds a
     // Session write lock for as long as it runs (#163, ADR 0024 D3–D7).
     openAttach: openSessionAttach,
+    // The two Control had no port for before the client half moved: the home
+    // folder (`files`) and the Shared folder (`shared`). Both are the published
+    // CLI's own implementations, bound here from its root exports.
+    openFiles: openFilesAtHome,
+    openShared: openSharedThroughCore,
 
     // ─── the machine half ─────────────────────────────────────────────────────
 

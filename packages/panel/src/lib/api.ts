@@ -1,8 +1,8 @@
-import type { Group, Project, ProjectPresentation, Task, UserTerminal } from "~/db/schema";
-import type { Harness, TaskStatus } from "@actana/shared/domain";
-import type { ProjectPathStatus, ProjectWithCounts } from "~/shared/projects";
+import type { Session, UserTerminal } from "~/db/schema";
+import type { Harness, SessionStatus } from "@actana/shared/domain";
 import type { CoreListResponse, CoreWithDial } from "~/shared/cores";
 import type { CorePairingIdentityResponse } from "~/shared/core-pairing";
+import type { SharedConnectionResult, StorageConfigInput, StorageConfigView, StorageCoreFolderView } from "~/shared/storage-wire";
 import { DEV_SERVER_ORIGIN } from "~/shared/dev-server";
 import { LOGIN_PATH, isAuthPath, withCarriedQuery } from "~/lib/auth-paths";
 import type { Binding, BindingMap, HotkeyAction } from "~/lib/keybindings/types";
@@ -14,35 +14,38 @@ import type { HarnessAccountStatus, HarnessLatestVersion } from "~/shared/harnes
 import type { PendingQuestion } from "~/shared/harness-questions";
 import type { AiModelId, AiRuntimeModelsResponse } from "@actana/shared/ai-runtime-defaults";
 import type { UpdateCheck } from "@actana/shared/actana-update-check";
-import type { ProjectsDashboardView } from "~/shared/ui-preferences";
 import type { TerminalZoomLevel } from "~/shared/terminal-zoom";
 import type { SessionHeaderButtonVisibility } from "~/shared/session-header-buttons";
 import type { HeaderButtonVisibility } from "~/shared/header-buttons";
 import { pruneStoredSessionFinishNotifications } from "~/lib/session-notification-store";
 import { HTTP_NO_CONTENT } from "~/shared/http-status";
+import type { TaskStatus } from "~/shared/tasks";
+import { attachmentsForm, type TaskAttachment } from "~/lib/task-attachments";
+import type {
+  SharedDownloadUrl,
+  SharedFileDetails,
+  SharedFilesListing,
+  SharedFilesSearchResult,
+  SharedFilesSummary,
+} from "~/shared/shared-files";
+import type {
+  AgentDto,
+  NewTaskCommentRequest,
+  NewTaskRequest,
+  TaskCommentDto,
+  TaskDto,
+} from "~/shared/task-wire";
+import type { ApiKeyView, WebhookDeliveryView, WebhookView } from "~/shared/api-integrations-wire";
 
 export type AppSettings = {
   agentSystemBannerDisabled: boolean;
   mouseGradientDisabled: boolean;
-  /** Show the active-group switcher pill in the top bar breadcrumb. */
-  showGroupSwitcher: boolean;
-  /** Show the group tag (colored dot + group name) in an open project's header. */
-  showProjectHeaderGroup: boolean;
   sessionFinishToastEnabled: boolean;
   sessionFinishOsNotificationEnabled: boolean;
   /** Ding when a session-finish notification arrives. */
   notificationSoundEnabled: boolean;
   /** Legacy compatibility field; native Claude Code question popups are always enabled. */
   questionOverlayEnabled: boolean;
-  /** Projects dashboard layout — cards (default) or table. */
-  projectsDashboardView: ProjectsDashboardView | null;
-  /**
-   * Globally active project group scoping the dashboard, left rail, and
-   * project picker: "ungrouped", a group id, or null for "all projects".
-   */
-  activeProjectGroup: string | null;
-  /** Collapsed dashboard section keys — group ids plus "pinned"/"ungrouped". */
-  collapsedProjectGroups: string[] | null;
   /** Default terminal text zoom (-2 … +2). Per-pane overrides live in localStorage. */
   terminalZoomLevel: TerminalZoomLevel;
   /**
@@ -51,7 +54,7 @@ export type AppSettings = {
    */
   sessionHeaderButtons: SessionHeaderButtonVisibility;
   /**
-   * Which discretionary top-bar / project-header buttons are shown. All default
+   * Which discretionary top-bar / Core-header buttons are shown. All default
    * on; each action keeps its keyboard shortcut while hidden.
    */
   headerButtons: HeaderButtonVisibility;
@@ -122,6 +125,8 @@ async function req<T>(url: string, init?: RequestInit): Promise<T> {
       ? DEV_SERVER_ORIGIN + url
       : url;
   const baseHeaders: Record<string, string> = { "content-type": "application/json" };
+  // A multipart body (Task attachments) carries its own boundary in the content type: the browser sets it.
+  if (typeof FormData !== "undefined" && init?.body instanceof FormData) delete baseHeaders["content-type"];
   const res = await fetch(resolved, {
     // Explicit: every one of these calls is authenticated by the Operator's
     // session cookie, and by nothing else.
@@ -151,12 +156,63 @@ async function req<T>(url: string, init?: RequestInit): Promise<T> {
   return (await res.json()) as T;
 }
 
-/** `?coreId=…` for the routes that address a Core-owned project, or nothing. */
-function coreIdQuery(coreId?: string | null): string {
-  return coreId ? `?coreId=${encodeURIComponent(coreId)}` : "";
-}
+/** `/api/cores/:coreId/shared/files[/leaf]`: the Files tab's routes (#565). */
+const sharedFilesUrl = (coreId: string, leaf = "") =>
+  `/api/cores/${encodeURIComponent(coreId)}/shared/files${leaf ? `/${leaf}` : ""}`;
+const pathQuery = (path: string) => `?path=${encodeURIComponent(path)}`;
+const post = (body: unknown): RequestInit => ({ method: "POST", body: JSON.stringify(body) });
+
+/** An image or PDF of the Shared folder, streamed by the Panel: a URL for an `<img>` or an `<object>`, with no key in it. */
+export const sharedFileMediaUrl = (coreId: string, path: string): string =>
+  `${sharedFilesUrl(coreId, "media")}${pathQuery(path)}`;
+
+/** The upload URL for one file: the body is the file's bytes, sent with `XMLHttpRequest` for progress. */
+export const sharedFileUploadUrl = (coreId: string, path: string): string =>
+  `${sharedFilesUrl(coreId, "upload")}${pathQuery(path)}`;
 
 export const api = {
+  /** A folder of a Core's Shared folder, read from S3 (the Core may be offline). */
+  listSharedFiles: (coreId: string, path: string) =>
+    req<SharedFilesListing>(`${sharedFilesUrl(coreId)}${pathQuery(path)}`),
+  getSharedFileDetails: (coreId: string, path: string) =>
+    req<SharedFileDetails>(`${sharedFilesUrl(coreId, "details")}${pathQuery(path)}`),
+  searchSharedFiles: (coreId: string, query: string) =>
+    req<SharedFilesSearchResult>(`${sharedFilesUrl(coreId, "search")}?q=${encodeURIComponent(query)}`),
+  getSharedFilesSummary: (coreId: string, since: number) =>
+    req<SharedFilesSummary>(`${sharedFilesUrl(coreId, "summary")}?since=${since}`),
+  /** A URL for this one file, good for five minutes: the browser downloads from it. */
+  sharedFileDownloadUrl: (coreId: string, path: string) =>
+    req<SharedDownloadUrl>(sharedFilesUrl(coreId, "download-url"), post({ path })),
+  makeSharedFolder: (coreId: string, path: string) =>
+    req<{ path: string }>(sharedFilesUrl(coreId, "mkdir"), post({ path })),
+  renameSharedFile: (coreId: string, path: string, name: string) =>
+    req<{ path: string }>(sharedFilesUrl(coreId, "rename"), post({ path, name })),
+  moveSharedFile: (coreId: string, path: string, to: string) =>
+    req<{ path: string }>(sharedFilesUrl(coreId, "move"), post({ path, to })),
+  deleteSharedFile: (coreId: string, path: string) =>
+    req<{ ok: true }>(sharedFilesUrl(coreId, "delete"), post({ path })),
+  /** Every Task the owner has, across Cores. */
+  listTasks: () => req<{ tasks: TaskDto[] }>("/api/tasks"),
+  getTask: (id: string) =>
+    req<{ task: TaskDto; comments: TaskCommentDto[] }>(`/api/tasks/${encodeURIComponent(id)}`),
+  /** With `attachments` the request is multipart and the server writes the files before it assigns the Task. */
+  createTask: (body: NewTaskRequest, attachments: readonly TaskAttachment[] = []) =>
+    req<{ task: TaskDto }>("/api/tasks", { method: "POST", body: attachments.length > 0 ? attachmentsForm(body, attachments) : JSON.stringify(body) }),
+  /** Assign or send back to draft. The server decides whether the move is legal. */
+  setTaskStatus: (id: string, status: TaskStatus) =>
+    req<{ task: TaskDto }>(`/api/tasks/${encodeURIComponent(id)}/status`, {
+      method: "POST",
+      body: JSON.stringify({ status }),
+    }),
+  /** A comment; with `reassign`, the service's single Comment & re-assign call. */
+  commentOnTask: (id: string, body: NewTaskCommentRequest, attachments: readonly TaskAttachment[] = []) =>
+    req<{ comment?: TaskCommentDto; task?: TaskDto; comments?: TaskCommentDto[] }>(
+      `/api/tasks/${encodeURIComponent(id)}/comments`,
+      { method: "POST", body: attachments.length > 0 ? attachmentsForm(body, attachments) : JSON.stringify(body) },
+    ),
+  /** One Core's Agents, from the Agents service. */
+  listCoreAgents: (coreId: string) =>
+    req<{ agents: AgentDto[] }>(`/api/cores/${encodeURIComponent(coreId)}/agents`),
   /** The fleet: every registered Core with the service's live view of its link. */
   listCores: () => req<CoreListResponse>("/api/cores"),
   /**
@@ -202,184 +258,57 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body),
     }),
+  /** Unpair: the Core is told to detach (it keeps `~/shared`), then forgotten. The S3 prefix stays. */
   removeCore: (id: string) => req<void>(`/api/cores/${id}`, { method: "DELETE" }),
-
-  listProjects: () => req<{ projects: ProjectWithCounts[] }>("/api/projects"),
-  getProject: (id: string) => req<{ project: ProjectWithCounts }>(`/api/projects/${id}`),
-  getProjectPathStatus: (id: string) =>
-    req<{ status: ProjectPathStatus }>(`/api/projects/${id}/path-status`),
-  createProject: (body: {
-    name?: string;
-    path: string;
-    githubUrl?: string;
-    icon?: string;
-    iconColor?: string;
-    groupId?: string | null;
-    savedHarness?: Project["savedHarness"] | null;
-    rememberHarnessSettings?: boolean;
-    defaultGridView?: boolean;
-    pinned?: boolean;
-  }) =>
-    req<{ project: Project }>("/api/projects", {
+  /** The Shared-folder storage config. The master key is never in the answer, only whether one is set. */
+  getStorage: () => req<{ storage: StorageConfigView; cores: StorageCoreFolderView[] }>("/api/storage"),
+  /** Write-only for the master key: send it to set or rotate it, leave it out to keep the stored one. */
+  putStorage: (body: StorageConfigInput) =>
+    req<{ storage: StorageConfigView }>("/api/storage", { method: "PUT", body: JSON.stringify(body) }),
+  /** Settings › Storage: issue a 1-hour key and prove isolation (optional Core id; else a probe id). */
+  testStorage: (body: { coreId?: string } = {}) =>
+    req<{ result: SharedConnectionResult }>("/api/storage/test", {
       method: "POST",
       body: JSON.stringify(body),
     }),
-  updateProject: (id: string, body: Record<string, unknown>) =>
-    req<{ project: Project }>(`/api/projects/${id}`, {
-      method: "PATCH",
-      body: JSON.stringify(body),
+  /** Pairing step 4: issue a 1-hour key for this Core and prove it reaches its own folder and no other. */
+  testSharedFolder: (coreId: string) =>
+    req<{ result: SharedConnectionResult }>(`/api/cores/${encodeURIComponent(coreId)}/shared/test`, {
+      method: "POST",
+    }),
+  /** Pairing step 4: attach the Core's Shared folder. The pairing is not finished until this succeeds. */
+  finishCorePairing: (coreId: string) =>
+    req<{ core: CoreWithDial }>(`/api/cores/${encodeURIComponent(coreId)}/pairing/finish`, {
+      method: "POST",
+      body: JSON.stringify({}),
     }),
   /**
-   * Upload a project's card image. The Panel service stores the bytes and
-   * answers with where the image now lives. `coreId` is required the first time
-   * a Core-owned project gets one — the Panel has no row for it, so the image
-   * needs a presentation row keyed to its Core (issue 98).
+   * Delete the Core, empty its S3 prefix and empty `~/shared` on its machine; `confirmPrefix` must be exactly the prefix.
+   * `machineFolder.state` is `kept` when the Core was not connected: it is still deleted on the Panel.
    */
-  uploadProjectImage: async (id: string, file: File, coreId?: string | null) => {
-    const { imagePath } = await req<{ imagePath: string | null }>(
-      `/api/projects/${id}/image${coreIdQuery(coreId)}`,
-      {
-        method: "PUT",
-        headers: { "content-type": file.type },
-        body: file,
-      },
-    );
-    return imagePath;
-  },
-  deleteProjectImage: (id: string, coreId?: string | null) =>
-    req<{ imagePath: string | null }>(
-      `/api/projects/${id}/image${coreIdQuery(coreId)}`,
-      { method: "DELETE" },
-    ),
-  updateProjectLaunchUrl: (id: string, launchUrl: string | null, coreId?: string | null) =>
-    coreId
-      ? req<{ presentation: ProjectPresentation }>(`/api/project-presentation/${id}`, {
-          method: "PATCH",
-          body: JSON.stringify({ coreId, launchUrl }),
-        })
-      : req<{ project: Project }>(`/api/projects/${id}`, {
-          method: "PATCH",
-          body: JSON.stringify({ launchUrl }),
-        }),
+  deleteCoreWithStorage: (coreId: string, confirmPrefix: string) =>
+    req<{
+      prefix: string | null;
+      removed: number;
+      machineFolder?: { state: "emptied"; removed: number } | { state: "kept"; reason: string; removed: number };
+    }>(`/api/cores/${encodeURIComponent(coreId)}/delete`, {
+      method: "POST",
+      body: JSON.stringify({ confirmPrefix }),
+    }),
 
-  /**
-   * Panel-local presentation for Core-owned projects (issue 98) — the group,
-   * card image, launch URL and rail slot (#382) the Panel keeps for a project
-   * whose row lives on its Core. Read as one list and joined onto Core
-   * snapshots client-side; the Panel server has no transport of its own to a
-   * Core to join them for us.
-   */
-  listProjectPresentation: () =>
-    req<{ presentation: ProjectPresentation[] }>("/api/project-presentation"),
-  updateProjectPresentation: (
-    id: string,
-    coreId: string,
-    patch: {
-      groupId?: string | null;
-      imagePath?: string | null;
-      launchUrl?: string | null;
-      pinnedOrder?: number | null;
-    },
-  ) =>
-    req<{ presentation: ProjectPresentation }>(`/api/project-presentation/${id}`, {
-      method: "PATCH",
-      body: JSON.stringify({ coreId, ...patch }),
-    }),
-  /**
-   * Where every Core-owned pin sits on the rail (issue 382). `pinnedOrder` is
-   * the row's index in the WHOLE rail — the same sequence
-   * {@link api.reorderPinnedProjects} numbers the Panel's own rows from — so
-   * the merged list sorts back into the operator's order after a reload.
-   *
-   * A Core's pin has no `projects` row on this Panel, so its slot cannot go to
-   * the Panel-only reorder API; and the rail spans Cores, so no single Core
-   * could hold the number either. It is Panel-local presentation, like the
-   * group the same row is filed under (issue 98).
-   */
-  reorderCorePinnedProjects: (
-    order: readonly { projectId: string; coreId: string; pinnedOrder: number }[],
-  ) =>
-    req<{ presentation: ProjectPresentation[] }>("/api/project-presentation/pinned-order", {
-      method: "PATCH",
-      body: JSON.stringify({ order }),
-    }),
-  deleteProjectPresentation: (id: string) =>
-    req<void>(`/api/project-presentation/${id}`, { method: "DELETE" }),
-  /**
-   * Forget the filing for every project on `coreId` outside `projectIds`. The
-   * client posts the list it just read from the Core because the Panel server
-   * has no way to ask — projects deleted on a Core, including deletes this
-   * Panel never witnessed, would otherwise leave rows nothing collects.
-   */
-  pruneProjectPresentation: (coreId: string, projectIds: string[]) =>
-    req<{ removed: number }>("/api/project-presentation/prune", {
-      method: "POST",
-      body: JSON.stringify({ coreId, projectIds }),
-    }),
-  togglePin: (id: string) =>
-    req<{ project: Project }>(`/api/projects/${id}`, {
-      method: "PATCH",
-      body: JSON.stringify({ togglePin: true }),
-    }),
-  reorderPinnedProjects: (order: string[]) =>
-    req<{ projects: ProjectWithCounts[] }>("/api/projects/pinned-order", {
-      method: "PATCH",
-      body: JSON.stringify({ order }),
-    }),
-  deleteProject: async (id: string) => {
-    await req<void>(`/api/projects/${id}`, { method: "DELETE" });
-    pruneStoredSessionFinishNotifications({ type: "project", projectId: id });
-  },
-
-  listGroups: () => req<{ groups: Group[] }>("/api/groups"),
-  createGroup: (body: { name: string; color?: string }) =>
-    req<{ group: Group }>("/api/groups", {
+  getSession: (id: string) => req<{ session: Session }>(`/api/sessions/${id}`),
+  getSessionQuestion: (id: string) =>
+    req<{ question: PendingQuestion | null }>(`/api/sessions/${id}/question`),
+  archiveSession: (id: string) =>
+    req<{ session: Session }>(`/api/sessions/${id}/archive`, { method: "POST" }),
+  restoreSession: (id: string) =>
+    req<{ session: Session }>(`/api/sessions/${id}/restore`, { method: "POST" }),
+  updateSessionStatus: (id: string, body: { status?: SessionStatus; preview?: string; lines?: number; prompt?: string }) =>
+    req<{ session: Session }>(`/api/sessions/${id}/status`, {
       method: "POST",
       body: JSON.stringify(body),
     }),
-  updateGroup: (id: string, body: { name?: string; color?: string }) =>
-    req<{ group: Group }>(`/api/groups/${id}`, {
-      method: "PATCH",
-      body: JSON.stringify(body),
-    }),
-  reorderGroups: (order: string[]) =>
-    req<{ groups: Group[] }>("/api/groups/order", {
-      method: "PATCH",
-      body: JSON.stringify({ order }),
-    }),
-  deleteGroup: (id: string) =>
-    req<void>(`/api/groups/${id}`, { method: "DELETE" }),
-
-  listTasks: (projectId: string) =>
-    req<{ tasks: Task[] }>(`/api/projects/${projectId}/tasks`),
-  getTask: (id: string) => req<{ task: Task }>(`/api/tasks/${id}`),
-  getTaskQuestion: (id: string) =>
-    req<{ question: PendingQuestion | null }>(`/api/tasks/${id}/question`),
-  archiveTask: (id: string) =>
-    req<{ task: Task }>(`/api/tasks/${id}/archive`, { method: "POST" }),
-  restoreTask: (id: string) =>
-    req<{ task: Task }>(`/api/tasks/${id}/restore`, { method: "POST" }),
-  updateTaskStatus: (id: string, body: { status?: TaskStatus; preview?: string; lines?: number; prompt?: string }) =>
-    req<{ task: Task }>(`/api/tasks/${id}/status`, {
-      method: "POST",
-      body: JSON.stringify(body),
-    }),
-  createTaskInternal: (
-    projectId: string,
-    body: {
-      id?: string;
-      title: string;
-      agent: Harness;
-      claudeSessionId?: string | null;
-      claudeSkipPermissions?: boolean;
-      claudeBareSession?: boolean;
-    },
-  ) =>
-    req<{ task: Task }>(`/api/projects/${projectId}/tasks`, {
-      method: "POST",
-      body: JSON.stringify(body),
-    }),
-  updateTask: (
+  updateSession: (
     id: string,
     body: {
       title?: string;
@@ -389,27 +318,23 @@ export const api = {
       claudeBareSession?: boolean;
     }
   ) =>
-    req<{ task: Task }>(`/api/tasks/${id}`, {
+    req<{ session: Session }>(`/api/sessions/${id}`, {
       method: "PATCH",
       body: JSON.stringify(body),
     }),
-  deleteTask: async (id: string) => {
-    await req<void>(`/api/tasks/${id}`, { method: "DELETE" });
-    pruneStoredSessionFinishNotifications({ type: "task", taskId: id });
+  deleteSession: async (id: string) => {
+    await req<void>(`/api/sessions/${id}`, { method: "DELETE" });
+    pruneStoredSessionFinishNotifications({ type: "session", sessionId: id });
   },
 
   // The Panel's only terminal rows (issue 266). Every terminal the Panel opens
   // is a VM Shell Session on a Core and persists here, whichever route opened
-  // it; the four `/api/projects/:id/user-terminals` + `/api/user-terminals/:id`
-  // calls that used to sit above went with the project-root path. Returned
-  // shaped as UserTerminal (sentinel projectId) so the same terminal
-  // store/panel render them.
+  // it.
   listHomeTerminals: () =>
     req<{ terminals: UserTerminal[] }>("/api/home/user-terminals"),
   createHomeTerminal: (body: {
     id?: string;
     name?: string;
-    cwd?: string | null;
   }) =>
     req<{ terminal: UserTerminal }>("/api/home/user-terminals", {
       method: "POST",
@@ -444,15 +369,10 @@ export const api = {
         AppSettings,
         | "agentSystemBannerDisabled"
         | "mouseGradientDisabled"
-        | "showGroupSwitcher"
-        | "showProjectHeaderGroup"
         | "sessionFinishToastEnabled"
         | "sessionFinishOsNotificationEnabled"
         | "notificationSoundEnabled"
         | "questionOverlayEnabled"
-        | "projectsDashboardView"
-        | "activeProjectGroup"
-        | "collapsedProjectGroups"
         | "terminalZoomLevel"
         | "sessionHeaderButtons"
         | "headerButtons"
@@ -522,6 +442,31 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body),
     }),
+
+  /** Settings › API & integrations: the Operator's API keys (no plaintext). */
+  listApiKeys: () => req<{ apiKeys: ApiKeyView[] }>("/api/api-keys"),
+  /** Create a key; the plaintext `key` is returned once and never again. */
+  createApiKey: (body: { name: string; coreIds?: string[] | null }) =>
+    req<{ apiKey: ApiKeyView; key: string }>("/api/api-keys", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  revokeApiKey: (id: string) =>
+    req<{ apiKey: ApiKeyView }>(`/api/api-keys/${encodeURIComponent(id)}/revoke`, { method: "POST" }),
+
+  /** Settings › API & integrations: webhooks with each row's newest delivery. */
+  listWebhooks: () => req<{ webhooks: WebhookView[] }>("/api/webhooks"),
+  createWebhook: (body: { url: string; events: string[]; coreIds?: string[] | null }) =>
+    req<{ webhook: WebhookView; secret: string }>("/api/webhooks", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  deleteWebhook: (id: string) =>
+    req<void>(`/api/webhooks/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  pingWebhook: (id: string) =>
+    req<{ outboxId: string }>(`/api/webhooks/${encodeURIComponent(id)}/ping`, { method: "POST" }),
+  listWebhookDeliveries: (id: string) =>
+    req<{ deliveries: WebhookDeliveryView[] }>(`/api/webhooks/${encodeURIComponent(id)}/deliveries`),
 };
 
 export type AuthStateResponse = {

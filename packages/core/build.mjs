@@ -28,7 +28,33 @@ await build({
   outfile: "dist/core-entry.cjs",
 });
 
-// **No second bundle here.** `dist/actana-cli.cjs` used to be emitted from this
+// The Core-home helper (issue 559). The daemon runs as its own user in the
+// container and starts this, through `asCore`, to do short reads and writes in
+// `core`'s home. Same externals and target; nothing it does needs the daemon.
+await build({
+  ...shared,
+  entryPoints: ["src/core-home-ops-entry.ts"],
+  outfile: "dist/core-home-ops.cjs",
+});
+
+// The Files API helper (issue 557, ADR 0041 D25). One short-lived process per request,
+// started through `asCore`, does the reading and writing in `core`'s home so the
+// daemon never touches it. Same externals and target.
+await build({
+  ...shared,
+  entryPoints: ["src/core-files-op-entry.ts"],
+  outfile: "dist/core-files-op.cjs",
+});
+
+// The Shared folder watcher (#561). In the container `~/shared` is `core`'s, so the
+// daemon starts this, through `asCore`, to watch it and report changes on stdout.
+await build({
+  ...shared,
+  entryPoints: ["src/shared-folder-watch-entry.ts"],
+  outfile: "dist/core-shared-watch.cjs",
+});
+
+// **No second daemon bundle here.** `dist/actana-cli.cjs` used to be emitted from this
 // package too, because the operator CLI lived in `packages/core/src`. It does
 // not any more: `packages/cli` owns the whole `actana` command and emits both
 // the published ESM bundle and the tarball's CJS one (#288 D1). This package is

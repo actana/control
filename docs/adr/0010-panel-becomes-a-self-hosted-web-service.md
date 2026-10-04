@@ -27,3 +27,5 @@ Shape of the decision:
 - The `127.0.0.1`-trust security model (`auth.ts` loopback hosts, IPC origin allow-list, no-auth loopback core-link) is void; browser access is authenticated per ADR 0011.
 - Desktop distribution planning (installers, macOS notarization, Windows signing for the *Panel*) is void. Signing questions may still apply to the Harness binary and must be re-raised in Harness distribution planning.
 - ADR 0001's "local application" phrasing and ADR 0004's loopback write-path carve-out are amended by this ADR; their core decisions (detached Harness, Harness owns writes) stand.
+
+> **Amended 2026-09-30 by [ADR 0041](0041-the-0-5-0-core-model.md) D16 and D20 (#567).** The Panel keeps all its state in Postgres and `better-sqlite3` leaves it, so the Panel no longer has a native SQLite module; the ABI sentence under "Native modules" holds for `node-pty` only. "One deployable" stays true of the Panel service, but it now needs a Postgres beside it, bundled in compose or given by `AC_PANEL_DATABASE_URL`, and refuses to start without one. The rest of this record is not changed.

@@ -1,46 +1,52 @@
 import { asc, eq } from "drizzle-orm";
-import { getDb } from "~/db/client";
-import { homeTerminals } from "~/db/schema";
-import type { HomeTerminal, UserTerminal } from "~/db/schema";
-import { HOME_TERMINAL_PROJECT_ID } from "~/shared/home-terminal";
+import { ownedBy } from "~/db/owner";
+import { panelDb } from "~/db/panel-db-handle";
+import { homeTerminals } from "~/db/pg-schema";
 
-/**
- * Shape a `home_terminals` row as a `UserTerminal` so the renderer can render it
- * with the existing terminal components. `projectId` is a sentinel — no real
- * project row has this id and nothing ever looks it up as one.
- */
-export function toUserTerminal(row: HomeTerminal): UserTerminal {
-  return {
-    id: row.id,
-    projectId: HOME_TERMINAL_PROJECT_ID,
-    name: row.name,
-    cwd: row.cwd,
-    position: row.position,
-    createdAt: row.createdAt,
-    updatedAt: row.updatedAt,
-  };
-}
+export type HomeTerminalRow = typeof homeTerminals.$inferSelect;
+export type NewHomeTerminalRow = typeof homeTerminals.$inferInsert;
 
-export function findHomeTerminals(): HomeTerminal[] {
-  return getDb()
+/** Every query here filters on `owner_id` (ADR 0041 D15). */
+
+export async function findHomeTerminals(ownerId: number): Promise<HomeTerminalRow[]> {
+  return panelDb()
     .select()
     .from(homeTerminals)
-    .orderBy(asc(homeTerminals.position), asc(homeTerminals.createdAt))
-    .all();
+    .where(ownedBy(homeTerminals, ownerId))
+    .orderBy(asc(homeTerminals.position), asc(homeTerminals.createdAt));
 }
 
-export function findHomeTerminalById(id: string): HomeTerminal | null {
-  return getDb().select().from(homeTerminals).where(eq(homeTerminals.id, id)).get() ?? null;
+export async function findHomeTerminalById(
+  ownerId: number,
+  id: string,
+): Promise<HomeTerminalRow | null> {
+  const rows = await panelDb()
+    .select()
+    .from(homeTerminals)
+    .where(ownedBy(homeTerminals, ownerId, eq(homeTerminals.id, id)))
+    .limit(1);
+  return rows[0] ?? null;
 }
 
-export function insertHomeTerminal(row: HomeTerminal): void {
-  getDb().insert(homeTerminals).values(row).run();
+export async function insertHomeTerminal(row: NewHomeTerminalRow): Promise<void> {
+  await panelDb().insert(homeTerminals).values({ ...row, ownerId: row.ownerId });
 }
 
-export function updateHomeTerminalRow(id: string, patch: Partial<HomeTerminal>): void {
-  getDb().update(homeTerminals).set(patch).where(eq(homeTerminals.id, id)).run();
+export async function updateHomeTerminalRow(
+  ownerId: number,
+  id: string,
+  patch: Partial<HomeTerminalRow>,
+): Promise<void> {
+  await panelDb()
+    .update(homeTerminals)
+    .set(patch)
+    .where(ownedBy(homeTerminals, ownerId, eq(homeTerminals.id, id)));
 }
 
-export function deleteHomeTerminalRow(id: string): number {
-  return getDb().delete(homeTerminals).where(eq(homeTerminals.id, id)).run().changes;
+export async function deleteHomeTerminalRow(ownerId: number, id: string): Promise<number> {
+  const removed = await panelDb()
+    .delete(homeTerminals)
+    .where(ownedBy(homeTerminals, ownerId, eq(homeTerminals.id, id)))
+    .returning({ id: homeTerminals.id });
+  return removed.length;
 }
