@@ -83,12 +83,22 @@ describe("HarnessInstallService", () => {
     // Pi with no model: the CLI is on PATH and runs, so the install worked; the
     // setup is finished in a Session, not reported as "not on PATH".
     const { service } = serviceWith({
-      before: MISSING,
-      after: { "claude-code": { status: "missing", reason: "needs-setup: no-models", path: "/usr/local/bin/claude" } },
-      outcomes: [{ agent: "claude-code", label: "Claude Code", status: "installed" }],
+      before: { pi: { status: "missing" } },
+      after: { pi: { status: "missing", reason: "needs-setup: no-models", path: "/usr/local/bin/pi" } },
+      outcomes: [{ agent: "pi", label: "Pi", status: "installed" }],
     });
 
-    await expect(service.install("claude-code")).resolves.toEqual({ ok: true });
+    await expect(service.install("pi")).resolves.toEqual({ ok: true });
+  });
+
+  it("trusts the probe over a failed installer outcome when it reports needs-setup", async () => {
+    const { service } = serviceWith({
+      before: { pi: { status: "missing" } },
+      after: { pi: { status: "missing", reason: "needs-setup: no-models", path: "/usr/local/bin/pi" } },
+      outcomes: [{ agent: "pi", label: "Pi", status: "failed" }],
+    });
+
+    await expect(service.install("pi")).resolves.toEqual({ ok: true });
   });
 
   it("treats an install the probe cannot see as a failure, not a success", async () => {

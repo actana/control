@@ -21,7 +21,7 @@ import {
   type CoreLinkHarnessAvailabilityMap,
   type CoreLinkHarnessInstallFailedPayload,
 } from "@actana/shared/sdk-link-frames";
-import { needsSetupDialog } from "@actana/shared/harness-needs-setup";
+import { isNeedsSetup, needsSetupDialog } from "@actana/shared/harness-needs-setup";
 import { createListenerSet } from "./listener-set";
 
 export type CliAvailabilityStatus = "unknown" | "checking" | "available" | "missing" | "outdated" | "needs-setup";
@@ -121,7 +121,7 @@ function fromCoreLinkAvailability(entry: CoreLinkHarnessAvailability): CliAvaila
   // The Core reports a Harness stopped by a first-run dialog as `missing` with a
   // needs-setup reason (the SDK's status union has no such value); here it becomes
   // its own status so the Panel says "Needs setup" and never "Install".
-  const setupDialog = entry.status === "missing" ? needsSetupDialog(entry.reason) : null;
+  const setupDialog = isNeedsSetup(entry) ? needsSetupDialog(entry.reason) : null;
   const next: CliAvailability = { status: setupDialog !== null ? "needs-setup" : entry.status };
   if (setupDialog !== null) next.setupDialog = setupDialog;
   if (entry.path !== undefined) next.path = entry.path;
@@ -143,11 +143,19 @@ export function fromCoreLinkMap(map: CoreLinkHarnessAvailabilityMap): CliAvailab
   return out;
 }
 
-export function firstAvailableHarness(availability: CliAvailabilityMap): Harness | null {
-  // A needs-setup Harness can be opened but is never the default pick.
+/**
+ * The Harness to preselect among `candidates` (the ones a picker offers): the first
+ * that is ready, else the first that can still open a Session. A needs-setup Harness
+ * can be opened but is never the default pick while a ready one exists.
+ */
+export function firstAvailableHarness(
+  availability: CliAvailabilityMap,
+  candidates: readonly Harness[] = UI_HARNESSES,
+): Harness | null {
+  const launchable = candidates.filter((agent) => harnessCanLaunch(availability, agent));
   return (
-    UI_HARNESSES.find((agent) => harnessCanLaunch(availability, agent) && availabilityFor(availability, agent).status !== "needs-setup") ??
-    UI_HARNESSES.find((agent) => harnessCanLaunch(availability, agent)) ??
+    launchable.find((agent) => availabilityFor(availability, agent).status !== "needs-setup") ??
+    launchable[0] ??
     null
   );
 }

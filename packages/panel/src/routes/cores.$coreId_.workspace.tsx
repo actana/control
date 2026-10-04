@@ -634,7 +634,9 @@ function CoreWorkspacePage() {
       showHarnessUpdateRequired(remembered.savedHarness, savedAvailability);
       return;
     }
-    if (savedAvailability.status === "missing") {
+    // Only a ready Harness starts silently; a needs-setup one goes through the
+    // dialog (like CorePage), so its "finish setup in the Session" row is seen.
+    if (savedAvailability.status === "missing" || savedAvailability.status === "needs-setup") {
       setShowNewHarness(true);
       return;
     }
@@ -652,7 +654,9 @@ function CoreWorkspacePage() {
       showHarnessUpdateRequired(remembered.savedHarness, savedAvailability);
       return;
     }
-    if (savedAvailability.status === "missing") {
+    // Only a ready Harness starts silently; a needs-setup one goes through the
+    // dialog (like CorePage), so its "finish setup in the Session" row is seen.
+    if (savedAvailability.status === "missing" || savedAvailability.status === "needs-setup") {
       setShowNewHarness(true);
       return;
     }

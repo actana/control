@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { firstAvailableHarness, fromCoreLinkMap, harnessCanLaunch, isCliUnavailable } from "../cli-availability";
+import type { Harness } from "@actana/shared/domain";
 import { coreHasHarness } from "../core-has-harness";
 
 describe("a Harness the Core reports as needing setup (#685)", () => {
@@ -34,5 +35,15 @@ describe("a Harness the Core reports as needing setup (#685)", () => {
       pi: { status: "missing" },
     });
     expect(firstAvailableHarness(onlySetup)).toBe("claude-code");
+  });
+
+  it("seeds the dialog from the offered options, not the first one, so a needs-setup claude-code is not preselected", () => {
+    const mixed = fromCoreLinkMap({
+      "claude-code": { status: "missing", reason: "needs-setup: folder-trust", path: "/bin/claude" },
+      codex: { status: "available", path: "/bin/codex" },
+    });
+    const options: Harness[] = ["claude-code", "codex"];
+    expect(firstAvailableHarness(mixed, options)).toBe("codex");
+    expect(firstAvailableHarness(mixed, ["claude-code"])).toBe("claude-code");
   });
 });

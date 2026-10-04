@@ -34,7 +34,7 @@ import {
 } from "@actana/shared/actana-harnesses";
 import type { ActanaSystem } from "@actana/shared/actana-system-port";
 import { isContainerMode } from "./core-identity";
-import { needsSetupDialog } from "@actana/shared/harness-needs-setup";
+import { isNeedsSetup } from "@actana/shared/harness-needs-setup";
 
 /** What one install ended as. `ok` means the Harness is on this Core now. */
 export type HarnessInstallResult = { ok: true } | { ok: false; message: string };
@@ -146,7 +146,7 @@ export class HarnessInstallService {
     const after = this.opts.availability()[harness];
     // needs-setup is reported as `missing` with a needs-setup reason, but the CLI
     // is on PATH and the install worked: the first-run dialog is set up in a Session.
-    if (after?.status === "available" || needsSetupDialog(after?.reason) !== null) return { ok: true };
+    if (after?.status === "available" || isNeedsSetup(after)) return { ok: true };
     return { ok: false, message: failureMessage(harness, outcome) };
   }
 }
