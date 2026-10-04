@@ -196,7 +196,9 @@ export class TaskDispatcher {
     const path = taskPromptPath(taskId, attempt);
     await files.put(path, text);
     const written = await files.get(path);
-    if (new TextDecoder().decode(written.body) !== text) throw new Error(`${path} on the Core does not hold what was written`);
+    // Bytes, not strings: the Core holds what `put` encoded, and that is what a decode of `text` can differ from.
+    const expected = new TextEncoder().encode(text);
+    if (written.body.length !== expected.length || written.body.some((b, i) => b !== expected[i])) throw new Error(`${path} on the Core does not hold what was written`);
   }
 
   /** Stop cleanly: no new claim after this, the cycle in flight finishes, the watcher stops. */

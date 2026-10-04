@@ -4,7 +4,7 @@ import { SharedChangeFeed, createSharedFactory } from "../shared-factory";
 import { SharedFilesUnavailableError } from "../../services/core-s3-shared";
 import { StorageNotConfiguredError } from "../../services/storage";
 import { launchCommand } from "../session-starter";
-import { MAX_POINTER_CHARS, buildTaskPointer, buildTaskPrompt, taskPromptPath } from "../task-prompt";
+import { MAX_POINTER_CHARS, buildTaskPointer, buildTaskPrompt, cutAtCodePoint, taskPromptPath } from "../task-prompt";
 import { HARNESS_FILE_MENTION, fileReference } from "@actana/shared/harness-file-mention";
 import { HARNESSES } from "@actana/shared/domain";
 import { isTaskPointerPrompt, taskPromptFilePath } from "@actana/shared/task-prompt-file";
@@ -178,6 +178,28 @@ describe("the timeout setting", () => {
   });
 });
 
+describe("cutting long text for the prompt file", () => {
+  const task = { id: "task_9", title: "T" };
+
+  it("never leaves half of a surrogate pair at the cut", () => {
+    const text = `${"a".repeat(19_999)}😀${"b".repeat(10)}`;
+    const cut = cutAtCodePoint(text, 20_000);
+    expect(cut).toBe("a".repeat(19_999));
+    expect(cutAtCodePoint("ab😀", 3)).toBe("ab");
+    expect(cutAtCodePoint("ab😀", 4)).toBe("ab😀");
+    expect(cutAtCodePoint("abc", 3)).toBe("abc");
+  });
+
+  it("builds a prompt that survives UTF-8 whole when an emoji sits at the description's and a comment's cut", () => {
+    const description = `${"a".repeat(19_999)}😀 tail`;
+    const comment = { id: "c", seq: 1, taskId: "task_9", ownerId: 1, authorKind: "agent", authorName: "Agent", sourceFile: null, body: `${"b".repeat(3_999)}✅😀 tail`, createdAt: 1 } as never;
+    const prompt = buildTaskPrompt({ ...task, description }, [comment], 1);
+    expect(prompt).toContain("[cut]");
+    expect(new TextDecoder().decode(new TextEncoder().encode(prompt))).toBe(prompt);
+    expect(prompt).not.toMatch(/[\ud800-\udbff](?![\udc00-\udfff])/);
+  });
+});
+
 describe("the pointer typed in place of the Task", () => {
   const path = `~/shared/${taskPromptPath("task_9", 3)}`;
 
@@ -208,6 +230,21 @@ describe("the pointer typed in place of the Task", () => {
       if (entry.form === "plain") expect(pointer).not.toContain("@");
       else expect(pointer).toContain(`@${path} (file ${path})`);
     }
+  });
+
+  it("fits the cap in the `@` form too, with a real-length id", () => {
+    const id = "task_aaaaaaaaaaaaaaaaaaaa";
+    const original = HARNESS_FILE_MENTION["codex"].form;
+    HARNESS_FILE_MENTION["codex"].form = "at";
+    try {
+      const pointer = buildTaskPointer("codex", id, 12);
+      expect(pointer).toContain(`@~/shared/tasks/${id}/prompt-attempt-12.md (file ~/shared/tasks/${id}/prompt-attempt-12.md)`);
+      expect(pointer.length).toBeLessThan(MAX_POINTER_CHARS);
+      expect(isTaskPointerPrompt(pointer)).toBe(true);
+    } finally {
+      HARNESS_FILE_MENTION["codex"].form = original;
+    }
+    expect(buildTaskPointer("claude-code", id, 12).length).toBeLessThan(200);
   });
 
   it("types no `@` today: every harness's mention form was found risky or unknown", () => {

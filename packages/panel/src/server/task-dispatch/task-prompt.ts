@@ -1,4 +1,4 @@
-import { taskPromptFilePath } from "@actana/shared/task-prompt-file";
+import { taskPointerLine, taskPromptFilePath, taskPromptHomePath } from "@actana/shared/task-prompt-file";
 import { fileReference } from "@actana/shared/harness-file-mention";
 import type { Task, TaskComment } from "../services/tasks";
 import type { Harness } from "~/shared/agents";
@@ -20,7 +20,13 @@ import { REPORT_END_MARKER, taskResultPath } from "~/shared/task-report";
  * for whoever reads a log, not something the harness depends on.
  */
 
-/** Comments are earlier reports and the operator's steering; a long thread or report is cut, not dropped. */
+/**
+ * Comments are earlier reports and the operator's steering; a long thread or report is cut, not dropped. What the
+ * prompt file holds is the last {@link MAX_PROMPT_COMMENTS} non-system comments, each cut at
+ * {@link MAX_PROMPT_COMMENT_CHARS} characters, and the description cut at {@link MAX_PROMPT_DESCRIPTION_CHARS}
+ * (`[cut]` marks a cut); earlier comments are not in it. The file is written once per attempt and never removed:
+ * it stays in the Task's Shared folder, with the Task text and comments in it, and syncs like any file there.
+ */
 export const MAX_PROMPT_COMMENTS = 20;
 export const MAX_PROMPT_COMMENT_CHARS = 4_000;
 export const MAX_PROMPT_DESCRIPTION_CHARS = 20_000;
@@ -30,13 +36,21 @@ function defuse(text: string): string {
   return text.replace(/\[(\/?)Actana standard block/g, "[$1Actana standard-block");
 }
 
+/** The first `max` UTF-16 units of `text`, without splitting a surrogate pair: a lone surrogate does not survive being written as UTF-8. */
+export function cutAtCodePoint(text: string, max: number): string {
+  let end = max;
+  const last = text.charCodeAt(end - 1);
+  if (end > 0 && last >= 0xd800 && last <= 0xdbff) end -= 1;
+  return text.slice(0, end);
+}
+
 function clipTo(text: string, max: number): string {
-  return text.length <= max ? text : `${text.slice(0, max)} [cut]`;
+  return text.length <= max ? text : `${cutAtCodePoint(text, max)} [cut]`;
 }
 
 function clip(text: string): string {
   const body = text.trim();
-  return defuse(body.length <= MAX_PROMPT_COMMENT_CHARS ? body : `${body.slice(0, MAX_PROMPT_COMMENT_CHARS)} [cut]`);
+  return defuse(clipTo(body, MAX_PROMPT_COMMENT_CHARS));
 }
 
 export function buildTaskPrompt(task: Pick<Task, "id" | "title" | "description">, comments: readonly TaskComment[], attempt: number): string {
@@ -84,8 +98,12 @@ export function taskPromptPath(taskId: string, attempt: number): string {
  * (`HARNESS_FILE_MENTION`), one line, well under {@link MAX_POINTER_CHARS}.
  */
 export function buildTaskPointer(harness: Harness, taskId: string, attempt: number): string {
-  const file = fileReference(harness, `~/shared/${taskPromptPath(taskId, attempt)}`);
-  return `Read ${file} and do what it says. It holds your Task and tells you where to report the result.`;
+  return taskPointerLine(fileReference(harness, taskPromptHomePath(taskId, attempt)));
 }
 
-export const MAX_POINTER_CHARS = 200;
+/**
+ * The cap on the pointer line only (the typed total adds the Core's block, about 420 characters, still far below the
+ * 1000 to 3000 that broke delivery). The plain path is about 142 characters with today's ids; 300 leaves room for the
+ * `@P (file P)` form, which repeats the path (about 206), and for longer ids.
+ */
+export const MAX_POINTER_CHARS = 300;

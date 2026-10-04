@@ -168,6 +168,17 @@ describe("dispatching an assigned Task", () => {
     expect(failed.lastError).toContain("disk full");
   });
 
+  it("dispatches a Task whose description is cut through an emoji: the readback matches and the prompt is typed", async () => {
+    const { clock, shared, core, dispatcher } = rig();
+    const task = await assign(clock, { description: `${"a".repeat(19_999)}😀 and more` });
+
+    await dispatcher.dispatchOnce();
+
+    expect(core.starts).toHaveLength(1);
+    expect((await getTask(A, task.id)).status).toBe("in_progress");
+    expect(shared.text(promptFile(task.id, 1))).toContain("[cut]");
+  });
+
   it("does not type anything when the file read back is not what was written", async () => {
     const { clock, shared, core, dispatcher } = rig();
     const task = await assign(clock);

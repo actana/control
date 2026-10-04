@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { isTaskPointerPrompt, taskPointerLine } from "@actana/shared/task-prompt-file";
 import {
   appendPromptBlock,
   buildPromptBlock,
@@ -82,10 +83,24 @@ describe("a Task Session's starting prompt", () => {
   });
 
   it("is recognised whatever mention form wraps the path, and is not stacked on a resend", () => {
-    const at = "Read @~/shared/tasks/task_9/prompt-attempt-2.md (file ~/shared/tasks/task_9/prompt-attempt-2.md) and do what it says.";
+    const path = "~/shared/tasks/task_9/prompt-attempt-2.md";
+    const at = taskPointerLine(`@${path} (file ${path})`);
     expect(appendPromptBlock(at, input)).not.toContain("sessions/");
     const once = appendPromptBlock(POINTER, input);
     expect(appendPromptBlock(once, input)).toBe(once);
+  });
+
+  it.each([
+    "summarise ~/shared/tasks/x/prompt-attempt-1.md",
+    "why did the Task fail? see ~/shared/tasks/task_9/prompt-attempt-2.md for what it was told",
+    "Read ~/shared/tasks/task_9/prompt-attempt-2.md and summarise it",
+    `${POINTER} Also tell me a joke.`,
+    `Please: ${POINTER}`,
+    "Read ~/shared/tasks/task_9/prompt-attempt-2.md and do what it says. It holds your Task and tells you where to report the result. Then stop.",
+  ])("keeps the normal block, with the session report path, for a prompt that only mentions the path: %s", (prompt) => {
+    expect(isTaskPointerPrompt(prompt)).toBe(false);
+    expect(appendPromptBlock(prompt, input)).toBe(`${prompt} ${buildPromptBlock(input)}`);
+    expect(appendPromptBlock(prompt, input)).toContain("~/shared/sessions/t-abc/report-1.md");
   });
 
   it("leaves an interactive Session's block unchanged, even one that mentions tasks", () => {
