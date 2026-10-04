@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useCallback, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useRouter } from "@tanstack/react-router";
 import { Btn } from "~/components/ui/Btn";
@@ -9,8 +9,9 @@ import { TaskMarkdown } from "~/components/views/TaskMarkdown";
 import { api } from "~/lib/api";
 import { useFleet } from "~/lib/fleet-context";
 import { formatRelativeTime } from "~/lib/format-relative-time";
+import { requestSessionOpen } from "~/lib/session-notification-store";
 import { TASK_STATUS_LABEL } from "~/lib/task-board";
-import { queryKeys, useCoreAgents, useTask } from "~/queries";
+import { queryKeys, useCoreAgents, useSessions, useTask } from "~/queries";
 import { FINISHED_TASK_STATUSES } from "~/shared/tasks";
 import { taskFolderPath } from "~/shared/shared-files";
 import type { TaskCommentDto } from "~/shared/task-wire";
@@ -23,6 +24,23 @@ const KIND_COLOR: Record<TaskCommentDto["authorKind"], string> = {
   user: "var(--brand-accent)",
 };
 
+/** The Session a dispatch comment named: attempt, Core and Session id (issue 676). */
+export type TaskAttemptSession = {
+  attempt: number;
+  coreId: string;
+  sessionId: string;
+};
+
+/**
+ * Read the attempt's Core and Session out of the dispatch comment the Panel wrote
+ * when it started that attempt. Shape matches `dispatcher.ts`.
+ */
+export function parseTaskDispatchComment(body: string): TaskAttemptSession | null {
+  const m = /^Dispatched \(attempt (\d+)\) to .+ \([^)]+\) on Core (.+): Session (.+)\.$/.exec(body);
+  if (!m) return null;
+  return { attempt: Number(m[1]), coreId: m[2]!, sessionId: m[3]! };
+}
+
 function Badge({ children, tone }: { children: React.ReactNode; tone?: string }) {
   return (
     <span style={{ fontFamily: "var(--mono)", fontSize: 12, letterSpacing: "0.05em", textTransform: "uppercase", padding: "3px 8px", borderRadius: 4, background: tone ?? "var(--surface-4)" }}>
@@ -33,6 +51,58 @@ function Badge({ children, tone }: { children: React.ReactNode; tone?: string })
 
 function message(e: unknown): string | null {
   return e ? (e instanceof Error ? e.message : String(e)) : null;
+}
+
+/**
+ * Open this attempt's Session the same way the Core page does: pending-open, then
+ * the workspace route. Disabled with a one-line reason when the Session or Core is gone.
+ */
+function OpenAttemptSession({
+  attempt,
+  coreId,
+  sessionId,
+  onOpened,
+}: {
+  attempt: number;
+  coreId: string;
+  sessionId: string;
+  onOpened: () => void;
+}) {
+  const { cores } = useFleet();
+  const router = useRouter({ warn: false });
+  const sessions = useSessions(coreId);
+  const core = cores.find((c) => c.id === coreId);
+  const sessionAlive = !!sessions.data?.some((s) => s.id === sessionId && !s.archived);
+  const reason = !core
+    ? "This Core is gone"
+    : sessions.isError
+      ? "This Core is gone"
+      : sessions.isFetched && !sessionAlive
+        ? "Session no longer exists on this Core"
+        : null;
+  const canOpen = !!router && !reason && sessionAlive;
+
+  const open = useCallback(() => {
+    if (!canOpen || !router) return;
+    requestSessionOpen(coreId, sessionId);
+    void router.navigate({ to: "/cores/$coreId/workspace", params: { coreId } });
+    onOpened();
+  }, [canOpen, router, coreId, sessionId, onOpened]);
+
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8, flexWrap: "wrap" }}>
+      <Btn
+        variant="ghost"
+        icon="terminal"
+        disabled={!canOpen}
+        title={reason ?? `Open attempt ${attempt}'s Session in the Core's workspace`}
+        onClick={open}
+      >
+        Open session
+      </Btn>
+      {reason ? <span style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--text-dim)" }}>{reason}</span> : null}
+    </div>
+  );
 }
 
 /**
@@ -140,15 +210,26 @@ export function TaskDetail({ taskId, onClose, focusComposer = false }: { taskId:
           </section>
           <section aria-label="Comments" style={{ display: "flex", flexDirection: "column", gap: 10 }}>
             <h3 style={{ fontFamily: "var(--mono)", fontSize: 12, letterSpacing: "0.08em", textTransform: "uppercase" }}>Comments</h3>
-            {comments.map((c) => (
-              <article key={c.id} data-comment-kind={c.authorKind} style={{ padding: 12, borderRadius: 6, borderLeft: `3px solid ${KIND_COLOR[c.authorKind]}`, background: "var(--surface-1)" }}>
-                <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--text-dim)" }}>
-                  {c.authorKind === "user" ? c.authorName : `${c.authorKind} · ${c.authorName}`}
-                  {c.sourceFile ? ` · from ${c.sourceFile}` : ""} · {formatRelativeTime(c.createdAt)}
-                </div>
-                <TaskMarkdown>{c.body}</TaskMarkdown>
-              </article>
-            ))}
+            {comments.map((c) => {
+              const dispatch = c.authorKind === "system" ? parseTaskDispatchComment(c.body) : null;
+              return (
+                <article key={c.id} data-comment-kind={c.authorKind} style={{ padding: 12, borderRadius: 6, borderLeft: `3px solid ${KIND_COLOR[c.authorKind]}`, background: "var(--surface-1)" }}>
+                  <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--text-dim)" }}>
+                    {c.authorKind === "user" ? c.authorName : `${c.authorKind} · ${c.authorName}`}
+                    {c.sourceFile ? ` · from ${c.sourceFile}` : ""} · {formatRelativeTime(c.createdAt)}
+                  </div>
+                  <TaskMarkdown>{c.body}</TaskMarkdown>
+                  {dispatch ? (
+                    <OpenAttemptSession
+                      attempt={dispatch.attempt}
+                      coreId={dispatch.coreId}
+                      sessionId={dispatch.sessionId}
+                      onOpened={onClose}
+                    />
+                  ) : null}
+                </article>
+              );
+            })}
           </section>
           <section aria-label="Composer" style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             <MarkdownField value={draft} onChange={setDraft} ariaLabel="Comment" toolbar={false} minRows={6} autoFocus={focusComposer} placeholder={agent ? `@${agent.name} · markdown supported` : "markdown supported"} />
