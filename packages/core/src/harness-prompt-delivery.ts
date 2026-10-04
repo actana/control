@@ -762,10 +762,17 @@ export const HARNESS_READINESS: Partial<Record<Harness, HarnessReadiness>> = {
   // not type into (ADO #4987). The same footer also appears under Pi's
   // "No models available" warning; that screen is refused by the `no-models`
   // row in {@link BLOCKING_DIALOGS}, not by narrowing this pattern (ADO #520).
+  //
+  // On 1.0.2 a long prompt repaints only the editor box, wrapped, and not the
+  // footer, so a write whose echo lands after the echo check is back in
+  // `settling` looking for a footer that is not coming back while the text is
+  // in the box. `textHidesComposerMarker` sends that screen to the carriage
+  // return instead of a retype or the composer ceiling.
   pi: {
     composer: [/\d+(\.\d+)?%\//],
     confirmEcho: true,
     maxPromptWrites: 3,
+    textHidesComposerMarker: true,
   },
 };
 
