@@ -238,12 +238,19 @@ async function ensureDefault(ownerId: number, coreId: string, harness: Harness, 
 }
 
 /**
- * One Core's Agents the Core can run now: a default Agent for each harness it
- * has, and any other Agent whose harness it still reports available. An Agent
- * whose harness is gone is hidden, not deleted, and returns when the harness
- * does. A Core that cannot be asked keeps the Agents it already has.
+ * One Core's Agents, with a default Agent for each harness it has. With
+ * `runnableOnly` (the New Task picker) an Agent whose harness the Core does not
+ * report available now is left out: hidden, not deleted, and back when the
+ * harness is. Without it every Agent is listed, because a Task's Agent must keep
+ * its name when its harness goes. A Core that cannot be asked keeps the Agents
+ * it already has.
  */
-export async function listAgentsForCore(ownerId: number, coreId: string, deps: AgentDeps = {}): Promise<Agent[]> {
+export async function listAgentsForCore(
+  ownerId: number,
+  coreId: string,
+  deps: AgentDeps = {},
+  { runnableOnly = false }: { runnableOnly?: boolean } = {},
+): Promise<Agent[]> {
   let reported: CoreLinkHarnessAvailabilityMap;
   try {
     if (!(await findCoreById(ownerId, coreId))) throw new NotFoundError("core not found");
@@ -253,5 +260,6 @@ export async function listAgentsForCore(ownerId: number, coreId: string, deps: A
     return findAgents(ownerId, coreId);
   }
   await ensureDefaultsFor(ownerId, coreId, reported, Date.now());
-  return (await findAgents(ownerId, coreId)).filter((a) => hasHarness(reported, a.harness));
+  const all = await findAgents(ownerId, coreId);
+  return runnableOnly ? all.filter((a) => hasHarness(reported, a.harness)) : all;
 }

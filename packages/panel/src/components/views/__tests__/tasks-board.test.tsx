@@ -29,13 +29,17 @@ const agentsByCore: Record<string, AgentDto[]> = {
   c2: [{ id: "ag-c2", coreId: "c2", name: "opencode", harness: "opencode", model: "Kimi K3", isDefault: true }],
 };
 
+// Harnesses the Core no longer reports available: the picker's runnable-only list drops their Agents.
+const goneHarnesses = new Set<string>();
 let tasks: TaskDto[] = [];
 let comments: TaskCommentDto[] = [];
 const api = vi.hoisted(() => ({
   getKeybindings: vi.fn(async () => ({ bindings: {} })),
   listTasks: vi.fn(async () => ({ tasks })),
   getTask: vi.fn(async (id: string) => ({ task: tasks.find((t) => t.id === id)!, comments })),
-  listCoreAgents: vi.fn(async (coreId: string) => ({ agents: agentsByCore[coreId] ?? [] })),
+  listCoreAgents: vi.fn(async (coreId: string, opts?: { runnableOnly?: boolean }) => ({
+    agents: (agentsByCore[coreId] ?? []).filter((a) => !(opts?.runnableOnly && goneHarnesses.has(a.harness))),
+  })),
   createTask: vi.fn(async (body: Record<string, unknown>) => ({ task: task("new", String(body.title), body.startNow ? "assigned" : "draft", (body.coreId as string) ?? null) })),
   commentOnTask: vi.fn(async () => ({})),
   setTaskStatus: vi.fn(async () => ({})),
@@ -64,7 +68,10 @@ beforeEach(() => {
   comments = [];
   for (const fn of Object.values(api)) fn.mockClear();
 });
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  goneHarnesses.clear();
+});
 
 const column = (id: string) => document.querySelector(`[data-board-column="${id}"]`) as HTMLElement;
 
@@ -76,6 +83,19 @@ describe("Tasks board", () => {
     expect(within(column("assigned")).getByText("Bump SeaweedFS")).toBeTruthy();
     expect(within(column("in_progress")).getByText("Remove sudo")).toBeTruthy();
     expect(within(column("finished")).getByText("Review PR")).toBeTruthy();
+  });
+
+  it("keeps a Task's Agent label when its harness goes away, while the New Task picker stops offering that Agent", async () => {
+    goneHarnesses.add("claude-code");
+    mount(<TasksBoard coreId="c1" />);
+    await screen.findByText("Rotate keys");
+    await waitFor(() => expect(document.querySelector('[data-task-card="t1"]')?.textContent).toContain("claude-code"));
+    expect(api.listCoreAgents).toHaveBeenCalledWith("c1");
+    fireEvent.click(screen.getByRole("button", { name: "New Task" }));
+    const picker = await screen.findByRole("radiogroup", { name: "Agent" });
+    await within(picker).findByText(/cursor-cli/);
+    expect(within(picker).queryByText(/claude-code/)).toBeNull();
+    expect(api.listCoreAgents).toHaveBeenCalledWith("c1", { runnableOnly: true });
   });
 
   it("filters to one Core from its chip, with counts, and back to All Cores", async () => {
