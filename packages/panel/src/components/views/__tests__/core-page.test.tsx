@@ -9,6 +9,7 @@ import type { CoreWithDial } from "~/shared/cores";
 // Terminal is the bottom drawer, so it must never be a tab.
 
 let cores: CoreWithDial[] = [];
+let coresLoading = false;
 let rows: Record<string, unknown>[] = [];
 const togglePanel = vi.fn();
 
@@ -17,6 +18,7 @@ vi.mock("~/lib/fleet-context", () => ({
     cores,
     fleet: { rows, offlineCores: [], singleCore: false },
     loading: false,
+    coresLoading,
     error: null,
     refresh: vi.fn(),
   }),
@@ -274,6 +276,19 @@ describe("CorePage", () => {
     // The board, without the per-Core chips: the Core page is already one Core.
     expect(screen.getByRole("button", { name: "New Task" })).toBeTruthy();
     expect(screen.queryByRole("group", { name: "Filter by Core" })).toBeNull();
+  });
+
+  it("shows a loading state, not Core not found, until the Core list has settled", async () => {
+    cores = [];
+    coresLoading = true;
+    try {
+      await mount("sessions", "a");
+      expect(screen.getByText("Loading Core")).toBeTruthy();
+      expect(screen.queryByText("Core not found")).toBeNull();
+      expect(screen.queryByRole("button", { name: "Back to Fleet" })).toBeNull();
+    } finally {
+      coresLoading = false;
+    }
   });
 
   it("says so when the Core is not registered", async () => {

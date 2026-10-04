@@ -94,11 +94,13 @@ export function useFleetSessions(): {
   /** The registry behind the fan-out, with each Core's live link state. */
   cores: CoreWithDial[];
   loading: boolean;
+  /** True until the first Core-list answer (or failure) has settled. */
+  coresLoading: boolean;
   error: string | null;
   refresh: () => void;
 } {
   const bridge = getPanelBridge();
-  const { cores, error: coresError } = useCores();
+  const { cores, loading: coresLoading, error: coresError } = useCores();
   const [fleet, setFleet] = useState<FleetMergeResult>(emptyFleet);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -200,5 +202,5 @@ export function useFleetSessions(): {
     return () => clearInterval(id);
   }, [run, coreSignature]);
 
-  return { fleet, cores, loading, error: error ?? coresError, refresh: () => void run() };
+  return { fleet, cores, loading, coresLoading, error: error ?? coresError, refresh: () => void run() };
 }
