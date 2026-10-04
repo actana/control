@@ -4,7 +4,9 @@ import { SharedChangeFeed, createSharedFactory } from "../shared-factory";
 import { SharedFilesUnavailableError } from "../../services/core-s3-shared";
 import { StorageNotConfiguredError } from "../../services/storage";
 import { launchCommand } from "../session-starter";
-import { buildTaskPrompt } from "../task-prompt";
+import { MAX_POINTER_CHARS, buildTaskPointer, buildTaskPrompt, taskPromptPath } from "../task-prompt";
+import { HARNESS_FILE_MENTION, fileReference } from "@actana/shared/harness-file-mention";
+import { HARNESSES } from "@actana/shared/domain";
 import { taskTimeoutMs, TASK_TIMEOUT_ENV } from "../index";
 
 const fake = (name: string) => ({ name }) as unknown as CoreShared;
@@ -172,5 +174,47 @@ describe("the timeout setting", () => {
     expect(taskTimeoutMs({ [TASK_TIMEOUT_ENV]: "5" })).toBe(300_000);
     expect(taskTimeoutMs({ [TASK_TIMEOUT_ENV]: "nope" })).toBe(3_600_000);
     expect(taskTimeoutMs({ [TASK_TIMEOUT_ENV]: "0" })).toBe(3_600_000);
+  });
+});
+
+describe("the pointer typed in place of the Task", () => {
+  const path = `~/shared/${taskPromptPath("task_9", 3)}`;
+
+  it("names the attempt's prompt file", () => {
+    expect(taskPromptPath("task_9", 3)).toBe("tasks/task_9/prompt-attempt-3.md");
+  });
+
+  it.each(HARNESSES.map((h) => [h]))("is one short line for %s that names the file", (harness) => {
+    const pointer = buildTaskPointer(harness, "task_9", 3);
+    expect(pointer.length).toBeLessThan(MAX_POINTER_CHARS);
+    expect(pointer).not.toMatch(/[\r\n]/);
+    expect(pointer).toContain(path);
+    expect(pointer).toContain("do what it says");
+  });
+
+  it("uses the form the table gives each harness, and the table is complete", () => {
+    for (const harness of HARNESSES) {
+      const entry = HARNESS_FILE_MENTION[harness];
+      expect(entry.reason.length).toBeGreaterThan(20);
+      const pointer = buildTaskPointer(harness, "task_9", 3);
+      expect(pointer).toContain(fileReference(harness, path));
+      // An `@` is typed only where the table allows it, and then the plain path follows in the same line.
+      if (entry.form === "plain") expect(pointer).not.toContain("@");
+      else expect(pointer).toContain(`@${path} (file ${path})`);
+    }
+  });
+
+  it("types no `@` today: every harness's mention form was found risky or unknown", () => {
+    expect(HARNESSES.filter((h) => HARNESS_FILE_MENTION[h].form === "at")).toEqual([]);
+  });
+
+  it("has the `@PATH (file PATH)` form ready for a harness that moves to it", () => {
+    const original = HARNESS_FILE_MENTION["codex"].form;
+    HARNESS_FILE_MENTION["codex"].form = "at";
+    try {
+      expect(buildTaskPointer("codex", "task_9", 3)).toContain(`Read @${path} (file ${path}) and do what it says.`);
+    } finally {
+      HARNESS_FILE_MENTION["codex"].form = original;
+    }
   });
 });

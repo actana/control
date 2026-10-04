@@ -1,5 +1,7 @@
+import { fileReference } from "@actana/shared/harness-file-mention";
 import type { Task, TaskComment } from "../services/tasks";
-import { REPORT_END_MARKER, taskResultPath } from "~/shared/task-report";
+import type { Harness } from "~/shared/agents";
+import { REPORT_END_MARKER, taskFolder, taskResultPath } from "~/shared/task-report";
 
 /**
  * What a Session is told when a Task is dispatched to it (#570): the Task, its
@@ -64,3 +66,25 @@ export function buildTaskPrompt(task: Pick<Task, "id" | "title" | "description">
   );
   return lines.join("\n");
 }
+
+/**
+ * Where a dispatch's full prompt is written, relative to the Shared folder: one file per attempt, so a re-run
+ * with new comments gets a fresh one and the earlier attempt's stays as it was. It is not a result name
+ * (`classifyTaskEntry` says `other`), so neither the watcher nor the archiving of old results touches it.
+ */
+export function taskPromptPath(taskId: string, attempt: number): string {
+  return `${taskFolder(taskId)}prompt-attempt-${attempt}.md`;
+}
+
+/**
+ * The one short line typed into the harness instead of the Task: a long text typed into a composer is
+ * scrolled, collapsed into a paste block or swallowed, and the Core then cannot see it landed. The file
+ * holds the Task, and the result instructions with it. The file is named the way the harness takes a file
+ * (`HARNESS_FILE_MENTION`), one line, well under {@link MAX_POINTER_CHARS}.
+ */
+export function buildTaskPointer(harness: Harness, taskId: string, attempt: number): string {
+  const file = fileReference(harness, `~/shared/${taskPromptPath(taskId, attempt)}`);
+  return `Read ${file} and do what it says. It holds your Task and tells you where to report the result.`;
+}
+
+export const MAX_POINTER_CHARS = 200;
