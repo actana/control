@@ -101,6 +101,10 @@ export function harnessCanLaunch(availability: CliAvailabilityMap, agent: Harnes
   if (HARNESS_REGISTRY[agent].disabled) return false;
   const status = availabilityFor(availability, agent).status;
   if (status === "available") return true;
+  // A Harness stopped at a first-run dialog (no model, no login) is set up from
+  // inside its own CLI, so a Session must still open on it — greying it out
+  // leaves the operator no way to finish that setup.
+  if (status === "needs-setup") return true;
   // With no link there is no Core to probe — assume launchable so the picker
   // isn't uniformly disabled on a page that hasn't connected yet.
   if (status === "unknown" && !getPanelBridge()) return true;
@@ -140,7 +144,12 @@ export function fromCoreLinkMap(map: CoreLinkHarnessAvailabilityMap): CliAvailab
 }
 
 export function firstAvailableHarness(availability: CliAvailabilityMap): Harness | null {
-  return UI_HARNESSES.find((agent) => harnessCanLaunch(availability, agent)) ?? null;
+  // A needs-setup Harness can be opened but is never the default pick.
+  return (
+    UI_HARNESSES.find((agent) => harnessCanLaunch(availability, agent) && availabilityFor(availability, agent).status !== "needs-setup") ??
+    UI_HARNESSES.find((agent) => harnessCanLaunch(availability, agent)) ??
+    null
+  );
 }
 
 /**

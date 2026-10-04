@@ -339,6 +339,7 @@ export function NewHarnessDialog({
                 availability.status === "checking" ||
                 (availability.status === "unknown" && !!getPanelBridge());
               const cliOutdated = availability.status === "outdated";
+              const cliNeedsSetup = availability.status === "needs-setup";
               const disabled =
                 !cliOutdated && !harnessCanLaunch(cliAvailability, a.id);
               return (
@@ -402,19 +403,21 @@ export function NewHarnessDialog({
                       >
                         {a.description}
                       </div>
-                      {(cliChecking || cliOutdated) && (
+                      {(cliChecking || cliOutdated || cliNeedsSetup) && (
                         <div
                           style={{
                             marginTop: 5,
                             fontFamily: "var(--mono)",
                             fontSize: 10.5,
-                            color: cliOutdated ? "var(--status-failed)" : "var(--text-faint)",
+                            color: cliOutdated || cliNeedsSetup ? "var(--status-failed)" : "var(--text-faint)",
                             lineHeight: 1.35,
                           }}
                         >
                           {cliOutdated
                             ? `Update required: ${availability.label ?? a.label} ${availability.requiredVersion ?? "latest"} or newer.`
-                            : "Checking PATH..."}
+                            : cliNeedsSetup
+                              ? `Needs setup (${availability.setupDialog ?? "first run"}): start a Session and finish it in ${a.label}.`
+                              : "Checking PATH..."}
                         </div>
                       )}
                     </div>

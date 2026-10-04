@@ -79,6 +79,18 @@ describe("HarnessInstallService", () => {
     expect(message).not.toMatch(/at .*\.ts:\d+/); // a sentence, not a stack trace
   });
 
+  it("reports ok when the installed Harness stops at a first-run dialog (needs setup)", async () => {
+    // Pi with no model: the CLI is on PATH and runs, so the install worked; the
+    // setup is finished in a Session, not reported as "not on PATH".
+    const { service } = serviceWith({
+      before: MISSING,
+      after: { "claude-code": { status: "missing", reason: "needs-setup: no-models", path: "/usr/local/bin/claude" } },
+      outcomes: [{ agent: "claude-code", label: "Claude Code", status: "installed" }],
+    });
+
+    await expect(service.install("claude-code")).resolves.toEqual({ ok: true });
+  });
+
   it("treats an install the probe cannot see as a failure, not a success", async () => {
     // The vendor installer exited 0 and put the CLI somewhere this daemon's
     // PATH does not reach. Reporting success would leave the Panel's row
