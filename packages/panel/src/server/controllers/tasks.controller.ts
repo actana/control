@@ -235,11 +235,15 @@ export async function comment(ownerId: number, id: string, request: Request): Pr
   }
 }
 
-/** One Core's Agents, from the Agents service. */
-export async function listCoreAgents(ownerId: number, coreId: string): Promise<Response> {
+/**
+ * One Core's Agents, from the Agents service. All of them by default, which is
+ * what a name lookup needs; `runnableOnly` (`?runnable=1`) is the New Task picker's
+ * list: only those whose harness the Core can run now.
+ */
+export async function listCoreAgents(ownerId: number, coreId: string, runnableOnly = false): Promise<Response> {
   try {
     if (!(await findCoreById(ownerId, coreId))) throw new NotFoundError("core not found");
-    return json({ agents: (await listAgentsForCore(ownerId, coreId)).map(agentDto) });
+    return json({ agents: (await listAgentsForCore(ownerId, coreId, {}, { runnableOnly })).map(agentDto) });
   } catch (e) {
     return rethrowUnlessDomain(e);
   }

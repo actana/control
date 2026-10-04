@@ -57,13 +57,16 @@ export function startTaskDispatch(opts: StartTaskDispatchOptions = {}): void {
     ...(opts.exitGraceMs !== undefined ? { exitGraceMs: opts.exitGraceMs } : {}),
     ...(opts.log ? { log: opts.log } : {}),
   });
+  const throughCore = opts.throughCore ?? createThroughCoreFactory(feed, OPERATOR_ID);
   const dispatcher = new TaskDispatcher({
     ownerId: OPERATOR_ID,
     startSession: opts.startSession ?? startSessionOnCore,
     sharedFor: createSharedFactory({
       s3: opts.s3 ?? createS3Factory(OPERATOR_ID, opts.modes),
-      throughCore: opts.throughCore ?? createThroughCoreFactory(feed, OPERATOR_ID),
+      throughCore,
     }),
+    // The prompt file goes in through the Core itself, never the object store: see `coreFilesFor`.
+    coreFilesFor: async (coreId) => throughCore(coreId),
     watcher,
     ...(opts.agents ? { agents: opts.agents } : {}),
     ...(opts.now ? { now: opts.now } : {}),

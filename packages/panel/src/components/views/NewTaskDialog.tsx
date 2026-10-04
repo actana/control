@@ -8,7 +8,7 @@ import { api, ApiError } from "~/lib/api";
 import { TaskAttachments } from "~/components/views/TaskAttachments";
 import type { TaskAttachment } from "~/lib/task-attachments";
 import { useFleet } from "~/lib/fleet-context";
-import { queryKeys, useCoreAgents } from "~/queries";
+import { queryKeys, useRunnableCoreAgents } from "~/queries";
 import type { NewTaskRequest } from "~/shared/task-wire";
 
 const labelStyle = { fontFamily: "var(--mono)", fontSize: 11, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--text-dim)" } as const;
@@ -37,7 +37,7 @@ function Form({ onClose, initialCoreId, onCreated }: { onClose: () => void; init
   const [coreId, setCoreId] = useState<string>(initialCoreId ?? cores[0]?.id ?? "");
   const [pickedAgent, setPickedAgent] = useState<string | null>(null);
   const [startNow, setStartNow] = useState(true);
-  const { data: agents = [], isLoading: agentsLoading } = useCoreAgents(coreId);
+  const { data: agents = [], isLoading: agentsLoading } = useRunnableCoreAgents(coreId);
   // The Agent is one of the chosen Core's. A pick made on another Core is not it.
   const agent = agents.find((a) => a.id === pickedAgent) ?? agents.find((a) => a.isDefault) ?? agents[0] ?? null;
 

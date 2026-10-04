@@ -1,17 +1,18 @@
 import { CoreSession, HARNESS_LAUNCH_COMMANDS, harnessAutoModeFlag } from "@actana/sdk/core";
+import { harnessLaunchesWithSkipPermissions } from "@actana/shared/harnesses";
 import { coreLinkManager } from "../services/core-link-manager";
 import type { SessionStarter, StartSessionRequest } from "./types";
 
 /**
  * The command a Task's Session is launched with: the harness's own launch command,
- * its auto-mode flag when the Agent carries `skip-permissions`, and `--model <id>`
+ * its auto-mode flag (always, as for a Session: issue 22), and `--model <id>`
  * when it names a model. The Core allow-lists the binary and every flag, so
  * nothing here is trusted to be safe on its own; the Agent's model is already
  * held to a plain id (`AGENT_MODEL_PATTERN`) and its flags to a closed set.
  */
 export function launchCommand(request: Pick<StartSessionRequest, "harness" | "model" | "flags">): string {
   const parts: string[] = [HARNESS_LAUNCH_COMMANDS[request.harness]];
-  const auto = request.flags.includes("skip-permissions") ? harnessAutoModeFlag(request.harness) : null;
+  const auto = harnessLaunchesWithSkipPermissions(request.harness) ? harnessAutoModeFlag(request.harness) : null;
   if (auto) parts.push(auto);
   if (request.model) parts.push("--model", request.model);
   return parts.join(" ");
@@ -31,7 +32,7 @@ export const startSessionOnCore: SessionStarter = async (request) => {
     title: request.title,
     prompt: request.prompt,
     command: launchCommand(request),
-    ...(request.flags.includes("skip-permissions") ? { dangerouslySkipPermissions: true } : {}),
+    ...(harnessLaunchesWithSkipPermissions(request.harness) ? { dangerouslySkipPermissions: true } : {}),
   });
   return {
     sessionId: session.sessionId,
