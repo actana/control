@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useCallback, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useRouter } from "@tanstack/react-router";
 import { Btn } from "~/components/ui/Btn";
@@ -9,9 +9,10 @@ import { TaskMarkdown } from "~/components/views/TaskMarkdown";
 import { api } from "~/lib/api";
 import { useFleet } from "~/lib/fleet-context";
 import { formatRelativeTime } from "~/lib/format-relative-time";
+import { requestSessionOpen } from "~/lib/session-notification-store";
 import { TASK_STATUS_LABEL } from "~/lib/task-board";
-import { queryKeys, useCoreAgents, useTask } from "~/queries";
-import { FINISHED_TASK_STATUSES } from "~/shared/tasks";
+import { queryKeys, useArchivedSessions, useCoreAgents, useSessions, useTask } from "~/queries";
+import { FINISHED_TASK_STATUSES, parseTaskDispatchComment } from "~/shared/tasks";
 import { taskFolderPath } from "~/shared/shared-files";
 import type { TaskCommentDto } from "~/shared/task-wire";
 import { TaskAttachments } from "~/components/views/TaskAttachments";
@@ -33,6 +34,70 @@ function Badge({ children, tone }: { children: React.ReactNode; tone?: string })
 
 function message(e: unknown): string | null {
   return e ? (e instanceof Error ? e.message : String(e)) : null;
+}
+
+/**
+ * Open this attempt's Session the same way the Core page does: pending-open, then
+ * the workspace route. Disabled with a one-line reason when the Session or Core is gone.
+ * The workspace's pending-open path only materialises active Sessions, so an archived
+ * attempt is named as archived rather than opened.
+ */
+function OpenAttemptSession({
+  attempt,
+  coreId,
+  sessionId,
+  onOpened,
+}: {
+  attempt: number;
+  coreId: string;
+  sessionId: string;
+  onOpened: () => void;
+}) {
+  const { cores } = useFleet();
+  const router = useRouter({ warn: false });
+  const core = cores.find((c) => c.id === coreId);
+  const coreReachable = core?.dial.state === "connected";
+  const sessions = useSessions(coreId);
+  const active = sessions.data?.find((s) => s.id === sessionId);
+  // Archived rows live in their own bucket (ADR 0019); ask only when the active
+  // list has answered and this Session was not in it.
+  const needArchivedCheck = !!core && !!coreReachable && sessions.isFetched && !sessions.isError && !active;
+  const archived = useArchivedSessions(coreId, { enabled: needArchivedCheck });
+  const inArchived = !!archived.data?.some((s) => s.id === sessionId);
+
+  let reason: string | null = null;
+  if (!core) {
+    reason = "This Core is gone";
+  } else if (!coreReachable || sessions.isError) {
+    // Dial first so an offline Core shows a reason without waiting on query retries.
+    reason = "This Core is not reachable right now";
+  } else if (!active && needArchivedCheck && archived.isFetched) {
+    reason = inArchived ? "Session is archived" : "Session no longer exists on this Core";
+  }
+
+  const canOpen = !!router && !reason && !!active;
+
+  const open = useCallback(() => {
+    if (!canOpen || !router) return;
+    requestSessionOpen(coreId, sessionId);
+    void router.navigate({ to: "/cores/$coreId/workspace", params: { coreId } });
+    onOpened();
+  }, [canOpen, router, coreId, sessionId, onOpened]);
+
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8, flexWrap: "wrap" }}>
+      <Btn
+        variant="ghost"
+        icon="terminal"
+        disabled={!canOpen}
+        title={reason ?? `Open attempt ${attempt}'s Session in the Core's workspace`}
+        onClick={open}
+      >
+        Open session
+      </Btn>
+      {reason ? <span style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--text-dim)" }}>{reason}</span> : null}
+    </div>
+  );
 }
 
 /**
@@ -140,15 +205,26 @@ export function TaskDetail({ taskId, onClose, focusComposer = false }: { taskId:
           </section>
           <section aria-label="Comments" style={{ display: "flex", flexDirection: "column", gap: 10 }}>
             <h3 style={{ fontFamily: "var(--mono)", fontSize: 12, letterSpacing: "0.08em", textTransform: "uppercase" }}>Comments</h3>
-            {comments.map((c) => (
-              <article key={c.id} data-comment-kind={c.authorKind} style={{ padding: 12, borderRadius: 6, borderLeft: `3px solid ${KIND_COLOR[c.authorKind]}`, background: "var(--surface-1)" }}>
-                <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--text-dim)" }}>
-                  {c.authorKind === "user" ? c.authorName : `${c.authorKind} · ${c.authorName}`}
-                  {c.sourceFile ? ` · from ${c.sourceFile}` : ""} · {formatRelativeTime(c.createdAt)}
-                </div>
-                <TaskMarkdown>{c.body}</TaskMarkdown>
-              </article>
-            ))}
+            {comments.map((c) => {
+              const dispatch = c.authorKind === "system" ? parseTaskDispatchComment(c.body) : null;
+              return (
+                <article key={c.id} data-comment-kind={c.authorKind} style={{ padding: 12, borderRadius: 6, borderLeft: `3px solid ${KIND_COLOR[c.authorKind]}`, background: "var(--surface-1)" }}>
+                  <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--text-dim)" }}>
+                    {c.authorKind === "user" ? c.authorName : `${c.authorKind} · ${c.authorName}`}
+                    {c.sourceFile ? ` · from ${c.sourceFile}` : ""} · {formatRelativeTime(c.createdAt)}
+                  </div>
+                  <TaskMarkdown>{c.body}</TaskMarkdown>
+                  {dispatch ? (
+                    <OpenAttemptSession
+                      attempt={dispatch.attempt}
+                      coreId={dispatch.coreId}
+                      sessionId={dispatch.sessionId}
+                      onOpened={onClose}
+                    />
+                  ) : null}
+                </article>
+              );
+            })}
           </section>
           <section aria-label="Composer" style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             <MarkdownField value={draft} onChange={setDraft} ariaLabel="Comment" toolbar={false} minRows={6} autoFocus={focusComposer} placeholder={agent ? `@${agent.name} · markdown supported` : "markdown supported"} />
