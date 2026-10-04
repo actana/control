@@ -27,6 +27,8 @@ export const queryKeys = {
   tasks: ["tasks"] as const,
   task: (id: string) => ["tasks", id] as const,
   coreAgents: (coreId: string) => ["core-agents", coreId] as const,
+  /** Under `coreAgents`, so invalidating a Core's Agents refreshes this too. */
+  runnableCoreAgents: (coreId: string) => ["core-agents", coreId, "runnable"] as const,
   /** Everything the Files tab holds for a Core, for one invalidation after a write. */
   sharedFiles: (coreId: string) => ["shared-files", coreId] as const,
   sharedFolder: (coreId: string, path: string) => ["shared-files", coreId, "folder", path] as const,
@@ -373,6 +375,14 @@ export const coreAgentsQueryOptions = (coreId: string) =>
     enabled: !!coreId,
   });
 
+/** The Agents a new Task can be given: only those whose harness the Core can run now. */
+export const runnableCoreAgentsQueryOptions = (coreId: string) =>
+  queryOptions({
+    queryKey: queryKeys.runnableCoreAgents(coreId),
+    queryFn: async () => (await api.listCoreAgents(coreId, { runnableOnly: true })).agents,
+    enabled: !!coreId,
+  });
+
 /**
  * The Files tab's fallback when the Core's change feed (#561) cannot tell it anything, because the Core is offline: it
  * lists S3 every ten seconds then. With the feed up nothing polls: a `shared:changed` event refreshes the folder.
@@ -425,6 +435,7 @@ export const useSharedFilesSearch = (coreId: string, query: string) =>
 export const useTasks = () => useQuery(tasksQueryOptions());
 export const useTask = (id: string) => useQuery({ ...taskQueryOptions(id), enabled: !!id });
 export const useCoreAgents = (coreId: string) => useQuery(coreAgentsQueryOptions(coreId));
+export const useRunnableCoreAgents = (coreId: string) => useQuery(runnableCoreAgentsQueryOptions(coreId));
 
 export const useSessions = (coreId: string) => {
   const options = sessionsQueryOptions(coreId);

@@ -268,6 +268,21 @@ describe("a default Agent for each harness a Core has", () => {
     await expect(resolveAgent(A, first!.id, deps)).rejects.toBeInstanceOf(HarnessMissingOnCoreError);
   });
 
+  it("lists only runnable Agents for the picker, keeps every Agent for a name lookup, and shows them again when the harness returns", async () => {
+    reported["core-1"] = available("claude-code", "codex", "pi");
+    const mine = await createAgent(A, { coreId: "core-1", name: "mine", harness: "pi" }, deps);
+    const runnable = () => listAgentsForCore(A, "core-1", deps, { runnableOnly: true });
+    expect((await runnable()).map((a) => a.harness).sort()).toEqual(["claude-code", "codex", "pi", "pi"]);
+    reported["core-1"] = available("claude-code");
+    expect((await runnable()).map((a) => a.harness)).toEqual(["claude-code"]);
+    // The full list keeps the Agent, so a Task's Agent keeps its name.
+    expect((await listAgentsForCore(A, "core-1", deps)).map((a) => a.id)).toContain(mine.id);
+    reported["core-1"] = { "claude-code": { status: "available" }, codex: { status: "missing" }, pi: { status: "checking" } };
+    expect((await runnable()).map((a) => a.harness)).toEqual(["claude-code"]);
+    reported["core-1"] = available("claude-code", "pi");
+    expect((await runnable()).map((a) => a.id)).toContain(mine.id);
+  });
+
   it("finds a name an operator already took, and uses another for the default", async () => {
     await createAgent(A, { coreId: "core-1", name: "Claude Code", harness: "codex" }, deps);
     const made = await ensureDefaultAgents(A, "core-1", deps);
