@@ -11,9 +11,10 @@ import type { CoreWithDial } from "~/shared/cores";
 
 let cores: CoreWithDial[] = [];
 let rows: { coreId: string; status: string }[] = [];
+let coresLoading = false;
 
 vi.mock("~/lib/fleet-context", () => ({
-  useFleet: () => ({ cores, fleet: { rows, offlineCores: [], singleCore: false } }),
+  useFleet: () => ({ cores, coresLoading, fleet: { rows, offlineCores: [], singleCore: false } }),
 }));
 vi.mock("~/lib/keybindings/store", () => ({
   useBinding: () => ({ mod: true, shift: false, alt: false, key: "1" }),
@@ -84,6 +85,17 @@ describe("CoreRail", () => {
     expect(tiles[1]!.querySelector("[data-core-hotkey]")?.textContent).toBe("2");
     expect(screen.queryByText(/add project/i)).toBeNull();
     expect(screen.getByText("2 Cores")).toBeTruthy();
+  });
+
+  it("does not claim 0 Cores while the Core list is still loading", async () => {
+    cores = [];
+    coresLoading = true;
+    try {
+      await mount();
+      expect(screen.queryByText("0 Cores")).toBeNull();
+    } finally {
+      coresLoading = false;
+    }
   });
 
   it("gives hotkey digits to the first nine Cores only", async () => {

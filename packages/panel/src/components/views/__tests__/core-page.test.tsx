@@ -10,6 +10,8 @@ import type { CoreWithDial } from "~/shared/cores";
 
 let cores: CoreWithDial[] = [];
 let coresLoading = false;
+let coresError: string | null = null;
+const refreshCores = vi.fn();
 let rows: Record<string, unknown>[] = [];
 const togglePanel = vi.fn();
 
@@ -19,6 +21,8 @@ vi.mock("~/lib/fleet-context", () => ({
     fleet: { rows, offlineCores: [], singleCore: false },
     loading: false,
     coresLoading,
+    coresError,
+    refreshCores,
     error: null,
     refresh: vi.fn(),
   }),
@@ -286,6 +290,37 @@ describe("CorePage", () => {
       expect(screen.getByText("Loading Core")).toBeTruthy();
       expect(screen.queryByText("Core not found")).toBeNull();
       expect(screen.queryByRole("button", { name: "Back to Fleet" })).toBeNull();
+    } finally {
+      coresLoading = false;
+    }
+  });
+
+  it("shows an error with Retry, not Core not found, when the first Core list query failed", async () => {
+    cores = [];
+    coresError = "network down";
+    try {
+      await mount("sessions", "a");
+      expect(screen.queryByText("Core not found")).toBeNull();
+      expect(screen.getByText("network down")).toBeTruthy();
+      fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+      expect(refreshCores).toHaveBeenCalledTimes(1);
+    } finally {
+      coresError = null;
+      refreshCores.mockClear();
+    }
+  });
+
+  it("changes from loading to Core not found once the list settles without the Core", async () => {
+    cores = [];
+    coresLoading = true;
+    try {
+      await mount("sessions", "a");
+      expect(screen.getByText("Loading Core")).toBeTruthy();
+      coresLoading = false;
+      cleanup();
+      await mount("sessions", "a");
+      expect(screen.getByText("Core not found")).toBeTruthy();
+      expect(screen.queryByText("Loading Core")).toBeNull();
     } finally {
       coresLoading = false;
     }
