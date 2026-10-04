@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   appendPromptBlock,
   buildPromptBlock,
+  buildTaskPromptBlock,
   PROMPT_BLOCK_VERSION,
   stripPromptBlock,
   reportPath,
@@ -53,5 +54,42 @@ describe("stripPromptBlock", () => {
 
   it("strips any version by its own markers, and only the block", () => {
     expect(stripPromptBlock("a [Actana standard block v7] anything [/Actana standard block v7] b")).toBe("a b");
+  });
+});
+
+describe("a Task Session's starting prompt", () => {
+  const input = { sessionId: "t-abc", turn: 1 };
+  const POINTER =
+    "Read ~/shared/tasks/task_9/prompt-attempt-2.md and do what it says. It holds your Task and tells you where to report the result.";
+
+  it("carries no session report path, and keeps the workspace, shared folder and sudo sentences", () => {
+    const typed = appendPromptBlock(POINTER, input);
+    expect(typed).not.toContain("sessions/");
+    expect(typed).not.toContain("report-1.md");
+    expect(typed).not.toContain("write your report to");
+    expect(typed).toContain("Your workspace is your home directory (~)");
+    expect(typed).toContain("~/shared is shared with the operator and syncs within seconds.");
+    expect(typed).toContain("Never use sudo.");
+    expect(typed.match(/\[Actana standard block/g)).toHaveLength(1);
+    expect(typed).toBe(`${POINTER} ${buildTaskPromptBlock()}`);
+  });
+
+  it("names only the Task file the pointer names: no result file path of its own, so only one instruction", () => {
+    const typed = appendPromptBlock(POINTER, input);
+    expect([...typed.matchAll(/~\/shared\/[^\s]+/g)].map((m) => m[0]).filter((p) => p.startsWith("~/shared/"))).toEqual([
+      "~/shared/tasks/task_9/prompt-attempt-2.md",
+    ]);
+  });
+
+  it("is recognised whatever mention form wraps the path, and is not stacked on a resend", () => {
+    const at = "Read @~/shared/tasks/task_9/prompt-attempt-2.md (file ~/shared/tasks/task_9/prompt-attempt-2.md) and do what it says.";
+    expect(appendPromptBlock(at, input)).not.toContain("sessions/");
+    const once = appendPromptBlock(POINTER, input);
+    expect(appendPromptBlock(once, input)).toBe(once);
+  });
+
+  it("leaves an interactive Session's block unchanged, even one that mentions tasks", () => {
+    expect(appendPromptBlock("fix the bug", input)).toBe(`fix the bug ${buildPromptBlock(input)}`);
+    expect(appendPromptBlock("look at ~/shared/tasks/x/success.md", input)).toContain("~/shared/sessions/t-abc/report-1.md");
   });
 });

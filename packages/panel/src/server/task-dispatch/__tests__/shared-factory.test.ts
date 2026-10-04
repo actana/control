@@ -7,6 +7,7 @@ import { launchCommand } from "../session-starter";
 import { MAX_POINTER_CHARS, buildTaskPointer, buildTaskPrompt, taskPromptPath } from "../task-prompt";
 import { HARNESS_FILE_MENTION, fileReference } from "@actana/shared/harness-file-mention";
 import { HARNESSES } from "@actana/shared/domain";
+import { isTaskPointerPrompt, taskPromptFilePath } from "@actana/shared/task-prompt-file";
 import { taskTimeoutMs, TASK_TIMEOUT_ENV } from "../index";
 
 const fake = (name: string) => ({ name }) as unknown as CoreShared;
@@ -179,6 +180,11 @@ describe("the timeout setting", () => {
 
 describe("the pointer typed in place of the Task", () => {
   const path = `~/shared/${taskPromptPath("task_9", 3)}`;
+
+  it.each(HARNESSES.map((h) => [h]))("is recognised by the Core as a Task pointer for %s", (harness) => {
+    expect(isTaskPointerPrompt(buildTaskPointer(harness, "task_9", 3))).toBe(true);
+    expect(taskPromptPath("task_9", 3)).toBe(taskPromptFilePath("task_9", 3));
+  });
 
   it("names the attempt's prompt file", () => {
     expect(taskPromptPath("task_9", 3)).toBe("tasks/task_9/prompt-attempt-3.md");

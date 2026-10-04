@@ -1,19 +1,20 @@
+import { taskPromptFilePath } from "@actana/shared/task-prompt-file";
 import { fileReference } from "@actana/shared/harness-file-mention";
 import type { Task, TaskComment } from "../services/tasks";
 import type { Harness } from "~/shared/agents";
-import { REPORT_END_MARKER, taskFolder, taskResultPath } from "~/shared/task-report";
+import { REPORT_END_MARKER, taskResultPath } from "~/shared/task-report";
 
 /**
  * What a Session is told when a Task is dispatched to it (#570): the Task, its
  * comments, and where and how to report the result.
  *
  * **No standard block here.** The Core appends its versioned block to a starting
- * prompt itself (control PR 621, `appendPromptBlock`), naming this Session's own
- * report file, and a prompt that already carries one is left alone. A block from
- * this side would be missing that Session id, and would stop the Core's from
- * being added. The block's text and the report paths are client PR 41's
- * (`shared/task-report.ts`); this file only says which of the Task's result
- * files to write, from the home directory, as the harness sees them.
+ * prompt itself (control PR 621, `appendPromptBlock`), and a prompt that already
+ * carries one is left alone. For the pointer typed to a Task's Session the Core
+ * appends the Task variant, which has no session-report sentence, so the Task has
+ * exactly one report instruction: the one in the prompt file built here. The report
+ * paths are client PR 41's (`shared/task-report.ts`); this file only says which of
+ * the Task's result files to write, from the home directory, as the harness sees them.
  *
  * The Core flattens line endings when it types a prompt, so the layout below is
  * for whoever reads a log, not something the harness depends on.
@@ -73,7 +74,7 @@ export function buildTaskPrompt(task: Pick<Task, "id" | "title" | "description">
  * (`classifyTaskEntry` says `other`), so neither the watcher nor the archiving of old results touches it.
  */
 export function taskPromptPath(taskId: string, attempt: number): string {
-  return `${taskFolder(taskId)}prompt-attempt-${attempt}.md`;
+  return taskPromptFilePath(taskId, attempt);
 }
 
 /**
