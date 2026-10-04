@@ -10,6 +10,7 @@ import {
   type Task,
 } from "../services/tasks";
 import { archivedTaskName, classifyTaskEntry, taskFolder } from "~/shared/task-report";
+import { formatTaskDispatchComment } from "~/shared/tasks";
 import { ResultWatcher } from "./result-watcher";
 import { lazyShared, type SharedFor } from "./shared-factory";
 import { buildTaskPrompt } from "./task-prompt";
@@ -258,7 +259,13 @@ export class TaskDispatcher {
         {
           authorKind: "system",
           authorName: "Panel",
-          body: `Dispatched (attempt ${attempt}) to ${agent.name} (${resolved.harness}) on Core ${resolved.coreId}: Session ${sessionId}.`,
+          body: formatTaskDispatchComment({
+            attempt,
+            agentName: agent.name,
+            harness: resolved.harness,
+            coreId: resolved.coreId,
+            sessionId,
+          }),
         },
         this.now(),
       );

@@ -11,8 +11,8 @@ import { useFleet } from "~/lib/fleet-context";
 import { formatRelativeTime } from "~/lib/format-relative-time";
 import { requestSessionOpen } from "~/lib/session-notification-store";
 import { TASK_STATUS_LABEL } from "~/lib/task-board";
-import { queryKeys, useCoreAgents, useSessions, useTask } from "~/queries";
-import { FINISHED_TASK_STATUSES } from "~/shared/tasks";
+import { queryKeys, useArchivedSessions, useCoreAgents, useSessions, useTask } from "~/queries";
+import { FINISHED_TASK_STATUSES, parseTaskDispatchComment } from "~/shared/tasks";
 import { taskFolderPath } from "~/shared/shared-files";
 import type { TaskCommentDto } from "~/shared/task-wire";
 import { TaskAttachments } from "~/components/views/TaskAttachments";
@@ -23,23 +23,6 @@ const KIND_COLOR: Record<TaskCommentDto["authorKind"], string> = {
   agent: "var(--warning)",
   user: "var(--brand-accent)",
 };
-
-/** The Session a dispatch comment named: attempt, Core and Session id (issue 676). */
-export type TaskAttemptSession = {
-  attempt: number;
-  coreId: string;
-  sessionId: string;
-};
-
-/**
- * Read the attempt's Core and Session out of the dispatch comment the Panel wrote
- * when it started that attempt. Shape matches `dispatcher.ts`.
- */
-export function parseTaskDispatchComment(body: string): TaskAttemptSession | null {
-  const m = /^Dispatched \(attempt (\d+)\) to .+ \([^)]+\) on Core (.+): Session (.+)\.$/.exec(body);
-  if (!m) return null;
-  return { attempt: Number(m[1]), coreId: m[2]!, sessionId: m[3]! };
-}
 
 function Badge({ children, tone }: { children: React.ReactNode; tone?: string }) {
   return (
@@ -56,6 +39,8 @@ function message(e: unknown): string | null {
 /**
  * Open this attempt's Session the same way the Core page does: pending-open, then
  * the workspace route. Disabled with a one-line reason when the Session or Core is gone.
+ * The workspace's pending-open path only materialises active Sessions, so an archived
+ * attempt is named as archived rather than opened.
  */
 function OpenAttemptSession({
   attempt,
@@ -70,17 +55,27 @@ function OpenAttemptSession({
 }) {
   const { cores } = useFleet();
   const router = useRouter({ warn: false });
-  const sessions = useSessions(coreId);
   const core = cores.find((c) => c.id === coreId);
-  const sessionAlive = !!sessions.data?.some((s) => s.id === sessionId && !s.archived);
-  const reason = !core
-    ? "This Core is gone"
-    : sessions.isError
-      ? "This Core is gone"
-      : sessions.isFetched && !sessionAlive
-        ? "Session no longer exists on this Core"
-        : null;
-  const canOpen = !!router && !reason && sessionAlive;
+  const coreReachable = core?.dial.state === "connected";
+  const sessions = useSessions(coreId);
+  const active = sessions.data?.find((s) => s.id === sessionId);
+  // Archived rows live in their own bucket (ADR 0019); ask only when the active
+  // list has answered and this Session was not in it.
+  const needArchivedCheck = !!core && !!coreReachable && sessions.isFetched && !sessions.isError && !active;
+  const archived = useArchivedSessions(coreId, { enabled: needArchivedCheck });
+  const inArchived = !!archived.data?.some((s) => s.id === sessionId);
+
+  let reason: string | null = null;
+  if (!core) {
+    reason = "This Core is gone";
+  } else if (!coreReachable || sessions.isError) {
+    // Dial first so an offline Core shows a reason without waiting on query retries.
+    reason = "This Core is not reachable right now";
+  } else if (!active && needArchivedCheck && archived.isFetched) {
+    reason = inArchived ? "Session is archived" : "Session no longer exists on this Core";
+  }
+
+  const canOpen = !!router && !reason && !!active;
 
   const open = useCallback(() => {
     if (!canOpen || !router) return;

@@ -4,6 +4,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { KeybindingsProvider } from "~/lib/keybindings/store";
 import type { CoreWithDial } from "~/shared/cores";
+import { formatTaskDispatchComment } from "~/shared/tasks";
 import type { TaskCommentDto, TaskDto } from "~/shared/task-wire";
 
 // Open session on a Task attempt (#676): pending-open + workspace navigate, same path as the Core page.
@@ -37,10 +38,13 @@ vi.mock("~/lib/fleet-context", () => ({
   }),
 }));
 
-const sessionRows = vi.hoisted(() => ({ rows: [] as Array<{ sessionId: string; title: string; agent: string; status: string; archived?: boolean }> }));
+type SessionRow = { sessionId: string; title: string; agent: string; status: string; archived?: boolean };
+const sessionRows = vi.hoisted(() => ({ rows: [] as SessionRow[] }));
+const archivedRows = vi.hoisted(() => ({ rows: [] as SessionRow[] }));
 vi.mock("~/lib/panel-bridge", () => ({
   getPanelBridge: () => ({
-    listSessionRows: async () => ({ sessions: sessionRows.rows, archivedCount: 0 }),
+    listSessionRows: async () => ({ sessions: sessionRows.rows, archivedCount: archivedRows.rows.length }),
+    listArchivedSessions: async () => archivedRows.rows,
   }),
 }));
 
@@ -64,7 +68,13 @@ function dispatchComment(attempt: number, sessionId: string, coreId = "core_a"):
     authorKind: "system",
     authorName: "Panel",
     sourceFile: null,
-    body: `Dispatched (attempt ${attempt}) to OpenCode (opencode) on Core ${coreId}: Session ${sessionId}.`,
+    body: formatTaskDispatchComment({
+      attempt,
+      agentName: "OpenCode",
+      harness: "opencode",
+      coreId,
+      sessionId,
+    }),
     createdAt: attempt,
   };
 }
@@ -95,6 +105,7 @@ beforeEach(() => {
     dial: { coreId: "core_a", state: "connected", lastSeenAt: 1 },
   });
   sessionRows.rows = [{ sessionId: "t-alive", title: "attempt", agent: "opencode", status: "running" }];
+  archivedRows.rows = [];
   task = {
     id: "T-0142",
     title: "Rotate keys",
@@ -145,6 +156,28 @@ describe("Open session on a Task attempt", () => {
     fireEvent.click(button);
     expect(requestSessionOpen).not.toHaveBeenCalled();
     expect(navigate).not.toHaveBeenCalled();
+  });
+
+  it("disables the control from dial state when the Core is not reachable", async () => {
+    cores[0]!.dial = { coreId: "core_a", state: "unreachable", lastSeenAt: 1 };
+    mount();
+    const button = (await screen.findByRole("button", { name: /Open session/ })) as HTMLButtonElement;
+    expect(button.disabled).toBe(true);
+    expect(screen.getByText("This Core is not reachable right now")).toBeTruthy();
+    fireEvent.click(button);
+    expect(requestSessionOpen).not.toHaveBeenCalled();
+    expect(navigate).not.toHaveBeenCalled();
+  });
+
+  it("names an archived Session instead of saying it no longer exists", async () => {
+    sessionRows.rows = [];
+    archivedRows.rows = [{ sessionId: "t-alive", title: "attempt", agent: "opencode", status: "idle", archived: true }];
+    mount();
+    const button = (await screen.findByRole("button", { name: /Open session/ })) as HTMLButtonElement;
+    await waitFor(() => expect(screen.getByText("Session is archived")).toBeTruthy());
+    expect(button.disabled).toBe(true);
+    fireEvent.click(button);
+    expect(requestSessionOpen).not.toHaveBeenCalled();
   });
 
   it("shows one Open session control per dispatched attempt", async () => {
