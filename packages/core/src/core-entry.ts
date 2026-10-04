@@ -147,7 +147,9 @@ import log from "@actana/shared/log";
 import { bootstrapCoreDb } from "./core-db-bootstrap";
 import { HarnessAvailabilityStore } from "@actana/shared/harness-availability-store";
 import { HarnessSkillWatcher } from "./harness-skill-watcher";
-import { ensureOrchestrationSkillViaCore } from "./core-home-ops-client";
+import { ensureOrchestrationSkillViaCore, pretrustWorkspacesViaCore } from "./core-home-ops-client";
+import { HarnessSetup } from "./harness-setup";
+import { runHarnessOnce } from "./harness-setup-run";
 import { coreAvailabilityProbe } from "./harness-availability-probe";
 import { HarnessInstallService } from "./harness-install-service";
 import { daemonHarnessSystem } from "./core-harness-system";
@@ -429,6 +431,14 @@ async function startCore(): Promise<void> {
     // Fire and forget: the helper has its own deadline and the wrapper never rejects.
     ensure: () => void ensureOrchestrationSkillViaCore(),
   });
+  // #685: every round pre-trusts the Session workspace in each available Harness's
+  // own config and starts the Harness once to see whether a first-run dialog still
+  // blocks it; a blocked one is published as needing setup, not as available.
+  const harnessSetup = new HarnessSetup({
+    workspaces: () => [coreHome()],
+    pretrust: pretrustWorkspacesViaCore,
+    runOnce: runHarnessOnce,
+  });
   const availabilityStore = new HarnessAvailabilityStore({
     appendEvent: (kind, payload, opts) => {
       const eventId = appendEvent(kind, payload, opts);
@@ -438,6 +448,7 @@ async function startCore(): Promise<void> {
     // In the container the daemon cannot look into core's home, so core does
     // the lookup (#559); undefined elsewhere, which keeps the in-process probe.
     probeAsync: coreAvailabilityProbe(),
+    afterProbe: (map) => harnessSetup.apply(map),
   });
   availabilityStore.start();
 
@@ -788,7 +799,7 @@ async function startCore(): Promise<void> {
   // surface is no longer only them, so the default ("yes if any HTTP surface is
   // mounted") would now be announcing a capability on the strength of a
   // pairing endpoint — the exact confusion ADR 0028 D4 warns about.
-  serverOpts.httpRoutes = pairing ? composeCoreHttpRoutes(auditPairingRoutes(pairing.redeem), fileRoutes) : fileRoutes;
+  serverOpts.httpRoutes = pairing ? composeCoreHttpRoutes(auditPairingRoutes(pairing.redeem, () => void availabilityStore.refresh()), fileRoutes) : fileRoutes;
   serverOpts.announceFiles = shouldAnnounceFiles(fileRoutes);
   // A function, so a watcher that comes up after the server is announced to the next connection.
   serverOpts.shared = () => announceShared(sharedSync.attached, sharedFolder.capability, sharedSync.keyIsolated);

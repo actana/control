@@ -126,6 +126,12 @@ describe("a harness the Core has", () => {
     expect(await listAgents(A)).toEqual([]);
   });
 
+  it("refuses a harness the Core reports as needing setup, so no Task is dispatched into it (#685)", async () => {
+    reported["core-1"] = { "claude-code": { status: "missing", reason: "needs-setup: folder-trust", path: "/bin/claude" } };
+    await expect(createAgent(A, { coreId: "core-1", name: "n", harness: "claude-code" }, deps)).rejects.toBeInstanceOf(HarnessMissingOnCoreError);
+    expect(await listAgents(A)).toEqual([]);
+  });
+
   it("refuses with its own error when the Core cannot be asked", async () => {
     delete reported["core-1"];
     await expect(createAgent(A, { coreId: "core-1", name: "n", harness: "codex" }, deps)).rejects.toBeInstanceOf(CoreHarnessesUnavailableError);

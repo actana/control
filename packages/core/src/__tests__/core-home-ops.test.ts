@@ -66,6 +66,7 @@ describe("request validation: known operations only", () => {
         "ensureOrchestrationSkill",
         "ensureStatuslineTap",
         "installHarnessHooks",
+        "pretrustWorkspaces",
         "probeHarnessCli",
         "resolveCommand",
         "resolveExecCwd",
@@ -459,4 +460,39 @@ describe("probeHarnessCli: the version check runs in the helper, as core", () =>
     expect(Date.now() - started).toBeLessThan(8_000);
     expect(answer.meeting).toMatchObject({ binary: file, check: { ok: false } });
   }, 15_000);
+});
+
+describe("pretrustWorkspaces (#685)", () => {
+  const request = (dirs: string[], harnesses = ["claude-code", "codex"]) =>
+    parseCoreHomeOpRequest({ op: "pretrustWorkspaces", harnesses, dirs }) as Extract<CoreHomeOpRequest, { op: "pretrustWorkspaces" }>;
+
+  it("is a listed operation and writes both configs inside the home", () => {
+    expect(CORE_HOME_OPERATIONS).toContain("pretrustWorkspaces");
+    const results = handleCoreHomeOpSync(request([home]), ctx);
+    expect(results.map((r) => [r.harness, r.outcome])).toEqual([
+      ["claude-code", "written"],
+      ["codex", "written"],
+    ]);
+    expect(JSON.parse(fs.readFileSync(path.join(home, ".claude.json"), "utf8")).projects[home].hasTrustDialogAccepted).toBe(true);
+    expect(fs.readFileSync(path.join(home, ".codex", "config.toml"), "utf8")).toContain(`trust_level = "trusted"`);
+    expect(handleCoreHomeOpSync(request([home]), ctx).map((r) => r.outcome)).toEqual(["unchanged", "unchanged"]);
+  });
+
+  it("refuses a directory outside the home before touching anything", () => {
+    expect(refusal(() => handleCoreHomeOpSync(request([outside]), ctx)).code).toBe("path-escape");
+    expect(fs.existsSync(path.join(home, ".claude.json"))).toBe(false);
+  });
+
+  it("refuses a config file that is a link leading out of the home", () => {
+    fs.writeFileSync(path.join(outside, "target.json"), "{}");
+    fs.symlinkSync(path.join(outside, "target.json"), path.join(home, ".claude.json"));
+    expect(refusal(() => handleCoreHomeOpSync(request([home]), ctx)).code).toBe("path-escape");
+    expect(fs.readFileSync(path.join(outside, "target.json"), "utf8")).toBe("{}");
+  });
+
+  it("refuses malformed fields and unknown extras", () => {
+    expect(() => parseCoreHomeOpRequest({ op: "pretrustWorkspaces", harnesses: ["Bad Id"], dirs: [home] })).toThrow(CoreHomeOpRefusedError);
+    expect(() => parseCoreHomeOpRequest({ op: "pretrustWorkspaces", harnesses: [], dirs: [home], cmd: "x" })).toThrow(CoreHomeOpRefusedError);
+    expect(() => parseCoreHomeOpRequest({ op: "pretrustWorkspaces", harnesses: [], dirs: "x" })).toThrow(CoreHomeOpRefusedError);
+  });
 });

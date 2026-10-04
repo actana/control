@@ -46,6 +46,7 @@ import { ensureStatuslineTap, statuslineTapPath } from "@actana/shared/statuslin
 import type { SkillInstallEntry } from "@actana/shared/orchestration-skill-install";
 import { hookWritePaths, installHarnessHooks, type HookInstallResult } from "./harness-hooks";
 import { installOrchestrationSkills, orchestrationSkillFolders } from "./orchestration-skill";
+import { claudeConfigPath, codexConfigPath, pretrustWorkspaces, type PretrustResult } from "./harness-pretrust";
 
 /** The only operations the helper will run. A name not in this list is refused. */
 export const CORE_HOME_OPERATIONS = [
@@ -58,6 +59,7 @@ export const CORE_HOME_OPERATIONS = [
   "resolveExecCwd",
   "resolveCommand",
   "probeHarnessCli",
+  "pretrustWorkspaces",
 ] as const;
 
 export type CoreHomeOperation = (typeof CORE_HOME_OPERATIONS)[number];
@@ -80,7 +82,9 @@ export type CoreHomeOpRequest =
   /** `path` is the PATH to search; null is the helper's own (core's). */
   | { op: "resolveCommand"; command: string; path: string | null }
   /** Find a Harness CLI on `path` and run its `--version`, both as core. Same fields as `resolveCommand`. */
-  | { op: "probeHarnessCli"; command: string; path: string | null };
+  | { op: "probeHarnessCli"; command: string; path: string | null }
+  /** Record trust for `dirs` in each named Harness's own config (#685). */
+  | { op: "pretrustWorkspaces"; harnesses: string[]; dirs: string[] };
 
 export type RegistrationCredential = {
   endpoint: string;
@@ -115,6 +119,7 @@ export type CoreHomeOpResult = {
    * match, and for a command with no registered version floor.
    */
   probeHarnessCli: { candidates: string[]; meeting: { binary: string; check: HarnessVersionCheck } | null };
+  pretrustWorkspaces: PretrustResult[];
 };
 
 /** Where and as whom the operations run. */
@@ -152,6 +157,7 @@ const MAX_PATH_LENGTH = 4096;
 const MAX_ROOTS = 256;
 const MAX_CREDENTIAL_FIELD = 64 * 1024;
 const MAX_SEARCH_PATH_LENGTH = 16 * 1024;
+const MAX_TRUST_DIRS = 16;
 
 function refuse(code: CoreHomeOpRefusedError["code"], message: string): never {
   throw new CoreHomeOpRefusedError(code, message);
@@ -238,6 +244,22 @@ export function parseCoreHomeOpRequest(raw: unknown): CoreHomeOpRequest {
     case "resolveExecCwd":
       noExtraFields(raw, ["cwd"]);
       return { op: "resolveExecCwd", cwd: optionalStr(raw.cwd, "cwd") };
+    case "pretrustWorkspaces": {
+      noExtraFields(raw, ["harnesses", "dirs"]);
+      if (!Array.isArray(raw.harnesses) || raw.harnesses.length > 8) refuse("bad-field", "harnesses must be a short list");
+      if (!Array.isArray(raw.dirs) || raw.dirs.length > MAX_TRUST_DIRS) {
+        refuse("bad-field", `dirs must be a list of at most ${MAX_TRUST_DIRS} paths`);
+      }
+      return {
+        op: "pretrustWorkspaces",
+        harnesses: raw.harnesses.map((h, i) => {
+          const id = str(h, `harnesses[${i}]`, 32);
+          if (!/^[a-z][a-z0-9-]*$/.test(id)) refuse("bad-field", "harnesses holds something that is not a harness id");
+          return id;
+        }),
+        dirs: raw.dirs.map((dir, i) => str(dir, `dirs[${i}]`)),
+      };
+    }
     case "resolveCommand":
     case "probeHarnessCli": {
       noExtraFields(raw, ["command", "path"]);
@@ -400,6 +422,22 @@ export function handleCoreHomeOpSync(request: CoreHomeOpRequest, ctx: CoreHomeOp
       // a linked `.claude` or `.codex` inside the workspace leads out of the home.
       for (const file of hookWritePaths(request.harness, cwd, env)) confine(file, ctx, "hook file");
       return installHarnessHooks(request.harness, cwd, env);
+    }
+    case "pretrustWorkspaces": {
+      // Only directories inside the home, and only the two config files, each
+      // confined like any other write: a link in the home that leaves it is refused.
+      const dirs = new Set<string>();
+      for (const dir of request.dirs) {
+        const inside = confine(dir, ctx, "dir");
+        dirs.add(inside);
+        // Harnesses key a project by the path they were started in, which may be the
+        // resolved one when the home is a link; trust both spellings.
+        const real = realpathOrNull(inside);
+        if (real !== null) dirs.add(real);
+      }
+      confine(claudeConfigPath(ctx.home), ctx, "claude config");
+      confine(codexConfigPath(ctx.home), ctx, "codex config");
+      return pretrustWorkspaces(ctx.home, request.harnesses, [...dirs]);
     }
     case "ensureStatuslineTap": {
       const cwd = confine(request.cwd, ctx, "cwd");

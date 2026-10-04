@@ -21,9 +21,10 @@ import {
   type CoreLinkHarnessAvailabilityMap,
   type CoreLinkHarnessInstallFailedPayload,
 } from "@actana/shared/sdk-link-frames";
+import { needsSetupDialog } from "@actana/shared/harness-needs-setup";
 import { createListenerSet } from "./listener-set";
 
-export type CliAvailabilityStatus = "unknown" | "checking" | "available" | "missing" | "outdated";
+export type CliAvailabilityStatus = "unknown" | "checking" | "available" | "missing" | "outdated" | "needs-setup";
 
 export type CliAvailability = {
   status: CliAvailabilityStatus;
@@ -34,6 +35,8 @@ export type CliAvailability = {
   requiredVersion?: string;
   packageUrl?: string;
   updateCommands?: readonly string[];
+  /** For `needs-setup`: the first-run dialog the Harness is stopped at (#685). */
+  setupDialog?: string;
 };
 
 export type CliAvailabilityMap = Partial<Record<Harness, CliAvailability>>;
@@ -91,7 +94,7 @@ export function availabilityFor(
 
 export function isCliUnavailable(availability: CliAvailabilityMap, agent: Harness): boolean {
   const status = availabilityFor(availability, agent).status;
-  return status === "missing" || status === "outdated";
+  return status === "missing" || status === "outdated" || status === "needs-setup";
 }
 
 export function harnessCanLaunch(availability: CliAvailabilityMap, agent: Harness): boolean {
@@ -111,7 +114,12 @@ export function harnessCanLaunch(availability: CliAvailabilityMap, agent: Harnes
  * is a straight structural coerce.
  */
 function fromCoreLinkAvailability(entry: CoreLinkHarnessAvailability): CliAvailability {
-  const next: CliAvailability = { status: entry.status };
+  // The Core reports a Harness stopped by a first-run dialog as `missing` with a
+  // needs-setup reason (the SDK's status union has no such value); here it becomes
+  // its own status so the Panel says "Needs setup" and never "Install".
+  const setupDialog = entry.status === "missing" ? needsSetupDialog(entry.reason) : null;
+  const next: CliAvailability = { status: setupDialog !== null ? "needs-setup" : entry.status };
+  if (setupDialog !== null) next.setupDialog = setupDialog;
   if (entry.path !== undefined) next.path = entry.path;
   if (entry.reason !== undefined) next.reason = entry.reason;
   if (entry.label !== undefined) next.label = entry.label;
@@ -122,7 +130,7 @@ function fromCoreLinkAvailability(entry: CoreLinkHarnessAvailability): CliAvaila
   return next;
 }
 
-function fromCoreLinkMap(map: CoreLinkHarnessAvailabilityMap): CliAvailabilityMap {
+export function fromCoreLinkMap(map: CoreLinkHarnessAvailabilityMap): CliAvailabilityMap {
   const out: CliAvailabilityMap = {};
   for (const [agent, entry] of Object.entries(map)) {
     if (!entry) continue;
@@ -319,7 +327,7 @@ function reconcileInstalls(coreId: string, availability: CliAvailabilityMap): vo
     // on PATH now, so the install is over and the update-required flow — which
     // this feature does not touch — owns the row from here. Leaving it
     // installing would be the one thing this state must never be: stuck.
-    if (status === "available" || status === "outdated") {
+    if (status === "available" || status === "outdated" || status === "needs-setup") {
       setInstallState(coreId, agent, null);
       continue;
     }

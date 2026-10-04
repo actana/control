@@ -8,6 +8,7 @@ import {
   ensureClaudeShiftEnterBindingViaCore,
   ensureStatuslineTapViaCore,
   installHarnessHooksViaCore,
+  pretrustWorkspacesViaCore,
   resolveCommandViaCore,
   spawnPathFactsViaCore,
   CoreHomeOpRefusedError,
@@ -750,6 +751,10 @@ export class PtyCore {
     let hooksReportTurnStart = false;
     if (plan.mode === "agent") {
       if (plan.agent === "claude-code") await ensureStatuslineTapViaCore(plan.cwd);
+      // #685: a directory a Session starts in is trusted in the Harness's own config
+      // before it starts. Best-effort and a no-op for a Harness with no writer; the
+      // folder-trust handling in prompt delivery remains the last line of defence.
+      await pretrustWorkspacesViaCore([plan.agent], [plan.cwd]);
       // Lifecycle hooks, pointed at THIS Core's loopback receiver (issue 84).
       // Without them nothing ever moves the Session's status off `ready`. The
       // env carries the URL and token so the file on disk holds no secret and
