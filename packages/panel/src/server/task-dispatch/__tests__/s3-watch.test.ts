@@ -7,8 +7,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vites
 import { closePanelTestDb, openPanelTestDb, resetPanelState } from "../../__tests__/_panel-test-db";
 import { FakeClock, fakeSts } from "../../__tests__/_shared-fakes";
 import { FakeS3 } from "../../__tests__/_shared-s3-fake";
-import { lazyShared } from "../shared-factory";
-import { FakeCore, collectingLog } from "./fakes";
+import { FakeClock as DispatchClock, FakeCore, FakeShared, collectingLog } from "./fakes";
 
 /**
  * The Task result watcher reads the Shared folder in S3 (#570), through the same per-Core S3 mode and the same
@@ -82,12 +81,10 @@ async function rig(coreId: string, env: NodeJS.ProcessEnv = {}) {
   });
   const core = new FakeCore();
   const log = collectingLog();
-  // A client for a Core is built without a connection, so building one works; every call to it fails.
-  const throughCore = vi.fn(async () =>
-    lazyShared(async () => {
-      throw new Error("the Core is unreachable: it is paused");
-    }),
-  );
+  // The Core is reachable for the one thing dispatch needs from it, writing the Task's prompt file, and is
+  // paused after that: the watcher must never ask it for anything (`throughCore` is called once, by dispatch).
+  const promptFiles = new FakeShared(new DispatchClock());
+  const throughCore = vi.fn(async () => promptFiles);
   const agent = {
     id: "agent_1",
     ownerId: OWNER,
@@ -158,7 +155,7 @@ describe("the Core is unreachable and a result file in S3 still moves the Task",
     const agentComments = comments.filter((c) => c.authorKind === "agent");
     expect(agentComments).toHaveLength(1);
     expect(agentComments[0]!.body).toBe("# Fixed\n\nThe lockfile was stale.");
-    expect(throughCore).not.toHaveBeenCalled();
+    expect(throughCore).toHaveBeenCalledTimes(1);
     // Where a read that failed would show: the watcher logs it, and there is none.
     expect(log.errors).toEqual([]);
     expect(s3.requests.some((r) => r.method === "GET" && r.key.endsWith(`tasks/${task.id}/success.md`))).toBe(true);
@@ -190,7 +187,7 @@ describe("the Core is unreachable and a result file in S3 still moves the Task",
     await waitFor("the Task to fail", async () => (await getTask(OWNER, task.id)).status, (status) => status === "failed");
     expect(s3.text(`${PREFIX}/${coreId}/tasks/${task.id}/fail.md`)).toContain("exited (code 1) without writing a result file");
     expect(s3.requests.some((r) => r.method === "PUT" && r.key === `${PREFIX}/${coreId}/tasks/${task.id}/fail.md`)).toBe(true);
-    expect(throughCore).not.toHaveBeenCalled();
+    expect(throughCore).toHaveBeenCalledTimes(1);
   });
 
   it("a Task that runs past the timeout gets a fail.md written to S3", async () => {
@@ -203,7 +200,7 @@ describe("the Core is unreachable and a result file in S3 still moves the Task",
 
     await waitFor("the Task to fail", async () => (await getTask(OWNER, task.id)).status, (status) => status === "failed");
     expect(s3.text(`${PREFIX}/${coreId}/tasks/${task.id}/fail.md`)).toContain("no result within 2 minutes");
-    expect(throughCore).not.toHaveBeenCalled();
+    expect(throughCore).toHaveBeenCalledTimes(1);
   });
 
   it("a Task that runs past the life of its Core's key keeps reading with a new one", async () => {

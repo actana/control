@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useRouter } from "@tanstack/react-router";
 import { Btn } from "~/components/ui/Btn";
@@ -30,6 +30,12 @@ function Badge({ children, tone }: { children: React.ReactNode; tone?: string })
       {children}
     </span>
   );
+}
+
+const FOCUSABLE = 'a[href], button, input, select, textarea, [tabindex]:not([tabindex="-1"])';
+
+function topBarBottom(): number {
+  return document.querySelector(".mc-topbar")?.getBoundingClientRect().bottom ?? 0;
 }
 
 function message(e: unknown): string | null {
@@ -117,6 +123,42 @@ export function TaskDetail({ taskId, onClose, focusComposer = false }: { taskId:
   const [draft, setDraft] = useState("");
   const [attachments, setAttachments] = useState<TaskAttachment[]>([]);
 
+  // The drawer starts under the app top bar, so its header and Close stay in view.
+  const [topOffset, setTopOffset] = useState(topBarBottom);
+  useEffect(() => {
+    const onResize = () => setTopOffset(topBarBottom());
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+
+  // A modal: focus goes in on open (the composer takes it when asked), Tab stays inside, and on close focus goes back to the opener.
+  const drawerRef = useRef<HTMLElement>(null);
+  useEffect(() => {
+    const opener = document.activeElement;
+    if (!focusComposer) drawerRef.current?.focus();
+    return () => {
+      if (opener instanceof HTMLElement && opener.isConnected) opener.focus();
+    };
+  }, [focusComposer]);
+  const keepTabInside = (e: React.KeyboardEvent<HTMLElement>) => {
+    if (e.key !== "Tab" || !drawerRef.current) return;
+    const items = [...drawerRef.current.querySelectorAll<HTMLElement>(FOCUSABLE)].filter((el) => !el.hasAttribute("disabled"));
+    const first = items[0];
+    const last = items[items.length - 1];
+    if (!first || !last) {
+      e.preventDefault();
+      return;
+    }
+    const active = document.activeElement;
+    if (e.shiftKey && (active === first || active === drawerRef.current)) {
+      e.preventDefault();
+      last.focus();
+    } else if (!e.shiftKey && active === last) {
+      e.preventDefault();
+      first.focus();
+    }
+  };
+
   const refresh = () => queryClient.invalidateQueries({ queryKey: queryKeys.tasks });
   const comment = useMutation({
     mutationFn: (reassign: boolean) => api.commentOnTask(taskId, { body: draft, reassign }, ...(attachments.length > 0 ? [attachments] : [])),
@@ -137,12 +179,31 @@ export function TaskDetail({ taskId, onClose, focusComposer = false }: { taskId:
   const resultFiles = [...new Set(comments.filter((c) => c.authorKind === "agent" && c.sourceFile).map((c) => c.sourceFile as string))];
   // A file is a comment on its own: the server names it in the comment.
   const hasBody = draft.trim().length > 0 || attachments.length > 0;
+  // Escape and the backdrop must not throw away an unsent comment; the Close button still closes.
+  const dismiss = () => {
+    if (!hasBody) onClose();
+  };
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && !e.defaultPrevented && !e.isComposing) dismiss();
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  });
 
   return (
+    <>
+    {/* The backdrop is a sibling of the drawer, never its parent: a text-selection drag that starts in the drawer and ends on the
+     * backdrop then sends its click to their common ancestor, not to the backdrop, so it does not close the drawer. */}
+    <div data-testid="task-detail-backdrop" onClick={dismiss} style={{ position: "fixed", inset: 0, zIndex: 8999, background: "rgba(0,0,0,0.35)" }} />
     <aside
+      ref={drawerRef}
+      tabIndex={-1}
+      onKeyDown={keepTabInside}
       role="dialog"
+      aria-modal="true"
       aria-label="Task detail"
-      style={{ position: "fixed", top: 0, right: 0, bottom: 0, width: "min(720px, 100vw)", zIndex: 9000, overflowY: "auto", padding: 24, background: "var(--surface-card)", borderLeft: "1px solid var(--border)", boxShadow: "-8px 0 32px rgba(0,0,0,0.3)", display: "flex", flexDirection: "column", gap: 16 }}
+      style={{ position: "fixed", top: topOffset, right: 0, bottom: 0, width: "min(720px, 100vw)", zIndex: 9000, overflowY: "auto", padding: 24, background: "var(--surface-card)", borderLeft: "1px solid var(--border)", boxShadow: "-8px 0 32px rgba(0,0,0,0.3)", display: "flex", flexDirection: "column", gap: 16 }}
     >
       <div style={{ display: "flex", justifyContent: "space-between", fontFamily: "var(--mono)", fontSize: 12, color: "var(--text-dim)" }}>
         <span>TASK · {taskId}{task ? ` · created ${formatRelativeTime(task.createdAt)}` : ""}</span>
@@ -250,5 +311,6 @@ export function TaskDetail({ taskId, onClose, focusComposer = false }: { taskId:
         </>
       ) : null}
     </aside>
+    </>
   );
 }

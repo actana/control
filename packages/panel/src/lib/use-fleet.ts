@@ -43,7 +43,13 @@ function emptyFleet(): FleetMergeResult {
  * it and this hook folds each push into the row it belongs to. A Core going
  * down reaches every open tab without anyone asking.
  */
-export function useCores(nonce = 0): { cores: CoreWithDial[]; loading: boolean; error: string | null } {
+export function useCores(nonce = 0): {
+  cores: CoreWithDial[];
+  loading: boolean;
+  error: string | null;
+  /** Ask for the Core list again now, without waiting for the poll. */
+  reload: () => void;
+} {
   const bridge = getPanelBridge();
   const [cores, setCores] = useState<CoreWithDial[]>([]);
   const [loading, setLoading] = useState(true);
@@ -78,7 +84,7 @@ export function useCores(nonce = 0): { cores: CoreWithDial[]; loading: boolean; 
     });
   }, [bridge]);
 
-  return { cores, loading, error };
+  return { cores, loading, error, reload: () => void load() };
 }
 
 /**
@@ -94,11 +100,17 @@ export function useFleetSessions(): {
   /** The registry behind the fan-out, with each Core's live link state. */
   cores: CoreWithDial[];
   loading: boolean;
+  /** True until the first Core-list answer (or failure) has settled. */
+  coresLoading: boolean;
+  /** The Core-list query's own error, apart from the session fan-out's. */
+  coresError: string | null;
+  /** Ask for the Core list again now. */
+  refreshCores: () => void;
   error: string | null;
   refresh: () => void;
 } {
   const bridge = getPanelBridge();
-  const { cores, error: coresError } = useCores();
+  const { cores, loading: coresLoading, error: coresError, reload: refreshCores } = useCores();
   const [fleet, setFleet] = useState<FleetMergeResult>(emptyFleet);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -200,5 +212,5 @@ export function useFleetSessions(): {
     return () => clearInterval(id);
   }, [run, coreSignature]);
 
-  return { fleet, cores, loading, error: error ?? coresError, refresh: () => void run() };
+  return { fleet, cores, loading, coresLoading, coresError, refreshCores, error: error ?? coresError, refresh: () => void run() };
 }

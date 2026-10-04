@@ -210,9 +210,9 @@ export const api = {
       `/api/tasks/${encodeURIComponent(id)}/comments`,
       { method: "POST", body: attachments.length > 0 ? attachmentsForm(body, attachments) : JSON.stringify(body) },
     ),
-  /** One Core's Agents, from the Agents service. */
-  listCoreAgents: (coreId: string) =>
-    req<{ agents: AgentDto[] }>(`/api/cores/${encodeURIComponent(coreId)}/agents`),
+  /** One Core's Agents, from the Agents service; `runnableOnly` is the New Task picker's list. */
+  listCoreAgents: (coreId: string, opts: { runnableOnly?: boolean } = {}) =>
+    req<{ agents: AgentDto[] }>(`/api/cores/${encodeURIComponent(coreId)}/agents${opts.runnableOnly ? "?runnable=1" : ""}`),
   /** The fleet: every registered Core with the service's live view of its link. */
   listCores: () => req<CoreListResponse>("/api/cores"),
   /**

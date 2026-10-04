@@ -9,8 +9,8 @@ import { availabilityFor, type CliAvailabilityMap } from "~/lib/cli-availability
 export function coreHasHarness(availability: CliAvailabilityMap, agent: Harness): boolean {
   if (HARNESS_REGISTRY[agent].disabled) return false;
   const status = availabilityFor(availability, agent).status;
-  // available / outdated: the binary is on the Core. checking: still probing —
+  // available / outdated / needs-setup: the binary is on the Core. checking: still probing —
   // keep the row so the picker does not flicker empty while availability loads.
   // unknown (no entry after a snapshot): the Core did not report it — not has.
-  return status === "available" || status === "outdated" || status === "checking";
+  return status === "available" || status === "outdated" || status === "needs-setup" || status === "checking";
 }

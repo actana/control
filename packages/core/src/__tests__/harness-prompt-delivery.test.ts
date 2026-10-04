@@ -1728,6 +1728,230 @@ describe("opencode with the prompt still in the composer (issue 563)", () => {
   });
 });
 
+/**
+ * codex 0.160.0 (`codex --enable hooks --yolo`) at 160x50, raw PTY bytes: the boot, and the output right after a
+ * long Task prompt was written. Codex repaints the composer in per-character frames with cursor moves instead of
+ * spaces and without the `Ask Codex to do anything` placeholder, which is gone while the box holds text.
+ */
+const CODEX_160_BOOT = readFileSync(path.resolve(__dirname, "fixtures/codex-0.160.0-boot.raw"), "utf8");
+const CODEX_160_AFTER_LONG_WRITE = readFileSync(
+  path.resolve(__dirname, "fixtures/codex-0.160.0-after-long-write.raw"),
+  "utf8",
+);
+
+describe("codex 0.160.0 with a long prompt landed in the composer", () => {
+  const SENTENCE =
+    "You have been given a Task by the operator's Panel. Do the work, then report the result as described at the end.";
+  const PROMPT = Array.from({ length: 6 }, () => SENTENCE).join(" ");
+  const count = (h: Fixture, w: string): number => h.writes.filter((x) => x === w).length;
+
+  /** Boot, settle, write, then silence until the echo check calls the write swallowed. */
+  function swallowed(): Fixture {
+    const h = startDelivery(PROMPT, { harness: "codex" });
+    h.delivery.onOutput(CODEX_160_BOOT);
+    h.clock.advance(PROFILE.quietGapMs + 1);
+    expect(h.writes).toEqual([PROMPT]);
+    h.clock.advance(submitPauseMs(PROMPT, PROFILE) + PROFILE.quietGapMs + 1);
+    expect(h.events).toContainEqual({ phase: "prompt-swallowed", attempt: 1 });
+    expect(h.delivery.currentPhase).toBe("settling");
+    return h;
+  }
+
+  it("the capture shows the text but not the placeholder, and the echo probe reads it", () => {
+    expect(composerOnScreen(CODEX_160_BOOT, readinessFor("codex"))).toBe(true);
+    expect(composerOnScreen(CODEX_160_AFTER_LONG_WRITE, readinessFor("codex"))).toBe(false);
+    expect(promptEchoed(CODEX_160_AFTER_LONG_WRITE, PROMPT)).toBe(true);
+  });
+
+  it("presses Enter once, without retyping, when the composer repaints after the echo check", () => {
+    const h = swallowed();
+    h.delivery.onOutput(CODEX_160_AFTER_LONG_WRITE);
+    h.clock.advance(PROFILE.quietGapMs + 1);
+    expect(h.writes).toEqual([PROMPT, "\r"]);
+    expect(h.events.some((e) => e.phase === "abandoned")).toBe(false);
+  });
+
+  it("presses Enter once when the repaint arrives in time for the echo check", () => {
+    const h = startDelivery(PROMPT, { harness: "codex" });
+    h.delivery.onOutput(CODEX_160_BOOT);
+    h.clock.advance(PROFILE.quietGapMs + 1);
+    h.delivery.onOutput(CODEX_160_AFTER_LONG_WRITE);
+    h.clock.advance(submitPauseMs(PROMPT, PROFILE) + PROFILE.quietGapMs + 1);
+    expect(h.writes).toEqual([PROMPT, "\r"]);
+  });
+
+  it("still delivers once when the screen keeps repainting after the late echo", () => {
+    const h = swallowed();
+    h.delivery.onOutput(CODEX_160_AFTER_LONG_WRITE);
+    for (let i = 0; i < 100; i++) {
+      h.delivery.onOutput(`${ESC}[50;1H Working (${i}s • esc to interrupt)`);
+      h.clock.advance(100);
+    }
+    expect(count(h, PROMPT)).toBe(1);
+    expect(count(h, "\r")).toBe(1);
+  });
+
+  it("still retypes when the placeholder is repainted over an empty composer", () => {
+    const h = swallowed();
+    h.delivery.onOutput(CODEX_160_BOOT);
+    h.clock.advance(PROFILE.quietGapMs + 1);
+    expect(h.writes).toEqual([PROMPT, PROMPT]);
+    expect(count(h, "\r")).toBe(0);
+  });
+});
+
+/**
+ * Pi 1.0.2 at 160x50, raw PTY bytes: the boot (footer `0.0%/1.0M (auto)` visible) and the output right
+ * after a 677-character Task prompt was written. After the write Pi repaints only the editor box with the
+ * wrapped text; the footer, which is the composer marker, is not repainted.
+ */
+const PI_102_BOOT = readFileSync(path.resolve(__dirname, "fixtures/pi-1.0.2-boot.raw"), "utf8");
+const PI_102_AFTER_LONG_WRITE = readFileSync(
+  path.resolve(__dirname, "fixtures/pi-1.0.2-after-long-write.raw"),
+  "utf8",
+);
+
+describe("pi 1.0.2 with a long prompt landed in the editor", () => {
+  const SENTENCE =
+    "You have been given a Task by the operator's Panel. Do the work, then report the result as described at the end.";
+  const PROMPT = Array.from({ length: 6 }, () => SENTENCE).join(" ");
+  const count = (h: Fixture, w: string): number => h.writes.filter((x) => x === w).length;
+
+  /** Boot, settle, write, then silence until the echo check calls the write swallowed (the logged failure). */
+  function swallowed(): Fixture {
+    const h = startDelivery(PROMPT, { harness: "pi" });
+    h.delivery.onOutput(PI_102_BOOT);
+    h.clock.advance(PROFILE.quietGapMs + 1);
+    expect(h.writes).toEqual([PROMPT]);
+    h.clock.advance(submitPauseMs(PROMPT, PROFILE) + PROFILE.quietGapMs + 1);
+    expect(h.events).toContainEqual({ phase: "prompt-swallowed", attempt: 1 });
+    expect(h.delivery.currentPhase).toBe("settling");
+    return h;
+  }
+
+  it("presses Enter once, without retyping the prompt, when the editor repaints late without the footer", () => {
+    const h = swallowed();
+    h.delivery.onOutput(PI_102_AFTER_LONG_WRITE);
+    h.clock.advance(PROFILE.quietGapMs + 1);
+    expect(h.writes).toEqual([PROMPT, "\r"]);
+    expect(h.events.some((e) => e.phase === "abandoned")).toBe(false);
+  });
+
+  it("presses Enter once when the repaint arrives in time for the echo check", () => {
+    const h = startDelivery(PROMPT, { harness: "pi" });
+    h.delivery.onOutput(PI_102_BOOT);
+    h.clock.advance(PROFILE.quietGapMs + 1);
+    h.delivery.onOutput(PI_102_AFTER_LONG_WRITE);
+    h.clock.advance(submitPauseMs(PROMPT, PROFILE) + PROFILE.quietGapMs + 1);
+    expect(h.writes).toEqual([PROMPT, "\r"]);
+  });
+
+  it("presses Enter, and never retypes, when a full redraw repaints the footer over the landed text", () => {
+    const h = swallowed();
+    h.delivery.onOutput(PI_102_AFTER_LONG_WRITE);
+    h.delivery.onOutput(PI_102_BOOT.slice(PI_102_BOOT.lastIndexOf(`${ESC}[2K`, PI_102_BOOT.indexOf("%/"))));
+    h.clock.advance(PROFILE.quietGapMs + 1);
+    expect(h.writes).toEqual([PROMPT, "\r"]);
+  });
+
+  it("does not press Enter for a footer-less repaint that is not the prompt, after a real swallow", () => {
+    const h = swallowed();
+    h.delivery.onOutput(`${ESC}[42;1H${ESC}[2K${ESC}[38;5;5m${"─".repeat(160)}${ESC}[0m`);
+    h.delivery.onOutput(`${ESC}[43;1H${ESC}[2KSome notice line`);
+    h.clock.advance(PROFILE.quietGapMs + 1);
+    h.clock.advance(PROFILE.quietGapMs + 1);
+    expect(count(h, "\r")).toBe(0);
+    expect(count(h, PROMPT)).toBe(1);
+  });
+
+  it("still retypes when the footer is repainted over an empty editor", () => {
+    const h = startDelivery(PROMPT, { harness: "pi" });
+    h.delivery.onOutput(PI_102_BOOT);
+    h.clock.advance(PROFILE.quietGapMs + 1);
+    h.clock.advance(submitPauseMs(PROMPT, PROFILE) + PROFILE.quietGapMs + 1);
+    expect(h.events).toContainEqual({ phase: "prompt-swallowed", attempt: 1 });
+    h.delivery.onOutput(PI_102_BOOT);
+    h.clock.advance(PROFILE.quietGapMs + 1);
+    expect(h.writes).toEqual([PROMPT, PROMPT]);
+    expect(count(h, "\r")).toBe(0);
+  });
+});
+
+describe("opencode composer painted late with the prompt in it (issue 681)", () => {
+  const PROMPT = "Dispatch alpha-bravo: refactor the authentication module.";
+  const HELD = `${ESC}[2J${ESC}[H┃ ${PROMPT} ┃\n  Build  big-pickle`;
+  const WORKING = [
+    `${ESC}[2K\rYou: refactor the authentication module`,
+    `${ESC}[2K\rbuild  big-pickle  esc interrupt`,
+  ];
+  const count = (h: Fixture, w: string): number => h.writes.filter((x) => x === w).length;
+
+  /** Paint, settle, write, then silence until the echo check calls it swallowed. */
+  function swallowed(): Fixture {
+    const h = startDelivery(PROMPT, { harness: "opencode" });
+    h.delivery.onOutput(OPENCODE_COMPOSER);
+    h.clock.advance(PROFILE.quietGapMs + 1);
+    expect(h.writes).toEqual([PROMPT]);
+    h.clock.advance(submitPauseMs(PROMPT, PROFILE) + PROFILE.quietGapMs + 1);
+    expect(h.events).toContainEqual({ phase: "prompt-swallowed", attempt: 1 });
+    expect(h.delivery.currentPhase).toBe("settling");
+    return h;
+  }
+
+  it("replays the logged failure: presses Enter once the composer shows the text, then delivers", () => {
+    const h = swallowed();
+    h.delivery.onOutput(HELD);
+    h.clock.advance(PROFILE.quietGapMs + 1);
+    expect(h.writes).toEqual([PROMPT, "\r"]);
+    for (const frame of WORKING) h.delivery.onOutput(frame);
+    h.clock.advance(120_000);
+    expect(h.delivery.currentPhase).toBe("delivered");
+    expect(h.events.some((e) => e.phase === "abandoned")).toBe(false);
+    expect(h.events.some((e) => e.phase === "delivered")).toBe(true);
+  });
+
+  it("presses Enter again after a swallowed Enter, and never types over the held prompt", () => {
+    const h = swallowed();
+    h.delivery.onOutput(HELD);
+    h.clock.advance(PROFILE.quietGapMs + 1);
+    h.clock.advance(1_100);
+    expect(count(h, "\r")).toBeGreaterThanOrEqual(2);
+    expect(count(h, PROMPT)).toBe(1);
+    for (const frame of WORKING) h.delivery.onOutput(frame);
+    h.clock.advance(120_000);
+    expect(count(h, PROMPT)).toBe(1);
+    expect(h.delivery.currentPhase).toBe("delivered");
+  });
+
+  it("is still bounded: a composer that never starts a turn ends abandoned", () => {
+    const h = swallowed();
+    h.delivery.onOutput(HELD);
+    h.clock.advance(120_000);
+    expect(count(h, PROMPT)).toBe(1);
+    expect(count(h, "\r")).toBeLessThanOrEqual(1 + (deliveryProfileFor("opencode").submitRetryGapsMs?.length ?? 0));
+    expect(h.delivery.currentPhase).toBe("abandoned");
+  });
+
+  it("still retypes when the marker is repainted and the composer is visibly empty", () => {
+    const h = swallowed();
+    h.delivery.onOutput(OPENCODE_COMPOSER);
+    h.clock.advance(PROFILE.quietGapMs + 1);
+    expect(h.writes).toEqual([PROMPT, PROMPT]);
+    expect(count(h, "\r")).toBe(0);
+  });
+
+  it("does not press Enter early for another harness whose text did not paint", () => {
+    const h = startDelivery(PROMPT, { harness: "claude-code" });
+    h.delivery.onOutput('Try "fix lint errors"');
+    h.clock.advance(PROFILE.quietGapMs + 1);
+    h.clock.advance(submitPauseMs(PROMPT, PROFILE) + PROFILE.quietGapMs + 1);
+    expect(h.events).toContainEqual({ phase: "prompt-swallowed", attempt: 1 });
+    h.delivery.onOutput(HELD);
+    h.clock.advance(PROFILE.quietGapMs + 1);
+    expect(h.writes).toEqual([PROMPT]);
+  });
+});
+
 describe("delivering to opencode (issue 229)", () => {
   /**
    * The live boot, replayed at its captured timings:

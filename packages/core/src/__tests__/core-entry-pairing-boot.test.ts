@@ -45,7 +45,7 @@ describe("the daemon's pairing wiring", () => {
     const server = code.indexOf("new PtyCoreLinkServer(");
     expect(server).toBeGreaterThan(-1);
 
-    const routes = code.indexOf("composeCoreHttpRoutes(auditPairingRoutes(pairing.redeem), fileRoutes)");
+    const routes = code.indexOf("composeCoreHttpRoutes(auditPairingRoutes(pairing.redeem, ");
     expect(routes).toBeGreaterThan(-1);
     expect(code.indexOf("serverOpts.httpRoutes =")).toBeLessThan(server);
     expect(routes).toBeLessThan(server);

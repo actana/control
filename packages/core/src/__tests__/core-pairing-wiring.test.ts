@@ -104,6 +104,19 @@ describe("auditPairingRoutes", () => {
     );
   });
 
+  it("tells the Core a pairing was issued (#685) and only then", () => {
+    vi.spyOn(log, "info").mockImplementation(() => {});
+    const issued = vi.fn();
+    const routes = auditPairingRoutes(family("/v1/pair/", []), issued);
+    for (const status of [403, 429, 200]) {
+      const { req, res } = exchange("203.0.113.9");
+      routes.handle(req, res);
+      res.statusCode = status;
+      res.emit("finish");
+    }
+    expect(issued).toHaveBeenCalledTimes(1);
+  });
+
   it.each([
     [200, "issued"],
     [400, "bad-request"],
