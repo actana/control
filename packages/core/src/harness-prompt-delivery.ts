@@ -533,6 +533,16 @@ export type HarnessReadiness = {
    * which makes a wrong guess visible instead of a false delivery.
    */
   textHidesComposerMarker?: boolean;
+  /**
+   * The narrow form of {@link textHidesComposerMarker}, for a harness whose
+   * composer drops its placeholder while it holds text but which may also put a
+   * menu this module has no dialog row for on the same screen. Only a screen
+   * that shows our own prompt back ({@link promptEchoed}) counts as a composer
+   * holding it; any other painted screen without the marker keeps waiting, so a
+   * carriage return is never pressed into a menu on the strength of "something
+   * painted".
+   */
+  echoHidesComposerMarker?: boolean;
 };
 
 const NO_READINESS: HarnessReadiness = {
@@ -749,10 +759,18 @@ export const HARNESS_READINESS: Partial<Record<Harness, HarnessReadiness>> = {
     confirmEcho: true,
     maxPromptWrites: 3,
   },
+  // On 0.160.0 a long prompt repaints the composer with the text and without
+  // the `Ask Codex to do anything` placeholder, which is gone while the box
+  // holds text. A write whose echo lands after the echo check is back in
+  // `settling` waiting for a placeholder that cannot return, so
+  // `echoHidesComposerMarker` sends a screen that shows the prompt back to the
+  // carriage return. Not `textHidesComposerMarker`: codex's directory-trust
+  // menu has no dialog row, and any painted screen would take the return.
   codex: {
     composer: [/ask\s+codex\s+to\s+do\s+anything/i],
     confirmEcho: true,
     maxPromptWrites: 3,
+    echoHidesComposerMarker: true,
   },
   // Pi's editor has no placeholder text — the listening screen is an empty
   // bordered box above a footer that always shows context usage as `N%/M`
@@ -1279,12 +1297,14 @@ export class HarnessPromptDelivery {
   /**
    * Back in `settling` after a write, with no marker on screen: is the prompt
    * we already typed sitting in the composer? Only for a harness whose text
-   * hides its marker (`textHidesComposerMarker`), so every other harness keeps
+   * hides its marker (`textHidesComposerMarker`, or `echoHidesComposerMarker` for
+   * a screen that shows the prompt back), so every other harness keeps
    * waiting for its marker exactly as before. The dialog gate has already run.
    */
   private composerHoldsPriorWrite(): boolean {
-    if (!this.readiness.textHidesComposerMarker || this.promptWrites === 0) return false;
-    return this.composerHoldsUnreadableText() || this.promptIsInComposer();
+    const { textHidesComposerMarker, echoHidesComposerMarker } = this.readiness;
+    if (!(textHidesComposerMarker || echoHidesComposerMarker) || this.promptWrites === 0) return false;
+    return (!!textHidesComposerMarker && this.composerHoldsUnreadableText()) || this.promptIsInComposer();
   }
 
   /**
