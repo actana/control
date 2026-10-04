@@ -780,10 +780,18 @@ export const HARNESS_READINESS: Partial<Record<Harness, HarnessReadiness>> = {
   // not type into (ADO #4987). The same footer also appears under Pi's
   // "No models available" warning; that screen is refused by the `no-models`
   // row in {@link BLOCKING_DIALOGS}, not by narrowing this pattern (ADO #520).
+  //
+  // On 1.0.2 a long prompt repaints only the editor box, wrapped, and not the
+  // footer, so a write whose echo lands after the echo check is back in
+  // `settling` looking for a footer that is not coming back while the text is
+  // in the box. `echoHidesComposerMarker` sends a screen that shows the prompt
+  // back to the carriage return. Not `textHidesComposerMarker`: that accepts any
+  // footer-less screen, and Pi has no turn-start signal to catch a wrong guess.
   pi: {
     composer: [/\d+(\.\d+)?%\//],
     confirmEcho: true,
     maxPromptWrites: 3,
+    echoHidesComposerMarker: true,
   },
 };
 
@@ -966,7 +974,9 @@ export const HARNESS_PROMPT_DELIVERY_PROFILES: Partial<
   // OpenCode collapses a long paste into a block and swallows a `\r` that comes
   // too early, so its submit is verified and retried. Claude Code, codex,
   // cursor-cli and pi take the single `\r` after `submitPauseMs` on a long
-  // prompt, so they get no entry.
+  // prompt, so they get no entry. Codex and pi send that `\r` for a landed
+  // prompt only on the strength of the prompt's own echo
+  // (`echoHidesComposerMarker`), which is why they need no retry gaps.
   opencode: {
     composerWaitMs: 90_000,
     submitRetryGapsMs: [1_000, 2_000, 4_000, 7_000, 10_000],
