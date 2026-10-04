@@ -209,7 +209,10 @@ export async function resolveAgent(ownerId: number, id: string, deps: AgentDeps 
  */
 export async function ensureDefaultAgents(ownerId: number, coreId: string, deps: AgentDeps = {}, now = Date.now()): Promise<Agent[]> {
   if (!(await findCoreById(ownerId, coreId))) throw new NotFoundError("core not found");
-  const reported = await reportedHarnesses(coreId, deps);
+  return ensureDefaultsFor(ownerId, coreId, await reportedHarnesses(coreId, deps), now);
+}
+
+async function ensureDefaultsFor(ownerId: number, coreId: string, reported: CoreLinkHarnessAvailabilityMap, now: number): Promise<Agent[]> {
   const out: Agent[] = [];
   for (const harness of HARNESSES) {
     if (!hasHarness(reported, harness)) continue;
@@ -235,14 +238,20 @@ async function ensureDefault(ownerId: number, coreId: string, harness: Harness, 
 }
 
 /**
- * One Core's Agents, with a default Agent for each harness it has. The Core is
- * asked first; one that cannot be asked keeps the Agents it already has.
+ * One Core's Agents the Core can run now: a default Agent for each harness it
+ * has, and any other Agent whose harness it still reports available. An Agent
+ * whose harness is gone is hidden, not deleted, and returns when the harness
+ * does. A Core that cannot be asked keeps the Agents it already has.
  */
 export async function listAgentsForCore(ownerId: number, coreId: string, deps: AgentDeps = {}): Promise<Agent[]> {
+  let reported: CoreLinkHarnessAvailabilityMap;
   try {
-    await ensureDefaultAgents(ownerId, coreId, deps);
+    if (!(await findCoreById(ownerId, coreId))) throw new NotFoundError("core not found");
+    reported = await reportedHarnesses(coreId, deps);
   } catch (err) {
     if (!(err instanceof CoreHarnessesUnavailableError)) throw err;
+    return findAgents(ownerId, coreId);
   }
-  return findAgents(ownerId, coreId);
+  await ensureDefaultsFor(ownerId, coreId, reported, Date.now());
+  return (await findAgents(ownerId, coreId)).filter((a) => hasHarness(reported, a.harness));
 }

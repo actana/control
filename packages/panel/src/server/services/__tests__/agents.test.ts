@@ -268,6 +268,19 @@ describe("a default Agent for each harness a Core has", () => {
     await expect(resolveAgent(A, first!.id, deps)).rejects.toBeInstanceOf(HarnessMissingOnCoreError);
   });
 
+  it("hides Agents whose harness the Core does not report available now, without deleting them, and shows them again when it returns", async () => {
+    reported["core-1"] = available("claude-code", "codex", "pi");
+    const mine = await createAgent(A, { coreId: "core-1", name: "mine", harness: "pi" }, deps);
+    expect((await listAgentsForCore(A, "core-1", deps)).map((a) => a.harness).sort()).toEqual(["claude-code", "codex", "pi", "pi"]);
+    reported["core-1"] = available("claude-code");
+    expect((await listAgentsForCore(A, "core-1", deps)).map((a) => a.harness)).toEqual(["claude-code"]);
+    expect((await listAgents(A, "core-1")).map((a) => a.id)).toContain(mine.id);
+    reported["core-1"] = { "claude-code": { status: "available" }, codex: { status: "missing" }, pi: { status: "checking" } };
+    expect((await listAgentsForCore(A, "core-1", deps)).map((a) => a.harness)).toEqual(["claude-code"]);
+    reported["core-1"] = available("claude-code", "pi");
+    expect((await listAgentsForCore(A, "core-1", deps)).map((a) => a.id)).toContain(mine.id);
+  });
+
   it("finds a name an operator already took, and uses another for the default", async () => {
     await createAgent(A, { coreId: "core-1", name: "Claude Code", harness: "codex" }, deps);
     const made = await ensureDefaultAgents(A, "core-1", deps);
