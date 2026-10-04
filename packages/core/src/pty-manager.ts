@@ -772,6 +772,7 @@ export class PtyCore {
         const hooks = await installHarnessHooksViaCore(plan.agent, plan.cwd, env);
         hooksReportTurnStart = hooks.reportsTurnStart;
         hookTrustBypassEarned = hooks.hookTrustBypassEarned;
+        if (hooks.hookTrustNote) log.warn("pty.codex-hook-trust.skipped", { reason: hooks.hookTrustNote });
         // The env goes in whenever a file landed, even for a family whose
         // hooks do not announce a turn's start: those still report its end,
         // and a `Stop` with no token to present is a Session that never

@@ -456,7 +456,10 @@ async function startCore(): Promise<void> {
   // this daemon is running. The 60s tick would find it eventually; SIGHUP is
   // how the CLI says "now", so a Panel sees the agent it just installed
   // without a restart and without a wait. Unknown senders cost one probe.
-  process.on("SIGHUP", () => void availabilityStore.refresh());
+  process.on("SIGHUP", () => {
+    harnessSetup.forgetBlocks();
+    void availabilityStore.refresh();
+  });
 
   // Issue 83 (ADR 0021): the Panel can now ask this Core to install a Harness
   // it found missing. Same non-interactive path `actana harnesses install <id>`

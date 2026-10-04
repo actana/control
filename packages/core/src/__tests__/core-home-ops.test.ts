@@ -527,6 +527,19 @@ describe("installHarnessHooks for codex also records the trust of the hooks it w
     expect(fs.readFileSync(config, "utf8")).toBe(text);
   });
 
+  it("writes beside `[features] hooks = true` (codex's own switch), with no note", () => {
+    const work = path.join(home, "work4");
+    fs.mkdirSync(work);
+    fs.mkdirSync(path.join(home, ".codex"));
+    fs.writeFileSync(path.join(home, ".codex", "config.toml"), "[features]\nhooks = true\n");
+    const result = handleCoreHomeOpSync(codexHooks(work), ctx);
+    expect(result).toMatchObject({ installed: true });
+    expect(result).not.toHaveProperty("hookTrustNote");
+    const text = fs.readFileSync(path.join(home, ".codex", "config.toml"), "utf8");
+    expect(text).toContain("[features]\nhooks = true");
+    expect(text.match(/trusted_hash = "sha256:[0-9a-f]{64}"/g)).toHaveLength(3);
+  });
+
   it("does not touch config.toml for another harness", () => {
     const work = path.join(home, "work2");
     fs.mkdirSync(work);
@@ -539,7 +552,8 @@ describe("installHarnessHooks for codex also records the trust of the hooks it w
     fs.mkdirSync(work);
     fs.mkdirSync(path.join(home, ".codex"));
     fs.writeFileSync(path.join(home, ".codex", "config.toml"), "hooks = {}\n");
-    expect(handleCoreHomeOpSync(codexHooks(work), ctx)).toMatchObject({ installed: true });
+    // The reason comes back to the caller, which logs it; the config is untouched.
+    expect(handleCoreHomeOpSync(codexHooks(work), ctx)).toMatchObject({ installed: true, hookTrustNote: expect.stringContaining("hooks.state") });
     expect(fs.readFileSync(path.join(home, ".codex", "config.toml"), "utf8")).toBe("hooks = {}\n");
   });
 });

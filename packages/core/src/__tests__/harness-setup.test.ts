@@ -89,6 +89,16 @@ describe("HarnessSetup", () => {
     expect(runs).toHaveLength(10);
   });
 
+  it("looks at a blocked Harness again at once after forgetBlocks (SIGHUP), inside its backoff", async () => {
+    const { subject, runs } = setup({ "claude-code": TRUST_DIALOG });
+    await subject.apply(mapOf());
+    await subject.apply(mapOf());
+    expect(runs).toHaveLength(1);
+    subject.forgetBlocks();
+    await subject.apply(mapOf());
+    expect(runs).toHaveLength(2);
+  });
+
   it("does not call Pi blocked at its trust screen: its extension answers that in a real Session (#686 review)", async () => {
     const trust = readFileSync(path.resolve(__dirname, "fixtures/pi-0.85.1-project-trust.txt"), "utf8");
     const { subject, runs } = setup({ pi: trust });

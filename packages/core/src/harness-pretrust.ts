@@ -33,6 +33,8 @@
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { hookEndpointSlug } from "@actana/shared/mission-control-hook-env";
+import { canonicalJson, codexGroup, CODEX_HOOK_EVENTS } from "./harness-hooks";
 
 export type PretrustOutcome = "written" | "unchanged" | "failed";
 
@@ -206,9 +208,6 @@ const CODEX_EVENT_LABELS: Readonly<Record<string, string>> = {
   Stop: "stop",
 };
 
-/** The marker this Core puts on every group and handler it installs. */
-const MANAGED_FLAG = "_acManaged";
-
 const DEFAULT_HOOK_TIMEOUT_SEC = 600;
 
 /** `JSON.stringify` of `value` with every object's keys sorted, which is what codex's `canonical_json` hashes. */
@@ -256,8 +255,15 @@ export function codexHookKey(hooksFile: string, event: string, group: number, ha
   return label ? `${hooksFile}:${label}:${group}:${handler}` : null;
 }
 
-/** The hooks this Core installed in `hooksFile`, as `[key, hash]`, read off the file as codex will read it. */
-export function ownedCodexHookTrust(hooksFile: string, files: readonly string[] = [hooksFile]): [string, string][] {
+/**
+ * The hooks this Core installed in `hooksFile`, as `[key, hash]`, read off the file as codex will read it.
+ *
+ * Only a group that equals, exactly, what `installHarnessHooks` writes for an event in `CODEX_HOOK_EVENTS`
+ * (`codexGroup(slug, event)`: our marker, one command handler with our command and no other option) is trusted.
+ * The Core's side is rebuilt here rather than read from the `_acManaged` flag, which a repository's file can carry
+ * on anything, under any event, with any command (the principle of `codexOwnsEveryHook`).
+ */
+export function ownedCodexHookTrust(hooksFile: string, files: readonly string[] = [hooksFile], slug = hookEndpointSlug("codex")): [string, string][] {
   const raw = readIfExists(hooksFile);
   if (raw === null) return [];
   let parsed: unknown;
@@ -269,30 +275,20 @@ export function ownedCodexHookTrust(hooksFile: string, files: readonly string[] 
   const events = (parsed as { hooks?: Record<string, unknown> } | null)?.hooks;
   if (!events || typeof events !== "object") return [];
   const out: [string, string][] = [];
-  for (const [event, groups] of Object.entries(events)) {
+  for (const event of CODEX_HOOK_EVENTS) {
+    const groups = events[event];
     if (!Array.isArray(groups)) continue;
+    const ours = codexGroup(slug, event);
+    const expected = canonicalJson(ours);
+    const handler = (ours.hooks as { command: string }[])[0]!;
+    const hash = codexHookHash(event, { command: handler.command });
+    if (!hash) continue;
     groups.forEach((group, g) => {
-      const entry = group as { hooks?: unknown; matcher?: unknown; [k: string]: unknown } | null;
-      if (!entry || entry[MANAGED_FLAG] !== true || !Array.isArray(entry.hooks)) return;
-      entry.hooks.forEach((handler, h) => {
-        const hook = handler as { type?: unknown; command?: unknown; timeout?: unknown; async?: unknown; statusMessage?: unknown; [k: string]: unknown };
-        if (!hook || hook[MANAGED_FLAG] !== true || hook.type !== "command" || typeof hook.command !== "string") return;
-        const hash = codexHookHash(
-          event,
-          {
-            command: hook.command,
-            ...(typeof hook.timeout === "number" ? { timeout: hook.timeout } : {}),
-            async: hook.async === true,
-            ...(typeof hook.statusMessage === "string" ? { statusMessage: hook.statusMessage } : {}),
-          },
-          typeof entry.matcher === "string" ? entry.matcher : undefined,
-        );
-        if (!hash) return;
-        for (const file of files) {
-          const key = codexHookKey(file, event, g, h);
-          if (key) out.push([key, hash]);
-        }
-      });
+      if (canonicalJson(group) !== expected) return;
+      for (const file of files) {
+        const key = codexHookKey(file, event, g, 0);
+        if (key) out.push([key, hash]);
+      }
     });
   }
   return out;
@@ -307,12 +303,71 @@ function hookStateHeaderKey(line: string): string | null {
   return quoted.slice(1, -1).replace(/\\(["\\btnfr])/g, (_all, c: string) => TOML_BASIC_ESCAPES[c]!);
 }
 
+/** The parts of a TOML dotted key (`a."b.c".d` -> `["a", "b.c", "d"]`), or null when it is not one this scanner reads. */
+function tomlKeyPath(text: string): string[] | null {
+  const parts: string[] = [];
+  let i = 0;
+  for (;;) {
+    while (text[i] === " " || text[i] === "\t") i++;
+    const ch = text[i];
+    if (ch === '"') {
+      let j = i + 1;
+      let out = "";
+      while (j < text.length && text[j] !== '"') {
+        if (text[j] === "\\" && j + 1 < text.length) {
+          out += TOML_BASIC_ESCAPES[text[j + 1]!] ?? text[j + 1]!;
+          j += 2;
+        } else out += text[j++];
+      }
+      if (text[j] !== '"') return null;
+      parts.push(out);
+      i = j + 1;
+    } else if (ch === "'") {
+      const j = text.indexOf("'", i + 1);
+      if (j === -1) return null;
+      parts.push(text.slice(i + 1, j));
+      i = j + 1;
+    } else {
+      const m = /^[A-Za-z0-9_-]+/.exec(text.slice(i));
+      if (!m) return null;
+      parts.push(m[0]);
+      i += m[0].length;
+    }
+    while (text[i] === " " || text[i] === "\t") i++;
+    if (text[i] === ".") {
+      i++;
+      continue;
+    }
+    return parts;
+  }
+}
+
 /**
- * Anything that defines `hooks.state` other than as `[hooks.state."key"]` tables (an inline table, dotted keys, a
- * bare `[hooks.state]`) is a shape this line editor does not rewrite, as with `projects`.
+ * Why this config cannot take `[hooks.state."key"]` tables appended to it, or null when it can.
+ *
+ * Table-aware: only a `hooks` key at the top of the file, a `state` key inside `[hooks]`, or a bare
+ * `[hooks.state]` table (also written dotted or quoted) define `hooks.state` some other way (an inline table, dotted
+ * keys), and a second `[hooks.state."k"]` beside any of them is invalid TOML that codex cannot load. A `hooks` key
+ * in another table is something else and is ignored: `[features] hooks = true` is codex's own switch for
+ * `--enable hooks`.
  */
-function definesHookStateElsewhere(lines: readonly string[]): boolean {
-  return lines.some((line) => /^\s*hooks\s*[=.]/.test(line) || /^\s*\[\s*hooks\s*\.\s*state\s*\]/.test(line));
+export function hookStateConflict(lines: readonly string[]): string | null {
+  let table: string[] = [];
+  for (const line of lines) {
+    const header = /^\s*(\[\[?)\s*(.*?)\s*\]\]?\s*(?:#.*)?$/.exec(line);
+    if (header && !/^\s*[A-Za-z0-9_"'-]+[^\]]*=/.test(line)) {
+      table = tomlKeyPath(header[2]!) ?? ["?"];
+      if (table[0] === "hooks" && table[1] === "state" && table.length === 2) return "a [hooks.state] table";
+      continue;
+    }
+    const eq = line.indexOf("=");
+    if (eq === -1 || /^\s*(#|$)/.test(line)) continue;
+    const key = tomlKeyPath(line.slice(0, eq));
+    if (!key) continue;
+    if (table.length === 0 && key[0] === "hooks") return "a top-level `hooks` key";
+    if (table.length === 1 && table[0] === "hooks" && key[0] === "state") return "a `state` key in [hooks]";
+  }
+  return null;
 }
 
 /**
@@ -325,9 +380,8 @@ export function trustCodexHooks(file: string, entries: readonly (readonly [strin
   const raw = readIfExists(file) ?? "";
   const eol = raw.includes("\r\n") ? "\r\n" : "\n";
   const lines = raw === "" ? [] : raw.split(/\r?\n/);
-  if (definesHookStateElsewhere(lines)) {
-    throw new Error(`${file} defines "hooks.state" in a form this writer does not edit`);
-  }
+  const conflict = hookStateConflict(lines);
+  if (conflict) throw new Error(`${file} defines "hooks.state" as ${conflict}, a form this writer does not edit`);
   let changed = false;
   for (const [key, hash] of entries) {
     const header = lines.findIndex((line) => hookStateHeaderKey(line) === key);

@@ -22,6 +22,11 @@
 // again, which is how a login or a fix made by hand clears it, but with a backoff
 // (a minute, doubling to ten) because each look is a full Harness process on a
 // VM several Cores share. A new binary or version is looked at at once.
+//
+// The backoff can hide a fix made by hand: a login done in a Session leaves the Harness
+// showing "needs setup" until its next look, up to ten minutes later. SIGHUP (which calls
+// {@link HarnessSetup.forgetBlocks}), a restart of the Core, or a new version of the
+// binary looks at once.
 
 import log from "@actana/shared/log";
 import type { Harness } from "@actana/shared/domain";
@@ -92,6 +97,11 @@ export class HarnessSetup {
   private readonly blocked = new Map<Harness, { key: string; dialog: string; nextAt: number; delayMs: number }>();
 
   constructor(private readonly deps: HarnessSetupDeps) {}
+
+  /** Look at every blocked Harness again on the next round, whatever its backoff says (SIGHUP). */
+  forgetBlocks(): void {
+    this.blocked.clear();
+  }
 
   /** `map` with every available-but-blocked Harness turned into its needs-setup entry. */
   async apply(map: CoreLinkHarnessAvailabilityMap): Promise<CoreLinkHarnessAvailabilityMap> {

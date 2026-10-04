@@ -441,8 +441,9 @@ export function handleCoreHomeOpSync(request: CoreHomeOpRequest, ctx: CoreHomeOp
             const real = realpathOrNull(file);
             trustCodexHooks(config, ownedCodexHookTrust(file, real !== null && real !== file ? [file, real] : [file]));
           }
-        } catch {
-          /* leave it to the review */
+        } catch (err) {
+          // Left to the review (and the bypass flag where earned); the reason goes to the caller's log.
+          return { ...installed, hookTrustNote: err instanceof Error ? err.message : String(err) };
         }
       }
       return installed;
