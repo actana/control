@@ -21,9 +21,10 @@ import {
   type CoreLinkHarnessAvailabilityMap,
   type CoreLinkHarnessInstallFailedPayload,
 } from "@actana/shared/sdk-link-frames";
+import { isNeedsSetup, needsSetupDialog } from "@actana/shared/harness-needs-setup";
 import { createListenerSet } from "./listener-set";
 
-export type CliAvailabilityStatus = "unknown" | "checking" | "available" | "missing" | "outdated";
+export type CliAvailabilityStatus = "unknown" | "checking" | "available" | "missing" | "outdated" | "needs-setup";
 
 export type CliAvailability = {
   status: CliAvailabilityStatus;
@@ -34,6 +35,8 @@ export type CliAvailability = {
   requiredVersion?: string;
   packageUrl?: string;
   updateCommands?: readonly string[];
+  /** For `needs-setup`: the first-run dialog the Harness is stopped at (#685). */
+  setupDialog?: string;
 };
 
 export type CliAvailabilityMap = Partial<Record<Harness, CliAvailability>>;
@@ -91,13 +94,17 @@ export function availabilityFor(
 
 export function isCliUnavailable(availability: CliAvailabilityMap, agent: Harness): boolean {
   const status = availabilityFor(availability, agent).status;
-  return status === "missing" || status === "outdated";
+  return status === "missing" || status === "outdated" || status === "needs-setup";
 }
 
 export function harnessCanLaunch(availability: CliAvailabilityMap, agent: Harness): boolean {
   if (HARNESS_REGISTRY[agent].disabled) return false;
   const status = availabilityFor(availability, agent).status;
   if (status === "available") return true;
+  // A Harness stopped at a first-run dialog (no model, no login) is set up from
+  // inside its own CLI, so a Session must still open on it — greying it out
+  // leaves the operator no way to finish that setup.
+  if (status === "needs-setup") return true;
   // With no link there is no Core to probe — assume launchable so the picker
   // isn't uniformly disabled on a page that hasn't connected yet.
   if (status === "unknown" && !getPanelBridge()) return true;
@@ -111,7 +118,12 @@ export function harnessCanLaunch(availability: CliAvailabilityMap, agent: Harnes
  * is a straight structural coerce.
  */
 function fromCoreLinkAvailability(entry: CoreLinkHarnessAvailability): CliAvailability {
-  const next: CliAvailability = { status: entry.status };
+  // The Core reports a Harness stopped by a first-run dialog as `missing` with a
+  // needs-setup reason (the SDK's status union has no such value); here it becomes
+  // its own status so the Panel says "Needs setup" and never "Install".
+  const setupDialog = isNeedsSetup(entry) ? needsSetupDialog(entry.reason) : null;
+  const next: CliAvailability = { status: setupDialog !== null ? "needs-setup" : entry.status };
+  if (setupDialog !== null) next.setupDialog = setupDialog;
   if (entry.path !== undefined) next.path = entry.path;
   if (entry.reason !== undefined) next.reason = entry.reason;
   if (entry.label !== undefined) next.label = entry.label;
@@ -122,7 +134,7 @@ function fromCoreLinkAvailability(entry: CoreLinkHarnessAvailability): CliAvaila
   return next;
 }
 
-function fromCoreLinkMap(map: CoreLinkHarnessAvailabilityMap): CliAvailabilityMap {
+export function fromCoreLinkMap(map: CoreLinkHarnessAvailabilityMap): CliAvailabilityMap {
   const out: CliAvailabilityMap = {};
   for (const [agent, entry] of Object.entries(map)) {
     if (!entry) continue;
@@ -131,8 +143,21 @@ function fromCoreLinkMap(map: CoreLinkHarnessAvailabilityMap): CliAvailabilityMa
   return out;
 }
 
-export function firstAvailableHarness(availability: CliAvailabilityMap): Harness | null {
-  return UI_HARNESSES.find((agent) => harnessCanLaunch(availability, agent)) ?? null;
+/**
+ * The Harness to preselect among `candidates` (the ones a picker offers): the first
+ * that is ready, else the first that can still open a Session. A needs-setup Harness
+ * can be opened but is never the default pick while a ready one exists.
+ */
+export function firstAvailableHarness(
+  availability: CliAvailabilityMap,
+  candidates: readonly Harness[] = UI_HARNESSES,
+): Harness | null {
+  const launchable = candidates.filter((agent) => harnessCanLaunch(availability, agent));
+  return (
+    launchable.find((agent) => availabilityFor(availability, agent).status !== "needs-setup") ??
+    launchable[0] ??
+    null
+  );
 }
 
 /**
@@ -319,7 +344,7 @@ function reconcileInstalls(coreId: string, availability: CliAvailabilityMap): vo
     // on PATH now, so the install is over and the update-required flow — which
     // this feature does not touch — owns the row from here. Leaving it
     // installing would be the one thing this state must never be: stuck.
-    if (status === "available" || status === "outdated") {
+    if (status === "available" || status === "outdated" || status === "needs-setup") {
       setInstallState(coreId, agent, null);
       continue;
     }

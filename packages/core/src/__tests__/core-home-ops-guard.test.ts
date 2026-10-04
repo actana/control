@@ -35,6 +35,9 @@ const HELPER_ONLY = [
   "resolveAllHarnessCommandsOnPath",
   "wireLocalCore",
   "registryPaths",
+  "pretrustWorkspaces",
+  "trustClaudeCode",
+  "trustCodex",
 ];
 
 function code(file: string): string {

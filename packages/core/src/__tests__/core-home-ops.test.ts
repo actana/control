@@ -66,6 +66,7 @@ describe("request validation: known operations only", () => {
         "ensureOrchestrationSkill",
         "ensureStatuslineTap",
         "installHarnessHooks",
+        "pretrustWorkspaces",
         "probeHarnessCli",
         "resolveCommand",
         "resolveExecCwd",
@@ -459,4 +460,100 @@ describe("probeHarnessCli: the version check runs in the helper, as core", () =>
     expect(Date.now() - started).toBeLessThan(8_000);
     expect(answer.meeting).toMatchObject({ binary: file, check: { ok: false } });
   }, 15_000);
+});
+
+describe("pretrustWorkspaces (#685)", () => {
+  const request = (dirs: string[], harnesses = ["claude-code", "codex"]) =>
+    parseCoreHomeOpRequest({ op: "pretrustWorkspaces", harnesses, dirs }) as Extract<CoreHomeOpRequest, { op: "pretrustWorkspaces" }>;
+
+  it("is a listed operation and writes both configs inside the home", () => {
+    expect(CORE_HOME_OPERATIONS).toContain("pretrustWorkspaces");
+    const results = handleCoreHomeOpSync(request([home]), ctx);
+    expect(results.map((r) => [r.harness, r.outcome])).toEqual([
+      ["claude-code", "written"],
+      ["codex", "written"],
+    ]);
+    expect(JSON.parse(fs.readFileSync(path.join(home, ".claude.json"), "utf8")).projects[home].hasTrustDialogAccepted).toBe(true);
+    expect(fs.readFileSync(path.join(home, ".codex", "config.toml"), "utf8")).toContain(`trust_level = "trusted"`);
+    expect(handleCoreHomeOpSync(request([home]), ctx).map((r) => r.outcome)).toEqual(["unchanged", "unchanged"]);
+  });
+
+  it("refuses a directory outside the home before touching anything", () => {
+    expect(refusal(() => handleCoreHomeOpSync(request([outside]), ctx)).code).toBe("path-escape");
+    expect(fs.existsSync(path.join(home, ".claude.json"))).toBe(false);
+  });
+
+  it("refuses a config file that is a link leading out of the home", () => {
+    fs.writeFileSync(path.join(outside, "target.json"), "{}");
+    fs.symlinkSync(path.join(outside, "target.json"), path.join(home, ".claude.json"));
+    expect(refusal(() => handleCoreHomeOpSync(request([home]), ctx)).code).toBe("path-escape");
+    expect(fs.readFileSync(path.join(outside, "target.json"), "utf8")).toBe("{}");
+  });
+
+  it("writes the Cursor marker inside the home, and refuses a .cursor link that leaves it", () => {
+    const results = handleCoreHomeOpSync(request([home], ["cursor-cli"]), ctx);
+    expect(results.map((r) => [r.harness, r.outcome])).toEqual([["cursor-cli", "written"]]);
+    const slug = home.replace(/^\/+/, "").replace(/\//g, "-");
+    expect(fs.existsSync(path.join(home, ".cursor", "projects", slug, ".workspace-trusted"))).toBe(true);
+
+    fs.rmSync(path.join(home, ".cursor"), { recursive: true });
+    fs.symlinkSync(outside, path.join(home, ".cursor"));
+    expect(refusal(() => handleCoreHomeOpSync(request([home], ["cursor-cli"]), ctx)).code).toBe("path-escape");
+    expect(fs.readdirSync(outside)).toEqual([]);
+  });
+
+  it("refuses malformed fields and unknown extras", () => {
+    expect(() => parseCoreHomeOpRequest({ op: "pretrustWorkspaces", harnesses: ["Bad Id"], dirs: [home] })).toThrow(CoreHomeOpRefusedError);
+    expect(() => parseCoreHomeOpRequest({ op: "pretrustWorkspaces", harnesses: [], dirs: [home], cmd: "x" })).toThrow(CoreHomeOpRefusedError);
+    expect(() => parseCoreHomeOpRequest({ op: "pretrustWorkspaces", harnesses: [], dirs: "x" })).toThrow(CoreHomeOpRefusedError);
+  });
+});
+
+describe("installHarnessHooks for codex also records the trust of the hooks it wrote", () => {
+  const codexHooks = (cwd: string): CoreHomeOpRequest => ({ op: "installHarnessHooks", harness: "codex", cwd, piAgentDir: null });
+
+  it("writes a trusted_hash per installed hook into ~/.codex/config.toml, once", () => {
+    const work = path.join(home, "work");
+    fs.mkdirSync(work);
+    expect(handleCoreHomeOpSync(codexHooks(work), ctx)).toMatchObject({ installed: true });
+    const config = path.join(home, ".codex", "config.toml");
+    const file = path.join(fs.realpathSync(work), ".codex", "hooks.json");
+    const text = fs.readFileSync(config, "utf8");
+    for (const event of ["permission_request", "user_prompt_submit", "stop"]) {
+      expect(text).toContain(`[hooks.state."${file}:${event}:0:0"]`);
+    }
+    expect(text.match(/trusted_hash = "sha256:[0-9a-f]{64}"/g)).toHaveLength(3);
+    handleCoreHomeOpSync(codexHooks(work), ctx);
+    expect(fs.readFileSync(config, "utf8")).toBe(text);
+  });
+
+  it("writes beside `[features] hooks = true` (codex's own switch), with no note", () => {
+    const work = path.join(home, "work4");
+    fs.mkdirSync(work);
+    fs.mkdirSync(path.join(home, ".codex"));
+    fs.writeFileSync(path.join(home, ".codex", "config.toml"), "[features]\nhooks = true\n");
+    const result = handleCoreHomeOpSync(codexHooks(work), ctx);
+    expect(result).toMatchObject({ installed: true });
+    expect(result).not.toHaveProperty("hookTrustNote");
+    const text = fs.readFileSync(path.join(home, ".codex", "config.toml"), "utf8");
+    expect(text).toContain("[features]\nhooks = true");
+    expect(text.match(/trusted_hash = "sha256:[0-9a-f]{64}"/g)).toHaveLength(3);
+  });
+
+  it("does not touch config.toml for another harness", () => {
+    const work = path.join(home, "work2");
+    fs.mkdirSync(work);
+    handleCoreHomeOpSync({ op: "installHarnessHooks", harness: "claude-code", cwd: work, piAgentDir: null }, ctx);
+    expect(fs.existsSync(path.join(home, ".codex", "config.toml"))).toBe(false);
+  });
+
+  it("still installs the hooks when config.toml is in a form the writer will not edit", () => {
+    const work = path.join(home, "work3");
+    fs.mkdirSync(work);
+    fs.mkdirSync(path.join(home, ".codex"));
+    fs.writeFileSync(path.join(home, ".codex", "config.toml"), "hooks = {}\n");
+    // The reason comes back to the caller, which logs it; the config is untouched.
+    expect(handleCoreHomeOpSync(codexHooks(work), ctx)).toMatchObject({ installed: true, hookTrustNote: expect.stringContaining("hooks.state") });
+    expect(fs.readFileSync(path.join(home, ".codex", "config.toml"), "utf8")).toBe("hooks = {}\n");
+  });
 });

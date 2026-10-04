@@ -87,7 +87,7 @@ afterEach(() => {
 });
 
 describe("spawning a Claude Code Session in container mode", () => {
-  it("asks core for the path facts, the tap and the hooks, in that order, and writes none of it itself", async () => {
+  it("asks core for the path facts, the tap, the trust and the hooks, in that order, and writes none of it itself", async () => {
     inContainer();
     const helper = cannedHelper();
     configureCoreHomeOps(helper.options);
@@ -99,12 +99,19 @@ describe("spawning a Claude Code Session in container mode", () => {
       command: "claude",
     } as never);
 
-    expect(helper.requests.map((r) => r.request.op)).toEqual(["spawnPathFacts", "resolveCommand", "ensureStatuslineTap", "installHarnessHooks"]);
+    expect(helper.requests.map((r) => r.request.op)).toEqual([
+      "spawnPathFacts",
+      "resolveCommand",
+      "ensureStatuslineTap",
+      "pretrustWorkspaces",
+      "installHarnessHooks",
+    ]);
     expect(helper.requests[0]!.request).toMatchObject({ op: "spawnPathFacts", cwd: workspace.dir });
     expect((helper.requests[0]!.request as { roots: string[] }).roots).toContain(workspace.dir);
     expect(helper.requests[1]!.request).toMatchObject({ op: "resolveCommand", command: "claude" });
     expect(helper.requests[2]!.request).toEqual({ op: "ensureStatuslineTap", cwd: workspace.dir });
-    expect(helper.requests[3]!.request).toEqual({ op: "installHarnessHooks", harness: "claude-code", cwd: workspace.dir, piAgentDir: null });
+    expect(helper.requests[3]!.request).toEqual({ op: "pretrustWorkspaces", harnesses: ["claude-code"], dirs: [workspace.dir] });
+    expect(helper.requests[4]!.request).toEqual({ op: "installHarnessHooks", harness: "claude-code", cwd: workspace.dir, piAgentDir: null });
     // The helper said it installed them, so the Session reports its turn starts.
     expect(result.hooksReportTurnStart).toBe(true);
     // And the daemon's own process touched nothing in the workspace.
@@ -117,7 +124,7 @@ describe("spawning a Claude Code Session in container mode", () => {
     configureCoreHomeOps(helper.options);
     vi.spyOn(nodePty, "spawn").mockReturnValue(fakePty() as never);
     await core(false).spawn({ sessionId: "t2", agent: "claude-code", command: "claude" } as never);
-    expect(helper.requests.map((r) => r.request.op)).toEqual(["spawnPathFacts", "resolveCommand", "ensureStatuslineTap"]);
+    expect(helper.requests.map((r) => r.request.op)).toEqual(["spawnPathFacts", "resolveCommand", "ensureStatuslineTap", "pretrustWorkspaces"]);
   });
 
   it("refuses a home core cannot see, through the policy's own rejection", async () => {

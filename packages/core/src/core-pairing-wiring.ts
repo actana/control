@@ -79,7 +79,7 @@ function attemptOutcome(status: number): string {
  * and no line can hold the code or the CSR**, because neither the body nor the
  * headers are read.
  */
-export function auditPairingRoutes(routes: CoreHttpRoutes): CoreHttpRoutes {
+export function auditPairingRoutes(routes: CoreHttpRoutes, onIssued?: () => void): CoreHttpRoutes {
   const audited =
     (inner: (req: IncomingMessage, res: ServerResponse) => boolean) =>
     (req: IncomingMessage, res: ServerResponse): boolean => {
@@ -93,6 +93,7 @@ export function auditPairingRoutes(routes: CoreHttpRoutes): CoreHttpRoutes {
         const write = (aborted: boolean): void => {
           if (written) return;
           written = true;
+          if (!aborted && res.statusCode === 200) onIssued?.();
           log.info("pairing.attempt", {
             outcome: aborted ? "aborted" : attemptOutcome(res.statusCode),
             status: res.statusCode,

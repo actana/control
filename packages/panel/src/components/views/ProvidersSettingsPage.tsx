@@ -295,6 +295,7 @@ function ProviderRow({
   const availability = installed.status === "ready" ? installed.availability : null;
   const installedVersion = availability?.version ?? null;
   const missing = availability?.status === "missing";
+  const setupDialog = availability?.status === "needs-setup" ? (availability.setupDialog ?? "unknown dialog") : null;
   const installing = installState.installing;
   const updateAvailable =
     !!latest?.latestVersion &&
@@ -399,7 +400,9 @@ function ProviderRow({
                   ? "—"
                   : missing
                     ? installState.error ?? "Not installed"
-                    : installedVersion
+                    : setupDialog !== null
+                      ? "Needs setup"
+                      : installedVersion
                       ? `v${installedVersion}`
                       : "Version unknown"}
           </div>
@@ -407,6 +410,10 @@ function ProviderRow({
             {installing || missing ? (
               <span style={{ color: installing ? "var(--text-faint)" : "var(--status-failed)" }}>
                 {installing ? "Install in progress" : "CLI not found on PATH"}
+              </span>
+            ) : setupDialog !== null ? (
+              <span style={{ color: "var(--status-failed)" }} title="Open the Harness once on this Core and answer its first-run dialog.">
+                Needs setup: {setupDialog}
               </span>
             ) : !latest || !latest.supported ? (
               <a

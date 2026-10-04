@@ -213,7 +213,7 @@ function installClaudeHooks(cwd: string, slug: string): boolean {
   return writeJsonSettingsFile(file, settings);
 }
 
-const CODEX_HOOK_EVENTS = ["UserPromptSubmit", "Stop", "PermissionRequest"] as const;
+export const CODEX_HOOK_EVENTS = ["UserPromptSubmit", "Stop", "PermissionRequest"] as const;
 
 /**
  * A Codex matcher group — the same shape as {@link claudeGroup}, and the fix
@@ -242,7 +242,7 @@ const CODEX_HOOK_EVENTS = ["UserPromptSubmit", "Stop", "PermissionRequest"] as c
  * narrow `Stop` or `UserPromptSubmit` to, and `PermissionRequest` is wanted
  * whatever raised it.
  */
-function codexGroup(slug: string, event: string): Record<string, unknown> {
+export function codexGroup(slug: string, event: string): Record<string, unknown> {
   return { [MANAGED_FLAG]: true, hooks: [managedEntry(slug, event)] };
 }
 
@@ -270,7 +270,7 @@ function installCodexHooks(cwd: string, slug: string): boolean {
  * reorders keys without changing a single hook, and answering "not ours" to
  * that would withhold the bypass for a difference that is not one.
  */
-function canonicalJson(value: unknown): string {
+export function canonicalJson(value: unknown): string {
   return JSON.stringify(value, (_key, val) =>
     val && typeof val === "object" && !Array.isArray(val)
       ? Object.fromEntries(
@@ -501,6 +501,8 @@ export function harnessSupportsHooks(harness: string | undefined): boolean {
 export type HookInstallResult = {
   /** Did a hook file land in the workspace? */
   installed: boolean;
+  /** Why this Core could not record codex's trust of the hooks it wrote (`harness-pretrust.ts`), when it could not. */
+  hookTrustNote?: string;
   /**
    * Will a hook report the start of a turn for this Session? Only this
    * exempts the Panel's terminal-input fallback (issue 84) — it is the
