@@ -976,7 +976,8 @@ export const HARNESS_PROMPT_DELIVERY_PROFILES: Partial<
   // cursor-cli and pi take the single `\r` after `submitPauseMs` on a long
   // prompt, so they get no entry. Codex and pi send that `\r` for a landed
   // prompt only on the strength of the prompt's own echo
-  // (`echoHidesComposerMarker`), which is why they need no retry gaps.
+  // (`echoHidesComposerMarker`), and have no turn-start signal to verify
+  // against, so nothing confirms that a turn started.
   opencode: {
     composerWaitMs: 90_000,
     submitRetryGapsMs: [1_000, 2_000, 4_000, 7_000, 10_000],
@@ -1388,6 +1389,16 @@ export class HarnessPromptDelivery {
         return;
       }
       this.holdForComposer();
+      return;
+    }
+
+    // The marker is back, but so is our own prompt: a harness whose renderer
+    // redraws only the rows that changed (Pi) can show the footer together with
+    // text that already landed. Typing again would double it, so press Enter. For
+    // a harness whose marker is a placeholder (codex) the two never coexist, so
+    // this cannot fire there.
+    if (this.readiness.echoHidesComposerMarker && this.promptIsInComposer()) {
+      this.submit(this.timers.now());
       return;
     }
 

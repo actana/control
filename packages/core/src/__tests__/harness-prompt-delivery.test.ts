@@ -1846,6 +1846,14 @@ describe("pi 1.0.2 with a long prompt landed in the editor", () => {
     expect(h.writes).toEqual([PROMPT, "\r"]);
   });
 
+  it("presses Enter, and never retypes, when a full redraw repaints the footer over the landed text", () => {
+    const h = swallowed();
+    h.delivery.onOutput(PI_102_AFTER_LONG_WRITE);
+    h.delivery.onOutput(PI_102_BOOT.slice(PI_102_BOOT.lastIndexOf(`${ESC}[2K`, PI_102_BOOT.indexOf("%/"))));
+    h.clock.advance(PROFILE.quietGapMs + 1);
+    expect(h.writes).toEqual([PROMPT, "\r"]);
+  });
+
   it("does not press Enter for a footer-less repaint that is not the prompt, after a real swallow", () => {
     const h = swallowed();
     h.delivery.onOutput(`${ESC}[42;1H${ESC}[2K${ESC}[38;5;5m${"─".repeat(160)}${ESC}[0m`);
