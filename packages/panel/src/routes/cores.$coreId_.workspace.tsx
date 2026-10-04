@@ -113,7 +113,7 @@ import {
 
 // Session workspace for a Core (issue 560). Sessions belong to the Core and
 // always start in ~ (ADR 0041 D1, D2).
-export const Route = createFileRoute("/cores/$coreId/workspace")({
+export const Route = createFileRoute("/cores/$coreId_/workspace")({
   component: CoreWorkspacePage,
 });
 
