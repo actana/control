@@ -98,7 +98,11 @@ async function reportedHarnesses(coreId: string, deps: AgentDeps): Promise<CoreL
   }
 }
 
-/** Only `available` can run, as `harnessCanLaunch` and the Core's own `harness ls` say. */
+/**
+ * Only `available` can run an Agent or Task. This is deliberately stricter than
+ * the Panel's `harnessCanLaunch`: a needs-setup Harness can open an interactive
+ * Session, but a Task cannot finish an interactive setup.
+ */
 function hasHarness(map: CoreLinkHarnessAvailabilityMap, harness: string): boolean {
   return map[harness]?.status === "available";
 }

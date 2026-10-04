@@ -9,6 +9,7 @@ import { HarnessLogo } from "~/components/ui/HarnessLogo";
 import { getPanelBridge } from "~/lib/panel-bridge";
 import {
   harnessCanLaunch,
+  firstAvailableHarness,
   availabilityFor,
   installStateFor,
   type CliAvailability,
@@ -151,7 +152,7 @@ export function NewHarnessDialog({
       initialRemember?.savedHarness &&
       harnessOptions.some((a) => a.id === initialRemember.savedHarness)
         ? initialRemember.savedHarness
-        : harnessOptions[0]?.id ?? "claude-code";
+        : firstAvailableHarness(cliAvailability, harnessOptions.map((a) => a.id)) ?? "claude-code";
     setHarness(seedHarness);
     setPrompt("");
     setInstallIntent(
@@ -231,9 +232,9 @@ export function NewHarnessDialog({
   useEffect(() => {
     if (!open) return;
     if (harnessOptions.some((a) => a.id === agent)) return;
-    const next = harnessOptions[0]?.id;
+    const next = firstAvailableHarness(cliAvailability, harnessOptions.map((a) => a.id)) ?? harnessOptions[0]?.id;
     if (next) setHarness(next);
-  }, [open, agent, harnessOptions]);
+  }, [open, agent, harnessOptions, cliAvailability]);
 
   useEffect(() => {
     if (!open) return;
@@ -339,6 +340,7 @@ export function NewHarnessDialog({
                 availability.status === "checking" ||
                 (availability.status === "unknown" && !!getPanelBridge());
               const cliOutdated = availability.status === "outdated";
+              const cliNeedsSetup = availability.status === "needs-setup";
               const disabled =
                 !cliOutdated && !harnessCanLaunch(cliAvailability, a.id);
               return (
@@ -402,19 +404,21 @@ export function NewHarnessDialog({
                       >
                         {a.description}
                       </div>
-                      {(cliChecking || cliOutdated) && (
+                      {(cliChecking || cliOutdated || cliNeedsSetup) && (
                         <div
                           style={{
                             marginTop: 5,
                             fontFamily: "var(--mono)",
                             fontSize: 10.5,
-                            color: cliOutdated ? "var(--status-failed)" : "var(--text-faint)",
+                            color: cliOutdated ? "var(--status-failed)" : cliNeedsSetup ? "var(--warning)" : "var(--text-faint)",
                             lineHeight: 1.35,
                           }}
                         >
                           {cliOutdated
                             ? `Update required: ${availability.label ?? a.label} ${availability.requiredVersion ?? "latest"} or newer.`
-                            : "Checking PATH..."}
+                            : cliNeedsSetup
+                              ? `Needs setup (${availability.setupDialog}): start a Session and finish it in ${a.label}.`
+                              : "Checking PATH..."}
                         </div>
                       )}
                     </div>

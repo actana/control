@@ -129,6 +129,12 @@ describe("missing detection", () => {
     expect(missingHarnesses(ALL_PRESENT)).toEqual([]);
   });
 
+  it("does not reinstall a Harness that is installed but needs setup", () => {
+    expect(
+      missingHarnesses({ ...ALL_MISSING, pi: { status: "missing", reason: "needs-setup: no-models" } }),
+    ).not.toContain("pi");
+  });
+
   it("leaves an outdated CLI alone — updating it is the vendor's job", () => {
     expect(
       missingHarnesses({ ...ALL_MISSING, codex: { status: "outdated", version: "0.1.0" } }),

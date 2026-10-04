@@ -11,7 +11,8 @@
 //      prompt, read what it paints, and match it against the same
 //      `BLOCKING_DIALOGS` table prompt delivery uses. A Harness still behind a
 //      blocking dialog is reported as needing setup (`harness-needs-setup.ts`)
-//      instead of available, so the Panel dispatches no Task into it.
+//      instead of available, so the Panel dispatches no Task into it. A Session can
+//      still open on it, which is where the operator finishes the setup.
 //
 // Prompt delivery's folder-trust handling is untouched: this is the first line of
 // defence and that stays the last.
