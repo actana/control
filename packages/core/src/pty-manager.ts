@@ -938,10 +938,13 @@ export class PtyCore {
               // start` that read the second as the first would be claiming a
               // readiness nobody established — the defect 395 is about.
               //
-              // This runs inside `submit`, in the same synchronous tick as the
-              // carriage return, so the row is in the log before the event loop
-              // can carry a single byte of the harness's reply. Whatever status
-              // the turn produces is therefore strictly behind it.
+              // For a harness whose return is not verified this runs inside
+              // `submit`, in the same synchronous tick as the carriage return, so
+              // the row is in the log before the event loop can carry a byte of
+              // the harness's reply. For opencode it runs when the delivery sees
+              // the working hint, from `onOutput` below, which is called after
+              // this chunk was appended and batched; the turn's own status is
+              // raised by later output, so the row is still ahead of it.
               if (event.phase === "delivered" && p.sessionId) {
                 reportPromptDelivered(this.deps, {
                   sessionId: p.sessionId,
