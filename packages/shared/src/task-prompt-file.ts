@@ -27,13 +27,15 @@ export function taskPointerLine(file: string): string {
   return `Read ${file}${POINTER_TAIL}`;
 }
 
-const P = "~/shared/tasks/[^\\s/]+/prompt-attempt-[1-9][0-9]*\\.md";
-const TAIL = POINTER_TAIL.replace(/[.]/g, "\\.");
-// The whole prompt, exactly: a prompt that only mentions the path (an interactive question about a Task file) is not
-// a Task's, and must keep its session report sentence, which `actana session wait` settles on.
-const TASK_POINTER = new RegExp(`^Read (?:(${P})|@(${P}) \\(file \\2\\))${TAIL}$`);
+const FILE = "~/shared/tasks/[^\\s/]+/prompt-attempt-[1-9][0-9]*\\.md";
+// Only the file part is a pattern. The fixed words around it are compared as plain strings, so nothing here has to
+// escape them. The whole prompt must match, exactly: a prompt that only mentions the path (an interactive question
+// about a Task file) is not a Task's, and must keep its session report sentence, which `actana session wait` settles on.
+const FILE_PART = new RegExp(`^(?:(${FILE})|@(${FILE}) \\(file \\2\\))$`);
 
 /** Is this starting prompt exactly the line `taskPointerLine` writes, in either mention form? */
 export function isTaskPointerPrompt(text: string): boolean {
-  return TASK_POINTER.test(text.trim());
+  const line = text.trim();
+  if (!line.startsWith("Read ") || !line.endsWith(POINTER_TAIL)) return false;
+  return FILE_PART.test(line.slice("Read ".length, line.length - POINTER_TAIL.length));
 }
