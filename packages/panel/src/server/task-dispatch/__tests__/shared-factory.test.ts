@@ -98,16 +98,20 @@ describe("the shared:changed feed behind the through-the-Core mode", () => {
 
 describe("how a Session is launched", () => {
   it.each([
-    [{ harness: "claude-code", model: null, flags: [] }, "claude"],
-    [{ harness: "claude-code", model: "claude-sonnet-5-5", flags: [] }, "claude --model claude-sonnet-5-5"],
-    [{ harness: "codex", model: null, flags: [] }, "codex --enable hooks"],
+    [{ harness: "claude-code", model: null, flags: [] }, "claude --dangerously-skip-permissions"],
+    [{ harness: "claude-code", model: "claude-sonnet-5-5", flags: [] }, "claude --dangerously-skip-permissions --model claude-sonnet-5-5"],
+    [{ harness: "codex", model: null, flags: [] }, "codex --enable hooks --yolo"],
   ] as const)("%j starts as `%s`", (request, command) => {
     expect(launchCommand(request)).toBe(command);
   });
 
-  it("adds the harness's own auto-mode flag for skip-permissions, and none where it has none", () => {
-    expect(launchCommand({ harness: "claude-code", model: null, flags: ["skip-permissions"] })).toBe("claude --dangerously-skip-permissions");
-    expect(launchCommand({ harness: "opencode", model: null, flags: ["skip-permissions"] })).toBe("opencode");
+  it("adds the harness's own auto-mode flag whether or not the Agent carries skip-permissions, and none where it has none", () => {
+    for (const flags of [[], ["skip-permissions"]]) {
+      expect(launchCommand({ harness: "claude-code", model: null, flags })).toBe("claude --dangerously-skip-permissions");
+      expect(launchCommand({ harness: "cursor-cli", model: null, flags })).toBe("cursor-agent --force");
+      expect(launchCommand({ harness: "codex", model: null, flags })).toBe("codex --enable hooks --yolo");
+      expect(launchCommand({ harness: "opencode", model: null, flags })).toBe("opencode");
+    }
   });
 });
 
