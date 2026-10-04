@@ -128,6 +128,30 @@ describe("a starting prompt through PtyCore.spawn", () => {
     expect(delivered[0]).toMatchObject({ sessionId: "t-abc", promptBlockVersion: PROMPT_BLOCK_VERSION });
   });
 
+  it("tells the delivery about foreign input, so its re-submit stands down (issue 681)", async () => {
+    const fake = pty();
+    vi.spyOn(nodePty, "spawn").mockReturnValue(fake.proc as never);
+    const core = new PtyCore({
+      userDataDir: os.tmpdir(),
+      appPath: os.tmpdir(),
+      getHookEnv: () => null,
+      getProtectedPorts: () => [],
+    } as never);
+
+    const spawned = (await core.spawn({ sessionId: "t-fx", agent: "opencode", command: "opencode", initialInput: "fix the bug" } as never)) as { ptyId: string };
+    fake.emit("Ask anything");
+    await vi.advanceTimersByTimeAsync(2_000);
+    const typed = fake.writes.filter((w) => w !== "\r");
+    expect(typed).toHaveLength(1);
+    // Nothing painted: the write counts as swallowed. Then the operator types.
+    await vi.advanceTimersByTimeAsync(6_000);
+    core.write(spawned.ptyId, "x");
+    fake.emit(`\u001B[2J\u001B[H┃ ${typed[0]} ┃`);
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    expect(fake.writes.filter((w) => w === "\r")).toEqual([]);
+  });
+
   it("reports an exit between the opencode return and the turn start as an undelivered prompt", async () => {
     const fake = pty();
     vi.spyOn(nodePty, "spawn").mockReturnValue(fake.proc as never);

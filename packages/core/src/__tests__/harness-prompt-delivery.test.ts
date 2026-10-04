@@ -1791,6 +1791,43 @@ describe("opencode composer painted late with the prompt in it (issue 681)", () 
     expect(count(h, "\r")).toBe(0);
   });
 
+  it("gives no carriage return when the working hint is on the screen after the swallow", () => {
+    const h = swallowed();
+    h.delivery.onOutput(`${HELD}\n  build  big-pickle  esc interrupt`);
+    h.clock.advance(120_000);
+    expect(count(h, "\r")).toBe(0);
+    expect(count(h, PROMPT)).toBe(1);
+  });
+
+  it("stands down for good once foreign input reached the PTY after the swallow", () => {
+    const h = swallowed();
+    h.delivery.noteForeignInput();
+    h.delivery.onOutput(HELD);
+    h.clock.advance(PROFILE.quietGapMs + 1);
+    expect(count(h, "\r")).toBe(0);
+    h.delivery.onOutput(`${ESC}[2J${ESC}[H┃ ${PROMPT} ┃\n  Build  big-pickle  v2`);
+    h.clock.advance(120_000);
+    expect(count(h, "\r")).toBe(0);
+    expect(count(h, PROMPT)).toBe(1);
+  });
+
+  it("gives no carriage return for a partial repaint that is not the composer", () => {
+    const h = swallowed();
+    h.delivery.onOutput(`${ESC}[40;1H${ESC}[2K  Build  big-pickle  Tip: use /help`);
+    h.clock.advance(PROFILE.quietGapMs + 1);
+    h.delivery.onOutput(`${ESC}[5;1H┃ Permission required: allow bash? ┃`);
+    h.clock.advance(120_000);
+    expect(count(h, "\r")).toBe(0);
+  });
+
+  it("relies on a whole-screen repaint when the composer text cannot be read", () => {
+    const h = swallowed();
+    h.delivery.onOutput(`${ESC}[2J${ESC}[H┃ the start of a long prompt has scrolled out of the box ┃\n  Build  big-pickle`);
+    h.clock.advance(PROFILE.quietGapMs + 1);
+    expect(h.writes).toEqual([PROMPT, "\r"]);
+    expect(count(h, PROMPT)).toBe(1);
+  });
+
   it("does not press Enter early for another harness whose text did not paint", () => {
     const h = startDelivery(PROMPT, { harness: "claude-code" });
     h.delivery.onOutput('Try "fix lint errors"');

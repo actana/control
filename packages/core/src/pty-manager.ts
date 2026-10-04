@@ -95,6 +95,8 @@ type Pty = {
   /** Last renderer write (user keystroke) — marks the PTY as interactive so
    *  battery saver never throttles typing echo (see pty-output-batch.ts). */
   lastInputAt: number;
+  /** The starting-prompt delivery, told about input it did not write. */
+  promptDelivery?: HarnessPromptDelivery;
 };
 
 type PtyBufferChunk = {
@@ -973,6 +975,7 @@ export class PtyCore {
             },
           })
         : undefined;
+    p.promptDelivery = promptDelivery;
 
     // First output means the agent is mostly booted — hand the spawn slot to
     // whoever is queued behind it. The timeout is the backstop for an agent
@@ -1066,6 +1069,9 @@ export class PtyCore {
     const p = ptys.get(ptyId);
     if (!p) return false;
     p.lastInputAt = Date.now();
+    // The delivery writes through its own handle to the process, so anything
+    // arriving here is somebody else's input (issue 681).
+    p.promptDelivery?.noteForeignInput();
     p.proc.write(data);
     return true;
   }

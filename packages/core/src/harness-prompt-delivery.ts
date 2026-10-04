@@ -1097,6 +1097,10 @@ export class HarnessPromptDelivery {
   private promptWrites = 0;
   /** Whether this settling round has already said it is waiting for a composer. */
   private waitingForComposerReported = false;
+  /** Input from anyone but this module has been written to the PTY since our write. */
+  private foreignInput = false;
+  /** A full-screen clear has painted since `retypePrompt` emptied the buffer. */
+  private clearedSinceRetype = false;
 
   private cancelIdle: (() => void) | null = null;
   private cancelDeadline: (() => void) | null = null;
@@ -1148,6 +1152,7 @@ export class HarnessPromptDelivery {
     // abandon delivery on a session sitting at a healthy composer, or to press
     // a menu digit into that composer.
     const cleared = lastScreenClearIndex(chunk);
+    if (cleared >= 0) this.clearedSinceRetype = true;
     this.screen =
       cleared >= 0
         ? chunk.slice(cleared)
@@ -1169,6 +1174,17 @@ export class HarnessPromptDelivery {
       this.paintedSinceKeystroke = true;
     }
     this.schedule();
+  }
+
+  /**
+   * Input that is not ours (an operator's keystrokes, `session send`) reached
+   * the PTY. From the first write of the prompt on, the screen may be someone
+   * else's turn, so the re-submit after a swallow stands down for good: a
+   * carriage return into a turn this module did not start can accept a
+   * permission prompt (issue 681, security gate on PR 683).
+   */
+  noteForeignInput(): void {
+    if (this.promptWrites > 0) this.foreignInput = true;
   }
 
   /** The PTY is gone, or the caller is done with us. Writes nothing further. */
@@ -1277,14 +1293,41 @@ export class HarnessPromptDelivery {
   }
 
   /**
-   * Back in `settling` after a write, with no marker on screen: is the prompt
-   * we already typed sitting in the composer? Only for a harness whose text
-   * hides its marker (`textHidesComposerMarker`), so every other harness keeps
-   * waiting for its marker exactly as before. The dialog gate has already run.
+   * Back in `settling` after a write, with no marker on screen: may the
+   * carriage return go out for the prompt we already typed? Only for a harness
+   * whose text hides its marker (`textHidesComposerMarker`). The dialog gate is
+   * empty for opencode, so it protects nothing here; the guards are these:
+   *
+   * - no working hint on the screen (a turn is visibly running);
+   * - no foreign input written to the PTY since our write (see
+   *   {@link noteForeignInput}), so no turn can be someone else's;
+   * - positive evidence of the prompt: its echo or paste chip
+   *   ({@link promptIsInComposer}); or, only when the composer text cannot be
+   *   read, a repaint that cleared the whole screen since the buffer was
+   *   emptied, so a partial repaint (toast, footer, modal) never qualifies.
    */
   private composerHoldsPriorWrite(): boolean {
     if (!this.readiness.textHidesComposerMarker || this.promptWrites === 0) return false;
-    return this.composerHoldsUnreadableText() || this.promptIsInComposer();
+    if (this.resubmitBarred()) return false;
+    if (this.promptIsInComposer()) return true;
+    return this.clearedSinceRetype && this.composerHoldsUnreadableText();
+  }
+
+  /**
+   * For a harness whose text hides its marker, no carriage return goes out on
+   * the strength of a screen read once a turn may be someone else's: foreign
+   * input was written, or the working hint is up. Covers the backstop and the
+   * composer ceiling too, which would otherwise submit on the echo alone.
+   */
+  private resubmitBarred(): boolean {
+    return (
+      !!this.readiness.textHidesComposerMarker &&
+      (this.foreignInput || this.workingHintOnScreen())
+    );
+  }
+
+  private workingHintOnScreen(): boolean {
+    return WORKING_HINT.test(stripAnsi(this.screen.replace(CURSOR_POSITION, " ")));
   }
 
   /**
@@ -1303,6 +1346,7 @@ export class HarnessPromptDelivery {
     this.emit({ phase: "prompt-swallowed", attempt: this.promptWrites });
     this.phase = "settling";
     this.screen = "";
+    this.clearedSinceRetype = false;
     this.recentSignatures = [];
     this.paintedSinceKeystroke = false;
     this.waitingForComposerReported = false;
@@ -1667,7 +1711,7 @@ export class HarnessPromptDelivery {
     // it, so this branch is not taken and the generic backstop below still
     // types and submits exactly as before.
     if (!composerOnScreen(this.screen, this.readiness)) {
-      if (this.promptIsInComposer()) {
+      if (this.promptIsInComposer() && !this.resubmitBarred()) {
         this.submit(this.timers.now());
         return;
       }
@@ -1736,7 +1780,7 @@ export class HarnessPromptDelivery {
       return;
     }
 
-    if (this.promptIsInComposer()) {
+    if (this.promptIsInComposer() && !this.resubmitBarred()) {
       this.submit(this.timers.now());
       return;
     }
