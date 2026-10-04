@@ -1277,6 +1277,17 @@ export class HarnessPromptDelivery {
   }
 
   /**
+   * Back in `settling` after a write, with no marker on screen: is the prompt
+   * we already typed sitting in the composer? Only for a harness whose text
+   * hides its marker (`textHidesComposerMarker`), so every other harness keeps
+   * waiting for its marker exactly as before. The dialog gate has already run.
+   */
+  private composerHoldsPriorWrite(): boolean {
+    if (!this.readiness.textHidesComposerMarker || this.promptWrites === 0) return false;
+    return this.composerHoldsUnreadableText() || this.promptIsInComposer();
+  }
+
+  /**
    * The prompt did not arrive. Go back to watching the harness rather than
    * hammering the same write at it: the reason it was swallowed is that the
    * TUI was not listening, and the next write is worth no more than this one
@@ -1337,6 +1348,15 @@ export class HarnessPromptDelivery {
     // composer has to be on screen before a keystroke is worth sending; for
     // every other harness `composerOnScreen` is `true` and this costs nothing.
     if (!this.deadlinePassed && !composerOnScreen(this.screen, this.readiness)) {
+      // Issue 681. A prompt written earlier may only now have painted: the
+      // composer holds it, so its placeholder is gone and will not come back.
+      // Waiting for the marker would end at the ceiling with the text typed but
+      // unsent. Press Enter instead of typing — nothing is written over it, and
+      // `submit` hands the rest to the bounded verify loop.
+      if (this.composerHoldsPriorWrite()) {
+        this.submit(this.timers.now());
+        return;
+      }
       this.holdForComposer();
       return;
     }

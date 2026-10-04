@@ -1728,6 +1728,81 @@ describe("opencode with the prompt still in the composer (issue 563)", () => {
   });
 });
 
+describe("opencode composer painted late with the prompt in it (issue 681)", () => {
+  const PROMPT = "Dispatch alpha-bravo: refactor the authentication module.";
+  const HELD = `${ESC}[2J${ESC}[H┃ ${PROMPT} ┃\n  Build  big-pickle`;
+  const WORKING = [
+    `${ESC}[2K\rYou: refactor the authentication module`,
+    `${ESC}[2K\rbuild  big-pickle  esc interrupt`,
+  ];
+  const count = (h: Fixture, w: string): number => h.writes.filter((x) => x === w).length;
+
+  /** Paint, settle, write, then silence until the echo check calls it swallowed. */
+  function swallowed(): Fixture {
+    const h = startDelivery(PROMPT, { harness: "opencode" });
+    h.delivery.onOutput(OPENCODE_COMPOSER);
+    h.clock.advance(PROFILE.quietGapMs + 1);
+    expect(h.writes).toEqual([PROMPT]);
+    h.clock.advance(submitPauseMs(PROMPT, PROFILE) + PROFILE.quietGapMs + 1);
+    expect(h.events).toContainEqual({ phase: "prompt-swallowed", attempt: 1 });
+    expect(h.delivery.currentPhase).toBe("settling");
+    return h;
+  }
+
+  it("replays the logged failure: presses Enter once the composer shows the text, then delivers", () => {
+    const h = swallowed();
+    h.delivery.onOutput(HELD);
+    h.clock.advance(PROFILE.quietGapMs + 1);
+    expect(h.writes).toEqual([PROMPT, "\r"]);
+    for (const frame of WORKING) h.delivery.onOutput(frame);
+    h.clock.advance(120_000);
+    expect(h.delivery.currentPhase).toBe("delivered");
+    expect(h.events.some((e) => e.phase === "abandoned")).toBe(false);
+    expect(h.events.some((e) => e.phase === "delivered")).toBe(true);
+  });
+
+  it("presses Enter again after a swallowed Enter, and never types over the held prompt", () => {
+    const h = swallowed();
+    h.delivery.onOutput(HELD);
+    h.clock.advance(PROFILE.quietGapMs + 1);
+    h.clock.advance(1_100);
+    expect(count(h, "\r")).toBeGreaterThanOrEqual(2);
+    expect(count(h, PROMPT)).toBe(1);
+    for (const frame of WORKING) h.delivery.onOutput(frame);
+    h.clock.advance(120_000);
+    expect(count(h, PROMPT)).toBe(1);
+    expect(h.delivery.currentPhase).toBe("delivered");
+  });
+
+  it("is still bounded: a composer that never starts a turn ends abandoned", () => {
+    const h = swallowed();
+    h.delivery.onOutput(HELD);
+    h.clock.advance(120_000);
+    expect(count(h, PROMPT)).toBe(1);
+    expect(count(h, "\r")).toBeLessThanOrEqual(1 + (deliveryProfileFor("opencode").submitRetryGapsMs?.length ?? 0));
+    expect(h.delivery.currentPhase).toBe("abandoned");
+  });
+
+  it("still retypes when the marker is repainted and the composer is visibly empty", () => {
+    const h = swallowed();
+    h.delivery.onOutput(OPENCODE_COMPOSER);
+    h.clock.advance(PROFILE.quietGapMs + 1);
+    expect(h.writes).toEqual([PROMPT, PROMPT]);
+    expect(count(h, "\r")).toBe(0);
+  });
+
+  it("does not press Enter early for another harness whose text did not paint", () => {
+    const h = startDelivery(PROMPT, { harness: "claude-code" });
+    h.delivery.onOutput('Try "fix lint errors"');
+    h.clock.advance(PROFILE.quietGapMs + 1);
+    h.clock.advance(submitPauseMs(PROMPT, PROFILE) + PROFILE.quietGapMs + 1);
+    expect(h.events).toContainEqual({ phase: "prompt-swallowed", attempt: 1 });
+    h.delivery.onOutput(HELD);
+    h.clock.advance(PROFILE.quietGapMs + 1);
+    expect(h.writes).toEqual([PROMPT]);
+  });
+});
+
 describe("delivering to opencode (issue 229)", () => {
   /**
    * The live boot, replayed at its captured timings:
