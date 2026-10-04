@@ -21,7 +21,7 @@ import { getCoreStatusDots } from "./core-status-dots";
 const TILE = 44;
 
 export const CoreRail = memo(function CoreRail() {
-  const { cores, fleet } = useFleet();
+  const { cores, fleet, coresLoading } = useFleet();
   const activeCoreId = useRouterState({ select: (state) => routeCoreIdFromLocation(state.location) });
   const slotBase = useBinding("core.slot");
   const ordered = railCores(cores);
@@ -49,7 +49,7 @@ export const CoreRail = memo(function CoreRail() {
           color: "var(--text-dim)",
         }}
       >
-        {ordered.length} {ordered.length === 1 ? "Core" : "Cores"}
+        {coresLoading ? "Cores" : `${ordered.length} ${ordered.length === 1 ? "Core" : "Cores"}`}
       </div>
       {ordered.map((core, index) => {
         const slot = index + 1;

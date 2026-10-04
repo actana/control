@@ -45,7 +45,7 @@ export function CorePage({ coreId, tab, path = "" }: { coreId: string; tab: Core
   const router = useRouter();
   const queryClient = useQueryClient();
   const cliAvailability = useCliAvailability(coreId);
-  const { cores, fleet, loading } = useFleet();
+  const { cores, fleet, loading, coresLoading, coresError, refreshCores } = useFleet();
   const { togglePanel, panelOpen } = useUserTerminals();
   const [showNew, setShowNew] = useState(false);
   const [rememberTick, setRememberTick] = useState(0);
@@ -142,6 +142,28 @@ export function CorePage({ coreId, tab, path = "" }: { coreId: string; tab: Core
     }
     setShowNew(true);
   }, [remembered, startSession, cliAvailability]);
+
+  // Opened directly, the Core list is still on its way: it is not "not found"
+  // until the list has settled and really lacks this Core.
+  if (!core && coresLoading) {
+    return <EmptyState title="Loading Core" subtitle="Fetching this Panel's Cores." icon="shield" />;
+  }
+
+  // The first Core-list query failed: the list never settled, so this is not "not found".
+  if (!core && coresError && cores.length === 0) {
+    return (
+      <EmptyState
+        title="Couldn't load this Panel's Cores"
+        subtitle={coresError}
+        icon="shield"
+        action={
+          <Btn variant="primary" icon="refresh" onClick={refreshCores}>
+            Retry
+          </Btn>
+        }
+      />
+    );
+  }
 
   if (!core) {
     return (
