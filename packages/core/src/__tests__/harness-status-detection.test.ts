@@ -23,6 +23,11 @@ import {
 import { CoreSessionWriter } from "../core-session-writer";
 import { CoreHarnessStatus } from "../core-harness-status";
 import type { SpawnedProcess } from "../harness-hook-origin";
+import {
+  CLIENT_KILL_REASON,
+  SESSION_KILLED_EVENT_KIND,
+  type SessionKilledPayload,
+} from "../session-kill";
 import { CoreTitleGenerator } from "../core-title-generator";
 import {
   startHarnessHookReceiver,
@@ -330,12 +335,119 @@ describe("harness status detection on the Core (issue 84)", () => {
     const status = new CoreHarnessStatus({ writer, spawned: () => ({ pid: SPAWNED_PID, launcher: "harness" }) });
     await postHook({ hook_event_name: "UserPromptSubmit", session_id: "sess-1" });
 
-    status.sessionExited(SESSION_ID, 1);
+    status.sessionExited({ sessionId: SESSION_ID, ptyId: "p1", exitCode: 1 });
     expect(rowStatus()).toBe("terminated");
 
     // A second exit patch (a retry, a second tab) must not disturb the row.
-    status.sessionExited(SESSION_ID, 0);
+    status.sessionExited({ sessionId: SESSION_ID, ptyId: "p1", exitCode: 0 });
     expect(rowStatus()).toBe("terminated");
+  });
+
+  describe("a killed live turn (issue 292)", () => {
+    const KILL_AT = Date.UTC(2026, 7, 20, 11, 13, 0);
+    const kill = { at: KILL_AT, reason: CLIENT_KILL_REASON };
+    const killedEvents = () =>
+      events()
+        .filter((e) => e.kind === SESSION_KILLED_EVENT_KIND)
+        .map((e) => JSON.parse(e.payload) as SessionKilledPayload);
+
+    it("settles as terminated, not finished, when the harness exits 0 on the hang-up", async () => {
+      const status = new CoreHarnessStatus({ writer, spawned: () => ({ pid: SPAWNED_PID, launcher: "harness" }) });
+      await postHook({ hook_event_name: "UserPromptSubmit", session_id: "sess-1" });
+      expect(rowStatus()).toBe("running");
+
+      status.sessionExited({ sessionId: SESSION_ID, ptyId: "p1", exitCode: 0, kill });
+
+      expect(rowStatus()).toBe("terminated");
+      // No completion ding for work that was destroyed.
+      expect(kinds()).not.toContain("session:finished");
+    });
+
+    it("leaves a session:killed event naming the task, time, reason and live turn", async () => {
+      const status = new CoreHarnessStatus({ writer, spawned: () => ({ pid: SPAWNED_PID, launcher: "harness" }) });
+      await postHook({ hook_event_name: "UserPromptSubmit", session_id: "sess-1" });
+
+      status.sessionExited({ sessionId: SESSION_ID, ptyId: "p1", exitCode: 0, signal: 1, kill });
+
+      const [killed, ...rest] = killedEvents();
+      expect(rest).toEqual([]);
+      expect(killed).toEqual({
+        sessionId: SESSION_ID,
+        ptyId: "p1",
+        reason: CLIENT_KILL_REASON,
+        killedAt: "2026-08-20T11:13:00.000Z",
+        liveTurn: true,
+        statusBefore: "running",
+        status: "terminated",
+        exitCode: 0,
+        signal: 1,
+      } satisfies SessionKilledPayload);
+      // Recorded after the settle, so a reader sees the status the row carries.
+      const ks = kinds();
+      expect(ks.lastIndexOf(SESSION_KILLED_EVENT_KIND)).toBeGreaterThan(ks.lastIndexOf("session:updated"));
+      // Addressed to the Session, so a replay filtered on it finds it.
+      expect(events().find((e) => e.kind === SESSION_KILLED_EVENT_KIND)?.sessionId).toBe(SESSION_ID);
+    });
+
+    it("settles a killed Session parked on needs-input as terminated", async () => {
+      const status = new CoreHarnessStatus({ writer, spawned: () => ({ pid: SPAWNED_PID, launcher: "harness" }) });
+      await postHook({ hook_event_name: "UserPromptSubmit", session_id: "sess-1" });
+      await postHook({ hook_event_name: "PermissionRequest", session_id: "sess-1" });
+      expect(rowStatus()).toBe("needs-input");
+
+      status.sessionExited({ sessionId: SESSION_ID, ptyId: "p1", exitCode: 0, kill });
+
+      expect(rowStatus()).toBe("terminated");
+      expect(kinds()).not.toContain("session:finished");
+      expect(killedEvents()).toMatchObject([{ liveTurn: true, statusBefore: "needs-input", status: "terminated" }]);
+    });
+
+    it("keeps the status of an already-settled row, and still records the kill, with no Panel connected", async () => {
+      // No Panel or link is wired in this suite: the event lands in the log a
+      // reconnecting Panel replays from.
+      const status = new CoreHarnessStatus({ writer, spawned: () => ({ pid: SPAWNED_PID, launcher: "harness" }) });
+      await postHook({ hook_event_name: "UserPromptSubmit", session_id: "sess-1" });
+      await postHook({ hook_event_name: "Stop", session_id: "sess-1" });
+      expect(rowStatus()).toBe("finished");
+      const dingsBefore = kinds().filter((k) => k === "session:finished").length;
+
+      status.sessionExited({ sessionId: SESSION_ID, ptyId: "p1", exitCode: 0, kill });
+
+      expect(rowStatus()).toBe("finished");
+      // No second ding for the kill of a turn that had already finished.
+      expect(kinds().filter((k) => k === "session:finished")).toHaveLength(dingsBefore);
+      expect(killedEvents()).toMatchObject([{ liveTurn: false, statusBefore: "finished", status: "finished" }]);
+    });
+
+    it("tells a killed bare Session apart from one that simply exited", async () => {
+      const status = new CoreHarnessStatus({ writer, spawned: () => ({ pid: SPAWNED_PID, launcher: "harness" }) });
+      status.sessionExited({ sessionId: SESSION_ID, ptyId: "p1", exitCode: 0, kill });
+
+      // The row settles as an unprompted exit always has — never `ready` …
+      expect(rowStatus()).toBe("disconnected");
+      // … and the event is what says it was killed, with no turn in flight.
+      expect(killedEvents()).toMatchObject([
+        { sessionId: SESSION_ID, liveTurn: false, statusBefore: "ready", status: "disconnected" },
+      ]);
+    });
+
+    it("appends nothing about a kill for an exit nobody asked for", async () => {
+      const status = new CoreHarnessStatus({ writer, spawned: () => ({ pid: SPAWNED_PID, launcher: "harness" }) });
+      await postHook({ hook_event_name: "UserPromptSubmit", session_id: "sess-1" });
+      status.sessionExited({ sessionId: SESSION_ID, ptyId: "p1", exitCode: 0 });
+
+      expect(rowStatus()).toBe("finished");
+      expect(killedEvents()).toEqual([]);
+    });
+
+    it("settles a signalled exit mid-turn as terminated even without a kill", async () => {
+      const status = new CoreHarnessStatus({ writer, spawned: () => ({ pid: SPAWNED_PID, launcher: "harness" }) });
+      await postHook({ hook_event_name: "UserPromptSubmit", session_id: "sess-1" });
+      status.sessionExited({ sessionId: SESSION_ID, ptyId: "p1", exitCode: 0, signal: 9 });
+
+      expect(rowStatus()).toBe("terminated");
+      expect(killedEvents()).toEqual([]);
+    });
   });
 
   it("settles a bare Session left on ready when its PTY dies (issue 387)", async () => {
@@ -345,7 +457,7 @@ describe("harness status detection on the Core (issue 84)", () => {
     const status = new CoreHarnessStatus({ writer, spawned: () => ({ pid: SPAWNED_PID, launcher: "harness" }) });
     expect(rowStatus()).toBe("ready");
 
-    status.sessionExited(SESSION_ID, 1);
+    status.sessionExited({ sessionId: SESSION_ID, ptyId: "p1", exitCode: 1 });
 
     expect(rowStatus()).toBe("disconnected");
     // `disconnected` is not a finish: no ding for a Session that never worked.
@@ -358,7 +470,7 @@ describe("harness status detection on the Core (issue 84)", () => {
     // going away. `finished` here would append `session:finished` and ding the
     // operator for "Waiting for initial prompt…".
     const status = new CoreHarnessStatus({ writer, spawned: () => ({ pid: SPAWNED_PID, launcher: "harness" }) });
-    status.sessionExited(SESSION_ID, 0);
+    status.sessionExited({ sessionId: SESSION_ID, ptyId: "p1", exitCode: 0 });
     expect(rowStatus()).toBe("disconnected");
     expect(kinds()).not.toContain("session:finished");
   });
@@ -705,7 +817,7 @@ describe("harness status detection on the Core (issue 84)", () => {
     it("the Core's own synthetic events carry no origin and are never held to a pid", async () => {
       const status = new CoreHarnessStatus({ writer, spawned: () => null });
       await postHook({ hook_event_name: "UserPromptSubmit", session_id: "sess-1" });
-      status.sessionExited(SESSION_ID, 0);
+      status.sessionExited({ sessionId: SESSION_ID, ptyId: "p1", exitCode: 0 });
       expect(rowStatus()).toBe("finished");
     });
   });

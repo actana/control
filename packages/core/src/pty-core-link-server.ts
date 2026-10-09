@@ -75,6 +75,7 @@ import {
 // module alongside {@link CoreQueryPort} (the Fleet view's query port, issue 07).
 export type { CoreSessionRow };
 import type { PtyCore, PtyCoreEvent } from "./pty-manager";
+import { CLIENT_KILL_REASON } from "./session-kill";
 import { CoreSessionWriter } from "./core-session-writer";
 import { SessionLockTable } from "./session-lock-table";
 import { sessionFrameFieldRefusal, spawnFieldRefusal } from "./request-fields";
@@ -1556,7 +1557,9 @@ export class PtyCoreLinkServer {
         // keeps answering its callers inside the Core — the PTY exit paths, the
         // session writer — which hold no lock and are nobody's client.
         if (this.refuseLockedPty(conn, frame.reqId, frame.ptyId)) return;
-        const ok = this.core.kill(frame.ptyId);
+        // The reason marks it as a requested kill (issue 292), so the exit
+        // settles a live turn as `terminated` and leaves a `session:killed` row.
+        const ok = this.core.kill(frame.ptyId, CLIENT_KILL_REASON);
         this.send(ws, { type: "killResult", reqId: frame.reqId, ok });
         return;
       }

@@ -29,6 +29,8 @@ import {
   type ProcessEntryReader,
   type SpawnedProcess,
 } from "./harness-hook-origin";
+import type { PtySessionExit } from "./pty-manager";
+import { SESSION_KILLED_EVENT_KIND, type SessionKilledPayload } from "./session-kill";
 
 export type CoreHarnessStatusDeps = {
   writer: CoreSessionWriter;
@@ -150,13 +152,43 @@ export class CoreHarnessStatus {
    * This runs on every exit, whether or not a Panel is connected: the Core's
    * PTY lifecycle is not the Panel's to observe, and a Session that finished
    * while the link was down must still be `finished` when it comes back.
+   *
+   * A killed PTY (issue 292) settles a live turn as `terminated` whatever its
+   * exit code, and appends one `session:killed` event naming the task, the
+   * time, the reason and whether a turn was in flight — the trace a caller who
+   * was not present reads afterwards. The event goes after the settle, so the
+   * status it reports is the one the row now carries.
    */
-  sessionExited(sessionId: string, exitCode: number): void {
+  sessionExited(exit: PtySessionExit): void {
+    const { sessionId, ptyId, exitCode, signal, kill } = exit;
     if (!sessionId) return;
+    const statusBefore = kill ? (this.deps.writer.readSession(sessionId)?.status ?? null) : null;
     this.receiveHook(sessionId, {
       hook_event_name: HARNESS_HOOK_EVENTS.sessionProcessExited,
       exit_code: exitCode,
+      ...(typeof signal === "number" ? { signal } : {}),
+      ...(kill ? { killed: true } : {}),
     });
+    if (!kill) return;
+    const payload: SessionKilledPayload = {
+      sessionId,
+      ptyId,
+      reason: kill.reason,
+      killedAt: new Date(kill.at).toISOString(),
+      liveTurn: statusBefore === "running" || statusBefore === "needs-input",
+      statusBefore,
+      status: this.deps.writer.readSession(sessionId)?.status ?? null,
+      exitCode,
+      signal: typeof signal === "number" && signal !== 0 ? signal : null,
+    };
+    try {
+      this.deps.writer.recordSessionEvent(SESSION_KILLED_EVENT_KIND, JSON.stringify(payload), {
+        sessionId,
+        ptyId,
+      });
+    } catch (err) {
+      log.warn("harness-status.kill-event-failed", { sessionId, error: String(err) });
+    }
   }
 
   /**
