@@ -23,6 +23,9 @@
 //
 // Runs where the writers run: in the helper, as `core` (`core-home-ops`, op
 // `verifyCodexHookTrust`), once per codex binary and version (`harness-setup.ts`).
+// codex is started through `asCore` and signalled through `killAsCore` like every
+// other child (`core-identity-guard.test.ts`); in the helper and on metal both
+// are the identity, since the process already is core.
 // No real config is read or written; the workspace and the `CODEX_HOME` are fresh
 // directories under the home and are removed afterwards. A mismatch is reported,
 // not repaired: codex asks at its review as it did before the writer, and the
@@ -31,6 +34,7 @@
 import { spawn as nodeSpawn, type ChildProcess } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { asCore, killAsCoreQuietly } from "./core-identity";
 import { CODEX_HOOK_EVENTS, installHarnessHooks } from "./harness-hooks";
 import { ownedCodexHookTrust, trustCodex, trustCodexHooks } from "./harness-pretrust";
 
@@ -188,7 +192,8 @@ function listCodexHooks(
   return new Promise<ListedHook[]>((resolve, reject) => {
     let child: ChildProcess;
     try {
-      child = spawn(binary, ["app-server"], { cwd, env, stdio: ["pipe", "pipe", "pipe"] });
+      const launch = asCore({ command: binary, args: ["app-server"], cwd, env });
+      child = spawn(launch.command, launch.args, { cwd: launch.cwd, env: launch.env, stdio: ["pipe", "pipe", "pipe"] });
     } catch (err) {
       reject(err instanceof Error ? err : new Error(String(err)));
       return;
@@ -202,11 +207,7 @@ function listCodexHooks(
       settled = true;
       clearTimeout(timer);
       // Nothing of codex's is worth keeping: the home it ran in is thrown away.
-      try {
-        child.kill("SIGKILL");
-      } catch {
-        /* already gone */
-      }
+      if (child.exitCode === null && child.signalCode === null) killAsCoreQuietly(child, "SIGKILL", "codex-hook-check.kill");
       if ("hooks" in outcome) resolve(outcome.hooks);
       else reject(outcome.error);
     };
