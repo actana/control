@@ -374,7 +374,41 @@ hooks became the foreign ones; and when its capture POSTs were lost (`curl -m 3
 and wrote `finished` over a live owned turn.
 
 **The discriminator is the process id — the one fact a nested process cannot
-inherit.** Three parts:
+inherit.** Every hook reports the pid of the process that ran it, the Core knows
+the pid it spawned, and the receiver places the one under the other with the
+process table. The subtlety is what the spawned pid *is*.
+
+#### What the Core spawned is the root of the tree, not always the harness
+
+`PtyCore.spawnedPidForSession` is the pid node-pty started for the Session's
+agent PTY. Whether that process is the harness depends on how the family's
+command is launched, and the guard relies on these shapes:
+
+| Family | What `command` resolves to | The spawned pid is |
+| --- | --- | --- |
+| Claude Code | one native binary (also what the npm package's postinstall copies into place) | the harness |
+| Cursor | a bash launcher that `exec`s node | the harness (`exec` keeps the pid) |
+| OpenCode | one native binary | the harness |
+| Pi | one node process | the harness |
+| Codex, `npm install -g @openai/codex` | `bin/codex.js`, a node wrapper that `spawn`s the vendor binary and stays alive as its parent | **the wrapper**; the native `codex` that runs the hooks is its child |
+
+In the container `setpriv` and the `sh -c 'cd … && exec "$@"'` it wraps keep
+the pid too. Measured on this Core with `@openai/codex@0.162.0`: `node
+bin/codex.js` (node 24 reports its comm as `MainThread`) is the pid node-pty
+records, and the native `codex` is its child. So a Codex hook's chain is
+`sh → codex → node(spawned)`, and a guard that held the hook to the spawned pid
+itself — through shells only — refused every Codex hook; that was the round-2
+shape of this fix. A shell terminal or a VM Shell Session has no spawned pid at
+all: nothing the Core would own can be posting for it.
+
+The guard therefore treats the spawned pid as the **root** of the Session's
+process tree and finds the harness under it by the *shape* of the tree. Nothing
+in it names a harness or a launcher: a wrapper the Core has never heard of must
+keep working, because the failure mode of a false *foreign* is a family whose
+Sessions never leave `ready`, which is far worse than a false *owned* (the
+pre-#460 behaviour).
+
+#### Three parts
 
 - **Every hook reports the pid of the process that ran it.** The shell
   families' command (`hookCommand` in `harness-hooks.ts`: Claude Code, Codex,
@@ -384,31 +418,47 @@ inherit.** Three parts:
   bash (macOS) the outer shell execs and the inner shell's parent is the harness;
   where it is dash (Debian, the Core container) it forks and the parent is the
   outer shell, one below the harness.
-- **The Core knows what it spawned.** `PtyCore.spawnedPidForSession` is the pid
-  of the Session's agent PTY — the harness itself, because the PTY spawns the
-  binary directly, and in the container `setpriv` and the `sh -c 'exec …'` it
-  wraps keep that pid. A shell terminal or a VM Shell Session answers `null`:
-  nothing the Core would own can be posting for it.
-- **The receiver climbs from the reported pid to the spawned one through
-  shells only** (`verifyHookProcess` in `harness-hook-origin.ts`). Equal is
-  `owned`. Otherwise each parent is read from the process table —
-  `/proc/<pid>/stat` on Linux, `ps -o ppid=,comm=` on macOS — and the climb
-  continues only while the process it stands on is a shell (`sh`, `dash`,
-  `bash`, `zsh`, …). Reaching the spawned pid is `owned`; a non-shell on the
-  way, a process that is gone, a chain longer than `MAX_HOOK_PROCESS_HOPS`
-  (8), or no reported pid at all is `foreign`. Measured on Claude Code 2.1.295
-  on a Debian Core: an owned hook's chain is `sh → claude`; a `claude -p` run
-  from inside the Session's turn reports `sh → claude(nested) → bash → claude`,
-  and the nested `claude` is the non-shell the climb refuses to cross. Nothing
-  identifies a harness binary by name, because nothing has to: the only question
-  is whether the path from the hook to the spawned process is made of shells.
-
-The check runs in `CoreHarnessStatus.receiveHook` **before** the pipeline, and
-only for a hook that arrived over the wire; the Core's own synthetic events (PTY
-exit, output signals) carry no origin and are never held to a pid. The family in
-the URL (`/api/hooks/<slug>`) is held to the row's harness first: a Codex started
-inside a Claude Code Session posts `/api/hooks/codex` under the Claude Session's
-id, and refusing that needs no process table.
+- **The receiver places the reported pid under the root** (`verifyHookProcess`
+  in `harness-hook-origin.ts`), reading each parent from the process table —
+  `/proc/<pid>/stat` on Linux, one `ps -axo pid=,ppid=,comm=` snapshot per hook
+  on macOS — in three steps:
+  1. *The program that ran the hook.* From the reported pid the climb crosses
+     the hook's own shells (`sh`, `dash`, `bash`, `zsh`, … — the only names the
+     guard knows); the first process that is not a shell is the program that
+     ran the hook: the Session's harness, or a harness nested inside it. A
+     plugin family reports the program outright.
+  2. *Its place under the root.* From that program the climb continues to the
+     root through programs only — launcher wrappers are programs. **A shell on
+     this stretch means the program was started by a shell the harness ran**:
+     a Bash tool call, the operator's own `claude` from the Session's shell.
+     That is a nested harness, and the hook is foreign (`started-by-a-shell`).
+     Not reaching the root at all — the process is gone, reparented, a
+     stranger with the env, a chain longer than `MAX_HOOK_PROCESS_HOPS` (8) —
+     is foreign too (`not-under-root`). Measured on Claude Code 2.1.295 on a
+     Debian Core: an owned hook's chain is `sh → claude`, and a `claude -p`
+     run from inside the Session's turn reports
+     `sh → claude(nested) → bash → claude`.
+  3. *Seniority.* The one shape step 2 cannot see is a harness started by a
+     program rather than a shell — an MCP server the harness spawned, spawning
+     `claude` — because from the tree alone `nested → mcp → harness → root` is
+     the same shape as `harness → wrapper → root`. So `CoreHarnessStatus`
+     remembers which program has been running the Session's hooks: the first
+     owned hook **binds** its program (keyed to the root pid, so a new spawn
+     starts over), a later hook from a *descendant* of the bound program is
+     foreign (`nested-under-harness`), and a hook from an *ancestor* of it
+     **re-binds** to that ancestor. The ancestor case is the real harness
+     arriving after its first POSTs were lost on a busy Core, and re-binding
+     upward is what guarantees the row can never be wedged on a nested
+     process: the harness exists before anything it starts, so it is always
+     the senior program, and the next hook it lands takes the row back. The
+     binding is logged as `harness-status.harness-bound`.
+- **The verdict is applied before the pipeline.** The check runs in
+  `CoreHarnessStatus.receiveHook`, and only for a hook that arrived over the
+  wire; the Core's own synthetic events (PTY exit, output signals) carry no
+  origin and are never held to a pid. The family in the URL
+  (`/api/hooks/<slug>`) is held to the row's harness first: a Codex started
+  inside a Claude Code Session posts `/api/hooks/codex` under the Claude
+  Session's id, and refusing that needs no process table.
 
 A foreign hook is **acked and dropped** — `{ ok: true, ignored:
 "foreign-process" }` — so the nested harness's `curl -f` records no delivery
@@ -417,7 +467,8 @@ id, moves no status, settles nothing and names nothing. It is not proof of life
 either: the quiet-Session backstop (issue 243) and the idle rule (issue 391)
 take an accepted hook as the Session talking, and `hookEvidencesSession`
 excludes `foreign-process` exactly as it excludes `foreign-session`. The drop is
-logged as `harness-status.foreign-process` with both pids.
+logged as `harness-status.foreign-process` with the reason, the reported pid,
+the root pid and the bound harness pid.
 
 What the guard does not do:
 
@@ -426,15 +477,21 @@ What the guard does not do:
   `harness-status.origin-unverifiable` log line: refusing every hook there would
   park a whole platform's Sessions on `ready`, which is worse than the exposure
   ADR 0020 already accepts.
+- **It does not support a launcher that is a forking shell** — a wrapper
+  script that runs the harness without `exec`. To the tree that is
+  indistinguishable from a tool shell, and no family the Core installs has that
+  shape (Cursor's launcher execs). A new family with such a launcher needs the
+  launcher fixed or the spawn to bypass it, and this is the table above's job
+  to say.
 - **It does not close that exposure.** A process holding the token can still
-  forge a request naming the spawned pid (ADR 0020, *the hook token is inherited
+  forge a request naming the root pid (ADR 0020, *the hook token is inherited
   by everything the harness spawns*, as amended by #460). What it closes is the
   accidental case the issue is about: a harness started inside a Session,
   running the Session's own hook file in good faith.
 - **It does not vouch for a Session the Core runs no harness for.** With no
-  agent PTY there is no spawned pid, and every hook is foreign — the process of
-  a previous spawn, or a stranger with the env. The PTY-exit settle still
-  answers for that row.
+  agent PTY there is no root, and every hook is foreign (`no-root`) — the
+  process of a previous spawn, or a stranger with the env. The PTY-exit settle
+  still answers for that row, and clears the binding.
 
 The Panel's own hook endpoint never produces `foreign-process`; the outcome is
 listed in the shared pipeline's `HookPipelineResult` so both hosts answer it with

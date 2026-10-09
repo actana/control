@@ -120,8 +120,9 @@ export {
  * nested inside the Session — a `claude -p` the agent runs, one the operator
  * starts from the Session's shell — would otherwise post under the Session's
  * id and take its card over. The pid is the one fact a nested process cannot
- * inherit: the receiver compares it with the pid the Core spawned, climbing
- * through nothing but shells to get there (`harness-hook-origin.ts`). It is
+ * inherit: the receiver climbs this hook's own shells to the program that
+ * ran it and places that program under the pid the Core spawned
+ * (`harness-hook-origin.ts`). It is
  * `$PPID` rather than `$$` because the harness runs the entry as
  * `/bin/sh -c "sh -c '…'"`: the inner shell's parent is the harness where
  * `/bin/sh` execs (bash) and the outer shell where it forks (dash), and the

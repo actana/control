@@ -264,8 +264,9 @@ async function startCore(): Promise<void> {
   const harnessStatus = new CoreHarnessStatus({
     writer: sessionWriter,
     generateTitle: (sessionId, prompt) => titleGenerator.schedule(sessionId, prompt),
-    // The pid every hook over the wire is held to (issue 460): the harness
-    // this Core spawned for the Session, and nothing started underneath it.
+    // The root every hook over the wire is placed under (issue 460): the
+    // process this Core spawned for the Session, under which the harness is
+    // found — and nothing started underneath the harness.
     spawnedPid: (sessionId) => ptyCore?.spawnedPidForSession(sessionId) ?? null,
   });
 

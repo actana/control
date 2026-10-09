@@ -1158,10 +1158,17 @@ export class PtyCore {
   }
 
   /**
-   * The pid of the harness process this Core spawned for the Session, or null
-   * when it runs none. The hook receiver holds every hook to this pid (issue
-   * 460): the hook env is inherited by everything the harness starts, and the
-   * pid is the one fact a process nested inside the Session cannot inherit.
+   * The pid this Core spawned for the Session's agent PTY, or null when it
+   * runs none: the ROOT of the Session's process tree, which is not always
+   * the harness. It is the harness for the families that are one process
+   * (Claude Code and OpenCode are native binaries, Pi is one node process,
+   * Cursor's bash launcher `exec`s node, and the container wrapper
+   * `sh -c 'cd … && exec "$@"'` keeps the pid); for Codex as the Core
+   * installs it, it is the npm wrapper `bin/codex.js`, and the native harness
+   * that runs the hooks is its child. The hook receiver places every hook
+   * under this root (issue 460, `harness-hook-origin.ts`): the hook env is
+   * inherited by everything the harness starts, and a pid's place in the tree
+   * is the one fact a process nested inside the Session cannot inherit.
    *
    * Same selection as {@link findBySession} — agent PTYs only. A shell
    * terminal's pid would be a process no hook file reports for, and a VM

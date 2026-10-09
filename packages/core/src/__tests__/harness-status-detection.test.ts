@@ -40,22 +40,42 @@ import type { CoreLinkEvent } from "@actana/sdk/core";
 // starts at an HTTP request a `curl` in a hook file could have made.
 
 const SESSION_ID = "t1";
-/** The pid of the harness this Core "spawned" for the Session (issue 460). */
+/**
+ * The pid this Core "spawned" for the Session (issue 460): the root of its
+ * process tree. For the Claude Code row below it is the harness itself; for
+ * the Codex row it is the npm wrapper whose child runs the hooks.
+ */
 const SPAWNED_PID = 4242;
 /** A `claude -p` started by the Session's own turn: a pid the Core never spawned. */
 const NESTED_PID = 5151;
+/** The native `codex` under the npm wrapper — the Codex harness that runs the hooks. */
+const CODEX_PID = 4600;
 /**
  * The process table a hook's climb reads, as measured on a Debian `/bin/sh`
  * (dash forks the inner `sh -c`, so a hook's `$PPID` is one shell below the
- * harness) and on a nested run from inside a Bash tool call.
+ * harness), on a nested run from inside a Bash tool call, on a nested run
+ * started by an MCP server (no shell in between), and on Codex installed by
+ * npm (`node bin/codex.js` ← `codex`, the wrapper's comm being `MainThread`
+ * on node 24).
  */
 const PROCESS_TABLE: Record<number, { comm: string; ppid: number }> = {
   [SPAWNED_PID]: { comm: "claude", ppid: 9 },
   4300: { comm: "sh", ppid: SPAWNED_PID },
   4301: { comm: "sh", ppid: 4300 },
+  // Nested through a Bash tool call.
   4400: { comm: "bash", ppid: SPAWNED_PID },
   [NESTED_PID]: { comm: "claude", ppid: 4400 },
   5200: { comm: "sh", ppid: NESTED_PID },
+  // Nested through an MCP server the harness spawned directly.
+  4500: { comm: "node", ppid: SPAWNED_PID },
+  5300: { comm: "claude", ppid: 4500 },
+  5301: { comm: "sh", ppid: 5300 },
+  // Codex: the same root pid stands for the npm wrapper in the Codex tests.
+  [CODEX_PID]: { comm: "codex", ppid: SPAWNED_PID },
+  4601: { comm: "sh", ppid: CODEX_PID },
+  4700: { comm: "bash", ppid: CODEX_PID },
+  4701: { comm: "codex", ppid: 4700 },
+  4702: { comm: "sh", ppid: 4701 },
 };
 
 describe("harness status detection on the Core (issue 84)", () => {
@@ -526,6 +546,40 @@ describe("harness status detection on the Core (issue 84)", () => {
       expect(rowStatus()).toBe("running");
     });
 
+    it("is dropped when started by a program rather than a shell, once the Session's harness has spoken", async () => {
+      // An MCP server the harness spawned, spawning `claude`: no shell in the
+      // chain, so only seniority tells it from a launcher wrapper. The
+      // Session's own SessionStart always comes first — the harness exists
+      // before anything it starts.
+      await postHook({ hook_event_name: "SessionStart", session_id: "sess-1", source: "startup" });
+      const stop = await postHook({ hook_event_name: "Stop", session_id: "nested-1" }, { pid: 5301 });
+      expect(stop.json).toMatchObject({ ok: true, ignored: "foreign-process" });
+      expect(rowSessionId()).toBe("sess-1");
+      expect(rowStatus()).toBe("ready");
+    });
+
+    it("cannot wedge the Session even when it got in first — the real harness takes the row back", async () => {
+      // Every one of the harness's own early POSTs lost on a busy Core, so the
+      // nested one binds first. The harness is its ancestor, so its next hook
+      // re-binds the row; from then on the nested one is foreign.
+      const first = await postHook(
+        { hook_event_name: "SessionStart", session_id: "nested-1", source: "startup" },
+        { pid: 5301 },
+      );
+      expect(first.json).toMatchObject({ ok: true });
+      expect(rowSessionId()).toBe("nested-1");
+
+      await postHook({ hook_event_name: "SessionStart", session_id: "sess-1", source: "startup" }, { pid: 4300 });
+      expect(rowSessionId()).toBe("sess-1");
+      await postHook({ hook_event_name: "UserPromptSubmit", session_id: "sess-1" });
+      expect(rowStatus()).toBe("running");
+
+      const stop = await postHook({ hook_event_name: "Stop", session_id: "nested-1" }, { pid: 5301 });
+      expect(stop.json).toMatchObject({ ok: true, ignored: "foreign-process" });
+      expect(rowStatus()).toBe("running");
+      expect(rowSessionId()).toBe("sess-1");
+    });
+
     it("drops a hook that reports no pid at all", async () => {
       // Every hook file this Core writes reports one; a request without it is
       // not from a file this Core wrote.
@@ -572,6 +626,38 @@ describe("harness status detection on the Core (issue 84)", () => {
       await postHook({ hook_event_name: "Stop", session_id: "sess-1" }, { pid: 4301 });
       expect(rowStatus()).toBe("finished");
       expect(kinds()).toContain("session:finished");
+    });
+
+    it("reports exactly as before for Codex, whose hooks come from the native child of the npm wrapper", async () => {
+      // The row must BE a Codex Session (the family in the URL is held to it
+      // first), and the root pid is the `node bin/codex.js` wrapper.
+      coreMutationStore.mutateSession({ op: "delete", sessionId: SESSION_ID });
+      coreMutationStore.mutateSession({
+        op: "create",
+        sessionId: SESSION_ID,
+        title: TITLE_WAITING,
+        agent: "codex",
+        status: "ready",
+      });
+      const codex = { slug: "codex", pid: 4601 };
+      await postHook({ hook_event_name: "UserPromptSubmit", session_id: "cx-1", prompt: "ship it" }, codex);
+      expect(rowStatus()).toBe("running");
+      expect(rowSessionId()).toBe("cx-1");
+      await postHook({ hook_event_name: "Stop", session_id: "cx-1" }, codex);
+      expect(rowStatus()).toBe("finished");
+      expect(kinds()).toContain("session:finished");
+      // The native codex's own pid, where the hook runner execs.
+      await postHook({ hook_event_name: "UserPromptSubmit", session_id: "cx-1" }, { slug: "codex", pid: CODEX_PID });
+      expect(rowStatus()).toBe("running");
+
+      // And a codex nested inside it through a tool shell is still foreign.
+      const nested = await postHook(
+        { hook_event_name: "Stop", session_id: "cx-nested" },
+        { slug: "codex", pid: 4702 },
+      );
+      expect(nested.json).toMatchObject({ ok: true, ignored: "foreign-process" });
+      expect(rowStatus()).toBe("running");
+      expect(rowSessionId()).toBe("cx-1");
     });
 
     it("still adopts a new session id from its own capture event (a resume in place)", async () => {
