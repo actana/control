@@ -27,13 +27,21 @@
 // showing "needs setup" until its next look, up to ten minutes later. SIGHUP (which calls
 // {@link HarnessSetup.forgetBlocks}), a restart of the Core, or a new version of the
 // binary looks at once.
+//
+// A third step for codex only (#703): the hook trust `harness-pretrust.ts` writes
+// reproduces codex's own hash, read off one codex release. Once per codex binary and
+// version (so on every upgrade), codex itself is asked whether it still hashes this
+// Core's hooks that way (`codex-hook-trust-check.ts`). The answer is logged, not acted
+// on: a mismatch means codex asks at its hook review again, as it did before the writer.
 
 import log from "@actana/shared/log";
 import type { Harness } from "@actana/shared/domain";
 import type { CoreLinkHarnessAvailability, CoreLinkHarnessAvailabilityMap } from "@actana/shared/sdk-link-frames";
 import { needsSetupReason } from "@actana/shared/harness-needs-setup";
 import { dialogsForHarness, matchBlockingDialog, type BlockingDialogSpec } from "./harness-prompt-delivery";
-import { PRETRUST_HARNESSES } from "./harness-pretrust";
+import { compareCliVersions } from "@actana/shared/harness-cli-version-compare";
+import { CODEX_HOOK_HASH_VERIFIED, PRETRUST_HARNESSES } from "./harness-pretrust";
+import type { CodexHookTrustCheck } from "./codex-hook-trust-check";
 
 /**
  * Dialogs only the setup check looks for. codex's directory-trust dialog, as
@@ -87,20 +95,42 @@ export type HarnessSetupDeps = {
    * which is not a dialog and is not reported as one.
    */
   runOnce: (run: SetupRun) => Promise<string>;
+  /**
+   * Ask the installed codex whether it hashes this Core's hooks as the trust writer does
+   * (`verifyCodexHookTrustViaCore`). Rejects when codex could not be asked. Absent where there is no codex to ask.
+   */
+  verifyCodexHookTrust?: () => Promise<{ binary: string; version: string | null; check: CodexHookTrustCheck }>;
   /** The clock, for the recheck backoff. */
   now?: () => number;
+};
+
+/** What the last codex hook-trust check found, for the binary and version it was run on. */
+export type CodexHookTrustState = {
+  /** `<path>@<version>` of the codex it was run on. */
+  key: string;
+  /** codex's answer; null while the check is running, and when it could not be run (`error`). */
+  check: CodexHookTrustCheck | null;
+  /** Why it could not be run, when it could not. */
+  error?: string;
 };
 
 export class HarnessSetup {
   private readonly passed = new Map<string, string>();
   /** A Harness found blocked: what it showed, and when it is started again (a full process each time). */
   private readonly blocked = new Map<Harness, { key: string; dialog: string; nextAt: number; delayMs: number }>();
+  private codexHookTrustState: CodexHookTrustState | null = null;
 
   constructor(private readonly deps: HarnessSetupDeps) {}
 
-  /** Look at every blocked Harness again on the next round, whatever its backoff says (SIGHUP). */
+  /** Look at every blocked Harness again on the next round, whatever its backoff says (SIGHUP); ask codex again too. */
   forgetBlocks(): void {
     this.blocked.clear();
+    this.codexHookTrustState = null;
+  }
+
+  /** The last codex hook-trust check (#703), or null when codex has not been available yet. */
+  codexHookTrust(): CodexHookTrustState | null {
+    return this.codexHookTrustState;
   }
 
   /** `map` with every available-but-blocked Harness turned into its needs-setup entry. */
@@ -121,6 +151,9 @@ export class HarnessSetup {
         log.warn("core-setup.pretrust-failed", { error: err instanceof Error ? err.message : String(err) });
       }
     }
+
+    const codex = available.find(([harness]) => harness === "codex");
+    if (codex && this.deps.verifyCodexHookTrust) await this.verifyCodexHookTrust(codex[1]);
 
     const next: CoreLinkHarnessAvailabilityMap = { ...map };
     // One at a time: each is a full Harness process, on a VM several Cores share.
@@ -147,6 +180,36 @@ export class HarnessSetup {
       next[harness] = { ...entry, status: "missing", reason: needsSetupReason(dialog) };
     }
     return next;
+  }
+
+  /**
+   * Once per codex binary and version: does the installed codex hash this Core's hooks as the trust writer does?
+   * A run that could not be made is remembered too, so a codex that cannot be asked costs one try per version, not
+   * one a minute; SIGHUP ({@link forgetBlocks}) asks again.
+   */
+  private async verifyCodexHookTrust(entry: CoreLinkHarnessAvailability): Promise<void> {
+    const key = `${entry.path ?? ""}@${entry.version ?? ""}`;
+    if (this.codexHookTrustState?.key === key) return;
+    this.codexHookTrustState = { key, check: null };
+    try {
+      const { binary, version, check } = await this.deps.verifyCodexHookTrust!();
+      if (this.codexHookTrustState?.key !== key) return; // forgotten or superseded while codex was being asked
+      this.codexHookTrustState = { key, check };
+      const codexVersion = version ?? entry.version ?? null;
+      const fields = {
+        binary,
+        version: codexVersion,
+        derivedFor: CODEX_HOOK_HASH_VERIFIED,
+        // Newer than the release the hash was read off: the writer still holds, and the constant can move up.
+        newer: codexVersion !== null && compareCliVersions(codexVersion, CODEX_HOOK_HASH_VERIFIED) > 0,
+      };
+      if (check.verified) log.info("core-setup.codex-hook-trust.verified", fields);
+      else log.warn("core-setup.codex-hook-trust.mismatch", { ...fields, reason: check.reason, hooks: check.hooks });
+    } catch (err) {
+      const error = err instanceof Error ? err.message : String(err);
+      if (this.codexHookTrustState?.key === key) this.codexHookTrustState = { key, check: null, error };
+      log.warn("core-setup.codex-hook-trust.failed", { version: entry.version ?? null, error });
+    }
   }
 
   /** The id of the blocking dialog on screen, null when there is none, undefined when the run failed. */

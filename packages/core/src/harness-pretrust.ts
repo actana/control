@@ -191,12 +191,17 @@ export function trustCodex(file: string, dirs: readonly string[]): "written" | "
 // ─── Codex hook trust ────────────────────────────────────────────────
 
 /**
- * The codex version whose hook hash this file reproduces (codex-rs `hooks/src/engine/discovery.rs` `hook_hash`
- * and `config/src/fingerprint.rs` `version_for_toml`, tag rust-v0.160.0). Checked against three entries codex
- * itself wrote for the hooks this Core installs (permission_request 777d6667, user_prompt_submit f23db2db, stop
- * 0fc32051). A newer codex may normalise differently; a hash that does not match only makes codex ask again.
+ * The newest codex release this file's hook hash is known to match (codex-rs `hooks/src/engine/discovery.rs`
+ * `hook_hash` and `config/src/fingerprint.rs` `version_for_toml`). Read off three entries codex 0.160.0 itself wrote
+ * for the hooks this Core installs (permission_request 777d6667, user_prompt_submit f23db2db, stop 0fc32051), and
+ * confirmed on 0.162.0 through codex's own `hooks/list` (`codex-hook-trust-check.ts`), which reported the same
+ * three hashes and read the entries this writer makes as `trusted`.
+ *
+ * A newer codex may normalise differently; a hash that does not match only makes codex ask again. The Core asks
+ * the codex it has on every upgrade and logs the answer (#703), and `codex-hook-trust-check.test.ts` fails on a
+ * host whose codex is newer than this, so the constant moves up with the evidence and never ahead of it.
  */
-export const CODEX_HOOK_HASH_VERIFIED = "0.160.0";
+export const CODEX_HOOK_HASH_VERIFIED = "0.162.0";
 
 /** codex's `hook_event_key_label`: the event as it is spelled in a hook's key and in its hashed identity. */
 const CODEX_EVENT_LABELS: Readonly<Record<string, string>> = {

@@ -14,6 +14,8 @@ import {
   CORE_HOME_OPERATIONS,
   CoreHomeOpFailedError,
   CoreHomeOpRefusedError,
+  codexHookCheckRoot,
+  handleCoreHomeOp,
   handleCoreHomeOpSync,
   parseCoreHomeOpRequest,
   type CoreHomeOpContext,
@@ -71,6 +73,7 @@ describe("request validation: known operations only", () => {
         "resolveCommand",
         "resolveExecCwd",
         "spawnPathFacts",
+        "verifyCodexHookTrust",
         "wireLocalCore",
       ].sort(),
     );
@@ -555,5 +558,76 @@ describe("installHarnessHooks for codex also records the trust of the hooks it w
     // The reason comes back to the caller, which logs it; the config is untouched.
     expect(handleCoreHomeOpSync(codexHooks(work), ctx)).toMatchObject({ installed: true, hookTrustNote: expect.stringContaining("hooks.state") });
     expect(fs.readFileSync(path.join(home, ".codex", "config.toml"), "utf8")).toBe("hooks = {}\n");
+  });
+});
+
+describe("verifyCodexHookTrust (#703): codex is found as the probe finds it, and asked in a workspace under the home", () => {
+  /** A `codex` that answers `--version`, and whose `app-server` lists what the check wrote as trusted. */
+  const fakeCodex = (version: string, appServer = "list") => {
+    const dir = path.join(home, ".local", "bin");
+    fs.mkdirSync(dir, { recursive: true });
+    const script = path.join(dir, "fake-codex.mjs");
+    fs.writeFileSync(
+      script,
+      `
+import fs from "node:fs";
+import readline from "node:readline";
+const out = (m) => process.stdout.write(JSON.stringify(m) + "\\n");
+readline.createInterface({ input: process.stdin }).on("line", (line) => {
+  const msg = JSON.parse(line);
+  if (msg.method === "initialize") return out({ id: msg.id, result: {} });
+  if (msg.method !== "hooks/list") return;
+  const config = fs.readFileSync(process.env.CODEX_HOME + "/config.toml", "utf8");
+  const hooks = [...config.matchAll(/^\\[hooks\\.state\\."((?:[^"\\\\]|\\\\.)*)"\\]\\n\\s*trusted_hash = "([^"]*)"/gm)]
+    .map((m) => ({ key: m[1], currentHash: m[2], trustStatus: "trusted" }));
+  out({ id: msg.id, result: { data: [{ cwd: msg.params.cwds[0], hooks, warnings: [], errors: [] }] } });
+});
+`,
+    );
+    const body =
+      appServer === "list"
+        ? `exec "${process.execPath}" "${script}" "$@"`
+        : `echo "fake codex: no app-server here" >&2; exit 7`;
+    const file = path.join(dir, "codex");
+    fs.writeFileSync(file, `#!/bin/sh\nif [ "$1" = "--version" ]; then echo "codex-cli ${version}"; exit 0; fi\n${body}\n`, { mode: 0o755 });
+    return file;
+  };
+  const request = (p: string | null) => ({ op: "verifyCodexHookTrust", path: p }) as Extract<CoreHomeOpRequest, { op: "verifyCodexHookTrust" }>;
+
+  it("parses a PATH or none, and refuses anything else", () => {
+    expect(parseCoreHomeOpRequest({ op: "verifyCodexHookTrust", path: "/a:/b" })).toEqual(request("/a:/b"));
+    expect(parseCoreHomeOpRequest({ op: "verifyCodexHookTrust", path: null })).toEqual(request(null));
+    expect(parseCoreHomeOpRequest({ op: "verifyCodexHookTrust" })).toEqual(request(null));
+    expect(refusal(() => parseCoreHomeOpRequest({ op: "verifyCodexHookTrust", binary: "/x/codex" })).code).toBe("bad-request");
+    expect(refusal(() => parseCoreHomeOpRequest({ op: "verifyCodexHookTrust", path: 7 })).code).toBe("bad-field");
+  });
+
+  it("runs only through handleCoreHomeOp: the synchronous handler does not start codex", () => {
+    expect(() => handleCoreHomeOpSync(request(null), ctx)).toThrow(CoreHomeOpFailedError);
+  });
+
+  it("asks the codex on the given PATH, in a workspace under the home's check root, and reports binary, version and verdict", async () => {
+    const binary = fakeCodex("99.0.0");
+    const answer = await handleCoreHomeOp(request(path.dirname(binary)), ctx);
+    expect(answer).toMatchObject({ binary, version: "99.0.0", check: { verified: true } });
+    expect(answer.check.hooks).toHaveLength(3);
+    const root = codexHookCheckRoot(home);
+    expect(root.startsWith(home + path.sep)).toBe(true);
+    expect(fs.readdirSync(root)).toEqual([]); // the workspace and the CODEX_HOME are gone
+  });
+
+  it("fails, and does not refuse, when codex is not on the PATH or cannot be asked", async () => {
+    await expect(handleCoreHomeOp(request(outside), ctx)).rejects.toThrow(CoreHomeOpFailedError);
+    const binary = fakeCodex("99.0.0", "exit");
+    await expect(handleCoreHomeOp(request(path.dirname(binary)), ctx)).rejects.toThrow(/exited \(7\) before answering hooks\/list.*no app-server here/);
+    expect(fs.readdirSync(codexHookCheckRoot(home))).toEqual([]);
+  });
+
+  it("refuses when the check root is not inside the home", async () => {
+    const binary = fakeCodex("99.0.0");
+    fs.rmSync(path.join(home, ".cache"), { recursive: true, force: true });
+    fs.mkdirSync(path.join(outside, "cache"));
+    fs.symlinkSync(path.join(outside, "cache"), path.join(home, ".cache"));
+    await expect(handleCoreHomeOp(request(path.dirname(binary)), ctx)).rejects.toMatchObject({ code: "path-escape" });
   });
 });
