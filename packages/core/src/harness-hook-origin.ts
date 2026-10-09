@@ -44,6 +44,7 @@
 import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { asCore } from "./core-identity";
 
 /** What the receiver learned about the request, beyond its body. */
 export type HookOrigin = {
@@ -171,10 +172,14 @@ function readProcessFromProc(pid: number): ProcessEntry | null {
 function readProcessFromPs(pid: number): ProcessEntry | null {
   let out: string;
   try {
-    out = execFileSync("ps", ["-o", "ppid=,comm=", "-p", String(pid)], {
+    // Through the identity wrapper like every child the Core starts; outside
+    // the container (where macOS is) it is the spec unchanged.
+    const launch = asCore({ command: "/bin/ps", args: ["-o", "ppid=,comm=", "-p", String(pid)] });
+    out = execFileSync(launch.command, launch.args, {
       encoding: "utf8",
       timeout: 2000,
       stdio: ["ignore", "pipe", "ignore"],
+      ...(launch.env ? { env: launch.env } : {}),
     });
   } catch {
     return null;
