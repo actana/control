@@ -129,6 +129,55 @@ function tomlQuote(value: string): string {
   return `"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
 }
 
+/**
+ * For each line of a TOML file, whether it continues a value begun on an earlier line: the inside of a
+ * multi-line basic or literal string (`"""` / `'''`), or of an array still open from a previous line. Such a line
+ * is text or data, never a table header or a key, however much it looks like one (`["a", "b"]` as the last
+ * element of a nested array, `[hooks]` quoted in a string), so the line scanners below skip it (#705).
+ *
+ * Single-line strings and `#` comments are stepped over so that a bracket or quote inside them counts for
+ * nothing. Only what codex's own strict parser would accept matters: an unclosed single-line string ends with
+ * its line, and a `]` with nothing open is ignored.
+ */
+export function tomlContinuationLines(lines: readonly string[]): boolean[] {
+  const out: boolean[] = [];
+  let depth = 0;
+  let multi: '"' | "'" | null = null;
+  for (const line of lines) {
+    out.push(depth > 0 || multi !== null);
+    let i = 0;
+    while (i < line.length) {
+      const ch = line[i]!;
+      if (multi !== null) {
+        if (ch === "\\" && multi === '"') {
+          i += 2;
+        } else if (line.startsWith(multi.repeat(3), i)) {
+          // The delimiter is the last three of a run of quotes: `""""` is one `"` of content, then the end.
+          while (line[i] === multi) i++;
+          multi = null;
+        } else i++;
+        continue;
+      }
+      if (ch === "#") break;
+      if (ch === '"' || ch === "'") {
+        if (line.startsWith(ch.repeat(3), i)) {
+          multi = ch;
+          i += 3;
+          continue;
+        }
+        i++;
+        while (i < line.length && line[i] !== ch) i += ch === '"' && line[i] === "\\" ? 2 : 1;
+        i++;
+        continue;
+      }
+      if (ch === "[" || ch === "{") depth++;
+      else if ((ch === "]" || ch === "}") && depth > 0) depth--;
+      i++;
+    }
+  }
+  return out;
+}
+
 /** The key a `[projects.<key>]` header names, or null when it is some other table. */
 function projectHeaderKey(line: string): string | null {
   const m = /^\s*\[\s*projects\s*\.\s*("(?:[^"\\]|\\.)*"|'[^']*')\s*\]\s*(?:#.*)?$/.exec(line);
@@ -144,7 +193,16 @@ function projectHeaderKey(line: string): string | null {
  * a second definition would make the file invalid TOML.
  */
 function definesProjectsElsewhere(lines: readonly string[]): boolean {
-  return lines.some((line) => /^\s*projects\s*[=.]/.test(line) || /^\s*\[\s*projects\s*\]/.test(line));
+  const continued = tomlContinuationLines(lines);
+  return lines.some((line, i) => !continued[i] && (/^\s*projects\s*[=.]/.test(line) || /^\s*\[\s*projects\s*\]/.test(line)));
+}
+
+/** The index of the first line after `header` that opens another table, or the end of the file. */
+function tableEnd(lines: readonly string[], continued: readonly boolean[], header: number): number {
+  for (let i = header + 1; i < lines.length; i++) {
+    if (!continued[i] && /^\s*\[/.test(lines[i]!)) return i;
+  }
+  return lines.length;
 }
 
 export function trustCodex(file: string, dirs: readonly string[]): "written" | "unchanged" {
@@ -156,7 +214,8 @@ export function trustCodex(file: string, dirs: readonly string[]): "written" | "
   }
   let changed = false;
   for (const dir of dirs) {
-    const header = lines.findIndex((line) => projectHeaderKey(line) === dir);
+    const continued = tomlContinuationLines(lines);
+    const header = lines.findIndex((line, i) => !continued[i] && projectHeaderKey(line) === dir);
     if (header === -1) {
       // One blank line between the old text and the new table (`""` last means the
       // file already ended in a newline).
@@ -165,14 +224,8 @@ export function trustCodex(file: string, dirs: readonly string[]): "written" | "
       changed = true;
       continue;
     }
-    let end = lines.length;
-    for (let i = header + 1; i < lines.length; i++) {
-      if (/^\s*\[/.test(lines[i]!)) {
-        end = i;
-        break;
-      }
-    }
-    const level = lines.findIndex((line, i) => i > header && i < end && /^\s*trust_level\s*=/.test(line));
+    const end = tableEnd(lines, continued, header);
+    const level = lines.findIndex((line, i) => i > header && i < end && !continued[i] && /^\s*trust_level\s*=/.test(line));
     if (level === -1) {
       lines.splice(header + 1, 0, 'trust_level = "trusted"');
       changed = true;
@@ -349,11 +402,13 @@ function tomlKeyPath(text: string): string[] | null {
  * `[hooks.state]` table (also written dotted or quoted) define `hooks.state` some other way (an inline table, dotted
  * keys), and a second `[hooks.state."k"]` beside any of them is invalid TOML that codex cannot load. A `hooks` key
  * in another table is something else and is ignored: `[features] hooks = true` is codex's own switch for
- * `--enable hooks`.
+ * `--enable hooks`. A line that continues a multi-line string or array is skipped (`tomlContinuationLines`).
  */
 export function hookStateConflict(lines: readonly string[]): string | null {
+  const continued = tomlContinuationLines(lines);
   let table: string[] = [];
-  for (const line of lines) {
+  for (const [i, line] of lines.entries()) {
+    if (continued[i]) continue;
     const header = /^\s*(\[\[?)\s*(.*?)\s*\]\]?\s*(?:#.*)?$/.exec(line);
     if (header && !/^\s*[A-Za-z0-9_"'-]+[^\]]*=/.test(line)) {
       table = tomlKeyPath(header[2]!) ?? ["?"];
@@ -384,7 +439,8 @@ export function trustCodexHooks(file: string, entries: readonly (readonly [strin
   if (conflict) throw new Error(`${file} defines "hooks.state" as ${conflict}, a form this writer does not edit`);
   let changed = false;
   for (const [key, hash] of entries) {
-    const header = lines.findIndex((line) => hookStateHeaderKey(line) === key);
+    const continued = tomlContinuationLines(lines);
+    const header = lines.findIndex((line, i) => !continued[i] && hookStateHeaderKey(line) === key);
     const want = `trusted_hash = ${tomlQuote(hash)}`;
     if (header === -1) {
       if (lines.length > 0 && lines[lines.length - 1] !== "") lines.push("");
@@ -392,14 +448,8 @@ export function trustCodexHooks(file: string, entries: readonly (readonly [strin
       changed = true;
       continue;
     }
-    let end = lines.length;
-    for (let i = header + 1; i < lines.length; i++) {
-      if (/^\s*\[/.test(lines[i]!)) {
-        end = i;
-        break;
-      }
-    }
-    const at = lines.findIndex((line, i) => i > header && i < end && /^\s*trusted_hash\s*=/.test(line));
+    const end = tableEnd(lines, continued, header);
+    const at = lines.findIndex((line, i) => i > header && i < end && !continued[i] && /^\s*trusted_hash\s*=/.test(line));
     if (at === -1) {
       lines.splice(header + 1, 0, want);
       changed = true;

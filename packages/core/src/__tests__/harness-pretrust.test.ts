@@ -11,6 +11,7 @@ import {
   codexHookHash,
   codexHookKey,
   hookStateConflict,
+  tomlContinuationLines,
   cursorMarkerPath,
   cursorProjectSlug,
   ownedCodexHookTrust,
@@ -376,5 +377,105 @@ describe("codex hook trust: [hooks.state.\"<hooks.json>:<event>:<group>:<handler
     const file = path.join(dir, "config.toml");
     expect(trustCodexHooks(file, [])).toBe("unchanged");
     expect(fs.existsSync(file)).toBe(false);
+  });
+});
+
+// #705: a line inside a multi-line array or string can look like a table header or a key. The scanners that
+// read ~/.codex/config.toml line by line must skip such continuation lines, or a conflict is missed (a
+// duplicate `[hooks.state."key"]` table would then be written) or invented (a config nothing is wrong with is
+// refused).
+describe("codex config.toml scanners skip continuation lines (#705)", () => {
+  const STOP_KEY = "/h/.codex/hooks.json:stop:0:0";
+
+  it("marks the lines that continue a multi-line array or string, and nothing else", () => {
+    const text = [
+      'a = "[x]" # [hooks]', // 0: single-line string and comment: brackets count for nothing
+      "[tui]", // 1: a header opens and closes on its line
+      "[[arr]]", // 2
+      "m = [", // 3
+      '  ["a", "b"]', // 4: continuation
+      "]", // 5: continuation (closes the array)
+      'b = """', // 6
+      "[hooks]", // 7: continuation
+      '\\""" still open', // 8: continuation: an escaped quote does not close the string
+      '""""', // 9: continuation: content `"`, then the delimiter
+      "c = '''", // 10
+      "[hooks.state]", // 11: continuation
+      "'''", // 12: continuation (closes the string)
+      'd = ["""', // 13
+      '""", "x",', // 14: continuation: the string closes, the array stays open
+      "]", // 15: continuation
+      "e = 1", // 16
+      "f = { g = [1] }", // 17
+      '"[k]" = 2', // 18: a quoted key with brackets
+    ];
+    expect(tomlContinuationLines(text).map((flag, i) => (flag ? i : -1)).filter((i) => i >= 0)).toEqual([4, 5, 7, 8, 9, 11, 12, 14, 15]);
+    expect(tomlContinuationLines([])).toEqual([]);
+    expect(tomlContinuationLines(["]", "x = 1"])).toEqual([false, false]);
+  });
+
+  it.each([
+    ["a nested array whose last element sits on its own line", 'matrix = [\n  ["a", "b"]\n]\nhooks = { state = {} }\n', "a top-level `hooks` key"],
+    ["a multi-line array with a bracket line before a top-level hooks key", 'm = [\n  [1],\n  [2]\n]\n\nhooks.state."k".trusted_hash = "x"\n', "a top-level `hooks` key"],
+    ["a table header quoted in a multi-line basic string", 'note = """\n[tui]\n"""\nhooks = { state = {} }\n', "a top-level `hooks` key"],
+    ["a table header quoted in a multi-line literal string", "note = '''\n[tui]\n'''\nhooks = { state = {} }\n", "a top-level `hooks` key"],
+    ["a [hooks] header quoted in a string before a real [hooks] table", 'note = """\n[tui]\n"""\n[hooks]\nstate = {}\n', "a `state` key in [hooks]"],
+  ])("still sees the conflict after %s", (_name, text, why) => {
+    expect(hookStateConflict(text.split("\n"))).toBe(why);
+  });
+
+  it.each([
+    ["a [hooks] header quoted in a multi-line basic string", 'note = """\n[hooks]\n"""\nstate = {}\n'],
+    ["a [hooks] header quoted in a multi-line literal string", "note = '''\n[hooks]\n'''\nstate = {}\n"],
+    ["a [hooks.state] header quoted in a string", 'doc = """\n[hooks.state]\n"""\n'],
+    ["a hooks key quoted in a string", 'doc = """\nhooks = {}\nstate = {}\n"""\n'],
+    ["a hooks key on an array continuation line", 'm = [\n  1,\n  2\n]\n[tui]\nhooks = "x"\n'],
+    ["a hooks line after a string that closes with extra quotes", 'doc = """\n""""\n[tui]\nhooks = "x"\n'],
+  ])("invents no conflict from %s", (_name, text) => {
+    expect(hookStateConflict(text.split("\n"))).toBeNull();
+  });
+
+  it("edits the real [hooks.state.\"key\"] table, not a look-alike inside a string, and the output is valid TOML", () => {
+    const file = path.join(dir, "config.toml");
+    const before = `doc = """\n[hooks.state."${STOP_KEY}"]\ntrusted_hash = "sha256:quoted"\n"""\n`;
+    fs.writeFileSync(file, before);
+    expect(trustCodexHooks(file, [[STOP_KEY, REAL_HASHES.Stop!]])).toBe("written");
+    expect(read(file)).toBe(`${before}\n[hooks.state."${STOP_KEY}"]\ntrusted_hash = "${REAL_HASHES.Stop}"\n`);
+    const parsed = parseToml(read(file));
+    if (parsed) {
+      expect(parsed.doc).toBe(`[hooks.state."${STOP_KEY}"]\ntrusted_hash = "sha256:quoted"\n`);
+      expect(parsed.hooks.state[STOP_KEY]).toEqual({ trusted_hash: REAL_HASHES.Stop });
+    }
+    expect(trustCodexHooks(file, [[STOP_KEY, REAL_HASHES.Stop!]])).toBe("unchanged");
+  });
+
+  it("does not end a [hooks.state.\"key\"] table at a bracket line of its own multi-line array, so the stale hash is replaced and not duplicated", () => {
+    const file = path.join(dir, "config.toml");
+    fs.writeFileSync(file, `[hooks.state."${STOP_KEY}"]\ntags = [\n  [1],\n  [2]\n]\ntrusted_hash = "sha256:stale"\n\n[tui]\ntheme = "dark"\n`);
+    expect(trustCodexHooks(file, [[STOP_KEY, REAL_HASHES.Stop!]])).toBe("written");
+    const after = read(file);
+    expect(after).toBe(`[hooks.state."${STOP_KEY}"]\ntags = [\n  [1],\n  [2]\n]\ntrusted_hash = "${REAL_HASHES.Stop}"\n\n[tui]\ntheme = "dark"\n`);
+    expect(after.match(/trusted_hash/g)).toHaveLength(1);
+    const parsed = parseToml(after);
+    if (parsed) expect(parsed.hooks.state[STOP_KEY]).toEqual({ tags: [[1], [2]], trusted_hash: REAL_HASHES.Stop });
+  });
+
+  it("does the same for [projects.\"dir\"]: a look-alike in a string is not edited and a bracket line does not end the table", () => {
+    const file = path.join(dir, "config.toml");
+    fs.writeFileSync(
+      file,
+      `doc = """\nprojects = {}\n[projects."/h/a"]\n"""\n\n[projects."/h/b"]\nextra = [\n  [1]\n]\ntrust_level = "untrusted"\n`,
+    );
+    expect(trustCodex(file, ["/h/a", "/h/b"])).toBe("written");
+    const after = read(file);
+    expect(after).toBe(
+      `doc = """\nprojects = {}\n[projects."/h/a"]\n"""\n\n[projects."/h/b"]\nextra = [\n  [1]\n]\ntrust_level = "trusted"\n\n[projects."/h/a"]\ntrust_level = "trusted"\n`,
+    );
+    const parsed = parseToml(after);
+    if (parsed) {
+      expect(parsed.projects["/h/a"]).toEqual({ trust_level: "trusted" });
+      expect(parsed.projects["/h/b"]).toEqual({ extra: [[1]], trust_level: "trusted" });
+    }
+    expect(trustCodex(file, ["/h/a", "/h/b"])).toBe("unchanged");
   });
 });
