@@ -9,7 +9,10 @@
 //                (the entry Claude Code 2.1.289 writes after "Yes, I trust this
 //                folder"; read off a real `~/.claude.json` after a manual trust)
 //   codex        `~/.codex/config.toml`  `[projects."<dir>"] trust_level = "trusted"`
-//                (documented key; `"trusted" | "untrusted"`)
+//                (documented key; `"trusted" | "untrusted"`. Checked on codex-cli
+//                0.160.0 (#702): answering its "Trust this folder?" dialog by hand
+//                writes exactly this table, and a repository the writer has
+//                recorded opens on the composer with no dialog)
 //
 //   codex hooks  `~/.codex/config.toml`  `[hooks.state."<hooks.json>:<event>:<group>:<handler>"]
 //                trusted_hash = "sha256:<hex>"`, one per hook this Core installs (`trustCodexHooks`:

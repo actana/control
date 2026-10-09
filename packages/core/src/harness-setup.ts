@@ -36,26 +36,40 @@ import { dialogsForHarness, matchBlockingDialog, type BlockingDialogSpec } from 
 import { PRETRUST_HARNESSES } from "./harness-pretrust";
 
 /**
- * Dialogs only the setup check looks for. codex's directory-trust dialog, as
- * codex-cli 0.153.0 paints it (captured live,
- * `fixtures/codex-0.153.0-directory-trust.txt`): "Do you trust the contents of this
- * directory? Working with untrusted contents comes with higher risk of prompt
- * injection. Trusting the directory allows project-local config, hooks, and exec
- * policies to load." over "› 1. Yes, continue" / "2. No, quit".
+ * Dialogs only the setup check looks for: codex's directory-trust dialog, in both
+ * wordings it has had (each captured live, raw PTY bytes under `fixtures/`).
+ *
+ *   codex-cli 0.153.0 (`codex-0.153.0-directory-trust.txt`): "Do you trust the
+ *   contents of this directory? Working with untrusted contents comes with higher
+ *   risk of prompt injection. Trusting the directory allows project-local config,
+ *   hooks, and exec policies to load." over "› 1. Yes, continue" / "2. No, quit".
+ *
+ *   codex-cli 0.160.0 (`codex-0.160.0-folder-trust.txt`, #702): "Folder access —
+ *   Trust this folder? Codex can read, edit, and run files here, subject to your
+ *   permission settings. Folder settings can run code automatically, even without
+ *   a model request. Continue only if you trust these files. Your trust decision
+ *   will be saved." over "› 1. Trust and continue" / "2. Back to Agent Command
+ *   Center". On 0.160.0 the dialog opens only when the directory is inside a git
+ *   repository; a plain directory goes straight to the composer
+ *   (`codex-0.160.0-plain-dir-boot.txt`), and so does a repository the
+ *   `[projects."<dir>"] trust_level` writer has recorded
+ *   (`codex-0.160.0-trusted-boot.txt`, taken after `trustCodex` wrote the entry).
  *
  * It is not in `BLOCKING_DIALOGS` on purpose: prompt delivery's handling of codex
  * (issue 277, 483) is pinned by tests that wait for the dialog to be answered, and
  * #685 leaves that path as it is. codex positions text with cursor moves, so the
- * stripped screen reads `Doyoutrustthecontents…`; the whitespace is optional for
- * that reason. Wording is from 0.153.0 and has not been re-captured on 0.160.0.
+ * stripped screen reads `Doyoutrustthecontents…` / `Trustthisfolder?Codexcan…`;
+ * the whitespace is optional for that reason.
  */
 export const SETUP_ONLY_DIALOGS: readonly BlockingDialogSpec[] = [
   {
     id: "directory-trust",
     harnesses: ["codex"],
-    match: [/do\s*you\s*trust\s*the\s*contents\s*of\s*this\s*directory/i],
+    match: [/(?:do\s*you\s*trust\s*the\s*contents\s*of\s*this\s*directory|trust\s*this\s*folder\s*\?)/i],
+    // "Yes, continue" (0.153.0) and "Trust and continue" (0.160.0).
     affirmative: /\b(yes|continue)\b/i,
-    refuse: /\b(no|quit|exit|cancel)\b/i,
+    // "No, quit" (0.153.0) and "Back to Agent Command Center" (0.160.0).
+    refuse: /\b(no|quit|exit|cancel|back)\b/i,
   },
 ];
 
