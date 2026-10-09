@@ -1158,6 +1158,23 @@ export class PtyCore {
   }
 
   /**
+   * The pid of the harness process this Core spawned for the Session, or null
+   * when it runs none. The hook receiver holds every hook to this pid (issue
+   * 460): the hook env is inherited by everything the harness starts, and the
+   * pid is the one fact a process nested inside the Session cannot inherit.
+   *
+   * Same selection as {@link findBySession} — agent PTYs only. A shell
+   * terminal's pid would be a process no hook file reports for, and a VM
+   * Shell Session has no harness to own a hook at all.
+   */
+  spawnedPidForSession(sessionId: string): number | null {
+    const { ptyId } = this.findBySession(sessionId);
+    if (!ptyId) return null;
+    const pid = ptys.get(ptyId)?.proc?.pid;
+    return Number.isInteger(pid) && pid > 0 ? pid : null;
+  }
+
+  /**
    * The output a (re)attaching Panel is missing. `sinceSeq` is the seq it wants
    * to resume from — omitted on a first attach, set to "one past what I've
    * painted" on a reattach after a dropped link. See {@link sliceReplayWindow}

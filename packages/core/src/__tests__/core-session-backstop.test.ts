@@ -24,7 +24,7 @@ import {
 import { CoreSessionWriter } from "../core-session-writer";
 import { CoreSessionBackstop } from "../core-session-backstop";
 import { PtyOutputActivityWatcher } from "../pty-output-activity";
-import { CoreHarnessStatus } from "../core-harness-status";
+import { CoreHarnessStatus, hookEvidencesSession } from "../core-harness-status";
 import type { HarnessHookBody } from "@actana/shared/harness-hook-pipeline";
 import { clearSubagentActivity } from "@actana/shared/subagent-activity";
 
@@ -373,9 +373,9 @@ describe("settling a turn whose end nobody reported", () => {
      * row is part of what is under test.
      */
     const deliverHook = (backstop: CoreSessionBackstop, payload: HarnessHookBody) => {
-      const harnessStatus = new CoreHarnessStatus({ writer });
+      const harnessStatus = new CoreHarnessStatus({ writer, spawnedPid: () => null });
       const result = harnessStatus.receiveHook("t-1", payload);
-      if (result.ok && result.body?.ignored !== "foreign-session") {
+      if (hookEvidencesSession(result)) {
         backstop.noteActivity("t-1", "hook");
       }
     };

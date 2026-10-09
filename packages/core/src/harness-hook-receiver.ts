@@ -39,6 +39,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import log from "@actana/shared/log";
 import { LOCAL_HOOK_API_HOST } from "./pty-hook-env";
+import { HOOK_PID_PARAM, parseReportedPid, type HookOrigin } from "./harness-hook-origin";
 import type { HarnessHookBody } from "@actana/shared/harness-hook-pipeline";
 
 /** Largest hook body we will read. A Claude payload is kilobytes; this is slack. */
@@ -54,6 +55,13 @@ export type HookReceiverHandler = (
    * `hook_event_name`. The body still wins when it has one.
    */
   eventNameFallback: string,
+  /**
+   * Where the request came from, as far as the URL says: the harness family
+   * in the path and the pid the hook reported (issue 460). The handler decides
+   * whether that is the process this Core spawned; the receiver only carries
+   * the facts.
+   */
+  origin: HookOrigin,
 ) => { ok: boolean; body: Record<string, unknown> };
 
 /**
@@ -184,7 +192,11 @@ export async function startHarnessHookReceiver(
         // none — the hook writer knows which event it installed each entry
         // for, so a harness that omits it from the body is still routable.
         const eventName = url.searchParams.get("hookEvent") ?? "";
-        const result = handler(sessionId, payload, eventName);
+        const origin: HookOrigin = {
+          slug: url.pathname.slice(HOOK_PATH_PREFIX.length).split("/")[0] ?? "",
+          pid: parseReportedPid(url.searchParams.get(HOOK_PID_PARAM)),
+        };
+        const result = handler(sessionId, payload, eventName, origin);
         if (!result.ok) {
           res.writeHead(404, { "content-type": "application/json" });
           res.end(JSON.stringify(result.body));

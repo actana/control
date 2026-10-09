@@ -134,8 +134,10 @@ describe("the OpenCode plugin the Core writes (issue 230)", () => {
   it("addresses the Core's receiver, with the session and the event on the URL", async () => {
     const hooks = await loadPlugin(WIRED);
     await events(hooks)({ type: "session.idle", properties: { sessionID: SESSION } });
+    // `pid` is this process — OpenCode loads plugins in its own process, which
+    // is the one the Core spawned; a nested opencode reports its own (issue 460).
     expect(posts[0]!.url).toBe(
-      "http://127.0.0.1:45111/api/hooks/opencode?sessionId=session_live_1&hookEvent=Stop",
+      `http://127.0.0.1:45111/api/hooks/opencode?sessionId=session_live_1&hookEvent=Stop&pid=${process.pid}`,
     );
     expect(posts[0]!.auth).toBe("Bearer hook-token-abc");
   });

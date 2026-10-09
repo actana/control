@@ -56,6 +56,7 @@ import {
   HOOK_TOKEN_ENV,
   HOOK_URL_ENV,
 } from "./harness-hook-env";
+import { HOOK_PID_PARAM } from "./harness-hook-origin";
 
 /** The comment that marks the file as this Core's to replace. */
 export const PI_EXTENSION_MARKER = "@actana-control-managed";
@@ -154,7 +155,13 @@ export default function (pi) {
       "?sessionId=" +
       encodeURIComponent(HOOK_SESSION_ID) +
       "&hookEvent=" +
-      encodeURIComponent(event);
+      encodeURIComponent(event) +
+      // The process this extension runs in IS the \`pi\` the Core spawned, and
+      // the receiver holds every hook to that pid (issue 460). The harness
+      // check above keeps a nested run of ANOTHER family quiet; this is what
+      // keeps a nested \`pi\` from posting into its parent's Session.
+      "&${HOOK_PID_PARAM}=" +
+      process.pid;
     const res = await fetch(url, {
       method: "POST",
       headers: {

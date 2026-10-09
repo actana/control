@@ -19,8 +19,15 @@ import {
   type HarnessHookBody,
 } from "@actana/shared/harness-hook-pipeline";
 import { HARNESS_HOOK_EVENTS } from "@actana/shared/harness-hook-events";
+import { hookEndpointSlug } from "@actana/shared/mission-control-hook-env";
 import type { CoreLinkSessionStatus } from "@actana/sdk/core";
 import type { CoreSessionWriter } from "./core-session-writer";
+import {
+  readProcessEntry,
+  verifyHookProcess,
+  type HookOrigin,
+  type ProcessEntryReader,
+} from "./harness-hook-origin";
 
 export type CoreHarnessStatusDeps = {
   writer: CoreSessionWriter;
@@ -29,7 +36,36 @@ export type CoreHarnessStatusDeps = {
    * a Core with no generator wired (tests) still moves status.
    */
   generateTitle?: (sessionId: string, prompt: string) => void;
+  /**
+   * The pid of the harness this Core spawned for the Session, or null when it
+   * runs none (`PtyCore.spawnedPidForSession`). What a hook over the wire is
+   * held to (issue 460). Required: a Core that could not answer would take a
+   * nested harness's hooks as the Session's own, which is the bug.
+   */
+  spawnedPid: (sessionId: string) => number | null;
+  /**
+   * The platform's process table, for a hook whose reported pid is not the
+   * spawned one but may climb to it through shells. Defaults to the real one;
+   * tests supply a table of their own.
+   */
+  readProcess?: ProcessEntryReader;
 };
+
+/**
+ * Does an accepted hook answer count as the Session's harness talking?
+ *
+ * The quiet-Session backstop (issue 243) and the idle rule (issue 391) take an
+ * accepted hook as proof of life. A hook the pipeline dropped as another
+ * session's (`foreign-session`), or one the origin check dropped as another
+ * process's (`foreign-process`, issue 460), is not that proof: neither came
+ * from the harness process this Session owns. `ok` is already false for a
+ * row this Core does not have.
+ */
+export function hookEvidencesSession(result: { ok: boolean; body: Record<string, unknown> }): boolean {
+  if (!result.ok) return false;
+  const ignored = result.body?.ignored;
+  return ignored !== "foreign-session" && ignored !== "foreign-process";
+}
 
 /**
  * The Core's harness-status service. One instance per Core process; the hook
@@ -42,12 +78,44 @@ export class CoreHarnessStatus {
    * Apply a hook payload to the session it names. The answer is what the receiver
    * writes back to the harness — a shape the harness ignores, but a `404` is
    * how an operator reading `curl -v` learns the session is gone.
+   *
+   * `origin` is present for a hook that arrived over the wire and absent for
+   * the Core's own synthetic events (PTY exit, output signals), which have no
+   * process to prove. With it, the hook is held to the process this Core
+   * spawned for the Session BEFORE the pipeline sees it (issue 460): a hook
+   * from any other process — a harness nested inside the Session's PTY,
+   * running the same hook file with the same inherited env — is acked and
+   * dropped as `foreign-process`, so it captures no session id, moves no
+   * status, and settles nothing. Acked, not refused: the nested harness's
+   * `curl -f` would otherwise record a delivery miss for a hook the Core
+   * heard perfectly well and chose not to act on.
+   *
+   * The family in the URL is held to the row's harness first. A hook file is
+   * per workspace and the env is per PTY, so a Codex started inside a Claude
+   * Code Session posts `/api/hooks/codex` under the Claude Session's id; that
+   * needs no process table to refuse.
    */
   receiveHook(
     sessionId: string,
     payload: HarnessHookBody,
     eventNameFallback = "",
+    origin?: HookOrigin,
   ): { ok: boolean; body: Record<string, unknown> } {
+    if (origin) {
+      const verdict = this.verifyOrigin(sessionId, origin);
+      if (verdict === "foreign") {
+        const event = payload.hook_event_name || eventNameFallback || "";
+        log.warn("harness-status.foreign-process", {
+          sessionId,
+          event,
+          slug: origin.slug,
+          pid: origin.pid,
+          spawnedPid: this.deps.spawnedPid(sessionId),
+        });
+        return hookResultResponse({ outcome: "foreign-process", event });
+      }
+    }
+
     const result = handleHarnessHookEvent(
       sessionId,
       payload,
@@ -118,6 +186,35 @@ export class CoreHarnessStatus {
           ? HARNESS_HOOK_EVENTS.userInterrupt
           : HARNESS_HOOK_EVENTS.permissionRequest,
     });
+  }
+
+  /**
+   * Is this request from the harness this Core spawned for the Session?
+   *
+   * "unverifiable" — a platform whose process table the Core cannot read —
+   * is taken as owned, with a log line saying so: refusing every hook there
+   * would leave a whole platform's Sessions on `ready` for ever, which is
+   * worse than the exposure ADR 0020 already accepts. A row this Core does not
+   * have is left to the pipeline, which answers 404 as it always did.
+   */
+  private verifyOrigin(sessionId: string, origin: HookOrigin): "owned" | "foreign" {
+    const session = this.deps.writer.readSession(sessionId);
+    if (!session) return "owned";
+    if (hookEndpointSlug(session.agent) !== origin.slug) return "foreign";
+    const verdict = verifyHookProcess(
+      origin.pid,
+      this.deps.spawnedPid(sessionId),
+      this.deps.readProcess ?? readProcessEntry,
+    );
+    if (verdict === "unverifiable") {
+      log.warn("harness-status.origin-unverifiable", {
+        sessionId,
+        pid: origin.pid,
+        platform: process.platform,
+      });
+      return "owned";
+    }
+    return verdict;
   }
 
   private writeStatus(sessionId: string, status: CoreLinkSessionStatus): boolean {

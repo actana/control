@@ -66,6 +66,7 @@ describe("a Session is named from the user's text, not the standard block (issue
     const status = new CoreHarnessStatus({
       writer,
       generateTitle: (id, prompt) => generator.schedule(id, prompt),
+      spawnedPid: () => null,
     });
     receiver = await startHarnessHookReceiver((id, payload, fallback) => status.receiveHook(id, payload, fallback));
   });

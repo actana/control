@@ -43,6 +43,7 @@ import {
   HOOK_TOKEN_ENV,
   HOOK_URL_ENV,
 } from "./harness-hook-env";
+import { HOOK_PID_PARAM } from "./harness-hook-origin";
 
 /** The comment that marks the file as this Core's to replace. */
 export const OPENCODE_PLUGIN_MARKER = "@actana-control-managed";
@@ -110,7 +111,14 @@ export const ActanaControl = async () => {
       "?sessionId=" +
       encodeURIComponent(HOOK_SESSION_ID) +
       "&hookEvent=" +
-      encodeURIComponent(event);
+      encodeURIComponent(event) +
+      // The process this plugin runs in IS the harness the Core spawned —
+      // OpenCode loads plugins in its own process — and the receiver holds
+      // every hook to that (issue 460): a nested \`opencode\` inside this
+      // Session loads the same file with the same env, and its pid is the one
+      // thing it does not share.
+      "&${HOOK_PID_PARAM}=" +
+      process.pid;
     const res = await fetch(url, {
       method: "POST",
       headers: {

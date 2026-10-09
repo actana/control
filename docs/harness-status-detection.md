@@ -14,6 +14,7 @@ about everything else on a Core — as an Event replayed off its cursor.
 | Piece | Module |
 | --- | --- |
 | Hook receiver (loopback HTTP) | `packages/core/src/harness-hook-receiver.ts` |
+| Process guard (a harness nested inside the Session) | `packages/core/src/harness-hook-origin.ts` |
 | Hook file writers, per harness | `packages/core/src/harness-hooks.ts` |
 | The decisions (event → status) | `packages/shared/src/harness-hook-pipeline.ts` |
 | Subagent bookkeeping | `packages/shared/src/subagent-activity.ts` |
@@ -354,13 +355,98 @@ one's:
   an OpenCode child's id would hand the rest of that child's lifecycle the
   Session's card.
 
+### The process guard: a harness nested inside the Session (issue 460)
+
+The session-id guard answers *is this the session I already know?* It cannot
+answer the question before it: *is the process that posted this the harness the
+Core spawned?* A hook file is per workspace and its target comes out of the
+PTY's environment (`AC_HOOK_URL`, `AC_HOOK_TOKEN`, `AC_HOOK_SESSION_ID`), and
+environment is inherited. So every harness started **inside** a Session's PTY —
+a `claude -p` the agent runs from a Bash tool, a headless helper, a second
+harness the operator starts from the Session's shell — reads the same hook file
+and POSTs under the same session id. The receiver authenticates the *machine*
+(loopback bind, per-boot bearer) but not the *process*, so it took those hooks as
+the Session's own. Two consequences, in order of severity: the nested harness's
+`SessionStart` / `UserPromptSubmit` are capture events, so it **took over
+`claudeSessionId`** and its lifecycle drove the card while the real harness's
+hooks became the foreign ones; and when its capture POSTs were lost (`curl -m 3
+--retry 2` on a busy Core), its `Stop` reached the foreign turn-end settle above
+and wrote `finished` over a live owned turn.
+
+**The discriminator is the process id — the one fact a nested process cannot
+inherit.** Three parts:
+
+- **Every hook reports the pid of the process that ran it.** The shell
+  families' command (`hookCommand` in `harness-hooks.ts`: Claude Code, Codex,
+  Cursor) adds `&pid=$PPID` to the URL; the in-process families (the OpenCode
+  plugin, the Pi extension) add `process.pid`. `$PPID` rather than `$$` because
+  the harness runs the entry as `/bin/sh -c "sh -c '…'"`: where `/bin/sh` is
+  bash (macOS) the outer shell execs and the inner shell's parent is the harness;
+  where it is dash (Debian, the Core container) it forks and the parent is the
+  outer shell, one below the harness.
+- **The Core knows what it spawned.** `PtyCore.spawnedPidForSession` is the pid
+  of the Session's agent PTY — the harness itself, because the PTY spawns the
+  binary directly, and in the container `setpriv` and the `sh -c 'exec …'` it
+  wraps keep that pid. A shell terminal or a VM Shell Session answers `null`:
+  nothing the Core would own can be posting for it.
+- **The receiver climbs from the reported pid to the spawned one through
+  shells only** (`verifyHookProcess` in `harness-hook-origin.ts`). Equal is
+  `owned`. Otherwise each parent is read from the process table —
+  `/proc/<pid>/stat` on Linux, `ps -o ppid=,comm=` on macOS — and the climb
+  continues only while the process it stands on is a shell (`sh`, `dash`,
+  `bash`, `zsh`, …). Reaching the spawned pid is `owned`; a non-shell on the
+  way, a process that is gone, a chain longer than `MAX_HOOK_PROCESS_HOPS`
+  (8), or no reported pid at all is `foreign`. Measured on Claude Code 2.1.295
+  on a Debian Core: an owned hook's chain is `sh → claude`; a `claude -p` run
+  from inside the Session's turn reports `sh → claude(nested) → bash → claude`,
+  and the nested `claude` is the non-shell the climb refuses to cross. Nothing
+  identifies a harness binary by name, because nothing has to: the only question
+  is whether the path from the hook to the spawned process is made of shells.
+
+The check runs in `CoreHarnessStatus.receiveHook` **before** the pipeline, and
+only for a hook that arrived over the wire; the Core's own synthetic events (PTY
+exit, output signals) carry no origin and are never held to a pid. The family in
+the URL (`/api/hooks/<slug>`) is held to the row's harness first: a Codex started
+inside a Claude Code Session posts `/api/hooks/codex` under the Claude Session's
+id, and refusing that needs no process table.
+
+A foreign hook is **acked and dropped** — `{ ok: true, ignored:
+"foreign-process" }` — so the nested harness's `curl -f` records no delivery
+miss for a hook the Core heard and chose not to act on. It captures no session
+id, moves no status, settles nothing and names nothing. It is not proof of life
+either: the quiet-Session backstop (issue 243) and the idle rule (issue 391)
+take an accepted hook as the Session talking, and `hookEvidencesSession`
+excludes `foreign-process` exactly as it excludes `foreign-session`. The drop is
+logged as `harness-status.foreign-process` with both pids.
+
+What the guard does not do:
+
+- **It does not refuse where it cannot see.** A platform with neither `/proc`
+  nor `ps` answers `unverifiable`, and the hook is taken as owned with a
+  `harness-status.origin-unverifiable` log line: refusing every hook there would
+  park a whole platform's Sessions on `ready`, which is worse than the exposure
+  ADR 0020 already accepts.
+- **It does not close that exposure.** A process holding the token can still
+  forge a request naming the spawned pid (ADR 0020, *the hook token is inherited
+  by everything the harness spawns*, as amended by #460). What it closes is the
+  accidental case the issue is about: a harness started inside a Session,
+  running the Session's own hook file in good faith.
+- **It does not vouch for a Session the Core runs no harness for.** With no
+  agent PTY there is no spawned pid, and every hook is foreign — the process of
+  a previous spawn, or a stranger with the env. The PTY-exit settle still
+  answers for that row.
+
+The Panel's own hook endpoint never produces `foreign-process`; the outcome is
+listed in the shared pipeline's `HookPipelineResult` so both hosts answer it with
+one shape.
+
 ## The hook receiver
 
 The Core exposes a small **loopback HTTP** listener a hook's shell command can
 reach from the Core's own machine:
 
 ```
-POST http://127.0.0.1:<ephemeral>/api/hooks/<harness-slug>?sessionId=<id>
+POST http://127.0.0.1:<ephemeral>/api/hooks/<harness-slug>?sessionId=<id>&hookEvent=<event>&pid=<pid>
 Authorization: Bearer <token>
 ```
 
@@ -581,8 +667,11 @@ sh -c 'curl -sS -m 3 -X POST \
   -H "Authorization: Bearer $AC_HOOK_TOKEN" \
   -H "Content-Type: application/json" \
   --data-binary @- \
-  "$AC_HOOK_URL/api/hooks/claude?sessionId=$AC_HOOK_SESSION_ID" || true'
+  "$AC_HOOK_URL/api/hooks/claude?sessionId=$AC_HOOK_SESSION_ID&hookEvent=Stop&pid=$PPID" || true'
 ```
+
+`pid=$PPID` is the process that ran the hook, which the receiver holds to the
+one the Core spawned — see [the process guard](#the-process-guard-a-harness-nested-inside-the-session-issue-460).
 
 The harness pipes the hook payload (`hook_event_name`, `session_id`, `cwd`,
 `transcript_path`, …) on stdin; the command forwards it as the request body.
