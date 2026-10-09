@@ -51,7 +51,7 @@ describe("createApiKey", () => {
   it("returns the plaintext once, and stores only its sha256 and a display prefix", async () => {
     const { apiKey, key } = await createApiKey(A, { name: "ci", permissions: ALL }, 1000);
     expect(key).toMatch(/^ak_1_[A-Za-z0-9_-]{43}$/);
-    expect(apiKey).toMatchObject({ name: "ci", allCores: true, coreIds: [], createdAt: 1000, revokedAt: null });
+    expect(apiKey).toMatchObject({ name: "ci", allCores: true, coreIds: [], createdAt: 1000, revokedAt: null, expiresAt: null });
     expect(key.startsWith(apiKey.prefix)).toBe(true);
     expect(apiKey.prefix).toHaveLength("ak_1_".length + 6);
     const { rows } = await testDb.pool.query("select * from api_keys");
@@ -184,5 +184,63 @@ describe("a restricted key whose Cores were forgotten", () => {
     const principal = await authenticateApiKey(key);
     expect(principal!.scope).toEqual({ allCores: false, coreIds: new Set() });
     expect(scopeReaches(principal!.scope, "b-1")).toBe(false);
+  });
+});
+
+describe("expiry (#689)", () => {
+  const DAY = 86_400_000;
+
+  it("a key created with an expiry authenticates before it and is refused at and after it", async () => {
+    const t0 = 1_000_000;
+    const { apiKey, key } = await createApiKey(A, { name: "week", expiresAt: t0 + 7 * DAY, permissions: ALL }, t0);
+    expect(apiKey.expiresAt).toBe(t0 + 7 * DAY);
+    expect(Number((await testDb.pool.query("select expires_at from api_keys")).rows[0]!.expires_at)).toBe(t0 + 7 * DAY);
+    expect(await authenticateApiKey(key, t0)).toEqual({ ownerId: A, keyId: apiKey.id, scope: { allCores: true }, permissions: new Set(ALL) });
+    expect(await authenticateApiKey(key, t0 + 7 * DAY - 1)).not.toBeNull();
+    expect(await authenticateApiKey(key, t0 + 7 * DAY)).toBeNull();
+    expect(await authenticateApiKey(key, t0 + 8 * DAY)).toBeNull();
+  });
+
+  it("an expired restricted key is refused too, not widened or narrowed", async () => {
+    const t0 = 5_000;
+    const { key } = await createApiKey(A, { name: "a", coreIds: ["a-1"], expiresAt: t0 + DAY, permissions: ALL }, t0);
+    expect((await authenticateApiKey(key, t0))!.scope).toEqual({ allCores: false, coreIds: new Set(["a-1"]) });
+    expect(await authenticateApiKey(key, t0 + DAY)).toBeNull();
+  });
+
+  it("'never' (omitted or null) keeps today's behaviour: the key works at any time until revoked", async () => {
+    const omitted = await createApiKey(A, { name: "omitted", permissions: ALL }, 10);
+    const nulled = await createApiKey(A, { name: "null", expiresAt: null, permissions: ALL }, 10);
+    for (const { apiKey, key } of [omitted, nulled]) {
+      expect(apiKey.expiresAt).toBeNull();
+      expect(await authenticateApiKey(key, Number.MAX_SAFE_INTEGER)).not.toBeNull();
+      await revokeApiKey(A, apiKey.id, 20);
+      expect(await authenticateApiKey(key, 21)).toBeNull();
+    }
+  });
+
+  it("refuses an expiry that is not in the future, or not a whole epoch-ms number", async () => {
+    const now = 1_000;
+    for (const expiresAt of [now, now - 1, 0, -5, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+      await expect(createApiKey(A, { name: "bad", expiresAt, permissions: ALL }, now), String(expiresAt)).rejects.toBeInstanceOf(ValidationError);
+    }
+    expect((await testDb.pool.query("select count(*)::int as n from api_keys")).rows[0]).toEqual({ n: 0 });
+  });
+
+  it("lists the expiry, and keeps it on a revoked key", async () => {
+    const { apiKey } = await createApiKey(A, { name: "x", expiresAt: 9 * DAY, permissions: ALL }, DAY);
+    await createApiKey(A, { name: "y", permissions: ALL }, DAY);
+    expect((await listApiKeys(A)).map((k) => [k.name, k.expiresAt])).toEqual([
+      ["x", 9 * DAY],
+      ["y", null],
+    ]);
+    expect((await revokeApiKey(A, apiKey.id, 2 * DAY)).expiresAt).toBe(9 * DAY);
+  });
+
+  it("is checked against the real clock when no time is given", async () => {
+    const { key } = await createApiKey(A, { name: "soon", expiresAt: Date.now() + 60_000, permissions: ALL });
+    expect(await authenticateApiKey(key)).not.toBeNull();
+    await testDb.pool.query("update api_keys set expires_at = $1", [Date.now() - 1]);
+    expect(await authenticateApiKey(key)).toBeNull();
   });
 });

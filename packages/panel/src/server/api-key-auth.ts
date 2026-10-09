@@ -69,10 +69,11 @@ export function acceptsApiKey(method: string, pathname: string): boolean {
 
 /**
  * The API gate. A request that presents an API key is judged by the key alone:
- * an unknown, malformed or revoked key is a 401, a key on a route that does
- * not accept keys is a 403, a key without the route's permission is a 403
- * (#688), and none of these ever falls back to the Operator's session cookie.
- * A request with no key goes through the session gate, which is unchanged.
+ * an unknown, malformed, revoked or expired key is a 401, a key on a route
+ * that does not accept keys is a 403, a key without the route's permission is
+ * a 403 (#688), and none of these ever falls back to the Operator's session
+ * cookie. A request with no key goes through the session gate, which is
+ * unchanged.
  */
 export async function authenticateApiRequest(
   request: Request,
@@ -99,8 +100,8 @@ export async function authenticateApiRequest(
 
 /**
  * The gate for a surface that is for API keys alone (`/mcp`, #573). There is no
- * session fallback: no key, a key that is not `ak_…`-shaped, an unknown or a
- * revoked one is a 401, so an Operator's cookie in the same request is never
+ * session fallback: no key, a key that is not `ak_…`-shaped, an unknown, a
+ * revoked or an expired one is a 401, so an Operator's cookie in the same request is never
  * looked at and a tool can never run as anyone but the key's owner.
  */
 export async function authenticateApiKeyOnly(

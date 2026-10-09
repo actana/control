@@ -24,6 +24,7 @@ const KEYS: ApiKeyView[] = [
     permissions: [...ALL_API_KEY_PERMISSIONS],
     createdAt: Date.now() - 4 * 60_000,
     revokedAt: null,
+    expiresAt: null,
   },
   {
     id: "key-2",
@@ -34,6 +35,7 @@ const KEYS: ApiKeyView[] = [
     permissions: ["read"],
     createdAt: Date.now() - 2 * 3_600_000,
     revokedAt: null,
+    expiresAt: null,
   },
 ];
 
@@ -74,6 +76,7 @@ const { api } = vi.hoisted(() => {
         permissions: ["read"],
         createdAt: Date.now(),
         revokedAt: null,
+        expiresAt: null,
       } satisfies ApiKeyView,
       key: "ak_1_PLAINTEXT_SECRET_SHOWN_ONCE_ONLY_xxxxxxxxxx",
     })),
@@ -87,6 +90,7 @@ const { api } = vi.hoisted(() => {
         permissions: [...ALL_API_KEY_PERMISSIONS],
         createdAt: Date.now(),
         revokedAt: Date.now(),
+        expiresAt: null,
       } satisfies ApiKeyView,
     })),
     listWebhooks: vi.fn(async () => ({ webhooks: [] as WebhookView[] })),
@@ -262,6 +266,7 @@ describe("Settings › API & integrations", () => {
       name: "bot",
       coreIds: null,
       permissions: ["read", "tasks:write", "agents:write"],
+      expiresAt: null,
     });
   });
 
@@ -282,7 +287,7 @@ describe("Settings › API & integrations", () => {
     await act(async () => {
       fireEvent.click(within(dialog).getByRole("button", { name: /^Create$/i }));
     });
-    expect(api.createApiKey).toHaveBeenCalledWith({ name: "laptop", coreIds: ["core-a"], permissions: ["read"] });
+    expect(api.createApiKey).toHaveBeenCalledWith({ name: "laptop", coreIds: ["core-a"], permissions: ["read"], expiresAt: null });
     expect(screen.getByText(/ak_1_PLAINTEXT_SECRET/)).toBeTruthy();
     expect(screen.getByText(/only time the key/i)).toBeTruthy();
 
@@ -457,5 +462,108 @@ describe("Settings › API & integrations", () => {
     expect(alert.textContent).toMatch(/https|private/i);
     expect(screen.getByRole("dialog")).toBeTruthy();
     expect(screen.queryByText(/whsec_PLAINTEXT/)).toBeNull();
+  });
+
+  describe("expiry (#689)", () => {
+    async function openCreate(name: string) {
+      await act(async () => {
+        mount();
+      });
+      await screen.findByText("ci-deploy");
+      await act(async () => {
+        fireEvent.click(screen.getByRole("button", { name: /Create API key/i }));
+      });
+      const dialog = screen.getByRole("dialog");
+      await act(async () => {
+        fireEvent.change(within(dialog).getByLabelText(/^Name$/i), { target: { value: name } });
+        // #688: no scope is preselected, so pick All Cores before Create.
+        fireEvent.click(within(dialog).getByLabelText(/^All Cores$/i));
+      });
+      return dialog;
+    }
+
+    it("defaults to Never, which sends no expiry", async () => {
+      const dialog = await openCreate("forever");
+      expect((within(dialog).getByLabelText(/^Expiry$/i) as HTMLSelectElement).value).toBe("never");
+      expect(within(dialog).getByText(/works until you revoke it/i)).toBeTruthy();
+      await act(async () => {
+        fireEvent.click(within(dialog).getByRole("button", { name: /^Create$/i }));
+      });
+      expect(api.createApiKey).toHaveBeenCalledWith({ name: "forever", coreIds: null, permissions: ["read"], expiresAt: null });
+    });
+
+    it("offers 7, 30 and 90 days, and sends the instant that many days from now", async () => {
+      const dialog = await openCreate("month");
+      const select = within(dialog).getByLabelText(/^Expiry$/i) as HTMLSelectElement;
+      expect([...select.options].map((o) => o.textContent)).toEqual(["Never", "7 days", "30 days", "90 days", "Custom date"]);
+      const before = Date.now();
+      await act(async () => {
+        fireEvent.change(select, { target: { value: "30d" } });
+      });
+      await act(async () => {
+        fireEvent.click(within(dialog).getByRole("button", { name: /^Create$/i }));
+      });
+      const after = Date.now();
+      const sent = (api.createApiKey.mock.calls[0] as unknown as [{ expiresAt: number }])[0].expiresAt;
+      expect(sent).toBeGreaterThanOrEqual(before + 30 * 86_400_000);
+      expect(sent).toBeLessThanOrEqual(after + 30 * 86_400_000);
+    });
+
+    it("takes a custom date as the end of that day, and will not create with a past or missing date", async () => {
+      const dialog = await openCreate("custom");
+      await act(async () => {
+        fireEvent.change(within(dialog).getByLabelText(/^Expiry$/i), { target: { value: "custom" } });
+      });
+      const create = within(dialog).getByRole("button", { name: /^Create$/i }) as HTMLButtonElement;
+      expect(create.disabled).toBe(true);
+      const date = within(dialog).getByLabelText(/Expiry date/i);
+      await act(async () => {
+        fireEvent.change(date, { target: { value: "2001-01-01" } });
+      });
+      expect(create.disabled).toBe(true);
+      expect(within(dialog).getByText(/Pick a date after today/i)).toBeTruthy();
+      const future = new Date();
+      future.setFullYear(future.getFullYear() + 1);
+      const day = `${future.getFullYear()}-${String(future.getMonth() + 1).padStart(2, "0")}-${String(future.getDate()).padStart(2, "0")}`;
+      await act(async () => {
+        fireEvent.change(date, { target: { value: day } });
+      });
+      expect(create.disabled).toBe(false);
+      await act(async () => {
+        fireEvent.click(create);
+      });
+      const sent = (api.createApiKey.mock.calls[0] as unknown as [{ expiresAt: number }])[0].expiresAt;
+      const end = new Date(future.getFullYear(), future.getMonth(), future.getDate(), 23, 59, 59, 999).getTime();
+      expect(sent).toBe(end);
+    });
+
+    it("shows each key's expiry date in the list, and marks an expired key", async () => {
+      const now = Date.now();
+      api.listApiKeys.mockResolvedValue({
+        apiKeys: [
+          { ...KEYS[0]!, id: "k-never", name: "never-key", expiresAt: null },
+          { ...KEYS[0]!, id: "k-later", name: "later-key", expiresAt: Date.UTC(2099, 4, 17, 12) },
+          { ...KEYS[0]!, id: "k-gone", name: "gone-key", expiresAt: now - 86_400_000 },
+          { ...KEYS[0]!, id: "k-revoked", name: "revoked-key", expiresAt: now - 86_400_000, revokedAt: now - 2 * 86_400_000 },
+        ],
+      });
+      await act(async () => {
+        mount();
+      });
+      const row = (name: string) => screen.getByText(name).closest("[data-api-key-id]") as HTMLElement;
+      await screen.findByText("never-key");
+      expect(row("never-key").textContent).toMatch(/no expiry/);
+      expect(row("never-key").dataset.expired).toBe("false");
+      expect(row("later-key").textContent).toMatch(/expires 2099-05-17/);
+      expect(row("later-key").dataset.expired).toBe("false");
+      expect(within(row("later-key")).queryByText(/^Expired$/)).toBeNull();
+      const gone = row("gone-key");
+      expect(gone.dataset.expired).toBe("true");
+      expect(within(gone).getByText(/^Expired$/)).toBeTruthy();
+      expect(gone.textContent).toContain(`expired ${new Date(now - 86_400_000).toISOString().slice(0, 10)}`);
+      // A revoked key reads as revoked, not as expired.
+      expect(row("revoked-key").dataset.expired).toBe("false");
+      expect(row("revoked-key").textContent).toMatch(/revoked/);
+    });
   });
 });

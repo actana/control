@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { ALL_API_KEY_PERMISSIONS } from "~/shared/api-key-permissions";
 import { closePanelTestDb, openPanelTestDb, resetPanelState } from "./_panel-test-db";
 import { McpTestClient, postMcp } from "./_mcp-client";
@@ -108,6 +108,39 @@ describe("401: the key is the whole credential", () => {
     expect((await postMcp(key, { jsonrpc: "2.0", id: 2, method: "tools/list" })).status).toBe(401);
     expect((await postMcp(key, { jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "list_cores" } })).status).toBe(401);
     expect((await postMcp(key, "", {}, "GET")).status).toBe(401);
+  });
+
+  it("refuses an expired key on every method, after it worked until its expiry (#689)", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      const t0 = Date.UTC(2030, 0, 1);
+      vi.setSystemTime(t0);
+      const { key } = await createKey({ name: "day", expiresAt: t0 + 86_400_000 });
+      const client = new McpTestClient(key);
+      await client.connect();
+      expect((await client.call("list_cores")).isError).toBeUndefined();
+      vi.setSystemTime(t0 + 86_400_000);
+      const res = await postMcp(key, initialize);
+      expect(res.status).toBe(401);
+      expect(res.headers.get("www-authenticate")).toMatch(/^Bearer/);
+      expect((await postMcp(key, { jsonrpc: "2.0", id: 2, method: "tools/list" })).status).toBe(401);
+      expect((await postMcp(key, { jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "list_cores" } })).status).toBe(401);
+      expect((await postMcp(key, initialize, { cookie: await operatorSessionCookie() })).status).toBe(401);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("still accepts a key created with no expiry, years on (#689)", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(Date.UTC(2030, 0, 1));
+      const { key } = await createKey({ name: "never" });
+      vi.setSystemTime(Date.UTC(2040, 0, 1));
+      expect((await postMcp(key, initialize)).status).toBe(200);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

@@ -25,6 +25,7 @@ const key = (ownerId: number, id: string, prefix = "ak_p") => ({
   permissions: [...ALL_API_KEY_PERMISSIONS],
   createdAt: 10,
   revokedAt: null,
+  expiresAt: null,
 });
 
 beforeAll(async () => {

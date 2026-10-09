@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { ALL_API_KEY_PERMISSIONS } from "~/shared/api-key-permissions";
 import { closePanelTestDb, openPanelTestDb, resetPanelState } from "./_panel-test-db";
 
@@ -88,8 +88,8 @@ describe("creating, listing and revoking keys", () => {
     expect(res.headers.get("cache-control")).toBe("no-store");
     const { key, apiKey } = (await res.json()) as { key: string; apiKey: Record<string, unknown> };
     expect(key).toMatch(/^ak_1_/);
-    expect(apiKey).toMatchObject({ name: "ci", allCores: true, coreIds: [], permissions: ALL_API_KEY_PERMISSIONS, revokedAt: null });
-    expect(Object.keys(apiKey).sort()).toEqual(["allCores", "coreIds", "createdAt", "id", "name", "permissions", "prefix", "revokedAt"]);
+    expect(apiKey).toMatchObject({ name: "ci", allCores: true, coreIds: [], permissions: ALL_API_KEY_PERMISSIONS, revokedAt: null, expiresAt: null });
+    expect(Object.keys(apiKey).sort()).toEqual(["allCores", "coreIds", "createdAt", "expiresAt", "id", "name", "permissions", "prefix", "revokedAt"]);
     const listed = await (await call("/api/api-keys", { cookie: true })).text();
     expect(listed).not.toContain(key);
     expect(listed).not.toContain(key.slice("ak_1_".length));
@@ -241,5 +241,70 @@ describe("the plaintext in the logs", () => {
       const { rows } = await testDb.pool.query(`select * from ${table}`);
       expect(JSON.stringify(rows), table).not.toContain(secret);
     }
+  });
+});
+
+describe("an expiring key (#689)", () => {
+  const DAY = 86_400_000;
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("works until its expiry and is a 401 after it, on every key route, like a revoked key", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const t0 = Date.UTC(2030, 0, 1);
+    vi.setSystemTime(t0);
+    const { key, apiKey } = await createKey({ name: "week", expiresAt: t0 + 7 * DAY });
+    expect((apiKey as unknown as { expiresAt: number }).expiresAt).toBe(t0 + 7 * DAY);
+    expect((await call("/api/cores", { bearer: key })).status).toBe(200);
+    expect((await call("/api/v1/cores", { bearer: key })).status).toBe(200);
+    expect((await call("/api/v1/tasks", { bearer: key })).status).toBe(200);
+    vi.setSystemTime(t0 + 7 * DAY - 1);
+    expect((await call("/api/v1/cores", { bearer: key })).status).toBe(200);
+    vi.setSystemTime(t0 + 7 * DAY);
+    for (const route of ["/api/cores", "/api/cores/core-a", "/api/v1/cores", "/api/v1/tasks", "/api/v1/agents", "/api/settings"]) {
+      const res = await call(route, { bearer: key });
+      expect(res.status, route).toBe(401);
+      expect(((await res.json()) as { error: string }).error, route).toBe("unauthorized");
+    }
+    // An expired key never falls back to the session cookie beside it.
+    expect((await call("/api/v1/cores", { bearer: key, cookie: true })).status).toBe(401);
+  });
+
+  it("'never' keeps today's behaviour: a key with no expiry still works years later", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const t0 = Date.UTC(2030, 0, 1);
+    vi.setSystemTime(t0);
+    const omitted = await createKey({ name: "omitted" });
+    const nulled = await createKey({ name: "null", expiresAt: null });
+    vi.setSystemTime(t0 + 3650 * DAY);
+    for (const k of [omitted, nulled]) {
+      expect((k.apiKey as unknown as { expiresAt: number | null }).expiresAt).toBeNull();
+      expect((await call("/api/v1/cores", { bearer: k.key })).status).toBe(200);
+    }
+  });
+
+  it("refuses an expiry in the past or of the wrong type with a 400", async () => {
+    const past = await call("/api/api-keys", { method: "POST", json: { name: "k", expiresAt: Date.now() - 1 }, cookie: true });
+    expect(past.status).toBe(400);
+    expect((await call("/api/api-keys", { method: "POST", json: { name: "k", expiresAt: "2099-01-01" }, cookie: true })).status).toBe(400);
+    expect((await call("/api/api-keys", { method: "POST", json: { name: "k", expiresAt: 1.5 }, cookie: true })).status).toBe(400);
+    const listed = (await (await call("/api/api-keys", { cookie: true })).json()) as { apiKeys: unknown[] };
+    expect(listed.apiKeys).toHaveLength(0);
+  });
+
+  it("lists the expiry of each key, an expired one included", async () => {
+    const soon = await createKey({ name: "soon", expiresAt: Date.now() + DAY });
+    await createKey({ name: "never" });
+    await testDb.pool.query("update api_keys set expires_at = $1 where id = $2", [Date.now() - DAY, soon.apiKey.id]);
+    const listed = (await (await call("/api/api-keys", { cookie: true })).json()) as {
+      apiKeys: { name: string; expiresAt: number | null; revokedAt: number | null }[];
+    };
+    expect(listed.apiKeys.map((k) => [k.name, typeof k.expiresAt, k.revokedAt])).toEqual([
+      ["soon", "number", null],
+      ["never", "object", null],
+    ]);
+    expect(listed.apiKeys[0]!.expiresAt!).toBeLessThan(Date.now());
+    expect((await call("/api/v1/cores", { bearer: soon.key })).status).toBe(401);
   });
 });

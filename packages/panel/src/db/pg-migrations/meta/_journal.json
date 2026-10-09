@@ -78,6 +78,13 @@
       "when": 1791564573921,
       "tag": "0010_panel_api_key_permissions",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1791654217365,
+      "tag": "0011_panel_api_key_expiry",
+      "breakpoints": true
     }
   ]
 }

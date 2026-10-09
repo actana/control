@@ -45,7 +45,7 @@ describe("parseMigrations", () => {
 });
 
 describe("the bundled Postgres migrations", () => {
-  it("are the baseline, the panel.db tables, the Task tables, the Agents table, the webhook tables, the API key tables, the Shared folder tables, the Storage settings columns, the missioncontrol.db tables, the Storage issuer endpoint and the API key permissions, and every SQL file on disk is in the journal", () => {
+  it("are the baseline, the panel.db tables, the Task tables, the Agents table, the webhook tables, the API key tables, the Shared folder tables, the Storage settings columns, the missioncontrol.db tables, the Storage issuer endpoint, the API key permissions and the API key expiry, and every SQL file on disk is in the journal", () => {
     const dir = path.resolve(import.meta.dirname, "..", "pg-migrations");
     const onDisk = readdirSync(dir).filter((f) => f.endsWith(".sql")).map((f) => f.replace(/\.sql$/, ""));
     expect(bundledPanelMigrations().map((m) => m.tag)).toEqual(onDisk.sort());
@@ -61,6 +61,7 @@ describe("the bundled Postgres migrations", () => {
       "0008_panel_missioncontrol_tables",
       "0009_panel_storage_issuer_endpoint",
       "0010_panel_api_key_permissions",
+      "0011_panel_api_key_expiry",
     ]);
   });
 });
@@ -81,6 +82,7 @@ describe("runMigrations on PGlite", { timeout: 30_000 }, () => {
       "0008_panel_missioncontrol_tables",
       "0009_panel_storage_issuer_endpoint",
       "0010_panel_api_key_permissions",
+      "0011_panel_api_key_expiry",
     ]);
     expect(await runMigrations(db.pool, migrations)).toEqual([]);
     const { rows } = await db.pool.query('select hash, created_at from "drizzle"."__drizzle_migrations"');
