@@ -117,6 +117,21 @@ describe("NewHarnessDialog prompt-first (issue 560)", () => {
     expect(bridge.installHarness).toHaveBeenCalledWith("core_a", "claude-code");
   });
 
+  it("says why a Harness the Core could not start for its setup check is not ready, and still offers it (#700)", async () => {
+    AVAILABILITY = {
+      ...availability(),
+      "claude-code": { status: "missing", reason: "setup-check-failed: posix_spawnp failed: EACCES", path: "/usr/bin/claude" },
+      "cursor-cli": { status: "available", path: "/usr/bin/cursor-agent" },
+    };
+    await openDialog();
+    expect(screen.getByText("Could not start on this Core (posix_spawnp failed: EACCES): a Session may show why.")).toBeTruthy();
+    expect(screen.queryByText(/Needs setup/)).toBeNull();
+    // Installed, so no Install for it; a Session can still open on it, so it is not disabled.
+    expect(screen.queryByRole("button", { name: /^Install$/ })).toBeNull();
+    const row = screen.getAllByText("Claude Code")[0]!.closest("button");
+    expect(row?.getAttribute("aria-disabled")).toBe("false");
+  });
+
   it("shows a Runs on line with the Core, home and report location", async () => {
     await openDialog();
     const runsOn = screen.getByText(/runs on/i).closest("div");

@@ -46,4 +46,34 @@ describe("a Harness the Core reports as needing setup (#685)", () => {
     expect(firstAvailableHarness(mixed, options)).toBe("codex");
     expect(firstAvailableHarness(mixed, ["claude-code"])).toBe("claude-code");
   });
+
+  describe("one the Core could not start for its check (#700)", () => {
+    const failed = fromCoreLinkMap({
+      "claude-code": {
+        status: "missing",
+        reason: "setup-check-failed: posix_spawnp failed: EACCES",
+        path: "/bin/claude",
+        version: "2.1.289",
+      },
+      codex: { status: "available", path: "/bin/codex" },
+    });
+
+    it("is needs-setup with the error and no dialog, keeping the binary and version", () => {
+      expect(failed["claude-code"]).toMatchObject({
+        status: "needs-setup",
+        setupError: "posix_spawnp failed: EACCES",
+        path: "/bin/claude",
+        version: "2.1.289",
+      });
+      expect(failed["claude-code"]!.setupDialog).toBeUndefined();
+      expect(map["claude-code"]!.setupError).toBeUndefined();
+    });
+
+    it("is installed and launchable, so a Session can show why, but is never the default pick", () => {
+      expect(coreHasHarness(failed, "claude-code")).toBe(true);
+      expect(harnessCanLaunch(failed, "claude-code")).toBe(true);
+      expect(isCliUnavailable(failed, "claude-code")).toBe(true);
+      expect(firstAvailableHarness(failed)).toBe("codex");
+    });
+  });
 });

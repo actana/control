@@ -30,11 +30,20 @@
 // land while one runs; the block that check finds is from before the reset and is not
 // remembered (#690, #704), or the next look would sit inside a backoff the reset was
 // meant to clear.
+//
+// A Harness the check cannot start at all (the spawn fails: a binary that is on PATH
+// but not executable for `core`, a PTY that cannot be opened, a VM out of processes) is
+// not announced available either: nothing is known about its dialogs, and a Session
+// would most likely not start on it (#700). It is reported as a failed check
+// (`setup-check-failed: <error>`), which the Panel shows as "Could not start", and it is
+// looked at again with the same backoff as a block, since a start failure on a shared VM
+// can be as transient as a dialog is fixable. The same resets apply: SIGHUP, a Core
+// restart, or a new binary or version looks at once.
 
 import log from "@actana/shared/log";
 import type { Harness } from "@actana/shared/domain";
 import type { CoreLinkHarnessAvailability, CoreLinkHarnessAvailabilityMap } from "@actana/shared/sdk-link-frames";
-import { needsSetupReason } from "@actana/shared/harness-needs-setup";
+import { needsSetupReason, setupCheckFailedReason } from "@actana/shared/harness-needs-setup";
 import { dialogsForHarness, matchBlockingDialog, type BlockingDialogSpec } from "./harness-prompt-delivery";
 import { PRETRUST_HARNESSES } from "./harness-pretrust";
 
@@ -87,7 +96,7 @@ export type HarnessSetupDeps = {
    * Start the Harness with no prompt and resolve with everything it painted,
    * ANSI intact (the matcher reads highlights from the escapes). Resolves with
    * what there is on a timeout; rejects only when the Harness cannot be started,
-   * which is not a dialog and is not reported as one.
+   * which is reported as a failed check (#700), not as a dialog.
    */
   runOnce: (run: SetupRun) => Promise<string>;
   /** The clock, for the recheck backoff. */
@@ -96,8 +105,11 @@ export type HarnessSetupDeps = {
 
 export class HarnessSetup {
   private readonly passed = new Map<string, string>();
-  /** A Harness found blocked: what it showed, and when it is started again (a full process each time). */
-  private readonly blocked = new Map<Harness, { key: string; dialog: string; nextAt: number; delayMs: number }>();
+  /**
+   * A Harness found blocked, or not startable: the reason it is reported with meanwhile, and when it is started
+   * again (a full process each time).
+   */
+  private readonly blocked = new Map<Harness, { key: string; reason: string; nextAt: number; delayMs: number }>();
   /** Bumped by every {@link forgetBlocks}: a check that started under an older generation records no block. */
   private generation = 0;
 
@@ -109,7 +121,7 @@ export class HarnessSetup {
     this.generation += 1;
   }
 
-  /** `map` with every available-but-blocked Harness turned into its needs-setup entry. */
+  /** `map` with every available Harness the check did not clear turned into its needs-setup entry. */
   async apply(map: CoreLinkHarnessAvailabilityMap): Promise<CoreLinkHarnessAvailabilityMap> {
     const available = Object.entries(map).filter(([, entry]) => entry?.status === "available") as [
       Harness,
@@ -137,42 +149,45 @@ export class HarnessSetup {
       const before = this.blocked.get(harness);
       // Still inside the backoff for the same binary and version: say what it showed last time, start nothing.
       if (before && before.key === key && now < before.nextAt) {
-        next[harness] = { ...entry, status: "missing", reason: needsSetupReason(before.dialog) };
+        next[harness] = { ...entry, status: "missing", reason: before.reason };
         continue;
       }
       const generation = this.generation;
-      const dialog = await this.check(harness, entry, dirs[0]!);
-      if (dialog === undefined) continue; // could not be started: say nothing new
-      if (dialog === null) {
+      const reason = await this.check(harness, entry, dirs[0]!);
+      if (reason === null) {
         this.passed.set(harness, key);
         this.blocked.delete(harness);
         continue;
       }
       this.passed.delete(harness);
-      next[harness] = { ...entry, status: "missing", reason: needsSetupReason(dialog) };
+      next[harness] = { ...entry, status: "missing", reason };
       // forgetBlocks ran while this check did: what it saw is from before the reset. Report it for this round,
-      // since the dialog was on screen, but remember no block, so the next round looks again at once.
+      // since the dialog was on screen (or the start failed), but remember no block, so the next round looks again at once.
       if (generation !== this.generation) continue;
       const delayMs = before && before.key === key ? Math.min(before.delayMs * 2, SETUP_RECHECK_MAX_MS) : SETUP_RECHECK_BASE_MS;
-      this.blocked.set(harness, { key, dialog, nextAt: now + delayMs, delayMs });
+      this.blocked.set(harness, { key, reason, nextAt: now + delayMs, delayMs });
     }
     return next;
   }
 
-  /** The id of the blocking dialog on screen, null when there is none, undefined when the run failed. */
-  private async check(harness: Harness, entry: CoreLinkHarnessAvailability, cwd: string): Promise<string | null | undefined> {
+  /**
+   * The needs-setup reason for the Harness: the blocking dialog on screen, or the error when it could not be
+   * started (#700). Null when it reached its composer.
+   */
+  private async check(harness: Harness, entry: CoreLinkHarnessAvailability, cwd: string): Promise<string | null> {
     let screen: string;
     try {
       screen = await this.deps.runOnce({ harness, binary: entry.path ?? harness, cwd });
     } catch (err) {
-      log.warn("core-setup.check-failed", { harness, error: err instanceof Error ? err.message : String(err) });
-      return undefined;
+      const error = err instanceof Error ? err.message : String(err);
+      log.warn("core-setup.check-failed", { harness, error });
+      return setupCheckFailedReason(error);
     }
     const dialog = matchBlockingDialog(screen, [
       ...dialogsForHarness(harness).filter((spec) => !SETUP_SKIPPED_DIALOGS[harness]?.includes(spec.id)),
       ...SETUP_ONLY_DIALOGS.filter((spec) => spec.harnesses?.includes(harness)),
     ]);
     if (dialog) log.warn("core-setup.needs-setup", { harness, dialog: dialog.spec.id });
-    return dialog ? dialog.spec.id : null;
+    return dialog ? needsSetupReason(dialog.spec.id) : null;
   }
 }

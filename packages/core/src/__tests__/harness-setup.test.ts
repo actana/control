@@ -5,7 +5,7 @@ import { readFileSync } from "node:fs";
 import * as path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import type { CoreLinkHarnessAvailabilityMap } from "@actana/shared/sdk-link-frames";
-import { needsSetupDialog } from "@actana/shared/harness-needs-setup";
+import { needsSetupDialog, setupCheckFailure } from "@actana/shared/harness-needs-setup";
 import { HarnessSetup, SETUP_RECHECK_BASE_MS, SETUP_RECHECK_MAX_MS, type SetupRun } from "../harness-setup";
 
 const TRUST_DIALOG = readFileSync(path.resolve(__dirname, "fixtures/claude-code-2.1.228-folder-trust.txt"), "utf8");
@@ -156,10 +156,6 @@ describe("HarnessSetup", () => {
     expect((await subject.apply(mapOf()))["claude-code"]!.status).toBe("available");
   });
 
-  it("does not call a Harness that could not be started needs-setup", async () => {
-    const { subject } = setup({ "claude-code": new Error("posix_spawnp failed") });
-    expect((await subject.apply(mapOf()))["claude-code"]!.status).toBe("available");
-  });
 
   it("pre-trusts only the available Harnesses that have a writer, before starting anything", async () => {
     const { subject, pretrust } = setup({});
@@ -192,5 +188,94 @@ describe("HarnessSetup", () => {
     expect(await subject.apply(input)).toBe(input);
     expect(runs).toEqual([]);
     expect(pretrust).not.toHaveBeenCalled();
+  });
+
+  describe("a Harness the check cannot start (#700)", () => {
+    const failing = () => setup({ "claude-code": new Error("posix_spawnp failed: EACCES") });
+
+    it("is not announced available: it is reported as a failed check naming the error, not as a dialog", async () => {
+      const { subject, runs } = failing();
+      const out = await subject.apply(mapOf());
+      expect(runs).toHaveLength(1);
+      expect(out["claude-code"]!.status).toBe("missing");
+      expect(setupCheckFailure(out["claude-code"]!.reason)).toBe("posix_spawnp failed: EACCES");
+      expect(needsSetupDialog(out["claude-code"]!.reason)).toBeNull();
+      // The probe's facts travel with it, so the Panel still knows the binary and version.
+      expect(out["claude-code"]!.path).toBe("/home/core/.local/bin/claude");
+      expect(out["claude-code"]!.version).toBe("2.1.289");
+      expect(out.codex).toEqual({ status: "missing", reason: "not-found" });
+    });
+
+    it("is looked at again with the same backoff as a block, and reports the last failure meanwhile", async () => {
+      const { subject, runs, clock } = failing();
+      await subject.apply(mapOf());
+      clock.t += SETUP_RECHECK_BASE_MS - 1;
+      const waiting = await subject.apply(mapOf());
+      expect(runs).toHaveLength(1);
+      expect(setupCheckFailure(waiting["claude-code"]!.reason)).toBe("posix_spawnp failed: EACCES");
+      clock.t += 1;
+      await subject.apply(mapOf());
+      expect(runs).toHaveLength(2);
+      clock.t += SETUP_RECHECK_BASE_MS; // the second wait is twice as long
+      await subject.apply(mapOf());
+      expect(runs).toHaveLength(2);
+      clock.t += SETUP_RECHECK_BASE_MS;
+      await subject.apply(mapOf());
+      expect(runs).toHaveLength(3);
+      for (let i = 0; i < 6; i += 1) {
+        clock.t += SETUP_RECHECK_MAX_MS;
+        await subject.apply(mapOf());
+      }
+      expect(runs).toHaveLength(9); // never longer than the cap between looks
+    });
+
+    it("shares one backoff with a block: a dialog after a failed start doubles the wait, not resets it", async () => {
+      const screens: Record<string, string | Error> = { "claude-code": new Error("spawn EAGAIN") };
+      const { subject, runs, clock } = setup(screens);
+      await subject.apply(mapOf());
+      screens["claude-code"] = TRUST_DIALOG;
+      clock.t += SETUP_RECHECK_BASE_MS;
+      const blocked = await subject.apply(mapOf());
+      expect(runs).toHaveLength(2);
+      expect(needsSetupDialog(blocked["claude-code"]!.reason)).toBe("folder-trust");
+      clock.t += SETUP_RECHECK_BASE_MS;
+      expect(needsSetupDialog((await subject.apply(mapOf()))["claude-code"]!.reason)).toBe("folder-trust");
+      expect(runs).toHaveLength(2);
+      clock.t += SETUP_RECHECK_BASE_MS;
+      await subject.apply(mapOf());
+      expect(runs).toHaveLength(3);
+    });
+
+    it("is available once a look reaches the composer, and is then remembered as a pass", async () => {
+      const screens: Record<string, string | Error> = { "claude-code": new Error("spawn EAGAIN") };
+      const { subject, runs, clock } = setup(screens);
+      expect((await subject.apply(mapOf()))["claude-code"]!.status).toBe("missing");
+      screens["claude-code"] = COMPOSER;
+      clock.t += SETUP_RECHECK_BASE_MS;
+      expect((await subject.apply(mapOf()))["claude-code"]!.status).toBe("available");
+      expect((await subject.apply(mapOf()))["claude-code"]!.status).toBe("available");
+      expect(runs).toHaveLength(2);
+    });
+
+    it("is looked at again at once after forgetBlocks (SIGHUP) or for a new version, inside its backoff", async () => {
+      const { subject, runs } = failing();
+      await subject.apply(mapOf());
+      await subject.apply(mapOf());
+      expect(runs).toHaveLength(1);
+      subject.forgetBlocks();
+      await subject.apply(mapOf());
+      expect(runs).toHaveLength(2);
+      await subject.apply({ "claude-code": claude("2.1.300") });
+      expect(runs).toHaveLength(3);
+    });
+
+    it("does not take back a pass: a Harness that reached its composer is not started again, so a later start failure cannot be seen", async () => {
+      const screens: Record<string, string | Error> = { "claude-code": COMPOSER };
+      const { subject, runs } = setup(screens);
+      await subject.apply(mapOf());
+      screens["claude-code"] = new Error("spawn EAGAIN");
+      expect((await subject.apply(mapOf()))["claude-code"]!.status).toBe("available");
+      expect(runs).toHaveLength(1);
+    });
   });
 });
