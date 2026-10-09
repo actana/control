@@ -99,6 +99,31 @@ describe("HarnessSetup", () => {
     expect(runs).toHaveLength(2);
   });
 
+  it("remembers no block from a check that was already running when forgetBlocks arrived (#690, #704)", async () => {
+    const runs: SetupRun[] = [];
+    let finish: (screen: string) => void = () => {};
+    const subject = new HarnessSetup({
+      workspaces: () => ["/home/core"],
+      pretrust: async () => [],
+      runOnce: async (run) => {
+        runs.push(run);
+        return runs.length === 1 ? new Promise<string>((resolve) => (finish = resolve)) : TRUST_DIALOG;
+      },
+    });
+    const round = subject.apply(mapOf());
+    await vi.waitFor(() => expect(runs).toHaveLength(1));
+    subject.forgetBlocks(); // SIGHUP lands while the Harness is still painting
+    finish(TRUST_DIALOG);
+    // This round still says what the screen showed ...
+    expect(needsSetupDialog((await round)["claude-code"]!.reason)).toBe("folder-trust");
+    // ... but the next round starts it again at once instead of sitting inside a backoff the reset was meant to clear.
+    expect(needsSetupDialog((await subject.apply(mapOf()))["claude-code"]!.reason)).toBe("folder-trust");
+    expect(runs).toHaveLength(2);
+    // That look, after the reset, is remembered as usual.
+    await subject.apply(mapOf());
+    expect(runs).toHaveLength(2);
+  });
+
   it("does not call Pi blocked at its trust screen: its extension answers that in a real Session (#686 review)", async () => {
     const trust = readFileSync(path.resolve(__dirname, "fixtures/pi-0.85.1-project-trust.txt"), "utf8");
     const { subject, runs } = setup({ pi: trust });

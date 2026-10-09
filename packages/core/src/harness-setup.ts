@@ -26,7 +26,10 @@
 // The backoff can hide a fix made by hand: a login done in a Session leaves the Harness
 // showing "needs setup" until its next look, up to ten minutes later. SIGHUP (which calls
 // {@link HarnessSetup.forgetBlocks}), a restart of the Core, or a new version of the
-// binary looks at once.
+// binary looks at once. A check is a Harness process that takes seconds, so a SIGHUP can
+// land while one runs; the block that check finds is from before the reset and is not
+// remembered (#690, #704), or the next look would sit inside a backoff the reset was
+// meant to clear.
 
 import log from "@actana/shared/log";
 import type { Harness } from "@actana/shared/domain";
@@ -95,12 +98,15 @@ export class HarnessSetup {
   private readonly passed = new Map<string, string>();
   /** A Harness found blocked: what it showed, and when it is started again (a full process each time). */
   private readonly blocked = new Map<Harness, { key: string; dialog: string; nextAt: number; delayMs: number }>();
+  /** Bumped by every {@link forgetBlocks}: a check that started under an older generation records no block. */
+  private generation = 0;
 
   constructor(private readonly deps: HarnessSetupDeps) {}
 
   /** Look at every blocked Harness again on the next round, whatever its backoff says (SIGHUP). */
   forgetBlocks(): void {
     this.blocked.clear();
+    this.generation += 1;
   }
 
   /** `map` with every available-but-blocked Harness turned into its needs-setup entry. */
@@ -134,6 +140,7 @@ export class HarnessSetup {
         next[harness] = { ...entry, status: "missing", reason: needsSetupReason(before.dialog) };
         continue;
       }
+      const generation = this.generation;
       const dialog = await this.check(harness, entry, dirs[0]!);
       if (dialog === undefined) continue; // could not be started: say nothing new
       if (dialog === null) {
@@ -142,9 +149,12 @@ export class HarnessSetup {
         continue;
       }
       this.passed.delete(harness);
+      next[harness] = { ...entry, status: "missing", reason: needsSetupReason(dialog) };
+      // forgetBlocks ran while this check did: what it saw is from before the reset. Report it for this round,
+      // since the dialog was on screen, but remember no block, so the next round looks again at once.
+      if (generation !== this.generation) continue;
       const delayMs = before && before.key === key ? Math.min(before.delayMs * 2, SETUP_RECHECK_MAX_MS) : SETUP_RECHECK_BASE_MS;
       this.blocked.set(harness, { key, dialog, nextAt: now + delayMs, delayMs });
-      next[harness] = { ...entry, status: "missing", reason: needsSetupReason(dialog) };
     }
     return next;
   }
