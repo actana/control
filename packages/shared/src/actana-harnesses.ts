@@ -169,7 +169,8 @@ export function missingHarnesses(availability: CoreLinkHarnessAvailabilityMap): 
     // No entry at all means the probe never covered it — treating that as
     // "missing" would offer to install agents the Core does not manage.
     if (!entry) return false;
-    // A needs-setup Harness is installed; re-running its installer would not help.
+    // A needs-setup Harness is installed; re-running its installer would not help. That
+    // includes one the Core could not start for its setup check (#700): on PATH, not ready.
     return entry.status === "missing" && entry.reason !== "disabled" && !isNeedsSetup(entry);
   });
 }
