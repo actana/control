@@ -27,7 +27,8 @@ bin="${COMMITLINT_BIN:-$root/node_modules/.bin/commitlint}"
 config="${COMMITLINT_CONFIG:-$root/commitlint.config.mjs}"
 
 # Keep this list in sync with CONTRIBUTING.md § Branch naming and the type list
-# in commitlint.config.mjs (branch types are the commit types plus the aliases).
+# in commitlint.config.mjs (branch types are the commit types plus the aliases,
+# minus `gate`: a gate names a pull request, never a branch — #499).
 branch_types='feat|feature|fix|bugfix|hotfix|release|chore|docs|refactor|perf|test|ci|revert'
 branch_pattern="^($branch_types)/[a-z0-9]+([._-][a-z0-9]+)*\$"
 
