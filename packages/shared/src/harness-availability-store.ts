@@ -66,6 +66,14 @@ export type HarnessAvailabilityStoreOptions = {
    * the synchronous one-shot the CLI and the tests call.
    */
   probeAsync?: (agent: Harness) => Promise<CoreLinkHarnessAvailability>;
+  /**
+   * Runs on every refreshed map before it is published and may change entries: the
+   * Core's setup check (#685) turns an `available` Harness that a first-run dialog
+   * blocks into a needs-setup entry. Because it sits in front of publishing, a
+   * Harness is never announced available and then taken back. A throw leaves the
+   * map as probed. Setting it makes {@link refresh} asynchronous on every Core.
+   */
+  afterProbe?: (map: CoreLinkHarnessAvailabilityMap) => Promise<CoreLinkHarnessAvailabilityMap>;
 };
 
 export class HarnessAvailabilityStore {
@@ -73,6 +81,7 @@ export class HarnessAvailabilityStore {
   private readonly tickMs: number;
   private readonly probe: (agent: Harness) => CoreLinkHarnessAvailability;
   private readonly probeAsync: ((agent: Harness) => Promise<CoreLinkHarnessAvailability>) | null;
+  private readonly afterProbe: HarnessAvailabilityStoreOptions["afterProbe"] | null;
   private refreshing: Promise<void> | null = null;
   /** The one round queued behind {@link refreshing}, shared by every caller that arrived meanwhile. */
   private trailing: Promise<void> | null = null;
@@ -83,7 +92,8 @@ export class HarnessAvailabilityStore {
     this.appendEvent = opts.appendEvent;
     this.tickMs = opts.tickMs ?? DEFAULT_AVAILABILITY_TICK_MS;
     this.probe = opts.probe ?? defaultProbe;
-    this.probeAsync = opts.probeAsync ?? null;
+    this.afterProbe = opts.afterProbe ?? null;
+    this.probeAsync = opts.probeAsync ?? (this.afterProbe ? async (agent) => this.probe(agent) : null);
     // Start every agent as `checking` so the Panel has a stable initial
     // rendering (matches the pre-issue-11 boot flow where the store seeds
     // "checking" before the first probe completes).
@@ -180,7 +190,17 @@ export class HarnessAvailabilityStore {
         next[agent] = probeFailed(err);
       }
     }
-    this.publish(next);
+    this.publish(await this.settle(next));
+  }
+
+  private async settle(next: CoreLinkHarnessAvailabilityMap): Promise<CoreLinkHarnessAvailabilityMap> {
+    if (!this.afterProbe) return next;
+    try {
+      return await this.afterProbe(next);
+    } catch (err) {
+      log.warn("core-availability.after-probe-failed", { error: err instanceof Error ? err.message : String(err) });
+      return next;
+    }
   }
 
   private publish(next: CoreLinkHarnessAvailabilityMap): void {

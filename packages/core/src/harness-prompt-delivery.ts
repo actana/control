@@ -533,6 +533,16 @@ export type HarnessReadiness = {
    * which makes a wrong guess visible instead of a false delivery.
    */
   textHidesComposerMarker?: boolean;
+  /**
+   * The narrow form of {@link textHidesComposerMarker}, for a harness whose
+   * composer drops its placeholder while it holds text but which may also put a
+   * menu this module has no dialog row for on the same screen. Only a screen
+   * that shows our own prompt back ({@link promptEchoed}) counts as a composer
+   * holding it; any other painted screen without the marker keeps waiting, so a
+   * carriage return is never pressed into a menu on the strength of "something
+   * painted".
+   */
+  echoHidesComposerMarker?: boolean;
 };
 
 const NO_READINESS: HarnessReadiness = {
@@ -749,10 +759,18 @@ export const HARNESS_READINESS: Partial<Record<Harness, HarnessReadiness>> = {
     confirmEcho: true,
     maxPromptWrites: 3,
   },
+  // On 0.160.0 a long prompt repaints the composer with the text and without
+  // the `Ask Codex to do anything` placeholder, which is gone while the box
+  // holds text. A write whose echo lands after the echo check is back in
+  // `settling` waiting for a placeholder that cannot return, so
+  // `echoHidesComposerMarker` sends a screen that shows the prompt back to the
+  // carriage return. Not `textHidesComposerMarker`: codex's directory-trust
+  // menu has no dialog row, and any painted screen would take the return.
   codex: {
     composer: [/ask\s+codex\s+to\s+do\s+anything/i],
     confirmEcho: true,
     maxPromptWrites: 3,
+    echoHidesComposerMarker: true,
   },
   // Pi's editor has no placeholder text — the listening screen is an empty
   // bordered box above a footer that always shows context usage as `N%/M`
@@ -762,10 +780,18 @@ export const HARNESS_READINESS: Partial<Record<Harness, HarnessReadiness>> = {
   // not type into (ADO #4987). The same footer also appears under Pi's
   // "No models available" warning; that screen is refused by the `no-models`
   // row in {@link BLOCKING_DIALOGS}, not by narrowing this pattern (ADO #520).
+  //
+  // On 1.0.2 a long prompt repaints only the editor box, wrapped, and not the
+  // footer, so a write whose echo lands after the echo check is back in
+  // `settling` looking for a footer that is not coming back while the text is
+  // in the box. `echoHidesComposerMarker` sends a screen that shows the prompt
+  // back to the carriage return. Not `textHidesComposerMarker`: that accepts any
+  // footer-less screen, and Pi has no turn-start signal to catch a wrong guess.
   pi: {
     composer: [/\d+(\.\d+)?%\//],
     confirmEcho: true,
     maxPromptWrites: 3,
+    echoHidesComposerMarker: true,
   },
 };
 
@@ -948,7 +974,10 @@ export const HARNESS_PROMPT_DELIVERY_PROFILES: Partial<
   // OpenCode collapses a long paste into a block and swallows a `\r` that comes
   // too early, so its submit is verified and retried. Claude Code, codex,
   // cursor-cli and pi take the single `\r` after `submitPauseMs` on a long
-  // prompt, so they get no entry.
+  // prompt, so they get no entry. Codex and pi send that `\r` for a landed
+  // prompt only on the strength of the prompt's own echo
+  // (`echoHidesComposerMarker`), and have no turn-start signal to verify
+  // against, so nothing confirms that a turn started.
   opencode: {
     composerWaitMs: 90_000,
     submitRetryGapsMs: [1_000, 2_000, 4_000, 7_000, 10_000],
@@ -1277,6 +1306,19 @@ export class HarnessPromptDelivery {
   }
 
   /**
+   * Back in `settling` after a write, with no marker on screen: is the prompt
+   * we already typed sitting in the composer? Only for a harness whose text
+   * hides its marker (`textHidesComposerMarker`, or `echoHidesComposerMarker` for
+   * a screen that shows the prompt back), so every other harness keeps
+   * waiting for its marker exactly as before. The dialog gate has already run.
+   */
+  private composerHoldsPriorWrite(): boolean {
+    const { textHidesComposerMarker, echoHidesComposerMarker } = this.readiness;
+    if (!(textHidesComposerMarker || echoHidesComposerMarker) || this.promptWrites === 0) return false;
+    return (!!textHidesComposerMarker && this.composerHoldsUnreadableText()) || this.promptIsInComposer();
+  }
+
+  /**
    * The prompt did not arrive. Go back to watching the harness rather than
    * hammering the same write at it: the reason it was swallowed is that the
    * TUI was not listening, and the next write is worth no more than this one
@@ -1337,7 +1379,26 @@ export class HarnessPromptDelivery {
     // composer has to be on screen before a keystroke is worth sending; for
     // every other harness `composerOnScreen` is `true` and this costs nothing.
     if (!this.deadlinePassed && !composerOnScreen(this.screen, this.readiness)) {
+      // Issue 681. A prompt written earlier may only now have painted: the
+      // composer holds it, so its placeholder is gone and will not come back.
+      // Waiting for the marker would end at the ceiling with the text typed but
+      // unsent. Press Enter instead of typing — nothing is written over it, and
+      // `submit` hands the rest to the bounded verify loop.
+      if (this.composerHoldsPriorWrite()) {
+        this.submit(this.timers.now());
+        return;
+      }
       this.holdForComposer();
+      return;
+    }
+
+    // The marker is back, but so is our own prompt: a harness whose renderer
+    // redraws only the rows that changed (Pi) can show the footer together with
+    // text that already landed. Typing again would double it, so press Enter. For
+    // a harness whose marker is a placeholder (codex) the two never coexist, so
+    // this cannot fire there.
+    if (this.readiness.echoHidesComposerMarker && this.promptIsInComposer()) {
+      this.submit(this.timers.now());
       return;
     }
 

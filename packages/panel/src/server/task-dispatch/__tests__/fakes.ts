@@ -134,9 +134,12 @@ export class FakeCore {
   readonly starts: StartSessionRequest[] = [];
   readonly sessions: { id: string; request: StartSessionRequest; exit: (code: number) => void; disposed: boolean }[] = [];
   failWith: string | null = null;
+  /** Runs when a Session is asked for, before it is recorded: what the Core can see at that moment. */
+  onStart: (() => void) | null = null;
   private n = 0;
 
   readonly startSession: SessionStarter = async (request) => {
+    this.onStart?.();
     this.starts.push(request);
     if (this.failWith) throw new Error(this.failWith);
     const id = `session_${(this.n += 1)}`;

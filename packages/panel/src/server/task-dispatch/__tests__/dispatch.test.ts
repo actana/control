@@ -82,11 +82,12 @@ const assign = (clock: FakeClock, overrides: Partial<Parameters<typeof createTas
   createTask(owner, { title: "Fix the build", description: "The CI build is red on main.", agent: AGENT.id, startNow: true, ...overrides }, clock.now());
 
 const result = (id: string, name: string) => `tasks/${id}/${name}`;
+const promptFile = (id: string, attempt: number) => `tasks/${id}/prompt-attempt-${attempt}.md`;
 const report = (text: string) => `${text}\n\nACT-REPORT-END\n`;
 
 describe("dispatching an assigned Task", () => {
   it("starts a Session on the Agent's Core with the Task, its comments and the result instructions", async () => {
-    const { clock, core, dispatcher } = rig();
+    const { clock, core, shared, dispatcher } = rig();
     const task = await assign(clock);
     await addTaskComment(A, task.id, { authorKind: "user", authorName: "Operator", body: "Use pnpm, not npm." }, clock.now());
     await addTaskComment(A, task.id, { authorKind: "agent", authorName: "Claude Code", body: "Earlier I found the lockfile is stale." }, clock.now());
@@ -98,24 +99,109 @@ describe("dispatching an assigned Task", () => {
     const start = core.starts[0]!;
     expect(start).toMatchObject({ coreId: "core_1", harness: "claude-code", model: "claude-sonnet-5-5", flags: ["skip-permissions"] });
     expect(start.title).toBe("Task: Fix the build");
-    expect(start.prompt).toContain("Fix the build");
-    expect(start.prompt).toContain("The CI build is red on main.");
-    expect(start.prompt).toContain("Use pnpm, not npm.");
-    expect(start.prompt).toContain("Earlier I found the lockfile is stale.");
-    expect(start.prompt).not.toContain("internal panel bookkeeping");
-    expect(start.prompt).toContain(`~/shared/tasks/${task.id}/success.md`);
-    expect(start.prompt).toContain(`~/shared/tasks/${task.id}/fail.md`);
-    expect(start.prompt).toContain(`~/shared/tasks/${task.id}/partial-<n>.md`);
-    expect(start.prompt).toContain("ACT-REPORT-END");
+
+    // The harness is typed one short line; the Task is in the prompt file that line names.
+    const file = promptFile(task.id, 1);
+    expect(start.prompt.length).toBeLessThan(200);
+    expect(start.prompt).not.toContain("\n");
+    expect(start.prompt).toContain(`~/shared/${file}`);
+    expect(start.prompt).not.toContain("The CI build is red on main.");
+    const prompt = shared.text(file)!;
+    expect(prompt).toContain("Fix the build");
+    expect(prompt).toContain("The CI build is red on main.");
+    expect(prompt).toContain("Use pnpm, not npm.");
+    expect(prompt).toContain("Earlier I found the lockfile is stale.");
+    expect(prompt).not.toContain("internal panel bookkeeping");
+    expect(prompt).toContain("attempt 1");
+    expect(prompt).toContain(`~/shared/tasks/${task.id}/success.md`);
+    expect(prompt).toContain(`~/shared/tasks/${task.id}/fail.md`);
+    expect(prompt).toContain(`~/shared/tasks/${task.id}/partial-<n>.md`);
+    expect(prompt).toContain("ACT-REPORT-END");
   });
 
-  it("leaves the Core's standard block to the Core: the prompt carries none", async () => {
-    const { clock, core, dispatcher } = rig();
-    await assign(clock);
+  it("writes the prompt file before it types the pointer, and reads it back", async () => {
+    const { clock, shared, core, dispatcher } = rig();
+    const task = await assign(clock);
+    const seen: boolean[] = [];
+    core.onStart = () => seen.push(shared.files.has(promptFile(task.id, 1)));
+
+    await dispatcher.dispatchOnce();
+
+    expect(seen).toEqual([true]);
+    expect(shared.calls.indexOf(`put ${promptFile(task.id, 1)}`)).toBeGreaterThanOrEqual(0);
+    expect(shared.calls.indexOf(`get ${promptFile(task.id, 1)}`)).toBeGreaterThan(shared.calls.indexOf(`put ${promptFile(task.id, 1)}`));
+  });
+
+  it("writes the file through the Core's own files, not the object store the watcher reads", async () => {
+    const r = rig();
+    const coreFiles = new FakeShared(r.clock);
+    const dispatcher = new TaskDispatcher({
+      ownerId: A,
+      startSession: r.core.startSession,
+      sharedFor: async () => r.shared,
+      coreFilesFor: async () => coreFiles,
+      watcher: r.watcher,
+      agents: r.agents,
+      now: r.clock.now,
+      log: r.log,
+    });
+    const task = await assign(r.clock);
+
+    await dispatcher.dispatchOnce();
+
+    expect(coreFiles.text(promptFile(task.id, 1))).toContain("Fix the build");
+    expect(r.shared.text(promptFile(task.id, 1))).toBeNull();
+    expect(r.core.starts).toHaveLength(1);
+  });
+
+  it("does not type anything when the prompt file cannot be written: the Task fails with the reason", async () => {
+    const { clock, shared, core, dispatcher } = rig();
+    const task = await assign(clock);
+    shared.failing.put = "disk full";
+
+    await dispatcher.dispatchOnce();
+
+    expect(core.starts).toHaveLength(0);
+    const failed = await getTask(A, task.id);
+    expect(failed.status).toBe("failed");
+    expect(failed.lastError).toContain("prompt file");
+    expect(failed.lastError).toContain("disk full");
+  });
+
+  it("dispatches a Task whose description is cut through an emoji: the readback matches and the prompt is typed", async () => {
+    const { clock, shared, core, dispatcher } = rig();
+    const task = await assign(clock, { description: `${"a".repeat(19_999)}😀 and more` });
+
+    await dispatcher.dispatchOnce();
+
+    expect(core.starts).toHaveLength(1);
+    expect((await getTask(A, task.id)).status).toBe("in_progress");
+    expect(shared.text(promptFile(task.id, 1))).toContain("[cut]");
+  });
+
+  it("does not type anything when the file read back is not what was written", async () => {
+    const { clock, shared, core, dispatcher } = rig();
+    const task = await assign(clock);
+    const get = shared.get.bind(shared);
+    shared.get = async (path) => {
+      const file = await get(path);
+      return { ...file, body: new TextEncoder().encode("truncated") };
+    };
+
+    await dispatcher.dispatchOnce();
+
+    expect(core.starts).toHaveLength(0);
+    expect((await getTask(A, task.id)).status).toBe("failed");
+  });
+
+  it("leaves the Core's standard block to the Core: neither the pointer nor the file carries one", async () => {
+    const { clock, shared, core, dispatcher } = rig();
+    const task = await assign(clock);
     await dispatcher.dispatchOnce();
 
     // A prompt that already holds a block is left alone by the Core, so the Session would be told no report path of its own.
     expect(core.starts[0]!.prompt).not.toMatch(/\[\/?Actana standard block/);
+    expect(shared.text(promptFile(task.id, 1))).not.toMatch(/\[\/?Actana standard block/);
   });
 
   it("claims the Task: in progress, attempt 1, dispatched at the clock", async () => {
@@ -391,8 +477,12 @@ describe("turning a result file into a comment and a status", () => {
     await dispatcher.dispatchOnce();
 
     expect(core.starts).toHaveLength(2);
-    expect(core.starts[1]!.prompt).toContain("Try the other approach.");
-    expect(core.starts[1]!.prompt).toContain("first try failed");
+    // A fresh file for attempt 2, with the new comment and the earlier report; attempt 1's file is as it was.
+    expect(core.starts[1]!.prompt).toContain(`~/shared/${promptFile(task.id, 2)}`);
+    expect(shared.text(promptFile(task.id, 2))).toContain("Try the other approach.");
+    expect(shared.text(promptFile(task.id, 2))).toContain("first try failed");
+    expect(shared.text(promptFile(task.id, 2))).toContain("attempt 2");
+    expect(shared.text(promptFile(task.id, 1))).not.toContain("Try the other approach.");
     expect(shared.text(result(task.id, "fail.md"))).toBeNull();
     expect(shared.text(result(task.id, "attempt-1-fail.md"))).toContain("first try failed");
     expect(shared.text(result(task.id, "attempt-1.log"))).toBe("log of attempt one");
@@ -721,7 +811,7 @@ describe("reading results that are awkward", () => {
     await dispatcher.dispatchOnce();
     clock.advance(1_000);
     shared.write(result(task.id, "success.md"), `${"x".repeat(1024 * 1024 + 1)}\n\nACT-REPORT-END\n`);
-    const gets = () => shared.calls.filter((c) => c.startsWith("get "));
+    const gets = () => shared.calls.filter((c) => c.startsWith("get ") && !c.includes("prompt-attempt"));
 
     await watcher.tick();
 

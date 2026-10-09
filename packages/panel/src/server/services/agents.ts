@@ -98,7 +98,11 @@ async function reportedHarnesses(coreId: string, deps: AgentDeps): Promise<CoreL
   }
 }
 
-/** Only `available` can run, as `harnessCanLaunch` and the Core's own `harness ls` say. */
+/**
+ * Only `available` can run an Agent or Task. This is deliberately stricter than
+ * the Panel's `harnessCanLaunch`: a needs-setup Harness can open an interactive
+ * Session, but a Task cannot finish an interactive setup.
+ */
 function hasHarness(map: CoreLinkHarnessAvailabilityMap, harness: string): boolean {
   return map[harness]?.status === "available";
 }
@@ -209,7 +213,10 @@ export async function resolveAgent(ownerId: number, id: string, deps: AgentDeps 
  */
 export async function ensureDefaultAgents(ownerId: number, coreId: string, deps: AgentDeps = {}, now = Date.now()): Promise<Agent[]> {
   if (!(await findCoreById(ownerId, coreId))) throw new NotFoundError("core not found");
-  const reported = await reportedHarnesses(coreId, deps);
+  return ensureDefaultsFor(ownerId, coreId, await reportedHarnesses(coreId, deps), now);
+}
+
+async function ensureDefaultsFor(ownerId: number, coreId: string, reported: CoreLinkHarnessAvailabilityMap, now: number): Promise<Agent[]> {
   const out: Agent[] = [];
   for (const harness of HARNESSES) {
     if (!hasHarness(reported, harness)) continue;
@@ -235,14 +242,28 @@ async function ensureDefault(ownerId: number, coreId: string, harness: Harness, 
 }
 
 /**
- * One Core's Agents, with a default Agent for each harness it has. The Core is
- * asked first; one that cannot be asked keeps the Agents it already has.
+ * One Core's Agents, with a default Agent for each harness it has. With
+ * `runnableOnly` (the New Task picker) an Agent whose harness the Core does not
+ * report available now is left out: hidden, not deleted, and back when the
+ * harness is. Without it every Agent is listed, because a Task's Agent must keep
+ * its name when its harness goes. A Core that cannot be asked keeps the Agents
+ * it already has.
  */
-export async function listAgentsForCore(ownerId: number, coreId: string, deps: AgentDeps = {}): Promise<Agent[]> {
+export async function listAgentsForCore(
+  ownerId: number,
+  coreId: string,
+  deps: AgentDeps = {},
+  { runnableOnly = false }: { runnableOnly?: boolean } = {},
+): Promise<Agent[]> {
+  let reported: CoreLinkHarnessAvailabilityMap;
   try {
-    await ensureDefaultAgents(ownerId, coreId, deps);
+    if (!(await findCoreById(ownerId, coreId))) throw new NotFoundError("core not found");
+    reported = await reportedHarnesses(coreId, deps);
   } catch (err) {
     if (!(err instanceof CoreHarnessesUnavailableError)) throw err;
+    return findAgents(ownerId, coreId);
   }
-  return findAgents(ownerId, coreId);
+  await ensureDefaultsFor(ownerId, coreId, reported, Date.now());
+  const all = await findAgents(ownerId, coreId);
+  return runnableOnly ? all.filter((a) => hasHarness(reported, a.harness)) : all;
 }

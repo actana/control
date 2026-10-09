@@ -10,9 +10,10 @@ import {
   type Task,
 } from "../services/tasks";
 import { archivedTaskName, classifyTaskEntry, taskFolder } from "~/shared/task-report";
+import { formatTaskDispatchComment } from "~/shared/tasks";
 import { ResultWatcher } from "./result-watcher";
 import { lazyShared, type SharedFor } from "./shared-factory";
-import { buildTaskPrompt } from "./task-prompt";
+import { buildTaskPointer, buildTaskPrompt, taskPromptPath } from "./task-prompt";
 import { consoleDispatchLog, messageOf, type Clock, type DispatchLog, type SessionStarter } from "./types";
 
 /**
@@ -20,12 +21,14 @@ import { consoleDispatchLog, messageOf, type Clock, type DispatchLog, type Sessi
  * Core with the Task, its comments and the result instructions, and hands the
  * running Task to the result watcher.
  *
+ * The Session is told only a short pointer; the Task itself is a file in the Task's folder (`prompt-attempt-<n>.md`).
+ *
  * Per Task, in this order:
  *  1. CLAIM with one conditional update (`claimTask`): assigned to in_progress,
  *     attempt + 1, dispatch time set. Of two dispatchers only one gets the Task.
  *  2. RESOLVE the Task's Agent to the harness and Core it has right now.
  *  3. On a re-run, rename the older results to `attempt-<n>-<name>` (client PR 41).
- *  4. START the Session through the Core's client, then add a system comment.
+ *  4. WRITE the prompt file through the Core's Files API and read it back, then START the Session through the Core's client, then add a system comment.
  *  5. WATCH its result files.
  * Any failure before the Session runs moves the Task to `failed` with the reason
  * as its last error and a system comment (`failTaskDispatch`), so no Task is left
@@ -43,6 +46,12 @@ export type TaskDispatcherOptions = {
   ownerId: number;
   startSession: SessionStarter;
   sharedFor: SharedFor;
+  /**
+   * The Core's own Files API (the through-the-Core mode), where the Task's prompt file is written. A write there
+   * is on the Core's disk when it returns, so the agent never reads a file that has not synced yet. Defaults to
+   * `sharedFor`, which is right only where that is already the Core's disk.
+   */
+  coreFilesFor?: SharedFor;
   watcher: ResultWatcher;
   agents?: AgentLookup;
   now?: Clock;
@@ -59,6 +68,7 @@ export class TaskDispatcher {
   private readonly ownerId: number;
   private readonly startSession: SessionStarter;
   private readonly sharedFor: SharedFor;
+  private readonly coreFilesFor: SharedFor;
   private readonly watcher: ResultWatcher;
   private readonly agents: AgentLookup;
   private readonly now: Clock;
@@ -73,6 +83,7 @@ export class TaskDispatcher {
     this.ownerId = opts.ownerId;
     this.startSession = opts.startSession;
     this.sharedFor = opts.sharedFor;
+    this.coreFilesFor = opts.coreFilesFor ?? opts.sharedFor;
     this.watcher = opts.watcher;
     this.agents = opts.agents ?? realAgents;
     this.now = opts.now ?? Date.now;
@@ -179,6 +190,17 @@ export class TaskDispatcher {
     return adopted;
   }
 
+  /** Write the prompt file through the Core's own Files API and read it back, so a short or missing file is an error here. */
+  private async writePromptFile(coreId: string, taskId: string, attempt: number, text: string): Promise<void> {
+    const files = await this.coreFilesFor(coreId);
+    const path = taskPromptPath(taskId, attempt);
+    await files.put(path, text);
+    const written = await files.get(path);
+    // Bytes, not strings: the Core holds what `put` encoded, and that is what a decode of `text` can differ from.
+    const expected = new TextEncoder().encode(text);
+    if (written.body.length !== expected.length || written.body.some((b, i) => b !== expected[i])) throw new Error(`${path} on the Core does not hold what was written`);
+  }
+
   /** Stop cleanly: no new claim after this, the cycle in flight finishes, the watcher stops. */
   async stop(): Promise<void> {
     this.stopped = true;
@@ -224,13 +246,21 @@ export class TaskDispatcher {
     let sessionId: string;
     try {
       const comments = await listTaskComments(this.ownerId, claimed.id);
+      // The whole Task goes into a file the agent reads, not into the composer. The file is on the Core before
+      // the pointer is typed, so the agent cannot be told to read a file that is not there.
+      try {
+        await this.writePromptFile(resolved.coreId, claimed.id, attempt, buildTaskPrompt(claimed, comments, attempt));
+      } catch (err) {
+        await fail(`could not put the Task's prompt file on Core ${resolved.coreId}: ${messageOf(err)}`);
+        return true;
+      }
       const session = await this.startSession({
         coreId: resolved.coreId,
         harness: resolved.harness,
         model: resolved.model,
         flags: resolved.flags,
         title: `Task: ${claimed.title.trim().slice(0, 80)}`,
-        prompt: buildTaskPrompt(claimed, comments, attempt),
+        prompt: buildTaskPointer(resolved.harness, claimed.id, attempt),
       });
       sessionId = session.sessionId;
       this.watcher.track(
@@ -258,7 +288,13 @@ export class TaskDispatcher {
         {
           authorKind: "system",
           authorName: "Panel",
-          body: `Dispatched (attempt ${attempt}) to ${agent.name} (${resolved.harness}) on Core ${resolved.coreId}: Session ${sessionId}.`,
+          body: formatTaskDispatchComment({
+            attempt,
+            agentName: agent.name,
+            harness: resolved.harness,
+            coreId: resolved.coreId,
+            sessionId,
+          }),
         },
         this.now(),
       );

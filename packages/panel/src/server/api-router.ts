@@ -355,7 +355,7 @@ async function dispatch(
   m = pathname.match(TASK_COMMENTS_PATH);
   if (m && method === "POST") return tasksController.comment(ownerId, decode(m[1]), request);
   m = pathname.match(CORE_AGENTS_PATH);
-  if (m && method === "GET") return tasksController.listCoreAgents(ownerId, decode(m[1]));
+  if (m && method === "GET") return tasksController.listCoreAgents(ownerId, decode(m[1]), url.searchParams.get("runnable") === "1");
 
   // The Files tab (#565): every call runs as the session's owner, on one of that owner's Cores. A key never reaches these.
   m = pathname.match(CORE_SHARED_FILES_PATH);

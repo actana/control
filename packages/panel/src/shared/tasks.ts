@@ -51,3 +51,37 @@ export function statusesBefore(to: TaskStatus): TaskStatus[] {
 
 export const COMMENT_AUTHOR_KINDS = ["user", "agent", "system"] as const;
 export type CommentAuthorKind = (typeof COMMENT_AUTHOR_KINDS)[number];
+
+/**
+ * Fields the Panel writes into a Task's system comment when it dispatches an
+ * attempt (#570 / #676). The Task detail drawer parses the same string to open
+ * that attempt's Session — so format and parse must stay a pair.
+ */
+export type TaskDispatchCommentFields = {
+  attempt: number;
+  agentName: string;
+  harness: string;
+  coreId: string;
+  sessionId: string;
+};
+
+/** The system comment body for one dispatch. Byte-stable: existing Tasks keep their Open session button. */
+export function formatTaskDispatchComment(fields: TaskDispatchCommentFields): string {
+  return `Dispatched (attempt ${fields.attempt}) to ${fields.agentName} (${fields.harness}) on Core ${fields.coreId}: Session ${fields.sessionId}.`;
+}
+
+/**
+ * Read attempt, agent, harness, Core and Session out of a dispatch comment.
+ * Agent names may contain parentheses; the harness is the last `(…)` before ` on Core`.
+ */
+export function parseTaskDispatchComment(body: string): TaskDispatchCommentFields | null {
+  const m = /^Dispatched \(attempt (\d+)\) to (.+) \(([^)]+)\) on Core (.+): Session (.+)\.$/.exec(body);
+  if (!m) return null;
+  return {
+    attempt: Number(m[1]),
+    agentName: m[2]!,
+    harness: m[3]!,
+    coreId: m[4]!,
+    sessionId: m[5]!,
+  };
+}

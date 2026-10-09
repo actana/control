@@ -30,6 +30,7 @@ import {
   type HarnessCliConfig,
 } from "./harness-cli-config";
 import type { Harness } from "./domain";
+import { isNeedsSetup } from "./harness-needs-setup";
 import type { CoreLinkHarnessAvailabilityMap } from "./sdk-link-frames";
 import type { ActanaSystem } from "./actana-system-port";
 import { withNpmUserPrefixIfNeeded, resolveNpmGlobalPrefixViaRun } from "./npm-install-prefix";
@@ -168,7 +169,8 @@ export function missingHarnesses(availability: CoreLinkHarnessAvailabilityMap): 
     // No entry at all means the probe never covered it — treating that as
     // "missing" would offer to install agents the Core does not manage.
     if (!entry) return false;
-    return entry.status === "missing" && entry.reason !== "disabled";
+    // A needs-setup Harness is installed; re-running its installer would not help.
+    return entry.status === "missing" && entry.reason !== "disabled" && !isNeedsSetup(entry);
   });
 }
 

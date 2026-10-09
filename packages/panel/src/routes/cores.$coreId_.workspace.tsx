@@ -113,7 +113,7 @@ import {
 
 // Session workspace for a Core (issue 560). Sessions belong to the Core and
 // always start in ~ (ADR 0041 D1, D2).
-export const Route = createFileRoute("/cores/$coreId/workspace")({
+export const Route = createFileRoute("/cores/$coreId_/workspace")({
   component: CoreWorkspacePage,
 });
 
@@ -528,6 +528,9 @@ function CoreWorkspacePage() {
         showHarnessUpdateRequired(payload.agent, selectedAvailability);
         return;
       }
+      // `needs-setup` is deliberately not guarded here: this is the explicit "open a Session on this Harness" path
+      // (the dialog's pick), and a Session is where the operator finishes a first-run dialog. The silent paths
+      // below (`startWithSaved*`) do guard it and send the operator through the dialog instead.
       if (selectedAvailability.status === "missing") {
         setShowNewHarness(true);
         return;
@@ -634,7 +637,9 @@ function CoreWorkspacePage() {
       showHarnessUpdateRequired(remembered.savedHarness, savedAvailability);
       return;
     }
-    if (savedAvailability.status === "missing") {
+    // Only a ready Harness starts silently; a needs-setup one goes through the
+    // dialog (like CorePage), so its "finish setup in the Session" row is seen.
+    if (savedAvailability.status === "missing" || savedAvailability.status === "needs-setup") {
       setShowNewHarness(true);
       return;
     }
@@ -652,7 +657,9 @@ function CoreWorkspacePage() {
       showHarnessUpdateRequired(remembered.savedHarness, savedAvailability);
       return;
     }
-    if (savedAvailability.status === "missing") {
+    // Only a ready Harness starts silently; a needs-setup one goes through the
+    // dialog (like CorePage), so its "finish setup in the Session" row is seen.
+    if (savedAvailability.status === "missing" || savedAvailability.status === "needs-setup") {
       setShowNewHarness(true);
       return;
     }

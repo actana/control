@@ -231,3 +231,30 @@ describe("HarnessAvailabilityStore.refresh with an asynchronous probe", () => {
     expect(store.snapshot()["claude-code"]).toEqual({ status: "available", path: "/x" });
   });
 });
+
+// #685: the setup check sits in front of publishing, on every Core.
+describe("HarnessAvailabilityStore afterProbe", () => {
+  it("publishes the map afterProbe returns, with no probeAsync, and never the raw one", async () => {
+    const appendEvent: ReturnType<typeof vi.fn<AppendEventFn>> = vi.fn(() => 1);
+    const store = new HarnessAvailabilityStore({
+      appendEvent,
+      probe: () => ({ status: "available", path: "/bin/x" }),
+      afterProbe: async (map) => ({ ...map, "claude-code": { status: "missing", reason: "needs-setup: folder-trust" } }),
+    });
+    await store.refresh();
+    expect(appendEvent).toHaveBeenCalledTimes(1);
+    expect(store.snapshot()["claude-code"]).toEqual({ status: "missing", reason: "needs-setup: folder-trust" });
+  });
+
+  it("publishes the probed map when afterProbe throws", async () => {
+    const store = new HarnessAvailabilityStore({
+      appendEvent: () => 1,
+      probe: () => ({ status: "available", path: "/bin/x" }),
+      afterProbe: async () => {
+        throw new Error("boom");
+      },
+    });
+    await store.refresh();
+    expect(store.snapshot()["claude-code"]!.status).toBe("available");
+  });
+});

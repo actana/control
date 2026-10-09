@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useRouter } from "@tanstack/react-router";
 import { Btn } from "~/components/ui/Btn";
@@ -10,9 +10,10 @@ import { TaskMarkdown } from "~/components/views/TaskMarkdown";
 import { api } from "~/lib/api";
 import { useFleet } from "~/lib/fleet-context";
 import { formatRelativeTime } from "~/lib/format-relative-time";
+import { requestSessionOpen } from "~/lib/session-notification-store";
 import { TASK_STATUS_LABEL } from "~/lib/task-board";
-import { queryKeys, useCoreAgents, useTask } from "~/queries";
-import { FINISHED_TASK_STATUSES, canDeleteTask, canEditTask } from "~/shared/tasks";
+import { queryKeys, useArchivedSessions, useCoreAgents, useSessions, useTask } from "~/queries";
+import { FINISHED_TASK_STATUSES, canDeleteTask, canEditTask, parseTaskDispatchComment } from "~/shared/tasks";
 import { taskFolderPath } from "~/shared/shared-files";
 import type { TaskCommentDto } from "~/shared/task-wire";
 import { TaskAttachments } from "~/components/views/TaskAttachments";
@@ -32,8 +33,78 @@ function Badge({ children, tone }: { children: React.ReactNode; tone?: string })
   );
 }
 
+const FOCUSABLE = 'a[href], button, input, select, textarea, [tabindex]:not([tabindex="-1"])';
+
+function topBarBottom(): number {
+  return document.querySelector(".mc-topbar")?.getBoundingClientRect().bottom ?? 0;
+}
+
 function message(e: unknown): string | null {
   return e ? (e instanceof Error ? e.message : String(e)) : null;
+}
+
+/**
+ * Open this attempt's Session the same way the Core page does: pending-open, then
+ * the workspace route. Disabled with a one-line reason when the Session or Core is gone.
+ * The workspace's pending-open path only materialises active Sessions, so an archived
+ * attempt is named as archived rather than opened.
+ */
+function OpenAttemptSession({
+  attempt,
+  coreId,
+  sessionId,
+  onOpened,
+}: {
+  attempt: number;
+  coreId: string;
+  sessionId: string;
+  onOpened: () => void;
+}) {
+  const { cores } = useFleet();
+  const router = useRouter({ warn: false });
+  const core = cores.find((c) => c.id === coreId);
+  const coreReachable = core?.dial.state === "connected";
+  const sessions = useSessions(coreId);
+  const active = sessions.data?.find((s) => s.id === sessionId);
+  // Archived rows live in their own bucket (ADR 0019); ask only when the active
+  // list has answered and this Session was not in it.
+  const needArchivedCheck = !!core && !!coreReachable && sessions.isFetched && !sessions.isError && !active;
+  const archived = useArchivedSessions(coreId, { enabled: needArchivedCheck });
+  const inArchived = !!archived.data?.some((s) => s.id === sessionId);
+
+  let reason: string | null = null;
+  if (!core) {
+    reason = "This Core is gone";
+  } else if (!coreReachable || sessions.isError) {
+    // Dial first so an offline Core shows a reason without waiting on query retries.
+    reason = "This Core is not reachable right now";
+  } else if (!active && needArchivedCheck && archived.isFetched) {
+    reason = inArchived ? "Session is archived" : "Session no longer exists on this Core";
+  }
+
+  const canOpen = !!router && !reason && !!active;
+
+  const open = useCallback(() => {
+    if (!canOpen || !router) return;
+    requestSessionOpen(coreId, sessionId);
+    void router.navigate({ to: "/cores/$coreId/workspace", params: { coreId } });
+    onOpened();
+  }, [canOpen, router, coreId, sessionId, onOpened]);
+
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8, flexWrap: "wrap" }}>
+      <Btn
+        variant="ghost"
+        icon="terminal"
+        disabled={!canOpen}
+        title={reason ?? `Open attempt ${attempt}'s Session in the Core's workspace`}
+        onClick={open}
+      >
+        Open session
+      </Btn>
+      {reason ? <span style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--text-dim)" }}>{reason}</span> : null}
+    </div>
+  );
 }
 
 /**
@@ -55,6 +126,42 @@ export function TaskDetail({ taskId, onClose, focusComposer = false }: { taskId:
   const [attachments, setAttachments] = useState<TaskAttachment[]>([]);
   const [editing, setEditing] = useState<{ title: string; description: string } | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
+
+  // The drawer starts under the app top bar, so its header and Close stay in view.
+  const [topOffset, setTopOffset] = useState(topBarBottom);
+  useEffect(() => {
+    const onResize = () => setTopOffset(topBarBottom());
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+
+  // A modal: focus goes in on open (the composer takes it when asked), Tab stays inside, and on close focus goes back to the opener.
+  const drawerRef = useRef<HTMLElement>(null);
+  useEffect(() => {
+    const opener = document.activeElement;
+    if (!focusComposer) drawerRef.current?.focus();
+    return () => {
+      if (opener instanceof HTMLElement && opener.isConnected) opener.focus();
+    };
+  }, [focusComposer]);
+  const keepTabInside = (e: React.KeyboardEvent<HTMLElement>) => {
+    if (e.key !== "Tab" || !drawerRef.current) return;
+    const items = [...drawerRef.current.querySelectorAll<HTMLElement>(FOCUSABLE)].filter((el) => !el.hasAttribute("disabled"));
+    const first = items[0];
+    const last = items[items.length - 1];
+    if (!first || !last) {
+      e.preventDefault();
+      return;
+    }
+    const active = document.activeElement;
+    if (e.shiftKey && (active === first || active === drawerRef.current)) {
+      e.preventDefault();
+      last.focus();
+    } else if (!e.shiftKey && active === last) {
+      e.preventDefault();
+      first.focus();
+    }
+  };
 
   const refresh = () => queryClient.invalidateQueries({ queryKey: queryKeys.tasks });
   const comment = useMutation({
@@ -93,12 +200,31 @@ export function TaskDetail({ taskId, onClose, focusComposer = false }: { taskId:
   const resultFiles = [...new Set(comments.filter((c) => c.authorKind === "agent" && c.sourceFile).map((c) => c.sourceFile as string))];
   // A file is a comment on its own: the server names it in the comment.
   const hasBody = draft.trim().length > 0 || attachments.length > 0;
+  // Escape and the backdrop must not throw away an unsent comment; the Close button still closes.
+  const dismiss = () => {
+    if (!hasBody) onClose();
+  };
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && !e.defaultPrevented && !e.isComposing) dismiss();
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  });
 
   return (
+    <>
+    {/* The backdrop is a sibling of the drawer, never its parent: a text-selection drag that starts in the drawer and ends on the
+     * backdrop then sends its click to their common ancestor, not to the backdrop, so it does not close the drawer. */}
+    <div data-testid="task-detail-backdrop" onClick={dismiss} style={{ position: "fixed", inset: 0, zIndex: 8999, background: "rgba(0,0,0,0.35)" }} />
     <aside
+      ref={drawerRef}
+      tabIndex={-1}
+      onKeyDown={keepTabInside}
       role="dialog"
+      aria-modal="true"
       aria-label="Task detail"
-      style={{ position: "fixed", top: 0, right: 0, bottom: 0, width: "min(720px, 100vw)", zIndex: 9000, overflowY: "auto", padding: 24, background: "var(--surface-card)", borderLeft: "1px solid var(--border)", boxShadow: "-8px 0 32px rgba(0,0,0,0.3)", display: "flex", flexDirection: "column", gap: 16 }}
+      style={{ position: "fixed", top: topOffset, right: 0, bottom: 0, width: "min(720px, 100vw)", zIndex: 9000, overflowY: "auto", padding: 24, background: "var(--surface-card)", borderLeft: "1px solid var(--border)", boxShadow: "-8px 0 32px rgba(0,0,0,0.3)", display: "flex", flexDirection: "column", gap: 16 }}
     >
       <div style={{ display: "flex", justifyContent: "space-between", fontFamily: "var(--mono)", fontSize: 12, color: "var(--text-dim)" }}>
         <span>TASK · {taskId}{task ? ` · created ${formatRelativeTime(task.createdAt)}` : ""}</span>
@@ -205,15 +331,26 @@ export function TaskDetail({ taskId, onClose, focusComposer = false }: { taskId:
           </section>
           <section aria-label="Comments" style={{ display: "flex", flexDirection: "column", gap: 10 }}>
             <h3 style={{ fontFamily: "var(--mono)", fontSize: 12, letterSpacing: "0.08em", textTransform: "uppercase" }}>Comments</h3>
-            {comments.map((c) => (
-              <article key={c.id} data-comment-kind={c.authorKind} style={{ padding: 12, borderRadius: 6, borderLeft: `3px solid ${KIND_COLOR[c.authorKind]}`, background: "var(--surface-1)" }}>
-                <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--text-dim)" }}>
-                  {c.authorKind === "user" ? c.authorName : `${c.authorKind} · ${c.authorName}`}
-                  {c.sourceFile ? ` · from ${c.sourceFile}` : ""} · {formatRelativeTime(c.createdAt)}
-                </div>
-                <TaskMarkdown>{c.body}</TaskMarkdown>
-              </article>
-            ))}
+            {comments.map((c) => {
+              const dispatch = c.authorKind === "system" ? parseTaskDispatchComment(c.body) : null;
+              return (
+                <article key={c.id} data-comment-kind={c.authorKind} style={{ padding: 12, borderRadius: 6, borderLeft: `3px solid ${KIND_COLOR[c.authorKind]}`, background: "var(--surface-1)" }}>
+                  <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--text-dim)" }}>
+                    {c.authorKind === "user" ? c.authorName : `${c.authorKind} · ${c.authorName}`}
+                    {c.sourceFile ? ` · from ${c.sourceFile}` : ""} · {formatRelativeTime(c.createdAt)}
+                  </div>
+                  <TaskMarkdown>{c.body}</TaskMarkdown>
+                  {dispatch ? (
+                    <OpenAttemptSession
+                      attempt={dispatch.attempt}
+                      coreId={dispatch.coreId}
+                      sessionId={dispatch.sessionId}
+                      onOpened={onClose}
+                    />
+                  ) : null}
+                </article>
+              );
+            })}
           </section>
           <section aria-label="Composer" style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             <MarkdownField value={draft} onChange={setDraft} ariaLabel="Comment" toolbar={false} minRows={6} autoFocus={focusComposer} placeholder={agent ? `@${agent.name} · markdown supported` : "markdown supported"} />
@@ -258,5 +395,6 @@ export function TaskDetail({ taskId, onClose, focusComposer = false }: { taskId:
         </>
       ) : null}
     </aside>
+    </>
   );
 }

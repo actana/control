@@ -15,8 +15,7 @@ import { createS3CoreShared } from "@actana/sdk/shared";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { closePanelTestDb, openPanelTestDb, resetPanelState } from "./_panel-test-db";
 import { servePanelJwks, type PanelJwksServer } from "./_panel-jwks-server";
-import { lazyShared } from "../task-dispatch/shared-factory";
-import { FakeCore, collectingLog } from "../task-dispatch/__tests__/fakes";
+import { FakeClock, FakeCore, FakeShared, collectingLog } from "../task-dispatch/__tests__/fakes";
 
 const env = {
   endpoint: process.env.SEAWEEDFS_ENDPOINT,
@@ -178,15 +177,15 @@ describe.skipIf(!configured)("the Task result watcher against real SeaweedFS and
     }
   }
 
-  /** The dispatcher the Panel boots, with a Core that starts no process and a through-the-Core mode that is down. */
+  /**
+   * The dispatcher the Panel boots, with a Core that starts no process. Its through-the-Core mode takes the Task's
+   * prompt file at dispatch (in memory here) and is never asked for anything after that: the Core is paused.
+   */
   function dispatch(coreId: string) {
     const core = new FakeCore();
     const log = collectingLog();
-    const throughCore = vi.fn(async () =>
-      lazyShared(async () => {
-        throw new Error("the Core is unreachable: it is paused");
-      }),
-    );
+    const coreDisk = new FakeShared(new FakeClock());
+    const throughCore = vi.fn(async () => coreDisk);
     const agent = { id: "agent_1", ownerId: 1, coreId, name: "Claude Code", harness: "claude-code" as const, model: null, flags: [] as string[], isDefault: false, createdAt: 1, updatedAt: 1 };
     mods.startTaskDispatch({
       env: {},
@@ -223,7 +222,7 @@ describe.skipIf(!configured)("the Task result watcher against real SeaweedFS and
       const agentComments = (await mods.listTaskComments(1, task.id)).filter((c) => c.authorKind === "agent");
       expect(agentComments).toHaveLength(1);
       expect(agentComments[0]!.body).toBe("# Fixed\n\nThe lockfile was stale.");
-      expect(throughCore).not.toHaveBeenCalled();
+      expect(throughCore).toHaveBeenCalledTimes(1);
       expect(log.errors).toEqual([]);
     } finally {
       await mods.stopTaskDispatch();
@@ -242,7 +241,7 @@ describe.skipIf(!configured)("the Task result watcher against real SeaweedFS and
       await waitFor("the Task to fail", async () => (await mods.getTask(1, task.id)).status, (status) => status === "failed");
       const root = `${env.prefix}/${coreId}/`;
       expect((await adminKeys(root)).filter((k) => !k.endsWith("/"))).toEqual([`${root}tasks/${task.id}/fail.md`]);
-      expect(throughCore).not.toHaveBeenCalled();
+      expect(throughCore).toHaveBeenCalledTimes(1);
     } finally {
       await mods.stopTaskDispatch();
     }
