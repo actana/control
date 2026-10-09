@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type CSSProperties } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { formatDistance } from "date-fns";
 import { Btn } from "~/components/ui/Btn";
@@ -19,6 +19,12 @@ import {
   type WebhookDeliveryView,
   type WebhookView,
 } from "~/shared/api-integrations-wire";
+import {
+  API_KEY_PERMISSIONS,
+  API_KEY_PERMISSION_LABELS,
+  normalizeApiKeyPermissions,
+  type ApiKeyPermission,
+} from "~/shared/api-key-permissions";
 import { WEBHOOK_CHANGE_EVENT_TYPES } from "~/shared/webhooks";
 
 /**
@@ -27,6 +33,11 @@ import { WEBHOOK_CHANGE_EVENT_TYPES } from "~/shared/webhooks";
  * An operator lists, creates (plaintext shown once), restricts to chosen Cores and
  * revokes API keys; copies the ready-made MCP command; and manages webhooks
  * (create with events and Core scope, see the last delivery, send a ping, delete).
+ *
+ * A key is created with its permissions and its Core scope (#688): the dialog
+ * preselects the narrowest permission (`read`) and no Core scope at all, so the
+ * widest key is never the one that falls out of pressing Create. Both are shown
+ * on every key in the list.
  *
  * The old page described the Core's hook token (`actana token regenerate`). That
  * token is still a Core concern (`actana status` on the Core; hookTokenQueryOptions
@@ -61,6 +72,11 @@ function coreScopeLabel(
   if (allCores) return "All Cores";
   if (coreIds.length === 0) return "No Cores";
   return coreIds.map((id) => labels.get(id) ?? id).join(", ");
+}
+
+/** `read · tasks:write`, in canonical order; a key from before #688 shows the full set. */
+function permissionsLabel(permissions: ApiKeyPermission[]): string {
+  return normalizeApiKeyPermissions(permissions).join(" · ");
 }
 
 /** Future retry due-time only — do not use formatRelativeTime (it maps clock-skew futures to "just now"). */
@@ -117,7 +133,7 @@ export function ApiSettingsPage() {
   // Plaintext must not become mutation `data` (R1). Hand it to the dialog here
   // and return only the view; reset on close so the cache retains nothing.
   const createKey = useMutation({
-    mutationFn: async (input: { name: string; coreIds: string[] | null }) => {
+    mutationFn: async (input: { name: string; coreIds: string[] | null; permissions: ApiKeyPermission[] }) => {
       const res = await api.createApiKey(input);
       setShownOnce({ kind: "api-key", name: res.apiKey.name, value: res.key });
       return res.apiKey;
@@ -187,7 +203,7 @@ export function ApiSettingsPage() {
 
       <SettingsSection
         title="API keys"
-        subtitle="Shown once, stored as a hash. A key reaches all Cores unless you limit it."
+        subtitle="Shown once, stored as a hash. Each key has the permissions and the Cores you give it."
       >
         {(keysQuery.isError || webhooksQuery.isError || error) && (
           <div role="alert" style={{ color: "var(--danger)", fontSize: 12 }}>
@@ -406,6 +422,7 @@ function ApiKeyRow({
 }) {
   const revoked = apiKey.revokedAt !== null;
   const scope = coreScopeLabel(apiKey.allCores, apiKey.coreIds, coreLabels);
+  const permissions = permissionsLabel(apiKey.permissions);
   const status = revoked
     ? `${scope} · revoked ${new Date(apiKey.revokedAt!).toISOString().slice(0, 10)}`
     : `${scope} · created ${formatRelativeTime(apiKey.createdAt)}`;
@@ -453,7 +470,10 @@ function ApiKeyRow({
             {apiKey.prefix}…
           </div>
         </div>
-        <div style={{ fontSize: 11, color: "var(--text-dim)", textAlign: "right" }}>{status}</div>
+        <div style={{ fontSize: 11, color: "var(--text-dim)", textAlign: "right" }}>
+          <div data-api-key-permissions style={{ fontFamily: "var(--mono)" }}>{permissions}</div>
+          <div data-api-key-scope>{status}</div>
+        </div>
         <Icon name={expanded ? "chevron-down" : "chevron-right"} size={12} />
       </button>
       {expanded && !revoked && (
@@ -634,11 +654,13 @@ function CreateApiKeyDialog({
   loading: boolean;
   error: string | null;
   onClose: () => void;
-  onCreate: (input: { name: string; coreIds: string[] | null }) => void;
+  onCreate: (input: { name: string; coreIds: string[] | null; permissions: ApiKeyPermission[] }) => void;
 }) {
   const [name, setName] = useState("");
-  const [allCores, setAllCores] = useState(true);
+  // No Core scope is chosen until the operator chooses one (#688): All Cores is never the silent default.
+  const [allCores, setAllCores] = useState<boolean | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [permissions, setPermissions] = useState<Set<ApiKeyPermission>>(new Set<ApiKeyPermission>(["read"]));
 
   const toggle = (id: string) => {
     setSelected((prev) => {
@@ -648,8 +670,17 @@ function CreateApiKeyDialog({
       return next;
     });
   };
+  const togglePermission = (p: ApiKeyPermission) => {
+    setPermissions((prev) => {
+      const next = new Set(prev);
+      if (next.has(p)) next.delete(p);
+      else next.add(p);
+      return next;
+    });
+  };
 
-  const canSubmit = name.trim().length > 0 && (allCores || selected.size > 0);
+  const scopeChosen = allCores === true || (allCores === false && selected.size > 0);
+  const canSubmit = name.trim().length > 0 && permissions.size > 0 && scopeChosen;
 
   return (
     <Modal
@@ -669,6 +700,7 @@ function CreateApiKeyDialog({
               onCreate({
                 name: name.trim(),
                 coreIds: allCores ? null : [...selected],
+                permissions: normalizeApiKeyPermissions(permissions),
               })
             }
           >
@@ -679,6 +711,7 @@ function CreateApiKeyDialog({
     >
       <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
         <TextField label="Name" value={name} onChange={setName} placeholder="ci-deploy" autoFocus />
+        <PermissionPicker selected={permissions} onToggle={togglePermission} />
         <CoreScopePicker
           cores={cores}
           allCores={allCores}
@@ -818,6 +851,66 @@ function CreateWebhookDialog({
   );
 }
 
+const pickerHeading: CSSProperties = {
+  fontFamily: "var(--mono)",
+  fontSize: 10.5,
+  fontWeight: 500,
+  color: "var(--text-dim)",
+  letterSpacing: "0.05em",
+  textTransform: "uppercase",
+  marginBottom: 6,
+};
+
+const pickerChoice: CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  gap: 8,
+  fontSize: 13,
+  color: "var(--text)",
+  cursor: "pointer",
+  marginBottom: 6,
+};
+
+/** The permissions a new key gets (#688): one checkbox each, with what it allows. */
+function PermissionPicker({
+  selected,
+  onToggle,
+}: {
+  selected: Set<ApiKeyPermission>;
+  onToggle: (p: ApiKeyPermission) => void;
+}) {
+  return (
+    <div data-permissions>
+      <div style={pickerHeading}>Permissions</div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+        {API_KEY_PERMISSIONS.map((p) => (
+          <label key={p} style={{ ...pickerChoice, alignItems: "flex-start", marginBottom: 0 }}>
+            <input
+              type="checkbox"
+              checked={selected.has(p)}
+              onChange={() => onToggle(p)}
+              aria-label={p}
+              style={{ marginTop: 3 }}
+            />
+            <span>
+              <span style={{ fontFamily: "var(--mono)", fontSize: 12 }}>{p}</span>
+              <span style={{ color: "var(--text-dim)", fontSize: 12 }}>
+                {" "}
+                · {API_KEY_PERMISSION_LABELS[p].detail}
+              </span>
+            </span>
+          </label>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Which Cores a key or a webhook reaches. `allCores` null is "not chosen yet":
+ * the key dialog starts there (#688), so the operator picks All Cores on
+ * purpose or names the Cores; nothing is chosen for them.
+ */
 function CoreScopePicker({
   cores,
   allCores,
@@ -826,45 +919,33 @@ function CoreScopePicker({
   onToggle,
 }: {
   cores: { id: string; label: string }[];
-  allCores: boolean;
+  allCores: boolean | null;
   selected: Set<string>;
   onAllCores: (all: boolean) => void;
   onToggle: (id: string) => void;
 }) {
   return (
     <div data-core-scope>
-      <div
-        style={{
-          fontFamily: "var(--mono)",
-          fontSize: 10.5,
-          fontWeight: 500,
-          color: "var(--text-dim)",
-          letterSpacing: "0.05em",
-          textTransform: "uppercase",
-          marginBottom: 6,
-        }}
-      >
-        Core scope
-      </div>
-      <label
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 8,
-          fontSize: 13,
-          color: "var(--text)",
-          cursor: "pointer",
-          marginBottom: 6,
-        }}
-      >
+      <div style={pickerHeading}>Core scope</div>
+      <label style={pickerChoice}>
         <input
-          type="checkbox"
-          checked={allCores}
-          onChange={(e) => onAllCores(e.target.checked)}
+          type="radio"
+          name="core-scope"
+          checked={allCores === true}
+          onChange={() => onAllCores(true)}
         />
         All Cores
       </label>
-      {!allCores && (
+      <label style={pickerChoice}>
+        <input
+          type="radio"
+          name="core-scope"
+          checked={allCores === false}
+          onChange={() => onAllCores(false)}
+        />
+        Only these Cores
+      </label>
+      {allCores === false && (
         <div style={{ display: "flex", flexDirection: "column", gap: 4, paddingLeft: 4 }}>
           {cores.length === 0 && (
             <div style={{ fontSize: 12, color: "var(--text-dim)" }}>No Cores paired yet.</div>

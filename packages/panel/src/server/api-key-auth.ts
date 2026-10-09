@@ -1,8 +1,9 @@
 import { jsonError } from "./http-responses";
 import { HTTP_FORBIDDEN, HTTP_UNAUTHORIZED } from "~/shared/http-status";
 import { OPERATOR_ID } from "./services/operator";
-import { authenticateApiKey, type ApiKeyScope } from "./services/api-keys";
+import { authenticateApiKey, hasPermission, missingPermissionMessage, type ApiKeyScope } from "./services/api-keys";
 import { requireOperatorSession } from "./panel-auth";
+import type { ApiKeyPermission } from "~/shared/api-key-permissions";
 
 /**
  * Who a call runs as (#572). Every route reads the owner from here and nothing
@@ -10,7 +11,7 @@ import { requireOperatorSession } from "./panel-auth";
  */
 export type ApiPrincipal =
   | { kind: "session"; ownerId: number }
-  | { kind: "api-key"; ownerId: number; keyId: string; scope: ApiKeyScope };
+  | { kind: "api-key"; ownerId: number; keyId: string; scope: ApiKeyScope; permissions: ReadonlySet<ApiKeyPermission> };
 
 const BEARER = /^Bearer[ \t]+(.+)$/i;
 const KEY_TOKEN_PREFIX = "ak_";
@@ -31,40 +32,47 @@ function presentedApiKey(request: Request): string | null {
 /**
  * The routes that accept an API key, as a short list: a route is closed to
  * keys until it is added here, so a key never reaches the Operator's whole
- * surface (pairing, forgetting a Core, minting more keys) by default.
+ * surface (pairing, forgetting a Core, minting more keys) by default. Each
+ * names the one permission a key needs for it (#688): every GET is `read`,
+ * the Task writes are `tasks:write`, the Agent writes are `agents:write`.
  *
  * The public surface is `/api/v1/…` (#572 PR 2). The two unversioned Cores
  * GETs stay so PR 1's proofs keep working; they are the same reads as the v1
  * Cores routes.
  */
-export const API_KEY_ROUTES: ReadonlyArray<{ method: string; pattern: RegExp }> = [
-  { method: "GET", pattern: /^\/api\/cores$/ },
-  { method: "GET", pattern: /^\/api\/cores\/(?!pairing$)[^/]+$/ },
-  { method: "GET", pattern: /^\/api\/v1\/cores$/ },
-  { method: "GET", pattern: /^\/api\/v1\/cores\/[^/]+$/ },
-  { method: "GET", pattern: /^\/api\/v1\/cores\/[^/]+\/agents$/ },
-  { method: "GET", pattern: /^\/api\/v1\/agents$/ },
-  { method: "POST", pattern: /^\/api\/v1\/agents$/ },
-  { method: "GET", pattern: /^\/api\/v1\/agents\/[^/]+$/ },
-  { method: "DELETE", pattern: /^\/api\/v1\/agents\/[^/]+$/ },
-  { method: "GET", pattern: /^\/api\/v1\/tasks$/ },
-  { method: "POST", pattern: /^\/api\/v1\/tasks$/ },
-  { method: "GET", pattern: /^\/api\/v1\/tasks\/[^/]+$/ },
-  { method: "POST", pattern: /^\/api\/v1\/tasks\/[^/]+\/status$/ },
-  { method: "GET", pattern: /^\/api\/v1\/tasks\/[^/]+\/comments$/ },
-  { method: "POST", pattern: /^\/api\/v1\/tasks\/[^/]+\/comments$/ },
+export const API_KEY_ROUTES: ReadonlyArray<{ method: string; pattern: RegExp; permission: ApiKeyPermission }> = [
+  { method: "GET", pattern: /^\/api\/cores$/, permission: "read" },
+  { method: "GET", pattern: /^\/api\/cores\/(?!pairing$)[^/]+$/, permission: "read" },
+  { method: "GET", pattern: /^\/api\/v1\/cores$/, permission: "read" },
+  { method: "GET", pattern: /^\/api\/v1\/cores\/[^/]+$/, permission: "read" },
+  { method: "GET", pattern: /^\/api\/v1\/cores\/[^/]+\/agents$/, permission: "read" },
+  { method: "GET", pattern: /^\/api\/v1\/agents$/, permission: "read" },
+  { method: "POST", pattern: /^\/api\/v1\/agents$/, permission: "agents:write" },
+  { method: "GET", pattern: /^\/api\/v1\/agents\/[^/]+$/, permission: "read" },
+  { method: "DELETE", pattern: /^\/api\/v1\/agents\/[^/]+$/, permission: "agents:write" },
+  { method: "GET", pattern: /^\/api\/v1\/tasks$/, permission: "read" },
+  { method: "POST", pattern: /^\/api\/v1\/tasks$/, permission: "tasks:write" },
+  { method: "GET", pattern: /^\/api\/v1\/tasks\/[^/]+$/, permission: "read" },
+  { method: "POST", pattern: /^\/api\/v1\/tasks\/[^/]+\/status$/, permission: "tasks:write" },
+  { method: "GET", pattern: /^\/api\/v1\/tasks\/[^/]+\/comments$/, permission: "read" },
+  { method: "POST", pattern: /^\/api\/v1\/tasks\/[^/]+\/comments$/, permission: "tasks:write" },
 ];
 
+/** The permission a key route needs, or null for a route that accepts no key. */
+export function apiKeyRoutePermission(method: string, pathname: string): ApiKeyPermission | null {
+  return API_KEY_ROUTES.find((r) => r.method === method && r.pattern.test(pathname))?.permission ?? null;
+}
+
 export function acceptsApiKey(method: string, pathname: string): boolean {
-  return API_KEY_ROUTES.some((r) => r.method === method && r.pattern.test(pathname));
+  return apiKeyRoutePermission(method, pathname) !== null;
 }
 
 /**
  * The API gate. A request that presents an API key is judged by the key alone:
  * an unknown, malformed or revoked key is a 401, a key on a route that does
- * not accept keys is a 403, and neither ever falls back to the Operator's
- * session cookie. A request with no key goes through the session gate, which is
- * unchanged.
+ * not accept keys is a 403, a key without the route's permission is a 403
+ * (#688), and none of these ever falls back to the Operator's session cookie.
+ * A request with no key goes through the session gate, which is unchanged.
  */
 export async function authenticateApiRequest(
   request: Request,
@@ -79,8 +87,12 @@ export async function authenticateApiRequest(
   }
   const key = await authenticateApiKey(presented);
   if (!key) return { ok: false, response: jsonError(HTTP_UNAUTHORIZED, "unauthorized") };
-  if (!acceptsApiKey(method, pathname)) {
+  const permission = apiKeyRoutePermission(method, pathname);
+  if (permission === null) {
     return { ok: false, response: jsonError(HTTP_FORBIDDEN, "this route does not accept an API key") };
+  }
+  if (!hasPermission(key, permission)) {
+    return { ok: false, response: jsonError(HTTP_FORBIDDEN, missingPermissionMessage(permission)) };
   }
   return { ok: true, principal: { kind: "api-key", ...key } };
 }

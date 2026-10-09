@@ -2,6 +2,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { ALL_API_KEY_PERMISSIONS } from "~/shared/api-key-permissions";
 import { closePanelTestDb, openPanelTestDb, resetPanelState } from "./_panel-test-db";
 import { McpTestClient, postMcp } from "./_mcp-client";
 
@@ -27,7 +28,7 @@ async function createKey(body: Record<string, unknown> = { name: "k" }) {
     new Request(`${ORIGIN}/api/api-keys`, {
       method: "POST",
       headers: { cookie: await operatorSessionCookie(), "content-type": "application/json" },
-      body: JSON.stringify(body),
+      body: JSON.stringify({ permissions: ALL_API_KEY_PERMISSIONS, ...body }),
     }),
   );
   expect(res!.status).toBe(201);

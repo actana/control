@@ -3,6 +3,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { CoreSharedError, type CoreShared, type SharedEntry, type SharedFile } from "@actana/sdk/shared";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { ALL_API_KEY_PERMISSIONS } from "~/shared/api-key-permissions";
 import { closePanelTestDb, openPanelTestDb, resetPanelState } from "./_panel-test-db";
 import { McpTestClient, dataOf, textOf } from "./_mcp-client";
 
@@ -103,7 +104,7 @@ async function seed() {
 }
 
 async function client(owner: number, coreIds?: string[]): Promise<McpTestClient> {
-  const { key } = await createApiKey(owner, { name: "k", ...(coreIds ? { coreIds } : {}) });
+  const { key } = await createApiKey(owner, { name: "k", permissions: ALL_API_KEY_PERMISSIONS, ...(coreIds ? { coreIds } : {}) });
   const c = new McpTestClient(key);
   await c.connect();
   return c;

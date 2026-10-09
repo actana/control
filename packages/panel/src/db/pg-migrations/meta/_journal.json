@@ -71,6 +71,13 @@
       "when": 1791056816245,
       "tag": "0009_panel_storage_issuer_endpoint",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1791564573921,
+      "tag": "0010_panel_api_key_permissions",
+      "breakpoints": true
     }
   ]
 }

@@ -2,6 +2,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { ALL_API_KEY_PERMISSIONS } from "~/shared/api-key-permissions";
 import { closePanelTestDb, openPanelTestDb, resetPanelState } from "./_panel-test-db";
 
 /**
@@ -42,7 +43,7 @@ async function call(
 }
 
 const createKey = async (body: Record<string, unknown>) => {
-  const res = await call("/api/api-keys", { method: "POST", json: body, cookie: true });
+  const res = await call("/api/api-keys", { method: "POST", json: { permissions: ALL_API_KEY_PERMISSIONS, ...body }, cookie: true });
   expect(res.status).toBe(201);
   return (await res.json()) as { key: string; apiKey: { id: string; prefix: string; coreIds: string[] } };
 };
@@ -77,18 +78,18 @@ afterAll(async () => {
 describe("creating, listing and revoking keys", () => {
   it("regression guard: key management needs the Operator's session, as every /api route already did", async () => {
     expect((await call("/api/api-keys")).status).toBe(401);
-    expect((await call("/api/api-keys", { method: "POST", json: { name: "k" } })).status).toBe(401);
+    expect((await call("/api/api-keys", { method: "POST", json: { name: "k", permissions: ALL_API_KEY_PERMISSIONS } })).status).toBe(401);
     expect((await call("/api/api-keys/key-x/revoke", { method: "POST" })).status).toBe(401);
   });
 
   it("returns the plaintext once, with no-store, and never again", async () => {
-    const res = await call("/api/api-keys", { method: "POST", json: { name: "ci" }, cookie: true });
+    const res = await call("/api/api-keys", { method: "POST", json: { name: "ci", permissions: ALL_API_KEY_PERMISSIONS }, cookie: true });
     expect(res.status).toBe(201);
     expect(res.headers.get("cache-control")).toBe("no-store");
     const { key, apiKey } = (await res.json()) as { key: string; apiKey: Record<string, unknown> };
     expect(key).toMatch(/^ak_1_/);
-    expect(apiKey).toMatchObject({ name: "ci", allCores: true, coreIds: [], revokedAt: null });
-    expect(Object.keys(apiKey).sort()).toEqual(["allCores", "coreIds", "createdAt", "id", "name", "prefix", "revokedAt"]);
+    expect(apiKey).toMatchObject({ name: "ci", allCores: true, coreIds: [], permissions: ALL_API_KEY_PERMISSIONS, revokedAt: null });
+    expect(Object.keys(apiKey).sort()).toEqual(["allCores", "coreIds", "createdAt", "id", "name", "permissions", "prefix", "revokedAt"]);
     const listed = await (await call("/api/api-keys", { cookie: true })).text();
     expect(listed).not.toContain(key);
     expect(listed).not.toContain(key.slice("ak_1_".length));
@@ -96,16 +97,17 @@ describe("creating, listing and revoking keys", () => {
   });
 
   it("refuses a bad body and a Core that is not the Operator's", async () => {
-    expect((await call("/api/api-keys", { method: "POST", json: { name: "" }, cookie: true })).status).toBe(400);
-    expect((await call("/api/api-keys", { method: "POST", json: { name: "k", coreIds: [] }, cookie: true })).status).toBe(400);
-    expect((await call("/api/api-keys", { method: "POST", json: { name: "k", coreIds: ["core-x"] }, cookie: true })).status).toBe(400);
+    const all = ALL_API_KEY_PERMISSIONS;
+    expect((await call("/api/api-keys", { method: "POST", json: { name: "", permissions: all }, cookie: true })).status).toBe(400);
+    expect((await call("/api/api-keys", { method: "POST", json: { name: "k", coreIds: [], permissions: all }, cookie: true })).status).toBe(400);
+    expect((await call("/api/api-keys", { method: "POST", json: { name: "k", coreIds: ["core-x"], permissions: all }, cookie: true })).status).toBe(400);
     expect((await call("/api/api-keys/nope/revoke", { method: "POST", cookie: true })).status).toBe(404);
   });
 
   it("never lets a key manage keys, not even its own", async () => {
     const { key, apiKey } = await createKey({ name: "k" });
     expect((await call("/api/api-keys", { bearer: key })).status).toBe(403);
-    expect((await call("/api/api-keys", { method: "POST", json: { name: "more" }, bearer: key })).status).toBe(403);
+    expect((await call("/api/api-keys", { method: "POST", json: { name: "more", permissions: ALL_API_KEY_PERMISSIONS }, bearer: key })).status).toBe(403);
     expect((await call(`/api/api-keys/${apiKey.id}/revoke`, { method: "POST", bearer: key })).status).toBe(403);
     expect((await call("/api/cores", { bearer: key })).status).toBe(200);
   });
@@ -201,7 +203,7 @@ describe("what a key presents is judged by the key alone", () => {
     // Owner 2's key, presented with the Operator's cookie beside it: the key wins.
     const { key } = await (async () => {
       const { createApiKey } = await import("../services/api-keys");
-      return createApiKey(2, { name: "b" });
+      return createApiKey(2, { name: "b", permissions: ALL_API_KEY_PERMISSIONS });
     })();
     const list = await call("/api/cores", { bearer: key, cookie: true });
     expect(((await list.json()) as { cores: { id: string }[] }).cores.map((c) => c.id)).toEqual(["core-x"]);
