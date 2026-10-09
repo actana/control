@@ -161,4 +161,35 @@ describe("Task routes", () => {
     expect((await call("/api/cores/core-b/agents")).status).toBe(404);
     expect((await (await tasksController.listCoreAgents(B, "core-b")).json()).agents.map((a: { id: string }) => a.id)).toEqual(["agent-b"]);
   });
+
+  it("edit the title and description, and refuse it while the Task is in_progress (#722)", async () => {
+    const t = (await (await post("/api/tasks", { title: "old", description: "old body", coreId: "core-a", agent: "agent-a" })).json()).task;
+    const edited = await call(`/api/tasks/${t.id}`, { method: "PATCH", json: { title: "new", description: "new body" } });
+    expect(edited.status).toBe(200);
+    expect((await edited.json()).task).toMatchObject({ title: "new", description: "new body", status: "draft" });
+    expect((await call(`/api/tasks/${t.id}`, { method: "PATCH", json: {} })).status).toBe(400);
+    await tasksService.changeTaskStatus(A, t.id, "assigned");
+    await tasksService.changeTaskStatus(A, t.id, "in_progress");
+    expect((await call(`/api/tasks/${t.id}`, { method: "PATCH", json: { title: "late" } })).status).toBe(409);
+    expect((await tasksService.getTask(A, t.id)).title).toBe("new");
+  });
+
+  it("delete a Task, refuse it while in_progress, and 404 for another owner's (#722)", async () => {
+    const t = (await (await post("/api/tasks", { title: "gone", coreId: "core-a", agent: "agent-a" })).json()).task;
+    expect((await call(`/api/tasks/${t.id}`, { method: "DELETE" })).status).toBe(204);
+    expect((await call(`/api/tasks/${t.id}`)).status).toBe(404);
+    const running = await tasksService.createTask(A, { title: "running", coreId: "core-a", agent: "agent-a", startNow: true });
+    await tasksService.changeTaskStatus(A, running.id, "in_progress");
+    expect((await call(`/api/tasks/${running.id}`, { method: "DELETE" })).status).toBe(409);
+    const theirs = await tasksService.createTask(B, { title: "theirs", coreId: "core-b", agent: "agent-b" });
+    expect((await call(`/api/tasks/${theirs.id}`, { method: "DELETE" })).status).toBe(404);
+    expect((await call(`/api/tasks/${theirs.id}`, { method: "PATCH", json: { title: "mine" } })).status).toBe(404);
+    expect((await tasksService.getTask(B, theirs.id)).title).toBe("theirs");
+  });
+
+  it("need the operator's session to edit or delete (#722)", async () => {
+    const t = await tasksService.createTask(A, { title: "locked" });
+    expect((await call(`/api/tasks/${t.id}`, { anonymous: true, method: "PATCH", json: { title: "x" } })).status).toBe(401);
+    expect((await call(`/api/tasks/${t.id}`, { anonymous: true, method: "DELETE" })).status).toBe(401);
+  });
 });

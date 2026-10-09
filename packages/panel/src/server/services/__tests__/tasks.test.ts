@@ -1,5 +1,13 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { TASK_STATUSES, TASK_TRANSITIONS, type TaskStatus } from "~/shared/tasks";
+import {
+  DELETABLE_TASK_STATUSES,
+  EDITABLE_TASK_STATUSES,
+  TASK_STATUSES,
+  TASK_TRANSITIONS,
+  canDeleteTask,
+  canEditTask,
+  type TaskStatus,
+} from "~/shared/tasks";
 import { closePanelTestDb, openPanelTestDb } from "../../__tests__/_panel-test-db";
 
 const testDb = await openPanelTestDb();
@@ -8,14 +16,18 @@ const { NotFoundError, ValidationError } = await import("../../errors");
 const {
   DuplicateTaskCommentSourceError,
   IllegalTaskTransitionError,
+  TaskNotChangeableError,
   addTaskComment,
   changeTaskStatus,
+  claimTask,
   commentAndReassign,
   createTask,
+  deleteTask,
   getTask,
   listTaskComments,
   listTaskHistory,
   listTasks,
+  updateTask,
 } = tasksService;
 
 const A = 1;
@@ -31,7 +43,7 @@ beforeAll(async () => {
   }
 });
 beforeEach(async () => {
-  await testDb.pool.query("truncate tasks cascade");
+  await testDb.pool.query("truncate tasks, webhook_outbox cascade");
 });
 afterAll(async () => {
   await closePanelTestDb(testDb);
@@ -200,6 +212,111 @@ describe("commentAndReassign", () => {
   });
 });
 
+/** The webhook events written for one Task, oldest first. */
+async function outboxFor(taskId: string): Promise<{ type: string; task: Record<string, unknown> }[]> {
+  const rows = (
+    await testDb.pool.query(
+      "select event_type, payload from webhook_outbox where (payload::jsonb)->'data'->'task'->>'id' = $1 order by created_at, id",
+      [taskId],
+    )
+  ).rows as { event_type: string; payload: string }[];
+  return rows.map((r) => ({ type: r.event_type, task: JSON.parse(r.payload).data.task }));
+}
+
+const NOT_RUNNING = TASK_STATUSES.filter((s) => s !== "in_progress");
+
+describe("the edit and delete rules (#722)", () => {
+  it("allow every status but in_progress", () => {
+    expect([...EDITABLE_TASK_STATUSES].sort()).toEqual([...NOT_RUNNING].sort());
+    expect([...DELETABLE_TASK_STATUSES].sort()).toEqual([...NOT_RUNNING].sort());
+    for (const s of TASK_STATUSES) {
+      expect(canEditTask(s), s).toBe(s !== "in_progress");
+      expect(canDeleteTask(s), s).toBe(s !== "in_progress");
+    }
+  });
+});
+
+describe("updateTask (#722)", () => {
+  it.each(NOT_RUNNING)("edits a %s Task, keeps its status, and writes task.updated", async (status) => {
+    const id = await taskIn(status);
+    const updated = await updateTask(A, id, { title: "  New  ", description: "new body" }, 900);
+    expect(updated).toMatchObject({ id, title: "New", description: "new body", status, updatedAt: 900 });
+    expect(await getTask(A, id)).toMatchObject({ title: "New", description: "new body", status });
+    const events = (await outboxFor(id)).filter((e) => e.type === "task.updated");
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ task: { id, title: "New", description: "new body", status } });
+  });
+
+  it("changes only the fields given", async () => {
+    const t = await createTask(A, { title: "t", description: "d" });
+    expect(await updateTask(A, t.id, { description: "d2" })).toMatchObject({ title: "t", description: "d2" });
+    expect(await updateTask(A, t.id, { title: "t2" })).toMatchObject({ title: "t2", description: "d2" });
+  });
+
+  it("refuses an in_progress Task with a typed 409 error and changes nothing", async () => {
+    const id = await taskIn("in_progress");
+    const err = await updateTask(A, id, { title: "late" }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(TaskNotChangeableError);
+    expect(err).toMatchObject({ code: "illegal_task_transition", action: "edit", status: "in_progress" });
+    expect((await getTask(A, id)).title).toBe("t");
+    expect((await outboxFor(id)).map((e) => e.type)).not.toContain("task.updated");
+  });
+
+  it("refuses an empty title, and answers not found for a missing Task", async () => {
+    const id = await taskIn("draft");
+    await expect(updateTask(A, id, { title: "   " })).rejects.toBeInstanceOf(ValidationError);
+    await expect(updateTask(A, "task_missing", { title: "x" })).rejects.toBeInstanceOf(NotFoundError);
+  });
+
+  it("loses to a dispatcher that claims the Task first", async () => {
+    const id = await taskIn("assigned");
+    expect(await claimTask(A, id)).not.toBeNull();
+    await expect(updateTask(A, id, { title: "late" })).rejects.toBeInstanceOf(TaskNotChangeableError);
+  });
+});
+
+describe("deleteTask (#722)", () => {
+  it.each(NOT_RUNNING)("deletes a %s Task with its comments and history, and writes task.deleted", async (status) => {
+    const id = await taskIn(status);
+    await addTaskComment(A, id, { authorKind: "user", authorName: "n", body: "hi" });
+    const removed = await deleteTask(A, id, 900);
+    expect(removed).toMatchObject({ id, status });
+    await expect(getTask(A, id)).rejects.toBeInstanceOf(NotFoundError);
+    for (const table of ["task_comments", "task_status_history"]) {
+      expect((await testDb.pool.query(`select count(*)::int as n from ${table} where task_id = $1`, [id])).rows[0].n, table).toBe(0);
+    }
+    const events = (await outboxFor(id)).filter((e) => e.type === "task.deleted");
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ task: { id, status } });
+  });
+
+  it("refuses an in_progress Task with a typed 409 error and keeps it", async () => {
+    const id = await taskIn("in_progress");
+    const err = await deleteTask(A, id).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(TaskNotChangeableError);
+    expect(err).toMatchObject({ code: "illegal_task_transition", action: "delete", status: "in_progress" });
+    expect((await getTask(A, id)).status).toBe("in_progress");
+    expect((await outboxFor(id)).map((e) => e.type)).not.toContain("task.deleted");
+  });
+
+  it("answers not found for a missing Task", async () => {
+    await expect(deleteTask(A, "task_missing")).rejects.toBeInstanceOf(NotFoundError);
+  });
+
+  it("and a racing claim: exactly one of them wins", async () => {
+    const id = await taskIn("assigned");
+    const [claimed, deleted] = await Promise.allSettled([claimTask(A, id), deleteTask(A, id)]);
+    const claimWon = claimed.status === "fulfilled" && claimed.value !== null;
+    if (claimWon) {
+      expect(deleted.status).toBe("rejected");
+      expect((await getTask(A, id)).status).toBe("in_progress");
+    } else {
+      expect(deleted.status).toBe("fulfilled");
+      await expect(getTask(A, id)).rejects.toBeInstanceOf(NotFoundError);
+    }
+  });
+});
+
 describe("Tasks across owners", () => {
   it("shows owner B nothing of owner A's Task, and lets B change nothing", async () => {
     const id = await taskIn("done");
@@ -211,7 +328,10 @@ describe("Tasks across owners", () => {
     await expect(changeTaskStatus(B, id, "assigned")).rejects.toBeInstanceOf(NotFoundError);
     await expect(addTaskComment(B, id, { authorKind: "user", authorName: "n", body: "x" })).rejects.toBeInstanceOf(NotFoundError);
     await expect(commentAndReassign(B, id, { authorKind: "user", authorName: "n", body: "x" })).rejects.toBeInstanceOf(NotFoundError);
+    await expect(updateTask(B, id, { title: "theirs" })).rejects.toBeInstanceOf(NotFoundError);
+    await expect(deleteTask(B, id)).rejects.toBeInstanceOf(NotFoundError);
     expect((await getTask(A, id)).status).toBe("done");
+    expect((await getTask(A, id)).title).toBe("t");
     expect(await listTaskComments(A, id)).toHaveLength(1);
   });
 

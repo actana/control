@@ -345,8 +345,10 @@ describe("all five change events and ping", () => {
     await updateTask(A, task.id, { title: "t2" }, 2);
     await changeTaskStatus(A, task.id, "in_progress", 3);
     await addTaskComment(A, task.id, { authorKind: "user", authorName: "u", body: "hi" }, 4);
-    await deleteTask(A, task.id, 5);
-    await pingWebhook(A, webhook.id, 6);
+    // A running Task cannot be deleted (#722): it finishes first.
+    await changeTaskStatus(A, task.id, "done", 5);
+    await deleteTask(A, task.id, 6);
+    await pingWebhook(A, webhook.id, 7);
 
     const types = (
       await testDb.pool.query("select event_type from webhook_outbox order by created_at, id")
@@ -356,6 +358,7 @@ describe("all five change events and ping", () => {
       "task.updated",
       "task.status_changed",
       "comment.created",
+      "task.status_changed",
       "task.deleted",
       "ping",
     ]);
