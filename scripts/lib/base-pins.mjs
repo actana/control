@@ -76,6 +76,48 @@ export const NOT_COVERED = {
 export const NODE_MAJOR = 24;
 
 /**
+ * Core base digests a *released* image was found pinning after the `24.04`
+ * tag had moved on (#548). Each is the pin a promoted Core image shipped
+ * with, keyed by the digest, with the point release it named and the report
+ * that found it stale.
+ *
+ * A pin moves forward and never back: once a digest is here, a Dockerfile
+ * that pins it again is a regression, not a choice. The weekly rebuild only
+ * detects drift (ADR 0023 D42), so the fix for a row in this map is always a
+ * forward bump in a patch release — which is what the test reading this map
+ * holds the shipped Dockerfile to.
+ */
+export const RETIRED_CORE_BASE_DIGESTS = {
+  "sha256:561618e2c15bf2397621dd04f96926663a3b5616c189cf7e38db7e82f5c538ea": {
+    tag: "noble-20260730.1",
+    report: "#548 — pinned by core 0.4.5 after ubuntu:24.04 had moved to noble-20260911",
+  },
+};
+
+const CORE_BASE_NOTE = /^#\s*ubuntu:24\.04\s*==\s*(\S+)\s+at the time of writing\.\s*$/;
+
+/**
+ * The point release the Core base digest was taken from, read from the note
+ * the Dockerfile keeps on the line above its `FROM`.
+ *
+ * The digest alone says nothing a reader can date; the note is what lets
+ * the next person see at a glance how far behind the tag the pin is. It has
+ * to be *beside* the pin — a note elsewhere in the file is one nobody
+ * updates with the digest. Returns `null` when there is no note, or when it
+ * is not directly above the first `FROM`.
+ */
+export function readCoreBaseNote(text) {
+  const lines = text.split("\n");
+  const from = parseFromLines(text)[0];
+  if (!from) return null;
+
+  const match = CORE_BASE_NOTE.exec(lines[from.line - 2] ?? "");
+  if (!match) return null;
+
+  return { tag: match[1], line: from.line - 1 };
+}
+
+/**
  * Split an image reference into its parts.
  *
  * The one subtlety is the port: `localhost:5000/panel` has a colon that is not
