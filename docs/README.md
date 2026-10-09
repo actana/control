@@ -69,13 +69,14 @@ routing around it.
 | [0004](adr/0004-core-owns-write-path.md) | The Core owns the write path |
 | [0005](adr/0005-singular-ui-across-cores.md) | Singular UI across Cores |
 | [0006](adr/0006-no-bundled-skills.md) | No bundled skills |
-| [0007](adr/0007-scope-narrowing-and-rebrand.md) | Scope narrowing and rebrand |
+| [0007](adr/0007-scope-narrowing-and-rebrand.md) | Scope narrowing and rebrand — amended by 0015 (the retained theme onboarding and accent surface is gone) |
 | [0008](adr/0008-cross-core-session-finish-notifications.md) | Cross-core session-finish notifications |
 | [0009](adr/0009-remove-managed-sandbox.md) | Remove the managed sandbox |
 | [0010](adr/0010-panel-becomes-a-self-hosted-web-service.md) | The Panel becomes a self-hosted web service — amended by 0041 (D16, D20) |
 | [0011](adr/0011-operator-identity-and-panel-auth.md) | Operator identity and Panel auth — amended by 0041 (D14, D16; D15 builds on it) |
 | [0012](adr/0012-panel-link-browser-transport.md) | Panel link browser transport |
 | [0013](adr/0013-core-is-the-machine-harness-is-the-cli.md) | Core is the machine, Harness is the CLI |
+| [0015](adr/0015-one-fixed-look-from-actana-studio.md) | One fixed look, copied from Actana Studio: dark / light is the only operator axis, and a new colour is a sync question — amends 0007 |
 | [0016](adr/0016-the-0-1-0-shape.md) | The 0.1.0 shape: two images, one installer, three workflows — amended by 0041 (D6 `sudo`, D12 sudo and headline, D19, D20, D25) |
 | [0017](adr/0017-remembered-session-settings-are-core-facts.md) | Remembered session settings are Core facts |
 | [0018](adr/0018-docker-hub-is-the-only-registry.md) | Docker Hub is the only registry — GHCR is retired. **Amended:** npm is a second registry, for the published packages |
