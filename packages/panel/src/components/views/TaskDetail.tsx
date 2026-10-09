@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useRouter } from "@tanstack/react-router";
 import { Btn } from "~/components/ui/Btn";
+import { ConfirmDialog } from "~/components/ui/ConfirmDialog";
 import { FormErrorBox } from "~/components/ui/FormErrorBox";
 import { Icon } from "~/components/ui/Icon";
 import { MarkdownField } from "~/components/views/MarkdownField";
@@ -11,7 +12,7 @@ import { useFleet } from "~/lib/fleet-context";
 import { formatRelativeTime } from "~/lib/format-relative-time";
 import { TASK_STATUS_LABEL } from "~/lib/task-board";
 import { queryKeys, useCoreAgents, useTask } from "~/queries";
-import { FINISHED_TASK_STATUSES } from "~/shared/tasks";
+import { FINISHED_TASK_STATUSES, canDeleteTask, canEditTask } from "~/shared/tasks";
 import { taskFolderPath } from "~/shared/shared-files";
 import type { TaskCommentDto } from "~/shared/task-wire";
 import { TaskAttachments } from "~/components/views/TaskAttachments";
@@ -39,6 +40,7 @@ function message(e: unknown): string | null {
  * A Task's detail (screen 07): badges, result files, the comment thread and a
  * large composer. Every status move is a call to the server; this view only
  * shows what comes back. Open folder jumps to the Task's folder in the Core's Files tab (#565); Attach file waits for a later PR.
+ * Edit and Delete (#722) are off while the Task is `in_progress`; the server holds the same line.
  */
 export function TaskDetail({ taskId, onClose, focusComposer = false }: { taskId: string; onClose: () => void; focusComposer?: boolean }) {
   const { cores } = useFleet();
@@ -51,6 +53,8 @@ export function TaskDetail({ taskId, onClose, focusComposer = false }: { taskId:
   const { data: agents = [] } = useCoreAgents(task?.coreId ?? "");
   const [draft, setDraft] = useState("");
   const [attachments, setAttachments] = useState<TaskAttachment[]>([]);
+  const [editing, setEditing] = useState<{ title: string; description: string } | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState(false);
 
   const refresh = () => queryClient.invalidateQueries({ queryKey: queryKeys.tasks });
   const comment = useMutation({
@@ -64,6 +68,23 @@ export function TaskDetail({ taskId, onClose, focusComposer = false }: { taskId:
   const move = useMutation({
     mutationFn: (status: "assigned" | "draft") => api.setTaskStatus(taskId, status),
     onSuccess: refresh,
+  });
+
+  const save = useMutation({
+    mutationFn: (fields: { title: string; description: string }) => api.updateTask(taskId, fields),
+    onSuccess: async () => {
+      setEditing(null);
+      await refresh();
+    },
+  });
+  const remove = useMutation({
+    mutationFn: () => api.deleteTask(taskId),
+    onSuccess: async () => {
+      setConfirmDelete(false);
+      onClose();
+      queryClient.removeQueries({ queryKey: queryKeys.task(taskId) });
+      await refresh();
+    },
   });
 
   const finished = !!task && (FINISHED_TASK_STATUSES as readonly string[]).includes(task.status);
@@ -88,14 +109,58 @@ export function TaskDetail({ taskId, onClose, focusComposer = false }: { taskId:
       {error && !task ? <FormErrorBox error={message(error)} /> : null}
       {task ? (
         <>
-          <h2 style={{ margin: 0, fontSize: 26 }}>{task.title}</h2>
+          {editing ? (
+            <section aria-label="Edit Task" style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              <input
+                aria-label="Title"
+                autoFocus
+                value={editing.title}
+                onChange={(e) => setEditing({ ...editing, title: e.target.value })}
+                style={{ padding: "10px 12px", borderRadius: 8, border: "1px solid var(--border)", background: "transparent", color: "inherit", font: "inherit", fontSize: 20 }}
+              />
+              <MarkdownField value={editing.description} onChange={(description) => setEditing({ ...editing, description })} ariaLabel="Description" />
+              <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+                <Btn variant="ghost" disabled={save.isPending} onClick={() => { save.reset(); setEditing(null); }}>
+                  Cancel
+                </Btn>
+                <Btn variant="primary" disabled={!editing.title.trim() || save.isPending} onClick={() => save.mutate(editing)}>
+                  Save
+                </Btn>
+              </div>
+              <FormErrorBox error={message(save.error)} />
+            </section>
+          ) : (
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
+              <h2 style={{ margin: 0, fontSize: 26 }}>{task.title}</h2>
+              <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
+                <Btn
+                  variant="ghost"
+                  icon="pencil"
+                  disabled={!canEditTask(task.status)}
+                  title={canEditTask(task.status) ? "Edit the title and description" : "A running Task cannot be edited: its Session already has the prompt"}
+                  onClick={() => setEditing({ title: task.title, description: task.description })}
+                >
+                  Edit
+                </Btn>
+                <Btn
+                  variant="ghost"
+                  icon="trash"
+                  disabled={!canDeleteTask(task.status)}
+                  title={canDeleteTask(task.status) ? "Delete this Task" : "A running Task cannot be deleted"}
+                  onClick={() => setConfirmDelete(true)}
+                >
+                  Delete
+                </Btn>
+              </div>
+            </div>
+          )}
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
             <Badge tone="var(--accent-subtle-bg)">{TASK_STATUS_LABEL[task.status]}</Badge>
             {task.attemptCount > 0 ? <Badge>Attempt {task.attemptCount}</Badge> : null}
             {core ? <Badge>{core.label}</Badge> : null}
             {agent ? <Badge>Agent: {agent.name}</Badge> : null}
           </div>
-          {task.description ? <TaskMarkdown>{task.description}</TaskMarkdown> : null}
+          {task.description && !editing ? <TaskMarkdown>{task.description}</TaskMarkdown> : null}
           {task.lastError ? <FormErrorBox error={task.lastError} /> : null}
           {task.status === "draft" || task.status === "assigned" ? (
             <div style={{ display: "flex", gap: 8 }}>
@@ -171,6 +236,25 @@ export function TaskDetail({ taskId, onClose, focusComposer = false }: { taskId:
             </div>
             <FormErrorBox error={message(comment.error) ?? message(move.error)} />
           </section>
+          <ConfirmDialog
+            open={confirmDelete}
+            onClose={() => {
+              remove.reset();
+              setConfirmDelete(false);
+            }}
+            onConfirm={() => remove.mutate()}
+            title="Delete Task?"
+            confirmLabel="Delete"
+            variant="danger"
+            loading={remove.isPending}
+          >
+            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+              <p style={{ margin: 0, fontSize: 13, color: "var(--text-dim)", lineHeight: 1.5 }}>
+                Delete <strong style={{ color: "var(--text)" }}>{task.title}</strong> with its comments and history? This cannot be undone. Files it left in the Shared folder stay.
+              </p>
+              <FormErrorBox error={message(remove.error)} />
+            </div>
+          </ConfirmDialog>
         </>
       ) : null}
     </aside>

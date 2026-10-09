@@ -34,6 +34,7 @@ import type {
   NewTaskRequest,
   TaskCommentDto,
   TaskDto,
+  UpdateTaskRequest,
 } from "~/shared/task-wire";
 import type { ApiKeyView, WebhookDeliveryView, WebhookView } from "~/shared/api-integrations-wire";
 
@@ -198,6 +199,11 @@ export const api = {
   /** With `attachments` the request is multipart and the server writes the files before it assigns the Task. */
   createTask: (body: NewTaskRequest, attachments: readonly TaskAttachment[] = []) =>
     req<{ task: TaskDto }>("/api/tasks", { method: "POST", body: attachments.length > 0 ? attachmentsForm(body, attachments) : JSON.stringify(body) }),
+  /** Edit the title and description (#722). The server refuses it while the Task is `in_progress`. */
+  updateTask: (id: string, body: UpdateTaskRequest) =>
+    req<{ task: TaskDto }>(`/api/tasks/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(body) }),
+  /** Delete the Task with its comments and history (#722). Refused while it is `in_progress`. */
+  deleteTask: (id: string) => req<void>(`/api/tasks/${encodeURIComponent(id)}`, { method: "DELETE" }),
   /** Assign or send back to draft. The server decides whether the move is legal. */
   setTaskStatus: (id: string, status: TaskStatus) =>
     req<{ task: TaskDto }>(`/api/tasks/${encodeURIComponent(id)}/status`, {

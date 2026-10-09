@@ -47,6 +47,12 @@ export type NewTaskRequest = {
   startNow?: boolean;
 };
 
+/** An edit (#722): the fields to change, at least one. Refused while the Task is `in_progress`. */
+export type UpdateTaskRequest = {
+  title?: string;
+  description?: string;
+};
+
 export type NewTaskCommentRequest = {
   body: string;
   /** Comment & re-assign: the comment and the move back to `assigned`, in one call. */

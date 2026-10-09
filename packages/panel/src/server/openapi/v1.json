@@ -290,6 +290,48 @@
           "404": { "description": "No such Task" },
           "401": { "description": "Unauthorized" }
         }
+      },
+      "patch": {
+        "operationId": "updateTask",
+        "summary": "Change a Task's title, description or both",
+        "description": "Fires `task.updated`. Allowed in draft, assigned, done, failed and partial; refused with 409 while the Task is `in_progress`, because its Session already has the prompt.",
+        "parameters": [{ "name": "taskId", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "minProperties": 1,
+                "properties": {
+                  "title": { "type": "string", "minLength": 1 },
+                  "description": { "type": "string" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Updated Task" },
+          "400": { "description": "Neither field given, or an empty title" },
+          "403": { "description": "Key does not reach the Task's Core" },
+          "404": { "description": "No such Task" },
+          "409": { "description": "The Task is in_progress" },
+          "401": { "description": "Unauthorized" }
+        }
+      },
+      "delete": {
+        "operationId": "deleteTask",
+        "summary": "Delete a Task with its comments and history",
+        "description": "Fires `task.deleted`. Refused with 409 while the Task is `in_progress`. Files the Task left in the Shared folder stay.",
+        "parameters": [{ "name": "taskId", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "responses": {
+          "204": { "description": "Deleted" },
+          "403": { "description": "Key does not reach the Task's Core" },
+          "404": { "description": "No such Task" },
+          "409": { "description": "The Task is in_progress" },
+          "401": { "description": "Unauthorized" }
+        }
       }
     },
     "/api/v1/tasks/{taskId}/status": {

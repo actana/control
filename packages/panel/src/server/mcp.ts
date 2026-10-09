@@ -48,7 +48,8 @@ const INTERNAL_ERROR = -32603;
 
 const INSTRUCTIONS =
   "Tasks on the Operator's Cores. Every call runs as the API key's owner and sees only the Cores the key reaches. " +
-  "assign_task only asks for the operator moves (assigned, draft); list_shared and get_shared read a Core's Shared folder.";
+  "assign_task only asks for the operator moves (assigned, draft). update_task changes a Task's title or description and " +
+  "delete_task removes it; both are refused while the Task is in_progress. list_shared and get_shared read a Core's Shared folder.";
 
 const rpcId = z.union([z.string(), z.number()]);
 const rpcMessage = z.object({
@@ -85,7 +86,7 @@ function describeTool(t: (typeof MCP_TOOLS)[number]) {
     name: t.name,
     description: t.description,
     inputSchema,
-    annotations: { readOnlyHint: t.readOnly },
+    annotations: { readOnlyHint: t.readOnly, ...(t.destructive ? { destructiveHint: true } : {}) },
   };
 }
 
