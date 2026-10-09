@@ -17,6 +17,7 @@ import {
   splitImageRef,
   updateStrategyFor,
 } from "../lib/base-pins.mjs";
+import { RETIRED_PANEL_RUNTIME_DIGESTS, readPanelRuntimeNote } from "../lib/base-pins.mjs";
 
 const repoRoot = path.resolve(import.meta.dirname, "..", "..");
 const read = (rel) => fs.readFileSync(path.join(repoRoot, rel), "utf8");
@@ -276,6 +277,58 @@ describe("every other Dockerfile in the tree", () => {
     for (const file of found) {
       const accounted = SHIPPED_DOCKERFILES.includes(file) || file in NOT_COVERED;
       expect(accounted, `${file} is neither shipped nor listed in NOT_COVERED`).toBe(true);
+    }
+  });
+});
+
+// #733: the Panel image shipped pinning a distroless digest `latest` had
+// already left behind (first reported by #312). Same shape as #548's Core
+// fix: a forward bump, held forward by these tests.
+describe("readPanelRuntimeNote", () => {
+  const pin = `FROM gcr.io/distroless/nodejs24@sha256:${"a".repeat(64)}`;
+
+  it("reads the date on the line above the runtime FROM", () => {
+    const text = [
+      "FROM node:24.15.0-trixie AS build",
+      "# gcr.io/distroless/nodejs24:latest == this digest on 2026-10-09.",
+      pin,
+    ].join("\n");
+
+    expect(readPanelRuntimeNote(text)).toEqual({ date: "2026-10-09", line: 2 });
+  });
+
+  it("is null when the note is not directly above the FROM", () => {
+    const text = ["# gcr.io/distroless/nodejs24:latest == this digest on 2026-10-09.", "", pin].join("\n");
+
+    expect(readPanelRuntimeNote(text)).toBe(null);
+  });
+
+  it("is null when there is no note, or no FROM", () => {
+    expect(readPanelRuntimeNote(`${pin}\n`)).toBe(null);
+    expect(readPanelRuntimeNote("# gcr.io/distroless/nodejs24:latest == this digest on 2026-10-09.\n")).toBe(null);
+  });
+});
+
+describe("the Panel runtime pin", () => {
+  const text = read("deploy/panel.Dockerfile");
+
+  it("is not a digest a released Panel image was found stale on (#733)", () => {
+    const runtime = parseFromLines(text).at(-1);
+    const retired = RETIRED_PANEL_RUNTIME_DIGESTS[runtime.digest];
+
+    expect(retired, `${runtime.digest} was retired by ${retired?.report}`).toBeUndefined();
+  });
+
+  it("is dated beside the pin, later than every drift report", () => {
+    const note = readPanelRuntimeNote(text);
+
+    expect(note, "no `# gcr.io/distroless/nodejs24:latest == this digest on YYYY-MM-DD.` line above the FROM").not.toBe(
+      null,
+    );
+
+    // ISO dates order as strings.
+    for (const { reported } of Object.values(RETIRED_PANEL_RUNTIME_DIGESTS)) {
+      expect(note.date > reported, `${note.date} is not later than the drift reported on ${reported}`).toBe(true);
     }
   });
 });
