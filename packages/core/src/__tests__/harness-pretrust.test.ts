@@ -7,6 +7,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+  CLAUDE_TRUST_ATTEMPTS,
   CODEX_HOOK_HASH_VERIFIED,
   codexHookHash,
   codexHookKey,
@@ -88,6 +89,98 @@ describe("claude-code: ~/.claude.json projects[dir].hasTrustDialogAccepted", () 
     fs.writeFileSync(file, "{ not json");
     expect(() => trustClaudeCode(file, ["/home/core"])).toThrow();
     expect(read(file)).toBe("{ not json");
+  });
+});
+
+describe("claude-code: compare and retry against Claude Code's own writes (#699)", () => {
+  it("keeps a key Claude Code writes between the read and the rename, and still trusts the dir", () => {
+    const file = path.join(dir, ".claude.json");
+    fs.writeFileSync(file, JSON.stringify({ numStartups: 3 }));
+    let calls = 0;
+    const result = trustClaudeCode(file, ["/home/core"], {
+      beforeCommit: () => {
+        if (calls++ === 0) fs.writeFileSync(file, JSON.stringify({ numStartups: 4, tipsHistory: { a: 1 } }));
+      },
+    });
+    expect(result).toBe("written");
+    expect(calls).toBe(2);
+    expect(JSON.parse(read(file))).toEqual({
+      numStartups: 4,
+      tipsHistory: { a: 1 },
+      projects: { "/home/core": { hasTrustDialogAccepted: true } },
+    });
+    expect(leftovers()).toEqual([]);
+  });
+
+  it("keeps a file Claude Code creates between the read and the rename", () => {
+    const file = path.join(dir, ".claude.json");
+    let calls = 0;
+    expect(
+      trustClaudeCode(file, ["/home/core"], {
+        beforeCommit: () => {
+          if (calls++ === 0) fs.writeFileSync(file, JSON.stringify({ userID: "u1" }));
+        },
+      }),
+    ).toBe("written");
+    expect(JSON.parse(read(file))).toEqual({ userID: "u1", projects: { "/home/core": { hasTrustDialogAccepted: true } } });
+  });
+
+  it("writes nothing when the concurrent write already trusted the dir", () => {
+    const file = path.join(dir, ".claude.json");
+    fs.writeFileSync(file, "{}");
+    const theirs = JSON.stringify({ projects: { "/home/core": { hasTrustDialogAccepted: true, lastCost: 2 } } });
+    let calls = 0;
+    expect(
+      trustClaudeCode(file, ["/home/core"], {
+        beforeCommit: () => {
+          calls++;
+          fs.writeFileSync(file, theirs);
+        },
+      }),
+    ).toBe("unchanged");
+    expect(calls).toBe(1);
+    expect(read(file)).toBe(theirs);
+    expect(leftovers()).toEqual([]);
+  });
+
+  it("gives up after the set number of tries on a file that keeps changing, and leaves it as it is", () => {
+    const file = path.join(dir, ".claude.json");
+    fs.writeFileSync(file, JSON.stringify({ n: 0 }));
+    let calls = 0;
+    expect(() =>
+      trustClaudeCode(file, ["/home/core"], {
+        attempts: 3,
+        beforeCommit: () => fs.writeFileSync(file, JSON.stringify({ n: ++calls })),
+      }),
+    ).toThrow(/changed while trust was being written, 3 times/);
+    expect(calls).toBe(3);
+    expect(JSON.parse(read(file))).toEqual({ n: 3 });
+    expect(leftovers()).toEqual([]);
+  });
+
+  it("retries CLAUDE_TRUST_ATTEMPTS times by default", () => {
+    const file = path.join(dir, ".claude.json");
+    fs.writeFileSync(file, "{}");
+    let calls = 0;
+    expect(() => trustClaudeCode(file, ["/home/core"], { beforeCommit: () => fs.writeFileSync(file, JSON.stringify({ n: ++calls })) })).toThrow();
+    expect(calls).toBe(CLAUDE_TRUST_ATTEMPTS);
+  });
+
+  it("writes through a symlinked config and compares against the file it points at", () => {
+    const real = path.join(dir, "real.json");
+    const file = path.join(dir, ".claude.json");
+    fs.writeFileSync(real, JSON.stringify({ a: 1 }));
+    fs.symlinkSync(real, file);
+    let calls = 0;
+    expect(
+      trustClaudeCode(file, ["/home/core"], {
+        beforeCommit: () => {
+          if (calls++ === 0) fs.writeFileSync(real, JSON.stringify({ a: 2 }));
+        },
+      }),
+    ).toBe("written");
+    expect(fs.lstatSync(file).isSymbolicLink()).toBe(true);
+    expect(JSON.parse(read(real))).toEqual({ a: 2, projects: { "/home/core": { hasTrustDialogAccepted: true } } });
   });
 });
 

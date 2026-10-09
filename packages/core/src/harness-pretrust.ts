@@ -28,6 +28,13 @@
 // other key, and writes a temp file beside the target before renaming it over, so
 // a reader never sees half a file. A file it cannot parse is left alone and
 // reported: overwriting someone's config to add a trust line is the wrong trade.
+//
+// `~/.claude.json` is also rewritten by Claude Code itself, while a Session runs,
+// and Claude Code takes no lock this writer could share. So the Claude Code
+// writer compares and retries (#699): just before the rename it re-reads the
+// file, and when it no longer holds what the change was built from, it drops the
+// change and starts again from the new text. The window left is the re-read to
+// the rename, not the whole read-modify-write.
 // This code runs as `core` in the helper (`core-home-ops`), never in the daemon.
 
 import { createHash } from "node:crypto";
@@ -56,8 +63,19 @@ export function codexConfigPath(home: string): string {
   return path.join(home, ".codex", "config.toml");
 }
 
-/** Temp file in the same directory, then rename: atomic on one filesystem. */
-function writeAtomic(file: string, text: string, fallbackMode: number): void {
+/**
+ * Temp file in the same directory, then rename: atomic on one filesystem.
+ *
+ * With `expected` (the text the change was built from, null for no file), the file is re-read after the temp
+ * write and the rename happens only when it still holds exactly that; otherwise the temp file is removed, nothing
+ * is written, and the result is false. Without it the result is always true.
+ */
+function writeAtomic(
+  file: string,
+  text: string,
+  fallbackMode: number,
+  guard?: { expected: string | null; beforeCommit?: () => void },
+): boolean {
   // Write through a link rather than replacing it: a symlinked config is the
   // user's arrangement, and the confinement check has already followed it.
   let target = file;
@@ -72,7 +90,15 @@ function writeAtomic(file: string, text: string, fallbackMode: number): void {
   const temp = path.join(path.dirname(target), `.${path.basename(target)}.${process.pid}.${Date.now()}.tmp`);
   try {
     fs.writeFileSync(temp, text, { encoding: "utf8", mode });
+    if (guard) {
+      guard.beforeCommit?.();
+      if (readIfExists(target) !== guard.expected) {
+        fs.rmSync(temp, { force: true });
+        return false;
+      }
+    }
     fs.renameSync(temp, target);
+    return true;
   } catch (err) {
     fs.rmSync(temp, { force: true });
     throw err;
@@ -90,8 +116,11 @@ function readIfExists(file: string): string | null {
 
 // ─── Claude Code ─────────────────────────────────────────────────────
 
-export function trustClaudeCode(file: string, dirs: readonly string[]): "written" | "unchanged" {
-  const raw = readIfExists(file);
+/** How many times the Claude Code writer re-reads a `~/.claude.json` that changed under it before it gives up. */
+export const CLAUDE_TRUST_ATTEMPTS = 5;
+
+/** The text `~/.claude.json` should hold with every dir trusted, or null when it already does. */
+function claudeTrustedText(file: string, raw: string | null, dirs: readonly string[]): string | null {
   let config: Record<string, unknown> = {};
   if (raw !== null && raw.trim() !== "") {
     const parsed: unknown = JSON.parse(raw);
@@ -115,10 +144,33 @@ export function trustClaudeCode(file: string, dirs: readonly string[]): "written
     projects[dir] = { ...(entry as Record<string, unknown> | undefined), hasTrustDialogAccepted: true };
     changed = true;
   }
-  if (!changed) return "unchanged";
+  if (!changed) return null;
   config.projects = projects;
-  writeAtomic(file, JSON.stringify(config, null, 2) + "\n", 0o600);
-  return "written";
+  return JSON.stringify(config, null, 2) + "\n";
+}
+
+/**
+ * Trust `dirs` in `~/.claude.json`, comparing and retrying against Claude Code's own writes: a change is renamed
+ * over the file only when the file still holds the text it was built from (`writeAtomic`'s `expected`). When it
+ * does not, the change is rebuilt from the new text, up to `attempts` times; after that the file is left as it
+ * is and the call throws, which `pretrustWorkspaces` reports as `failed` and the next round tries again.
+ * `beforeCommit` runs between the temp write and the re-read; it is there for tests to change the file in that
+ * window.
+ */
+export function trustClaudeCode(
+  file: string,
+  dirs: readonly string[],
+  { attempts = CLAUDE_TRUST_ATTEMPTS, beforeCommit }: { attempts?: number; beforeCommit?: () => void } = {},
+): "written" | "unchanged" {
+  for (let attempt = 1; ; attempt++) {
+    const raw = readIfExists(file);
+    const text = claudeTrustedText(file, raw, dirs);
+    if (text === null) return "unchanged";
+    if (writeAtomic(file, text, 0o600, { expected: raw, beforeCommit })) return "written";
+    if (attempt >= attempts) {
+      throw new Error(`${file} changed while trust was being written, ${attempts} times in a row; left as it is`);
+    }
+  }
 }
 
 // ─── Codex ───────────────────────────────────────────────────────────
