@@ -121,7 +121,8 @@ export {
  * starts from the Session's shell — would otherwise post under the Session's
  * id and take its card over. The pid is the one fact a nested process cannot
  * inherit: the receiver compares it with the pid the Core spawned, climbing
- * through nothing but shells to get there (`harness-hook-origin.ts`). It is
+ * through nothing but shells to get there — or, for the npm `codex` wrapper,
+ * through the one native child it runs (`harness-hook-origin.ts`). It is
  * `$PPID` rather than `$$` because the harness runs the entry as
  * `/bin/sh -c "sh -c '…'"`: the inner shell's parent is the harness where
  * `/bin/sh` execs (bash) and the outer shell where it forks (dash), and the

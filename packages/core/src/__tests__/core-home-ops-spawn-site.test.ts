@@ -35,13 +35,19 @@ vi.mock("node:fs", async (importOriginal) => {
   return { ...actual, default: { ...actual, existsSync }, existsSync };
 });
 
-const workspace = vi.hoisted(() => ({ dir: "", lookups: [] as string[], checks: {} as Record<string, { ok: boolean; reason?: string; version?: string }> }));
+const workspace = vi.hoisted(() => ({
+  dir: "",
+  lookups: [] as string[],
+  checks: {} as Record<string, { ok: boolean; reason?: string; version?: string }>,
+  /** What the daemon's own lookup (outside the container) resolves to. */
+  binary: "/daemon/looked/up/claude",
+}));
 vi.mock("@actana/shared/harness-cli-resolution", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@actana/shared/harness-cli-resolution")>();
   return {
     ...actual,
-    resolveHarnessCommandMeetingVersion: (name: string) => (workspace.lookups.push(name), { binary: "/daemon/looked/up/claude" }),
-    resolveHarnessCommandOnPath: (name: string) => (workspace.lookups.push(name), "/daemon/looked/up/claude"),
+    resolveHarnessCommandMeetingVersion: (name: string) => (workspace.lookups.push(name), { binary: workspace.binary }),
+    resolveHarnessCommandOnPath: (name: string) => (workspace.lookups.push(name), workspace.binary),
   };
 });
 vi.mock("@actana/shared/harness-cli-version", async (importOriginal) => {
@@ -77,6 +83,7 @@ function inContainer(home: string = workspace.dir) {
 beforeEach(() => {
   workspace.lookups = [];
   workspace.checks = {};
+  workspace.binary = "/daemon/looked/up/claude";
   workspace.dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "spawn-site-")));
 });
 afterEach(() => {
@@ -230,6 +237,69 @@ describe("resolving the Harness CLI in container mode", () => {
       expect(seen.map((r) => r.op), agent).toEqual(["spawnPathFacts"]);
     }
     expect(warn.mock.calls.map((c) => c[0])).not.toContain("pty.spawn.command-lookup-refused");
+  });
+});
+
+describe("what the spawned pid is to the harness (issue 460)", () => {
+  // The hook receiver holds every hook to the spawned pid, climbing through
+  // shells; the npm `codex` wrapper keeps a node process alive above the
+  // harness, so the Core records at spawn whether it launched a wrapper.
+  function spawnWith(found: { candidates: string[]; scripts: string[] }, agent: string, command: string) {
+    configureCoreHomeOps({
+      run: async (_spec, input) => {
+        const request = JSON.parse(input) as { op: string; cwd?: string; roots?: string[] };
+        const result =
+          request.op === "spawnPathFacts"
+            ? { cwdOk: true, realpaths: Object.fromEntries([request.cwd!, ...request.roots!].map((p) => [p, p])) }
+            : request.op === "resolveCommand"
+              ? found
+              : request.op === "installHarnessHooks"
+                ? { installed: false, reportsTurnStart: false, hookTrustBypassEarned: false }
+                : null;
+        return { status: 0, stdout: JSON.stringify({ ok: true, result }), stderr: "" };
+      },
+    });
+    vi.spyOn(nodePty, "spawn").mockReturnValue(fakePty() as never);
+    const pty = core(false);
+    return pty.spawn({ sessionId: "tl", agent, command } as never).then(() => pty.spawnedProcessForSession("tl"));
+  }
+
+  it("records the npm codex wrapper core found as a wrapper, with node-pty's pid", async () => {
+    inContainer();
+    const wrapper = "/home/core/.local/bin/codex";
+    await expect(spawnWith({ candidates: [wrapper], scripts: [wrapper] }, "codex", "codex")).resolves.toEqual({
+      pid: 4242,
+      launcher: "wrapper",
+    });
+  });
+
+  it("records a native codex as the harness", async () => {
+    inContainer();
+    const native = "/home/core/.local/bin/codex";
+    await expect(spawnWith({ candidates: [native], scripts: [] }, "codex", "codex")).resolves.toEqual({
+      pid: 4242,
+      launcher: "harness",
+    });
+  });
+
+  it("records every other family as the harness, script launcher or not", async () => {
+    inContainer();
+    const claude = "/home/core/.local/bin/claude";
+    await expect(spawnWith({ candidates: [claude], scripts: [claude] }, "claude-code", "claude")).resolves.toEqual({
+      pid: 4242,
+      launcher: "harness",
+    });
+  });
+
+  it("outside the container reads the launcher the daemon resolved itself", async () => {
+    const wrapper = path.join(workspace.dir, "codex");
+    fs.writeFileSync(wrapper, "#!/usr/bin/env node\nimport { spawn } from 'node:child_process';\n", { mode: 0o755 });
+    workspace.binary = wrapper;
+    vi.spyOn(nodePty, "spawn").mockReturnValue(fakePty() as never);
+    const pty = core(false);
+    await pty.spawn({ sessionId: "tm", agent: "codex", command: "codex" } as never);
+    expect(pty.spawnedProcessForSession("tm")).toEqual({ pid: 4242, launcher: "wrapper" });
+    expect(pty.spawnedProcessForSession("no-such-session")).toBeNull();
   });
 });
 

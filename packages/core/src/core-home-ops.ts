@@ -37,6 +37,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { pickHarnessCandidateMeetingVersion, resolveAllHarnessCommandsOnPath } from "@actana/shared/harness-cli-resolution";
+import { isInterpreterScript } from "@actana/shared/shell-env";
 import { HARNESS_CLI_CONFIG_BY_COMMAND } from "@actana/shared/harness-cli-config";
 import type { HarnessVersionCheck } from "@actana/shared/harness-cli-version";
 import { registryPaths } from "@actana/shared/blob-registry";
@@ -119,8 +120,13 @@ export type CoreHomeOpResult = {
   wireLocalCore: LocalCoreWiring;
   spawnPathFacts: SpawnPathFacts;
   resolveExecCwd: { cwd: string };
-  /** Every executable match, in search order; the caller picks by version. */
-  resolveCommand: { candidates: string[] };
+  /**
+   * Every executable match, in search order; the caller picks by version.
+   * `scripts` is the subset that are interpreter scripts (`#!`) rather than
+   * native binaries — what tells the npm `codex` wrapper from the vendor binary
+   * (issue 460), read here because the file is in core's home.
+   */
+  resolveCommand: { candidates: string[]; scripts: string[] };
   /**
    * Every match, and the one that meets the version floor (or the first, with its
    * failed check), already version-checked. `meeting` is null when there is no
@@ -406,7 +412,8 @@ export function handleCoreHomeOpSync(request: CoreHomeOpRequest, ctx: CoreHomeOp
       // are in `~/.local/bin` and in `/usr/local/bin`. What it can see is what
       // `core` can see, and it answers with paths only.
       const env = request.path === null ? ctx.env : { ...ctx.env, PATH: request.path };
-      return { candidates: resolveAllHarnessCommandsOnPath(request.command, env, os.platform()) };
+      const candidates = resolveAllHarnessCommandsOnPath(request.command, env, os.platform());
+      return { candidates, scripts: candidates.filter((file) => isInterpreterScript(file)) };
     }
     case "probeHarnessCli": {
       // The `--version` of each match is run here, by core, in a process the daemon

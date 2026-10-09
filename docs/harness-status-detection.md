@@ -384,11 +384,36 @@ inherit.** Three parts:
   bash (macOS) the outer shell execs and the inner shell's parent is the harness;
   where it is dash (Debian, the Core container) it forks and the parent is the
   outer shell, one below the harness.
-- **The Core knows what it spawned.** `PtyCore.spawnedPidForSession` is the pid
-  of the Session's agent PTY — the harness itself, because the PTY spawns the
-  binary directly, and in the container `setpriv` and the `sh -c 'exec …'` it
-  wraps keep that pid. A shell terminal or a VM Shell Session answers `null`:
-  nothing the Core would own can be posting for it.
+- **The Core knows what it spawned.** `PtyCore.spawnedProcessForSession` is
+  the pid of the Session's agent PTY — what node-pty started, which in the
+  container `setpriv` and the `sh -c 'exec …'` it wraps keep — together with
+  what that process is to the harness: the harness itself, or a **wrapper**
+  that runs the harness as its direct child. The PTY spawns whatever the
+  family's command resolves to on PATH, and that is not the harness for every
+  family. The launcher shapes the guard relies on, per family as the Core
+  installs them:
+
+  | Family | What PATH resolves to | Spawned pid is… | Launcher |
+  |---|---|---|---|
+  | Claude Code | a native binary (the npm package's postinstall copies one into place; the installer script does the same) | the harness | `harness` |
+  | Cursor | `cursor-agent`, a bash launcher that `exec`s node — the pid is kept | the harness | `harness` |
+  | OpenCode | a native binary | the harness | `harness` |
+  | Pi | one node process (the npm bin is the harness's own entry) | the harness | `harness` |
+  | Codex, `npm install -g @openai/codex` (the Core's `installCommand`) | `bin/codex.js`, a node wrapper that `spawn`s `vendor/<triple>/bin/codex` as a child and stays alive as its parent, forwarding signals and mirroring the exit code | the wrapper; the harness is its direct child | `wrapper` |
+  | Codex, Homebrew / Codex.app | the native binary | the harness | `harness` |
+
+  Measured on this Core with `@openai/codex@0.162.0`: `node bin/codex.js` pid
+  101931 (node 24 names its main thread `MainThread`, so its `comm` is not
+  `node`) ← native `codex` pid 101939. The shape is recorded **at spawn**
+  (`harnessLauncherShape` in `harness-hook-origin.ts`): `wrapper` only for a
+  family whose vendor ships one — Codex — and only when the resolved command
+  is an interpreter script (`#!`) rather than a native binary. In the container
+  the file is in core's home, so core says which candidates are scripts when it
+  finds them (`resolveCommand` answers `candidates` and `scripts`); on metal the
+  daemon reads the two bytes itself. Every other family is `harness` whatever
+  its launcher is, so the exception widens nothing for them. A shell terminal
+  or a VM Shell Session answers `null`: nothing the Core would own can be
+  posting for it.
 - **The receiver climbs from the reported pid to the spawned one through
   shells only** (`verifyHookProcess` in `harness-hook-origin.ts`). Equal is
   `owned`. Otherwise each parent is read from the process table —
@@ -402,6 +427,21 @@ inherit.** Three parts:
   and the nested `claude` is the non-shell the climb refuses to cross. Nothing
   identifies a harness binary by name, because nothing has to: the only question
   is whether the path from the hook to the spawned process is made of shells.
+- **Under a `wrapper` spawn the climb may cross exactly one non-shell: the
+  wrapper's own direct child.** A Codex hook's chain is `sh → codex(native) →
+  node(wrapper)` (`sh → sh → codex → node` where `/bin/sh` forks): the climb
+  stands on the native `codex`, which is not a shell, and owns it because its
+  parent is the spawned pid and the spawn was recorded as a wrapper. It is
+  still name-free — the child is accepted for where it sits, not for what it is
+  called. Everything the issue is about stays refused: a `claude -p` from a
+  Bash tool inside the Codex Session is `sh → claude(nested) → bash →
+  codex(native) → node`, a non-shell whose parent is the native `codex`, not
+  the wrapper; a harness the native `codex` started without a shell is two
+  non-shells deep; and the same chain under a spawn recorded as `harness` (a
+  native Codex, every other family) is foreign exactly as before. A launcher
+  that `exec`s the binary keeps the pid, so recording it as a wrapper could at
+  most widen the climb by that one child; the chains that were owned stay
+  owned.
 
 The check runs in `CoreHarnessStatus.receiveHook` **before** the pipeline, and
 only for a hook that arrived over the wire; the Core's own synthetic events (PTY
@@ -435,6 +475,13 @@ What the guard does not do:
   agent PTY there is no spawned pid, and every hook is foreign — the process of
   a previous spawn, or a stranger with the env. The PTY-exit settle still
   answers for that row.
+- **It does not follow a wrapper it was not told about.** The wrapper
+  exception is a fact recorded at spawn for one family; a launcher some other
+  package manager puts in front of another family's binary would make that
+  family's hooks foreign, and its Sessions would sit on `ready` with
+  `harness-status.foreign-process` in the log naming both pids and the
+  recorded launcher. That is the fail-closed side, and the table above is what
+  to extend when a new launcher shape appears.
 
 The Panel's own hook endpoint never produces `foreign-process`; the outcome is
 listed in the shared pipeline's `HookPipelineResult` so both hosts answer it with

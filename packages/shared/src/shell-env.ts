@@ -283,6 +283,33 @@ function commandNames(command: string, env: NodeJS.ProcessEnv, platform: NodeJS.
   return [...pathext.map((ext) => `${command}${ext.toLowerCase()}`), command];
 }
 
+/**
+ * Is this executable an interpreter script (`#!…`) rather than a native
+ * binary? The one fact the Core needs about a Harness launcher it is about to
+ * spawn: a script may run the harness as a child and stay alive above it (the
+ * npm `codex` wrapper does), a native binary is the harness. Reads two bytes;
+ * anything unreadable is "not a script", which is the fail-closed answer.
+ */
+export function isInterpreterScript(file: string): boolean {
+  let fd: number | null = null;
+  try {
+    fd = fs.openSync(file, "r");
+    const head = Buffer.alloc(2);
+    const n = fs.readSync(fd, head, 0, 2, 0);
+    return n === 2 && head[0] === 0x23 && head[1] === 0x21; // "#!"
+  } catch {
+    return false;
+  } finally {
+    if (fd !== null) {
+      try {
+        fs.closeSync(fd);
+      } catch {
+        /* nothing to do */
+      }
+    }
+  }
+}
+
 function isExecutableFile(file: string, platform: NodeJS.Platform): boolean {
   try {
     const stat = fs.statSync(file);

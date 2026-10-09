@@ -22,6 +22,7 @@ import {
 } from "../event-log-store";
 import { CoreSessionWriter } from "../core-session-writer";
 import { CoreHarnessStatus } from "../core-harness-status";
+import type { SpawnedProcess } from "../harness-hook-origin";
 import { CoreTitleGenerator } from "../core-title-generator";
 import {
   startHarnessHookReceiver,
@@ -44,10 +45,25 @@ const SESSION_ID = "t1";
 const SPAWNED_PID = 4242;
 /** A `claude -p` started by the Session's own turn: a pid the Core never spawned. */
 const NESTED_PID = 5151;
+/** A Codex Session on the same Core, spawned through the npm wrapper (`bin/codex.js`). */
+const CODEX_SESSION_ID = "t-codex";
+/** What node-pty spawned for it: the node wrapper, not the harness. */
+const CODEX_WRAPPER_PID = 6100;
+/** The native `codex` the wrapper spawned, which is what runs the hooks. */
+const CODEX_PID = 6101;
+/** A `claude -p` started from a Bash tool inside the Codex Session. */
+const CODEX_NESTED_PID = 6151;
+/** What the Core recorded at spawn for each Session (`PtyCore.spawnedProcessForSession`). */
+const SPAWNED: Record<string, SpawnedProcess> = {
+  [SESSION_ID]: { pid: SPAWNED_PID, launcher: "harness" },
+  [CODEX_SESSION_ID]: { pid: CODEX_WRAPPER_PID, launcher: "wrapper" },
+};
 /**
  * The process table a hook's climb reads, as measured on a Debian `/bin/sh`
  * (dash forks the inner `sh -c`, so a hook's `$PPID` is one shell below the
- * harness) and on a nested run from inside a Bash tool call.
+ * harness), on a nested run from inside a Bash tool call, and on Codex 0.162.0
+ * installed by npm (node wrapper → native codex; node 24 names its main thread
+ * `MainThread`).
  */
 const PROCESS_TABLE: Record<number, { comm: string; ppid: number }> = {
   [SPAWNED_PID]: { comm: "claude", ppid: 9 },
@@ -56,6 +72,13 @@ const PROCESS_TABLE: Record<number, { comm: string; ppid: number }> = {
   4400: { comm: "bash", ppid: SPAWNED_PID },
   [NESTED_PID]: { comm: "claude", ppid: 4400 },
   5200: { comm: "sh", ppid: NESTED_PID },
+  [CODEX_WRAPPER_PID]: { comm: "MainThread", ppid: 9 },
+  [CODEX_PID]: { comm: "codex", ppid: CODEX_WRAPPER_PID },
+  6200: { comm: "sh", ppid: CODEX_PID },
+  6201: { comm: "sh", ppid: 6200 },
+  6300: { comm: "bash", ppid: CODEX_PID },
+  [CODEX_NESTED_PID]: { comm: "claude", ppid: 6300 },
+  6400: { comm: "sh", ppid: CODEX_NESTED_PID },
 };
 
 describe("harness status detection on the Core (issue 84)", () => {
@@ -89,7 +112,7 @@ describe("harness status detection on the Core (issue 84)", () => {
     const status = new CoreHarnessStatus({
       writer,
       generateTitle: (sessionId, prompt) => titleGenerator.schedule(sessionId, prompt),
-      spawnedPid: (sessionId) => (sessionId === SESSION_ID ? SPAWNED_PID : null),
+      spawned: (sessionId) => SPAWNED[sessionId] ?? null,
       readProcess: (pid) => PROCESS_TABLE[pid] ?? null,
     });
     receiver = await startHarnessHookReceiver((sessionId, payload, eventFallback, origin) =>
@@ -103,10 +126,18 @@ describe("harness status detection on the Core (issue 84)", () => {
       agent: "claude-code",
       status: "ready",
     });
+    coreMutationStore.mutateSession({
+      op: "create",
+      sessionId: CODEX_SESSION_ID,
+      title: TITLE_WAITING,
+      agent: "codex",
+      status: "ready",
+    });
   });
 
   afterEach(() => {
     clearSubagentActivity(SESSION_ID);
+    clearSubagentActivity(CODEX_SESSION_ID);
     receiver.close();
     disposeCoreMutationStore();
     disposeCoreQueryStore();
@@ -296,7 +327,7 @@ describe("harness status detection on the Core (issue 84)", () => {
   });
 
   it("settles a Session whose PTY exited, and leaves a settled one alone", async () => {
-    const status = new CoreHarnessStatus({ writer, spawnedPid: () => SPAWNED_PID });
+    const status = new CoreHarnessStatus({ writer, spawned: () => ({ pid: SPAWNED_PID, launcher: "harness" }) });
     await postHook({ hook_event_name: "UserPromptSubmit", session_id: "sess-1" });
 
     status.sessionExited(SESSION_ID, 1);
@@ -311,7 +342,7 @@ describe("harness status detection on the Core (issue 84)", () => {
     // The zombie found live on pairdemo: spawned, never prompted, so not one
     // hook ever arrived for it and no Stop was ever coming. The row is created
     // `ready` in beforeEach and nothing here posts a hook at all.
-    const status = new CoreHarnessStatus({ writer, spawnedPid: () => SPAWNED_PID });
+    const status = new CoreHarnessStatus({ writer, spawned: () => ({ pid: SPAWNED_PID, launcher: "harness" }) });
     expect(rowStatus()).toBe("ready");
 
     status.sessionExited(SESSION_ID, 1);
@@ -326,7 +357,7 @@ describe("harness status detection on the Core (issue 84)", () => {
     // A clean exit of a Session that never ran a turn is still only a process
     // going away. `finished` here would append `session:finished` and ding the
     // operator for "Waiting for initial prompt…".
-    const status = new CoreHarnessStatus({ writer, spawnedPid: () => SPAWNED_PID });
+    const status = new CoreHarnessStatus({ writer, spawned: () => ({ pid: SPAWNED_PID, launcher: "harness" }) });
     status.sessionExited(SESSION_ID, 0);
     expect(rowStatus()).toBe("disconnected");
     expect(kinds()).not.toContain("session:finished");
@@ -338,7 +369,7 @@ describe("harness status detection on the Core (issue 84)", () => {
     // row stayed where it was and every client saw a Session that looked hung.
     // It is not hung — it is waiting on a human, which `needs-input` is the
     // word for, and which is a settled status so an SDK `waitForIdle` stops.
-    const status = new CoreHarnessStatus({ writer, spawnedPid: () => SPAWNED_PID });
+    const status = new CoreHarnessStatus({ writer, spawned: () => ({ pid: SPAWNED_PID, launcher: "harness" }) });
     await postHook({ hook_event_name: "UserPromptSubmit", session_id: "sess-1" });
     expect(rowStatus()).toBe("running");
 
@@ -593,7 +624,7 @@ describe("harness status detection on the Core (issue 84)", () => {
     it("is dropped once the Core runs no harness for the Session", async () => {
       // Nothing this Core would own can be posting for a Session it has no
       // PTY for: a process of a previous spawn, or a stranger with the env.
-      const status = new CoreHarnessStatus({ writer, spawnedPid: () => null });
+      const status = new CoreHarnessStatus({ writer, spawned: () => null });
       const res = status.receiveHook(
         SESSION_ID,
         { hook_event_name: "UserPromptSubmit", session_id: "sess-1" },
@@ -609,7 +640,7 @@ describe("harness status detection on the Core (issue 84)", () => {
       // park every Session on `ready`; the exposure is logged instead.
       const status = new CoreHarnessStatus({
         writer,
-        spawnedPid: () => SPAWNED_PID,
+        spawned: () => ({ pid: SPAWNED_PID, launcher: "harness" }),
         readProcess: () => undefined,
       });
       const res = status.receiveHook(
@@ -621,8 +652,58 @@ describe("harness status detection on the Core (issue 84)", () => {
       expect(res.body).toMatchObject({ ok: true, status: "running" });
     });
 
+    describe("a Codex Session, spawned through the npm wrapper", () => {
+      // `npm install -g @openai/codex` — the Core's own install command — puts
+      // `bin/codex.js` on PATH, a node wrapper that spawns the native binary
+      // as its child and stays alive as its parent. The pid the Core recorded
+      // is the wrapper's; the hooks come from the child, one level below.
+      const codexRow = () => coreQueryStore.getSession(CODEX_SESSION_ID);
+      const codexHook = (body: Record<string, unknown>, pid: number) =>
+        postHook(body, { sessionId: CODEX_SESSION_ID, slug: "codex", pid });
+
+      it("captures its session id, runs and finishes from hooks under the wrapper's child", async () => {
+        // /bin/sh is bash: the hook's shell is a direct child of the native codex.
+        const start = await codexHook({ hook_event_name: "SessionStart", session_id: "codex-1" }, 6200);
+        expect(start.json).toMatchObject({ ok: true });
+        expect(start.json).not.toMatchObject({ ignored: "foreign-process" });
+        expect(codexRow()?.claudeSessionId).toBe("codex-1");
+
+        await codexHook({ hook_event_name: "UserPromptSubmit", session_id: "codex-1", prompt: "ship it" }, 6200);
+        expect(codexRow()?.status).toBe("running");
+        // /bin/sh is dash: one shell deeper.
+        await codexHook({ hook_event_name: "Stop", session_id: "codex-1" }, 6201);
+        expect(codexRow()?.status).toBe("finished");
+        expect(events().some((e) => e.kind === "session:finished" && e.sessionId === CODEX_SESSION_ID)).toBe(true);
+      });
+
+      it("names the Session from its prompt, like any owned hook", async () => {
+        await codexHook({ hook_event_name: "UserPromptSubmit", session_id: "codex-1", prompt: "ship it" }, 6200);
+        await vi.waitFor(() => expect(titleRuns.some((run) => run.includes("ship it"))).toBe(true));
+      });
+
+      it("still refuses a harness nested under a Bash tool inside the Codex Session", async () => {
+        await codexHook({ hook_event_name: "UserPromptSubmit", session_id: "codex-1" }, 6200);
+        expect(codexRow()?.status).toBe("running");
+        // sh → claude(nested) → bash → codex(native) → node(wrapper)
+        const start = await codexHook({ hook_event_name: "SessionStart", session_id: "nested-1", source: "startup" }, 6400);
+        expect(start.json).toMatchObject({ ok: true, ignored: "foreign-process" });
+        const stop = await codexHook({ hook_event_name: "Stop", session_id: "nested-1" }, 6400);
+        expect(stop.json).toMatchObject({ ok: true, ignored: "foreign-process" });
+        expect(codexRow()?.claudeSessionId).toBe("codex-1");
+        expect(codexRow()?.status).toBe("running");
+      });
+
+      it("leaves the Claude Code Session on the same Core as strict as before", async () => {
+        // The wrapper exception is per spawn: the Claude row's spawn is the
+        // harness itself, and a non-shell straight under it is still foreign.
+        const res = await postHook({ hook_event_name: "UserPromptSubmit", session_id: "sess-1" }, { pid: 5200 });
+        expect(res.json).toMatchObject({ ok: true, ignored: "foreign-process" });
+        expect(rowStatus()).toBe("ready");
+      });
+    });
+
     it("the Core's own synthetic events carry no origin and are never held to a pid", async () => {
-      const status = new CoreHarnessStatus({ writer, spawnedPid: () => null });
+      const status = new CoreHarnessStatus({ writer, spawned: () => null });
       await postHook({ hook_event_name: "UserPromptSubmit", session_id: "sess-1" });
       status.sessionExited(SESSION_ID, 0);
       expect(rowStatus()).toBe("finished");

@@ -264,9 +264,10 @@ async function startCore(): Promise<void> {
   const harnessStatus = new CoreHarnessStatus({
     writer: sessionWriter,
     generateTitle: (sessionId, prompt) => titleGenerator.schedule(sessionId, prompt),
-    // The pid every hook over the wire is held to (issue 460): the harness
-    // this Core spawned for the Session, and nothing started underneath it.
-    spawnedPid: (sessionId) => ptyCore?.spawnedPidForSession(sessionId) ?? null,
+    // The process every hook over the wire is held to (issue 460): what this
+    // Core spawned for the Session — the harness, or the npm codex wrapper
+    // that runs it — and nothing started underneath it.
+    spawned: (sessionId) => ptyCore?.spawnedProcessForSession(sessionId) ?? null,
   });
 
   // Loopback only, ephemeral port, token minted here — see the decisions

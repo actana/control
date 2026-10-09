@@ -27,6 +27,7 @@ import {
   verifyHookProcess,
   type HookOrigin,
   type ProcessEntryReader,
+  type SpawnedProcess,
 } from "./harness-hook-origin";
 
 export type CoreHarnessStatusDeps = {
@@ -37,12 +38,13 @@ export type CoreHarnessStatusDeps = {
    */
   generateTitle?: (sessionId: string, prompt: string) => void;
   /**
-   * The pid of the harness this Core spawned for the Session, or null when it
-   * runs none (`PtyCore.spawnedPidForSession`). What a hook over the wire is
+   * The process this Core spawned for the Session — its pid, and whether that
+   * is the harness or a wrapper the harness runs under — or null when it runs
+   * none (`PtyCore.spawnedProcessForSession`). What a hook over the wire is
    * held to (issue 460). Required: a Core that could not answer would take a
    * nested harness's hooks as the Session's own, which is the bug.
    */
-  spawnedPid: (sessionId: string) => number | null;
+  spawned: (sessionId: string) => SpawnedProcess | null;
   /**
    * The platform's process table, for a hook whose reported pid is not the
    * spawned one but may climb to it through shells. Defaults to the real one;
@@ -105,12 +107,14 @@ export class CoreHarnessStatus {
       const verdict = this.verifyOrigin(sessionId, origin);
       if (verdict === "foreign") {
         const event = payload.hook_event_name || eventNameFallback || "";
+        const spawned = this.deps.spawned(sessionId);
         log.warn("harness-status.foreign-process", {
           sessionId,
           event,
           slug: origin.slug,
           pid: origin.pid,
-          spawnedPid: this.deps.spawnedPid(sessionId),
+          spawnedPid: spawned?.pid ?? null,
+          launcher: spawned?.launcher ?? null,
         });
         return hookResultResponse({ outcome: "foreign-process", event });
       }
@@ -203,7 +207,7 @@ export class CoreHarnessStatus {
     if (hookEndpointSlug(session.agent) !== origin.slug) return "foreign";
     const verdict = verifyHookProcess(
       origin.pid,
-      this.deps.spawnedPid(sessionId),
+      this.deps.spawned(sessionId),
       this.deps.readProcess ?? readProcessEntry,
     );
     if (verdict === "unverifiable") {

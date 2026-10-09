@@ -38,6 +38,8 @@ import {
 } from "@actana/shared/pty-spawn-policy";
 import { type PtyHookEnv } from "./pty-hook-env";
 import { HOOK_CWD_ENV, HOOK_HARNESS_ENV } from "./harness-hook-env";
+import { harnessLauncherShape, type HarnessLauncherShape, type SpawnedProcess } from "./harness-hook-origin";
+import { isInterpreterScript } from "@actana/shared/shell-env";
 import {
   HOOK_MISS_LOG_ENV,
   HOOK_SESSION_ID_ENV,
@@ -85,6 +87,13 @@ type Pty = {
   cwd: string;
   command: string;
   agent?: string;
+  /**
+   * Whether `proc` is the harness itself or a wrapper that runs it as a direct
+   * child (the npm `codex` wrapper) — what the hook receiver's climb needs to
+   * know besides the pid (issue 460). Shells and VM Shell Sessions own no
+   * harness and are never asked.
+   */
+  launcher: HarnessLauncherShape;
   /** True for user-shell terminals; findBySession only matches agent PTYs. */
   shell: boolean;
   /**
@@ -688,16 +697,16 @@ export class PtyCore {
       pathFacts?.cwdOk && spawnReq.shell !== true && typeof spawnReq.agent === "string" && Object.hasOwn(HARNESS_BINARIES, spawnReq.agent)
         ? HARNESS_BINARIES[spawnReq.agent as keyof typeof HARNESS_BINARIES]
         : null;
-    const found: { name: string; candidates: string[] } | null =
+    const found: { name: string; candidates: string[]; scripts: string[] } | null =
       agentBinary && lookupEnv
         ? {
             name: agentBinary,
-            candidates: await resolveCommandViaCore(agentBinary, lookupEnv.PATH ?? null).catch((err: unknown) => {
+            ...(await resolveCommandViaCore(agentBinary, lookupEnv.PATH ?? null).catch((err: unknown) => {
               // A PATH the helper will not take finds nothing: the policy says binary-not-found.
               if (!(err instanceof CoreHomeOpRefusedError)) throw err;
               log.warn("pty.spawn.command-lookup-refused", { command: agentBinary, error: err.message });
-              return [];
-            }),
+              return { candidates: [], scripts: [] };
+            })),
           }
         : null;
     try {
@@ -745,6 +754,19 @@ export class PtyCore {
         throw new Error(message);
       }
     }
+
+    // What the pid node-pty is about to record will be: the harness, or a
+    // wrapper the harness runs under (issue 460). Decided from the file PATH
+    // resolved to — an interpreter script or a native binary — and the
+    // family; in the container the file is in core's home, so core said which
+    // candidates are scripts when it found them.
+    const launcher: HarnessLauncherShape =
+      plan.mode === "agent"
+        ? harnessLauncherShape(
+            plan.agent,
+            lookupEnv ? (found?.scripts.includes(plan.binary) ?? false) : isInterpreterScript(plan.binary),
+          )
+        : "harness";
 
     // Harness-workspace-only setup; a VM Shell Session (and a plain user shell)
     // has no agent config to touch.
@@ -864,6 +886,7 @@ export class PtyCore {
       cwd: plan.cwd,
       command: opts.command ?? "",
       agent: opts.agent,
+      launcher,
       shell: opts.shell === true,
       shellSession: opts.shellSession === true,
       lastInputAt: 0,
@@ -1158,20 +1181,30 @@ export class PtyCore {
   }
 
   /**
-   * The pid of the harness process this Core spawned for the Session, or null
-   * when it runs none. The hook receiver holds every hook to this pid (issue
-   * 460): the hook env is inherited by everything the harness starts, and the
-   * pid is the one fact a process nested inside the Session cannot inherit.
+   * The process this Core spawned for the Session, or null when it runs none.
+   * The hook receiver holds every hook to it (issue 460): the hook env is
+   * inherited by everything the harness starts, and the pid is the one fact a
+   * process nested inside the Session cannot inherit.
+   *
+   * The pid is node-pty's, which is the harness itself for Claude Code (native
+   * binary), Cursor (its launcher `exec`s node), OpenCode (native binary) and
+   * Pi (one node process) — in the container `setpriv` and the `sh -c 'exec …'`
+   * it wraps keep the pid too. For Codex installed by npm it is the vendor's
+   * node wrapper, which runs the native `codex` as its direct child and stays
+   * alive as its parent; `launcher` says which, recorded from what PATH
+   * resolved to at spawn, and the receiver's climb crosses that one child.
    *
    * Same selection as {@link findBySession} — agent PTYs only. A shell
    * terminal's pid would be a process no hook file reports for, and a VM
    * Shell Session has no harness to own a hook at all.
    */
-  spawnedPidForSession(sessionId: string): number | null {
+  spawnedProcessForSession(sessionId: string): SpawnedProcess | null {
     const { ptyId } = this.findBySession(sessionId);
     if (!ptyId) return null;
-    const pid = ptys.get(ptyId)?.proc?.pid;
-    return Number.isInteger(pid) && pid > 0 ? pid : null;
+    const p = ptys.get(ptyId);
+    const pid = p?.proc?.pid;
+    if (!p || !Number.isInteger(pid) || pid <= 0) return null;
+    return { pid, launcher: p.launcher };
   }
 
   /**

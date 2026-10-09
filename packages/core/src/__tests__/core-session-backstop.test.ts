@@ -373,7 +373,7 @@ describe("settling a turn whose end nobody reported", () => {
      * row is part of what is under test.
      */
     const deliverHook = (backstop: CoreSessionBackstop, payload: HarnessHookBody) => {
-      const harnessStatus = new CoreHarnessStatus({ writer, spawnedPid: () => null });
+      const harnessStatus = new CoreHarnessStatus({ writer, spawned: () => null });
       const result = harnessStatus.receiveHook("t-1", payload);
       if (hookEvidencesSession(result)) {
         backstop.noteActivity("t-1", "hook");
