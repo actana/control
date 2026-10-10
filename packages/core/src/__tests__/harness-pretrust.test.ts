@@ -231,7 +231,8 @@ describe("cursor-cli: ~/.cursor/projects/<slug>/.workspace-trusted", () => {
 
 // What codex 0.160.0 itself wrote to ~/.codex/config.toml after its hook review was answered by hand on a Core,
 // for the hooks `installHarnessHooks("codex")` writes (the first eight hex digits were read off that file; the rest
-// is this function's output, and the prefixes are what pin it to codex).
+// is this function's output, and the prefixes are what pin it to codex). codex 0.162.0 listed the same three
+// through `hooks/list` (#703, `codex-hook-trust-check.test.ts` runs that against a real codex when there is one).
 const REAL_HASHES: Record<string, string> = {
   PermissionRequest: "sha256:777d6667e97d3543f8f43d42796281cd863fb133097563631d65ea5b657094f3",
   UserPromptSubmit: "sha256:f23db2db11919289814ac6c32a2b10ca0c24a4d8c4a7fbbf401520266e115a27",
@@ -239,8 +240,8 @@ const REAL_HASHES: Record<string, string> = {
 };
 
 describe("codex hook trust: [hooks.state.\"<hooks.json>:<event>:<group>:<handler>\"] trusted_hash", () => {
-  it("reproduces the hashes codex 0.160.0 wrote for the hooks this Core installs", () => {
-    expect(CODEX_HOOK_HASH_VERIFIED).toBe("0.160.0");
+  it("reproduces the hashes codex 0.160.0 wrote for the hooks this Core installs, and 0.162.0 still reports", () => {
+    expect(CODEX_HOOK_HASH_VERIFIED).toBe("0.162.0");
     for (const [event, hash] of Object.entries(REAL_HASHES)) {
       expect(codexHookHash(event, { command: hookCommand("codex", event) })).toBe(hash);
     }
