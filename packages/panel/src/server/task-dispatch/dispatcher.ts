@@ -5,16 +5,19 @@ import {
   addTaskComment,
   claimTask,
   failTaskDispatch,
+  findCurrentTaskSession,
+  getTask,
   listTaskComments,
   listTasks,
   type Task,
+  type TaskComment,
 } from "../services/tasks";
 import { archivedTaskName, classifyTaskEntry, taskFolder } from "~/shared/task-report";
-import { formatTaskDispatchComment } from "~/shared/tasks";
+import { formatTaskDispatchComment, parseTaskDispatchComment } from "~/shared/tasks";
 import { ResultWatcher } from "./result-watcher";
 import { lazyShared, type SharedFor } from "./shared-factory";
 import { buildTaskPointer, buildTaskPrompt, taskPromptPath } from "./task-prompt";
-import { consoleDispatchLog, messageOf, type Clock, type DispatchLog, type SessionStarter } from "./types";
+import { consoleDispatchLog, messageOf, type Clock, type DispatchLog, type SessionStarter, type SessionStopper } from "./types";
 
 /**
  * The dispatcher (#570): claims `assigned` Tasks, starts a Session on the Agent's
@@ -54,6 +57,11 @@ export type TaskDispatcherOptions = {
   coreFilesFor?: SharedFor;
   watcher: ResultWatcher;
   agents?: AgentLookup;
+  /**
+   * Stops a Session (#723): the one a Task was stopped under while it was still starting, and the previous
+   * attempt's before a re-run. Best effort; without it neither is done.
+   */
+  stopSession?: SessionStopper;
   now?: Clock;
   /** How often to look for `assigned` Tasks. */
   pollMs?: number;
@@ -71,6 +79,7 @@ export class TaskDispatcher {
   private readonly coreFilesFor: SharedFor;
   private readonly watcher: ResultWatcher;
   private readonly agents: AgentLookup;
+  private readonly stopSession: SessionStopper | null;
   private readonly now: Clock;
   private readonly pollMs: number;
   private readonly log: DispatchLog;
@@ -86,6 +95,7 @@ export class TaskDispatcher {
     this.coreFilesFor = opts.coreFilesFor ?? opts.sharedFor;
     this.watcher = opts.watcher;
     this.agents = opts.agents ?? realAgents;
+    this.stopSession = opts.stopSession ?? null;
     this.now = opts.now ?? Date.now;
     this.pollMs = opts.pollMs ?? DEFAULT_DISPATCH_POLL_MS;
     this.log = opts.log ?? consoleDispatchLog;
@@ -172,8 +182,10 @@ export class TaskDispatcher {
         }
         // The Core's Shared folder as it is now, when it can be reached; otherwise a handle that asks again on each use.
         const shared = await this.sharedFor(coreId).catch(() => lazyShared(() => this.sharedFor(coreId)));
+        const session = await findCurrentTaskSession(this.ownerId, task.id).catch(() => null);
         this.watcher.track({
           taskId: task.id,
+          sessionId: session?.sessionId ?? null,
           attempt: task.attemptCount,
           dispatchedAt: task.dispatchedAt ?? this.now(),
           coreId,
@@ -208,6 +220,54 @@ export class TaskDispatcher {
     this.timer = null;
     await this.cycling;
     await this.watcher.stop();
+  }
+
+  /**
+   * An operator may stop the Task while its Session is still starting (#723): the stop found no Session to kill.
+   * Now that this one is up, kill it and let go of it.
+   */
+  private async stopIfStoppedWhileStarting(taskId: string, attempt: number, target: { coreId: string; sessionId: string }): Promise<void> {
+    try {
+      const now = await getTask(this.ownerId, taskId);
+      if (now.status === "in_progress" && now.attemptCount === attempt) return;
+      this.watcher.untrack(taskId);
+      this.log.info(`task ${taskId}: stopped while Session ${target.sessionId} was starting; stopping it`);
+      if (this.stopSession) await this.stopSession(target);
+    } catch (err) {
+      this.log.error(`task ${taskId}: could not stop Session ${target.sessionId} of a Task stopped while starting: ${messageOf(err)}`);
+    }
+  }
+
+  /**
+   * Before attempt n: if attempt n-1 ended by an operator's stop or by the timeout, its Session may still be
+   * running (the stop could not reach the Core, or the kill failed) and could write a `success.md` the new
+   * attempt would count. Try to stop it again. Best effort and logged: a Core still unreachable does not hold
+   * the new attempt back. An attempt that ended on its own result is left alone, so its Session stays open to read.
+   */
+  private async stopPreviousSession(taskId: string, previous: number, comments: readonly TaskComment[]): Promise<void> {
+    if (!this.stopSession) return;
+    try {
+      let at = -1;
+      comments.forEach((c, i) => {
+        if (c.authorKind === "system" && parseTaskDispatchComment(c.body)?.attempt === previous) at = i;
+      });
+      if (at < 0) return;
+      const target = parseTaskDispatchComment(comments[at]!.body)!;
+      // Only the Panel's own words count: "Stopped by" is a system comment, and the timeout is the Panel's
+      // `fail.md` of that attempt (recorded as the agent's comment, but with that attempt's fail.md as its
+      // source and the Panel's signature in the body). A user or agent comment with the same phrase is not it.
+      const timeoutFile = archivedTaskName(previous, "fail.md");
+      const cutShort = comments.slice(at + 1).some(
+        (c) =>
+          (c.authorKind === "system" && c.body.startsWith("Stopped by ")) ||
+          (c.authorKind === "agent" && c.sourceFile === timeoutFile && c.body.includes("wrote no result within") && c.body.includes("written by the Panel")),
+      );
+      if (!cutShort) return;
+      const result = await this.stopSession({ coreId: target.coreId, sessionId: target.sessionId });
+      this.log.info(`task ${taskId}: previous Session ${target.sessionId} before attempt ${previous + 1}: ${result.outcome}${result.detail ? ` (${result.detail})` : ""}`);
+    } catch (err) {
+      this.log.error(`task ${taskId}: could not stop the previous attempt's Session: ${messageOf(err)}`);
+    }
   }
 
   /** True when this dispatcher claimed the Task (whether or not its Session then started). */
@@ -246,6 +306,7 @@ export class TaskDispatcher {
     let sessionId: string;
     try {
       const comments = await listTaskComments(this.ownerId, claimed.id);
+      if (attempt > 1) await this.stopPreviousSession(claimed.id, attempt - 1, comments);
       // The whole Task goes into a file the agent reads, not into the composer. The file is on the Core before
       // the pointer is typed, so the agent cannot be told to read a file that is not there.
       try {
@@ -271,6 +332,7 @@ export class TaskDispatcher {
           coreId: resolved.coreId,
           shared,
           authorName: agent.name,
+          sessionId,
         },
         () => session.dispose(),
       );
@@ -302,6 +364,7 @@ export class TaskDispatcher {
       // The Session is running and being watched; a missing note is not a reason to fail the Task.
       this.log.error(`task ${claimed.id}: could not add the dispatch comment: ${messageOf(err)}`);
     }
+    await this.stopIfStoppedWhileStarting(claimed.id, attempt, { coreId: resolved.coreId, sessionId });
     this.log.info(`task ${claimed.id}: attempt ${attempt} running as Session ${sessionId} on Core ${resolved.coreId}`);
     return true;
   }

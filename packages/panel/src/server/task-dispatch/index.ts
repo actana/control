@@ -1,11 +1,15 @@
+import type { Task } from "../services/tasks";
+import type { TaskSessionStopDto } from "~/shared/task-wire";
 import { OPERATOR_ID } from "../services/operator";
 import { TaskDispatcher } from "./dispatcher";
 import { ResultWatcher, DEFAULT_TASK_TIMEOUT_MS } from "./result-watcher";
 import { SharedChangeFeed, createS3Factory, createSharedFactory, createThroughCoreFactory, type SharedFactoryDeps } from "./shared-factory";
 import { startSessionOnCore } from "./session-starter";
+import { stopSessionOnCore } from "./session-stopper";
+import { stopTaskRun } from "./stop-task";
 import { coreLinkManager } from "../services/core-link-manager";
 import type { CoreS3Shared } from "../services/core-s3-shared";
-import { consoleDispatchLog, type Clock, type DispatchLog, type SessionStarter } from "./types";
+import { consoleDispatchLog, type Clock, type DispatchLog, type SessionStarter, type SessionStopper } from "./types";
 import type { AgentLookup } from "./dispatcher";
 
 /**
@@ -27,7 +31,7 @@ export function taskTimeoutMs(env: NodeJS.ProcessEnv = process.env): number {
   return Number.isFinite(minutes) && minutes > 0 ? Math.round(minutes * 60_000) : DEFAULT_TASK_TIMEOUT_MS;
 }
 
-let running: { dispatcher: TaskDispatcher; detachFeed: () => void } | null = null;
+let running: { dispatcher: TaskDispatcher; detachFeed: () => void; watcher: ResultWatcher; stopSession: SessionStopper; now?: Clock } | null = null;
 
 /** What `bootPanel` leaves alone; a test hands in fakes for the Core, the clock and the object store. */
 export type StartTaskDispatchOptions = {
@@ -37,6 +41,8 @@ export type StartTaskDispatchOptions = {
   modes?: CoreS3Shared;
   throughCore?: SharedFactoryDeps["throughCore"];
   startSession?: SessionStarter;
+  /** How a Session is stopped (#723). The Panel's own link to the Core by default. */
+  stopSession?: SessionStopper;
   agents?: AgentLookup;
   now?: Clock;
   pollMs?: number;
@@ -49,7 +55,9 @@ export function startTaskDispatch(opts: StartTaskDispatchOptions = {}): void {
   if (running) return;
   const feed = new SharedChangeFeed();
   const detachFeed = feed.attach(coreLinkManager());
+  const stopSession = opts.stopSession ?? stopSessionOnCore;
   const watcher = new ResultWatcher({
+    stopSession,
     ownerId: OPERATOR_ID,
     timeoutMs: taskTimeoutMs(opts.env),
     ...(opts.now ? { now: opts.now } : {}),
@@ -68,12 +76,13 @@ export function startTaskDispatch(opts: StartTaskDispatchOptions = {}): void {
     // The prompt file goes in through the Core itself, never the object store: see `coreFilesFor`.
     coreFilesFor: async (coreId) => throughCore(coreId),
     watcher,
+    stopSession,
     ...(opts.agents ? { agents: opts.agents } : {}),
     ...(opts.now ? { now: opts.now } : {}),
     ...(opts.pollMs ? { pollMs: opts.pollMs } : {}),
     ...(opts.log ? { log: opts.log } : {}),
   });
-  running = { dispatcher, detachFeed };
+  running = { dispatcher, detachFeed, watcher, stopSession, ...(opts.now ? { now: opts.now } : {}) };
   dispatcher.start();
   consoleDispatchLog.info("task dispatch is running");
 }
@@ -85,4 +94,21 @@ export async function stopTaskDispatch(): Promise<void> {
   if (!current) return;
   current.detachFeed();
   await current.dispatcher.stop();
+}
+
+/**
+ * Stop a running Task (#723): fail it with a system comment, let the watcher go of it, kill its Session.
+ * Works whether or not dispatch is running in this process (then there is no watcher to tell).
+ * Throws NotFoundError, or TaskNotRunningError when the Task is not `in_progress`.
+ */
+export async function stopTask(
+  ownerId: number,
+  id: string,
+  input: { stoppedBy: string; reason?: string | null },
+): Promise<{ task: Task; session: TaskSessionStopDto | null }> {
+  return stopTaskRun(ownerId, id, input, {
+    watcher: running?.watcher ?? null,
+    stopSession: running?.stopSession ?? stopSessionOnCore,
+    ...(running?.now ? { now: running.now } : {}),
+  });
 }

@@ -23,6 +23,8 @@ const { operatorSessionCookie, resetOperatorSessionForTests } = await import("./
 const tasksService = await import("../services/tasks");
 const { createApiKey } = await import("../services/api-keys");
 
+const { formatTaskDispatchComment } = await import("~/shared/tasks");
+
 const A = 1;
 const B = 2;
 
@@ -301,5 +303,72 @@ describe("delete_task (#722)", () => {
     expect(textOf(await (await client(A, ["core-a"])).call("delete_task", { taskId: onB.id }))).toMatch(/^403/);
     expect(textOf(await (await client(A)).call("delete_task", { taskId: onX.id }))).toMatch(/^404/);
     expect(await taskCount()).toBe(2);
+  });
+});
+
+describe("stop_task (#723)", () => {
+  async function running(coreId = "core-a", agent = "agent-a", owner = A) {
+    const task = await tasksService.createTask(owner, { title: "hung", coreId, agent, startNow: true });
+    await tasksService.claimTask(owner, task.id);
+    await tasksService.addTaskComment(owner, task.id, {
+      authorKind: "system",
+      authorName: "Panel",
+      body: formatTaskDispatchComment({ attempt: 1, agentName: "Agent", harness: "claude-code", coreId, sessionId: "session_1" }),
+    });
+    return task;
+  }
+
+  it("is listed as a destructive write tool taking a taskId and an optional reason", async () => {
+    const byName = Object.fromEntries((await (await client(A)).listTools()).map((t) => [t.name, t]));
+    expect(byName.stop_task).toBeDefined();
+    expect(byName.stop_task!.annotations).toEqual({ readOnlyHint: false, destructiveHint: true });
+    expect(byName.stop_task!.inputSchema.required).toEqual(["taskId"]);
+    expect(Object.keys(byName.stop_task!.inputSchema.properties).sort()).toEqual(["reason", "taskId"]);
+    expect(byName.assign_task!.description).toMatch(/stop_task/);
+    expect(byName.comment_task!.description).toMatch(/stop_task/);
+  });
+
+  it("stops an in_progress Task: failed, with a system comment, and the Session outcome", async () => {
+    const task = await running();
+    const data = dataOf(await (await client(A)).call("stop_task", { taskId: task.id, reason: "hung" }));
+    expect(data.task).toMatchObject({ id: task.id, status: "failed" });
+    // No Core link in this test: the Core is offline.
+    expect(data.session).toMatchObject({ coreId: "core-a", sessionId: "session_1", outcome: "unreachable" });
+    const comments = await tasksService.listTaskComments(A, task.id);
+    expect(comments.some((c) => c.authorKind === "system" && c.body.startsWith("Stopped by ") && c.body.includes("hung"))).toBe(true);
+  });
+
+  it("is refused 409 for a Task that is not in_progress", async () => {
+    const draft = await tasksService.createTask(A, { title: "d", coreId: "core-a", agent: "agent-a" });
+    const res = await (await client(A)).call("stop_task", { taskId: draft.id });
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toMatch(/^409 .*not running/);
+    expect((await tasksService.getTask(A, draft.id)).status).toBe("draft");
+  });
+
+  it("is refused 403 on a Core outside the key, 404 on another owner's Task, and stops nothing", async () => {
+    const onB = await running("core-b", "agent-b");
+    const onX = await tasksService.createTask(B, { title: "x", coreId: "core-x", agent: "agent-x", startNow: true });
+    await tasksService.claimTask(B, onX.id);
+    expect(textOf(await (await client(A, ["core-a"])).call("stop_task", { taskId: onB.id }))).toMatch(/^403/);
+    expect(textOf(await (await client(A)).call("stop_task", { taskId: onX.id }))).toMatch(/^404/);
+    expect((await tasksService.getTask(A, onB.id)).status).toBe("in_progress");
+    expect((await tasksService.getTask(B, onX.id)).status).toBe("in_progress");
+  });
+
+  it("makes comment_task reassign work: refused naming stop_task while running, accepted after the stop", async () => {
+    const task = await running();
+    const c = await client(A);
+    const refused = await c.call("comment_task", { taskId: task.id, body: "again", reassign: true });
+    expect(refused.isError).toBe(true);
+    expect(textOf(refused)).toMatch(/^409 .*stop/);
+    const refusedAssign = await c.call("assign_task", { taskId: task.id });
+    expect(refusedAssign.isError).toBe(true);
+    expect(textOf(refusedAssign)).toMatch(/^409 .*stop/);
+    expect((await tasksService.getTask(A, task.id)).status).toBe("in_progress");
+
+    expect(dataOf(await c.call("stop_task", { taskId: task.id })).task.status).toBe("failed");
+    const again = dataOf(await c.call("comment_task", { taskId: task.id, body: "again", reassign: true }));
+    expect(again.task.status).toBe("assigned");
   });
 });

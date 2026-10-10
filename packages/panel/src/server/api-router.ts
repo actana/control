@@ -47,6 +47,7 @@ const WEBHOOK_DELIVERIES_PATH = /^\/api\/webhooks\/([^/]+)\/deliveries$/;
 const SESSION_SWEEP_DISCONNECTED_PATH = "/api/sessions/sweep-disconnected";
 const TASK_PATH = /^\/api\/tasks\/([^/]+)$/;
 const TASK_STATUS_PATH = /^\/api\/tasks\/([^/]+)\/status$/;
+const TASK_STOP_PATH = /^\/api\/tasks\/([^/]+)\/stop$/;
 const TASK_COMMENTS_PATH = /^\/api\/tasks\/([^/]+)\/comments$/;
 const CORE_AGENTS_PATH = /^\/api\/cores\/([^/]+)\/agents$/;
 // Public REST API (#572 PR 2). Versioned under `/api/v1` so the session-cookie
@@ -56,6 +57,7 @@ const V1_CORE_AGENTS_PATH = /^\/api\/v1\/cores\/([^/]+)\/agents$/;
 const V1_AGENT_PATH = /^\/api\/v1\/agents\/([^/]+)$/;
 const V1_TASK_PATH = /^\/api\/v1\/tasks\/([^/]+)$/;
 const V1_TASK_STATUS_PATH = /^\/api\/v1\/tasks\/([^/]+)\/status$/;
+const V1_TASK_STOP_PATH = /^\/api\/v1\/tasks\/([^/]+)\/stop$/;
 const V1_TASK_COMMENTS_PATH = /^\/api\/v1\/tasks\/([^/]+)\/comments$/;
 const SESSION_PATH = /^\/api\/sessions\/([^/]+)$/;
 const SESSION_STATUS_PATH = /^\/api\/sessions\/([^/]+)\/status$/;
@@ -292,6 +294,8 @@ async function dispatch(
   }
   m = pathname.match(V1_TASK_STATUS_PATH);
   if (m && method === "POST") return v1Controller.setTaskStatusV1(principal!, decode(m[1]), request);
+  m = pathname.match(V1_TASK_STOP_PATH);
+  if (m && method === "POST") return v1Controller.stopTaskV1(principal!, decode(m[1]), request);
   m = pathname.match(V1_TASK_COMMENTS_PATH);
   if (m && method === "GET") return v1Controller.listTaskCommentsV1(principal!, decode(m[1]));
   if (m && method === "POST") return v1Controller.addTaskCommentV1(principal!, decode(m[1]), request);
@@ -352,6 +356,8 @@ async function dispatch(
   if (m && method === "DELETE") return tasksController.remove(ownerId, decode(m[1]));
   m = pathname.match(TASK_STATUS_PATH);
   if (m && method === "POST") return tasksController.setStatus(ownerId, decode(m[1]), request);
+  m = pathname.match(TASK_STOP_PATH);
+  if (m && method === "POST") return tasksController.stop(ownerId, decode(m[1]), request);
   m = pathname.match(TASK_COMMENTS_PATH);
   if (m && method === "POST") return tasksController.comment(ownerId, decode(m[1]), request);
   m = pathname.match(CORE_AGENTS_PATH);
