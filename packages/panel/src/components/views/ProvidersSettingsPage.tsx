@@ -295,7 +295,10 @@ function ProviderRow({
   const availability = installed.status === "ready" ? installed.availability : null;
   const installedVersion = availability?.version ?? null;
   const missing = availability?.status === "missing";
-  const setupDialog = availability?.status === "needs-setup" ? (availability.setupDialog ?? "unknown dialog") : null;
+  // The Core could not start the Harness for its setup check (#700): installed, not ready, and not a dialog.
+  const setupError = availability?.status === "needs-setup" ? (availability.setupError ?? null) : null;
+  const setupDialog =
+    availability?.status === "needs-setup" && setupError === null ? (availability.setupDialog ?? "unknown dialog") : null;
   const installing = installState.installing;
   const updateAvailable =
     !!latest?.latestVersion &&
@@ -400,6 +403,8 @@ function ProviderRow({
                   ? "—"
                   : missing
                     ? installState.error ?? "Not installed"
+                    : setupError !== null
+                      ? "Could not start"
                     : setupDialog !== null
                       ? "Needs setup"
                       : installedVersion
@@ -410,6 +415,13 @@ function ProviderRow({
             {installing || missing ? (
               <span style={{ color: installing ? "var(--text-faint)" : "var(--status-failed)" }}>
                 {installing ? "Install in progress" : "CLI not found on PATH"}
+              </span>
+            ) : setupError !== null ? (
+              <span
+                style={{ color: "var(--status-failed)" }}
+                title="The Core could not start this Harness for its setup check; its log has the error (core-setup.check-failed). It is looked at again, a minute to ten later, or at once after a SIGHUP. A Session on it may show why."
+              >
+                Could not start: {setupError}
               </span>
             ) : setupDialog !== null ? (
               <span style={{ color: "var(--status-failed)" }} title="Open the Harness once on this Core and answer its first-run dialog.">

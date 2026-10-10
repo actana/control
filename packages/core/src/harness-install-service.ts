@@ -146,6 +146,8 @@ export class HarnessInstallService {
     const after = this.opts.availability()[harness];
     // needs-setup is reported as `missing` with a needs-setup reason, but the CLI
     // is on PATH and the install worked: the first-run dialog is set up in a Session.
+    // The same holds when the Core could not start it for its setup check (#700):
+    // that is reported on the availability row, not as a failed install.
     if (after?.status === "available" || isNeedsSetup(after)) return { ok: true };
     return { ok: false, message: failureMessage(harness, outcome) };
   }
