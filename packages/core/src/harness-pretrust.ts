@@ -22,7 +22,11 @@
 //                `{ "trustedAt": <ISO time>, "workspacePath": <dir> }`
 //                (cursor-agent 2026.10.01-e373342: trusting /home/core by hand
 //                created `~/.cursor/projects/home-core/.workspace-trusted`; its
-//                `--trust` flag is headless-only, so the marker is the mechanism)
+//                `--trust` flag is headless-only, so the marker is the mechanism.
+//                The slug is Cursor's own mapping, read off that version's bundle:
+//                see `cursorProjectSlug`. Cursor keeps `projects/` under
+//                `$CURSOR_DATA_DIR` when that is set, `~/.cursor` otherwise; a Core
+//                does not set it, and the home is where this helper is confined to.)
 //
 // Pi has no writer on purpose: its trust is answered by the global extension
 // (ADR 0040).
@@ -476,17 +480,29 @@ export function trustCodexHooks(file: string, entries: readonly (readonly [strin
 // ─── Cursor CLI ──────────────────────────────────────────────────────
 
 /**
- * The directory name Cursor gives a workspace: the absolute path with the leading
- * slash dropped and every other slash turned into a dash (`/home/core` ->
- * `home-core`). **The mapping is not injective**: a dash already in the path stays
- * a dash, so `/home/a-b` and `/home/a/b` are both `home-a-b`. Cursor itself has
- * that ambiguity; the marker's `workspacePath` is what tells them apart, and an
- * existing marker is never overwritten, so the second of two colliding paths is
- * simply not written (it is reported as unchanged and the setup check still
- * catches a dialog that shows).
+ * The directory name Cursor gives a workspace, as cursor-agent 2026.10.01-e373342
+ * computes it (`utils/dist/workspace-paths.js` in its bundle, joined under
+ * `projects/` by `cursor-config/dist/paths.js`): every character that is not an
+ * ASCII letter or digit becomes a dash, a run of dashes collapses to one, and
+ * leading and trailing dashes are dropped. So `/home/core` -> `home-core`, and
+ * `/home/core/my.app_v2 (beta)/` -> `home-core-my-app-v2-beta`; a dot, an
+ * underscore, a space, a trailing slash or a non-ASCII letter never reaches the
+ * folder name. The three replaces below are Cursor's, verbatim (no `u` flag
+ * either, so a character outside the BMP is two dashes that collapse to one).
+ *
+ * **The mapping is not injective**: `/home/a-b`, `/home/a/b`, `/home/a.b` and
+ * `/home/a b` are all `home-a-b`. Cursor itself has that ambiguity; the marker's
+ * `workspacePath` is what tells them apart, and an existing marker is never
+ * overwritten, so the second of two colliding paths is simply not written (it is
+ * reported as unchanged and the setup check still catches a dialog that shows).
+ * A path with no letter or digit at all (the root) maps to `""`, and `trustCursor`
+ * skips it.
  */
 export function cursorProjectSlug(dir: string): string {
-  return dir.replace(/^\/+/, "").replace(/\//g, "-");
+  return dir
+    .replace(/[^a-zA-Z0-9]/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-+|-+$/g, "");
 }
 
 export function cursorMarkerPath(home: string, dir: string): string {
