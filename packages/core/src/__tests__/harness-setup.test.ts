@@ -269,6 +269,32 @@ describe("HarnessSetup", () => {
       expect(runs).toHaveLength(3);
     });
 
+    it("remembers no failed start from a check that was already running when forgetBlocks arrived", async () => {
+      const runs: SetupRun[] = [];
+      let fail: (error: Error) => void = () => {};
+      const subject = new HarnessSetup({
+        workspaces: () => ["/home/core"],
+        pretrust: async () => [],
+        runOnce: async (run) => {
+          runs.push(run);
+          return new Promise<string>((_resolve, reject) => (fail = reject));
+        },
+      });
+      const round = subject.apply(mapOf());
+      await vi.waitFor(() => expect(runs).toHaveLength(1));
+      subject.forgetBlocks(); // SIGHUP lands while the start is still in flight
+      fail(new Error("spawn EAGAIN"));
+      // This round still reports the failed start ...
+      const reported = (await round)["claude-code"]!;
+      expect(reported.status).toBe("missing");
+      expect(setupCheckFailure(reported.reason)).toBe("spawn EAGAIN");
+      // ... but the next round starts it again at once instead of sitting inside the backoff.
+      const again = subject.apply(mapOf());
+      await vi.waitFor(() => expect(runs).toHaveLength(2));
+      fail(new Error("spawn EAGAIN"));
+      await again;
+    });
+
     it("does not take back a pass: a Harness that reached its composer is not started again, so a later start failure cannot be seen", async () => {
       const screens: Record<string, string | Error> = { "claude-code": COMPOSER };
       const { subject, runs } = setup(screens);
