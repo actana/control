@@ -81,7 +81,7 @@ describe("use-theme (.dark class reconciliation)", () => {
     expect(readCachedTheme()).toBe("system");
   });
 
-  it("migrates a pinned pre-spec-12 mc.theme choice to mc:theme once", async () => {
+  it("migrates a pinned pre-Studio-look mc.theme choice to mc:theme once", async () => {
     const { readCachedTheme } = await import("../use-theme");
     dom.store.set("mc.theme", "light");
     expect(readCachedTheme()).toBe("light");

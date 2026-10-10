@@ -77,6 +77,7 @@ routing around it.
 | [0012](adr/0012-panel-link-browser-transport.md) | Panel link browser transport |
 | [0013](adr/0013-core-is-the-machine-harness-is-the-cli.md) | Core is the machine, Harness is the CLI |
 | [0014](adr/0014-panel-owns-no-source-control.md) | The Panel owns no source-control surface — **ACCEPTED** |
+| [0015](adr/0015-one-fixed-look-from-actana-studio.md) | One fixed look, copied from Actana Studio; dark / light is the only operator axis — **ACCEPTED** |
 | [0016](adr/0016-the-0-1-0-shape.md) | The 0.1.0 shape: two images, one installer, three workflows — amended by 0041 (D6 `sudo`, D12 sudo and headline, D19, D20, D25) |
 | [0017](adr/0017-remembered-session-settings-are-core-facts.md) | Remembered session settings are Core facts |
 | [0018](adr/0018-docker-hub-is-the-only-registry.md) | Docker Hub is the only registry — GHCR is retired. **Amended:** npm is a second registry, for the published packages |

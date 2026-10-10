@@ -14,7 +14,7 @@ kinds, with two different provenances — one generated, one captured by hand.
 | `harness/*.png`, `harness/*.svg` | README harness banner (44px) and Supported-harnesses table (18px) | vendor marks on a chip — see below |
 
 All generated text is set in **JetBrains Mono** — the product's primary UI font
-(Studio look, spec 12) — so the brand type matches the app everywhere.
+(Studio look, ADR 0015) — so the brand type matches the app everywhere.
 
 Full inventory, brand tokens, badge set and the video plan live in
 `planning/resource-plan.md`, a sibling folder outside this repo.
