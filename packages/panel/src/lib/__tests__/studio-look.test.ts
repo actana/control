@@ -148,12 +148,28 @@ describe("studio look — ADR 0015 record", () => {
   const ADR_PATH = "docs/adr/0015-one-fixed-look-from-actana-studio.md";
   const ADR = readFileSync(path.join(REPO_ROOT, ADR_PATH), "utf8");
 
+  // The comment directly above `@theme {`. The capture may not cross another
+  // comment opener, so an earlier comment cannot be mistaken for the anchor.
+  const THEME_ANCHOR = /\/\*((?:(?!\/\*)[\s\S])*?)\*\/\s*@theme\s*\{/g;
+  const anchorsOf = (css: string) =>
+    [...css.matchAll(THEME_ANCHOR)].map((m) => m[1]!.replace(/\s+/g, " "));
+
   it("anchors the @theme token block to the ADR file", () => {
-    const comments = [...STYLES.matchAll(/\/\*([\s\S]*?)\*\/\s*@theme\s*\{/g)];
-    expect(comments).toHaveLength(1);
-    const anchor = comments[0]![1]!.replace(/\s+/g, " ");
-    expect(anchor).toContain(ADR_PATH);
+    const anchors = anchorsOf(STYLES);
+    expect(anchors).toHaveLength(1);
+    expect(anchors[0]).toContain(ADR_PATH);
     expect(existsSync(path.join(REPO_ROOT, ADR_PATH))).toBe(true);
+  });
+
+  it("reads only the comment directly above @theme as the anchor", () => {
+    // The ADR path sits in an earlier comment; an unrelated one leads @theme.
+    const stray = `/* see ${ADR_PATH} */\n@import "x";\n/* unrelated */\n@theme {}`;
+    const strayAnchors = anchorsOf(stray);
+    expect(strayAnchors).toHaveLength(1);
+    expect(strayAnchors[0]).not.toContain(ADR_PATH);
+
+    const direct = `/* earlier */\n@import "x";\n/* see ${ADR_PATH} */\n@theme {}`;
+    expect(anchorsOf(direct)[0]).toContain(ADR_PATH);
   });
 
   it("records one look whose only operator axis is dark / light, system-following", () => {
