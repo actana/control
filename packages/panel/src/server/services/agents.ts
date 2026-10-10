@@ -1,5 +1,6 @@
 import type { CoreLinkHarnessAvailabilityMap } from "@actana/shared/sdk-link-frames";
 import { HARNESS_REGISTRY } from "@actana/shared/harnesses";
+import { needsSetupDialog } from "@actana/shared/harness-needs-setup";
 import { ConflictError, NotFoundError, ValidationError } from "../errors";
 import { findCoreById } from "../repositories/cores.repo";
 import {
@@ -57,15 +58,75 @@ export class CoreHarnessesUnavailableError extends ConflictError {
   }
 }
 
-/** The Core does not report this harness as available, so no Agent may run on it. */
+/** The Core does not report this harness as available, so no Agent may run on it. `detail` says why, when known. */
 export class HarnessMissingOnCoreError extends ConflictError {
   readonly code = "harness_missing_on_core";
   constructor(
     readonly coreId: string,
     readonly harness: string,
+    readonly detail?: string,
   ) {
-    super(`this Core does not have ${harness} available`);
+    super(`this Core does not have ${harness} available${detail ? `: ${detail}` : ""}`);
     this.name = "HarnessMissingOnCoreError";
+  }
+}
+
+/**
+ * The harness is still being checked, or its last probe failed in a way that may
+ * pass on the next one (#706). Not a verdict: a caller may wait and ask again.
+ */
+export class HarnessNotReadyError extends ConflictError {
+  readonly code = "harness_not_ready";
+  constructor(
+    readonly coreId: string,
+    readonly harness: string,
+    readonly state: string,
+  ) {
+    super(`${harness} on this Core is not ready yet (${state})`);
+    this.name = "HarnessNotReadyError";
+  }
+}
+
+export type HarnessReadiness =
+  | { kind: "ready" }
+  | { kind: "wait"; state: string }
+  | { kind: "unavailable"; detail: string };
+
+/**
+ * Sort one availability entry into ready, "wait and ask again" (still checking,
+ * or a probe that failed or timed out) or "will not run" with the reason (#706).
+ */
+export function harnessReadiness(entry: CoreLinkHarnessAvailabilityMap[string] | undefined): HarnessReadiness {
+  if (!entry) return { kind: "unavailable", detail: "not reported" };
+  const reason = typeof entry.reason === "string" ? entry.reason.trim() : "";
+  switch (entry.status) {
+    case "available":
+      return { kind: "ready" };
+    case "checking":
+      return { kind: "wait", state: "checking" };
+    case "outdated": {
+      if (reason === "version-check-failed") return { kind: "wait", state: "version check failed" };
+      const detail = entry.version
+        ? entry.requiredVersion
+          ? `outdated: ${entry.version} installed, ${entry.requiredVersion} or newer required`
+          : `outdated: ${entry.version} installed`
+        : entry.requiredVersion
+          ? `outdated: ${entry.requiredVersion} or newer required`
+          : reason && reason !== "outdated"
+            ? `outdated (${reason})`
+            : "outdated";
+      return { kind: "unavailable", detail };
+    }
+    case "missing": {
+      const dialog = needsSetupDialog(entry.reason);
+      if (dialog !== null) return { kind: "unavailable", detail: `needs setup: ${dialog}` };
+      if (!reason) return { kind: "unavailable", detail: "missing" };
+      if (reason === "not-found" || reason === "disabled") return { kind: "unavailable", detail: `missing (${reason})` };
+      // Any other reason is the text of a probe that threw or timed out: it may pass next time.
+      return { kind: "wait", state: `probe failed: ${reason}` };
+    }
+    default:
+      return { kind: "unavailable", detail: `unknown status ${String(entry.status)}` };
   }
 }
 
@@ -193,9 +254,9 @@ export async function deleteAgent(ownerId: number, id: string): Promise<void> {
  */
 export async function resolveAgent(ownerId: number, id: string, deps: AgentDeps = {}): Promise<ResolvedAgent> {
   const agent = await getAgent(ownerId, id);
-  if (!hasHarness(await reportedHarnesses(agent.coreId, deps), agent.harness)) {
-    throw new HarnessMissingOnCoreError(agent.coreId, agent.harness);
-  }
+  const readiness = harnessReadiness((await reportedHarnesses(agent.coreId, deps))[agent.harness]);
+  if (readiness.kind === "wait") throw new HarnessNotReadyError(agent.coreId, agent.harness, readiness.state);
+  if (readiness.kind === "unavailable") throw new HarnessMissingOnCoreError(agent.coreId, agent.harness, readiness.detail);
   return {
     agentId: agent.id,
     coreId: agent.coreId,

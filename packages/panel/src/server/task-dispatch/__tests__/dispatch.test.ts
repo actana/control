@@ -13,6 +13,8 @@ const { TaskDispatcher } = await import("../dispatcher");
 const { ResultWatcher } = await import("../result-watcher");
 const tasksService = await import("../../services/tasks");
 const { NotFoundError } = await import("../../errors");
+const { HarnessNotReadyError, HarnessMissingOnCoreError, CoreHarnessesUnavailableError } = await import("../../services/agents");
+const { DEFAULT_HARNESS_WAIT_MS } = await import("../dispatcher");
 const { createTask, getTask, listTaskComments, listTaskHistory, commentAndReassign, claimTask, addTaskComment } =
   tasksService;
 
@@ -334,6 +336,130 @@ describe("a Task that cannot be dispatched", () => {
     expect(after.status).toBe("failed");
     expect(after.lastError).toContain("Shared folder of Core core_1 is not reachable");
     expect(after.lastError).toContain("the Core is paused");
+  });
+});
+
+describe("a Task whose Harness is not ready yet (#706)", () => {
+  /** A rig whose `resolve` is whatever the test sets `behave.resolve` to; by default the Harness is ready. */
+  function switchable() {
+    const r = rig();
+    const behave: { resolve: (id: string) => Promise<unknown> | unknown } = { resolve: () => undefined };
+    const ready = r.agents.resolve;
+    // "agent_2" is a second Agent with the same Harness, so a test can make just one of two Tasks wait.
+    const same = (id: string) => (id === "agent_2" ? AGENT.id : id);
+    r.agents.resolve = async (owner: number, id: string) => {
+      await behave.resolve(id);
+      return ready(owner, same(id));
+    };
+    const got = r.agents.get;
+    r.agents.get = (owner: number, id: string) => got(owner, same(id));
+    return { ...r, behave };
+  }
+  const throwing = (err: Error) => () => {
+    throw err;
+  };
+
+  for (const [label, error] of [
+    ["is checking", new HarnessNotReadyError("core_1", "claude-code", "checking")],
+    ["cannot be asked because the Core link is down", new CoreHarnessesUnavailableError("core_1")],
+  ] as const) {
+    it(`leaves the Task assigned while the Harness ${label}, and dispatches it once it is available`, async () => {
+      const { clock, core, dispatcher, behave } = switchable();
+      const task = await assign(clock);
+      behave.resolve = throwing(error);
+
+      expect(await dispatcher.dispatchOnce()).toBe(0);
+      clock.advance(2_000);
+      expect(await dispatcher.dispatchOnce()).toBe(0);
+
+      expect(core.starts).toHaveLength(0);
+      expect(await getTask(A, task.id)).toMatchObject({ status: "assigned", attemptCount: 0, lastError: null });
+      expect(await listTaskComments(A, task.id)).toHaveLength(0);
+      const historyBefore = await listTaskHistory(A, task.id);
+
+      behave.resolve = () => undefined;
+      expect(await dispatcher.dispatchOnce()).toBe(1);
+
+      expect(core.starts).toHaveLength(1);
+      expect(await getTask(A, task.id)).toMatchObject({ status: "in_progress", attemptCount: 1 });
+      expect((await listTaskHistory(A, task.id)).length).toBeGreaterThan(historyBefore.length);
+    });
+  }
+
+  it("logs the wait once, not on every poll", async () => {
+    const { clock, log, dispatcher, behave } = switchable();
+    await assign(clock);
+    behave.resolve = throwing(new HarnessNotReadyError("core_1", "claude-code", "checking"));
+    for (let i = 0; i < 3; i++) {
+      await dispatcher.dispatchOnce();
+      clock.advance(2_000);
+    }
+    expect(log.infos.filter((l) => l.includes("not ready yet"))).toHaveLength(1);
+  });
+
+  it.each([
+    ["needs setup", "needs setup: folder-trust"],
+    ["is outdated", "outdated: 1.2.0 is older than 1.5.0"],
+  ])("fails the Task at once, with the reason, when the Harness %s", async (_label, detail) => {
+    const { clock, core, dispatcher, behave } = switchable();
+    const task = await assign(clock);
+    behave.resolve = throwing(new HarnessMissingOnCoreError("core_1", "claude-code", detail));
+
+    await dispatcher.dispatchOnce();
+
+    expect(core.starts).toHaveLength(0);
+    const after = await getTask(A, task.id);
+    expect(after.status).toBe("failed");
+    expect(after.lastError).toContain("its Agent cannot run it");
+    expect(after.lastError).toContain(detail);
+  });
+
+  it("fails the Task with the reason once the wait is over", async () => {
+    const { clock, core, dispatcher, behave } = switchable();
+    const task = await assign(clock);
+    behave.resolve = throwing(new HarnessNotReadyError("core_1", "claude-code", "checking"));
+
+    await dispatcher.dispatchOnce();
+    clock.advance(DEFAULT_HARNESS_WAIT_MS - 1);
+    await dispatcher.dispatchOnce();
+    expect((await getTask(A, task.id)).status).toBe("assigned");
+    clock.advance(1);
+    expect(await dispatcher.dispatchOnce()).toBe(1);
+
+    expect(core.starts).toHaveLength(0);
+    const after = await getTask(A, task.id);
+    expect(after.status).toBe("failed");
+    expect(after.lastError).toContain("not ready yet (checking)");
+  });
+
+  it("does not hold back another Task whose Harness is ready", async () => {
+    const { clock, core, dispatcher, behave } = switchable();
+    const waiting = await assign(clock, { title: "waits" });
+    const ready = await assign(clock, { title: "goes", agent: "agent_2" });
+    behave.resolve = (id) => {
+      if (id === AGENT.id) throw new HarnessNotReadyError("core_1", "claude-code", "checking");
+    };
+
+    expect(await dispatcher.dispatchOnce()).toBe(1);
+
+    expect(core.starts.map((x) => x.title)).toEqual(["Task: goes"]);
+    expect((await getTask(A, waiting.id)).status).toBe("assigned");
+    expect((await getTask(A, ready.id)).status).toBe("in_progress");
+  });
+
+  it("starts a fresh wait window for a Task that left assigned and came back", async () => {
+    const { clock, dispatcher, behave } = switchable();
+    const task = await assign(clock);
+    behave.resolve = throwing(new HarnessNotReadyError("core_1", "claude-code", "checking"));
+    await dispatcher.dispatchOnce();
+
+    await tasksService.changeTaskStatus(A, task.id, "draft", clock.now());
+    await dispatcher.dispatchOnce(); // the pass that sees it gone forgets it
+    clock.advance(DEFAULT_HARNESS_WAIT_MS + 1);
+    await tasksService.changeTaskStatus(A, task.id, "assigned", clock.now());
+
+    await dispatcher.dispatchOnce();
+    expect(await getTask(A, task.id)).toMatchObject({ status: "assigned", attemptCount: 0 });
   });
 });
 

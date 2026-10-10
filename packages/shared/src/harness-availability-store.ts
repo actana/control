@@ -42,6 +42,14 @@ import { sanitizedProcessEnv } from "./shell-env";
 /** How often the Core re-probes for changes. Explicit so tests can override. */
 export const DEFAULT_AVAILABILITY_TICK_MS = 60_000;
 
+/** How many times a transient probe failure is re-probed before it is published. */
+export const DEFAULT_PROBE_RETRIES = 2;
+/** How long to wait between those re-probes. Explicit so tests can override. */
+export const DEFAULT_PROBE_RETRY_DELAY_MS = 2_000;
+
+/** `fresh` asks the probe to bypass the version-check failure cache — a retry must really look again. */
+export type HarnessProbeOptions = { fresh?: boolean };
+
 export type HarnessAvailabilityStoreOptions = {
   /**
    * Append a domain event to the monotonic event log. The store calls this
@@ -57,7 +65,7 @@ export type HarnessAvailabilityStoreOptions = {
   /** Override the probe tick for tests. Default {@link DEFAULT_AVAILABILITY_TICK_MS}. */
   tickMs?: number;
   /** Injectable probe for tests. Default runs the real PATH resolution. */
-  probe?: (agent: Harness) => CoreLinkHarnessAvailability;
+  probe?: (agent: Harness, opts?: HarnessProbeOptions) => CoreLinkHarnessAvailability;
   /**
    * An asynchronous probe, for a Core whose daemon cannot look into the home the
    * Harness CLIs live in (the container: the daemon is `actana`, the home is
@@ -65,7 +73,16 @@ export type HarnessAvailabilityStoreOptions = {
    * is what the tick, SIGHUP and the install service use; {@link runProbe} stays
    * the synchronous one-shot the CLI and the tests call.
    */
-  probeAsync?: (agent: Harness) => Promise<CoreLinkHarnessAvailability>;
+  probeAsync?: (agent: Harness, opts?: HarnessProbeOptions) => Promise<CoreLinkHarnessAvailability>;
+  /**
+   * How many times {@link refresh} re-probes (with `{ fresh: true }`) an entry whose
+   * version check failed or whose probe threw, before publishing it (#706): a slow
+   * `--version` at Core start is not an outdated CLI. `version-unknown` and a real
+   * `outdated` are final and never retried. Default {@link DEFAULT_PROBE_RETRIES}.
+   */
+  probeRetries?: number;
+  /** Wait between those re-probes, for tests to shorten. Default {@link DEFAULT_PROBE_RETRY_DELAY_MS}. */
+  probeRetryDelayMs?: number;
   /**
    * Runs on every refreshed map before it is published and may change entries: the
    * Core's setup check (#685) turns an `available` Harness that a first-run dialog
@@ -79,21 +96,29 @@ export type HarnessAvailabilityStoreOptions = {
 export class HarnessAvailabilityStore {
   private readonly appendEvent: HarnessAvailabilityStoreOptions["appendEvent"];
   private readonly tickMs: number;
-  private readonly probe: (agent: Harness) => CoreLinkHarnessAvailability;
-  private readonly probeAsync: ((agent: Harness) => Promise<CoreLinkHarnessAvailability>) | null;
+  private readonly probe: NonNullable<HarnessAvailabilityStoreOptions["probe"]>;
+  private readonly probeAsync: HarnessAvailabilityStoreOptions["probeAsync"] | null;
+  private readonly probeRetries: number;
+  private readonly probeRetryDelayMs: number;
   private readonly afterProbe: HarnessAvailabilityStoreOptions["afterProbe"] | null;
   private refreshing: Promise<void> | null = null;
   /** The one round queued behind {@link refreshing}, shared by every caller that arrived meanwhile. */
   private trailing: Promise<void> | null = null;
   private current: CoreLinkHarnessAvailabilityMap;
   private timer: ReturnType<typeof setInterval> | null = null;
+  /** Set by {@link stop}: a round in its retry wait publishes what it has instead of probing again. */
+  private stopped = false;
+  /** The pending retry wait, so {@link stop} can end it instead of leaving it to run out. */
+  private retryWait: { timer: ReturnType<typeof setTimeout>; resolve: () => void } | null = null;
 
   constructor(opts: HarnessAvailabilityStoreOptions) {
     this.appendEvent = opts.appendEvent;
     this.tickMs = opts.tickMs ?? DEFAULT_AVAILABILITY_TICK_MS;
     this.probe = opts.probe ?? defaultProbe;
     this.afterProbe = opts.afterProbe ?? null;
-    this.probeAsync = opts.probeAsync ?? (this.afterProbe ? async (agent) => this.probe(agent) : null);
+    this.probeRetries = Math.max(0, opts.probeRetries ?? DEFAULT_PROBE_RETRIES);
+    this.probeRetryDelayMs = Math.max(0, opts.probeRetryDelayMs ?? DEFAULT_PROBE_RETRY_DELAY_MS);
+    this.probeAsync = opts.probeAsync ?? (this.afterProbe ? async (agent, probeOpts) => this.probe(agent, probeOpts) : null);
     // Start every agent as `checking` so the Panel has a stable initial
     // rendering (matches the pre-issue-11 boot flow where the store seeds
     // "checking" before the first probe completes).
@@ -114,6 +139,7 @@ export class HarnessAvailabilityStore {
    */
   start(): void {
     if (this.timer) return;
+    this.stopped = false;
     void this.refresh();
     this.timer = setInterval(() => void this.refresh(), this.tickMs);
     if (typeof this.timer.unref === "function") this.timer.unref();
@@ -121,6 +147,13 @@ export class HarnessAvailabilityStore {
 
   /** Stop the probe timer (shutdown). */
   stop(): void {
+    this.stopped = true;
+    if (this.retryWait) {
+      const { timer, resolve } = this.retryWait;
+      this.retryWait = null;
+      clearTimeout(timer);
+      resolve();
+    }
     if (this.timer) {
       clearInterval(this.timer);
       this.timer = null;
@@ -177,18 +210,41 @@ export class HarnessAvailabilityStore {
     return this.trailing;
   }
 
-  private async round(probeAsync: (agent: Harness) => Promise<CoreLinkHarnessAvailability>): Promise<void> {
+  private async round(probeAsync: NonNullable<HarnessAvailabilityStoreOptions["probeAsync"]>): Promise<void> {
     const next: CoreLinkHarnessAvailabilityMap = {};
+    // Entries a second look may change: a version check that failed (not one that
+    // answered), or a probe that threw. Tracked here, never read back from reason text.
+    const transient = new Set<Harness>();
+    const probeOne = async (agent: Harness, opts?: HarnessProbeOptions): Promise<void> => {
+      try {
+        const found = await probeAsync(agent, opts);
+        next[agent] = found;
+        if (found.status === "outdated" && found.reason === "version-check-failed") transient.add(agent);
+        else transient.delete(agent);
+      } catch (err) {
+        next[agent] = probeFailed(err);
+        transient.add(agent);
+      }
+    };
     for (const agent of UI_HARNESSES) {
       if (HARNESS_REGISTRY[agent].disabled) {
         next[agent] = DISABLED;
         continue;
       }
-      try {
-        next[agent] = await probeAsync(agent);
-      } catch (err) {
-        next[agent] = probeFailed(err);
-      }
+      await probeOne(agent);
+    }
+    for (let attempt = 0; attempt < this.probeRetries && transient.size > 0 && !this.stopped; attempt++) {
+      await new Promise<void>((resolve) => {
+        const done = (): void => {
+          this.retryWait = null;
+          resolve();
+        };
+        const timer = setTimeout(done, this.probeRetryDelayMs);
+        timer.unref?.();
+        this.retryWait = { timer, resolve: done };
+      });
+      if (this.stopped) break;
+      for (const agent of [...transient]) await probeOne(agent, { fresh: true });
     }
     this.publish(await this.settle(next));
   }
@@ -231,7 +287,7 @@ function probeFailed(err: unknown): CoreLinkHarnessAvailability {
  * process, so `sanitizedProcessEnv` +
  * `resolveHarnessCommandMeetingVersion` are directly available.
  */
-function defaultProbe(agent: Harness): CoreLinkHarnessAvailability {
+function defaultProbe(agent: Harness, opts?: HarnessProbeOptions): CoreLinkHarnessAvailability {
   const command = HARNESS_REGISTRY[agent].command;
   const env = sanitizedProcessEnv();
   const platform = os.platform();
@@ -240,6 +296,7 @@ function defaultProbe(agent: Harness): CoreLinkHarnessAvailability {
     resolveAllHarnessCommandsOnPath(command, env, platform),
     env,
     platform,
+    opts,
   );
 }
 
@@ -254,9 +311,10 @@ export function availabilityFromCandidates(
   candidates: readonly string[],
   env: NodeJS.ProcessEnv,
   platform: NodeJS.Platform = os.platform(),
+  opts?: HarnessProbeOptions,
 ): CoreLinkHarnessAvailability {
   const requirement = HARNESS_CLI_CONFIG_BY_COMMAND[HARNESS_REGISTRY[agent].command];
-  const meeting = requirement ? pickHarnessCandidateMeetingVersion(candidates, requirement, env, platform) : null;
+  const meeting = requirement ? pickHarnessCandidateMeetingVersion(candidates, requirement, env, platform, opts) : null;
   return availabilityFromProbe(agent, candidates, meeting, platform);
 }
 
