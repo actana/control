@@ -323,6 +323,19 @@ export async function probeHarnessCliViaCore(
 }
 
 /**
+ * Ask the installed codex whether it hashes this Core's hooks as `harness-pretrust.ts` does (#703), as `core`:
+ * the check writes a throwaway workspace in the home and starts codex there. `searchPath` is the PATH the
+ * availability probe searches, so the codex asked is the one a Session gets. Rejects like any op; the setup
+ * round records a failure and does not ask again for the same binary and version.
+ */
+export async function verifyCodexHookTrustViaCore(
+  searchPath: string | null,
+  options: CoreHomeOpsOptions = {},
+): Promise<CoreHomeOpResult["verifyCodexHookTrust"]> {
+  return coreHomeOp({ op: "verifyCodexHookTrust", path: searchPath }, options);
+}
+
+/**
  * Record trust for `dirs` in each of `harnesses`' own config, as `core` (#685).
  * Never rejects: a Harness that could not be pre-trusted is reported by the
  * setup check when its dialog still shows, and a refusal here must not stop a

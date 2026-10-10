@@ -147,7 +147,8 @@ import log from "@actana/shared/log";
 import { bootstrapCoreDb } from "./core-db-bootstrap";
 import { HarnessAvailabilityStore } from "@actana/shared/harness-availability-store";
 import { HarnessSkillWatcher } from "./harness-skill-watcher";
-import { ensureOrchestrationSkillViaCore, pretrustWorkspacesViaCore } from "./core-home-ops-client";
+import { sanitizedProcessEnv } from "@actana/shared/shell-env";
+import { ensureOrchestrationSkillViaCore, pretrustWorkspacesViaCore, verifyCodexHookTrustViaCore } from "./core-home-ops-client";
 import { HarnessSetup } from "./harness-setup";
 import { runHarnessOnce } from "./harness-setup-run";
 import { coreAvailabilityProbe } from "./harness-availability-probe";
@@ -438,6 +439,8 @@ async function startCore(): Promise<void> {
     workspaces: () => [coreHome()],
     pretrust: pretrustWorkspacesViaCore,
     runOnce: runHarnessOnce,
+    // #703: once per codex binary and version, ask codex itself whether the hook trust this Core writes holds.
+    verifyCodexHookTrust: () => verifyCodexHookTrustViaCore(sanitizedProcessEnv().PATH ?? null),
   });
   const availabilityStore = new HarnessAvailabilityStore({
     appendEvent: (kind, payload, opts) => {
