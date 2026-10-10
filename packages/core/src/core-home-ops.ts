@@ -460,23 +460,9 @@ export function handleCoreHomeOpSync(request: CoreHomeOpRequest, ctx: CoreHomeOp
       }
       return installed;
     }
-    case "pretrustWorkspaces": {
-      // Only directories inside the home, and only the two config files, each
-      // confined like any other write: a link in the home that leaves it is refused.
-      const dirs = new Set<string>();
-      for (const dir of request.dirs) {
-        const inside = confine(dir, ctx, "dir");
-        dirs.add(inside);
-        // Harnesses key a project by the path they were started in, which may be the
-        // resolved one when the home is a link; trust both spellings.
-        const real = realpathOrNull(inside);
-        if (real !== null) dirs.add(real);
-      }
-      confine(claudeConfigPath(ctx.home), ctx, "claude config");
-      confine(codexConfigPath(ctx.home), ctx, "codex config");
-      for (const dir of dirs) confine(cursorMarkerPath(ctx.home, dir), ctx, "cursor trust marker");
-      return pretrustWorkspaces(ctx.home, request.harnesses, [...dirs]);
-    }
+    case "pretrustWorkspaces":
+      // Asynchronous (the Claude Code writer waits on a lock without blocking): `handleCoreHomeOp` runs it.
+      throw new CoreHomeOpFailedError("pretrustWorkspaces runs through handleCoreHomeOp");
     case "ensureStatuslineTap": {
       const cwd = confine(request.cwd, ctx, "cwd");
       confine(path.join(cwd, ".claude", "settings.local.json"), ctx, "statusline settings file");
@@ -564,6 +550,31 @@ async function verifyCodexHookTrust(
   return { binary: meeting.binary, version: typeof version === "string" ? version : null, check };
 }
 
+/**
+ * The `pretrustWorkspaces` op (#685): confine every path, then write. Asynchronous because the Claude Code writer
+ * waits for Claude Code's lock with timers; this runs in the daemon itself on metal installs, so it must never block.
+ */
+async function pretrustWorkspacesOp(
+  request: Extract<CoreHomeOpRequest, { op: "pretrustWorkspaces" }>,
+  ctx: CoreHomeOpContext,
+): Promise<CoreHomeOpResult["pretrustWorkspaces"]> {
+  // Only directories inside the home, and only the two config files, each
+  // confined like any other write: a link in the home that leaves it is refused.
+  const dirs = new Set<string>();
+  for (const dir of request.dirs) {
+    const inside = confine(dir, ctx, "dir");
+    dirs.add(inside);
+    // Harnesses key a project by the path they were started in, which may be the
+    // resolved one when the home is a link; trust both spellings.
+    const real = realpathOrNull(inside);
+    if (real !== null) dirs.add(real);
+  }
+  confine(claudeConfigPath(ctx.home), ctx, "claude config");
+  confine(codexConfigPath(ctx.home), ctx, "codex config");
+  for (const dir of dirs) confine(cursorMarkerPath(ctx.home, dir), ctx, "cursor trust marker");
+  return await pretrustWorkspaces(ctx.home, request.harnesses, [...dirs]);
+}
+
 /** {@link handleCoreHomeOpSync}, as a promise: the helper's entry and the in-process client both `await` it. */
 export async function handleCoreHomeOp<Op extends CoreHomeOperation>(
   request: Extract<CoreHomeOpRequest, { op: Op }>,
@@ -571,5 +582,6 @@ export async function handleCoreHomeOp<Op extends CoreHomeOperation>(
 ): Promise<CoreHomeOpResult[Op]>;
 export async function handleCoreHomeOp(request: CoreHomeOpRequest, ctx: CoreHomeOpContext): Promise<unknown> {
   if (request.op === "verifyCodexHookTrust") return verifyCodexHookTrust(request, ctx);
+  if (request.op === "pretrustWorkspaces") return pretrustWorkspacesOp(request, ctx);
   return handleCoreHomeOpSync(request, ctx);
 }

@@ -339,7 +339,7 @@ export async function verifyCodexHookTrustViaCore(
  * Record trust for `dirs` in each of `harnesses`' own config, as `core` (#685).
  * Never rejects: a Harness that could not be pre-trusted is reported by the
  * setup check when its dialog still shows, and a refusal here must not stop a
- * probe round or a spawn.
+ * probe round or a spawn. A writer that reports `failed` is logged here, since callers drop the results.
  */
 export async function pretrustWorkspacesViaCore(
   harnesses: readonly string[],
@@ -348,7 +348,11 @@ export async function pretrustWorkspacesViaCore(
 ): Promise<CoreHomeOpResult["pretrustWorkspaces"]> {
   if (harnesses.length === 0 || dirs.length === 0) return [];
   try {
-    return await coreHomeOp({ op: "pretrustWorkspaces", harnesses: [...harnesses], dirs: [...dirs] }, options);
+    const results = await coreHomeOp({ op: "pretrustWorkspaces", harnesses: [...harnesses], dirs: [...dirs] }, options);
+    for (const r of results) {
+      if (r.outcome === "failed") log.warn("core-home-ops.pretrust.harness-failed", { harness: r.harness, detail: r.detail });
+    }
+    return results;
   } catch (err) {
     log.warn("core-home-ops.pretrust.failed", { error: err instanceof Error ? err.message : String(err) });
     return [];

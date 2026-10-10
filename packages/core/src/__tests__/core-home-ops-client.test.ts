@@ -9,6 +9,7 @@ import {
   decodeHelperOutcome,
   ensureClaudeShiftEnterBindingViaCore,
   installHarnessHooksViaCore,
+  pretrustWorkspacesViaCore,
   type HelperOutcome,
 } from "../core-home-ops-client";
 import log from "@actana/shared/log";
@@ -173,6 +174,28 @@ describe("the daemon's wrappers keep the contracts of what they replaced", () =>
       hookTrustBypassEarned: false,
     });
     expect(warn.mock.calls.map((c) => c[0])).toContain("core-home-ops.hooks.failed");
+  });
+
+  it("logs a pre-trust writer that failed, once, and returns every result unchanged", async () => {
+    inContainer();
+    const warn = vi.spyOn(log, "warn").mockImplementation(() => undefined);
+    const results = [
+      { harness: "claude-code", outcome: "failed", detail: "~/.claude.json is locked" },
+      { harness: "codex", outcome: "written" },
+      { harness: "opencode", outcome: "unchanged" },
+    ];
+    configureCoreHomeOps({ exists: setpriv, run: async () => ok(results) });
+    await expect(pretrustWorkspacesViaCore(["claude-code", "codex", "opencode"], ["/home/core/w"])).resolves.toEqual(results);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith("core-home-ops.pretrust.harness-failed", { harness: "claude-code", detail: "~/.claude.json is locked" });
+  });
+
+  it("does not log pre-trust results that were written or unchanged", async () => {
+    inContainer();
+    const warn = vi.spyOn(log, "warn").mockImplementation(() => undefined);
+    configureCoreHomeOps({ exists: setpriv, run: async () => ok([{ harness: "codex", outcome: "written" }, { harness: "pi", outcome: "unchanged" }]) });
+    await pretrustWorkspacesViaCore(["codex", "pi"], ["/home/core/w"]);
+    expect(warn).not.toHaveBeenCalled();
   });
 
   it("sends only PI_CODING_AGENT_DIR from the spawn env, never the env", async () => {
