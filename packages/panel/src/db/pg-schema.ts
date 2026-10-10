@@ -346,7 +346,9 @@ export const webhookDeliveries = pgTable(
  * each a known one, fixed at creation. There is no column default on purpose,
  * so no insert path mints a key with every permission by omission; the
  * migration that added the column gave the keys that already existed the full
- * set, which is what they had.
+ * set, which is what they had. `expires_at` (#689) is when the key stops
+ * authenticating on its own, or null for a key that lives until it is revoked;
+ * a key from before the column is null, which is what it was.
  */
 export const apiKeys = pgTable(
   "api_keys",
@@ -362,6 +364,7 @@ export const apiKeys = pgTable(
     permissions: text("permissions").array().notNull(),
     createdAt: epochMs("created_at").notNull(),
     revokedAt: epochMs("revoked_at"),
+    expiresAt: epochMs("expires_at"),
   },
   (t) => [
     index("api_keys_owner_prefix_idx").on(t.ownerId, t.prefix),

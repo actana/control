@@ -314,6 +314,7 @@ separate from the browser's session-cookie routes.
 | Who it runs as | the key's owner, every time; a presented key never falls back to the Operator's session cookie |
 | Scope | all of the owner's Cores, or chosen ones, picked when the key is created; outside the scope is `403`, a revoked key is `401` |
 | Permissions | picked when the key is created ([#688](https://github.com/actana/control/issues/688)): `read` (every GET), `tasks:write` (create, assign, comment), `agents:write` (create, delete). A route a key lacks the permission for is `403`. Keys from before #688 hold all three |
+| Expiry | optional, set when the key is created (7, 30 or 90 days, a date, or never); an expired key is `401`, the same as a revoked one. Keys created before 0.5.1 never expire |
 | Description | OpenAPI 3 at [`packages/panel/src/server/openapi/v1.json`](../packages/panel/src/server/openapi/v1.json) |
 
 | Area | Routes |
@@ -328,7 +329,9 @@ operator moves `assigned` and `draft` (the dispatcher and the result watcher
 own the rest). API keys themselves are managed only with the Operator's
 session (`POST/GET /api/api-keys`, `POST /api/api-keys/:id/revoke`); a create
 names the key's `permissions` (at least one of the three) and, optionally, its
-`coreIds`.
+`coreIds`. `POST /api/api-keys` also takes an optional `expiresAt` (epoch
+milliseconds, in the future; omitted or `null` means never), and every key in
+the list carries its `expiresAt`.
 
 ## The Panel's MCP server (`/mcp`)
 
@@ -346,7 +349,7 @@ the tools below are available to the model.
 
 | Property | Value |
 | --- | --- |
-| Auth | `Authorization: Bearer ak_…` and nothing else: no key, an unknown or a revoked key is `401` with `WWW-Authenticate: Bearer`; the Operator's session cookie is never read on this path |
+| Auth | `Authorization: Bearer ak_…` and nothing else: no key, an unknown, a revoked or an expired key is `401` with `WWW-Authenticate: Bearer`; the Operator's session cookie is never read on this path |
 | Who it runs as | the key's owner, every call; every tool runs the same handler the `/api/v1` route runs, so the owner and Core-scope rules are one implementation |
 | Scope | a key limited to some Cores sees only those; a tool aimed at another Core answers a tool error starting `403`, another owner's data `404` |
 | Permissions | `tools/list` names only the tools the key's permissions allow (`read` for the reads and the Shared folder, `tasks:write` for `create_task`, `assign_task`, `comment_task`); a call to any other is a tool error starting `403` that names the missing permission |

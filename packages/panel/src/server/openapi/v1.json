@@ -3,7 +3,7 @@
   "info": {
     "title": "Actana Control Panel public API",
     "version": "1.0.0",
-    "description": "Public REST API for Cores, Agents, Tasks and comments. Authenticate with an API key (`Authorization: Bearer ak_…`). Every call runs as the key's owner. A key restricted to chosen Cores gets 403 outside that scope; a key without the permission a route needs gets 403 too (every GET needs `read`, the Task writes `tasks:write`, the Agent writes `agents:write`); a revoked key gets 401."
+    "description": "Public REST API for Cores, Agents, Tasks and comments. Authenticate with an API key (`Authorization: Bearer ak_…`). Every call runs as the key's owner. A key restricted to chosen Cores gets 403 outside that scope; a key without the permission a route needs gets 403 too (every GET needs `read`, the Task writes `tasks:write`, the Agent writes `agents:write`); a revoked or expired key gets 401."
   },
   "servers": [{ "url": "/", "description": "The Panel origin" }],
   "security": [{ "ApiKey": [] }],
@@ -13,7 +13,7 @@
         "type": "http",
         "scheme": "bearer",
         "bearerFormat": "ak_",
-        "description": "An API key created in Settings › API & integrations, with its permissions (read, tasks:write, agents:write) and Core scope. Shown once at create time."
+        "description": "An API key created in Settings › API & integrations, with its permissions (read, tasks:write, agents:write) and Core scope. Shown once at create time. It may carry an expiry chosen at creation; after it the key gets 401."
       }
     },
     "schemas": {
@@ -97,7 +97,7 @@
               }
             }
           },
-          "401": { "description": "Missing, unknown or revoked key", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+          "401": { "description": "Missing, unknown, revoked or expired key", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
         }
       }
     },

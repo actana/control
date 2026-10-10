@@ -30,9 +30,10 @@ import { WEBHOOK_CHANGE_EVENT_TYPES } from "~/shared/webhooks";
 /**
  * Settings › API & integrations (screen 09 of the 0.5.0 design; #572 / #573 / #574).
  *
- * An operator lists, creates (plaintext shown once), restricts to chosen Cores and
- * revokes API keys; copies the ready-made MCP command; and manages webhooks
- * (create with events and Core scope, see the last delivery, send a ping, delete).
+ * An operator lists, creates (plaintext shown once), restricts to chosen Cores, gives
+ * an optional expiry to (#689) and revokes API keys; copies the ready-made MCP
+ * command; and manages webhooks (create with events and Core scope, see the last
+ * delivery, send a ping, delete).
  *
  * A key is created with its permissions and its Core scope (#688): the dialog
  * preselects the narrowest permission (`read`) and no Core scope at all, so the
@@ -77,6 +78,49 @@ function coreScopeLabel(
 /** `read · tasks:write`, in canonical order; a key from before #688 shows the full set. */
 function permissionsLabel(permissions: ApiKeyPermission[]): string {
   return normalizeApiKeyPermissions(permissions).join(" · ");
+}
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * The expiry choices of the Create API key dialog (#689): a preset in days, a
+ * date of the operator's own, or never. The server takes an epoch-ms instant,
+ * so the choice is turned into one here, at Create.
+ */
+const API_KEY_EXPIRY_PRESET_DAYS = [7, 30, 90] as const;
+type ExpiryChoice = "never" | `${(typeof API_KEY_EXPIRY_PRESET_DAYS)[number]}d` | "custom";
+
+/** The instant a chosen expiry stands for, or null for never; undefined when a custom date is missing or not in the future. */
+function expiryInstant(choice: ExpiryChoice, customDate: string, now = Date.now()): number | null | undefined {
+  if (choice === "never") return null;
+  if (choice === "custom") {
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(customDate);
+    if (!m) return undefined;
+    // The end of that day, local time: a key that "expires on the 31st" works through the 31st.
+    const at = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), 23, 59, 59, 999).getTime();
+    return Number.isFinite(at) && at > now ? at : undefined;
+  }
+  return now + Number.parseInt(choice, 10) * DAY_MS;
+}
+
+/** The local calendar day of an instant, as YYYY-MM-DD: the same timezone a custom expiry date is read in. */
+function isoDay(at: number): string {
+  const d = new Date(at);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+/** Tomorrow's local day, the earliest a custom expiry can be picked (by calendar, not +24 h, so a DST day cannot skip it). */
+function tomorrowDay(now = Date.now()): string {
+  const d = new Date(now);
+  d.setDate(d.getDate() + 1);
+  return isoDay(d.getTime());
+}
+
+/** The expiry part of a key's status line: what it says, and whether the key has expired. */
+function expiryLabel(expiresAt: number | null, now = Date.now()): { text: string; expired: boolean } {
+  if (expiresAt === null) return { text: "no expiry", expired: false };
+  if (expiresAt <= now) return { text: `expired ${isoDay(expiresAt)}`, expired: true };
+  return { text: `expires ${isoDay(expiresAt)}`, expired: false };
 }
 
 /** Future retry due-time only — do not use formatRelativeTime (it maps clock-skew futures to "just now"). */
@@ -133,7 +177,7 @@ export function ApiSettingsPage() {
   // Plaintext must not become mutation `data` (R1). Hand it to the dialog here
   // and return only the view; reset on close so the cache retains nothing.
   const createKey = useMutation({
-    mutationFn: async (input: { name: string; coreIds: string[] | null; permissions: ApiKeyPermission[] }) => {
+    mutationFn: async (input: { name: string; coreIds: string[] | null; permissions: ApiKeyPermission[]; expiresAt: number | null }) => {
       const res = await api.createApiKey(input);
       setShownOnce({ kind: "api-key", name: res.apiKey.name, value: res.key });
       return res.apiKey;
@@ -421,21 +465,24 @@ function ApiKeyRow({
   onRevoke: () => void;
 }) {
   const revoked = apiKey.revokedAt !== null;
+  const expiry = expiryLabel(apiKey.expiresAt);
+  const expired = !revoked && expiry.expired;
   const scope = coreScopeLabel(apiKey.allCores, apiKey.coreIds, coreLabels);
   const permissions = permissionsLabel(apiKey.permissions);
   const status = revoked
-    ? `${scope} · revoked ${new Date(apiKey.revokedAt!).toISOString().slice(0, 10)}`
-    : `${scope} · created ${formatRelativeTime(apiKey.createdAt)}`;
+    ? `${scope} · revoked ${isoDay(apiKey.revokedAt!)}`
+    : `${scope} · created ${formatRelativeTime(apiKey.createdAt)} · ${expiry.text}`;
 
   return (
     <div
       data-api-key-id={apiKey.id}
       data-revoked={revoked ? "true" : "false"}
+      data-expired={expired ? "true" : "false"}
       style={{
         background: "var(--surface-0)",
         border: "1px solid var(--border)",
         borderRadius: 7,
-        opacity: revoked ? 0.55 : 1,
+        opacity: revoked || expired ? 0.55 : 1,
       }}
     >
       <button
@@ -470,6 +517,22 @@ function ApiKeyRow({
             {apiKey.prefix}…
           </div>
         </div>
+        {expired && (
+          <span
+            style={{
+              fontFamily: "var(--mono)",
+              fontSize: 10.5,
+              letterSpacing: "0.05em",
+              textTransform: "uppercase",
+              color: "var(--danger)",
+              border: "1px solid var(--danger)",
+              borderRadius: 4,
+              padding: "1px 6px",
+            }}
+          >
+            Expired
+          </span>
+        )}
         <div style={{ fontSize: 11, color: "var(--text-dim)", textAlign: "right" }}>
           <div data-api-key-permissions style={{ fontFamily: "var(--mono)" }}>{permissions}</div>
           <div data-api-key-scope>{status}</div>
@@ -654,13 +717,15 @@ function CreateApiKeyDialog({
   loading: boolean;
   error: string | null;
   onClose: () => void;
-  onCreate: (input: { name: string; coreIds: string[] | null; permissions: ApiKeyPermission[] }) => void;
+  onCreate: (input: { name: string; coreIds: string[] | null; permissions: ApiKeyPermission[]; expiresAt: number | null }) => void;
 }) {
   const [name, setName] = useState("");
   // No Core scope is chosen until the operator chooses one (#688): All Cores is never the silent default.
   const [allCores, setAllCores] = useState<boolean | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [permissions, setPermissions] = useState<Set<ApiKeyPermission>>(new Set<ApiKeyPermission>(["read"]));
+  const [expiry, setExpiry] = useState<ExpiryChoice>("never");
+  const [customDate, setCustomDate] = useState("");
 
   const toggle = (id: string) => {
     setSelected((prev) => {
@@ -680,7 +745,8 @@ function CreateApiKeyDialog({
   };
 
   const scopeChosen = allCores === true || (allCores === false && selected.size > 0);
-  const canSubmit = name.trim().length > 0 && permissions.size > 0 && scopeChosen;
+  const expiresAt = expiryInstant(expiry, customDate);
+  const canSubmit = name.trim().length > 0 && permissions.size > 0 && scopeChosen && expiresAt !== undefined;
 
   return (
     <Modal
@@ -701,6 +767,7 @@ function CreateApiKeyDialog({
                 name: name.trim(),
                 coreIds: allCores ? null : [...selected],
                 permissions: normalizeApiKeyPermissions(permissions),
+                expiresAt: expiresAt ?? null,
               })
             }
           >
@@ -718,6 +785,13 @@ function CreateApiKeyDialog({
           selected={selected}
           onAllCores={setAllCores}
           onToggle={toggle}
+        />
+        <ExpiryPicker
+          choice={expiry}
+          customDate={customDate}
+          onChoice={setExpiry}
+          onCustomDate={setCustomDate}
+          invalidCustom={expiry === "custom" && expiresAt === undefined && customDate !== ""}
         />
         <FormErrorBox error={error} />
       </div>
@@ -901,6 +975,71 @@ function PermissionPicker({
             </span>
           </label>
         ))}
+      </div>
+    </div>
+  );
+}
+
+const pickerControl: CSSProperties = {
+  padding: "7px 10px",
+  borderRadius: 7,
+  border: "1px solid var(--border)",
+  background: "var(--surface-0)",
+  color: "var(--text)",
+  fontFamily: "var(--mono)",
+  fontSize: 12,
+};
+
+/** Expiry (#689): never, a preset in days, or a date; an expired key answers 401 like a revoked one. */
+function ExpiryPicker({
+  choice,
+  customDate,
+  onChoice,
+  onCustomDate,
+  invalidCustom,
+}: {
+  choice: ExpiryChoice;
+  customDate: string;
+  onChoice: (choice: ExpiryChoice) => void;
+  onCustomDate: (date: string) => void;
+  invalidCustom: boolean;
+}) {
+  return (
+    <div data-expiry>
+      <div style={pickerHeading}>Expiry</div>
+      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+        <select
+          aria-label="Expiry"
+          value={choice}
+          onChange={(e) => onChoice(e.target.value as ExpiryChoice)}
+          style={pickerControl}
+        >
+          <option value="never">Never</option>
+          {API_KEY_EXPIRY_PRESET_DAYS.map((days) => (
+            <option key={days} value={`${days}d`}>
+              {days} days
+            </option>
+          ))}
+          <option value="custom">Custom date</option>
+        </select>
+        {choice === "custom" && (
+          <input
+            type="date"
+            aria-label="Expiry date"
+            aria-invalid={invalidCustom || undefined}
+            value={customDate}
+            min={tomorrowDay()}
+            onChange={(e) => onCustomDate(e.target.value)}
+            style={{ ...pickerControl, borderColor: invalidCustom ? "var(--danger)" : undefined }}
+          />
+        )}
+      </div>
+      <div style={{ fontSize: 11, color: "var(--text-dim)", marginTop: 6 }}>
+        {choice === "never"
+          ? "The key works until you revoke it."
+          : invalidCustom
+            ? "Pick a date after today."
+            : "After this the key gets 401, like a revoked one. Expiry cannot be changed later."}
       </div>
     </div>
   );

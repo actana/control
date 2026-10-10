@@ -32,6 +32,13 @@ import {
  * A key is created with its permissions (#688, `~/shared/api-key-permissions`)
  * and keeps them: the gate and the MCP server ask {@link hasPermission} before
  * a route or a tool runs. Keys from before #688 hold the full set.
+ *
+ * Expiry is optional (#689). A key created with `expiresAt` stops
+ * authenticating at that instant, and the caller cannot tell an expired key
+ * from a revoked or unknown one: all three are null from
+ * {@link authenticateApiKey}, so a 401 on every surface. A key created
+ * without one, and every key from before the column existed, lives until it
+ * is revoked.
  */
 
 const KEY_SECRET_BYTES = 32;
@@ -52,6 +59,8 @@ export type ApiKey = {
   permissions: ApiKeyPermission[];
   createdAt: number;
   revokedAt: number | null;
+  /** When the key stops authenticating on its own; null for a key that lives until it is revoked. */
+  expiresAt: number | null;
 };
 
 /** The Cores an authenticated key may reach. */
@@ -83,19 +92,27 @@ function toApiKey(row: ApiKeyRow, coreIds: string[]): ApiKey {
     permissions: permissionsOf(row),
     createdAt: row.createdAt,
     revokedAt: row.revokedAt,
+    expiresAt: row.expiresAt,
   };
+}
+
+/** True when a key with this `expiresAt` has expired at `now`. Null never expires. */
+export function isApiKeyExpired(expiresAt: number | null, now: number): boolean {
+  return expiresAt !== null && expiresAt <= now;
 }
 
 /**
  * Create a key for `ownerId`. `coreIds` omitted or null means every Core of the
  * owner; otherwise the key is restricted to those Cores, which must all be the
  * owner's. `permissions` is what the key may do: at least one, each a known
- * one; there is no default, the caller says. The returned `key` is the
+ * one; there is no default, the caller says. `expiresAt` omitted or null means
+ * the key lives until it is revoked; otherwise it is an epoch-ms instant after
+ * `now`, and the key stops authenticating there. The returned `key` is the
  * plaintext, and this is the only time it exists outside the caller.
  */
 export async function createApiKey(
   ownerId: number,
-  input: { name: string; coreIds?: string[] | null; permissions: readonly string[] },
+  input: { name: string; coreIds?: string[] | null; permissions: readonly string[]; expiresAt?: number | null },
   now = Date.now(),
 ): Promise<{ apiKey: ApiKey; key: string }> {
   const name = input.name.trim();
@@ -111,6 +128,10 @@ export async function createApiKey(
   if (unknown !== undefined) throw new ValidationError(`unknown API key permission: ${String(unknown).slice(0, 40)}`);
   const permissions = normalizeApiKeyPermissions(input.permissions as ApiKeyPermission[]);
   if (permissions.length === 0) throw new ValidationError("an API key needs at least one permission");
+  const expiresAt = input.expiresAt ?? null;
+  if (expiresAt !== null && (!Number.isSafeInteger(expiresAt) || expiresAt <= now)) {
+    throw new ValidationError("an API key's expiry is an instant in the future, in epoch milliseconds; leave it out for a key that never expires");
+  }
   const secret = randomBytes(KEY_SECRET_BYTES).toString("base64url");
   const key = `ak_${ownerId}_${secret}`;
   const result = await insertApiKey(
@@ -124,6 +145,7 @@ export async function createApiKey(
       permissions,
       createdAt: now,
       revokedAt: null,
+      expiresAt,
     },
     coreIds,
   );
@@ -150,11 +172,11 @@ export async function revokeApiKey(ownerId: number, id: string, now = Date.now()
 
 /**
  * Resolve a presented key to the principal it runs as, or null for a key that
- * is malformed, unknown or revoked: the caller cannot tell which, and neither
- * can an attacker. The stored hash and the presented key's hash are both 32
- * bytes and are compared with `timingSafeEqual`.
+ * is malformed, unknown, revoked or expired at `now`: the caller cannot tell
+ * which, and neither can an attacker. The stored hash and the presented key's
+ * hash are both 32 bytes and are compared with `timingSafeEqual`.
  */
-export async function authenticateApiKey(presented: string): Promise<ApiKeyPrincipal | null> {
+export async function authenticateApiKey(presented: string, now = Date.now()): Promise<ApiKeyPrincipal | null> {
   const match = KEY_PATTERN.exec(presented);
   if (!match) return null;
   const ownerId = Number(match[1]);
@@ -165,7 +187,7 @@ export async function authenticateApiKey(presented: string): Promise<ApiKeyPrinc
     const stored = Buffer.from(row.keyHash, "hex");
     if (stored.length === presentedHash.length && timingSafeEqual(stored, presentedHash)) found = row;
   }
-  if (!found || found.revokedAt !== null) return null;
+  if (!found || found.revokedAt !== null || isApiKeyExpired(found.expiresAt, now)) return null;
   const permissions: ReadonlySet<ApiKeyPermission> = new Set(permissionsOf(found));
   if (found.allCores) return { ownerId: found.ownerId, keyId: found.id, scope: { allCores: true }, permissions };
   const coreIds = (await findApiKeyCoreIds(found.ownerId, [found.id])).get(found.id) ?? [];

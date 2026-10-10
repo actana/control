@@ -20,6 +20,8 @@ const createBody = z.object({
   coreIds: z.array(z.string().min(1)).nullable().optional(),
   /** What the key may do (#688). Required, at least one: there is no default set. */
   permissions: z.array(z.enum(API_KEY_PERMISSIONS)).min(1),
+  /** Omitted or null: the key lives until it is revoked. Otherwise the epoch-ms instant it expires (#689). */
+  expiresAt: z.number().int().nullable().optional(),
 });
 
 const NO_STORE = { "cache-control": "no-store" };

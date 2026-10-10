@@ -45,7 +45,7 @@ describe("the api_keys table", () => {
   it("has no column that could hold the plaintext key", async () => {
     const { rows } = await db.pool.query(`select column_name from information_schema.columns where table_name = 'api_keys'`);
     expect(rows.map((r) => String(r.column_name)).sort()).toEqual(
-      ["all_cores", "created_at", "id", "key_hash", "name", "owner_id", "permissions", "prefix", "revoked_at"].sort(),
+      ["all_cores", "created_at", "expires_at", "id", "key_hash", "name", "owner_id", "permissions", "prefix", "revoked_at"].sort(),
     );
   });
 
@@ -68,6 +68,15 @@ describe("the api_keys table", () => {
       { id: "p-read", permissions: ["read"] },
       { id: "p-write", permissions: ["tasks:write", "agents:write"] },
     ]);
+  });
+
+  it("has a nullable bigint expires_at with no default, so a key is 'never' unless it says otherwise (#689)", async () => {
+    const { rows } = await db.pool.query(
+      `select data_type, is_nullable, column_default from information_schema.columns where table_name = 'api_keys' and column_name = 'expires_at'`,
+    );
+    expect(rows[0]).toEqual({ data_type: "bigint", is_nullable: "YES", column_default: null });
+    await insertKey("e-default");
+    expect((await db.pool.query("select expires_at from api_keys where id = 'e-default'")).rows[0]).toEqual({ expires_at: null });
   });
 
   it("keeps a key hash unique", async () => {
@@ -125,7 +134,7 @@ describe("keys created before #688", () => {
         "insert into api_keys (id, owner_id, name, prefix, key_hash, all_cores, created_at) values ('legacy', 1, 'legacy', 'ak_1_abcdef', 'h-legacy', true, 1), ('legacy-revoked', 1, 'r', 'ak_1_abcdef', 'h-r', false, 1)",
       );
       await old.pool.query("update api_keys set revoked_at = 2 where id = 'legacy-revoked'");
-      expect(await runMigrations(old.pool, all)).toEqual(["0010_panel_api_key_permissions"]);
+      expect(await runMigrations(old.pool, all.slice(0, before + 1))).toEqual(["0010_panel_api_key_permissions"]);
       const { rows } = await old.pool.query(
         "select id, permissions, all_cores, revoked_at::int as revoked_at from api_keys order by id",
       );
@@ -137,6 +146,38 @@ describe("keys created before #688", () => {
       await expect(
         old.pool.query("insert into api_keys (id, owner_id, name, prefix, key_hash, created_at) values ('new', 1, 'n', 'p', 'h-n', 1)"),
       ).rejects.toThrow(/permissions/);
+    } finally {
+      await old.close();
+    }
+  });
+});
+
+describe("keys created before #689", () => {
+  it("are left with no expiry by the migration, so they keep working as they did", { timeout: 30_000 }, async () => {
+    const all = bundledPanelMigrations();
+    const at = all.findIndex((m) => m.tag === "0011_panel_api_key_expiry");
+    expect(at).toBeGreaterThan(0);
+    const old = await createTestDb({ env: {}, migrations: all.slice(0, at) });
+    try {
+      await old.pool.query(
+        "insert into operator (id, name, password_hash, created_at, password_changed_at) values (1, 'o', 'h', 1, 1)",
+      );
+      const { rows: cols } = await old.pool.query(
+        "select column_name from information_schema.columns where table_name = 'api_keys' and column_name = 'expires_at'",
+      );
+      expect(cols).toEqual([]);
+      // #688 (0010) adds a permissions column with no default; when it is in the chain the row must name its permissions.
+      const { rows: hasPermissions } = await old.pool.query(
+        "select 1 from information_schema.columns where table_name = 'api_keys' and column_name = 'permissions'",
+      );
+      await old.pool.query(
+        hasPermissions.length
+          ? "insert into api_keys (id, owner_id, name, prefix, key_hash, permissions, created_at) values ('legacy', 1, 'legacy', 'ak_1_abcdef', 'h-legacy', '{read}', 1)"
+          : "insert into api_keys (id, owner_id, name, prefix, key_hash, created_at) values ('legacy', 1, 'legacy', 'ak_1_abcdef', 'h-legacy', 1)",
+      );
+      expect(await runMigrations(old.pool, all)).toEqual(["0011_panel_api_key_expiry"]);
+      const { rows } = await old.pool.query("select id, expires_at, revoked_at from api_keys");
+      expect(rows).toEqual([{ id: "legacy", expires_at: null, revoked_at: null }]);
     } finally {
       await old.close();
     }

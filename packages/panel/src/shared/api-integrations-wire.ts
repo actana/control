@@ -18,6 +18,8 @@ export type ApiKeyView = {
   permissions: ApiKeyPermission[];
   createdAt: number;
   revokedAt: number | null;
+  /** When the key expires, or null for a key that lives until it is revoked (#689). */
+  expiresAt: number | null;
 };
 
 /** A webhook as the owner sees it, plus the newest delivery when one exists. */
