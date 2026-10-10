@@ -88,7 +88,7 @@ const markDefs = (id) => `
 </linearGradient>
 <clipPath id="clip_${id}"><rect width="24" height="24" fill="white"/></clipPath>`
 
-// JetBrains Mono is the product's primary UI font (Studio look, spec 12) —
+// JetBrains Mono is the product's primary UI font (Studio look, ADR 0015) —
 // every rendered asset uses it so the brand type is consistent with the app.
 const jbmono = `'JetBrains Mono', monospace`
 

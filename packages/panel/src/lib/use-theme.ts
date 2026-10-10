@@ -6,7 +6,7 @@ export type Theme = "system" | "light" | "dark";
 export type ResolvedTheme = "light" | "dark";
 
 const KEY = "mc:theme";
-// Pre-spec-12 key (dot, not colon). Read once as a fallback so an operator's
+// Pre-Studio-look key (before ADR 0015) (dot, not colon). Read once as a fallback so an operator's
 // pinned dark/light choice survives the upgrade, then rewritten under KEY.
 const LEGACY_KEY = "mc.theme";
 
@@ -25,7 +25,7 @@ export function readCachedTheme(): Theme {
     const value = window.localStorage.getItem(KEY);
     if (value === "light" || value === "dark") return value;
     if (value === null) {
-      // One-time migration of the pre-spec-12 pinned choice.
+      // One-time migration of the pre-Studio-look pinned choice.
       const legacy = window.localStorage.getItem(LEGACY_KEY);
       if (legacy === "light" || legacy === "dark") {
         window.localStorage.setItem(KEY, legacy);

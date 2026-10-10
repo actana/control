@@ -401,7 +401,7 @@ describe("settings API", () => {
     }
   });
 
-  // Spec 12: the theming keys are gone from the settings surface. A stale
+  // ADR 0015: the theming keys are gone from the settings surface. A stale
   // renderer writing any of them must fail loudly (strict schema -> 400), not
   // silently no-op — mirrors the spec-07 dropped-key cases above.
   it.each([

@@ -29,7 +29,7 @@ const LEGACY_PANEL_ALIASES: Record<string, SettingsPanelId> = {
   session: "interface",
   // Experimental graduated; old links now open the main settings page.
   beta: "general",
-  // The multi-theme system collapsed into the single Appearance page (spec 12).
+  // The multi-theme system collapsed into the single Appearance page (ADR 0015).
   theme: "appearance",
 };
 
