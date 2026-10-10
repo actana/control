@@ -4,6 +4,7 @@
  * and webhook secrets are never in a list response — only in the create reply.
  */
 
+import type { ApiKeyPermission } from "./api-key-permissions";
 import type { WebhookEventType } from "./webhooks";
 
 /** What an API key is as the owner sees it. No hash and no plaintext. */
@@ -13,6 +14,8 @@ export type ApiKeyView = {
   prefix: string;
   allCores: boolean;
   coreIds: string[];
+  /** What the key may do (#688), in canonical order; never empty. */
+  permissions: ApiKeyPermission[];
   createdAt: number;
   revokedAt: number | null;
 };

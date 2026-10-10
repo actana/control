@@ -10,6 +10,11 @@ import {
 } from "../repositories/api-keys.repo";
 import { NotFoundError, ValidationError } from "../errors";
 import { newId } from "./_ids";
+import {
+  isApiKeyPermission,
+  normalizeApiKeyPermissions,
+  type ApiKeyPermission,
+} from "~/shared/api-key-permissions";
 
 /**
  * API keys (#572): credentials a user creates for the public REST API.
@@ -23,6 +28,10 @@ import { newId } from "./_ids";
  * Revocation is final. {@link revokeApiKey} stamps `revoked_at` once, the
  * database refuses to change it afterwards, and a revoked key never
  * authenticates again.
+ *
+ * A key is created with its permissions (#688, `~/shared/api-key-permissions`)
+ * and keeps them: the gate and the MCP server ask {@link hasPermission} before
+ * a route or a tool runs. Keys from before #688 hold the full set.
  */
 
 const KEY_SECRET_BYTES = 32;
@@ -39,6 +48,8 @@ export type ApiKey = {
   allCores: boolean;
   /** The Cores a restricted key reaches; empty when {@link ApiKey.allCores}. */
   coreIds: string[];
+  /** What the key may do, in canonical order. Never empty. */
+  permissions: ApiKeyPermission[];
   createdAt: number;
   revokedAt: number | null;
 };
@@ -46,10 +57,20 @@ export type ApiKey = {
 /** The Cores an authenticated key may reach. */
 export type ApiKeyScope = { allCores: true } | { allCores: false; coreIds: ReadonlySet<string> };
 
-export type ApiKeyPrincipal = { ownerId: number; keyId: string; scope: ApiKeyScope };
+export type ApiKeyPrincipal = {
+  ownerId: number;
+  keyId: string;
+  scope: ApiKeyScope;
+  permissions: ReadonlySet<ApiKeyPermission>;
+};
 
 function hashKey(key: string): Buffer {
   return createHash("sha256").update(key).digest();
+}
+
+/** A row's permissions as the known set, in canonical order. The check constraint keeps the column to known values. */
+function permissionsOf(row: ApiKeyRow): ApiKeyPermission[] {
+  return normalizeApiKeyPermissions(row.permissions.filter(isApiKeyPermission));
 }
 
 function toApiKey(row: ApiKeyRow, coreIds: string[]): ApiKey {
@@ -59,6 +80,7 @@ function toApiKey(row: ApiKeyRow, coreIds: string[]): ApiKey {
     prefix: row.prefix,
     allCores: row.allCores,
     coreIds: row.allCores ? [] : coreIds,
+    permissions: permissionsOf(row),
     createdAt: row.createdAt,
     revokedAt: row.revokedAt,
   };
@@ -67,12 +89,13 @@ function toApiKey(row: ApiKeyRow, coreIds: string[]): ApiKey {
 /**
  * Create a key for `ownerId`. `coreIds` omitted or null means every Core of the
  * owner; otherwise the key is restricted to those Cores, which must all be the
- * owner's. The returned `key` is the plaintext, and this is the only time it
- * exists outside the caller.
+ * owner's. `permissions` is what the key may do: at least one, each a known
+ * one; there is no default, the caller says. The returned `key` is the
+ * plaintext, and this is the only time it exists outside the caller.
  */
 export async function createApiKey(
   ownerId: number,
-  input: { name: string; coreIds?: string[] | null },
+  input: { name: string; coreIds?: string[] | null; permissions: readonly string[] },
   now = Date.now(),
 ): Promise<{ apiKey: ApiKey; key: string }> {
   const name = input.name.trim();
@@ -84,6 +107,10 @@ export async function createApiKey(
   if (coreIds && coreIds.length === 0) {
     throw new ValidationError("a restricted API key needs at least one Core; leave the Cores out to reach every Core");
   }
+  const unknown = input.permissions.find((p) => !isApiKeyPermission(p));
+  if (unknown !== undefined) throw new ValidationError(`unknown API key permission: ${String(unknown).slice(0, 40)}`);
+  const permissions = normalizeApiKeyPermissions(input.permissions as ApiKeyPermission[]);
+  if (permissions.length === 0) throw new ValidationError("an API key needs at least one permission");
   const secret = randomBytes(KEY_SECRET_BYTES).toString("base64url");
   const key = `ak_${ownerId}_${secret}`;
   const result = await insertApiKey(
@@ -94,6 +121,7 @@ export async function createApiKey(
       prefix: `ak_${ownerId}_${secret.slice(0, PREFIX_SECRET_CHARS)}`,
       keyHash: hashKey(key).toString("hex"),
       allCores: coreIds === null,
+      permissions,
       createdAt: now,
       revokedAt: null,
     },
@@ -138,12 +166,23 @@ export async function authenticateApiKey(presented: string): Promise<ApiKeyPrinc
     if (stored.length === presentedHash.length && timingSafeEqual(stored, presentedHash)) found = row;
   }
   if (!found || found.revokedAt !== null) return null;
-  if (found.allCores) return { ownerId: found.ownerId, keyId: found.id, scope: { allCores: true } };
+  const permissions: ReadonlySet<ApiKeyPermission> = new Set(permissionsOf(found));
+  if (found.allCores) return { ownerId: found.ownerId, keyId: found.id, scope: { allCores: true }, permissions };
   const coreIds = (await findApiKeyCoreIds(found.ownerId, [found.id])).get(found.id) ?? [];
-  return { ownerId: found.ownerId, keyId: found.id, scope: { allCores: false, coreIds: new Set(coreIds) } };
+  return { ownerId: found.ownerId, keyId: found.id, scope: { allCores: false, coreIds: new Set(coreIds) }, permissions };
 }
 
 /** Whether a key's scope reaches a Core. */
 export function scopeReaches(scope: ApiKeyScope, coreId: string): boolean {
   return scope.allCores || scope.coreIds.has(coreId);
+}
+
+/** Whether a key may do what `permission` covers (#688). */
+export function hasPermission(principal: Pick<ApiKeyPrincipal, "permissions">, permission: ApiKeyPermission): boolean {
+  return principal.permissions.has(permission);
+}
+
+/** The 403 a key without a permission gets, worded once for REST and MCP alike. */
+export function missingPermissionMessage(permission: ApiKeyPermission): string {
+  return `this API key lacks the ${permission} permission`;
 }

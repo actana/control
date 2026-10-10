@@ -3,6 +3,7 @@ import { forbidden, json, parseJsonBody, rethrowUnlessDomain } from "./_helpers"
 import { HTTP_CREATED } from "~/shared/http-status";
 import type { ApiPrincipal } from "../api-key-auth";
 import { createApiKey, listApiKeys, revokeApiKey } from "../services/api-keys";
+import { API_KEY_PERMISSIONS } from "~/shared/api-key-permissions";
 
 /**
  * The owner's API keys: create, list, revoke (#572). Only the Operator's
@@ -17,6 +18,8 @@ const createBody = z.object({
   name: z.string(),
   /** Omitted or null: every Core. Otherwise only these Cores. */
   coreIds: z.array(z.string().min(1)).nullable().optional(),
+  /** What the key may do (#688). Required, at least one: there is no default set. */
+  permissions: z.array(z.enum(API_KEY_PERMISSIONS)).min(1),
 });
 
 const NO_STORE = { "cache-control": "no-store" };

@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { ALL_API_KEY_PERMISSIONS } from "~/shared/api-key-permissions";
 import { closePanelTestDb, openPanelTestDb } from "./_panel-test-db";
 
 /**
@@ -21,6 +22,7 @@ const key = (ownerId: number, id: string, prefix = "ak_p") => ({
   prefix,
   keyHash: `hash-${id}`,
   allCores: true,
+  permissions: [...ALL_API_KEY_PERMISSIONS],
   createdAt: 10,
   revokedAt: null,
 });

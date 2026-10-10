@@ -4,6 +4,7 @@ import { act, cleanup, fireEvent, render, screen, within } from "@testing-librar
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { KeybindingsProvider } from "~/lib/keybindings/store";
 import type { ApiKeyView, WebhookView } from "~/shared/api-integrations-wire";
+import { ALL_API_KEY_PERMISSIONS } from "~/shared/api-key-permissions";
 import { API_KEY_PLACEHOLDER, mcpAddCommand } from "~/shared/api-integrations-wire";
 
 /**
@@ -20,6 +21,7 @@ const KEYS: ApiKeyView[] = [
     prefix: "ak_1_3f9a12",
     allCores: true,
     coreIds: [],
+    permissions: [...ALL_API_KEY_PERMISSIONS],
     createdAt: Date.now() - 4 * 60_000,
     revokedAt: null,
   },
@@ -29,6 +31,7 @@ const KEYS: ApiKeyView[] = [
     prefix: "ak_1_91bc00",
     allCores: false,
     coreIds: ["core-a", "core-b"],
+    permissions: ["read"],
     createdAt: Date.now() - 2 * 3_600_000,
     revokedAt: null,
   },
@@ -68,6 +71,7 @@ const { api } = vi.hoisted(() => {
         prefix: "ak_1_aabbcc",
         allCores: false,
         coreIds: ["core-a"],
+        permissions: ["read"],
         createdAt: Date.now(),
         revokedAt: null,
       } satisfies ApiKeyView,
@@ -80,6 +84,7 @@ const { api } = vi.hoisted(() => {
         prefix: "ak_1_3f9a12",
         allCores: true,
         coreIds: [],
+        permissions: [...ALL_API_KEY_PERMISSIONS],
         createdAt: Date.now(),
         revokedAt: Date.now(),
       } satisfies ApiKeyView,
@@ -203,6 +208,63 @@ describe("Settings › API & integrations", () => {
     expect(screen.getByText(/last delivery 200/)).toBeTruthy();
   });
 
+  it("shows each key's permissions next to its Core scope (#688)", async () => {
+    await act(async () => {
+      mount();
+    });
+    const full = (await screen.findByText("ci-deploy")).closest("[data-api-key-id]") as HTMLElement;
+    expect(full.querySelector("[data-api-key-permissions]")!.textContent).toBe("read · tasks:write · agents:write");
+    expect(full.querySelector("[data-api-key-scope]")!.textContent).toMatch(/^All Cores · created/);
+    const readOnly = screen.getByText("studio").closest("[data-api-key-id]") as HTMLElement;
+    expect(readOnly.querySelector("[data-api-key-permissions]")!.textContent).toBe("read");
+    expect(readOnly.querySelector("[data-api-key-scope]")!.textContent).toMatch(/^workstation-berlin, build-box-01 · created/);
+  });
+
+  it("asks for the permissions and the Core scope: read is preselected, no scope is, and Create waits for both (#688)", async () => {
+    await act(async () => {
+      mount();
+    });
+    await screen.findByText("ci-deploy");
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /Create API key/i }));
+    });
+    const dialog = screen.getByRole("dialog");
+    const create = () => within(dialog).getByRole("button", { name: /^Create$/i }) as HTMLButtonElement;
+    const box = (name: string) => within(dialog).getByLabelText(name) as HTMLInputElement;
+    expect(box("read").checked).toBe(true);
+    expect(box("tasks:write").checked).toBe(false);
+    expect(box("agents:write").checked).toBe(false);
+    expect(within(dialog).getByText(/Create and delete Agents/)).toBeTruthy();
+    expect((within(dialog).getByLabelText(/^All Cores$/i) as HTMLInputElement).checked).toBe(false);
+    expect((within(dialog).getByLabelText(/Only these Cores/i) as HTMLInputElement).checked).toBe(false);
+
+    await act(async () => {
+      fireEvent.change(within(dialog).getByLabelText(/^Name$/i), { target: { value: "bot" } });
+    });
+    expect(create().disabled).toBe(true); // a name and read, but no Core scope chosen yet
+    await act(async () => {
+      fireEvent.click(within(dialog).getByLabelText(/^All Cores$/i));
+    });
+    expect(create().disabled).toBe(false);
+    await act(async () => {
+      fireEvent.click(box("read"));
+    });
+    expect(create().disabled).toBe(true); // a scope, but no permission left
+    await act(async () => {
+      fireEvent.click(box("agents:write"));
+      fireEvent.click(box("read"));
+      fireEvent.click(box("tasks:write"));
+    });
+    await act(async () => {
+      fireEvent.click(create());
+    });
+    expect(api.createApiKey).toHaveBeenCalledWith({
+      name: "bot",
+      coreIds: null,
+      permissions: ["read", "tasks:write", "agents:write"],
+    });
+  });
+
   it("creates a key restricted to chosen Cores and shows the plaintext exactly once", async () => {
     await act(async () => {
       mount();
@@ -214,13 +276,13 @@ describe("Settings › API & integrations", () => {
     const dialog = screen.getByRole("dialog");
     await act(async () => {
       fireEvent.change(within(dialog).getByLabelText(/^Name$/i), { target: { value: "laptop" } });
-      fireEvent.click(within(dialog).getByLabelText(/All Cores/i));
+      fireEvent.click(within(dialog).getByLabelText(/Only these Cores/i));
       fireEvent.click(within(dialog).getByLabelText(/workstation-berlin/i));
     });
     await act(async () => {
       fireEvent.click(within(dialog).getByRole("button", { name: /^Create$/i }));
     });
-    expect(api.createApiKey).toHaveBeenCalledWith({ name: "laptop", coreIds: ["core-a"] });
+    expect(api.createApiKey).toHaveBeenCalledWith({ name: "laptop", coreIds: ["core-a"], permissions: ["read"] });
     expect(screen.getByText(/ak_1_PLAINTEXT_SECRET/)).toBeTruthy();
     expect(screen.getByText(/only time the key/i)).toBeTruthy();
 
@@ -245,6 +307,7 @@ describe("Settings › API & integrations", () => {
     const dialog = screen.getByRole("dialog");
     await act(async () => {
       fireEvent.change(within(dialog).getByLabelText(/^Name$/i), { target: { value: "x" } });
+      fireEvent.click(within(dialog).getByLabelText(/^All Cores$/i));
       fireEvent.click(within(dialog).getByRole("button", { name: /^Create$/i }));
     });
     expect(screen.getByText(/ak_1_PLAINTEXT_SECRET/)).toBeTruthy();

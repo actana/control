@@ -341,7 +341,12 @@ export const webhookDeliveries = pgTable(
  * default, a key that reaches every Core of its owner; false means it reaches
  * only the Cores in `api_key_cores`, so a restricted key whose Cores were all
  * forgotten reaches none. `revoked_at` is set once and never cleared: a
- * trigger in the migration refuses to change or clear it.
+ * trigger in the migration refuses to change or clear it. `permissions` (#688)
+ * is what the key may do, from `~/shared/api-key-permissions`: at least one,
+ * each a known one, fixed at creation. There is no column default on purpose,
+ * so no insert path mints a key with every permission by omission; the
+ * migration that added the column gave the keys that already existed the full
+ * set, which is what they had.
  */
 export const apiKeys = pgTable(
   "api_keys",
@@ -354,10 +359,17 @@ export const apiKeys = pgTable(
     prefix: text("prefix").notNull(),
     keyHash: text("key_hash").notNull().unique(),
     allCores: boolean("all_cores").notNull().default(true),
+    permissions: text("permissions").array().notNull(),
     createdAt: epochMs("created_at").notNull(),
     revokedAt: epochMs("revoked_at"),
   },
-  (t) => [index("api_keys_owner_prefix_idx").on(t.ownerId, t.prefix)],
+  (t) => [
+    index("api_keys_owner_prefix_idx").on(t.ownerId, t.prefix),
+    check(
+      "api_keys_permissions_check",
+      sql`cardinality(${t.permissions}) > 0 and ${t.permissions} <@ array['read', 'tasks:write', 'agents:write']::text[]`,
+    ),
+  ],
 );
 
 /** The Cores a restricted key reaches. `owner_id` repeats the key's owner so the guard's rule holds here too. */
