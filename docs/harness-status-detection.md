@@ -535,6 +535,17 @@ the second of two gates. The first is *project-layer trust*: Codex asks
 > the directory allows project-local config, **hooks**, and exec policies to
 > load.
 
+On codex-cli 0.160.0 the same gate is worded "Folder access — Trust this
+folder? Codex can read, edit, and run files here, subject to your permission
+settings. … Your trust decision will be saved." over "1. Trust and continue" /
+"2. Back to Agent Command Center", and it opens only when the directory is
+inside a git repository; a plain directory goes straight to the composer.
+Answering it writes `[projects."<path>"] trust_level = "trusted"` to
+`~/.codex/config.toml`, the same table the Core's pre-trust writer records
+(#685, checked against 0.160.0 in #702: a repository the writer has recorded
+opens with no dialog). The setup check recognises both wordings
+(`SETUP_ONLY_DIALOGS` in `harness-setup.ts`).
+
 Until that is answered, `<cwd>/.codex/hooks.json` is not loaded at all, so there
 is nothing for the hook-trust bypass to lift. `--dangerously-bypass-hook-trust`
 lifts hook trust only; it does not answer this prompt, and the Core does not

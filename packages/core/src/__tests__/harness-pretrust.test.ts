@@ -98,6 +98,26 @@ describe("codex: ~/.codex/config.toml [projects.\"dir\"] trust_level", () => {
     expect(read(file)).toBe('[projects."/home/core"]\ntrust_level = "trusted"\n');
   });
 
+  it("writes the table codex 0.160.0 itself writes, beside one it wrote by hand (#702)", () => {
+    // `~/.codex/config.toml` of a throwaway home after codex-cli 0.160.0's "Trust this folder?" dialog was
+    // answered with "Trust and continue" for `/home/core/.cache/codex-702-capture/repo2`, verbatim.
+    const codexWrote =
+      '[tui]\nscreen_reader_detection_done = true\n\n[tui.model_availability_nux]\n"gpt-6.1-sol" = 1\n\n' +
+      '[projects."/home/core/.cache/codex-702-capture/repo2"]\ntrust_level = "trusted"\n';
+    const file = path.join(dir, "config.toml");
+    fs.writeFileSync(file, codexWrote);
+    expect(trustCodex(file, ["/home/core/.cache/codex-702-capture/repo2"])).toBe("unchanged");
+    expect(trustCodex(file, ["/home/core/.cache/codex-702-capture/repo"])).toBe("written");
+    // What the file held when codex 0.160.0, started again in `repo`, opened on its composer with no dialog
+    // (`fixtures/codex-0.160.0-trusted-boot.txt`).
+    expect(read(file)).toBe(codexWrote + '\n[projects."/home/core/.cache/codex-702-capture/repo"]\ntrust_level = "trusted"\n');
+    const parsed = parseToml(read(file));
+    if (parsed) {
+      expect(parsed.projects["/home/core/.cache/codex-702-capture/repo"]).toEqual({ trust_level: "trusted" });
+      expect(parsed.projects["/home/core/.cache/codex-702-capture/repo2"]).toEqual({ trust_level: "trusted" });
+    }
+  });
+
   it("appends to a file with other keys and tables, keeping them", () => {
     const file = path.join(dir, "config.toml");
     const before = 'model = "gpt-5"\n\n[projects."/other"]\ntrust_level = "untrusted"\n\n[tui]\ntheme = "dark"\n';

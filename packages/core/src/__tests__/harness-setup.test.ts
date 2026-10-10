@@ -6,7 +6,8 @@ import * as path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import type { CoreLinkHarnessAvailabilityMap } from "@actana/shared/sdk-link-frames";
 import { needsSetupDialog } from "@actana/shared/harness-needs-setup";
-import { HarnessSetup, SETUP_RECHECK_BASE_MS, SETUP_RECHECK_MAX_MS, type SetupRun } from "../harness-setup";
+import { matchBlockingDialog } from "../harness-prompt-delivery";
+import { HarnessSetup, SETUP_ONLY_DIALOGS, SETUP_RECHECK_BASE_MS, SETUP_RECHECK_MAX_MS, type SetupRun } from "../harness-setup";
 
 const TRUST_DIALOG = readFileSync(path.resolve(__dirname, "fixtures/claude-code-2.1.228-folder-trust.txt"), "utf8");
 const COMPOSER = readFileSync(path.resolve(__dirname, "fixtures/claude-code-2.1.228-composer.txt"), "utf8");
@@ -116,10 +117,37 @@ describe("HarnessSetup", () => {
   it("recognises codex's real directory-trust dialog, and not its composer (#685)", async () => {
     const dialog = readFileSync(path.resolve(__dirname, "fixtures/codex-0.153.0-directory-trust.txt"), "utf8");
     const composer = readFileSync(path.resolve(__dirname, "fixtures/codex-0.153.0-composer.txt"), "utf8");
-    const codex = { codex: { status: "available" as const, path: "/bin/codex", version: "0.160.0" } };
+    const codex = { codex: { status: "available" as const, path: "/bin/codex", version: "0.153.0" } };
     const blocked = await setup({ codex: dialog }).subject.apply(codex);
     expect(needsSetupDialog(blocked.codex!.reason)).toBe("directory-trust");
     expect((await setup({ codex: composer }).subject.apply(codex)).codex!.status).toBe("available");
+  });
+
+  // codex-cli 0.160.0, captured live at 120x40 the way the setup check starts it (no prompt, no flags) in a
+  // throwaway home: the reworded "Folder access / Trust this folder?" dialog in an untrusted git repository, the
+  // composer in the same repository after `trustCodex` wrote `[projects."<dir>"] trust_level = "trusted"`, and the
+  // composer in a plain directory, where 0.160.0 asks nothing (#702).
+  const codex160 = (fixture: string) => readFileSync(path.resolve(__dirname, `fixtures/codex-0.160.0-${fixture}.txt`), "utf8");
+  const codex160Entry = { codex: { status: "available" as const, path: "/home/core/.local/bin/codex", version: "0.160.0" } };
+
+  it("recognises codex 0.160.0's reworded folder-trust dialog (#702)", async () => {
+    const out = await setup({ codex: codex160("folder-trust") }).subject.apply(codex160Entry);
+    expect(out.codex!.status).toBe("missing");
+    expect(needsSetupDialog(out.codex!.reason)).toBe("directory-trust");
+    // The menu itself ("1. Trust and continue" / "2. Back to Agent Command Center") is laid out with absolute cursor
+    // moves, which `readDialogOptions` cannot read on codex (issue 469); the setup check needs only the match.
+    expect(matchBlockingDialog(codex160("folder-trust"), SETUP_ONLY_DIALOGS)?.spec.id).toBe("directory-trust");
+  });
+
+  it("reports codex 0.160.0 available once the projects writer has recorded the repository (#702)", async () => {
+    const out = await setup({ codex: codex160("trusted-boot") }).subject.apply(codex160Entry);
+    expect(out.codex!.status).toBe("available");
+    expect(matchBlockingDialog(codex160("trusted-boot"), SETUP_ONLY_DIALOGS)).toBeNull();
+  });
+
+  it("reports codex 0.160.0 available in a plain directory, where it opens no dialog (#702)", async () => {
+    const out = await setup({ codex: codex160("plain-dir-boot") }).subject.apply(codex160Entry);
+    expect(out.codex!.status).toBe("available");
   });
 
   it("clears the report once the dialog is gone", async () => {
