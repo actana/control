@@ -10,6 +10,7 @@ const { ConflictError, NotFoundError, ValidationError } = await import("../../er
 const {
   CoreHarnessesUnavailableError,
   HarnessMissingOnCoreError,
+  HarnessNotReadyError,
   createAgent,
   deleteAgent,
   ensureDefaultAgents,
@@ -145,6 +146,56 @@ describe("a harness the Core has", () => {
     await expect(resolveAgent(A, made.id, deps)).rejects.toBeInstanceOf(HarnessMissingOnCoreError);
     delete reported["core-1"];
     await expect(resolveAgent(A, made.id, deps)).rejects.toBeInstanceOf(CoreHarnessesUnavailableError);
+  });
+});
+
+describe("why a harness cannot run an Agent yet (#706)", () => {
+  const resolveWith = async (entry: CoreLinkHarnessAvailabilityMap[string] | null) => {
+    reported["core-1"] = available("claude-code", "codex");
+    const made = await createAgent(A, { coreId: "core-1", name: "n", harness: "codex" }, deps);
+    reported["core-1"] = entry ? { codex: entry } : {};
+    return resolveAgent(A, made.id, deps);
+  };
+
+  it("says not ready, not missing, while the harness is checking", async () => {
+    const err = await resolveWith({ status: "checking" }).catch((e) => e);
+    expect(err).toBeInstanceOf(HarnessNotReadyError);
+    expect(err).not.toBeInstanceOf(HarnessMissingOnCoreError);
+    expect(err).toMatchObject({ code: "harness_not_ready", coreId: "core-1", harness: "codex", state: "checking" });
+    expect(err.message).toBe("codex on this Core is not ready yet (checking)");
+  });
+
+  it("says not ready when the version probe failed", async () => {
+    await expect(resolveWith({ status: "outdated", reason: "version-check-failed" })).rejects.toMatchObject({ code: "harness_not_ready", state: "version check failed" });
+  });
+
+  it("says not ready when the probe itself threw or timed out", async () => {
+    const err = await resolveWith({ status: "missing", reason: "no answer within 5000 ms" }).catch((e) => e);
+    expect(err).toBeInstanceOf(HarnessNotReadyError);
+    expect(err.state).toBe("probe failed: no answer within 5000 ms");
+  });
+
+  it.each([
+    ["outdated", { status: "outdated", reason: "outdated", version: "1.2.0", requiredVersion: "1.4.0" }, "outdated: 1.2.0 installed, 1.4.0 or newer required"],
+    ["version-unknown", { status: "outdated", reason: "version-unknown" }, "outdated (version-unknown)"],
+    ["needs setup", { status: "missing", reason: "needs-setup: folder-trust" }, "needs setup: folder-trust"],
+    ["not found", { status: "missing", reason: "not-found" }, "missing (not-found)"],
+    ["disabled", { status: "missing", reason: "disabled" }, "missing (disabled)"],
+    ["not reported", null, "not reported"],
+  ] as const)("fails the Task with the reason for %s", async (_name, entry, detail) => {
+    const err = await resolveWith(entry as never).catch((e) => e);
+    expect(err).toBeInstanceOf(HarnessMissingOnCoreError);
+    expect(err.detail).toBe(detail);
+    expect(err.message).toBe(`this Core does not have codex available: ${detail}`);
+  });
+
+  it("keeps the old message when no detail is given", () => {
+    expect(new HarnessMissingOnCoreError("c", "codex").message).toBe("this Core does not have codex available");
+  });
+
+  it("still refuses to create an Agent on a harness that is checking", async () => {
+    reported["core-1"] = { codex: { status: "checking" } };
+    await expect(createAgent(A, { coreId: "core-1", name: "n", harness: "codex" }, deps)).rejects.toBeInstanceOf(HarnessMissingOnCoreError);
   });
 });
 
