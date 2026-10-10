@@ -13,7 +13,7 @@ import { formatRelativeTime } from "~/lib/format-relative-time";
 import { requestSessionOpen } from "~/lib/session-notification-store";
 import { TASK_STATUS_LABEL } from "~/lib/task-board";
 import { queryKeys, useArchivedSessions, useCoreAgents, useSessions, useTask } from "~/queries";
-import { FINISHED_TASK_STATUSES, canDeleteTask, canEditTask, parseTaskDispatchComment } from "~/shared/tasks";
+import { FINISHED_TASK_STATUSES, canDeleteTask, canEditTask, canStopTask, parseTaskDispatchComment } from "~/shared/tasks";
 import { taskFolderPath } from "~/shared/shared-files";
 import type { TaskCommentDto } from "~/shared/task-wire";
 import { TaskAttachments } from "~/components/views/TaskAttachments";
@@ -39,6 +39,8 @@ function topBarBottom(): number {
   return document.querySelector(".mc-topbar")?.getBoundingClientRect().bottom ?? 0;
 }
 
+const STOP_OFFLINE_HINT = "The Core is offline; the Task will be failed, its Session may keep running";
+
 function message(e: unknown): string | null {
   return e ? (e instanceof Error ? e.message : String(e)) : null;
 }
@@ -54,11 +56,14 @@ function OpenAttemptSession({
   coreId,
   sessionId,
   onOpened,
+  onStop,
 }: {
   attempt: number;
   coreId: string;
   sessionId: string;
   onOpened: () => void;
+  /** Present only on the current attempt of a running Task. */
+  onStop?: () => void;
 }) {
   const { cores } = useFleet();
   const router = useRouter({ warn: false });
@@ -102,6 +107,16 @@ function OpenAttemptSession({
       >
         Open session
       </Btn>
+      {onStop ? (
+        <Btn
+          variant="ghost"
+          icon="x"
+          title={coreReachable ? "Stop this Task: its Session is stopped and the Task fails" : STOP_OFFLINE_HINT}
+          onClick={onStop}
+        >
+          Stop
+        </Btn>
+      ) : null}
       {reason ? <span style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--text-dim)" }}>{reason}</span> : null}
     </div>
   );
@@ -126,6 +141,8 @@ export function TaskDetail({ taskId, onClose, focusComposer = false }: { taskId:
   const [attachments, setAttachments] = useState<TaskAttachment[]>([]);
   const [editing, setEditing] = useState<{ title: string; description: string } | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [stopping, setStopping] = useState<{ coreId: string } | null>(null);
+  const [stopReason, setStopReason] = useState("");
 
   // The drawer starts under the app top bar, so its header and Close stay in view.
   const [topOffset, setTopOffset] = useState(topBarBottom);
@@ -194,6 +211,24 @@ export function TaskDetail({ taskId, onClose, focusComposer = false }: { taskId:
     },
   });
 
+  const stop = useMutation({
+    mutationFn: (reason: string) => api.stopTask(taskId, reason ? { reason } : {}),
+    onSuccess: async () => {
+      setStopping(null);
+      setStopReason("");
+      await refresh();
+    },
+  });
+  const stopOutcome = stop.data?.session ?? null;
+  // Without a dispatch comment for the current attempt (the Session is still starting, the Panel restarted mid-start, or the
+  // comment failed to write) no per-attempt Stop exists, so the header offers the only one.
+  const hasCurrentDispatch =
+    !!task && comments.some((c) => c.authorKind === "system" && parseTaskDispatchComment(c.body)?.attempt === task.attemptCount);
+  const stopNotice =
+    stopOutcome && stopOutcome.outcome !== "stopped" && stopOutcome.outcome !== "not-running"
+      ? `The Task was failed, but its Session could not be stopped (${stopOutcome.outcome})${stopOutcome.detail ? `: ${stopOutcome.detail}` : ""}. It may still be running.`
+      : null;
+
   const finished = !!task && (FINISHED_TASK_STATUSES as readonly string[]).includes(task.status);
   const core = cores.find((c) => c.id === task?.coreId);
   const agent = agents.find((a) => a.id === task?.agent);
@@ -259,6 +294,18 @@ export function TaskDetail({ taskId, onClose, focusComposer = false }: { taskId:
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
               <h2 style={{ margin: 0, fontSize: 26 }}>{task.title}</h2>
               <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
+                {canStopTask(task.status) && !hasCurrentDispatch ? (
+                  <Btn
+                    variant="ghost"
+                    icon="x"
+                    onClick={() => {
+                      stop.reset();
+                      setStopping({ coreId: task.coreId ?? "" });
+                    }}
+                  >
+                    Stop
+                  </Btn>
+                ) : null}
                 <Btn
                   variant="ghost"
                   icon="pencil"
@@ -287,6 +334,7 @@ export function TaskDetail({ taskId, onClose, focusComposer = false }: { taskId:
             {agent ? <Badge>Agent: {agent.name}</Badge> : null}
           </div>
           {task.description && !editing ? <TaskMarkdown>{task.description}</TaskMarkdown> : null}
+          {stopNotice ? <FormErrorBox error={stopNotice} /> : null}
           {task.lastError ? <FormErrorBox error={task.lastError} /> : null}
           {task.status === "draft" || task.status === "assigned" ? (
             <div style={{ display: "flex", gap: 8 }}>
@@ -346,6 +394,14 @@ export function TaskDetail({ taskId, onClose, focusComposer = false }: { taskId:
                       coreId={dispatch.coreId}
                       sessionId={dispatch.sessionId}
                       onOpened={onClose}
+                      onStop={
+                        canStopTask(task.status) && dispatch.attempt === task.attemptCount
+                          ? () => {
+                              stop.reset();
+                              setStopping({ coreId: dispatch.coreId });
+                            }
+                          : undefined
+                      }
                     />
                   ) : null}
                 </article>
@@ -361,7 +417,7 @@ export function TaskDetail({ taskId, onClose, focusComposer = false }: { taskId:
                 variant="frame"
                 icon="refresh"
                 disabled={!hasBody || !finished || comment.isPending}
-                title={finished ? undefined : "Only a finished Task can be re-assigned"}
+                title={finished ? undefined : task.status === "in_progress" ? "Stop the Task first" : "Only a finished Task can be re-assigned"}
                 onClick={() => comment.mutate(true)}
               >
                 Comment &amp; re-assign
@@ -373,6 +429,36 @@ export function TaskDetail({ taskId, onClose, focusComposer = false }: { taskId:
             </div>
             <FormErrorBox error={message(comment.error) ?? message(move.error)} />
           </section>
+          <ConfirmDialog
+            open={!!stopping}
+            onClose={() => {
+              stop.reset();
+              setStopping(null);
+            }}
+            onConfirm={() => stop.mutate(stopReason.trim())}
+            title="Stop Task?"
+            confirmLabel="Stop"
+            variant="danger"
+            loading={stop.isPending}
+          >
+            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+              <p style={{ margin: 0, fontSize: 13, color: "var(--text-dim)", lineHeight: 1.5 }}>
+                Stop <strong style={{ color: "var(--text)" }}>{task.title}</strong>? Its Session is stopped and the Task fails; you can then re-assign it for a new attempt.
+              </p>
+              {stopping && cores.find((c) => c.id === stopping.coreId)?.dial.state !== "connected" ? (
+                <p style={{ margin: 0, fontSize: 13, color: "var(--warning)" }}>{STOP_OFFLINE_HINT}</p>
+              ) : null}
+              <input
+                aria-label="Reason"
+                placeholder="Reason (optional)"
+                value={stopReason}
+                maxLength={2000}
+                onChange={(e) => setStopReason(e.target.value)}
+                style={{ padding: "8px 10px", borderRadius: 6, border: "1px solid var(--border)", background: "transparent", color: "inherit", font: "inherit" }}
+              />
+              <FormErrorBox error={message(stop.error)} />
+            </div>
+          </ConfirmDialog>
           <ConfirmDialog
             open={confirmDelete}
             onClose={() => {

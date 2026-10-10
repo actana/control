@@ -20,6 +20,8 @@ const testDb = await openPanelTestDb();
 const { operatorSessionCookie, resetOperatorSessionForTests } = await import("./_operator-session");
 const tasksService = await import("../services/tasks");
 
+const { formatTaskDispatchComment } = await import("~/shared/tasks");
+
 const ORIGIN = "http://panel.example.test";
 const A = 1;
 
@@ -262,5 +264,87 @@ describe("v1 Task edit and delete (#722)", () => {
     expect((await call(`/api/v1/tasks/${t.id}`, { method: "PATCH", bearer: key, json: { title: "x" } })).status).toBe(403);
     expect((await call(`/api/v1/tasks/${t.id}`, { method: "DELETE", bearer: key })).status).toBe(403);
     expect((await tasksService.getTask(A, t.id)).title).toBe("on a");
+  });
+});
+
+describe("v1 Task stop (#723)", () => {
+  /** An in_progress Task with a dispatch comment for the current attempt, as the dispatcher leaves it. */
+  async function runningTask(key: string): Promise<string> {
+    const id = await v1Task(key, { title: "hung", coreId: "core-a", agent: "agent-a", startNow: true });
+    await tasksService.changeTaskStatus(A, id, "in_progress");
+    const task = await tasksService.getTask(A, id);
+    await tasksService.addTaskComment(A, id, {
+      authorKind: "system",
+      authorName: "Panel",
+      body: formatTaskDispatchComment({
+        attempt: task.attemptCount,
+        agentName: "A",
+        harness: "claude-code",
+        coreId: "core-a",
+        sessionId: "session_1",
+      }),
+    });
+    return id;
+  }
+  const commentBodies = async (id: string) => (await tasksService.listTaskComments(A, id)).map((c) => c.body);
+
+  it("stops an in_progress Task with a key: failed, a system comment, and the Core being offline is reported", async () => {
+    const { key } = await createKey();
+    const id = await runningTask(key);
+    const res = await call(`/api/v1/tasks/${id}/stop`, { method: "POST", bearer: key, json: { reason: "hung" } });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { task: { status: string }; session: { outcome: string; sessionId: string; coreId: string } };
+    expect(body.task.status).toBe("failed");
+    // No Core link in this test: the Core is offline, so the Task fails but the Session is unreachable.
+    expect(body.session).toMatchObject({ coreId: "core-a", sessionId: "session_1", outcome: "unreachable" });
+    expect((await commentBodies(id)).some((b) => b.startsWith("Stopped by ") && b.includes("hung"))).toBe(true);
+    expect((await tasksService.getTask(A, id)).status).toBe("failed");
+  });
+
+  it("accepts an empty body", async () => {
+    const { key } = await createKey();
+    const id = await runningTask(key);
+    const res = await call(`/api/v1/tasks/${id}/stop`, { method: "POST", bearer: key });
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { task: { status: string } }).task.status).toBe("failed");
+  });
+
+  it("answers 409 for a Task that is not in_progress, and 404 for a missing one", async () => {
+    const { key } = await createKey();
+    const draft = await v1Task(key);
+    const res = await call(`/api/v1/tasks/${draft}/stop`, { method: "POST", bearer: key });
+    expect(res.status).toBe(409);
+    expect(((await res.json()) as { error: string }).error).toMatch(/not running/);
+    expect((await tasksService.getTask(A, draft)).status).toBe("draft");
+    expect((await call("/api/v1/tasks/nope/stop", { method: "POST", bearer: key })).status).toBe(404);
+  });
+
+  it("answers 403 to a key that does not reach the Task's Core, and leaves the Task running", async () => {
+    const { key: all } = await createKey();
+    const id = await runningTask(all);
+    const { key } = await createKey({ name: "b only", coreIds: ["core-b"] });
+    expect((await call(`/api/v1/tasks/${id}/stop`, { method: "POST", bearer: key })).status).toBe(403);
+    expect((await tasksService.getTask(A, id)).status).toBe("in_progress");
+  });
+
+  it("needs a credential", async () => {
+    expect((await call("/api/v1/tasks/x/stop", { method: "POST" })).status).toBe(401);
+  });
+
+  it("lets the Task be re-assigned after a stop, and refuses it before, naming the stop call", async () => {
+    const { key } = await createKey();
+    const id = await runningTask(key);
+    const before = await call(`/api/v1/tasks/${id}/comments`, { method: "POST", bearer: key, json: { body: "again", reassign: true } });
+    expect(before.status).toBe(409);
+    expect(((await before.json()) as { error: string }).error).toMatch(/\/stop/);
+    const status = await call(`/api/v1/tasks/${id}/status`, { method: "POST", bearer: key, json: { status: "assigned" } });
+    expect(status.status).toBe(409);
+    expect(((await status.json()) as { error: string }).error).toMatch(/\/stop/);
+    expect((await tasksService.getTask(A, id)).status).toBe("in_progress");
+
+    expect((await call(`/api/v1/tasks/${id}/stop`, { method: "POST", bearer: key })).status).toBe(200);
+    const after = await call(`/api/v1/tasks/${id}/comments`, { method: "POST", bearer: key, json: { body: "again", reassign: true } });
+    expect(after.status).toBe(200);
+    expect(((await after.json()) as { task: { status: string } }).task.status).toBe("assigned");
   });
 });

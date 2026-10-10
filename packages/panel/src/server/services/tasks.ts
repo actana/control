@@ -22,7 +22,9 @@ import {
   EDITABLE_TASK_STATUSES,
   FINISHED_TASK_STATUSES,
   canMoveTask,
+  formatTaskStopComment,
   isTaskStatus,
+  parseTaskDispatchComment,
   statusesBefore,
   type CommentAuthorKind,
   type TaskStatus,
@@ -53,7 +55,11 @@ export class IllegalTaskTransitionError extends ConflictError {
     readonly from: TaskStatus,
     readonly to: TaskStatus,
   ) {
-    super(`a Task cannot move from ${from} to ${to}`);
+    super(
+      from === "in_progress" && (to === "assigned" || to === "draft")
+        ? `a Task cannot move from ${from} to ${to}: it is running. Stop it first (POST /api/v1/tasks/:id/stop, MCP stop_task, or Stop in the Task detail), then re-assign it`
+        : `a Task cannot move from ${from} to ${to}`,
+    );
     this.name = "IllegalTaskTransitionError";
   }
 }
@@ -75,6 +81,15 @@ export class TaskNotChangeableError extends ConflictError {
         : `a Task that is ${status} cannot be deleted while its Session runs. Wait for it to finish, then delete it`,
     );
     this.name = "TaskNotChangeableError";
+  }
+}
+
+/** A stop of a Task that is not running (#723). Same 409 family as {@link IllegalTaskTransitionError}. */
+export class TaskNotRunningError extends ConflictError {
+  readonly code = "illegal_task_transition";
+  constructor(readonly taskStatus: TaskStatus) {
+    super(`a Task that is ${taskStatus} is not running: only an in_progress Task can be stopped`);
+    this.name = "TaskNotRunningError";
   }
 }
 
@@ -394,6 +409,51 @@ export async function failTaskDispatch(ownerId: number, id: string, reason: stri
     body: `Dispatch failed: ${reason}`,
   });
   return move(ownerId, id, "failed", now, comment, ["in_progress"], { lastError: reason });
+}
+
+/**
+ * An operator stops a running Task (#723): `in_progress` to `failed` with a system
+ * comment ("Stopped by X: reason") and the reason as the last error, in one
+ * transaction. A Task that is not `in_progress` throws {@link TaskNotRunningError}.
+ * Stopping the Session itself is the caller's job (`task-dispatch/stop-task.ts`).
+ */
+export async function markTaskStopped(
+  ownerId: number,
+  id: string,
+  input: { stoppedBy: string; reason?: string | null },
+  now = Date.now(),
+): Promise<Task> {
+  const body = formatTaskStopComment(input);
+  const comment = cleanComment({ authorKind: "system", authorName: "Panel", body });
+  try {
+    return await move(ownerId, id, "failed", now, comment, ["in_progress"], { lastError: body });
+  } catch (err) {
+    if (err instanceof IllegalTaskTransitionError) throw new TaskNotRunningError(err.from);
+    throw err;
+  }
+}
+
+/**
+ * The Core and Session of the Task's current attempt, read from the newest dispatch
+ * comment whose attempt is `attempt` (default: the Task's attempt count now; a caller that stopped
+ * a particular attempt passes that one, so a newer attempt is never picked). Null when there is none (not
+ * dispatched yet, or the comment could not be written).
+ */
+export async function findCurrentTaskSession(
+  ownerId: number,
+  id: string,
+  attempt?: number,
+): Promise<{ coreId: string; sessionId: string; attempt: number } | null> {
+  const wanted = attempt ?? (await getTask(ownerId, id)).attemptCount;
+  const comments = await listTaskComments(ownerId, id);
+  for (const c of [...comments].reverse()) {
+    if (c.authorKind !== "system") continue;
+    const parsed = parseTaskDispatchComment(c.body);
+    if (parsed && parsed.attempt === wanted) {
+      return { coreId: parsed.coreId, sessionId: parsed.sessionId, attempt: parsed.attempt };
+    }
+  }
+  return null;
 }
 
 export type TaskResultInput = {

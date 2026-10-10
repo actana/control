@@ -26,6 +26,7 @@ import {
 import { getAgent, listAgentsForCore, type Agent } from "../services/agents";
 import { getOperator } from "../services/operator";
 import { findCoreById } from "../repositories/cores.repo";
+import { stopTask } from "../task-dispatch";
 
 /**
  * Tasks and their comments, for the operator's browser (#571). Every handler
@@ -48,6 +49,8 @@ const newTaskBody = z.object({
 export const OPERATOR_TASK_STATUSES = ["assigned", "draft"] as const;
 const statusBody = z.object({ status: z.enum(OPERATOR_TASK_STATUSES) });
 const commentBody = z.object({ body: z.string(), reassign: z.boolean().optional() });
+/** Stopping a running Task (#723): an optional reason, recorded in the system comment. */
+export const stopTaskBody = z.object({ reason: z.string().trim().max(2000).optional() });
 /** An edit (#722): the fields to change, at least one. The service says whether the Task's status allows it. */
 export const updateTaskBody = z
   .object({ title: z.string().optional(), description: z.string().optional() })
@@ -218,6 +221,18 @@ export async function update(ownerId: number, id: string, request: Request): Pro
   if (!body.ok) return body.response;
   try {
     return json({ task: taskDto(await updateTask(ownerId, id, body.data)) });
+  } catch (e) {
+    return rethrowUnlessDomain(e);
+  }
+}
+
+/** Stop a running Task (#723): its Session is stopped and the Task fails. 409 unless it is `in_progress`. */
+export async function stop(ownerId: number, id: string, request: Request): Promise<Response> {
+  const body = await parseJsonBody(request, stopTaskBody);
+  if (!body.ok) return body.response;
+  try {
+    const stopped = await stopTask(ownerId, id, { stoppedBy: await authorName(), reason: body.data.reason });
+    return json({ task: taskDto(stopped.task), session: stopped.session });
   } catch (e) {
     return rethrowUnlessDomain(e);
   }

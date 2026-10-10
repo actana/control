@@ -1,5 +1,5 @@
 import { CoreSharedError, type CoreShared, type SharedChange } from "@actana/sdk/shared";
-import { DuplicateTaskCommentSourceError, applyTaskResult } from "../services/tasks";
+import { DuplicateTaskCommentSourceError, addTaskComment, applyTaskResult } from "../services/tasks";
 import { NotFoundError } from "../errors";
 import {
   REPORT_END_MARKER,
@@ -13,7 +13,7 @@ import {
   type TaskResult,
 } from "~/shared/task-report";
 import { isFolderScoped } from "./shared-factory";
-import { consoleDispatchLog, messageOf, type Clock, type DispatchLog } from "./types";
+import { consoleDispatchLog, messageOf, type Clock, type DispatchLog, type SessionStopper } from "./types";
 
 /**
  * The result watcher (#570): turns `success.md`, `fail.md` and `partial-<n>.md`
@@ -48,6 +48,8 @@ export type WatchedDispatch = {
   shared: CoreShared;
   /** Who the agent comment is by. */
   authorName: string;
+  /** The Session running this attempt, when known: stopped by the Panel if the dispatch times out (#723). */
+  sessionId?: string | null;
 };
 
 export type ResultWatcherOptions = {
@@ -63,6 +65,8 @@ export type ResultWatcherOptions = {
   exitGraceMs?: number;
   pollMs?: number;
   log?: DispatchLog;
+  /** Stops a Session whose dispatch timed out, so a hung agent does not run on after its Task failed (#723). */
+  stopSession?: SessionStopper;
 };
 
 export const DEFAULT_TASK_TIMEOUT_MS = 60 * 60_000;
@@ -96,6 +100,7 @@ export class ResultWatcher {
   private readonly exitGraceMs: number;
   private readonly pollMs: number;
   private readonly log: DispatchLog;
+  private readonly stopSession: SessionStopper | null;
   private readonly tracked = new Map<string, Tracked>();
   private timer: ReturnType<typeof setInterval> | null = null;
   private running: Promise<void> | null = null;
@@ -108,6 +113,7 @@ export class ResultWatcher {
     this.exitGraceMs = opts.exitGraceMs ?? DEFAULT_EXIT_GRACE_MS;
     this.pollMs = opts.pollMs ?? DEFAULT_WATCH_POLL_MS;
     this.log = opts.log ?? consoleDispatchLog;
+    this.stopSession = opts.stopSession ?? null;
   }
 
   /** Start watching one dispatch. `release` runs when the dispatch is over, however it ended. */
@@ -207,7 +213,7 @@ export class ResultWatcher {
     if (t.exit && now - t.exit.at >= this.exitGraceMs) {
       await this.synthesize(t, `The agent exited (code ${t.exit.code}) without writing a result file.`);
     } else if (now - t.dispatchedAt >= this.timeoutMs) {
-      await this.synthesize(t, `The agent wrote no result within ${minutes(this.timeoutMs)} of dispatch.`);
+      await this.synthesize(t, `The agent wrote no result within ${minutes(this.timeoutMs)} of dispatch.`, true);
     }
   }
 
@@ -289,7 +295,7 @@ export class ResultWatcher {
   }
 
   /** The Panel's own `fail.md`: written to the Shared folder, then recorded like any other result. */
-  private async synthesize(t: Tracked, reason: string): Promise<void> {
+  private async synthesize(t: Tracked, reason: string, stopSession = false): Promise<void> {
     // One last look at the folder itself, not at the change feed: a result whose event was missed still counts.
     try {
       if (await this.consume(t, await this.folderChanges(t))) {
@@ -310,6 +316,33 @@ export class ResultWatcher {
     // Recorded from what the Panel wrote, not read back: the store's clock is not the Panel's, and a `fail.md`
     // that looked older than the dispatch would leave the Task `in_progress` for ever.
     await this.apply(t, "fail.md", { kind: "fail" }, body);
+    // Only a timeout leaves the agent running: on an exit there is nothing to stop.
+    if (stopSession) await this.stopTimedOutSession(t);
     this.drop(t);
+  }
+
+  /** Best effort: the Task is failed already, so nothing here may throw or hold it up. */
+  private async stopTimedOutSession(t: Tracked): Promise<void> {
+    if (!this.stopSession || !t.sessionId) return;
+    const target = { coreId: t.coreId, sessionId: t.sessionId };
+    let note: string;
+    try {
+      const { outcome, detail } = await this.stopSession(target);
+      this.log.info(`task ${t.taskId}: Session ${target.sessionId} after the timeout: ${outcome}${detail ? ` (${detail})` : ""}`);
+      note =
+        outcome === "stopped"
+          ? `Session ${target.sessionId} on Core ${target.coreId} stopped after the timeout.`
+          : outcome === "not-running"
+            ? `Session ${target.sessionId} on Core ${target.coreId} was no longer running at the timeout.`
+            : `Session ${target.sessionId} on Core ${target.coreId} could not be stopped after the timeout: ${detail ?? outcome}. It may still be running.`;
+    } catch (err) {
+      this.log.error(`task ${t.taskId}: stopping Session ${target.sessionId} failed: ${messageOf(err)}`);
+      return;
+    }
+    try {
+      await addTaskComment(this.ownerId, t.taskId, { authorKind: "system", authorName: "Panel", body: note }, this.now());
+    } catch (err) {
+      this.log.error(`task ${t.taskId}: could not note the Session stop: ${messageOf(err)}`);
+    }
   }
 }

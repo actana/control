@@ -21,6 +21,8 @@ const { operatorSessionCookie } = await import("./_operator-session");
 const tasksService = await import("../services/tasks");
 const tasksController = await import("../controllers/tasks.controller");
 
+const { formatTaskDispatchComment } = await import("~/shared/tasks");
+
 const A = 1;
 const B = 2;
 
@@ -185,6 +187,52 @@ describe("Task routes", () => {
     expect((await call(`/api/tasks/${theirs.id}`, { method: "DELETE" })).status).toBe(404);
     expect((await call(`/api/tasks/${theirs.id}`, { method: "PATCH", json: { title: "mine" } })).status).toBe(404);
     expect((await tasksService.getTask(B, theirs.id)).title).toBe("theirs");
+  });
+
+  it("stop a running Task, then re-assign it; the same routes refuse a Task that is not running (#723)", async () => {
+    const t = (await (await post("/api/tasks", { title: "hung", coreId: "core-a", agent: "agent-a", startNow: true })).json()).task;
+    // Not running yet: 409, and nothing changes.
+    expect((await post(`/api/tasks/${t.id}/stop`, {})).status).toBe(409);
+    await tasksService.claimTask(A, t.id);
+    await tasksService.addTaskComment(A, t.id, {
+      authorKind: "system",
+      authorName: "Panel",
+      body: formatTaskDispatchComment({ attempt: 1, agentName: "claude-code", harness: "claude-code", coreId: "core-a", sessionId: "session_1" }),
+    });
+    // Re-assigning while it runs is refused with a message that names the stop call.
+    const refused = await post(`/api/tasks/${t.id}/comments`, { body: "again", reassign: true });
+    expect(refused.status).toBe(409);
+    expect((await refused.json()).error).toMatch(/\/stop/);
+    const refusedStatus = await post(`/api/tasks/${t.id}/status`, { status: "assigned" });
+    expect(refusedStatus.status).toBe(409);
+    expect((await refusedStatus.json()).error).toMatch(/\/stop/);
+
+    const stopped = await post(`/api/tasks/${t.id}/stop`, { reason: "hung" });
+    expect(stopped.status).toBe(200);
+    const body = await stopped.json();
+    expect(body.task).toMatchObject({ id: t.id, status: "failed" });
+    // No Core link in this test, so the Core counts as offline.
+    expect(body.session).toMatchObject({ coreId: "core-a", sessionId: "session_1", outcome: "unreachable" });
+    const read = await (await call(`/api/tasks/${t.id}`)).json();
+    expect(read.comments.some((c: { body: string }) => c.body.startsWith("Stopped by ") && c.body.includes("hung"))).toBe(true);
+    // A second stop is a 409: it is no longer running.
+    expect((await post(`/api/tasks/${t.id}/stop`, {})).status).toBe(409);
+    const again = await (await post(`/api/tasks/${t.id}/comments`, { body: "again", reassign: true })).json();
+    expect(again.task.status).toBe("assigned");
+  });
+
+  it("stop takes an empty body, refuses a bad reason, 404s for another owner's Task and needs the session (#723)", async () => {
+    const t = await tasksService.createTask(A, { title: "r", coreId: "core-a", agent: "agent-a", startNow: true });
+    await tasksService.claimTask(A, t.id);
+    expect((await post(`/api/tasks/${t.id}/stop`, { reason: 5 })).status).toBe(400);
+    expect((await post(`/api/tasks/${t.id}/stop`, { reason: "x".repeat(2001) })).status).toBe(400);
+    expect((await call(`/api/tasks/${t.id}/stop`, { anonymous: true, method: "POST" })).status).toBe(401);
+    expect((await tasksService.getTask(A, t.id)).status).toBe("in_progress");
+    const theirs = await tasksService.createTask(B, { title: "theirs", coreId: "core-b", agent: "agent-b", startNow: true });
+    await tasksService.claimTask(B, theirs.id);
+    expect((await post(`/api/tasks/${theirs.id}/stop`, {})).status).toBe(404);
+    expect((await tasksService.getTask(B, theirs.id)).status).toBe("in_progress");
+    expect((await call(`/api/tasks/${t.id}/stop`, { method: "POST" })).status).toBe(200);
   });
 
   it("need the operator's session to edit or delete (#722)", async () => {

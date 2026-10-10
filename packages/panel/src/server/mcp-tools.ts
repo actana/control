@@ -11,6 +11,7 @@ import {
   listCoresV1,
   listTasksV1,
   setTaskStatusV1,
+  stopTaskV1,
   updateTaskV1,
 } from "./controllers/v1.controller";
 import { getShared, listShared } from "./mcp-shared";
@@ -129,7 +130,8 @@ export const MCP_TOOLS: readonly McpTool[] = [
     name: "assign_task",
     description:
       "Move a Task to assigned (its Agent starts on it) or back to draft. These are the only moves an operator makes; " +
-      "in_progress, done, failed and partial belong to the dispatcher and the Agent's report.",
+      "in_progress, done, failed and partial belong to the dispatcher and the Agent's report. A Task that is in_progress " +
+      "cannot be moved: stop_task it first.",
     readOnly: false,
     input: z.object({ taskId: taskIdArg, status: z.enum(OPERATOR_TASK_STATUSES).default("assigned") }),
     run: async (principal, { taskId, status }) =>
@@ -137,11 +139,23 @@ export const MCP_TOOLS: readonly McpTool[] = [
   }),
   tool({
     name: "comment_task",
-    description: "Add a comment to a Task's thread. With reassign true, also send a finished Task back to its Agent (Comment & re-assign).",
+    description: "Add a comment to a Task's thread. With reassign true, also send a finished Task back to its Agent (Comment & re-assign). " +
+      "A Task that is in_progress is refused: stop_task it first, then comment again with reassign true.",
     readOnly: false,
     input: z.object({ taskId: taskIdArg, body: z.string().min(1), reassign: z.boolean().optional() }),
     run: async (principal, { taskId, body, reassign }) =>
       outcomeOf(await addTaskCommentV1(principal, taskId, asJsonRequest({ body, ...(reassign === undefined ? {} : { reassign }) }))),
+  }),
+  tool({
+    name: "stop_task",
+    description:
+      "Stop a Task that is in_progress: stops its Session, fails it with a system comment; then comment_task reassign works. " +
+      "The result says whether the Session was stopped (a Core that is offline leaves it running).",
+    readOnly: false,
+    destructive: true,
+    input: z.object({ taskId: taskIdArg, reason: z.string().max(2000).optional().describe("Why it is stopped; recorded in the Task's comment.") }),
+    run: async (principal, { taskId, reason }) =>
+      outcomeOf(await stopTaskV1(principal, taskId, asJsonRequest({ ...(reason === undefined ? {} : { reason }) }))),
   }),
   tool({
     name: "update_task",
