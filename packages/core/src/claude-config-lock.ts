@@ -25,24 +25,29 @@
 // lock directory with something in it is reported and left; and anything at the
 // lock path that is not a directory (a file, a symlink) is not ours to remove.
 //
-// This is synchronous because its caller, the one-shot `core-home-ops` helper,
-// is. The wait is an `Atomics.wait` on a private buffer: it blocks the thread
-// without spinning the CPU.
+// The wait is async (`setTimeout` from `node:timers/promises`), never a blocking
+// one. This code runs in the one-shot `core-home-ops` helper when the Core has a
+// separate identity, and inside the daemon itself on metal installs (`coreIdentity`
+// null: `coreHomeOp` runs the op in process). A lock held for the whole budget
+// would otherwise freeze every Session's output for that long. The lock is a
+// directory, not a descriptor, so holding it across an `await` is safe; it is
+// released after the last await, whether `fn` returns or throws.
 
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 
 /** proper-lockfile's default `stale`, which Claude Code's lock uses: a lock dir whose mtime is older than this is abandoned. */
 export const CLAUDE_CONFIG_LOCK_STALE_MS = 10_000;
 
-/** Pauses between attempts while another writer holds the lock (~3.1 s in all, well under the helper's 15 s timeout). */
+/** Pauses between attempts while another writer holds the lock (~3.1 s in all, well under the helper's 15 s timeout; async, so the event loop keeps running). */
 export const CLAUDE_CONFIG_LOCK_DELAYS_MS: readonly number[] = [50, 100, 200, 400, 800, 1600];
 
 export type ClaudeConfigLockOptions = {
   delays?: readonly number[];
   staleMs?: number;
-  /** Blocks for ms. Default: Atomics.wait on a fresh SharedArrayBuffer. Tests inject one (it may also change the lock between attempts). */
-  sleep?: (ms: number) => void;
+  /** Resolves after ms. Default: `setTimeout` from `node:timers/promises`. Tests inject one (it may also change the lock between attempts). */
+  sleep?: (ms: number) => Promise<void>;
   now?: () => number;
 };
 
@@ -51,8 +56,8 @@ export function claudeConfigLockPath(file: string): string {
   return `${file}.lock`;
 }
 
-function blockingSleep(ms: number): void {
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+function timerSleep(ms: number): Promise<void> {
+  return delay(ms);
 }
 
 function errorCode(err: unknown): string | undefined {
@@ -60,10 +65,14 @@ function errorCode(err: unknown): string | undefined {
 }
 
 /** Run `fn` holding Claude Code's config lock; always released afterwards. */
-export function withClaudeConfigLock<T>(file: string, fn: () => T, options: ClaudeConfigLockOptions = {}): T {
+export async function withClaudeConfigLock<T>(
+  file: string,
+  fn: () => T | Promise<T>,
+  options: ClaudeConfigLockOptions = {},
+): Promise<T> {
   const delays = options.delays ?? CLAUDE_CONFIG_LOCK_DELAYS_MS;
   const staleMs = options.staleMs ?? CLAUDE_CONFIG_LOCK_STALE_MS;
-  const sleep = options.sleep ?? blockingSleep;
+  const sleep = options.sleep ?? timerSleep;
   const now = options.now ?? Date.now;
   for (const d of delays) {
     if (typeof d !== "number" || !Number.isFinite(d) || d < 0) {
@@ -109,19 +118,20 @@ export function withClaudeConfigLock<T>(file: string, fn: () => T, options: Clau
         `${lockPath} is held by another writer (Claude Code saves ${file} under it); gave up after waiting ${waited} ms`,
       );
     }
-    const delay = delays[next++];
-    sleep(delay);
-    waited += delay;
+    const pause = delays[next++]!;
+    await sleep(pause);
+    waited += pause;
   }
 
   let result: T;
   try {
-    result = fn();
+    result = await fn();
   } catch (err) {
+    // Released on the way out; fn's error is the one worth reporting, so a release failure is dropped.
     try {
       fs.rmdirSync(lockPath);
     } catch {
-      // fn's error is the one worth reporting
+      // nothing to add
     }
     throw err;
   }

@@ -26,7 +26,7 @@ function recorder(onCall?: (n: number) => void) {
   const slept: number[] = [];
   return {
     slept,
-    sleep: (ms: number) => {
+    sleep: async (ms: number) => {
       slept.push(ms);
       onCall?.(slept.length);
     },
@@ -39,9 +39,9 @@ describe("withClaudeConfigLock", () => {
     expect(CLAUDE_CONFIG_LOCK_DELAYS_MS).toEqual([50, 100, 200, 400, 800, 1600]);
   });
 
-  it("acquires, runs fn, returns its value and removes the lock dir", () => {
+  it("acquires, runs fn, returns its value and removes the lock dir", async () => {
     let during = false;
-    const value = withClaudeConfigLock(file, () => {
+    const value = await withClaudeConfigLock(file, () => {
       during = fs.statSync(lock).isDirectory();
       return 42;
     });
@@ -50,7 +50,7 @@ describe("withClaudeConfigLock", () => {
     expect(fs.existsSync(lock)).toBe(false);
   });
 
-  it("puts the lock beside a symlinked file, not beside its target", () => {
+  it("puts the lock beside a symlinked file, not beside its target", async () => {
     const other = path.join(dir, "other");
     fs.mkdirSync(other);
     const target = path.join(other, "real.json");
@@ -58,43 +58,41 @@ describe("withClaudeConfigLock", () => {
     const link = path.join(dir, "link.json");
     fs.symlinkSync(target, link);
     expect(claudeConfigLockPath(link)).toBe(`${link}.lock`);
-    withClaudeConfigLock(link, () => {
+    await withClaudeConfigLock(link, () => {
       expect(fs.existsSync(`${link}.lock`)).toBe(true);
       expect(fs.existsSync(`${target}.lock`)).toBe(false);
     });
     expect(fs.existsSync(`${link}.lock`)).toBe(false);
   });
 
-  it("releases the lock when fn throws, and the error propagates", () => {
-    expect(() =>
-      withClaudeConfigLock(file, () => {
+  it("releases the lock when fn throws, and the error propagates", async () => {
+    await expect(withClaudeConfigLock(file, () => {
         throw new Error("boom");
-      }),
-    ).toThrow("boom");
+      })).rejects.toThrow("boom");
     expect(fs.existsSync(lock)).toBe(false);
   });
 
-  it("does not fail when fn's lock was already removed", () => {
-    expect(withClaudeConfigLock(file, () => fs.rmdirSync(lock))).toBeUndefined();
+  it("does not fail when fn's lock was already removed", async () => {
+    expect(await withClaudeConfigLock(file, () => fs.rmdirSync(lock))).toBeUndefined();
   });
 
-  it("waits while a live writer holds the lock and runs once it is released", () => {
+  it("waits while a live writer holds the lock and runs once it is released", async () => {
     fs.mkdirSync(lock);
     const r = recorder((n) => {
       if (n === 2) fs.rmdirSync(lock);
     });
     let ran = false;
-    withClaudeConfigLock(file, () => (ran = true), { sleep: r.sleep });
+    await withClaudeConfigLock(file, () => (ran = true), { sleep: r.sleep });
     expect(ran).toBe(true);
     expect(r.slept).toEqual([50, 100]);
     expect(fs.existsSync(lock)).toBe(false);
   });
 
-  it("gives up when the lock stays held past the delays, leaving the other lock alone", () => {
+  it("gives up when the lock stays held past the delays, leaving the other lock alone", async () => {
     fs.mkdirSync(lock);
     const r = recorder();
     let ran = false;
-    expect(() => withClaudeConfigLock(file, () => (ran = true), { sleep: r.sleep })).toThrow(
+    await expect(withClaudeConfigLock(file, () => (ran = true), { sleep: r.sleep })).rejects.toThrow(
       new RegExp(`${lock.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}.*another writer.*waiting 3150 ms`),
     );
     expect(ran).toBe(false);
@@ -102,23 +100,23 @@ describe("withClaudeConfigLock", () => {
     expect(fs.statSync(lock).isDirectory()).toBe(true);
   });
 
-  it("breaks a stale lock with no sleep", () => {
+  it("breaks a stale lock with no sleep", async () => {
     fs.mkdirSync(lock);
     const old = new Date(Date.now() - 11_000);
     fs.utimesSync(lock, old, old);
     const r = recorder();
     let ran = false;
-    withClaudeConfigLock(file, () => (ran = true), { sleep: r.sleep });
+    await withClaudeConfigLock(file, () => (ran = true), { sleep: r.sleep });
     expect(ran).toBe(true);
     expect(r.slept).toEqual([]);
     expect(fs.existsSync(lock)).toBe(false);
   });
 
-  it("honours an injected clock for staleness", () => {
+  it("honours an injected clock for staleness", async () => {
     fs.mkdirSync(lock);
     const r = recorder();
     let ran = false;
-    withClaudeConfigLock(file, () => (ran = true), {
+    await withClaudeConfigLock(file, () => (ran = true), {
       sleep: r.sleep,
       now: () => Date.now() + 60_000,
     });
@@ -126,60 +124,92 @@ describe("withClaudeConfigLock", () => {
     expect(r.slept).toEqual([]);
   });
 
-  it("does not remove a non-empty stale lock directory", () => {
+  it("does not remove a non-empty stale lock directory", async () => {
     fs.mkdirSync(lock);
     fs.writeFileSync(path.join(lock, "keep"), "x");
     const old = new Date(Date.now() - 11_000);
     fs.utimesSync(lock, old, old);
     let ran = false;
-    expect(() => withClaudeConfigLock(file, () => (ran = true), { sleep: () => {} })).toThrow();
+    await expect(withClaudeConfigLock(file, () => (ran = true), { sleep: async () => {} })).rejects.toThrow();
     expect(ran).toBe(false);
     expect(fs.readFileSync(path.join(lock, "keep"), "utf8")).toBe("x");
   });
 
-  it("refuses a regular file at the lock path and leaves it", () => {
+  it("refuses a regular file at the lock path and leaves it", async () => {
     fs.writeFileSync(lock, "mine");
     let ran = false;
-    expect(() => withClaudeConfigLock(file, () => (ran = true), { sleep: () => {} })).toThrow(/not a lock directory/);
+    await expect(withClaudeConfigLock(file, () => (ran = true), { sleep: async () => {} })).rejects.toThrow(/not a lock directory/);
     expect(ran).toBe(false);
     expect(fs.readFileSync(lock, "utf8")).toBe("mine");
   });
 
-  it("refuses a symlink to a directory at the lock path and leaves it", () => {
+  it("refuses a symlink to a directory at the lock path and leaves it", async () => {
     const target = path.join(dir, "elsewhere");
     fs.mkdirSync(target);
     fs.symlinkSync(target, lock);
     let ran = false;
-    expect(() => withClaudeConfigLock(file, () => (ran = true), { sleep: () => {} })).toThrow(/not a lock directory/);
+    await expect(withClaudeConfigLock(file, () => (ran = true), { sleep: async () => {} })).rejects.toThrow(/not a lock directory/);
     expect(ran).toBe(false);
     expect(fs.lstatSync(lock).isSymbolicLink()).toBe(true);
     expect(fs.existsSync(target)).toBe(true);
   });
 
-  it("creates a missing parent directory", () => {
+  it("creates a missing parent directory", async () => {
     const nested = path.join(dir, "a", "b", ".claude.json");
-    withClaudeConfigLock(nested, () => {
+    await withClaudeConfigLock(nested, () => {
       expect(fs.existsSync(`${nested}.lock`)).toBe(true);
     });
     expect(fs.existsSync(`${nested}.lock`)).toBe(false);
   });
 
-  it("validates its options before touching anything", () => {
+  it("validates its options before touching anything", async () => {
     const noop = () => 1;
-    expect(() => withClaudeConfigLock(file, noop, { delays: [-1] })).toThrow(TypeError);
-    expect(() => withClaudeConfigLock(file, noop, { delays: [NaN] })).toThrow(TypeError);
-    expect(() => withClaudeConfigLock(file, noop, { delays: [Infinity] })).toThrow(TypeError);
-    expect(() => withClaudeConfigLock(file, noop, { staleMs: 0 })).toThrow(TypeError);
-    expect(() => withClaudeConfigLock(file, noop, { staleMs: Infinity })).toThrow(TypeError);
-    expect(() => withClaudeConfigLock(file, noop, { staleMs: -5 })).toThrow(TypeError);
+    await expect(withClaudeConfigLock(file, noop, { delays: [-1] })).rejects.toThrow(TypeError);
+    await expect(withClaudeConfigLock(file, noop, { delays: [NaN] })).rejects.toThrow(TypeError);
+    await expect(withClaudeConfigLock(file, noop, { delays: [Infinity] })).rejects.toThrow(TypeError);
+    await expect(withClaudeConfigLock(file, noop, { staleMs: 0 })).rejects.toThrow(TypeError);
+    await expect(withClaudeConfigLock(file, noop, { staleMs: Infinity })).rejects.toThrow(TypeError);
+    await expect(withClaudeConfigLock(file, noop, { staleMs: -5 })).rejects.toThrow(TypeError);
     expect(fs.existsSync(lock)).toBe(false);
   });
 
-  it("the default sleep really blocks", () => {
+  it("the default sleep really waits, on a timer", async () => {
     fs.mkdirSync(lock);
     const start = Date.now();
-    expect(() => withClaudeConfigLock(file, () => 1, { delays: [20] })).toThrow(/another writer/);
+    await expect(withClaudeConfigLock(file, () => 1, { delays: [20] })).rejects.toThrow(/another writer/);
     expect(Date.now() - start).toBeGreaterThanOrEqual(15);
     expect(fs.existsSync(lock)).toBe(true);
+  });
+
+  it("does not block the event loop while it waits for a held lock", async () => {
+    fs.mkdirSync(lock);
+    const ticks: number[] = [];
+    const timer = setInterval(() => ticks.push(Date.now()), 5);
+    const start = Date.now();
+    try {
+      await expect(withClaudeConfigLock(file, () => 1, { delays: [60, 60] })).rejects.toThrow(/another writer/);
+    } finally {
+      clearInterval(timer);
+    }
+    expect(Date.now() - start).toBeGreaterThanOrEqual(110);
+    // A blocked loop would run no tick at all until the wait was over.
+    expect(ticks.length).toBeGreaterThanOrEqual(5);
+  });
+
+  it("releases the lock after an awaited fn, whether it returns or throws", async () => {
+    let during = false;
+    await withClaudeConfigLock(file, async () => {
+      await new Promise((r) => setTimeout(r, 5));
+      during = fs.statSync(lock).isDirectory();
+    });
+    expect(during).toBe(true);
+    expect(fs.existsSync(lock)).toBe(false);
+    await expect(
+      withClaudeConfigLock(file, async () => {
+        await new Promise((r) => setTimeout(r, 5));
+        throw new Error("late boom");
+      }),
+    ).rejects.toThrow("late boom");
+    expect(fs.existsSync(lock)).toBe(false);
   });
 });

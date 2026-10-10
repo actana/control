@@ -470,38 +470,38 @@ describe("pretrustWorkspaces (#685)", () => {
   const request = (dirs: string[], harnesses = ["claude-code", "codex"]) =>
     parseCoreHomeOpRequest({ op: "pretrustWorkspaces", harnesses, dirs }) as Extract<CoreHomeOpRequest, { op: "pretrustWorkspaces" }>;
 
-  it("is a listed operation and writes both configs inside the home", () => {
+  it("is a listed operation and writes both configs inside the home", async () => {
     expect(CORE_HOME_OPERATIONS).toContain("pretrustWorkspaces");
-    const results = handleCoreHomeOpSync(request([home]), ctx);
+    const results = await handleCoreHomeOp(request([home]), ctx);
     expect(results.map((r) => [r.harness, r.outcome])).toEqual([
       ["claude-code", "written"],
       ["codex", "written"],
     ]);
     expect(JSON.parse(fs.readFileSync(path.join(home, ".claude.json"), "utf8")).projects[home].hasTrustDialogAccepted).toBe(true);
     expect(fs.readFileSync(path.join(home, ".codex", "config.toml"), "utf8")).toContain(`trust_level = "trusted"`);
-    expect(handleCoreHomeOpSync(request([home]), ctx).map((r) => r.outcome)).toEqual(["unchanged", "unchanged"]);
+    expect((await handleCoreHomeOp(request([home]), ctx)).map((r) => r.outcome)).toEqual(["unchanged", "unchanged"]);
   });
 
-  it("refuses a directory outside the home before touching anything", () => {
-    expect(refusal(() => handleCoreHomeOpSync(request([outside]), ctx)).code).toBe("path-escape");
+  it("refuses a directory outside the home before touching anything", async () => {
+    expect(((await handleCoreHomeOp(request([outside]), ctx).catch((e) => e)) as { code?: string }).code).toBe("path-escape");
     expect(fs.existsSync(path.join(home, ".claude.json"))).toBe(false);
   });
 
-  it("refuses a config file that is a link leading out of the home", () => {
+  it("refuses a config file that is a link leading out of the home", async () => {
     fs.writeFileSync(path.join(outside, "target.json"), "{}");
     fs.symlinkSync(path.join(outside, "target.json"), path.join(home, ".claude.json"));
-    expect(refusal(() => handleCoreHomeOpSync(request([home]), ctx)).code).toBe("path-escape");
+    expect(((await handleCoreHomeOp(request([home]), ctx).catch((e) => e)) as { code?: string }).code).toBe("path-escape");
     expect(fs.readFileSync(path.join(outside, "target.json"), "utf8")).toBe("{}");
   });
 
-  it("writes the Cursor marker inside the home, and refuses a .cursor link that leaves it", () => {
-    const results = handleCoreHomeOpSync(request([home], ["cursor-cli"]), ctx);
+  it("writes the Cursor marker inside the home, and refuses a .cursor link that leaves it", async () => {
+    const results = await handleCoreHomeOp(request([home], ["cursor-cli"]), ctx);
     expect(results.map((r) => [r.harness, r.outcome])).toEqual([["cursor-cli", "written"]]);
     expect(fs.existsSync(cursorMarkerPath(home, home))).toBe(true);
 
     fs.rmSync(path.join(home, ".cursor"), { recursive: true });
     fs.symlinkSync(outside, path.join(home, ".cursor"));
-    expect(refusal(() => handleCoreHomeOpSync(request([home], ["cursor-cli"]), ctx)).code).toBe("path-escape");
+    expect(((await handleCoreHomeOp(request([home], ["cursor-cli"]), ctx).catch((e) => e)) as { code?: string }).code).toBe("path-escape");
     expect(fs.readdirSync(outside)).toEqual([]);
   });
 

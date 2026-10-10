@@ -50,16 +50,23 @@
 // The lock is not the whole answer, because not every writer takes it: Claude Code
 // also has an unlocked fallback write after a failed locked save and a "storage v5"
 // write path behind a flag, and older versions (2.1.289 and before) may not lock at
-// all. So inside the lock the writer still compares and retries (#699): just before
-// the rename it re-reads the file, and when it no longer holds what the change was
-// built from, it drops the change, pauses briefly, and starts again from the new
-// text. The window left is a writer that ignores the lock saving between our
-// re-read and our rename.
-// This code runs as `core` in the helper (`core-home-ops`), never in the daemon.
+// all. Claude Code's exit-time saves (`saveGlobalConfigSyncForExit` and
+// `saveCurrentProjectConfigSyncForExit`) skip the lock too, and are probably the
+// lock-ignoring writer met most often. So inside the lock the writer still compares
+// and retries (#699): just before the rename it re-reads the file, and when it no
+// longer holds what the change was built from, it drops the change, pauses briefly,
+// and starts again from the new text. The window left is a writer that ignores the
+// lock saving between our re-read and our rename.
+//
+// This code runs as `core` in the helper (`core-home-ops`) when the Core has its own
+// identity, and inside the daemon on metal installs (`coreIdentity` null). So every
+// wait here (the lock wait and the compare back-off) is async and never blocks the
+// event loop.
 
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { hookEndpointSlug } from "@actana/shared/mission-control-hook-env";
 import { withClaudeConfigLock, type ClaudeConfigLockOptions } from "./claude-config-lock";
 import { canonicalJson, codexGroup, CODEX_HOOK_EVENTS } from "./harness-hooks";
@@ -170,8 +177,8 @@ function claudeTrustedText(file: string, raw: string | null, dirs: readonly stri
   return JSON.stringify(config, null, 2) + "\n";
 }
 
-function blockingSleep(ms: number): void {
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+function timerSleep(ms: number): Promise<void> {
+  return delay(ms);
 }
 
 /** The pause after the Nth compare miss is this times N (25, 50, 75, 100 ms), so a burst of writes gets time to finish. */
@@ -184,10 +191,11 @@ const CLAUDE_TRUST_BACKOFF_MS = 25;
  * rename happens inside the lock, so a lock-honouring Claude Code waits for this write and this write waits for it.
  *
  * Inside the lock the compare-and-retry stays, as the defence against writers that do not take it (older Claude
- * Code, its unlocked fallback write, its storage-v5 path): a change is renamed over the file only when the file
+ * Code, its unlocked fallback write, its storage-v5 path, its unlocked exit-time saves
+ * `saveGlobalConfigSyncForExit` / `saveCurrentProjectConfigSyncForExit`): a change is renamed over the file only when the file
  * still holds the text it was built from (`writeAtomic`'s `expected`). When it does not, the change is rebuilt from
  * the new text after a short, increasing pause (25 ms times the attempt), up to `attempts` times (an integer of at
- * least 1, checked before anything is touched); after that the file is left as the other writer left it and the call
+ * least 1, checked before anything is touched; the pause is async, so the event loop is never blocked); after that the file is left as the other writer left it and the call
  * throws. What remains is a lock-ignoring writer saving between the re-read and the rename.
  *
  * When the lock stays held past its budget, or something that is not a directory sits at the lock path, nothing is
@@ -195,7 +203,7 @@ const CLAUDE_TRUST_BACKOFF_MS = 25;
  * unlocked fallback. `beforeCommit` runs between the temp write and the re-read; it is there for tests to change the
  * file in that window.
  */
-export function trustClaudeCode(
+export async function trustClaudeCode(
   file: string,
   dirs: readonly string[],
   {
@@ -203,14 +211,14 @@ export function trustClaudeCode(
     beforeCommit,
     lock,
   }: { attempts?: number; beforeCommit?: () => void; lock?: ClaudeConfigLockOptions } = {},
-): "written" | "unchanged" {
+): Promise<"written" | "unchanged"> {
   if (typeof attempts !== "number" || !Number.isInteger(attempts) || attempts < 1) {
     throw new TypeError(`claude trust: attempts must be an integer of at least 1, got ${String(attempts)}`);
   }
-  const sleep = lock?.sleep ?? blockingSleep;
-  return withClaudeConfigLock(
+  const sleep = lock?.sleep ?? timerSleep;
+  return await withClaudeConfigLock(
     file,
-    () => {
+    async () => {
       for (let attempt = 1; ; attempt++) {
         const raw = readIfExists(file);
         const text = claudeTrustedText(file, raw, dirs);
@@ -219,7 +227,7 @@ export function trustClaudeCode(
         if (attempt >= attempts) {
           throw new Error(`${file} changed while trust was being written, ${attempts} times in a row; left as it is`);
         }
-        sleep(CLAUDE_TRUST_BACKOFF_MS * attempt);
+        await sleep(CLAUDE_TRUST_BACKOFF_MS * attempt);
       }
     },
     lock,
@@ -643,18 +651,18 @@ export function trustCursor(home: string, dirs: readonly string[], now: () => Da
  * Trust `dirs` in each of `harnesses` that has a writer. One Harness failing does
  * not stop the next; the failure is the result, not a throw.
  */
-export function pretrustWorkspaces(
+export async function pretrustWorkspaces(
   home: string,
   harnesses: readonly string[],
   dirs: readonly string[],
-): PretrustResult[] {
+): Promise<PretrustResult[]> {
   const results: PretrustResult[] = [];
   for (const harness of PRETRUST_HARNESSES) {
     if (!harnesses.includes(harness)) continue;
     try {
       const outcome =
         harness === "claude-code"
-          ? trustClaudeCode(claudeConfigPath(home), dirs)
+          ? await trustClaudeCode(claudeConfigPath(home), dirs)
           : harness === "codex"
             ? trustCodex(codexConfigPath(home), dirs)
             : trustCursor(home, dirs);

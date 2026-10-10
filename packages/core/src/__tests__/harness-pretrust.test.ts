@@ -39,20 +39,20 @@ function parseToml(text: string): any {
 }
 
 /** Lock options for tests: no real waiting. */
-const noLockSleep = { sleep: () => {} };
+const noLockSleep = { sleep: async () => {} };
 const read = (file: string) => fs.readFileSync(file, "utf8");
 const leftovers = () => fs.readdirSync(dir).filter((name) => name.endsWith(".tmp"));
 
 describe("claude-code: ~/.claude.json projects[dir].hasTrustDialogAccepted", () => {
-  it("creates the file, owner-only, when there is none", () => {
+  it("creates the file, owner-only, when there is none", async () => {
     const file = path.join(dir, ".claude.json");
-    expect(trustClaudeCode(file, ["/home/core"])).toBe("written");
+    expect(await trustClaudeCode(file, ["/home/core"])).toBe("written");
     expect(JSON.parse(read(file))).toEqual({ projects: { "/home/core": { hasTrustDialogAccepted: true } } });
     expect(fs.statSync(file).mode & 0o777).toBe(0o600);
     expect(leftovers()).toEqual([]);
   });
 
-  it("keeps every other key, at the top and inside the project entry", () => {
+  it("keeps every other key, at the top and inside the project entry", async () => {
     const file = path.join(dir, ".claude.json");
     fs.writeFileSync(
       file,
@@ -65,7 +65,7 @@ describe("claude-code: ~/.claude.json projects[dir].hasTrustDialogAccepted", () 
       }),
       { mode: 0o640 },
     );
-    expect(trustClaudeCode(file, ["/home/core", "/srv/work"])).toBe("written");
+    expect(await trustClaudeCode(file, ["/home/core", "/srv/work"])).toBe("written");
     expect(JSON.parse(read(file))).toEqual({
       numStartups: 3,
       projects: {
@@ -77,30 +77,30 @@ describe("claude-code: ~/.claude.json projects[dir].hasTrustDialogAccepted", () 
     expect(fs.statSync(file).mode & 0o777).toBe(0o640);
   });
 
-  it("writes nothing when every directory is already trusted", () => {
+  it("writes nothing when every directory is already trusted", async () => {
     const file = path.join(dir, ".claude.json");
     const text = '{"projects":{"/home/core":{"hasTrustDialogAccepted":true}}}';
     fs.writeFileSync(file, text);
     const before = fs.statSync(file).mtimeMs;
-    expect(trustClaudeCode(file, ["/home/core"])).toBe("unchanged");
+    expect(await trustClaudeCode(file, ["/home/core"])).toBe("unchanged");
     expect(read(file)).toBe(text);
     expect(fs.statSync(file).mtimeMs).toBe(before);
   });
 
-  it("leaves a file it cannot parse exactly as it was", () => {
+  it("leaves a file it cannot parse exactly as it was", async () => {
     const file = path.join(dir, ".claude.json");
     fs.writeFileSync(file, "{ not json");
-    expect(() => trustClaudeCode(file, ["/home/core"])).toThrow();
+    await expect(trustClaudeCode(file, ["/home/core"])).rejects.toThrow();
     expect(read(file)).toBe("{ not json");
   });
 });
 
 describe("claude-code: compare and retry against Claude Code's own writes (#699)", () => {
-  it("keeps a key Claude Code writes between the read and the rename, and still trusts the dir", () => {
+  it("keeps a key Claude Code writes between the read and the rename, and still trusts the dir", async () => {
     const file = path.join(dir, ".claude.json");
     fs.writeFileSync(file, JSON.stringify({ numStartups: 3 }));
     let calls = 0;
-    const result = trustClaudeCode(file, ["/home/core"], {
+    const result = await trustClaudeCode(file, ["/home/core"], {
         lock: noLockSleep,
       beforeCommit: () => {
         if (calls++ === 0) fs.writeFileSync(file, JSON.stringify({ numStartups: 4, tipsHistory: { a: 1 } }));
@@ -116,11 +116,11 @@ describe("claude-code: compare and retry against Claude Code's own writes (#699)
     expect(leftovers()).toEqual([]);
   });
 
-  it("keeps a file Claude Code creates between the read and the rename", () => {
+  it("keeps a file Claude Code creates between the read and the rename", async () => {
     const file = path.join(dir, ".claude.json");
     let calls = 0;
     expect(
-      trustClaudeCode(file, ["/home/core"], {
+      await trustClaudeCode(file, ["/home/core"], {
         lock: noLockSleep,
         beforeCommit: () => {
           if (calls++ === 0) fs.writeFileSync(file, JSON.stringify({ userID: "u1" }));
@@ -130,13 +130,13 @@ describe("claude-code: compare and retry against Claude Code's own writes (#699)
     expect(JSON.parse(read(file))).toEqual({ userID: "u1", projects: { "/home/core": { hasTrustDialogAccepted: true } } });
   });
 
-  it("writes nothing when the concurrent write already trusted the dir", () => {
+  it("writes nothing when the concurrent write already trusted the dir", async () => {
     const file = path.join(dir, ".claude.json");
     fs.writeFileSync(file, "{}");
     const theirs = JSON.stringify({ projects: { "/home/core": { hasTrustDialogAccepted: true, lastCost: 2 } } });
     let calls = 0;
     expect(
-      trustClaudeCode(file, ["/home/core"], {
+      await trustClaudeCode(file, ["/home/core"], {
         lock: noLockSleep,
         beforeCommit: () => {
           calls++;
@@ -149,38 +149,36 @@ describe("claude-code: compare and retry against Claude Code's own writes (#699)
     expect(leftovers()).toEqual([]);
   });
 
-  it("gives up after the set number of tries on a file that keeps changing, and leaves it as it is", () => {
+  it("gives up after the set number of tries on a file that keeps changing, and leaves it as it is", async () => {
     const file = path.join(dir, ".claude.json");
     fs.writeFileSync(file, JSON.stringify({ n: 0 }));
     let calls = 0;
-    expect(() =>
-      trustClaudeCode(file, ["/home/core"], {
+    await expect(trustClaudeCode(file, ["/home/core"], {
         lock: noLockSleep,
         attempts: 3,
         beforeCommit: () => fs.writeFileSync(file, JSON.stringify({ n: ++calls })),
-      }),
-    ).toThrow(/changed while trust was being written, 3 times/);
+      })).rejects.toThrow(/changed while trust was being written, 3 times/);
     expect(calls).toBe(3);
     expect(JSON.parse(read(file))).toEqual({ n: 3 });
     expect(leftovers()).toEqual([]);
   });
 
-  it("retries CLAUDE_TRUST_ATTEMPTS times by default", () => {
+  it("retries CLAUDE_TRUST_ATTEMPTS times by default", async () => {
     const file = path.join(dir, ".claude.json");
     fs.writeFileSync(file, "{}");
     let calls = 0;
-    expect(() => trustClaudeCode(file, ["/home/core"], { lock: noLockSleep, beforeCommit: () => fs.writeFileSync(file, JSON.stringify({ n: ++calls })) })).toThrow();
+    await expect(trustClaudeCode(file, ["/home/core"], { lock: noLockSleep, beforeCommit: () => fs.writeFileSync(file, JSON.stringify({ n: ++calls })) })).rejects.toThrow();
     expect(calls).toBe(CLAUDE_TRUST_ATTEMPTS);
   });
 
-  it("writes through a symlinked config and compares against the file it points at", () => {
+  it("writes through a symlinked config and compares against the file it points at", async () => {
     const real = path.join(dir, "real.json");
     const file = path.join(dir, ".claude.json");
     fs.writeFileSync(real, JSON.stringify({ a: 1 }));
     fs.symlinkSync(real, file);
     let calls = 0;
     expect(
-      trustClaudeCode(file, ["/home/core"], {
+      await trustClaudeCode(file, ["/home/core"], {
         lock: noLockSleep,
         beforeCommit: () => {
           if (calls++ === 0) fs.writeFileSync(real, JSON.stringify({ a: 2 }));
@@ -203,74 +201,110 @@ describe("claude-code: Claude Code's config lock (file.lock) (#699)", () => {
     }
   };
 
-  it("holds the lock dir during the write and releases it after a write", () => {
+  it("holds the lock dir during the write and releases it after a write", async () => {
     const file = path.join(dir, ".claude.json");
     let seen = false;
-    expect(trustClaudeCode(file, ["/home/core"], { lock: noLockSleep, beforeCommit: () => (seen = fs.existsSync(lockDir(file))) })).toBe("written");
+    expect(await trustClaudeCode(file, ["/home/core"], { lock: noLockSleep, beforeCommit: () => (seen = fs.existsSync(lockDir(file))) })).toBe("written");
     expect(seen).toBe(true);
     expect(fs.existsSync(lockDir(file))).toBe(false);
   });
 
-  it("releases the lock when nothing changed, on a parse error, and after giving up", () => {
+  it("releases the lock when nothing changed, on a parse error, and after giving up", async () => {
     const file = path.join(dir, ".claude.json");
     fs.writeFileSync(file, '{"projects":{"/home/core":{"hasTrustDialogAccepted":true}}}');
-    expect(trustClaudeCode(file, ["/home/core"], { lock: noLockSleep })).toBe("unchanged");
+    expect(await trustClaudeCode(file, ["/home/core"], { lock: noLockSleep })).toBe("unchanged");
     expect(fs.existsSync(lockDir(file))).toBe(false);
 
     fs.writeFileSync(file, "{ not json");
-    expect(() => trustClaudeCode(file, ["/home/core"], { lock: noLockSleep })).toThrow();
+    await expect(trustClaudeCode(file, ["/home/core"], { lock: noLockSleep })).rejects.toThrow();
     expect(fs.existsSync(lockDir(file))).toBe(false);
 
     let calls = 0;
     fs.writeFileSync(file, "{}");
-    expect(() =>
-      trustClaudeCode(file, ["/home/core"], { attempts: 2, lock: noLockSleep, beforeCommit: () => fs.writeFileSync(file, JSON.stringify({ n: ++calls })) }),
-    ).toThrow(/changed while trust/);
+    await expect(trustClaudeCode(file, ["/home/core"], { attempts: 2, lock: noLockSleep, beforeCommit: () => fs.writeFileSync(file, JSON.stringify({ n: ++calls })) })).rejects.toThrow(/changed while trust/);
     expect(fs.existsSync(lockDir(file))).toBe(false);
   });
 
-  it("waits for a lock another writer holds, and writes once it is released", () => {
+  it("waits for a lock another writer holds, and writes once it is released", async () => {
     const file = path.join(dir, ".claude.json");
     hold(file);
     let sleeps = 0;
-    const sleep = () => {
+    const sleep = async () => {
       if (++sleeps === 2) fs.rmdirSync(lockDir(file));
     };
-    expect(trustClaudeCode(file, ["/home/core"], { lock: { sleep } })).toBe("written");
+    expect(await trustClaudeCode(file, ["/home/core"], { lock: { sleep } })).toBe("written");
     expect(sleeps).toBe(2);
     expect(JSON.parse(read(file)).projects["/home/core"].hasTrustDialogAccepted).toBe(true);
     expect(fs.existsSync(lockDir(file))).toBe(false);
   });
 
-  it("writes nothing and leaves the foreign lock when it is never released", () => {
+  it("writes nothing and leaves the foreign lock when it is never released", async () => {
     const file = path.join(dir, ".claude.json");
     const text = JSON.stringify({ numStartups: 1 });
     fs.writeFileSync(file, text);
     hold(file);
-    expect(() => trustClaudeCode(file, ["/home/core"], { lock: noLockSleep })).toThrow(/held/);
+    await expect(trustClaudeCode(file, ["/home/core"], { lock: noLockSleep })).rejects.toThrow(/held/);
     expect(read(file)).toBe(text);
     expect(fs.existsSync(lockDir(file))).toBe(true);
     expect(leftovers()).toEqual([]);
   });
 
-  it("is reported as failed, with the reason, by pretrustWorkspaces when the lock stays held", () => {
+  it("is reported as failed, with the reason, by pretrustWorkspaces when the lock stays held", async () => {
     const file = path.join(dir, ".claude.json");
     hold(file);
-    const results = pretrustWorkspaces(dir, ["claude-code"], ["/home/core"]);
+    const results = await pretrustWorkspaces(dir, ["claude-code"], ["/home/core"]);
     expect(results).toHaveLength(1);
     expect(results[0]).toMatchObject({ harness: "claude-code", outcome: "failed" });
     expect(results[0]!.detail).toMatch(/held/);
     expect(fs.existsSync(file)).toBe(false);
   }, 20_000);
 
-  it("breaks a stale lock and writes", () => {
+  it("does not block the event loop while the lock is held by another writer", async () => {
     const file = path.join(dir, ".claude.json");
-    hold(file, 60);
-    expect(trustClaudeCode(file, ["/home/core"], { lock: noLockSleep })).toBe("written");
+    hold(file);
+    const ticks: number[] = [];
+    const timer = setInterval(() => ticks.push(Date.now()), 5);
+    const start = Date.now();
+    try {
+      await expect(trustClaudeCode(file, ["/home/core"], { lock: { delays: [60, 60] } })).rejects.toThrow(/held/);
+    } finally {
+      clearInterval(timer);
+    }
+    expect(Date.now() - start).toBeGreaterThanOrEqual(110);
+    expect(ticks.length).toBeGreaterThanOrEqual(5);
+    expect(fs.existsSync(file)).toBe(false);
+    expect(fs.existsSync(lockDir(file))).toBe(true);
+  });
+
+  it("does not block the event loop during the compare back-off", async () => {
+    const file = path.join(dir, ".claude.json");
+    fs.writeFileSync(file, "{}");
+    const ticks: number[] = [];
+    const timer = setInterval(() => ticks.push(Date.now()), 2);
+    let calls = 0;
+    try {
+      await expect(
+        trustClaudeCode(file, ["/home/core"], {
+          attempts: 3,
+          beforeCommit: () => fs.writeFileSync(file, JSON.stringify({ n: ++calls })),
+        }),
+      ).rejects.toThrow(/changed while trust/);
+    } finally {
+      clearInterval(timer);
+    }
+    // Back-off is 25 + 50 ms on a timer: ticks keep running in between.
+    expect(ticks.length).toBeGreaterThanOrEqual(5);
     expect(fs.existsSync(lockDir(file))).toBe(false);
   });
 
-  it("puts the lock beside a symlinked config, not beside its target", () => {
+  it("breaks a stale lock and writes", async () => {
+    const file = path.join(dir, ".claude.json");
+    hold(file, 60);
+    expect(await trustClaudeCode(file, ["/home/core"], { lock: noLockSleep })).toBe("written");
+    expect(fs.existsSync(lockDir(file))).toBe(false);
+  });
+
+  it("puts the lock beside a symlinked config, not beside its target", async () => {
     const sub = path.join(dir, "sub");
     fs.mkdirSync(sub);
     const real = path.join(sub, "real.json");
@@ -278,7 +312,7 @@ describe("claude-code: Claude Code's config lock (file.lock) (#699)", () => {
     fs.writeFileSync(real, "{}");
     fs.symlinkSync(real, file);
     const seen: boolean[] = [];
-    trustClaudeCode(file, ["/home/core"], {
+    await trustClaudeCode(file, ["/home/core"], {
       lock: noLockSleep,
       beforeCommit: () => seen.push(fs.existsSync(`${file}.lock`), fs.existsSync(`${real}.lock`)),
     });
@@ -286,27 +320,25 @@ describe("claude-code: Claude Code's config lock (file.lock) (#699)", () => {
     expect(fs.existsSync(`${file}.lock`)).toBe(false);
   });
 
-  it("pauses for longer after each compare miss", () => {
+  it("pauses for longer after each compare miss", async () => {
     const file = path.join(dir, ".claude.json");
     fs.writeFileSync(file, "{}");
     const sleeps: number[] = [];
     let calls = 0;
-    expect(() =>
-      trustClaudeCode(file, ["/home/core"], {
+    await expect(trustClaudeCode(file, ["/home/core"], {
         attempts: 4,
-        lock: { sleep: (ms) => sleeps.push(ms) },
+        lock: { sleep: async (ms) => void sleeps.push(ms) },
         beforeCommit: () => fs.writeFileSync(file, JSON.stringify({ n: ++calls })),
-      }),
-    ).toThrow();
+      })).rejects.toThrow();
     expect(sleeps).toHaveLength(3);
     expect(sleeps.every((ms, i) => i === 0 || ms > sleeps[i - 1]!)).toBe(true);
     expect(sleeps[0]).toBeGreaterThan(0);
   });
 
-  it.each([0, -1, 1.5, Number.NaN])("rejects attempts = %s with a TypeError before touching anything", (attempts) => {
+  it.each([0, -1, 1.5, Number.NaN])("rejects attempts = %s with a TypeError before touching anything", async (attempts) => {
     const file = path.join(dir, ".claude.json");
     fs.writeFileSync(file, "{}");
-    expect(() => trustClaudeCode(file, ["/home/core"], { attempts, lock: noLockSleep })).toThrow(TypeError);
+    await expect(trustClaudeCode(file, ["/home/core"], { attempts, lock: noLockSleep })).rejects.toThrow(TypeError);
     expect(read(file)).toBe("{}");
     expect(fs.existsSync(lockDir(file))).toBe(false);
   });
@@ -389,17 +421,17 @@ describe("codex: ~/.codex/config.toml [projects.\"dir\"] trust_level", () => {
 });
 
 describe("pretrustWorkspaces", () => {
-  it("writes only the Harnesses named, and reports a failure without throwing", () => {
+  it("writes only the Harnesses named, and reports a failure without throwing", async () => {
     fs.writeFileSync(path.join(dir, ".claude.json"), "{ broken");
-    const results = pretrustWorkspaces(dir, ["claude-code", "codex", "cursor-cli", "pi"], ["/home/core"]);
+    const results = await pretrustWorkspaces(dir, ["claude-code", "codex", "cursor-cli", "pi"], ["/home/core"]);
     expect(results.map((r) => [r.harness, r.outcome])).toEqual([
       ["claude-code", "failed"],
       ["codex", "written"],
       ["cursor-cli", "written"],
     ]);
     expect(fs.existsSync(path.join(dir, ".codex", "config.toml"))).toBe(true);
-    expect(pretrustWorkspaces(dir, ["pi"], ["/home/core"])).toEqual([]);
-    expect(pretrustWorkspaces(dir, ["cursor-cli"], ["/home/core"]).map((r) => [r.harness, r.outcome])).toEqual([["cursor-cli", "unchanged"]]);
+    expect(await pretrustWorkspaces(dir, ["pi"], ["/home/core"])).toEqual([]);
+    expect((await pretrustWorkspaces(dir, ["cursor-cli"], ["/home/core"])).map((r) => [r.harness, r.outcome])).toEqual([["cursor-cli", "unchanged"]]);
   });
 });
 
