@@ -8,6 +8,7 @@ import {
 } from "../pty-core-link-server";
 import type { CoreSessionRow } from "@actana/shared/core-query";
 import type { PtyCore, PtyCoreEvent } from "../pty-manager";
+import { CLIENT_KILL_REASON } from "../session-kill";
 import {
   SESSION_LOCKED_ERROR_CODE,
   type CoreLinkEvent,
@@ -114,6 +115,7 @@ function mockCore() {
   const ptySessions = new Map<string, string>();
   const writes: Array<{ ptyId: string; data: string }> = [];
   const kills: string[] = [];
+  const killReasons: Array<string | undefined> = [];
   const spawns: string[] = [];
   let nextPty = 0;
   let target: ((event: PtyCoreEvent) => void) | null = null;
@@ -132,8 +134,9 @@ function mockCore() {
       return ptySessions.has(ptyId);
     },
     resize: () => true,
-    kill: (ptyId: string) => {
+    kill: (ptyId: string, reason?: string) => {
       kills.push(ptyId);
+      killReasons.push(reason);
       return ptySessions.delete(ptyId);
     },
     killLaunchProcesses: async () => ({ ptyCount: 0, ports: [] }),
@@ -146,6 +149,7 @@ function mockCore() {
     core: core as unknown as PtyCore,
     writes,
     kills,
+    killReasons,
     spawns,
     ptySessions,
     emit: (event: PtyCoreEvent) => target?.(event),
@@ -368,6 +372,19 @@ describe("the Session write lock (issue 144, ADR 0024 D3-D7, D10)", () => {
       expect(ws.answerTo("w1")).toMatchObject({ type: "writeResult", ok: true });
       expect(ws.answerTo("m1")).toMatchObject({ type: "sessionsMutateResult" });
       expect(core.writes).toEqual([{ ptyId, data: "hello" }]);
+    });
+
+    it("marks a client's kill as requested, so the exit settles as a kill (issue 292)", async () => {
+      // The reason is what the exit reads: without it a harness that caught
+      // the hang-up and exited 0 settled its live turn as `finished`.
+      const ws = connect();
+      const ptyId = await spawn(ws, "session-a");
+
+      ws.receive({ type: "kill", reqId: "k1", ptyId });
+
+      expect(ws.answerTo("k1")).toMatchObject({ type: "killResult", ok: true });
+      expect(core.kills).toEqual([ptyId]);
+      expect(core.killReasons).toEqual([CLIENT_KILL_REASON]);
     });
 
     it("never lets a refused mutation acquire the lock (D6)", async () => {

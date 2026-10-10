@@ -794,6 +794,28 @@ Sessions whose process is gone:
   unconditional, so it would overwrite an `interrupted` Session with `finished`
   and raise a spurious `session:finished` besides.
 
+  **A killed or signalled exit is never a finish** (issue 292). `exit 0` alone
+  does not mean the turn completed: a `session kill` closes the PTY, the
+  harness gets SIGHUP, and Claude Code can catch it and exit 0 — which settled a
+  killed mid-turn Session as `finished`, rang a completion ding for destroyed
+  work, and left no trace of the kill. So `onSessionExit` carries the `signal`
+  node-pty reported and, for a client's `kill` frame, a kill record (time and
+  reason) set on the PTY *before* the teardown. An active Session settles as
+  `finished` only on exit code 0 with no signal and no kill; anything else is
+  `terminated`. A killed `ready` Session still settles as `disconnected` — it
+  had no turn to terminate — and never stays `ready`.
+
+  Every requested kill also appends one **`session:killed`** event, after the
+  settle, whether or not a Panel is connected. Its payload is
+  `{ sessionId, ptyId, reason, killedAt, liveTurn, statusBefore, status,
+  exitCode, signal }` (`packages/core/src/session-kill.ts`): the task, the ISO
+  time, why, whether a turn was in flight, and the status the row was left on.
+  It is an ordinary event-log row, addressed to the Session, so a caller that
+  was not present reads it later by cursor (`actana events tail --json`) — the
+  trace that tells a killed Session apart from one that never got a prompt,
+  which `live: false` cannot. Turn start and turn end are the
+  `session:updated` rows that carry the patched `status`.
+
   **`ready` settles here too** (issue 387), and it is the one status in scope
   that describes no work. A *bare* Session — spawned with no prompt, sitting on
   "Waiting for initial prompt…" — never leaves `ready` until its first

@@ -331,9 +331,9 @@ async function startCore(): Promise<void> {
     // and the hook receiver's, for the same reason: killing it would silently
     // strand every running Session's status.
     getProtectedPorts: () => [port, hookReceiver?.port],
-    onSessionExit: ({ sessionId, exitCode }) => {
-      harnessStatus.sessionExited(sessionId, exitCode);
-      sessionBackstop?.forget(sessionId);
+    onSessionExit: (exit) => {
+      harnessStatus.sessionExited(exit);
+      sessionBackstop?.forget(exit.sessionId);
     },
     onSessionOutputSignal: ({ sessionId, signal }) => harnessStatus.outputSignal(sessionId, signal),
     // Issue 483. The status the signal above writes is what a client renders;

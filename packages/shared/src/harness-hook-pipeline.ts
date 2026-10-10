@@ -60,6 +60,18 @@ export type HarnessHookBody = {
   last_assistant_message?: string;
   /** Synthetic session-exited event: the PTY process's exit code. */
   exit_code?: number;
+  /**
+   * Synthetic session-exited event: the signal that ended the PTY process, when
+   * one did (issue 292). A harness torn down by SIGHUP or SIGKILL can still
+   * report exit code 0, so the code alone cannot tell a clean exit from one.
+   */
+  signal?: number;
+  /**
+   * Synthetic session-exited event: a client asked the Core to kill this PTY
+   * (issue 292). A harness that catches the teardown signal and exits 0 looks
+   * exactly like one that finished, so the intent has to travel with the exit.
+   */
+  killed?: boolean;
 };
 
 /** What the pipeline needs to know about a session before it decides anything. */
@@ -131,6 +143,18 @@ function isSubagentLifecycleEvent(event: string): boolean {
   return (
     event === HARNESS_HOOK_EVENTS.subagentStart || event === HARNESS_HOOK_EVENTS.subagentStop
   );
+}
+
+/**
+ * Did the process exit end a live turn before the turn ended itself? Any of the
+ * three is enough: a client killed the PTY, a signal ended the process, or the
+ * process reported a non-zero (or no) exit code. Only a clean, unsignalled,
+ * unrequested exit can mean the work completed.
+ */
+function exitCutTurnShort(payload: HarnessHookBody): boolean {
+  if (payload.killed === true) return true;
+  if (typeof payload.signal === "number" && payload.signal !== 0) return true;
+  return payload.exit_code !== 0;
 }
 
 /**
@@ -318,9 +342,16 @@ export function handleHarnessHookEvent(
   }
 
   // Synthetic PTY-exit event: the session process is gone, so a session still
-  // showing active work is wrong — settle it by exit code. Sessions already in a
-  // settled state (finished, interrupted, …) keep it: the exit of an idle
-  // session isn't news. Dead process ⇒ its subagents died with it.
+  // showing active work is wrong — settle it by how the process ended. Sessions
+  // already in a settled state (finished, interrupted, …) keep it: the exit of
+  // an idle session isn't news. Dead process ⇒ its subagents died with it.
+  //
+  // A live turn that ends in an exit is `finished` only when nothing cut it
+  // short: exit code 0, no signal, and no kill (issue 292). A `session kill`
+  // closes the PTY, the harness gets SIGHUP, and Claude Code can catch it and
+  // exit 0 — so the code alone settled a killed mid-turn Session as `finished`,
+  // raised a completion ding for work that was destroyed, and left no trace of
+  // the kill. See `exitCutTurnShort`.
   //
   // `ready` is in scope too (issue 387), and it is the one status here that
   // does not describe work in progress. It describes a Session that has not
@@ -349,7 +380,7 @@ export function handleHarnessHookEvent(
     // in flight must be ignored as stale, never heal to "running".
     clearSessionFinished(sessionId);
     if (session.status === "running" || session.status === "needs-input") {
-      ports.updateStatus(sessionId, payload.exit_code === 0 ? "finished" : "terminated");
+      ports.updateStatus(sessionId, exitCutTurnShort(payload) ? "terminated" : "finished");
     } else if (session.status === "ready") {
       ports.updateStatus(sessionId, "disconnected");
     }
