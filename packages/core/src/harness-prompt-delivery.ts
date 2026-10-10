@@ -828,11 +828,13 @@ const ECHO_PROBE_CHARS = 12;
  * How many trailing characters of a long prompt are looked for in the echo,
  * and the length at or under which a prompt counts as short (issue 697).
  *
- * Long enough that the tail is not boilerplate by accident, short enough to
- * survive a composer that shows only its last few wrapped rows. Every starting
- * prompt ends in the same standard block, so the tail is shared text across
- * prompts: it is evidence only when it was painted after our first write and
- * was not already on screen before it (see {@link promptEchoed}).
+ * Short enough to survive a composer that shows only its last few wrapped
+ * rows. It is not distinctive: every starting prompt carries the fixed standard
+ * block (300+ characters), so in production the 64-character tail lies wholly
+ * inside that block and `headCounts` is never true. The tail proves only that
+ * the block was painted after our first write; what stops a false delivery is
+ * the baseline check in {@link promptEchoed} — the same text was not on screen
+ * before that write.
  */
 const ECHO_TAIL_PROBE_CHARS = 64;
 
@@ -914,6 +916,17 @@ export function pastePlaceholderShown(screen: string, prompt: string): boolean {
  * shared standard block and a paste chip from an earlier prompt all outlive the
  * prompt that painted them. Without it, a harness that never took the prompt is
  * reported as having taken it.
+ *
+ * Limits, all accepted for now (issue 697):
+ *  - `before` is only the screen since the last full-screen clear, inside the
+ *    8 000-character window. Block text repainted from scrollback or a
+ *    transcript after a clear would count as new. That is safe today only
+ *    because the Core delivers turn 1 into a fresh harness, with no resume.
+ *  - cursor-cli, claude-code and opencode have no captured echo of a long
+ *    prompt. A composer that shows only the start of one would read as
+ *    swallowed and be retyped until `maxPromptWrites`.
+ *  - The codex chip count is checked against UTF-8 bytes as a loose upper
+ *    bound: codex counts at most that many.
  */
 export function promptEchoed(screen: string, prompt: string, before = ""): boolean {
   const { head, tail, headCounts } = promptEchoProbes(prompt);
