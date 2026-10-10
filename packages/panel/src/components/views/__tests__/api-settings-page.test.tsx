@@ -187,6 +187,9 @@ beforeEach(() => {
 });
 afterEach(() => cleanup());
 
+const localDay = (d: Date) =>
+  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+
 function mutationCacheBlob(client: QueryClient): string {
   return JSON.stringify(
     client.getMutationCache().getAll().map((m) => ({
@@ -524,7 +527,7 @@ describe("Settings › API & integrations", () => {
       expect(within(dialog).getByText(/Pick a date after today/i)).toBeTruthy();
       const future = new Date();
       future.setFullYear(future.getFullYear() + 1);
-      const day = `${future.getFullYear()}-${String(future.getMonth() + 1).padStart(2, "0")}-${String(future.getDate()).padStart(2, "0")}`;
+      const day = localDay(future);
       await act(async () => {
         fireEvent.change(date, { target: { value: day } });
       });
@@ -537,12 +540,52 @@ describe("Settings › API & integrations", () => {
       expect(sent).toBe(end);
     });
 
+    // West of UTC the local day and the UTC day differ every evening; pin a zone and an evening so this
+    // fails if the picker and the list ever read the day in different timezones again (review r1).
+    it("reads the picked day, the list label and the earliest pick in one timezone (America/New_York, 21:00)", async () => {
+      const tz = process.env.TZ;
+      process.env.TZ = "America/New_York";
+      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.setSystemTime(new Date("2026-10-11T01:00:00Z")); // 2026-10-10 21:00 in New York
+      try {
+        const dialog = await openCreate("new-york");
+        await act(async () => {
+          fireEvent.change(within(dialog).getByLabelText(/^Expiry$/i), { target: { value: "custom" } });
+        });
+        const date = within(dialog).getByLabelText(/Expiry date/i) as HTMLInputElement;
+        // Tomorrow in New York is the 11th; UTC is already on the 11th, so a UTC day would say the 12th.
+        expect(date.min).toBe("2026-10-11");
+        await act(async () => {
+          fireEvent.change(date, { target: { value: "2026-12-31" } });
+        });
+        api.listApiKeys.mockResolvedValue({ apiKeys: [] });
+        await act(async () => {
+          fireEvent.click(within(dialog).getByRole("button", { name: /^Create$/i }));
+        });
+        const sent = (api.createApiKey.mock.calls[0] as unknown as [{ expiresAt: number }])[0].expiresAt;
+        expect(sent).toBe(Date.parse("2027-01-01T04:59:59.999Z")); // end of 2026-12-31 in New York
+        cleanup();
+        api.listApiKeys.mockResolvedValue({
+          apiKeys: [{ ...KEYS[0]!, id: "k-ny", name: "ny-key", expiresAt: sent }],
+        });
+        await act(async () => {
+          mount();
+        });
+        const row = (await screen.findByText("ny-key")).closest("[data-api-key-id]") as HTMLElement;
+        expect(row.textContent).toMatch(/expires 2026-12-31/);
+      } finally {
+        vi.useRealTimers();
+        if (tz === undefined) delete process.env.TZ;
+        else process.env.TZ = tz;
+      }
+    });
+
     it("shows each key's expiry date in the list, and marks an expired key", async () => {
       const now = Date.now();
       api.listApiKeys.mockResolvedValue({
         apiKeys: [
           { ...KEYS[0]!, id: "k-never", name: "never-key", expiresAt: null },
-          { ...KEYS[0]!, id: "k-later", name: "later-key", expiresAt: Date.UTC(2099, 4, 17, 12) },
+          { ...KEYS[0]!, id: "k-later", name: "later-key", expiresAt: new Date(2099, 4, 17, 12).getTime() },
           { ...KEYS[0]!, id: "k-gone", name: "gone-key", expiresAt: now - 86_400_000 },
           { ...KEYS[0]!, id: "k-revoked", name: "revoked-key", expiresAt: now - 86_400_000, revokedAt: now - 2 * 86_400_000 },
         ],
@@ -560,7 +603,7 @@ describe("Settings › API & integrations", () => {
       const gone = row("gone-key");
       expect(gone.dataset.expired).toBe("true");
       expect(within(gone).getByText(/^Expired$/)).toBeTruthy();
-      expect(gone.textContent).toContain(`expired ${new Date(now - 86_400_000).toISOString().slice(0, 10)}`);
+      expect(gone.textContent).toContain(`expired ${localDay(new Date(now - 86_400_000))}`);
       // A revoked key reads as revoked, not as expired.
       expect(row("revoked-key").dataset.expired).toBe("false");
       expect(row("revoked-key").textContent).toMatch(/revoked/);

@@ -103,7 +103,18 @@ function expiryInstant(choice: ExpiryChoice, customDate: string, now = Date.now(
   return now + Number.parseInt(choice, 10) * DAY_MS;
 }
 
-const isoDay = (at: number) => new Date(at).toISOString().slice(0, 10);
+/** The local calendar day of an instant, as YYYY-MM-DD: the same timezone a custom expiry date is read in. */
+function isoDay(at: number): string {
+  const d = new Date(at);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+/** Tomorrow's local day, the earliest a custom expiry can be picked (by calendar, not +24 h, so a DST day cannot skip it). */
+function tomorrowDay(now = Date.now()): string {
+  const d = new Date(now);
+  d.setDate(d.getDate() + 1);
+  return isoDay(d.getTime());
+}
 
 /** The expiry part of a key's status line: what it says, and whether the key has expired. */
 function expiryLabel(expiresAt: number | null, now = Date.now()): { text: string; expired: boolean } {
@@ -1017,7 +1028,7 @@ function ExpiryPicker({
             aria-label="Expiry date"
             aria-invalid={invalidCustom || undefined}
             value={customDate}
-            min={isoDay(Date.now() + DAY_MS)}
+            min={tomorrowDay()}
             onChange={(e) => onCustomDate(e.target.value)}
             style={{ ...pickerControl, borderColor: invalidCustom ? "var(--danger)" : undefined }}
           />
