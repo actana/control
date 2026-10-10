@@ -6,12 +6,14 @@ import { describe, expect, it } from "vitest";
 import {
   DOCKERFILE_FILENAME_REGEX,
   NOT_COVERED,
+  RETIRED_CORE_BASE_DIGESTS,
   SHIPPED_DOCKERFILES,
   dockerUpdateDirectories,
   formatReport,
   isCovered,
   latestVersionForMajor,
   parseFromLines,
+  readCoreBaseNote,
   readNodeVersionArg,
   setNodeVersionArg,
   splitImageRef,
@@ -201,6 +203,33 @@ describe("the NODE_VERSION ARG", () => {
   });
 });
 
+describe("readCoreBaseNote", () => {
+  it("reads the point release named on the line above the base", () => {
+    const text = [
+      "# some prose",
+      "# ubuntu:24.04 == noble-20260917 at the time of writing.",
+      `FROM ubuntu:24.04@sha256:${"a".repeat(64)}`,
+    ].join("\n");
+
+    expect(readCoreBaseNote(text)).toEqual({ tag: "noble-20260917", line: 2 });
+  });
+
+  it("is null when the note is not directly above the FROM", () => {
+    const text = [
+      "# ubuntu:24.04 == noble-20260917 at the time of writing.",
+      "",
+      `FROM ubuntu:24.04@sha256:${"a".repeat(64)}`,
+    ].join("\n");
+
+    expect(readCoreBaseNote(text)).toBe(null);
+  });
+
+  it("is null when there is no note, or no FROM", () => {
+    expect(readCoreBaseNote(`FROM ubuntu:24.04@sha256:${"a".repeat(64)}\n`)).toBe(null);
+    expect(readCoreBaseNote("# ubuntu:24.04 == noble-20260917 at the time of writing.\n")).toBe(null);
+  });
+});
+
 describe("formatReport", () => {
   it("names the drifted rows and only those", () => {
     const report = formatReport([
@@ -260,6 +289,29 @@ describe("the shipped Dockerfiles", () => {
 
   it("carry a NODE_VERSION that no registry can bump for them", () => {
     expect(readNodeVersionArg(read("deploy/core.Dockerfile")).version).toMatch(/^24\.\d+\.\d+$/);
+  });
+
+  // #548: core 0.4.5 shipped pinning a digest `ubuntu:24.04` had already left
+  // behind. The weekly rebuild only reports that (ADR 0023 D42), so the fix
+  // is a forward bump — and these two tests are what keeps it forward.
+  it("do not pin a Core base digest a release was found stale on (#548)", () => {
+    const base = parseFromLines(read("deploy/core.Dockerfile"))[0];
+    const retired = RETIRED_CORE_BASE_DIGESTS[base.digest];
+
+    expect(retired, `${base.digest} is ${retired?.tag}, retired by ${retired?.report}`).toBeUndefined();
+  });
+
+  it("name the point release the Core base digest came from, beside the pin", () => {
+    const note = readCoreBaseNote(read("deploy/core.Dockerfile"));
+
+    expect(note, "no `# ubuntu:24.04 == noble-… at the time of writing.` line above the FROM").not.toBe(null);
+    expect(note.tag).toMatch(/^noble-\d{8}(\.\d+)?$/);
+
+    // Newer than every point release a stale pin has been reported on. The
+    // tags carry their date, so the ordering is the string ordering.
+    for (const { tag } of Object.values(RETIRED_CORE_BASE_DIGESTS)) {
+      expect(note.tag > tag, `${note.tag} is not newer than the retired ${tag}`).toBe(true);
+    }
   });
 });
 
