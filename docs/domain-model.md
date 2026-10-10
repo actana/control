@@ -24,6 +24,10 @@ Explicit non-goals:
   `.claude/`, `.codex/`, `.cursor/`, or any other harness skill directory.
   Injecting behavior into the user's harness biases results and collides
   with their own setup, especially for git operations. See ADR 0006.
+- **Not a source-control UI.** No git probe, worktree, diff, or branch
+  display. Source-control decisions belong to the tool on the Core's
+  machine; a Harness may run `git` in a Session, but the Panel does not
+  look. See [ADR 0014](adr/0014-panel-owns-no-source-control.md).
 - **Not a voice interface.** Speech-to-text belongs in the operator's own
   toolchain, not the remote control.
 - **Not a screen capture tool.** File transfer to a Core will be a
@@ -114,6 +118,8 @@ one in code, it is dead:
 - Diagram skill install target, ship skill install target, MC_API_URL /
   MC_API_TOKEN / MC_THEME injected into harness Sessions.
 - Scratch pad, custom scripts, launch commands, prompt search palette.
+- Worktree, git diff, branch (Panel-side git probes and the Task or
+  Session fields that modeled them). See [ADR 0014](adr/0014-panel-owns-no-source-control.md).
 - File editor dialog, file finder dialog, HTML preview, annotations panel,
   markdown annotator.
 
@@ -125,6 +131,7 @@ one in code, it is dead:
 | Skills, MCPs, hooks config     | The user's harness   |
 | Where code executes            | The Core machine  |
 | Editing / previewing files     | The user's editor    |
+| Source control (git)           | The Core machine  |
 | Saved prompts                  | The user's toolchain |
 | Notifying the operator         | The Panel            |
 | Showing task/session state     | The Panel            |
