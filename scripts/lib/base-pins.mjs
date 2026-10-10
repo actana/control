@@ -332,3 +332,47 @@ export function formatReport(rows) {
     `${drifted.length} of ${rows.length} pin${rows.length === 1 ? "" : "s"} have drifted.`,
   ].join("\n");
 }
+
+// ---------------------------------------------------------------------------
+// The Panel runtime pin (#733) — the distroless counterpart of #548's Core fix.
+
+/**
+ * Panel runtime digests a *released* image was found pinning after
+ * `gcr.io/distroless/nodejs24:latest` had moved on. Each is the pin a
+ * promoted Panel image shipped with, keyed by the digest, with the date the
+ * drift was reported and the report that found it.
+ *
+ * Same rule as the Core map: a pin moves forward and never back. The weekly
+ * rebuild only detects drift (ADR 0023 D42), so the fix for a row here is a
+ * forward bump in a release, and the test reading this map holds the shipped
+ * Dockerfile to that.
+ */
+export const RETIRED_PANEL_RUNTIME_DIGESTS = {
+  "sha256:2e3b3a96d1d7286c3e4727f9c84b4dc32b6b33e7d7d4425c5a5c8186ad85fa93": {
+    reported: "2026-08-24",
+    report: "#312 / #733 — pinned by panel 0.3.3 through 0.4.5 after distroless/nodejs24:latest had moved",
+  },
+};
+
+const PANEL_RUNTIME_NOTE =
+  /^#\s*gcr\.io\/distroless\/nodejs24:latest\s*==\s*this digest on (\d{4}-\d{2}-\d{2})\.\s*$/;
+
+/**
+ * The date the Panel runtime digest was read off the `latest` tag, from the
+ * note the Dockerfile keeps on the line above the runtime `FROM`.
+ *
+ * Distroless publishes no versioned tags (D20), so unlike the Core's
+ * `noble-…` point release there is nothing else to date the pin by. The note
+ * must sit directly above the pin so it is updated with it. Returns `null`
+ * when there is no note, or no `FROM`.
+ */
+export function readPanelRuntimeNote(text) {
+  const lines = text.split("\n");
+  const runtime = parseFromLines(text).at(-1);
+  if (!runtime) return null;
+
+  const match = PANEL_RUNTIME_NOTE.exec(lines[runtime.line - 2] ?? "");
+  if (!match) return null;
+
+  return { date: match[1], line: runtime.line - 1 };
+}
