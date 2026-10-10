@@ -98,6 +98,14 @@ export type HookPipelineResult =
   | { outcome: "ok"; event: string; status?: SessionStatus }
   | { outcome: "ignored"; event: string }
   | { outcome: "foreign-session"; event: string }
+  /**
+   * The hook came from a process that is not the harness the Core spawned for
+   * the Session — a harness nested inside it, running the same hook file with
+   * the same inherited env (issue 460). Decided by the Core before anything
+   * here runs (`harness-hook-origin.ts`); the Panel never produces it. Listed
+   * here so both hosts answer it with one shape.
+   */
+  | { outcome: "foreign-process"; event: string }
   | { outcome: "session-not-found"; event: string };
 
 function hookSessionId(payload: HarnessHookBody): string {
@@ -214,6 +222,14 @@ export function handleHarnessHookEvent(
     // ended, and the session it reports about is not in question: the hook was
     // addressed by session id, out of the PTY's own environment, so the PTY that
     // posted this belongs to this session whatever the harness calls its session.
+    //
+    // "The PTY that posted this" is doing real work in that sentence, and on
+    // the Core it is checked before this function runs: a hook from a process
+    // the Core did not spawn for the Session — a harness nested inside the
+    // PTY, which inherits the same environment — is answered `foreign-process`
+    // and never reaches here (issue 460, `harness-hook-origin.ts`). So the
+    // settle below is reached only by the Session's own harness under a
+    // session id it has not captured, which is the two shapes named next.
     //
     // Dropping it was still an ack — `{ ok: true, ignored: "foreign-session" }`
     // — so the harness saw its hook accepted, the card stayed on `running`, and
@@ -411,6 +427,8 @@ export function hookResultResponse(result: HookPipelineResult): {
       return { ok: false, body: { error: "session not found" } };
     case "foreign-session":
       return { ok: true, body: { ok: true, ignored: "foreign-session" } };
+    case "foreign-process":
+      return { ok: true, body: { ok: true, ignored: "foreign-process" } };
     case "ignored":
       return { ok: true, body: { ok: true, ignored: result.event } };
     case "ok":
