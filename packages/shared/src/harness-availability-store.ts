@@ -108,6 +108,8 @@ export class HarnessAvailabilityStore {
   private timer: ReturnType<typeof setInterval> | null = null;
   /** Set by {@link stop}: a round in its retry wait publishes what it has instead of probing again. */
   private stopped = false;
+  /** The pending retry wait, so {@link stop} can end it instead of leaving it to run out. */
+  private retryWait: { timer: ReturnType<typeof setTimeout>; resolve: () => void } | null = null;
 
   constructor(opts: HarnessAvailabilityStoreOptions) {
     this.appendEvent = opts.appendEvent;
@@ -146,6 +148,12 @@ export class HarnessAvailabilityStore {
   /** Stop the probe timer (shutdown). */
   stop(): void {
     this.stopped = true;
+    if (this.retryWait) {
+      const { timer, resolve } = this.retryWait;
+      this.retryWait = null;
+      clearTimeout(timer);
+      resolve();
+    }
     if (this.timer) {
       clearInterval(this.timer);
       this.timer = null;
@@ -226,7 +234,15 @@ export class HarnessAvailabilityStore {
       await probeOne(agent);
     }
     for (let attempt = 0; attempt < this.probeRetries && transient.size > 0 && !this.stopped; attempt++) {
-      await new Promise<void>((resolve) => setTimeout(resolve, this.probeRetryDelayMs));
+      await new Promise<void>((resolve) => {
+        const done = (): void => {
+          this.retryWait = null;
+          resolve();
+        };
+        const timer = setTimeout(done, this.probeRetryDelayMs);
+        timer.unref?.();
+        this.retryWait = { timer, resolve: done };
+      });
       if (this.stopped) break;
       for (const agent of [...transient]) await probeOne(agent, { fresh: true });
     }

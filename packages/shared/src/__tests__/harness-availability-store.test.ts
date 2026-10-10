@@ -214,6 +214,7 @@ describe("HarnessAvailabilityStore.refresh with an asynchronous probe", () => {
   it("records a probe that throws as missing, not as a rejection", async () => {
     const store = new HarnessAvailabilityStore({
       appendEvent: () => 1,
+      probeRetryDelayMs: 0,
       probeAsync: async () => {
         throw new Error("helper did not finish");
       },
@@ -401,6 +402,19 @@ describe("HarnessAvailabilityStore probe retries", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("ends the retry wait at once when stopped, without waiting out a long delay", async () => {
+    const probeAsync = vi.fn(async () => slow);
+    const store = new HarnessAvailabilityStore({ appendEvent: () => 1, probeAsync, probeRetryDelayMs: 60_000 });
+    const round = store.refresh();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const started = Date.now();
+    store.stop();
+    await round;
+    expect(Date.now() - started).toBeLessThan(1_000);
+    expect(probeAsync).toHaveBeenCalledTimes(enabled.length);
+    expect(store.snapshot()["claude-code"]).toEqual(slow);
   });
 
   it("publishes what it has, without another probe, when stopped during the wait", async () => {
