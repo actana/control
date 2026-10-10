@@ -706,11 +706,12 @@ const NO_READINESS: HarnessReadiness = {
  * `retypePrompt`, and `retypePrompt` clears the screen and re-imposes the
  * composer gate, so a harness that had taken the prompt would be re-typed at
  * and then abandoned. The failing shape would be a long prompt rendered as a
- * collapsed paste chip, because {@link PASTE_PLACEHOLDER} transcribes Claude
- * Code's `[Pasted text #1 …]` and OpenCode's `[Pasted ~N lines]` and would not
- * match codex's wording.
+ * collapsed paste chip, because {@link PASTE_PLACEHOLDER} once transcribed only
+ * Claude Code's `[Pasted text #1 …]` and OpenCode's `[Pasted ~N lines]`.
  *
- * It does not happen. `sanitizeInitialInput` flattens a multi-line prompt to
+ * On 0.153.0 it does not happen. (On 0.160.0 it does, from about a thousand
+ * characters: `[Pasted Content N chars]`, issue 697, which the pattern now
+ * carries.) `sanitizeInitialInput` flattens a multi-line prompt to
  * one line before delivery sees it, and an 800-character sub-agent contract
  * written that way — one `write`, the way `writePrompt` writes it — comes back
  * echoed verbatim and wrapped, with no chip. The same text delivered as a real
@@ -814,14 +815,38 @@ export function composerOnScreen(screen: string, readiness: HarnessReadiness): b
  * is the expensive direction here, because it re-types text that already
  * landed. A short probe errs the other way, toward believing the prompt
  * arrived, and believing that wrongly costs exactly what today already costs.
+ *
+ * For a prompt longer than {@link ECHO_TAIL_PROBE_CHARS} the head alone is no
+ * evidence at all (issue 697): the cursor sits at the end of the typed text, so
+ * a composer too small to show it all scrolls to the tail, and the head is the
+ * preamble every Task prompt starts with — text that may already be on screen
+ * from an earlier prompt. See {@link promptEchoProbes}.
  */
 const ECHO_PROBE_CHARS = 12;
 
 /**
- * `[Pasted text #1 +12 lines]` (Claude Code) or `[Pasted ~12 lines]` (OpenCode)
- * — a landed prompt the composer does not echo.
+ * How many trailing characters of a long prompt are looked for in the echo,
+ * and the length at or under which a prompt counts as short (issue 697).
+ *
+ * Long enough that the tail is not boilerplate by accident, short enough to
+ * survive a composer that shows only its last few wrapped rows. Every starting
+ * prompt ends in the same standard block, so the tail is shared text across
+ * prompts: it is evidence only when it was painted after our first write and
+ * was not already on screen before it (see {@link promptEchoed}).
  */
-const PASTE_PLACEHOLDER = /\[\s*pasted\s+(text|~)/i;
+const ECHO_TAIL_PROBE_CHARS = 64;
+
+/**
+ * Every paste chip a harness paints for a prompt it took but will not echo:
+ * `[Pasted text #1 +12 lines]` (Claude Code), `[Pasted ~12 lines]` (OpenCode)
+ * and `[Pasted Content 3072 chars]` (codex 0.160, issue 697).
+ *
+ * Matched against *squeezed* text. codex lays the chip out with absolute
+ * `ESC[row;colH` moves, which {@link stripAnsi} deletes, so the words arrive
+ * glued as `[PastedContent3072chars]`. The codex form captures the character
+ * count so {@link pastePlaceholderShown} can check it against the prompt.
+ */
+const PASTE_PLACEHOLDER = /\[pasted(?:text|~|content(\d+)chars?\])/gi;
 
 /**
  * Whitespace and the glyphs a composer draws its own frame out of.
@@ -840,21 +865,69 @@ function squeeze(text: string): string {
   return text.replace(ECHO_NOISE, "");
 }
 
-export function promptEchoProbe(prompt: string): string {
-  return squeeze(prompt).slice(0, ECHO_PROBE_CHARS);
+export type PromptEchoProbes = {
+  /** The first {@link ECHO_PROBE_CHARS} squeezed characters. */
+  head: string;
+  /** The last {@link ECHO_TAIL_PROBE_CHARS} squeezed characters. */
+  tail: string;
+  /** Whether the head is evidence on its own: only for a short prompt. */
+  headCounts: boolean;
+};
+
+export function promptEchoProbes(prompt: string): PromptEchoProbes {
+  const s = squeeze(prompt);
+  return {
+    head: s.slice(0, ECHO_PROBE_CHARS),
+    tail: s.slice(-ECHO_TAIL_PROBE_CHARS),
+    headCounts: s.length <= ECHO_TAIL_PROBE_CHARS,
+  };
 }
 
-/** Is there evidence on screen that the prompt reached the composer? */
-export function promptEchoed(screen: string, prompt: string): boolean {
-  const probe = promptEchoProbe(prompt);
+/** The head probe, kept for callers that only want the start of the prompt. */
+export function promptEchoProbe(prompt: string): string {
+  return promptEchoProbes(prompt).head;
+}
+
+/**
+ * Is a paste chip for this prompt on screen?
+ *
+ * `text` and `~` chips carry no count and are taken as they are. codex's chip
+ * carries the number of characters it collapsed, and counts only if that number
+ * could belong to this prompt: at least one, and no more than its bytes.
+ */
+export function pastePlaceholderShown(screen: string, prompt: string): boolean {
+  const shown = squeeze(stripAnsi(screen));
+  const bytes = Buffer.byteLength(prompt, "utf8");
+  for (const m of shown.matchAll(PASTE_PLACEHOLDER)) {
+    if (m[1] === undefined) return true;
+    const n = Number(m[1]);
+    if (n >= 1 && n <= bytes) return true;
+  }
+  return false;
+}
+
+/**
+ * Is there evidence on screen that the prompt reached the composer?
+ *
+ * `before` is what was on screen when the first write went out. Evidence that
+ * was already there is not evidence of this write: the shared preamble, the
+ * shared standard block and a paste chip from an earlier prompt all outlive the
+ * prompt that painted them. Without it, a harness that never took the prompt is
+ * reported as having taken it.
+ */
+export function promptEchoed(screen: string, prompt: string, before = ""): boolean {
+  const { head, tail, headCounts } = promptEchoProbes(prompt);
   // Nothing to look for — a prompt of pure whitespace is not this module's
   // problem to detect, and re-typing it forever would be.
-  if (!probe) return true;
-  const shown = stripAnsi(screen);
-  if (squeeze(shown).includes(probe)) return true;
+  if (!head) return true;
+  const now = squeeze(stripAnsi(screen));
+  const was = squeeze(stripAnsi(before));
+  const fresh = (probe: string) => now.includes(probe) && !was.includes(probe);
+  if (fresh(tail)) return true;
+  if (headCounts && fresh(head)) return true;
   // A harness that rendered the write as a paste is a harness that took it,
   // and the one thing it deliberately does not do is echo the text.
-  return PASTE_PLACEHOLDER.test(shown);
+  return pastePlaceholderShown(screen, prompt) && !pastePlaceholderShown(before, prompt);
 }
 
 // ─── Timing ──────────────────────────────────────────────────────────
@@ -1124,6 +1197,8 @@ export class HarnessPromptDelivery {
   private composerCeilingArmed = false;
   /** How many times the prompt has been written into the composer. */
   private promptWrites = 0;
+  /** The screen as it stood when the first write went out (issue 697). */
+  private echoBaseline = "";
   /** Whether this settling round has already said it is waiting for a composer. */
   private waitingForComposerReported = false;
 
@@ -1285,7 +1360,7 @@ export class HarnessPromptDelivery {
     if (!this.readiness.confirmEcho) return true;
     if (this.deadlinePassed) return true;
     if (this.promptWrites >= this.readiness.maxPromptWrites) return true;
-    return promptEchoed(this.screen, this.opts.prompt);
+    return promptEchoed(this.screen, this.opts.prompt, this.echoBaseline);
   }
 
   /**
@@ -1514,6 +1589,9 @@ export class HarnessPromptDelivery {
     this.composerObserved = composerOnScreen(this.screen, this.readiness) &&
       this.readiness.composer.length > 0;
     this.phase = "typing";
+    // First write only: a retype must not launder our own earlier echo into
+    // the baseline, or the text we typed would stop counting as evidence.
+    if (this.promptWrites === 0) this.echoBaseline = this.screen;
     this.screen = "";
     this.recentSignatures = [];
     this.promptWrites += 1;
@@ -1663,11 +1741,14 @@ export class HarnessPromptDelivery {
    *
    * `promptWrites > 0` is what keeps it honest: with no write of ours on the
    * screen, an echo match would be the harness's own scrollback, not a
-   * delivery. Checked after the dialog gate in both callers, so a menu on
+   * delivery. The evidence must also be new since the first write
+   * (`echoBaseline`, issue 697): the shared preamble or a paste chip already
+   * on screen is not our prompt. Checked after the dialog gate in both callers, so a menu on
    * screen still abandons (D4a) rather than taking a `\r` it cannot justify.
    */
   private promptIsInComposer(): boolean {
-    return this.promptWrites > 0 && promptEchoed(this.screen, this.opts.prompt);
+    return this.promptWrites > 0 &&
+      promptEchoed(this.screen, this.opts.prompt, this.echoBaseline);
   }
 
   private onDeadline(): void {
