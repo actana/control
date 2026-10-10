@@ -75,11 +75,15 @@ const CODEX_160_BOOT = readFileSync(path.resolve(__dirname, "fixtures/codex-0.16
 
 const SENTENCE =
   "You have been given a Task by the operator's Panel. Do the work, then report the result as described at the end.";
-/** A ~4500-character Task prompt ending in the fixed standard block, as pty-manager sends it (issue 697). */
-const LONG = appendPromptBlock(Array.from({ length: 36 }, () => SENTENCE).join(" "), {
-  sessionId: "s-697",
-  turn: 1,
-});
+/** Body text that never repeats the preamble, so a long prompt's tail does not contain its head probe. */
+const body = (n: number, tag = "module"): string =>
+  Array.from({ length: n }, (_, i) => `Step ${i + 1}: check ${tag} ${i} and note each finding.`).join(" ");
+/** A ~4000-character Task prompt: the preamble once, then distinct steps, then the standard block (issue 697). */
+const LONG = appendPromptBlock(`${SENTENCE} ${body(70)}`, { sessionId: "s-697", turn: 1 });
+/** A different prompt that ends in the same fixed standard block. */
+const OTHER = appendPromptBlock(`Fix the flaky scheduler test. ${body(70, "service")}`, { sessionId: "s-other", turn: 1 });
+/** ~20 000 characters, well past the 8000-character screen window. */
+const HUGE = appendPromptBlock(`${SENTENCE} ${body(350)}`, { sessionId: "s-697", turn: 1 });
 const SHORT = "refactor the auth module";
 
 // ── Synthetic screens, modelled on the pi 1.0.2 and codex 0.160 captures ──────────────────────────────────────
@@ -154,6 +158,11 @@ describe("promptEchoed with a long prompt", () => {
     expect(promptEchoed(`unrelated output\n${"x".repeat(200)}`, LONG)).toBe(false);
   });
 
+  it("shares the standard-block tail with other prompts, so only a fresh tail counts", () => {
+    expect(promptEchoed(piTail(OTHER), LONG)).toBe(true);
+    expect(promptEchoed(piTail(OTHER), LONG, piTail(OTHER))).toBe(false);
+  });
+
   it("does not take a Codex chip with an implausible size for the prompt", () => {
     expect(promptEchoed(codexChips(999_999), LONG)).toBe(false);
   });
@@ -215,6 +224,24 @@ describe("pi 1.0.2 with a ~4500-character Task prompt (issue 697)", () => {
     expect(count(h, LONG)).toBeLessThanOrEqual(3);
   });
 
+  it("does not take another prompt's shared standard-block tail already on screen for the prompt landing", () => {
+    const h = swallowed(PI_102_BOOT + piTail(OTHER));
+    h.delivery.onOutput(piTail(OTHER));
+    h.clock.advance(ceiling);
+    expect(count(h, "\r")).toBe(0);
+    expect(h.events.at(-1)).toEqual({ phase: "abandoned", reason: abandonReason });
+  });
+
+  it("presses Enter once for a ~20 000-character prompt", () => {
+    const h = startDelivery(HUGE, { harness: "pi" });
+    h.delivery.onOutput(PI_102_BOOT);
+    h.clock.advance(PROFILE.quietGapMs + 1);
+    h.clock.advance(submitPauseMs(HUGE, PROFILE) + PROFILE.quietGapMs + 1);
+    h.delivery.onOutput(piTail(HUGE));
+    h.clock.advance(PROFILE.quietGapMs + 1);
+    expect(h.writes).toEqual([HUGE, "\r"]);
+  });
+
   it("abandons honestly when nothing ever lands", () => {
     const h = swallowed();
     h.clock.advance(ceiling);
@@ -262,6 +289,16 @@ describe("codex 0.160 with a ~4500-character Task prompt pasted as a chip (issue
     h.delivery.onOutput(codexChips(1024, 3072));
     h.clock.advance(PROFILE.quietGapMs + 1);
     expect(h.writes).toEqual([LONG, "\r"]);
+  });
+
+  it("presses Enter once for a ~20 000-character prompt shown as several chips", () => {
+    const h = startDelivery(HUGE, { harness: "codex" });
+    h.delivery.onOutput(CODEX_160_BOOT);
+    h.clock.advance(PROFILE.quietGapMs + 1);
+    h.clock.advance(submitPauseMs(HUGE, PROFILE) + PROFILE.quietGapMs + 1);
+    h.delivery.onOutput(codexChips(3072, 3072, 3072, 3072, 3072, 3072, 1500));
+    h.clock.advance(PROFILE.quietGapMs + 1);
+    expect(h.writes).toEqual([HUGE, "\r"]);
   });
 
   it("does not take a chip already on the screen before the write for the prompt landing", () => {
