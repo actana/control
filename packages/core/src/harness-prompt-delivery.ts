@@ -543,6 +543,18 @@ export type HarnessReadiness = {
    * painted".
    */
   echoHidesComposerMarker?: boolean;
+  /**
+   * The most bytes this harness reads from one write (issue 697). codex 0.160
+   * reads only the first ~1 KiB-multiple of a long write (`[Pasted Content 1024
+   * chars]` for a 3 949-character prompt, 16 384 for an 18 450-character one;
+   * a reviewer saw 1 936 and 17 392), leaves the rest unread, and answers the
+   * next `\r` by pulling in the next piece instead of submitting. A prompt
+   * longer than this is therefore written in pieces of at most this many bytes,
+   * split on character boundaries, each one confirmed read (it painted, then the
+   * screen went quiet) before the next goes out. See
+   * {@link HarnessPromptDelivery.writeChunk}.
+   */
+  maxWriteBytes?: number;
 };
 
 const NO_READINESS: HarnessReadiness = {
@@ -772,6 +784,7 @@ export const HARNESS_READINESS: Partial<Record<Harness, HarnessReadiness>> = {
     confirmEcho: true,
     maxPromptWrites: 3,
     echoHidesComposerMarker: true,
+    maxWriteBytes: 1024,
   },
   // Pi's editor has no placeholder text — the listening screen is an empty
   // bordered box above a footer that always shows context usage as `N%/M`
@@ -848,7 +861,7 @@ const ECHO_TAIL_PROBE_CHARS = 64;
  * glued as `[PastedContent3072chars]`. The codex form captures the character
  * count so {@link pastePlaceholderShown} can check it against the prompt.
  */
-const PASTE_PLACEHOLDER = /\[pasted(?:text|~|content(\d+)chars?\])/gi;
+const PASTE_PLACEHOLDER = /\[pasted(?:text|~|content(\d+)chars?\](?:#(\d+))?)/gi;
 
 /**
  * Whitespace and the glyphs a composer draws its own frame out of.
@@ -894,18 +907,27 @@ export function promptEchoProbe(prompt: string): string {
  * Is a paste chip for this prompt on screen?
  *
  * `text` and `~` chips carry no count and are taken as they are. codex's chip
- * carries the number of characters it collapsed, and counts only if that number
- * could belong to this prompt: at least one, and no more than its bytes.
+ * carries the number of *characters* it collapsed, and counts only when the
+ * chips on screen together cover the whole prompt (issue 697). One write gives
+ * a chip for the first part only (`[Pasted Content 1936 chars]` for a
+ * 3 912-character prompt) and the rest stays unread, so a smaller number is a
+ * partly read prompt and not a delivery. A chip repainted many times is one
+ * chip: counts are kept per chip (`#2`, `#3`, ...) and not summed per sighting.
+ * The composer shows only a few chips, so a very long prompt never adds up from
+ * the screen; the chunked path in {@link HarnessPromptDelivery} confirms such a
+ * prompt piece by piece instead.
  */
 export function pastePlaceholderShown(screen: string, prompt: string): boolean {
   const shown = squeeze(stripAnsi(screen));
-  const bytes = Buffer.byteLength(prompt, "utf8");
+  const perChip = new Map<number, number>();
   for (const m of shown.matchAll(PASTE_PLACEHOLDER)) {
     if (m[1] === undefined) return true;
-    const n = Number(m[1]);
-    if (n >= 1 && n <= bytes) return true;
+    const index = m[2] === undefined ? 1 : Number(m[2]);
+    perChip.set(index, Math.max(perChip.get(index) ?? 0, Number(m[1])));
   }
-  return false;
+  let total = 0;
+  for (const n of perChip.values()) total += n;
+  return total >= 1 && total >= prompt.length;
 }
 
 /**
@@ -925,8 +947,8 @@ export function pastePlaceholderShown(screen: string, prompt: string): boolean {
  *  - cursor-cli, claude-code and opencode have no captured echo of a long
  *    prompt. A composer that shows only the start of one would read as
  *    swallowed and be retyped until `maxPromptWrites`.
- *  - The codex chip count is checked against UTF-8 bytes as a loose upper
- *    bound: codex counts at most that many.
+ *  - The codex chip must cover the prompt's characters (see
+ *    {@link pastePlaceholderShown}); a partial chip is not evidence.
  */
 export function promptEchoed(screen: string, prompt: string, before = ""): boolean {
   const { head, tail, headCounts } = promptEchoProbes(prompt);
@@ -1163,6 +1185,35 @@ export type PromptDeliveryOptions = {
   timers?: PromptDeliveryTimers;
 };
 
+/**
+ * How long a written piece gets, from its write, before the next one (issue 697).
+ * Measured on codex 0.160.0: every piece of at most 1 KiB was read when at
+ * least ~1.2 s passed after it; a read takes ~0.15 s per 512 characters and
+ * ~0.3 s per 1 024.
+ */
+const CHUNK_SETTLE_MS = 1_200;
+/** A piece that has caused no repaint this long after its write was not read. */
+const CHUNK_READ_WAIT_MS = 5_000;
+
+/** Split on code point boundaries into pieces of at most `maxBytes` UTF-8 bytes. */
+export function splitUtf8(text: string, maxBytes: number): string[] {
+  const pieces: string[] = [];
+  let current = "";
+  let bytes = 0;
+  for (const ch of text) {
+    const n = Buffer.byteLength(ch, "utf8");
+    if (bytes + n > maxBytes && current) {
+      pieces.push(current);
+      current = "";
+      bytes = 0;
+    }
+    current += ch;
+    bytes += n;
+  }
+  if (current) pieces.push(current);
+  return pieces;
+}
+
 /** How much recent screen to keep for dialog matching. */
 const SCREEN_WINDOW_CHARS = 8_000;
 /** How many recent redraw signatures count as "we have seen this frame". */
@@ -1214,6 +1265,11 @@ export class HarnessPromptDelivery {
   private echoBaseline = "";
   /** Whether this settling round has already said it is waiting for a composer. */
   private waitingForComposerReported = false;
+  /** The pieces of a prompt written in several (issue 697), else null. */
+  private chunks: string[] | null = null;
+  /** How many pieces have been written. */
+  private chunksWritten = 0;
+  private cancelChunkWait: (() => void) | null = null;
 
   private cancelIdle: (() => void) | null = null;
   private cancelDeadline: (() => void) | null = null;
@@ -1298,6 +1354,8 @@ export class HarnessPromptDelivery {
     this.cancelComposerCeiling = null;
     this.cancelSubmitCheck?.();
     this.cancelSubmitCheck = null;
+    this.cancelChunkWait?.();
+    this.cancelChunkWait = null;
     this.verifying = false;
     this.pendingDelivered = null;
     if (!this.finished) this.phase = "abandoned";
@@ -1330,6 +1388,10 @@ export class HarnessPromptDelivery {
     this.cancelIdle = null;
     if (this.finished) return;
     const now = this.timers.now();
+    if (this.phase === "typing" && this.chunks) {
+      this.onChunkIdle(now);
+      return;
+    }
     if (!this.deadlinePassed && now - this.lastPaintAt < this.profile.quietGapMs) {
       this.schedule();
       return;
@@ -1605,6 +1667,13 @@ export class HarnessPromptDelivery {
     // First write only: a retype must not launder our own earlier echo into
     // the baseline, or the text we typed would stop counting as evidence.
     if (this.promptWrites === 0) this.echoBaseline = this.screen;
+    const max = this.readiness.maxWriteBytes;
+    if (max !== undefined && this.promptWrites === 0 && Buffer.byteLength(this.opts.prompt, "utf8") > max) {
+      this.chunks = splitUtf8(this.opts.prompt, max);
+      this.promptWrites = 1;
+      this.writeChunk();
+      return;
+    }
     this.screen = "";
     this.recentSignatures = [];
     this.promptWrites += 1;
@@ -1615,8 +1684,69 @@ export class HarnessPromptDelivery {
     this.schedule();
   }
 
+  /**
+   * Write the next piece of a prompt too long for one write (issue 697).
+   *
+   * Measured on codex 0.160.0 (160x50; fixtures `codex-0.160.0-long-*`): one
+   * write of the whole prompt is read only in part, and each `\r` then pulls in
+   * the next piece and does not submit, so a single Enter never sends the
+   * prompt. Pieces written one at a time are each read as they arrive when the
+   * previous one has been read and the output has gone quiet: pieces of 1 000+
+   * characters show as `[Pasted Content N chars]`, `#2`, `#3`, shorter ones as
+   * text. Pieces 0 to 30 ms apart were lost like the single write. So a piece
+   * is written, the screen must paint (the read), then stay quiet and
+   * {@link CHUNK_SETTLE_MS} must pass from the write, and only then does the
+   * next piece go out ({@link onChunkIdle}).
+   */
+  private writeChunk(): void {
+    const chunks = this.chunks!;
+    this.screen = "";
+    this.recentSignatures = [];
+    this.paintedSinceKeystroke = false;
+    this.opts.write(chunks[this.chunksWritten]);
+    this.chunksWritten += 1;
+    const now = this.timers.now();
+    this.lastPaintAt = now;
+    this.submitAt = now + CHUNK_SETTLE_MS;
+    this.cancelChunkWait?.();
+    // No paint at all means this piece was not read. Nothing more is written and
+    // nothing is retyped: a retype after a partial read duplicates text already
+    // in the composer, and the unread rest cannot be told from the screen.
+    this.cancelChunkWait = this.timers.setTimer(() => {
+      this.cancelChunkWait = null;
+      if (this.finished || this.paintedSinceKeystroke) return;
+      this.abandon(
+        `${this.opts.harness} did not read piece ${this.chunksWritten} of ${chunks.length} of the prompt ` +
+          `(no repaint within ${CHUNK_READ_WAIT_MS} ms); the prompt was not submitted`,
+      );
+    }, CHUNK_READ_WAIT_MS);
+    this.schedule();
+  }
+
+  /** A written piece has gone quiet: the next piece, or the one `\r` after the last. */
+  private onChunkIdle(now: number): void {
+    // Not read yet: the wait above ends this delivery if no paint ever comes,
+    // and a paint re-arms the idle timer through `onOutput`.
+    if (!this.paintedSinceKeystroke) return;
+    const readyAt = Math.max(this.lastPaintAt + this.profile.quietGapMs, this.submitAt);
+    if (now < readyAt) {
+      // Not through `schedule`: past the backstop it would ask for a zero wait.
+      this.cancelIdle = this.timers.setTimer(() => this.onIdle(), readyAt - now);
+      return;
+    }
+    this.cancelChunkWait?.();
+    this.cancelChunkWait = null;
+    if (this.chunksWritten < this.chunks!.length) {
+      this.writeChunk();
+      return;
+    }
+    this.submit(now);
+  }
+
   private submit(now: number): void {
     this.opts.write("\r");
+    this.cancelChunkWait?.();
+    this.cancelChunkWait = null;
     this.cancelIdle?.();
     this.cancelIdle = null;
     this.cancelDeadline?.();
@@ -1893,6 +2023,8 @@ export class HarnessPromptDelivery {
     this.cancelDeadline = null;
     this.cancelComposerCeiling?.();
     this.cancelComposerCeiling = null;
+    this.cancelChunkWait?.();
+    this.cancelChunkWait = null;
     this.emit({ phase: "abandoned", reason });
   }
 

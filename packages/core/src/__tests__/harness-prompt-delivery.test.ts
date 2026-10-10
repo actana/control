@@ -1480,8 +1480,8 @@ describe("promptEchoed", () => {
     expect(promptEchoed(pasted, "Refactor the authentication module. ".repeat(40))).toBe(true);
   });
 
-  it("counts codex 0.160's paste chip, glued or spaced, as the prompt having landed", () => {
-    const prompt = "x".repeat(4000);
+  it("counts codex 0.160's paste chip, glued or spaced, when it covers the prompt", () => {
+    const prompt = "x".repeat(3072);
     expect(promptEchoed("› [Pasted Content 3072 chars]", prompt)).toBe(true);
     // codex lays the chip out with absolute cursor moves, which stripping
     // deletes, so the words arrive glued together.
@@ -1490,10 +1490,16 @@ describe("promptEchoed", () => {
     expect(promptEchoed(glued, prompt)).toBe(true);
   });
 
+  it("does not count a codex chip that covers only part of the prompt (issue 697)", () => {
+    const glued =
+      `›${ESC}[46;3H[Pasted${ESC}[46;10HContent${ESC}[46;18H1936${ESC}[46;23Hchars]`;
+    expect(promptEchoed(glued, "x".repeat(3912))).toBe(false);
+  });
+
   it("does not count a chip that was already on screen before the first write", () => {
     const glued =
       `›${ESC}[46;3H[Pasted${ESC}[46;10HContent${ESC}[46;18H3072${ESC}[46;23Hchars]`;
-    expect(promptEchoed(glued, "x".repeat(4000), glued)).toBe(false);
+    expect(promptEchoed(glued, "x".repeat(3072), glued)).toBe(false);
   });
 
   it("does not re-type forever on a prompt with nothing to look for", () => {
