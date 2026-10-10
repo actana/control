@@ -7,7 +7,8 @@ import { closePanelTestDb, openPanelTestDb, resetPanelState } from "./_panel-tes
 /**
  * Public `/api/v1` Tasks and comments (#572 PR 2): create, list, status moves
  * (only assigned and draft), comments and Comment & re-assign, all as the
- * key's owner through the Tasks service.
+ * key's owner through the Tasks service. Edit and delete (#722): PATCH and
+ * DELETE on `/api/v1/tasks/:id`, refused while the Task is `in_progress`.
  */
 
 const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ac-public-api-tasks-"));
@@ -185,5 +186,81 @@ describe("v1 Tasks", () => {
       json: { status: "draft" },
     });
     expect(bad.status).toBe(409);
+  });
+});
+
+/** The webhook events written for one Task, oldest first. */
+const outboxTypes = async (taskId: string) =>
+  (
+    await testDb.pool.query(
+      "select event_type from webhook_outbox where (payload::jsonb)->'data'->'task'->>'id' = $1 order by created_at, id",
+      [taskId],
+    )
+  ).rows.map((r) => r.event_type as string);
+
+async function v1Task(key: string, json: Record<string, unknown> = { title: "m", coreId: "core-a", agent: "agent-a" }) {
+  const res = await call("/api/v1/tasks", { method: "POST", bearer: key, json });
+  expect(res.status).toBe(201);
+  return ((await res.json()) as { task: { id: string } }).task.id;
+}
+
+describe("v1 Task edit and delete (#722)", () => {
+  it("updates the title and description with an API key, and task.updated fires", async () => {
+    const { key } = await createKey();
+    const id = await v1Task(key);
+    const res = await call(`/api/v1/tasks/${id}`, {
+      method: "PATCH",
+      bearer: key,
+      json: { title: " New title ", description: "New *instructions*" },
+    });
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { task: unknown }).task).toMatchObject({
+      id,
+      title: "New title",
+      description: "New *instructions*",
+      status: "draft",
+    });
+    expect(await outboxTypes(id)).toEqual(["task.created", "task.updated"]);
+    // Only the field given changes.
+    const titleOnly = await call(`/api/v1/tasks/${id}`, { method: "PATCH", bearer: key, json: { title: "Again" } });
+    expect(((await titleOnly.json()) as { task: unknown }).task).toMatchObject({ title: "Again", description: "New *instructions*" });
+  });
+
+  it("refuses an empty body and an empty title with 400", async () => {
+    const { key } = await createKey();
+    const id = await v1Task(key);
+    expect((await call(`/api/v1/tasks/${id}`, { method: "PATCH", bearer: key, json: {} })).status).toBe(400);
+    expect((await call(`/api/v1/tasks/${id}`, { method: "PATCH", bearer: key, json: { title: "  " } })).status).toBe(400);
+  });
+
+  it("deletes a Task with an API key, and task.deleted fires", async () => {
+    const { key } = await createKey();
+    const id = await v1Task(key);
+    const res = await call(`/api/v1/tasks/${id}`, { method: "DELETE", bearer: key });
+    expect(res.status).toBe(204);
+    expect((await call(`/api/v1/tasks/${id}`, { bearer: key })).status).toBe(404);
+    expect(await outboxTypes(id)).toEqual(["task.created", "task.deleted"]);
+    expect((await call(`/api/v1/tasks/${id}`, { method: "DELETE", bearer: key })).status).toBe(404);
+  });
+
+  it("answers 409 to an edit or a delete while the Task is in_progress, and changes nothing", async () => {
+    const { key } = await createKey();
+    const id = await v1Task(key, { title: "run", coreId: "core-a", agent: "agent-a", startNow: true });
+    await tasksService.changeTaskStatus(A, id, "in_progress");
+    const edit = await call(`/api/v1/tasks/${id}`, { method: "PATCH", bearer: key, json: { title: "x" } });
+    expect(edit.status).toBe(409);
+    expect(((await edit.json()) as { error: string }).error).toMatch(/in_progress cannot be edited/);
+    const del = await call(`/api/v1/tasks/${id}`, { method: "DELETE", bearer: key });
+    expect(del.status).toBe(409);
+    expect(((await del.json()) as { error: string }).error).toMatch(/in_progress cannot be deleted/);
+    expect((await tasksService.getTask(A, id)).title).toBe("run");
+  });
+
+  it("answers 403 to a key that does not reach the Task's Core, and leaves the Task alone", async () => {
+    const { key } = await createKey({ name: "b only", coreIds: ["core-b"] });
+    const t = await tasksService.createTask(A, { title: "on a", coreId: "core-a" });
+    expect((await call(`/api/v1/tasks/${t.id}`, { method: "PATCH", bearer: key, json: { title: "x" } })).status).toBe(403);
+    expect((await call(`/api/v1/tasks/${t.id}`, { method: "DELETE", bearer: key })).status).toBe(403);
+    expect((await tasksService.getTask(A, t.id)).title).toBe("on a");
   });
 });

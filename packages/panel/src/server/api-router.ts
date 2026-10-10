@@ -297,6 +297,8 @@ async function dispatch(
   if (m && method === "POST") return v1Controller.addTaskCommentV1(principal!, decode(m[1]), request);
   m = pathname.match(V1_TASK_PATH);
   if (m && method === "GET") return v1Controller.getTaskV1(principal!, decode(m[1]));
+  if (m && method === "PATCH") return v1Controller.updateTaskV1(principal!, decode(m[1]), request);
+  if (m && method === "DELETE") return v1Controller.deleteTaskV1(principal!, decode(m[1]));
 
   // API keys (#572). The Operator's session creates, lists and revokes them; a
   // key never does, because these routes are not in API_KEY_ROUTES.
@@ -346,6 +348,8 @@ async function dispatch(
   }
   m = pathname.match(TASK_PATH);
   if (m && method === "GET") return tasksController.read(ownerId, decode(m[1]));
+  if (m && method === "PATCH") return tasksController.update(ownerId, decode(m[1]), request);
+  if (m && method === "DELETE") return tasksController.remove(ownerId, decode(m[1]));
   m = pathname.match(TASK_STATUS_PATH);
   if (m && method === "POST") return tasksController.setStatus(ownerId, decode(m[1]), request);
   m = pathname.match(TASK_COMMENTS_PATH);

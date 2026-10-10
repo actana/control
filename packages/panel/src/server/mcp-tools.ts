@@ -4,12 +4,14 @@ import { forbidden } from "./controllers/_helpers";
 import {
   addTaskCommentV1,
   createTaskV1,
+  deleteTaskV1,
   getTaskV1,
   listAgentsV1,
   listCoreAgentsV1,
   listCoresV1,
   listTasksV1,
   setTaskStatusV1,
+  updateTaskV1,
 } from "./controllers/v1.controller";
 import { getShared, listShared } from "./mcp-shared";
 import { OPERATOR_TASK_STATUSES } from "./controllers/tasks.controller";
@@ -32,6 +34,8 @@ export type McpTool = {
   name: string;
   description: string;
   readOnly: boolean;
+  /** A write that cannot be undone (MCP's `destructiveHint`). */
+  destructive?: boolean;
   input: z.ZodObject;
   run(principal: ApiKeyPrincipal, args: never): Promise<ToolOutcome>;
 };
@@ -45,9 +49,9 @@ async function outcomeOf(response: Response): Promise<ToolOutcome> {
 }
 
 /** The JSON body a v1 write handler reads, as the `Request` it takes: the tool's arguments are its body, validated by the same schema. */
-function asJsonRequest(body: Record<string, unknown>): Request {
+function asJsonRequest(body: Record<string, unknown>, method = "POST"): Request {
   return new Request("http://mcp.invalid/", {
-    method: "POST",
+    method,
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
   });
@@ -57,6 +61,7 @@ function tool<S extends z.ZodObject>(def: {
   name: string;
   description: string;
   readOnly: boolean;
+  destructive?: boolean;
   input: S;
   run: (principal: ApiKeyPrincipal, args: z.infer<S>) => Promise<ToolOutcome>;
 }): McpTool {
@@ -137,6 +142,35 @@ export const MCP_TOOLS: readonly McpTool[] = [
     input: z.object({ taskId: taskIdArg, body: z.string().min(1), reassign: z.boolean().optional() }),
     run: async (principal, { taskId, body, reassign }) =>
       outcomeOf(await addTaskCommentV1(principal, taskId, asJsonRequest({ body, ...(reassign === undefined ? {} : { reassign }) }))),
+  }),
+  tool({
+    name: "update_task",
+    description:
+      "Change a Task's title, description or both. Allowed in draft, assigned, done, failed and partial; refused while " +
+      "the Task is in_progress, because its Session already has the prompt.",
+    readOnly: false,
+    input: z
+      .object({
+        taskId: taskIdArg,
+        title: z.string().min(1).optional().describe("The new title."),
+        description: z.string().optional().describe("The new description, in Markdown. It replaces the old one."),
+      })
+      .refine((a) => a.title !== undefined || a.description !== undefined, { message: "give a title, a description or both" }),
+    run: async (principal, { taskId, ...fields }) =>
+      outcomeOf(await updateTaskV1(principal, taskId, asJsonRequest(fields, "PATCH"))),
+  }),
+  tool({
+    name: "delete_task",
+    description:
+      "Delete a Task with its comments and history. Refused while the Task is in_progress; files it left in the Shared " +
+      "folder stay.",
+    readOnly: false,
+    destructive: true,
+    input: z.object({ taskId: taskIdArg }),
+    run: async (principal, { taskId }) => {
+      const deleted = await outcomeOf(await deleteTaskV1(principal, taskId));
+      return deleted.ok ? { ok: true, data: { deleted: taskId } } : deleted;
+    },
   }),
   tool({
     name: "list_shared",

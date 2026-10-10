@@ -18,6 +18,8 @@ import {
 import type { NewOutboxRow } from "../repositories/webhooks.repo";
 import {
   COMMENT_AUTHOR_KINDS,
+  DELETABLE_TASK_STATUSES,
+  EDITABLE_TASK_STATUSES,
   FINISHED_TASK_STATUSES,
   canMoveTask,
   isTaskStatus,
@@ -53,6 +55,26 @@ export class IllegalTaskTransitionError extends ConflictError {
   ) {
     super(`a Task cannot move from ${from} to ${to}`);
     this.name = "IllegalTaskTransitionError";
+  }
+}
+
+/**
+ * An edit or a delete of a Task whose status does not allow it (#722): today
+ * only `in_progress`, whose Session already has the prompt. Same 409 family as
+ * {@link IllegalTaskTransitionError}.
+ */
+export class TaskNotChangeableError extends ConflictError {
+  readonly code = "illegal_task_transition";
+  constructor(
+    readonly action: "edit" | "delete",
+    readonly status: TaskStatus,
+  ) {
+    super(
+      action === "edit"
+        ? `a Task that is ${status} cannot be edited: its Session already has the prompt. Wait for it to finish, then edit and re-assign it`
+        : `a Task that is ${status} cannot be deleted while its Session runs. Wait for it to finish, then delete it`,
+    );
+    this.name = "TaskNotChangeableError";
   }
 }
 
@@ -191,38 +213,42 @@ export async function listTaskComments(ownerId: number, id: string): Promise<Tas
   return findCommentsForTask(ownerId, id);
 }
 
-/** Update a Task's title and description; emits `task.updated`. */
+/**
+ * Update a Task's title and description; emits `task.updated`. Only in
+ * {@link EDITABLE_TASK_STATUSES}, checked once the row is locked (#722).
+ */
 export async function updateTask(
   ownerId: number,
   id: string,
   input: { title?: string; description?: string },
   now = Date.now(),
 ): Promise<Task> {
-  const current = await getTask(ownerId, id);
-  const title = input.title !== undefined ? input.title.trim() : current.title;
-  if (!title) throw new ValidationError("a Task needs a title");
-  const description = input.description !== undefined ? input.description : current.description;
-  const outbox = [
-    outboxEvent(
-      ownerId,
-      "task.updated",
-      { task: taskPayload({ ...current, title, description, updatedAt: now }) },
-      current.coreId,
-      now,
-    ),
-  ];
-  const updated = await updateTaskRow(ownerId, id, { title, description, updatedAt: now }, outbox);
-  if (!updated) throw new NotFoundError("task not found");
-  return updated;
+  const title = input.title?.trim();
+  if (input.title !== undefined && !title) throw new ValidationError("a Task needs a title");
+  const patch = {
+    ...(title === undefined ? {} : { title }),
+    ...(input.description === undefined ? {} : { description: input.description }),
+    updatedAt: now,
+  };
+  const result = await updateTaskRow(ownerId, id, EDITABLE_TASK_STATUSES, patch, (task) => [
+    outboxEvent(ownerId, "task.updated", { task: taskPayload(task) }, task.coreId, now),
+  ]);
+  if (result.kind === "missing") throw new NotFoundError("task not found");
+  if (result.kind === "illegal") throw new TaskNotChangeableError("edit", result.from);
+  return result.task;
 }
 
-/** Delete a Task; emits `task.deleted` with the last known row. */
+/**
+ * Delete a Task; emits `task.deleted` with the last known row. Only in
+ * {@link DELETABLE_TASK_STATUSES}, checked once the row is locked (#722).
+ */
 export async function deleteTask(ownerId: number, id: string, now = Date.now()): Promise<Task> {
-  const current = await getTask(ownerId, id);
-  const outbox = [outboxEvent(ownerId, "task.deleted", { task: taskPayload(current) }, current.coreId, now)];
-  const removed = await deleteTaskRow(ownerId, id, outbox);
-  if (!removed) throw new NotFoundError("task not found");
-  return removed;
+  const result = await deleteTaskRow(ownerId, id, DELETABLE_TASK_STATUSES, (task) => [
+    outboxEvent(ownerId, "task.deleted", { task: taskPayload(task) }, task.coreId, now),
+  ]);
+  if (result.kind === "missing") throw new NotFoundError("task not found");
+  if (result.kind === "illegal") throw new TaskNotChangeableError("delete", result.from);
+  return result.task;
 }
 
 /** Add a comment without changing the status. */

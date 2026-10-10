@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { json, jsonError, parseJsonBody, rethrowUnlessDomain } from "./_helpers";
+import { json, jsonError, noContent, parseJsonBody, rethrowUnlessDomain } from "./_helpers";
 import { NotFoundError, ValidationError } from "../errors";
 import { HTTP_BAD_REQUEST, HTTP_CREATED, HTTP_PAYLOAD_TOO_LARGE } from "~/shared/http-status";
 import type { AgentDto, TaskCommentDto, TaskDto } from "~/shared/task-wire";
@@ -8,9 +8,11 @@ import {
   changeTaskStatus,
   commentAndReassign,
   createTask,
+  deleteTask,
   getTask,
   listTaskComments,
   listTasks,
+  updateTask,
   type Task,
   type TaskComment,
 } from "../services/tasks";
@@ -46,6 +48,10 @@ const newTaskBody = z.object({
 export const OPERATOR_TASK_STATUSES = ["assigned", "draft"] as const;
 const statusBody = z.object({ status: z.enum(OPERATOR_TASK_STATUSES) });
 const commentBody = z.object({ body: z.string(), reassign: z.boolean().optional() });
+/** An edit (#722): the fields to change, at least one. The service says whether the Task's status allows it. */
+export const updateTaskBody = z
+  .object({ title: z.string().optional(), description: z.string().optional() })
+  .refine((b) => b.title !== undefined || b.description !== undefined, { message: "give a title, a description or both" });
 
 function taskDto(t: Task): TaskDto {
   return {
@@ -201,6 +207,27 @@ export async function setStatus(ownerId: number, id: string, request: Request): 
   if (!body.ok) return body.response;
   try {
     return json({ task: taskDto(await changeTaskStatus(ownerId, id, body.data.status)) });
+  } catch (e) {
+    return rethrowUnlessDomain(e);
+  }
+}
+
+/** Edit the title and description (#722). 409 while the Task is `in_progress`. */
+export async function update(ownerId: number, id: string, request: Request): Promise<Response> {
+  const body = await parseJsonBody(request, updateTaskBody);
+  if (!body.ok) return body.response;
+  try {
+    return json({ task: taskDto(await updateTask(ownerId, id, body.data)) });
+  } catch (e) {
+    return rethrowUnlessDomain(e);
+  }
+}
+
+/** Delete the Task with its comments and history (#722). 409 while the Task is `in_progress`. */
+export async function remove(ownerId: number, id: string): Promise<Response> {
+  try {
+    await deleteTask(ownerId, id);
+    return noContent();
   } catch (e) {
     return rethrowUnlessDomain(e);
   }

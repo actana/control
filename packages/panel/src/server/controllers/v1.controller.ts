@@ -13,9 +13,11 @@ import {
   changeTaskStatus,
   commentAndReassign,
   createTask,
+  deleteTask,
   getTask,
   listTaskComments,
   listTasks,
+  updateTask,
   type Task,
   type TaskComment,
 } from "../services/tasks";
@@ -30,7 +32,7 @@ import {
 import { getOperator } from "../services/operator";
 import { findCoreById } from "../repositories/cores.repo";
 import { HARNESSES } from "~/shared/agents";
-import { OPERATOR_TASK_STATUSES } from "./tasks.controller";
+import { OPERATOR_TASK_STATUSES, updateTaskBody } from "./tasks.controller";
 
 /**
  * The public REST API under `/api/v1` (#572 PR 2). Every handler takes the
@@ -38,6 +40,8 @@ import { OPERATOR_TASK_STATUSES } from "./tasks.controller";
  * and see only the Cores in that key's scope; a session call sees the Owner's
  * whole fleet. Status moves go through the Tasks service, and a key client may
  * only ask for the operator moves `assigned` and `draft` (same line as #630).
+ * Edits and deletes (#722) go through the same service, which refuses both
+ * while the Task is `in_progress`.
  */
 
 const newTaskBody = z.object({
@@ -249,6 +253,33 @@ export async function setTaskStatusV1(principal: ApiPrincipal, id: string, reque
     const denied = refuseOutsideScope(principal, task.coreId);
     if (denied) return denied;
     return json({ task: taskDto(await changeTaskStatus(principal.ownerId, id, body.data.status)) });
+  } catch (e) {
+    return rethrowUnlessDomain(e);
+  }
+}
+
+/** `PATCH /api/v1/tasks/:id` (#722): title and description; 409 while the Task is `in_progress`. */
+export async function updateTaskV1(principal: ApiPrincipal, id: string, request: Request): Promise<Response> {
+  const body = await parseJsonBody(request, updateTaskBody);
+  if (!body.ok) return body.response;
+  try {
+    const task = await getTask(principal.ownerId, id);
+    const denied = refuseOutsideScope(principal, task.coreId);
+    if (denied) return denied;
+    return json({ task: taskDto(await updateTask(principal.ownerId, id, body.data)) });
+  } catch (e) {
+    return rethrowUnlessDomain(e);
+  }
+}
+
+/** `DELETE /api/v1/tasks/:id` (#722): 204, or 409 while the Task is `in_progress`. */
+export async function deleteTaskV1(principal: ApiPrincipal, id: string): Promise<Response> {
+  try {
+    const task = await getTask(principal.ownerId, id);
+    const denied = refuseOutsideScope(principal, task.coreId);
+    if (denied) return denied;
+    await deleteTask(principal.ownerId, id);
+    return noContent();
   } catch (e) {
     return rethrowUnlessDomain(e);
   }

@@ -319,12 +319,16 @@ separate from the browser's session-cookie routes.
 | --- | --- |
 | Cores | `GET /api/v1/cores`, `GET /api/v1/cores/:id` |
 | Agents | `GET/POST /api/v1/agents`, `GET/DELETE /api/v1/agents/:id`, `GET /api/v1/cores/:id/agents` |
-| Tasks | `GET/POST /api/v1/tasks`, `GET /api/v1/tasks/:id`, `POST /api/v1/tasks/:id/status` |
+| Tasks | `GET/POST /api/v1/tasks`, `GET/PATCH/DELETE /api/v1/tasks/:id`, `POST /api/v1/tasks/:id/status` |
 | Comments | `GET/POST /api/v1/tasks/:id/comments` |
 
 Status moves go through the Tasks service. A key client may only ask for the
 operator moves `assigned` and `draft` (the dispatcher and the result watcher
-own the rest). API keys themselves are managed only with the Operator's
+own the rest). `PATCH /api/v1/tasks/:id` changes the title, the description
+or both and fires `task.updated`; `DELETE` removes the Task with its comments
+and history and fires `task.deleted`. Both answer `409` while the Task is
+`in_progress`, because its Session already has the prompt
+([#722](https://github.com/actana/control/issues/722)). API keys themselves are managed only with the Operator's
 session (`POST/GET /api/api-keys`, `POST /api/api-keys/:id/revoke`).
 
 ## The Panel's MCP server (`/mcp`)
@@ -358,6 +362,8 @@ the tools below are available to the model.
 | `create_task` | a draft, or an assigned Task with `startNow` (needs `coreId` and `agent`) |
 | `assign_task` | `assigned` (default) or `draft`, the operator moves only; every other status is refused |
 | `comment_task` | a comment; `reassign: true` also sends a finished Task back (Comment & re-assign) |
+| `update_task` | a Task's `title`, `description` or both; refused (`409`) while it is `in_progress` |
+| `delete_task` | removes a Task with its comments and history (marked `destructiveHint`); refused (`409`) while it is `in_progress` |
 | `list_shared` | a folder of a Core's Shared folder, read-only, cut at 500 entries |
 | `get_shared` | one UTF-8 text file from it, read-only, refused over 256 KiB |
 

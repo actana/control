@@ -119,42 +119,69 @@ export async function transitionTask(
   });
 }
 
-/** Update title/description; outbox events ride the same transaction. Null when missing. */
+/**
+ * Update title/description, if the Task is in one of `legalFrom` once its row is
+ * locked (#722): a dispatcher that claims the Task first wins, and the edit then
+ * reads `illegal`. Outbox events ride the same transaction. `legalFrom` is the
+ * service's rule, not this file's.
+ */
 export async function updateTaskRow(
   ownerId: number,
   id: string,
-  patch: { title: string; description: string; updatedAt: number },
-  outbox: NewOutboxRow[] = [],
-): Promise<TaskRow | null> {
-  return panelDb().transaction(async (tx) => {
-    const updated = await tx
-      .update(tasks)
-      .set({ title: patch.title, description: patch.description, updatedAt: patch.updatedAt })
-      .where(ownedBy(tasks, ownerId, eq(tasks.id, id)))
-      .returning();
-    if (!updated[0]) return null;
-    await writeOutbox(tx, outbox);
-    return updated[0];
-  });
-}
-
-/** Delete a Task (cascades comments and history); outbox in the same transaction. */
-export async function deleteTaskRow(
-  ownerId: number,
-  id: string,
-  outbox: NewOutboxRow[] = [],
-): Promise<TaskRow | null> {
-  return panelDb().transaction(async (tx) => {
+  legalFrom: readonly TaskStatus[],
+  /** Only the fields given are written. */
+  patch: { title?: string; description?: string; updatedAt: number },
+  outboxFor?: (task: TaskRow) => NewOutboxRow[],
+): Promise<TransitionResult> {
+  return panelDb().transaction(async (tx): Promise<TransitionResult> => {
     const locked = await tx
       .select()
       .from(tasks)
       .where(ownedBy(tasks, ownerId, eq(tasks.id, id)))
       .for("update");
     const current = locked[0];
-    if (!current) return null;
-    await writeOutbox(tx, outbox);
+    if (!current) return { kind: "missing" };
+    const from = current.status as TaskStatus;
+    if (!legalFrom.includes(from)) return { kind: "illegal", from };
+    const updated = await tx
+      .update(tasks)
+      .set({
+        ...(patch.title === undefined ? {} : { title: patch.title }),
+        ...(patch.description === undefined ? {} : { description: patch.description }),
+        updatedAt: patch.updatedAt,
+      })
+      .where(ownedBy(tasks, ownerId, eq(tasks.id, id)))
+      .returning();
+    const task = updated[0]!;
+    await writeOutbox(tx, outboxFor?.(task));
+    return { kind: "ok", task };
+  });
+}
+
+/**
+ * Delete a Task (cascades comments and history), if it is in one of `legalFrom`
+ * once its row is locked (#722). `ok` carries the row as it was. Outbox in the
+ * same transaction.
+ */
+export async function deleteTaskRow(
+  ownerId: number,
+  id: string,
+  legalFrom: readonly TaskStatus[],
+  outboxFor?: (task: TaskRow) => NewOutboxRow[],
+): Promise<TransitionResult> {
+  return panelDb().transaction(async (tx): Promise<TransitionResult> => {
+    const locked = await tx
+      .select()
+      .from(tasks)
+      .where(ownedBy(tasks, ownerId, eq(tasks.id, id)))
+      .for("update");
+    const current = locked[0];
+    if (!current) return { kind: "missing" };
+    const from = current.status as TaskStatus;
+    if (!legalFrom.includes(from)) return { kind: "illegal", from };
+    await writeOutbox(tx, outboxFor?.(current));
     await tx.delete(tasks).where(ownedBy(tasks, ownerId, eq(tasks.id, id)));
-    return current;
+    return { kind: "ok", task: current };
   });
 }
 
