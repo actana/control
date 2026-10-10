@@ -7,7 +7,8 @@
 //
 //   claude-code  `~/.claude.json`  `projects[<dir>].hasTrustDialogAccepted = true`
 //                (the entry Claude Code 2.1.289 writes after "Yes, I trust this
-//                folder"; read off a real `~/.claude.json` after a manual trust)
+//                folder"; read off a real `~/.claude.json` after a manual trust; the
+//                lock described below is from 2.1.296)
 //   codex        `~/.codex/config.toml`  `[projects."<dir>"] trust_level = "trusted"`
 //                (documented key; `"trusted" | "untrusted"`. Checked on codex-cli
 //                0.160.0 (#702): answering its "Trust this folder?" dialog by hand
@@ -32,18 +33,31 @@
 // a reader never sees half a file. A file it cannot parse is left alone and
 // reported: overwriting someone's config to add a trust line is the wrong trade.
 //
-// `~/.claude.json` is also rewritten by Claude Code itself, while a Session runs,
-// and Claude Code takes no lock this writer could share. So the Claude Code
-// writer compares and retries (#699): just before the rename it re-reads the
-// file, and when it no longer holds what the change was built from, it drops the
-// change and starts again from the new text. The window left is the re-read to
-// the rename, not the whole read-modify-write.
+// `~/.claude.json` is also rewritten by Claude Code itself, while a Session runs.
+// Claude Code 2.1.296 saves it in `saveConfigWithLock`, under a `proper-lockfile`
+// lock whose directory is `${configPath}.lock` (stale when its mtime is over 10 s
+// old). When it finds the lock held it retries with backoff (200 ms up to 4 s) and
+// then re-reads the file under the lock. So the Claude Code writer takes that same
+// lock (`claude-config-lock.ts`): a lock-honouring Claude Code waits for us, and we
+// wait for it. If the lock stays held past our budget the writer writes nothing and
+// throws, which `pretrustWorkspaces` reports as `failed`; the next availability
+// round or spawn tries again. There is no unlocked fallback.
+//
+// The lock is not the whole answer, because not every writer takes it: Claude Code
+// also has an unlocked fallback write after a failed locked save and a "storage v5"
+// write path behind a flag, and older versions (2.1.289 and before) may not lock at
+// all. So inside the lock the writer still compares and retries (#699): just before
+// the rename it re-reads the file, and when it no longer holds what the change was
+// built from, it drops the change, pauses briefly, and starts again from the new
+// text. The window left is a writer that ignores the lock saving between our
+// re-read and our rename.
 // This code runs as `core` in the helper (`core-home-ops`), never in the daemon.
 
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { hookEndpointSlug } from "@actana/shared/mission-control-hook-env";
+import { withClaudeConfigLock, type ClaudeConfigLockOptions } from "./claude-config-lock";
 import { canonicalJson, codexGroup, CODEX_HOOK_EVENTS } from "./harness-hooks";
 
 export type PretrustOutcome = "written" | "unchanged" | "failed";
@@ -152,28 +166,60 @@ function claudeTrustedText(file: string, raw: string | null, dirs: readonly stri
   return JSON.stringify(config, null, 2) + "\n";
 }
 
+function blockingSleep(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+/** The pause after the Nth compare miss is this times N (25, 50, 75, 100 ms), so a burst of writes gets time to finish. */
+const CLAUDE_TRUST_BACKOFF_MS = 25;
+
 /**
- * Trust `dirs` in `~/.claude.json`, comparing and retrying against Claude Code's own writes: a change is renamed
- * over the file only when the file still holds the text it was built from (`writeAtomic`'s `expected`). When it
- * does not, the change is rebuilt from the new text, up to `attempts` times; after that the file is left as it
- * is and the call throws, which `pretrustWorkspaces` reports as `failed` and the next round tries again.
- * `beforeCommit` runs between the temp write and the re-read; it is there for tests to change the file in that
- * window.
+ * Trust `dirs` in `~/.claude.json`, holding Claude Code's own lock on it (`withClaudeConfigLock`: Claude Code
+ * 2.1.296 saves the file in `saveConfigWithLock` under a `proper-lockfile` lock at `${file}.lock`, stale after
+ * 10 s, retrying with backoff and re-reading under the lock). The whole read, build, temp write, re-read and
+ * rename happens inside the lock, so a lock-honouring Claude Code waits for this write and this write waits for it.
+ *
+ * Inside the lock the compare-and-retry stays, as the defence against writers that do not take it (older Claude
+ * Code, its unlocked fallback write, its storage-v5 path): a change is renamed over the file only when the file
+ * still holds the text it was built from (`writeAtomic`'s `expected`). When it does not, the change is rebuilt from
+ * the new text after a short, increasing pause (25 ms times the attempt), up to `attempts` times (an integer of at
+ * least 1, checked before anything is touched); after that the file is left as the other writer left it and the call
+ * throws. What remains is a lock-ignoring writer saving between the re-read and the rename.
+ *
+ * When the lock stays held past its budget, or something that is not a directory sits at the lock path, nothing is
+ * written and the error propagates: `pretrustWorkspaces` reports `failed` and the next round tries again. There is no
+ * unlocked fallback. `beforeCommit` runs between the temp write and the re-read; it is there for tests to change the
+ * file in that window.
  */
 export function trustClaudeCode(
   file: string,
   dirs: readonly string[],
-  { attempts = CLAUDE_TRUST_ATTEMPTS, beforeCommit }: { attempts?: number; beforeCommit?: () => void } = {},
+  {
+    attempts = CLAUDE_TRUST_ATTEMPTS,
+    beforeCommit,
+    lock,
+  }: { attempts?: number; beforeCommit?: () => void; lock?: ClaudeConfigLockOptions } = {},
 ): "written" | "unchanged" {
-  for (let attempt = 1; ; attempt++) {
-    const raw = readIfExists(file);
-    const text = claudeTrustedText(file, raw, dirs);
-    if (text === null) return "unchanged";
-    if (writeAtomic(file, text, 0o600, { expected: raw, beforeCommit })) return "written";
-    if (attempt >= attempts) {
-      throw new Error(`${file} changed while trust was being written, ${attempts} times in a row; left as it is`);
-    }
+  if (typeof attempts !== "number" || !Number.isInteger(attempts) || attempts < 1) {
+    throw new TypeError(`claude trust: attempts must be an integer of at least 1, got ${String(attempts)}`);
   }
+  const sleep = lock?.sleep ?? blockingSleep;
+  return withClaudeConfigLock(
+    file,
+    () => {
+      for (let attempt = 1; ; attempt++) {
+        const raw = readIfExists(file);
+        const text = claudeTrustedText(file, raw, dirs);
+        if (text === null) return "unchanged";
+        if (writeAtomic(file, text, 0o600, { expected: raw, beforeCommit })) return "written";
+        if (attempt >= attempts) {
+          throw new Error(`${file} changed while trust was being written, ${attempts} times in a row; left as it is`);
+        }
+        sleep(CLAUDE_TRUST_BACKOFF_MS * attempt);
+      }
+    },
+    lock,
+  );
 }
 
 // ─── Codex ───────────────────────────────────────────────────────────
