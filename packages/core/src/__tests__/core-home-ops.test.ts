@@ -21,6 +21,7 @@ import {
   type CoreHomeOpContext,
   type CoreHomeOpRequest,
 } from "../core-home-ops";
+import { cursorMarkerPath } from "../harness-pretrust";
 
 let base: string;
 let home: string;
@@ -496,8 +497,7 @@ describe("pretrustWorkspaces (#685)", () => {
   it("writes the Cursor marker inside the home, and refuses a .cursor link that leaves it", () => {
     const results = handleCoreHomeOpSync(request([home], ["cursor-cli"]), ctx);
     expect(results.map((r) => [r.harness, r.outcome])).toEqual([["cursor-cli", "written"]]);
-    const slug = home.replace(/^\/+/, "").replace(/\//g, "-");
-    expect(fs.existsSync(path.join(home, ".cursor", "projects", slug, ".workspace-trusted"))).toBe(true);
+    expect(fs.existsSync(cursorMarkerPath(home, home))).toBe(true);
 
     fs.rmSync(path.join(home, ".cursor"), { recursive: true });
     fs.symlinkSync(outside, path.join(home, ".cursor"));

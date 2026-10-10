@@ -407,10 +407,57 @@ describe("cursor-cli: ~/.cursor/projects/<slug>/.workspace-trusted", () => {
   const at = () => new Date("2026-10-04T09:21:07.646Z");
   const marker = (slug: string) => path.join(dir, ".cursor", "projects", slug, ".workspace-trusted");
 
+  // The slug is cursor-agent 2026.10.01-e373342's own mapping (`utils/dist/workspace-paths.js` in its bundle:
+  // `replace(/[^a-zA-Z0-9]/g, "-").replace(/-+/g, "-").replace(/^-+|-+$/g, "")`), and `/home/core` -> `home-core`
+  // is what trusting /home/core by hand created on a Core.
   it("maps a path to its slug: leading slash dropped, other slashes become dashes", () => {
     expect(cursorProjectSlug("/home/core")).toBe("home-core");
     expect(cursorProjectSlug("/home/core/repos/x")).toBe("home-core-repos-x");
     expect(cursorMarkerPath("/h", "/home/core")).toBe("/h/.cursor/projects/home-core/.workspace-trusted");
+  });
+
+  it("maps a dot, an underscore, a space and any other non-alphanumeric character to a dash, as Cursor does", () => {
+    expect(cursorProjectSlug("/home/core/my.app")).toBe("home-core-my-app");
+    expect(cursorProjectSlug("/home/core/my_app")).toBe("home-core-my-app");
+    expect(cursorProjectSlug("/home/core/my app")).toBe("home-core-my-app");
+    expect(cursorProjectSlug("/home/core/.hidden")).toBe("home-core-hidden");
+    expect(cursorProjectSlug("/srv/app@2.0 (beta)+rc#1~x$y%z&w'q\"r,s;t:u=v!w?x*y[z]")).toBe(
+      "srv-app-2-0-beta-rc-1-x-y-z-w-q-r-s-t-u-v-w-x-y-z",
+    );
+    expect(cursorProjectSlug("/home/core/caf\u00e9/\u00fc\u00f1\u00efc\u00f6de")).toBe("home-core-caf-c-de");
+    expect(cursorProjectSlug("/home/core/\u65e5\u672c/x")).toBe("home-core-x");
+    expect(cursorProjectSlug("/home/core/\u{1F600}app")).toBe("home-core-app");
+  });
+
+  it("collapses runs of dashes and drops leading and trailing ones, as Cursor does", () => {
+    expect(cursorProjectSlug("/home/core/")).toBe("home-core");
+    expect(cursorProjectSlug("//home//core")).toBe("home-core");
+    expect(cursorProjectSlug("/home/core/a--b")).toBe("home-core-a-b");
+    expect(cursorProjectSlug("/home/core/-x-")).toBe("home-core-x");
+    expect(cursorProjectSlug("/home/core/._ -")).toBe("home-core");
+    expect(cursorProjectSlug("/")).toBe("");
+    expect(cursorProjectSlug("/-/_/.")).toBe("");
+  });
+
+  it("reproduces Cursor's mapping character for character on every printable ASCII byte", () => {
+    // Cursor's three replaces, verbatim from its bundle; the slug must equal them on any input.
+    const cursors = (p: string) => p.replace(/[^a-zA-Z0-9]/g, "-").replace(/-+/g, "-").replace(/^-+|-+$/g, "");
+    for (let code = 0x20; code < 0x7f; code++) {
+      const ch = String.fromCharCode(code);
+      for (const p of [`/home/core/${ch}`, `/home/${ch}core`, `/home/core${ch}`, `${ch}`]) {
+        expect(cursorProjectSlug(p)).toBe(cursors(p));
+      }
+    }
+  });
+
+  it("writes the marker where Cursor looks for a workspace with a dot, an underscore or a space in its path", () => {
+    expect(trustCursor(dir, ["/home/core/my.app", "/home/core/my_lib", "/home/core/my app"], at)).toBe("written");
+    expect(JSON.parse(read(marker("home-core-my-app"))).workspacePath).toBe("/home/core/my.app");
+    expect(fs.readdirSync(path.join(dir, ".cursor", "projects"))).toEqual(["home-core-my-app", "home-core-my-lib"]);
+    // Cursor would never read these: the names the old mapping produced.
+    expect(fs.existsSync(path.join(dir, ".cursor", "projects", "home-core-my.app"))).toBe(false);
+    expect(fs.existsSync(path.join(dir, ".cursor", "projects", "home-core-my app"))).toBe(false);
+    expect(trustCursor(dir, ["/home/core/my.app", "/home/core/my_lib", "/home/core/my app"], at)).toBe("unchanged");
   });
 
   it("creates the marker exactly as Cursor does: two keys, two-space indent, mode 644", () => {
@@ -438,13 +485,15 @@ describe("cursor-cli: ~/.cursor/projects/<slug>/.workspace-trusted", () => {
 
   it("is ambiguous for a dash in the path: the second colliding path is left to the existing marker", () => {
     expect(cursorProjectSlug("/home/a-b")).toBe(cursorProjectSlug("/home/a/b"));
+    expect(cursorProjectSlug("/home/a.b")).toBe("home-a-b");
+    expect(cursorProjectSlug("/home/a b")).toBe("home-a-b");
     expect(trustCursor(dir, ["/home/a-b"], at)).toBe("written");
     expect(trustCursor(dir, ["/home/a/b"], at)).toBe("unchanged");
     expect(JSON.parse(read(marker("home-a-b"))).workspacePath).toBe("/home/a-b");
   });
 
-  it("ignores a relative path and the root", () => {
-    expect(trustCursor(dir, ["relative/dir", "/"], at)).toBe("unchanged");
+  it("ignores a relative path, the root, and a path with no letter or digit", () => {
+    expect(trustCursor(dir, ["relative/dir", "/", "/-/_/."], at)).toBe("unchanged");
     expect(fs.existsSync(path.join(dir, ".cursor"))).toBe(false);
   });
 });
