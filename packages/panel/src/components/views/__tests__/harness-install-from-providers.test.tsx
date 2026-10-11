@@ -127,6 +127,21 @@ describe("installing a missing Harness from Providers (issue 560)", () => {
     expect(screen.getByText("CLI not found on PATH")).toBeTruthy();
   });
 
+  it("shows a Harness the Core could not start for its setup check as 'Could not start', with no Install (#700)", async () => {
+    AVAILABILITY = availability({
+      status: "missing",
+      reason: "setup-check-failed: posix_spawnp failed: EACCES",
+      path: "/usr/bin/claude",
+      version: "2.1.289",
+    });
+    await openProviders();
+    expect(screen.getByText("Could not start")).toBeTruthy();
+    expect(screen.getByText("Could not start: posix_spawnp failed: EACCES")).toBeTruthy();
+    expect(screen.queryByText(/Needs setup/)).toBeNull();
+    expect(screen.queryByText("CLI not found on PATH")).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Install$/ })).toBeNull();
+  });
+
   it("asks the selected Core to install that Harness", async () => {
     await openProviders();
     await act(async () => {

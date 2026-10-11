@@ -1,6 +1,13 @@
 import { CoreSharedError, type CoreShared } from "@actana/sdk/shared";
 import { NotFoundError } from "../errors";
-import { getAgent, resolveAgent, type Agent, type ResolvedAgent } from "../services/agents";
+import {
+  CoreHarnessesUnavailableError,
+  HarnessNotReadyError,
+  getAgent,
+  resolveAgent,
+  type Agent,
+  type ResolvedAgent,
+} from "../services/agents";
 import {
   addTaskComment,
   claimTask,
@@ -24,6 +31,7 @@ import { consoleDispatchLog, messageOf, type Clock, type DispatchLog, type Sessi
  * The Session is told only a short pointer; the Task itself is a file in the Task's folder (`prompt-attempt-<n>.md`).
  *
  * Per Task, in this order:
+ *  0. WAIT while the Agent's Harness is still being checked (#706), before any claim; see below.
  *  1. CLAIM with one conditional update (`claimTask`): assigned to in_progress,
  *     attempt + 1, dispatch time set. Of two dispatchers only one gets the Task.
  *  2. RESOLVE the Task's Agent to the harness and Core it has right now.
@@ -33,6 +41,14 @@ import { consoleDispatchLog, messageOf, type Clock, type DispatchLog, type Sessi
  * Any failure before the Session runs moves the Task to `failed` with the reason
  * as its last error and a system comment (`failTaskDispatch`), so no Task is left
  * `in_progress` with nothing running and none is claimed again in a loop.
+ *
+ * The wait (step 0): a Harness that is `checking`, or whose check failed in a way that may pass (a probe that
+ * timed out, a Core that is restarting and does not answer), is not a reason to fail a Task. The Task is left
+ * `assigned`, with no claim, attempt, comment or history, and looked at again on the next poll, for up to
+ * `harnessWaitMs` from the first time this dispatcher saw it waiting. Then it is claimed and fails with the
+ * reason as usual. A Harness that is missing, outdated or needs setup fails at once. The wait lives in memory:
+ * a Panel restart starts it again. It is separate from the result watcher's run timeout, which only starts
+ * at dispatch.
  *
  * Every query is the owner's (`ownerId`).
  */
@@ -57,10 +73,14 @@ export type TaskDispatcherOptions = {
   now?: Clock;
   /** How often to look for `assigned` Tasks. */
   pollMs?: number;
+  /** How long an `assigned` Task waits for its Harness to finish being checked before it fails with that reason. */
+  harnessWaitMs?: number;
   log?: DispatchLog;
 };
 
 export const DEFAULT_DISPATCH_POLL_MS = 2_000;
+/** Covers a setup check (about 75 s), the probe retries and a Core link that reconnects. */
+export const DEFAULT_HARNESS_WAIT_MS = 5 * 60_000;
 
 const realAgents: AgentLookup = { get: getAgent, resolve: (ownerId, id) => resolveAgent(ownerId, id) };
 
@@ -73,6 +93,9 @@ export class TaskDispatcher {
   private readonly agents: AgentLookup;
   private readonly now: Clock;
   private readonly pollMs: number;
+  private readonly harnessWaitMs: number;
+  /** Task id to the first time it was seen waiting for its Harness; dropped once it is claimed or leaves `assigned`. */
+  private readonly waitingSince = new Map<string, number>();
   private readonly log: DispatchLog;
   private timer: ReturnType<typeof setInterval> | null = null;
   private cycling: Promise<number> | null = null;
@@ -88,6 +111,7 @@ export class TaskDispatcher {
     this.agents = opts.agents ?? realAgents;
     this.now = opts.now ?? Date.now;
     this.pollMs = opts.pollMs ?? DEFAULT_DISPATCH_POLL_MS;
+    this.harnessWaitMs = opts.harnessWaitMs ?? DEFAULT_HARNESS_WAIT_MS;
     this.log = opts.log ?? consoleDispatchLog;
   }
 
@@ -112,6 +136,8 @@ export class TaskDispatcher {
         this.log.error(`task dispatch: could not list assigned Tasks: ${messageOf(err)}`);
         return 0;
       }
+      const ids = new Set(waiting.map((t) => t.id));
+      for (const id of this.waitingSince.keys()) if (!ids.has(id)) this.waitingSince.delete(id);
       for (const task of waiting) {
         if (this.stopped) break;
         try {
@@ -210,8 +236,27 @@ export class TaskDispatcher {
     await this.watcher.stop();
   }
 
-  /** True when this dispatcher claimed the Task (whether or not its Session then started). */
+  /** True when this dispatcher claimed the Task (whether or not its Session then started). False also when the Task keeps waiting for its Harness. */
   private async dispatch(task: Task): Promise<boolean> {
+    // Ask before claiming: nothing moves a claimed Task back to `assigned`, so the wait has to happen here.
+    let early: { agentId: string; resolved?: ResolvedAgent; error?: unknown } | null = null;
+    if (task.agent) {
+      try {
+        early = { agentId: task.agent, resolved: await this.agents.resolve(this.ownerId, task.agent) };
+      } catch (err) {
+        if (err instanceof HarnessNotReadyError || err instanceof CoreHarnessesUnavailableError) {
+          const since = this.waitingSince.get(task.id) ?? this.now();
+          if (!this.waitingSince.has(task.id)) {
+            this.waitingSince.set(task.id, since);
+            this.log.info(`task ${task.id}: waiting for its Agent's Harness: ${messageOf(err)}`);
+          }
+          if (this.now() - since < this.harnessWaitMs) return false;
+        }
+        early = { agentId: task.agent, error: err };
+      }
+    }
+    this.waitingSince.delete(task.id);
+
     const claimed = await claimTask(this.ownerId, task.id, this.now());
     if (!claimed) return false; // another dispatcher got it, or it is no longer assigned
     const attempt = claimed.attemptCount;
@@ -228,7 +273,12 @@ export class TaskDispatcher {
     let resolved: ResolvedAgent;
     try {
       agent = await this.agents.get(this.ownerId, claimed.agent);
-      resolved = await this.agents.resolve(this.ownerId, claimed.agent);
+      if (early && early.agentId === claimed.agent) {
+        if (early.error !== undefined) throw early.error;
+        resolved = early.resolved!;
+      } else {
+        resolved = await this.agents.resolve(this.ownerId, claimed.agent); // reassigned since the list was read
+      }
     } catch (err) {
       await fail(`its Agent cannot run it: ${messageOf(err)}`);
       return true;
