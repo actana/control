@@ -190,6 +190,7 @@ the same command. Schema migrations run automatically on boot. Running from
 source, upgrade is `git pull && pnpm install && pnpm build` and a restart.
 
 Cores are upgraded separately (`actana update` on each machine, or
-`docker compose pull && docker compose up -d` for a container Core); the version
-gate at the core-link handshake tells you in the UI when a Core and Panel
-have drifted apart.
+`docker compose pull core && docker compose up -d core` for a container Core,
+with `ACTANA_TAG` set to the Panel's line in `.env` first); the version gate at
+the core-link handshake tells you in the UI when a Core and Panel have drifted
+apart.

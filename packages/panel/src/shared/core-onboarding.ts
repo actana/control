@@ -100,7 +100,7 @@ export function coreInstallPaths(panelVersion: string): readonly CoreInstallPath
         "git clone https://github.com/actana/control && cd control",
         composeUpCoreCommand(panelVersion),
       ],
-      note: `\`ACTANA_TAG\` pins both services to one line, and it is set here because the file's default is \`:latest\`, which does not resolve until a release is published. \`${coreImageTag(panelVersion)}\` is the line this Panel is on. Once a release exists, that line's tag is \`${panelVersion}\`.`,
+      note: `\`ACTANA_TAG\` pins both services to one line, and it is set here because the file's default is \`:latest\`, which is the last stable release and older than this Panel. \`${coreImageTag(panelVersion)}\` is the line this Panel is on. Once a release exists, that line's tag is \`${panelVersion}\`.`,
     },
   ];
 }
@@ -113,8 +113,8 @@ export function coreInstallPaths(panelVersion: string): readonly CoreInstallPath
  * Compose path is concrete about the tag because no compose Core saved one:
  * the README and the wizard both set `ACTANA_TAG` inline, so a bare
  * `docker compose pull && docker compose up -d` either finds no compose file
- * (at a clone's root) or pulls `:latest`, which does not resolve until a
- * release is published.
+ * (at a clone's root) or pulls `:latest`, which is the last stable
+ * release and older than this Panel.
  */
 export function coreUpdatePaths(panelVersion: string): readonly CoreUpdatePath[] {
   return [
@@ -130,7 +130,7 @@ export function coreUpdatePaths(panelVersion: string): readonly CoreUpdatePath[]
       title:
         "Running from the Core image (Docker Compose) — run on the host, in the directory holding its compose file (`deploy/` in a clone), not inside the container",
       command: CORE_IMAGE_UPDATE_COMMAND,
-      note: `Set \`ACTANA_TAG=${coreImageTag(panelVersion)}\` (this Panel's line) in \`.env\` beside the file first. The file's default \`:latest\` does not resolve until a release is published. The README and this Panel's setup wizard set the tag inline, so it was never saved. A second Core in the same file: use its service name (e.g. \`core2\`) in both places.`,
+      note: `Set \`ACTANA_TAG=${coreImageTag(panelVersion)}\` (this Panel's line) in \`.env\` beside the file first. The file's default \`:latest\` is the last stable release, older than this Panel. The README and this Panel's setup wizard set the tag inline, so it was never saved. A second Core in the same file: use its service name (e.g. \`core2\`) in both places.`,
       copyLabel: "container",
     },
   ];

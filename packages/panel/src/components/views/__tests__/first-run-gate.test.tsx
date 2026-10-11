@@ -364,7 +364,7 @@ describe("the first-run gate (#358)", () => {
     it("brings up the Core alone, at a tag that resolves", async () => {
       // The reader of this screen already has a Panel. A bare `up -d` would
       // start the file's `panel` service too — clashing with theirs on 7420 or
-      // shadowing it — and `:latest` does not resolve until a release exists.
+      // shadowing it — and `:latest` is the last stable release, older than this Panel.
       await mount();
       await goToStep(1);
       const compose = screen.getByText(/docker compose .* up -d/);

@@ -160,6 +160,8 @@ describe("attaching the Shared folder", () => {
     await expect(r.service.finishPairing(coreId)).rejects.toThrow(
       /docker compose pull core && docker compose up -d core/,
     );
+    // Without the tag the pull falls back to `:latest`, which is older than this Panel, so the Core would stay behind.
+    await expect(r.service.finishPairing(coreId)).rejects.toThrow(/ACTANA_TAG/);
     expect(r.link.frames).toEqual([]);
     expect((await findSharedFolder(1, coreId))?.state).toBe("pending");
   });
