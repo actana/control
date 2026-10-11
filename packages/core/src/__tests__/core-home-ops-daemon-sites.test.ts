@@ -150,7 +150,10 @@ describe("resolving a Harness CLI", () => {
     inContainer();
     const helper = cannedHelper();
     configureCoreHomeOps(helper.options);
-    await expect(resolveCommandViaCore("claude", "/home/core/.local/bin:/usr/bin")).resolves.toEqual(["/home/core/.local/bin/claude"]);
+    await expect(resolveCommandViaCore("claude", "/home/core/.local/bin:/usr/bin")).resolves.toEqual({
+      candidates: ["/home/core/.local/bin/claude"],
+      scripts: [],
+    });
     expect(helper.requests.map((r) => r.request)).toEqual([{ op: "resolveCommand", command: "claude", path: "/home/core/.local/bin:/usr/bin" }]);
   });
 
@@ -160,16 +163,31 @@ describe("resolving a Harness CLI", () => {
     fs.mkdirSync(bin, { recursive: true });
     fs.writeFileSync(path.join(bin, "claude"), "#!/bin/sh\n", { mode: 0o755 });
     configureCoreHomeOps(inProcessHelper(coreHome, { PATH: "/usr/bin" }).options);
-    await expect(resolveCommandViaCore("claude", `${bin}:/usr/bin`)).resolves.toEqual([path.join(bin, "claude")]);
-    await expect(resolveCommandViaCore("codex", `${bin}:/usr/bin`)).resolves.toEqual([]);
+    // A `#!` file is a script launcher, and core says so: that is how the daemon
+    // tells the npm codex wrapper from the vendor binary (issue 460).
+    await expect(resolveCommandViaCore("claude", `${bin}:/usr/bin`)).resolves.toEqual({
+      candidates: [path.join(bin, "claude")],
+      scripts: [path.join(bin, "claude")],
+    });
+    await expect(resolveCommandViaCore("codex", `${bin}:/usr/bin`)).resolves.toEqual({ candidates: [], scripts: [] });
   });
 
   it("reads a malformed answer as finding nothing, not as a TypeError", async () => {
     inContainer();
     for (const result of [{}, { candidates: "/usr/bin/claude" }, { candidates: [1, null, ""] }, null]) {
       configureCoreHomeOps({ run: async () => ({ status: 0, stdout: JSON.stringify({ ok: true, result }), stderr: "" }) });
-      await expect(resolveCommandViaCore("claude", null)).resolves.toEqual([]);
+      await expect(resolveCommandViaCore("claude", null)).resolves.toEqual({ candidates: [], scripts: [] });
     }
+  });
+
+  it("takes a script only among the candidates, and an answer without the list as none", async () => {
+    inContainer();
+    const answer = (result: unknown) =>
+      configureCoreHomeOps({ run: async () => ({ status: 0, stdout: JSON.stringify({ ok: true, result }), stderr: "" }) });
+    answer({ candidates: ["/usr/bin/claude"], scripts: ["/elsewhere/claude", 7] });
+    await expect(resolveCommandViaCore("claude", null)).resolves.toEqual({ candidates: ["/usr/bin/claude"], scripts: [] });
+    answer({ candidates: ["/usr/bin/claude"] });
+    await expect(resolveCommandViaCore("claude", null)).resolves.toEqual({ candidates: ["/usr/bin/claude"], scripts: [] });
   });
 
   it("refuses a command that is not a bare name, before any process", async () => {

@@ -359,9 +359,10 @@ export function trustCodex(file: string, dirs: readonly string[]): "written" | "
 /**
  * The newest codex release this file's hook hash is known to match (codex-rs `hooks/src/engine/discovery.rs`
  * `hook_hash` and `config/src/fingerprint.rs` `version_for_toml`). Read off three entries codex 0.160.0 itself wrote
- * for the hooks this Core installs (permission_request 777d6667, user_prompt_submit f23db2db, stop 0fc32051), and
- * confirmed on 0.162.0 through codex's own `hooks/list` (`codex-hook-trust-check.ts`), which reported the same
- * three hashes and read the entries this writer makes as `trusted`.
+ * for the hooks this Core installed then (permission_request 777d6667, user_prompt_submit f23db2db, stop 0fc32051),
+ * and confirmed on 0.162.0 through codex's own `hooks/list` (`codex-hook-trust-check.ts`), which reported the same
+ * three hashes and read the entries this writer makes as `trusted`. The command has since grown `&pid=$PPID`
+ * (issue 460), so those hashes are over the text codex reviewed, not over today's command.
  *
  * A newer codex may normalise differently; a hash that does not match only makes codex ask again. The Core asks
  * the codex it has on every upgrade and logs the answer (#703), and `codex-hook-trust-check.test.ts` fails on a
