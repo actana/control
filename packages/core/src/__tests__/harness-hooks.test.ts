@@ -60,6 +60,15 @@ describe("installing a harness's lifecycle hooks (issue 84)", () => {
     expect(command).toContain(`$${HOOK_SESSION_ID_ENV}`);
   });
 
+  it("reports the process that ran it, so a nested harness cannot post as the Session (issue 460)", () => {
+    // `$PPID`, not `$$`: the harness runs the entry as `/bin/sh -c "sh -c '…'"`,
+    // and the inner shell's parent is the harness (bash execs) or the outer
+    // shell (dash forks). The receiver climbs through shells to the spawned pid.
+    const command = hookCommand("claude", "Stop");
+    expect(command).toContain("&pid=$PPID\"");
+    expect(command).not.toContain("pid=$$");
+  });
+
   it("carries no secret on disk — the token comes from the PTY's environment", () => {
     // A hook file lives in the operator's workspace and may well be committed.
     // The literal token must never be in it; a restart also mints a new one,

@@ -392,18 +392,21 @@ describe("resolveCommand: where a Harness CLI is, looked up by core", () => {
   it("lists every executable match on the given PATH, in PATH order", () => {
     const local = exe(path.join(home, ".local", "bin"), "claude");
     const system = exe(path.join(outside, "bin"), "claude");
-    expect(resolve("claude", [path.dirname(local), path.dirname(system)].join(":"))).toEqual({ candidates: [local, system] });
+    expect(resolve("claude", [path.dirname(local), path.dirname(system)].join(":"))).toEqual({
+      candidates: [local, system],
+      scripts: [local, system],
+    });
   });
 
   it("finds a binary in a directory outside the home: a PATH lookup is a read, not a write, so it is not confined", () => {
     const system = exe(path.join(outside, "bin"), "claude");
-    expect(resolve("claude", path.dirname(system))).toEqual({ candidates: [system] });
+    expect(resolve("claude", path.dirname(system))).toEqual({ candidates: [system], scripts: [system] });
   });
 
   it("skips a file that is not executable and a directory of that name", () => {
     exe(path.join(home, "a"), "claude", 0o644);
     fs.mkdirSync(path.join(home, "b", "claude"), { recursive: true });
-    expect(resolve("claude", `${path.join(home, "a")}:${path.join(home, "b")}`)).toEqual({ candidates: [] });
+    expect(resolve("claude", `${path.join(home, "a")}:${path.join(home, "b")}`)).toEqual({ candidates: [], scripts: [] });
   });
 
   it("reads the helper's own PATH when the request carries none", () => {
@@ -412,7 +415,7 @@ describe("resolveCommand: where a Harness CLI is, looked up by core", () => {
       { op: "resolveCommand", command: "claude", path: null },
       { ...ctx, env: { HOME: home, PATH: path.dirname(local) } },
     );
-    expect(there).toEqual({ candidates: [local] });
+    expect(there).toEqual({ candidates: [local], scripts: [local] });
   });
 
   it("follows the Harness's alias list, as the daemon's own lookup did", () => {
@@ -421,7 +424,20 @@ describe("resolveCommand: where a Harness CLI is, looked up by core", () => {
   });
 
   it("finds nothing for a command that is not there", () => {
-    expect(resolve("claude", outside)).toEqual({ candidates: [] });
+    expect(resolve("claude", outside)).toEqual({ candidates: [], scripts: [] });
+  });
+
+  it("says which matches are interpreter scripts: the npm codex wrapper is one, a native binary is not (issue 460)", () => {
+    const wrapper = exe(path.join(home, ".local", "bin"), "codex");
+    const nativeDir = path.join(outside, "bin");
+    fs.mkdirSync(nativeDir, { recursive: true });
+    const native = path.join(nativeDir, "codex");
+    fs.writeFileSync(native, Buffer.from([0x7f, 0x45, 0x4c, 0x46, 0x02, 0x01]), { mode: 0o755 });
+    fs.chmodSync(native, 0o755);
+    expect(resolve("codex", [path.dirname(wrapper), nativeDir].join(":"))).toEqual({
+      candidates: [wrapper, native],
+      scripts: [wrapper],
+    });
   });
 });
 
