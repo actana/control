@@ -1,5 +1,6 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { closePanelTestDb, openPanelTestDb } from "../../__tests__/_panel-test-db";
+import type { SessionLiveness } from "../types";
 import { FakeClock, FakeCore, FakeShared, collectingLog } from "./fakes";
 
 /**
@@ -51,7 +52,7 @@ afterAll(async () => {
   await closePanelTestDb(testDb);
 });
 
-function rig(ownerId = A) {
+function rig(ownerId = A, liveOverride?: SessionLiveness) {
   const clock = new FakeClock();
   const shared = new FakeShared(clock);
   const core = new FakeCore();
@@ -66,7 +67,7 @@ function rig(ownerId = A) {
       return { agentId: AGENT.id, coreId: AGENT.coreId, harness: AGENT.harness, model: AGENT.model, flags: [...AGENT.flags] };
     },
   };
-  const watcher = new ResultWatcher({ ownerId, now: clock.now, exitGraceMs: GRACE_MS, log, stopSession: core.stopSession, liveSessions: core.liveSessions });
+  const watcher = new ResultWatcher({ ownerId, now: clock.now, exitGraceMs: GRACE_MS, log, stopSession: core.stopSession, liveSessions: liveOverride ?? core.liveSessions });
   const dispatcher = new TaskDispatcher({
     ownerId,
     startSession: core.startSession,
@@ -1350,6 +1351,44 @@ describe("a time limit per Task (#724)", () => {
     }
 
     expect((await getTask(A, task.id)).status).toBe("in_progress");
+  });
+
+  it("a Core whose session list is empty but whose PTY is alive does not fail the Task (#724)", async () => {
+    const { liveSessionsOnCore } = await import("../session-liveness");
+    const sessionsList = vi.fn(async () => []); // what a Core answers when its SQLite read fails
+    const findBySession = vi.fn(async () => ({ ptyId: "pty_1" }));
+    const probe: SessionLiveness = (coreId, ids) => liveSessionsOnCore(coreId, ids, () => ({ sdk: { sessionsList, findBySession } as never }));
+    const { clock, dispatcher, watcher } = rig(A, probe);
+    const task = await assign(clock, { timeoutMinutes: null });
+    await dispatcher.dispatchOnce();
+
+    for (let i = 0; i < 6; i += 1) {
+      clock.advance(MIN);
+      await watcher.tick();
+    }
+    clock.advance(GRACE_MS * 2);
+    await watcher.tick();
+
+    expect(findBySession).toHaveBeenCalledWith("session_1");
+    expect(sessionsList).not.toHaveBeenCalled();
+    expect((await getTask(A, task.id)).status).toBe("in_progress");
+  });
+
+  it("two null-ptyId answers from the PTY table, then the grace, fail the Task (#724)", async () => {
+    const { liveSessionsOnCore } = await import("../session-liveness");
+    const probe: SessionLiveness = (coreId, ids) => liveSessionsOnCore(coreId, ids, () => ({ sdk: { findBySession: async () => ({ ptyId: null }) } as never }));
+    const { clock, dispatcher, watcher } = rig(A, probe);
+    const task = await assign(clock, { timeoutMinutes: null });
+    await dispatcher.dispatchOnce();
+
+    await watcher.tick(); // miss 1
+    clock.advance(MIN);
+    await watcher.tick(); // miss 2: the grace starts
+    expect((await getTask(A, task.id)).status).toBe("in_progress");
+    clock.advance(GRACE_MS);
+    await watcher.tick();
+
+    expect((await getTask(A, task.id)).status).toBe("failed");
   });
 
   it("a Core that cannot be reached never fails a No-limit Task", async () => {

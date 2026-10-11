@@ -147,9 +147,9 @@ export class FakeCore {
   /** Every Core the Panel asked about, in order. */
   readonly liveCalls: string[] = [];
 
-  readonly liveSessions: SessionLiveness = async (coreId) => {
+  readonly liveSessions: SessionLiveness = async (coreId, sessionIds) => {
     this.liveCalls.push(coreId);
-    return this.live ? new Set(this.live) : null;
+    return this.live ? new Set(sessionIds.filter((id) => this.live!.has(id))) : null;
   };
 
   readonly stopSession: SessionStopper = async (target) => {

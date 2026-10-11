@@ -231,7 +231,7 @@ export class ResultWatcher {
       if (this.stopped) return;
       let live: ReadonlySet<string> | null;
       try {
-        live = await liveSessions(coreId);
+        live = await liveSessions(coreId, dispatches.map((t) => t.sessionId!));
       } catch (err) {
         this.log.error(`liveness of Core ${coreId}: ${messageOf(err)}`);
         live = null;
