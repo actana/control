@@ -101,6 +101,18 @@ describe("HarnessInstallService", () => {
     await expect(service.install("pi")).resolves.toEqual({ ok: true });
   });
 
+  it("reports ok when the installed Harness is on PATH but its setup check could not start it (#700)", async () => {
+    // The install put the CLI on PATH; that the Core could not start it for the
+    // check is reported on the availability row, not as a failed install.
+    const { service } = serviceWith({
+      before: { pi: { status: "missing" } },
+      after: { pi: { status: "missing", reason: "setup-check-failed: EACCES", path: "/usr/local/bin/pi" } },
+      outcomes: [{ agent: "pi", label: "Pi", status: "installed" }],
+    });
+
+    await expect(service.install("pi")).resolves.toEqual({ ok: true });
+  });
+
   it("treats an install the probe cannot see as a failure, not a success", async () => {
     // The vendor installer exited 0 and put the CLI somewhere this daemon's
     // PATH does not reach. Reporting success would leave the Panel's row
