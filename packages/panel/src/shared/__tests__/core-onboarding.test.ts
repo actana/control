@@ -14,10 +14,12 @@ import {
   composeUpCoreCommand,
   coreImageTag,
   coreInstallPaths,
+  coreUpdatePaths,
   firstRunStepFromSearch,
   labelRefusal,
   pairNewCommand,
 } from "../core-onboarding";
+import { CORE_IMAGE_UPDATE_COMMAND } from "../cores";
 
 /**
  * The Core-side commands the first-run wizard teaches (#358).
@@ -219,7 +221,7 @@ describe("what the wizard puts on screen", () => {
     expect(compose?.commands.join("\n")).not.toMatch(/up -d(\s|$)(?!core)/);
   });
 
-  it("pins an image tag rather than falling through to a `:latest` that 404s", () => {
+  it("pins an image tag rather than falling through to a `:latest` older than this Panel", () => {
     const up = composeUpCoreCommand(VERSION);
     expect(up.startsWith(`ACTANA_TAG=${coreImageTag(VERSION)} `)).toBe(true);
     expect(coreImageTag("0.4.3")).toBe("beta-0.4.3");
@@ -228,6 +230,12 @@ describe("what the wizard puts on screen", () => {
     const compose = coreInstallPaths(VERSION).find((path) => path.id === "compose");
     expect(compose?.note).toContain("ACTANA_TAG");
     expect(compose?.note).toContain(VERSION);
+    // `:latest` exists (the last stable release); the reason to avoid it is that it is older than this Panel.
+    expect(compose?.note).toContain("older than this Panel");
+    expect(compose?.note).not.toContain("does not resolve");
+    const update = coreUpdatePaths(VERSION).find((path) => path.id === "compose");
+    expect(update?.note).toContain("older than this Panel");
+    expect(update?.note).not.toContain("does not resolve");
   });
 
   it("tracks the Panel's own line rather than a hard-coded version", () => {
@@ -304,6 +312,14 @@ describe("the Compose disclaimer", () => {
     expect(COMPOSE).toContain(REDEEM_STEP_LINK);
   });
 
+  it("has the `core` service that the update command names, on the shared ACTANA_TAG", () => {
+    // CORE_IMAGE_UPDATE_COMMAND says `core`; if the service is renamed, the command would quietly update nothing.
+    const service = COMPOSE.match(/^ {2}core:\n((?: {4}.*\n|\s*\n|\s*#.*\n)*)/m);
+    expect(service).not.toBeNull();
+    expect(service![1]).toMatch(/^ {4}image: .*\$\{ACTANA_TAG[:-]/m);
+    expect(CORE_IMAGE_UPDATE_COMMAND).toContain("pull core && docker compose up -d core");
+  });
+
   it("names the address that Compose actually serves the Core on", () => {
     // `core:8443` is the compose service name, and it is what the redeem step's
     // first field wants. A disclaimer that skipped two screens without saying
@@ -329,5 +345,25 @@ describe("the Compose disclaimer", () => {
     for (const copy of [COMPOSE_SHORTCUT_ACTION, COMPOSE_SHORTCUT_NOTICE]) {
       expect(copy).not.toMatch(/skip|dismiss|later|not now|close|continue anyway|explore/i);
     }
+  });
+});
+
+describe("coreUpdatePaths", () => {
+  it("mirrors the install ids and names the Panel's tag and the compose directory", () => {
+    const paths = coreUpdatePaths(VERSION);
+    expect(paths.map((p) => p.id)).toEqual(coreInstallPaths(VERSION).map((p) => p.id));
+    const compose = paths.find((p) => p.id === "compose");
+    expect(compose?.note).toContain(`ACTANA_TAG=${coreImageTag(VERSION)}`);
+    expect(compose?.title).toMatch(/deploy\//);
+    expect(compose?.title).toMatch(/on the host/i);
+  });
+
+  it("scopes the compose command to the same service the wizard brings up", () => {
+    const compose = coreUpdatePaths(VERSION).find((p) => p.id === "compose");
+    const service = composeUpCoreCommand(VERSION).split(" ").pop();
+    expect(service).toBe("core");
+    expect(compose?.command.endsWith(` ${service}`)).toBe(true);
+    expect(compose?.command).toMatch(/pull core && /);
+    expect(compose?.note).toContain("core2");
   });
 });

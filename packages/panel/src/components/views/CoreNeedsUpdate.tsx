@@ -1,6 +1,13 @@
 import { useState } from "react";
 import { Icon } from "~/components/ui/Icon";
-import { CORE_UPDATE_COMMAND, coreDriftDirection, type CoreDialStatus } from "~/shared/cores";
+import { Ticked } from "~/components/ui/Ticked";
+import { CURRENT_MC_VERSION } from "~/queries/mission-control-version";
+import { coreUpdatePaths } from "~/shared/core-onboarding";
+import {
+  coreDriftDirection,
+  type CoreDialStatus,
+  type CoreUpdatePath,
+} from "~/shared/cores";
 
 // "This Core needs updating", as an operator-facing chore.
 //
@@ -13,8 +20,9 @@ import { CORE_UPDATE_COMMAND, coreDriftDirection, type CoreDialStatus } from "~/
 //
 // **The command has to leave the daemon running the new version**, or the
 // button is decoration: the Core would keep announcing the old protocol and
-// this notice would keep saying the same thing. `CORE_UPDATE_COMMAND`'s
-// docstring says which command does that and which two do not.
+// this notice would keep saying the same thing. `coreUpdatePaths` lists the
+// commands that do, one per way a Core gets installed. The Panel cannot see
+// which applies to the Core in front of it, so it shows both and says so.
 //
 // Everything else about the Core — its sessions, terminals — is
 // suppressed at the panel-link router, so this notice stands where that data
@@ -27,21 +35,10 @@ export function CoreNeedsUpdateNotice({
   dial: CoreDialStatus;
   compact?: boolean;
 }) {
-  const [copied, setCopied] = useState(false);
   // Which side is behind decides what the operator is told to do. A Panel that
   // has not been upgraded while its fleet has is the same gate in the other
   // direction, and handing over the Core installer there fixes nothing.
   const panelBehind = coreDriftDirection(dial) === "panel-behind";
-
-  const copy = () => {
-    void navigator.clipboard?.writeText(CORE_UPDATE_COMMAND).then(
-      () => {
-        setCopied(true);
-        setTimeout(() => setCopied(false), 1500);
-      },
-      () => undefined,
-    );
-  };
 
   return (
     <div
@@ -78,9 +75,32 @@ export function CoreNeedsUpdateNotice({
       <div style={{ fontSize: 12, color: "var(--text-dim)", lineHeight: 1.45 }}>
         {panelBehind
           ? "This Core is ahead of this Panel. Its sessions stay hidden until the Panel itself is upgraded — pull a newer Panel and restart it."
-          : "Its sessions stay hidden until the Core on that machine is updated. Run this there — it lands the new version, restarts the daemon, and keeps the pairing:"}
+          : "Its sessions stay hidden until the Core on that machine is updated. This Panel cannot see how that Core was installed — run the line that matches it. Both keep the pairing:"}
       </div>
-      {!panelBehind && (
+      {!panelBehind &&
+        coreUpdatePaths(CURRENT_MC_VERSION).map((path) => <CommandRow key={path.id} path={path} />)}
+    </div>
+  );
+}
+
+function CommandRow({ path }: { path: CoreUpdatePath }) {
+  const [copied, setCopied] = useState(false);
+
+  const copy = () => {
+    void navigator.clipboard?.writeText(path.command).then(
+      () => {
+        setCopied(true);
+        setTimeout(() => setCopied(false), 1500);
+      },
+      () => undefined,
+    );
+  };
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+      <div style={{ fontSize: 12, color: "var(--text-dim)", lineHeight: 1.45 }}>
+        <Ticked text={path.title} />
+      </div>
       <div
         style={{
           display: "flex",
@@ -103,12 +123,12 @@ export function CoreNeedsUpdateNotice({
             whiteSpace: "pre",
           }}
         >
-          {CORE_UPDATE_COMMAND}
+          {path.command}
         </code>
         <button
           type="button"
           onClick={copy}
-          aria-label="Copy the update command"
+          aria-label={`Copy the ${path.copyLabel} update command`}
           style={{
             display: "inline-flex",
             alignItems: "center",
@@ -128,6 +148,10 @@ export function CoreNeedsUpdateNotice({
           {copied ? "copied" : "copy"}
         </button>
       </div>
+      {path.note && (
+        <div style={{ fontSize: 11, color: "var(--text-dim)", lineHeight: 1.45 }}>
+          <Ticked text={path.note} />
+        </div>
       )}
     </div>
   );
