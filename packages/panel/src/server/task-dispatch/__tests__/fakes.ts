@@ -6,7 +6,7 @@ import {
   type SharedFile,
   type SharedWatchResult,
 } from "@actana/sdk/shared";
-import type { DispatchLog, SessionStarter, StartSessionRequest, StartedSession } from "../types";
+import type { DispatchLog, SessionStarter, SessionStopResult, SessionStopper, StartSessionRequest, StartedSession } from "../types";
 
 /** A clock a test moves by hand. */
 export class FakeClock {
@@ -135,11 +135,20 @@ export class FakeCore {
   readonly sessions: { id: string; request: StartSessionRequest; exit: (code: number) => void; disposed: boolean }[] = [];
   failWith: string | null = null;
   /** Runs when a Session is asked for, before it is recorded: what the Core can see at that moment. */
-  onStart: (() => void) | null = null;
+  onStart: (() => unknown) | null = null;
   private n = 0;
+  /** Every Session the Panel asked this Core to stop, in order. */
+  readonly stops: { coreId: string; sessionId: string }[] = [];
+  /** What a stop answers: `unreachable` is a Core that is offline. */
+  stopOutcome: SessionStopResult = { outcome: "stopped", detail: null };
+
+  readonly stopSession: SessionStopper = async (target) => {
+    this.stops.push({ ...target });
+    return this.stopOutcome;
+  };
 
   readonly startSession: SessionStarter = async (request) => {
-    this.onStart?.();
+    await this.onStart?.();
     this.starts.push(request);
     if (this.failWith) throw new Error(this.failWith);
     const id = `session_${(this.n += 1)}`;

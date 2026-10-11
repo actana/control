@@ -5,25 +5,32 @@ import {
   TASK_STATUSES,
   TASK_TRANSITIONS,
   canDeleteTask,
+  STOPPABLE_TASK_STATUSES,
   canEditTask,
+  canStopTask,
+  formatTaskStopComment,
+  formatTaskDispatchComment,
   type TaskStatus,
 } from "~/shared/tasks";
 import { closePanelTestDb, openPanelTestDb } from "../../__tests__/_panel-test-db";
 
 const testDb = await openPanelTestDb();
 const tasksService = await import("../tasks");
-const { NotFoundError, ValidationError } = await import("../../errors");
+const { ConflictError, NotFoundError, ValidationError } = await import("../../errors");
 const {
   DuplicateTaskCommentSourceError,
   IllegalTaskTransitionError,
   TaskNotChangeableError,
+  TaskNotRunningError,
   addTaskComment,
   changeTaskStatus,
   claimTask,
   commentAndReassign,
   createTask,
   deleteTask,
+  findCurrentTaskSession,
   getTask,
+  markTaskStopped,
   listTaskComments,
   listTaskHistory,
   listTasks,
@@ -342,5 +349,95 @@ describe("Tasks across owners", () => {
     );
     expect((await createTask(A, { title: "t", coreId: "core_a" })).coreId).toBe("core_a");
     await expect(createTask(B, { title: "t", coreId: "core_a" })).rejects.toBeInstanceOf(NotFoundError);
+  });
+});
+
+describe("stopping a Task (#723)", () => {
+  it("only an in_progress Task is stoppable", () => {
+    expect(STOPPABLE_TASK_STATUSES).toEqual(["in_progress"]);
+    for (const s of TASK_STATUSES) expect(canStopTask(s)).toBe(s === "in_progress");
+  });
+
+  it("formats the stop comment with and without a reason", () => {
+    expect(formatTaskStopComment({ stoppedBy: "Core", reason: "hung" })).toBe("Stopped by Core: hung");
+    expect(formatTaskStopComment({ stoppedBy: "Core", reason: "  " })).toBe("Stopped by Core.");
+    expect(formatTaskStopComment({ stoppedBy: "Core" })).toBe("Stopped by Core.");
+  });
+
+  it("markTaskStopped fails the Task with a system comment, the last error, and one status_changed and one comment.created event", async () => {
+    const id = await taskIn("in_progress");
+    const stopped = await markTaskStopped(A, id, { stoppedBy: "Core", reason: "hung" }, 700);
+    expect(stopped).toMatchObject({ status: "failed", lastError: "Stopped by Core: hung" });
+    expect((await listTaskComments(A, id)).map((c) => [c.authorKind, c.authorName, c.body])).toEqual([["system", "Panel", "Stopped by Core: hung"]]);
+    expect((await listTaskHistory(A, id)).at(-1)).toMatchObject({ fromStatus: "in_progress", toStatus: "failed", changedAt: 700 });
+    const types = (await outboxFor(id)).map((e) => e.type);
+    expect(types.filter((t) => t === "task.status_changed")).toHaveLength(3);
+    expect(types.at(-1)).toBe("task.status_changed");
+    expect(types).toContain("comment.created");
+  });
+
+  it.each(NOT_RUNNING)("markTaskStopped refuses a %s Task with TaskNotRunningError and writes nothing", async (status) => {
+    const id = await taskIn(status);
+    const before = await listTaskHistory(A, id);
+    const err = await markTaskStopped(A, id, { stoppedBy: "Core" }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(TaskNotRunningError);
+    expect(err).toBeInstanceOf(ConflictError);
+    expect(err).toMatchObject({ code: "illegal_task_transition" });
+    expect((err as Error).message).toBe(`a Task that is ${status} is not running: only an in_progress Task can be stopped`);
+    expect(await listTaskComments(A, id)).toEqual([]);
+    expect(await listTaskHistory(A, id)).toEqual(before);
+    expect((await getTask(A, id)).status).toBe(status);
+  });
+
+  it("markTaskStopped is not found for another owner", async () => {
+    const id = await taskIn("in_progress");
+    await expect(markTaskStopped(B, id, { stoppedBy: "x" })).rejects.toBeInstanceOf(NotFoundError);
+  });
+
+  it("a second stop is refused: the first one failed the Task", async () => {
+    const id = await taskIn("in_progress");
+    await markTaskStopped(A, id, { stoppedBy: "Core" });
+    await expect(markTaskStopped(A, id, { stoppedBy: "Core" })).rejects.toBeInstanceOf(TaskNotRunningError);
+  });
+
+  it("re-assigning an in_progress Task is a 409 that names the stop call", async () => {
+    const id = await taskIn("in_progress");
+    const viaComment = await commentAndReassign(A, id, { authorKind: "user", authorName: "n", body: "b" }).catch((e: unknown) => e);
+    expect(viaComment).toBeInstanceOf(IllegalTaskTransitionError);
+    expect((viaComment as Error).message).toMatch(/stop/);
+    expect((viaComment as Error).message).toContain("/api/v1/tasks/:id/stop");
+    const viaStatus = await changeTaskStatus(A, id, "assigned").catch((e: unknown) => e);
+    expect((viaStatus as Error).message).toMatch(/stop/);
+    expect((await getTask(A, id)).status).toBe("in_progress");
+  });
+
+  it("other illegal moves keep the plain message", async () => {
+    const id = await taskIn("done");
+    await expect(changeTaskStatus(A, id, "draft")).rejects.toThrow("a Task cannot move from done to draft");
+  });
+
+  it("findCurrentTaskSession picks the dispatch comment of the current attempt", async () => {
+    const id = await taskIn("assigned");
+    expect(await findCurrentTaskSession(A, id)).toBeNull();
+    const note = (attempt: number, sessionId: string, coreId = "core_1") =>
+      addTaskComment(A, id, { authorKind: "system", authorName: "Panel", body: formatTaskDispatchComment({ attempt, agentName: "Claude Code", harness: "claude-code", coreId, sessionId }) });
+    await claimTask(A, id);
+    await note(1, "session_1");
+    expect(await findCurrentTaskSession(A, id)).toEqual({ coreId: "core_1", sessionId: "session_1", attempt: 1 });
+    await markTaskStopped(A, id, { stoppedBy: "Core" });
+    await commentAndReassign(A, id, { authorKind: "user", authorName: "n", body: "again" });
+    await claimTask(A, id);
+    // Attempt 2 is claimed but not noted yet: attempt 1's Session is not the current one.
+    expect(await findCurrentTaskSession(A, id)).toBeNull();
+    await note(2, "session_2", "core_2");
+    expect(await findCurrentTaskSession(A, id)).toEqual({ coreId: "core_2", sessionId: "session_2", attempt: 2 });
+    // A user comment that looks like a dispatch note is not trusted.
+    await addTaskComment(A, id, { authorKind: "user", authorName: "n", body: formatTaskDispatchComment({ attempt: 2, agentName: "x", harness: "claude-code", coreId: "evil", sessionId: "s9" }) });
+    expect((await findCurrentTaskSession(A, id))?.sessionId).toBe("session_2");
+    // An explicit attempt is honoured, so a stop of attempt 1 never lands on attempt 2's Session.
+    expect((await findCurrentTaskSession(A, id, 1))?.sessionId).toBe("session_1");
+    expect((await findCurrentTaskSession(A, id, 2))?.sessionId).toBe("session_2");
+    expect(await findCurrentTaskSession(A, id, 3)).toBeNull();
+    await expect(findCurrentTaskSession(B, id)).rejects.toBeInstanceOf(NotFoundError);
   });
 });

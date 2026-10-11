@@ -58,3 +58,17 @@ export type NewTaskCommentRequest = {
   /** Comment & re-assign: the comment and the move back to `assigned`, in one call. */
   reassign?: boolean;
 };
+
+/** Stop a running Task (#723). */
+export type StopTaskRequest = { reason?: string };
+
+export type TaskSessionStopOutcome = "stopped" | "not-running" | "unreachable" | "failed";
+
+export type TaskSessionStopDto = {
+  coreId: string;
+  sessionId: string;
+  outcome: TaskSessionStopOutcome;
+  detail: string | null;
+};
+
+export type StopTaskResponse = { task: TaskDto; session: TaskSessionStopDto | null };

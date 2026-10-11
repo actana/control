@@ -26,6 +26,19 @@ export function canDeleteTask(status: TaskStatus): boolean {
   return (DELETABLE_TASK_STATUSES as readonly TaskStatus[]).includes(status);
 }
 
+/** Statuses an operator can stop (#723): a Task whose Session is running. */
+export const STOPPABLE_TASK_STATUSES = ["in_progress"] as const satisfies readonly TaskStatus[];
+
+export function canStopTask(status: TaskStatus): boolean {
+  return (STOPPABLE_TASK_STATUSES as readonly TaskStatus[]).includes(status);
+}
+
+/** The system comment body for a stop: `Stopped by X: reason` or `Stopped by X.` */
+export function formatTaskStopComment(f: { stoppedBy: string; reason?: string | null }): string {
+  const reason = f.reason?.trim();
+  return reason ? `Stopped by ${f.stoppedBy}: ${reason}` : `Stopped by ${f.stoppedBy}.`;
+}
+
 /** Every legal move, by the status it leaves. Anything not listed here is rejected. */
 export const TASK_TRANSITIONS: Readonly<Record<TaskStatus, readonly TaskStatus[]>> = {
   draft: ["assigned"],

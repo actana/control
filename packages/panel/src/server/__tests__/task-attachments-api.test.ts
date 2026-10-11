@@ -374,6 +374,20 @@ describe("a comment with a file", () => {
     expect(s3.objects.has(key(core, t.id, "late.md"))).toBe(false);
   });
 
+  it("with Comment & re-assign on an in_progress Task answers 409 naming the stop call, and writes nothing (#723)", async () => {
+    const { s3 } = rigState;
+    const core = await attachedCore();
+    const t = await tasksService.createTask(A, { title: "T", coreId: core, agent: `agent-${core}`, startNow: true });
+    await tasksService.claimTask(A, t.id);
+    const writesBefore = writes().length;
+    const res = await call(`/api/tasks/${t.id}/comments`, { body: form({ body: "again", reassign: true }, [{ path: "run.md", content: "r" }]) });
+    expect(res.status).toBe(409);
+    expect((await res.json()).error).toMatch(/\/stop/);
+    expect(writes()).toHaveLength(writesBefore);
+    expect(s3.objects.has(key(core, t.id, "run.md"))).toBe(false);
+    expect(await statusOf(t.id)).toBe("in_progress");
+  });
+
   it("adds no comment and moves nothing when the write fails", async () => {
     const core = await attachedCore();
     const t = await finishedTask(core);

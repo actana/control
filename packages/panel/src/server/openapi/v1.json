@@ -359,8 +359,58 @@
           "400": { "description": "Status not allowed for a key client" },
           "403": { "description": "Key does not reach the Task's Core" },
           "404": { "description": "No such Task" },
-          "409": { "description": "Illegal status move" },
+          "409": { "description": "Illegal status move. A Task that is in_progress cannot be re-assigned or sent back to draft: stop it first with POST /api/v1/tasks/{taskId}/stop." },
           "401": { "description": "Unauthorized" }
+        }
+      }
+    },
+    "/api/v1/tasks/{taskId}/stop": {
+      "post": {
+        "operationId": "stopTask",
+        "summary": "Stop a running Task",
+        "description": "Only a Task that is `in_progress` can be stopped. Its Session is stopped on the Core and the Task becomes `failed` with a system comment (`Stopped by <name>: <reason>`), after which it can be re-assigned to run in a new Session. The Task is failed even when the Core is offline; `session.outcome` then says `unreachable` and the Session may still be running. A result file arriving later is kept as a comment and does not change the Task.",
+        "parameters": [{ "name": "taskId", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "reason": { "type": "string", "maxLength": 2000, "description": "Why it is stopped; recorded in the system comment." }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The failed Task and what happened to its Session (null when none was recorded)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "task": { "$ref": "#/components/schemas/Task" },
+                    "session": {
+                      "type": ["object", "null"],
+                      "properties": {
+                        "coreId": { "type": "string" },
+                        "sessionId": { "type": "string" },
+                        "outcome": { "type": "string", "enum": ["stopped", "not-running", "unreachable", "failed"] },
+                        "detail": { "type": ["string", "null"] }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": { "description": "Validation error" },
+          "401": { "description": "Unauthorized" },
+          "403": { "description": "Key does not reach the Task's Core" },
+          "404": { "description": "No such Task" },
+          "409": { "description": "The Task is not in_progress" }
         }
       }
     },
@@ -413,7 +463,7 @@
           "400": { "description": "Validation error" },
           "403": { "description": "Key does not reach the Task's Core" },
           "404": { "description": "No such Task" },
-          "409": { "description": "Re-assign refused" },
+          "409": { "description": "Re-assign refused. A Task that is in_progress must be stopped first with POST /api/v1/tasks/{taskId}/stop." },
           "401": { "description": "Unauthorized" }
         }
       }

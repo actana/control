@@ -53,6 +53,7 @@ export const API_KEY_ROUTES: ReadonlyArray<{ method: string; pattern: RegExp }> 
   { method: "PATCH", pattern: /^\/api\/v1\/tasks\/[^/]+$/ },
   { method: "DELETE", pattern: /^\/api\/v1\/tasks\/[^/]+$/ },
   { method: "POST", pattern: /^\/api\/v1\/tasks\/[^/]+\/status$/ },
+  { method: "POST", pattern: /^\/api\/v1\/tasks\/[^/]+\/stop$/ },
   { method: "GET", pattern: /^\/api\/v1\/tasks\/[^/]+\/comments$/ },
   { method: "POST", pattern: /^\/api\/v1\/tasks\/[^/]+\/comments$/ },
 ];

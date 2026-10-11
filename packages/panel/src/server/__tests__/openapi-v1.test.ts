@@ -70,6 +70,7 @@ describe("OpenAPI v1", () => {
       { method: "PATCH", path: "/api/v1/tasks/x", template: "/api/v1/tasks/{taskId}" },
       { method: "DELETE", path: "/api/v1/tasks/x", template: "/api/v1/tasks/{taskId}" },
       { method: "POST", path: "/api/v1/tasks/x/status", template: "/api/v1/tasks/{taskId}/status" },
+      { method: "POST", path: "/api/v1/tasks/x/stop", template: "/api/v1/tasks/{taskId}/stop" },
       { method: "GET", path: "/api/v1/tasks/x/comments", template: "/api/v1/tasks/{taskId}/comments" },
       { method: "POST", path: "/api/v1/tasks/x/comments", template: "/api/v1/tasks/{taskId}/comments" },
     ];
@@ -82,5 +83,19 @@ describe("OpenAPI v1", () => {
       const hit = samples.some((s) => s.method === route.method && route.pattern.test(s.path));
       expect(hit, `${route.method} ${route.pattern}`).toBe(true);
     }
+  });
+
+  it("documents stopTask (#723): an optional reason, the session outcome and 409 for a Task that is not running", () => {
+    const op = doc.paths["/api/v1/tasks/{taskId}/stop"]?.post as {
+      operationId: string;
+      requestBody: { required?: boolean; content: { "application/json": { schema: { properties: Record<string, unknown> } } } };
+      responses: Record<string, unknown>;
+    };
+    expect(op.operationId).toBe("stopTask");
+    expect(op.requestBody.required).toBeFalsy();
+    expect(Object.keys(op.requestBody.content["application/json"].schema.properties)).toEqual(["reason"]);
+    for (const code of ["200", "401", "403", "404", "409"]) expect(op.responses[code], code).toBeDefined();
+    const text = JSON.stringify(doc.paths["/api/v1/tasks/{taskId}/status"]) + JSON.stringify(doc.paths["/api/v1/tasks/{taskId}/comments"]);
+    expect(text).toContain("/stop");
   });
 });

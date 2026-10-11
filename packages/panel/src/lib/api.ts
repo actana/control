@@ -35,6 +35,8 @@ import type {
   TaskCommentDto,
   TaskDto,
   UpdateTaskRequest,
+  StopTaskRequest,
+  StopTaskResponse,
 } from "~/shared/task-wire";
 import type { ApiKeyView, WebhookDeliveryView, WebhookView } from "~/shared/api-integrations-wire";
 
@@ -210,6 +212,9 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ status }),
     }),
+  /** Stop a running Task (#723): its Session is stopped and the Task fails. Refused with 409 unless it is `in_progress`. */
+  stopTask: (id: string, body: StopTaskRequest = {}) =>
+    req<StopTaskResponse>(`/api/tasks/${encodeURIComponent(id)}/stop`, { method: "POST", body: JSON.stringify(body) }),
   /** A comment; with `reassign`, the service's single Comment & re-assign call. */
   commentOnTask: (id: string, body: NewTaskCommentRequest, attachments: readonly TaskAttachment[] = []) =>
     req<{ comment?: TaskCommentDto; task?: TaskDto; comments?: TaskCommentDto[] }>(

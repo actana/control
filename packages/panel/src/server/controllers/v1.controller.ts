@@ -3,6 +3,8 @@ import { forbidden, json, noContent, notFound, parseJsonBody, rethrowUnlessDomai
 import { NotFoundError, ValidationError } from "../errors";
 import { HTTP_CREATED } from "~/shared/http-status";
 import type { ApiPrincipal } from "../api-key-auth";
+import { stopTask } from "../task-dispatch";
+import { stopTaskBody } from "./tasks.controller";
 import { scopeReaches } from "../services/api-keys";
 import { getCore, listCores } from "../services/cores";
 import { coreLinkManager } from "../services/core-link-manager";
@@ -280,6 +282,21 @@ export async function deleteTaskV1(principal: ApiPrincipal, id: string): Promise
     if (denied) return denied;
     await deleteTask(principal.ownerId, id);
     return noContent();
+  } catch (e) {
+    return rethrowUnlessDomain(e);
+  }
+}
+
+/** `POST /api/v1/tasks/:id/stop` (#723): stops the Task's Session and fails the Task; 409 unless it is `in_progress`. */
+export async function stopTaskV1(principal: ApiPrincipal, id: string, request: Request): Promise<Response> {
+  const body = await parseJsonBody(request, stopTaskBody);
+  if (!body.ok) return body.response;
+  try {
+    const task = await getTask(principal.ownerId, id);
+    const denied = refuseOutsideScope(principal, task.coreId);
+    if (denied) return denied;
+    const stopped = await stopTask(principal.ownerId, id, { stoppedBy: await authorName(), reason: body.data.reason });
+    return json({ task: taskDto(stopped.task), session: stopped.session });
   } catch (e) {
     return rethrowUnlessDomain(e);
   }
