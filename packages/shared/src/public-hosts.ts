@@ -178,3 +178,25 @@ export function widenedPublicHosts(
   const added = next.filter((host) => !previous.includes(host));
   return added.length > 0 ? added : null;
 }
+
+/**
+ * An IPv6 literal bracketed for a URL authority; anything else — a name, an
+ * IPv4 address, an already-bracketed literal — unchanged (#351 item 1).
+ *
+ * `fe80::1:8443` is not an address anything can parse, so every place that
+ * spells `host:port` or `wss://host:port` goes through here rather than
+ * keeping its own copy of the rule.
+ */
+export function urlHost(host: string): string {
+  return host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
+}
+
+/** `host:port`, with an IPv6 literal bracketed. */
+export function hostPort(host: string, port: number): string {
+  return `${urlHost(host)}:${port}`;
+}
+
+/** `wss://host:port` — the one spelling of a core-link endpoint in this repo. */
+export function wssEndpoint(host: string, port: number): string {
+  return `wss://${hostPort(host, port)}`;
+}

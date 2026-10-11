@@ -12,6 +12,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import log from "@actana/shared/log";
+import { wssEndpoint } from "@actana/shared/public-hosts";
 
 /** The filename inside the config dir. */
 export const ACTANA_CONFIG_FILENAME = "actana.json";
@@ -140,8 +141,5 @@ export function configPublicHosts(
  * can answer for everybody.
  */
 export function endpointFor(config: Pick<ActanaConfig, "publicHost" | "port">): string {
-  const host = config.publicHost.includes(":") && !config.publicHost.startsWith("[")
-    ? `[${config.publicHost}]`
-    : config.publicHost;
-  return `wss://${host}:${config.port}`;
+  return wssEndpoint(config.publicHost, config.port);
 }
