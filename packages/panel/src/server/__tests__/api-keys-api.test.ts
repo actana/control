@@ -285,10 +285,17 @@ describe("an expiring key (#689)", () => {
   });
 
   it("refuses an expiry in the past or of the wrong type with a 400", async () => {
-    const past = await call("/api/api-keys", { method: "POST", json: { name: "k", expiresAt: Date.now() - 1 }, cookie: true });
+    // Otherwise valid bodies (name, permissions), so the 400 can only come from the expiry.
+    const post = (expiresAt: unknown) =>
+      call("/api/api-keys", { method: "POST", json: { name: "k", permissions: ALL_API_KEY_PERMISSIONS, expiresAt }, cookie: true });
+    const past = await post(Date.now() - 1);
     expect(past.status).toBe(400);
-    expect((await call("/api/api-keys", { method: "POST", json: { name: "k", expiresAt: "2099-01-01" }, cookie: true })).status).toBe(400);
-    expect((await call("/api/api-keys", { method: "POST", json: { name: "k", expiresAt: 1.5 }, cookie: true })).status).toBe(400);
+    expect(JSON.stringify(await past.json())).toMatch(/expiry/i);
+    for (const bad of ["2099-01-01", 1.5]) {
+      const res = await post(bad);
+      expect(res.status).toBe(400);
+      expect(JSON.stringify(await res.json())).toMatch(/expiresAt|expiry/i);
+    }
     const listed = (await (await call("/api/api-keys", { cookie: true })).json()) as { apiKeys: unknown[] };
     expect(listed.apiKeys).toHaveLength(0);
   });
