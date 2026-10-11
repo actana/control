@@ -21,7 +21,7 @@ import {
   type CoreLinkHarnessAvailabilityMap,
   type CoreLinkHarnessInstallFailedPayload,
 } from "@actana/shared/sdk-link-frames";
-import { isNeedsSetup, needsSetupDialog } from "@actana/shared/harness-needs-setup";
+import { isNeedsSetup, needsSetupDialog, setupCheckFailure } from "@actana/shared/harness-needs-setup";
 import { createListenerSet } from "./listener-set";
 
 export type CliAvailabilityStatus = "unknown" | "checking" | "available" | "missing" | "outdated" | "needs-setup";
@@ -37,6 +37,12 @@ export type CliAvailability = {
   updateCommands?: readonly string[];
   /** For `needs-setup`: the first-run dialog the Harness is stopped at (#685). */
   setupDialog?: string;
+  /**
+   * For `needs-setup` when the Core could not start the Harness for its setup check
+   * at all (#700): the error. A needs-setup entry has exactly one of `setupDialog` and
+   * `setupError`.
+   */
+  setupError?: string;
 };
 
 export type CliAvailabilityMap = Partial<Record<Harness, CliAvailability>>;
@@ -118,12 +124,17 @@ export function harnessCanLaunch(availability: CliAvailabilityMap, agent: Harnes
  * is a straight structural coerce.
  */
 function fromCoreLinkAvailability(entry: CoreLinkHarnessAvailability): CliAvailability {
-  // The Core reports a Harness stopped by a first-run dialog as `missing` with a
-  // needs-setup reason (the SDK's status union has no such value); here it becomes
-  // its own status so the Panel says "Needs setup" and never "Install".
-  const setupDialog = isNeedsSetup(entry) ? needsSetupDialog(entry.reason) : null;
-  const next: CliAvailability = { status: setupDialog !== null ? "needs-setup" : entry.status };
-  if (setupDialog !== null) next.setupDialog = setupDialog;
+  // The Core reports a Harness stopped by a first-run dialog, or one its setup check
+  // could not start (#700), as `missing` with a reason that says which (the SDK's
+  // status union has no such value); here it becomes its own status so the Panel
+  // says "Needs setup" or "Could not start" and never "Install".
+  const stopped = isNeedsSetup(entry);
+  const next: CliAvailability = { status: stopped ? "needs-setup" : entry.status };
+  if (stopped) {
+    const setupDialog = needsSetupDialog(entry.reason);
+    if (setupDialog !== null) next.setupDialog = setupDialog;
+    else next.setupError = setupCheckFailure(entry.reason) ?? "unknown error";
+  }
   if (entry.path !== undefined) next.path = entry.path;
   if (entry.reason !== undefined) next.reason = entry.reason;
   if (entry.label !== undefined) next.label = entry.label;
