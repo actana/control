@@ -1,6 +1,6 @@
 import type { CoreLinkHarnessAvailabilityMap } from "@actana/shared/sdk-link-frames";
 import { HARNESS_REGISTRY } from "@actana/shared/harnesses";
-import { needsSetupDialog } from "@actana/shared/harness-needs-setup";
+import { needsSetupDialog, setupCheckFailure } from "@actana/shared/harness-needs-setup";
 import { ConflictError, NotFoundError, ValidationError } from "../errors";
 import { findCoreById } from "../repositories/cores.repo";
 import {
@@ -120,6 +120,8 @@ export function harnessReadiness(entry: CoreLinkHarnessAvailabilityMap[string] |
     case "missing": {
       const dialog = needsSetupDialog(entry.reason);
       if (dialog !== null) return { kind: "unavailable", detail: `needs setup: ${dialog}` };
+      const startFailure = setupCheckFailure(entry.reason);
+      if (startFailure !== null) return { kind: "unavailable", detail: `could not start for its setup check: ${startFailure}` };
       if (!reason) return { kind: "unavailable", detail: "missing" };
       if (reason === "not-found" || reason === "disabled") return { kind: "unavailable", detail: `missing (${reason})` };
       // Any other reason is the text of a probe that threw or timed out: it may pass next time.

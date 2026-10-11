@@ -399,6 +399,7 @@ describe("a Task whose Harness is not ready yet (#706)", () => {
 
   it.each([
     ["needs setup", "needs setup: folder-trust"],
+    ["could not be started for its setup check", "could not start for its setup check: posix_spawnp failed: EACCES"],
     ["is outdated", "outdated: 1.2.0 is older than 1.5.0"],
   ])("fails the Task at once, with the reason, when the Harness %s", async (_label, detail) => {
     const { clock, core, dispatcher, behave } = switchable();

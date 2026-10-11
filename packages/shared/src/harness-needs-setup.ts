@@ -31,7 +31,7 @@ export function needsSetupReason(dialogId: string): string {
 
 /** The `reason` for a Harness the setup check could not start: the error's first line, capped. */
 export function setupCheckFailedReason(error: string): string {
-  const line = (error.split(/\r?\n/, 1)[0] ?? "").trim() || "unknown error";
+  const line = (error.trim().split(/\r?\n/, 1)[0] ?? "").trim() || "unknown error";
   const capped = line.length > SETUP_CHECK_FAILED_MAX_CHARS ? `${line.slice(0, SETUP_CHECK_FAILED_MAX_CHARS - 1)}…` : line;
   return `${SETUP_CHECK_FAILED_PREFIX} ${capped}`;
 }
