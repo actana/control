@@ -1263,7 +1263,7 @@ jobs:
               echo "::notice title=File list truncated::The API returned $listed of $CHANGED_FILES changed files, so the documentation-only test cannot be trusted and this build runs. GitHub truncates this endpoint past 300 files."
               files=""
             fi
-            if [[ -n "$files" ]] && ! grep -qvE '(\.md$|^docs/|^\.scratch/|^designs/|^landing/)' <<<"$files"; then
+            if [[ -n "$files" ]] && ! grep -qvE '(\.md$|^docs/|^designs/|^landing/)' <<<"$files"; then
               docs_only=true
             fi
           fi
