@@ -16,7 +16,6 @@ export const SETTINGS_PANEL_IDS = [
   "keybindings",
   "cores",
   "operator",
-  "terms",
 ] as const;
 
 export type SettingsPanelId = (typeof SETTINGS_PANEL_IDS)[number];
@@ -31,6 +30,8 @@ const LEGACY_PANEL_ALIASES: Record<string, SettingsPanelId> = {
   beta: "general",
   // The multi-theme system collapsed into the single Appearance page (ADR 0015).
   theme: "appearance",
+  // The Terms of Service page was removed (#26); old links open the main settings page.
+  terms: "general",
 };
 
 export function normalizeSettingsPanelId(raw: string | null | undefined): SettingsPanelId | null {

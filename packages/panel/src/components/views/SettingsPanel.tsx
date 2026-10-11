@@ -15,7 +15,6 @@ import { ProvidersSettingsPage } from "./ProvidersSettingsPage";
 import { InterfaceSettingsPage } from "./InterfaceSettingsPage";
 import { TerminalSettingsPage } from "./TerminalSettingsPage";
 import { AppearanceSettingsPage } from "./AppearanceSettingsPage";
-import { TermsSettingsPage } from "./TermsSettingsPage";
 import { UsageSettingsPage } from "./UsageSettingsPage";
 import { StorageSettingsPage } from "./StorageSettingsPage";
 import { ApiSettingsPage } from "./ApiSettingsPage";
@@ -239,34 +238,6 @@ export function SettingsPanel({
               />
             ))}
           </nav>
-          <div
-            style={{
-              marginTop: 16,
-              paddingTop: 12,
-              borderTop: "1px solid var(--border)",
-            }}
-          >
-            <div
-              style={{
-                fontFamily: "var(--mono)",
-                fontSize: 11,
-                fontWeight: 600,
-                letterSpacing: "0.08em",
-                textTransform: "uppercase",
-                color: "var(--text-dim)",
-                padding: "0 10px 8px",
-              }}
-            >
-              Legal
-            </div>
-            <SettingsNavButton
-              id="terms"
-              label="Terms of Service"
-              icon="shield"
-              active={activePanel === "terms"}
-              onClick={() => setActivePanel("terms")}
-            />
-          </div>
         </CardFrame>
         </div>
         <div
@@ -310,10 +281,8 @@ export function SettingsPanel({
             <KeybindingsPage />
           ) : activePanel === "cores" ? (
             <CoresSettingsPage />
-          ) : activePanel === "operator" ? (
-            <OperatorSettingsPage />
           ) : (
-            <TermsSettingsPage />
+            <OperatorSettingsPage />
           )}
         </CardFrame>
         </div>
