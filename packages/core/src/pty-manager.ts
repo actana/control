@@ -38,6 +38,8 @@ import {
 } from "@actana/shared/pty-spawn-policy";
 import { type PtyHookEnv } from "./pty-hook-env";
 import { HOOK_CWD_ENV, HOOK_HARNESS_ENV } from "./harness-hook-env";
+import { harnessLauncherShape, type HarnessLauncherShape, type SpawnedProcess } from "./harness-hook-origin";
+import { isInterpreterScript } from "@actana/shared/shell-env";
 import {
   HOOK_MISS_LOG_ENV,
   HOOK_SESSION_ID_ENV,
@@ -53,6 +55,7 @@ import { applyHarnessPtyEnv } from "@actana/shared/harness-pty-env";
 import { acquireSpawnSlot, SPAWN_SETTLE_MS } from "./pty-spawn-queue";
 import { HarnessPromptDelivery, type PromptDeliveryEvent } from "./harness-prompt-delivery";
 import { appendPromptBlock, PROMPT_BLOCK_VERSION } from "./prompt-standard-block";
+import type { PtySessionKill } from "./session-kill";
 
 function sanitizeEnv(): Record<string, string> {
   const out = sanitizedProcessEnv();
@@ -85,6 +88,13 @@ type Pty = {
   cwd: string;
   command: string;
   agent?: string;
+  /**
+   * Whether `proc` is the harness itself or a wrapper that runs it as a direct
+   * child (the npm `codex` wrapper) — what the hook receiver's climb needs to
+   * know besides the pid (issue 460). Shells and VM Shell Sessions own no
+   * harness and are never asked.
+   */
+  launcher: HarnessLauncherShape;
   /** True for user-shell terminals; findBySession only matches agent PTYs. */
   shell: boolean;
   /**
@@ -96,7 +106,14 @@ type Pty = {
   /** Last renderer write (user keystroke) — marks the PTY as interactive so
    *  battery saver never throttles typing echo (see pty-output-batch.ts). */
   lastInputAt: number;
+  /**
+   * Set when a client asked the Core to kill this PTY (issue 292), before the
+   * teardown starts. The exit that follows reads it, so a harness that catches
+   * the hang-up and exits 0 still settles as a kill and not as a finish.
+   */
+  kill?: PtySessionKill;
 };
+
 
 type PtyBufferChunk = {
   seq: number;
@@ -193,6 +210,21 @@ const ptys = new Map<string, Pty>();
 const RING_LIMIT_BYTES = 1_000_000;
 
 /**
+ * How a harness PTY ended (issue 84 for the exit, issue 292 for the rest).
+ * `signal` and `kill` are what tell a teardown from a clean exit: either can
+ * accompany exit code 0.
+ */
+export type PtySessionExit = {
+  sessionId: string;
+  ptyId: string;
+  exitCode: number;
+  /** The signal that ended the process; absent or 0 when none did. */
+  signal?: number;
+  /** Present when a client asked for this PTY to be killed. */
+  kill?: PtySessionKill;
+};
+
+/**
  * Dependencies the PTY core needs from its host process.
  */
 export type PtyCoreDeps = {
@@ -210,7 +242,7 @@ export type PtyCoreDeps = {
    * Panel is connected, because the emit target is null while the link is
    * down and a Session that died then must still settle on this Core.
    */
-  onSessionExit?: (info: { sessionId: string; exitCode: number }) => void;
+  onSessionExit?: (info: PtySessionExit) => void;
   /**
    * A harness's own output said something its hooks do not (issue 84).
    * Claude has no `UserInterrupt` settings hook, and Codex refuses to run
@@ -688,16 +720,16 @@ export class PtyCore {
       pathFacts?.cwdOk && spawnReq.shell !== true && typeof spawnReq.agent === "string" && Object.hasOwn(HARNESS_BINARIES, spawnReq.agent)
         ? HARNESS_BINARIES[spawnReq.agent as keyof typeof HARNESS_BINARIES]
         : null;
-    const found: { name: string; candidates: string[] } | null =
+    const found: { name: string; candidates: string[]; scripts: string[] } | null =
       agentBinary && lookupEnv
         ? {
             name: agentBinary,
-            candidates: await resolveCommandViaCore(agentBinary, lookupEnv.PATH ?? null).catch((err: unknown) => {
+            ...(await resolveCommandViaCore(agentBinary, lookupEnv.PATH ?? null).catch((err: unknown) => {
               // A PATH the helper will not take finds nothing: the policy says binary-not-found.
               if (!(err instanceof CoreHomeOpRefusedError)) throw err;
               log.warn("pty.spawn.command-lookup-refused", { command: agentBinary, error: err.message });
-              return [];
-            }),
+              return { candidates: [], scripts: [] };
+            })),
           }
         : null;
     try {
@@ -745,6 +777,19 @@ export class PtyCore {
         throw new Error(message);
       }
     }
+
+    // What the pid node-pty is about to record will be: the harness, or a
+    // wrapper the harness runs under (issue 460). Decided from the file PATH
+    // resolved to — an interpreter script or a native binary — and the
+    // family; in the container the file is in core's home, so core said which
+    // candidates are scripts when it found them.
+    const launcher: HarnessLauncherShape =
+      plan.mode === "agent"
+        ? harnessLauncherShape(
+            plan.agent,
+            lookupEnv ? (found?.scripts.includes(plan.binary) ?? false) : isInterpreterScript(plan.binary),
+          )
+        : "harness";
 
     // Harness-workspace-only setup; a VM Shell Session (and a plain user shell)
     // has no agent config to touch.
@@ -864,6 +909,7 @@ export class PtyCore {
       cwd: plan.cwd,
       command: opts.command ?? "",
       agent: opts.agent,
+      launcher,
       shell: opts.shell === true,
       shellSession: opts.shellSession === true,
       lastInputAt: 0,
@@ -1057,7 +1103,13 @@ export class PtyCore {
       // are not agent work, so they settle nothing.
       if (!p.shell && !p.shellSession && p.agent && p.sessionId) {
         try {
-          this.deps.onSessionExit?.({ sessionId: p.sessionId, exitCode });
+          this.deps.onSessionExit?.({
+            sessionId: p.sessionId,
+            ptyId: id,
+            exitCode,
+            ...(typeof signal === "number" ? { signal } : {}),
+            ...(p.kill ? { kill: p.kill } : {}),
+          });
         } catch (err) {
           log.warn("pty.exit.settle-failed", { error: String(err) });
         }
@@ -1087,9 +1139,15 @@ export class PtyCore {
     return true;
   }
 
-  kill(ptyId: string): boolean {
+  /**
+   * Tear a PTY down. `reason` marks it as a requested kill (issue 292): the
+   * exit that follows then settles a live turn as `terminated` whatever exit
+   * code the harness chose, and the host records who killed it and when.
+   */
+  kill(ptyId: string, reason?: string): boolean {
     const p = ptys.get(ptyId);
     if (!p) return false;
+    if (reason) p.kill = { at: Date.now(), reason };
     disposePty(p.proc);
     ptys.delete(ptyId);
     return true;
@@ -1155,6 +1213,33 @@ export class PtyCore {
       if (p.sessionId === sessionId && !p.shell && !p.shellSession) found = p.id;
     }
     return { ptyId: found };
+  }
+
+  /**
+   * The process this Core spawned for the Session, or null when it runs none.
+   * The hook receiver holds every hook to it (issue 460): the hook env is
+   * inherited by everything the harness starts, and the pid is the one fact a
+   * process nested inside the Session cannot inherit.
+   *
+   * The pid is node-pty's, which is the harness itself for Claude Code (native
+   * binary), Cursor (its launcher `exec`s node), OpenCode (native binary) and
+   * Pi (one node process) — in the container `setpriv` and the `sh -c 'exec …'`
+   * it wraps keep the pid too. For Codex installed by npm it is the vendor's
+   * node wrapper, which runs the native `codex` as its direct child and stays
+   * alive as its parent; `launcher` says which, recorded from what PATH
+   * resolved to at spawn, and the receiver's climb crosses that one child.
+   *
+   * Same selection as {@link findBySession} — agent PTYs only. A shell
+   * terminal's pid would be a process no hook file reports for, and a VM
+   * Shell Session has no harness to own a hook at all.
+   */
+  spawnedProcessForSession(sessionId: string): SpawnedProcess | null {
+    const { ptyId } = this.findBySession(sessionId);
+    if (!ptyId) return null;
+    const p = ptys.get(ptyId);
+    const pid = p?.proc?.pid;
+    if (!p || !Number.isInteger(pid) || pid <= 0) return null;
+    return { pid, launcher: p.launcher };
   }
 
   /**

@@ -49,6 +49,15 @@ export class CoreSessionWriter {
     return session;
   }
 
+  /**
+   * Append an event about a session that is not a row change — a kill
+   * (issue 292) is a fact about the process, recorded beside the status write it
+   * caused. No-op on a Core with no event log.
+   */
+  recordSessionEvent(kind: string, payload: string, opts: { sessionId: string; ptyId?: string }): void {
+    this.ports.eventLog?.appendEvent(kind, payload, opts);
+  }
+
   /** This Core's current row for `sessionId`, or `null` when it has none. */
   readSession(sessionId: string): CoreSessionRow | null {
     return this.ports.queryPort?.getSession(sessionId) ?? null;

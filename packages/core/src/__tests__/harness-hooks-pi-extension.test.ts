@@ -308,8 +308,10 @@ describe("the Pi extension the Core writes (ADO #4985)", () => {
     const pi = await loadExtension(WIRED);
     await pi.fire("agent_settled");
     await settle();
+    // `pid` is this process — the extension runs inside the `pi` the Core
+    // spawned; a nested pi reports its own (issue 460).
     expect(posts[0]!.url).toBe(
-      "http://127.0.0.1:45112/api/hooks/pi?sessionId=session_pi_1&hookEvent=Stop",
+      `http://127.0.0.1:45112/api/hooks/pi?sessionId=session_pi_1&hookEvent=Stop&pid=${process.pid}`,
     );
     expect(posts[0]!.auth).toBe("Bearer hook-token-pi");
   });
