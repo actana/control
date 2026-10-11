@@ -39,7 +39,7 @@ function canned(request: CoreHomeOpRequest): unknown {
     case "wireLocalCore":
       return { name: "core-01", selected: true, keptSelection: null };
     case "resolveCommand":
-      return { candidates: [`/home/core/.local/bin/${request.command}`] };
+      return { candidates: [`/home/core/.local/bin/${request.command}`], scripts: [] };
     default:
       return null;
   }

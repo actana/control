@@ -1,6 +1,6 @@
 {
-  "id": "67af984f-717c-47f0-9a32-521a03c1e2a7",
-  "prevId": "b4468a47-c0d9-4f2b-b780-16571c5b4e1c",
+  "id": "6f453bec-e74d-4c53-b35f-2390cf128146",
+  "prevId": "5001a28c-718d-4c5d-9540-bef1150ce7ff",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -284,6 +284,12 @@
           "notNull": true,
           "default": true
         },
+        "permissions": {
+          "name": "permissions",
+          "type": "text[]",
+          "primaryKey": false,
+          "notNull": true
+        },
         "created_at": {
           "name": "created_at",
           "type": "bigint",
@@ -292,6 +298,12 @@
         },
         "revoked_at": {
           "name": "revoked_at",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "expires_at": {
+          "name": "expires_at",
           "type": "bigint",
           "primaryKey": false,
           "notNull": false
@@ -346,7 +358,12 @@
         }
       },
       "policies": {},
-      "checkConstraints": {},
+      "checkConstraints": {
+        "api_keys_permissions_check": {
+          "name": "api_keys_permissions_check",
+          "value": "cardinality(\"api_keys\".\"permissions\") > 0 and \"api_keys\".\"permissions\" <@ array['read', 'tasks:write', 'agents:write']::text[]"
+        }
+      },
       "isRLSEnabled": false
     },
     "public.app_settings": {

@@ -209,19 +209,43 @@ describe("cursor-cli: ~/.cursor/projects/<slug>/.workspace-trusted", () => {
 });
 
 // What codex 0.160.0 itself wrote to ~/.codex/config.toml after its hook review was answered by hand on a Core,
-// for the hooks `installHarnessHooks("codex")` writes (the first eight hex digits were read off that file; the rest
-// is this function's output, and the prefixes are what pin it to codex).
+// for the hooks `installHarnessHooks("codex")` wrote at the time (the first eight hex digits were read off that
+// file; the rest is this function's output, and the prefixes are what pin it to codex).
 const REAL_HASHES: Record<string, string> = {
   PermissionRequest: "sha256:777d6667e97d3543f8f43d42796281cd863fb133097563631d65ea5b657094f3",
   UserPromptSubmit: "sha256:f23db2db11919289814ac6c32a2b10ca0c24a4d8c4a7fbbf401520266e115a27",
   Stop: "sha256:0fc320513044eada106bd90279e5937b1283a78fd42f81efbf486a8e700e5cfd",
 };
 
+/**
+ * The command codex 0.160.0 reviewed: today's, before issue 460 added the pid of the process that ran the hook
+ * to its URL. The hashes above are over THAT text; what they verify is the hashing, not the command, which the
+ * Core is free to change — its pre-trust writes the new hash, and a stale one only makes codex ask again.
+ */
+function commandCodexReviewed(event: string): string {
+  const command = hookCommand("codex", event);
+  const reviewed = command.replace("&pid=$PPID", "");
+  expect(reviewed).not.toBe(command);
+  return reviewed;
+}
+
+/** The hash codex will compute for the hook this Core installs today. */
+const ourHash = (event: string) => codexHookHash(event, { command: hookCommand("codex", event) });
+
 describe("codex hook trust: [hooks.state.\"<hooks.json>:<event>:<group>:<handler>\"] trusted_hash", () => {
-  it("reproduces the hashes codex 0.160.0 wrote for the hooks this Core installs", () => {
+  it("reproduces the hashes codex 0.160.0 wrote for the hooks this Core installed then", () => {
     expect(CODEX_HOOK_HASH_VERIFIED).toBe("0.160.0");
     for (const [event, hash] of Object.entries(REAL_HASHES)) {
-      expect(codexHookHash(event, { command: hookCommand("codex", event) })).toBe(hash);
+      expect(codexHookHash(event, { command: commandCodexReviewed(event) })).toBe(hash);
+    }
+  });
+
+  it("hashes today's hook, which carries the pid, to a different value (issue 460)", () => {
+    // The Core's pre-trust writes this one, so an operator who answered codex's review for the old command is
+    // not asked again on the first spawn after the upgrade: a stale hash is rewritten, below.
+    for (const event of Object.keys(REAL_HASHES)) {
+      expect(ourHash(event)).toMatch(/^sha256:[0-9a-f]{64}$/);
+      expect(ourHash(event)).not.toBe(REAL_HASHES[event]);
     }
   });
 
@@ -252,7 +276,7 @@ describe("codex hook trust: [hooks.state.\"<hooks.json>:<event>:<group>:<handler
     expect(owned.map(([key]) => key).sort()).toEqual(
       [`${file}:permission_request:0:0`, `${file}:stop:1:0`, `${file}:user_prompt_submit:0:0`].sort(),
     );
-    expect(new Map(owned).get(`${file}:stop:1:0`)).toBe(REAL_HASHES.Stop);
+    expect(new Map(owned).get(`${file}:stop:1:0`)).toBe(ourHash("Stop"));
   });
 
   it("writes a table per hook into a fresh config.toml, owner-only", () => {

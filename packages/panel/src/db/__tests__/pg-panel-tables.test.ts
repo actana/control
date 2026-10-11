@@ -69,7 +69,8 @@ describe("the panel.db tables on Postgres", { timeout: 30_000 }, () => {
          'changed_at','dispatched_at','processed_at','next_attempt_at','claimed_until','delivered_at','key_expires_at'
        )`,
     );
-    expect(rows.length).toBe(35);
+    // 36 since #689 added api_keys.expires_at.
+    expect(rows.length).toBe(36);
     for (const r of rows) expect(r.data_type, `${r.table_name}.${r.column_name}`).toBe("bigint");
     await seedOperator(db);
     // An int4 column would reject this outright.

@@ -193,8 +193,10 @@ export function trustCodex(file: string, dirs: readonly string[]): "written" | "
 /**
  * The codex version whose hook hash this file reproduces (codex-rs `hooks/src/engine/discovery.rs` `hook_hash`
  * and `config/src/fingerprint.rs` `version_for_toml`, tag rust-v0.160.0). Checked against three entries codex
- * itself wrote for the hooks this Core installs (permission_request 777d6667, user_prompt_submit f23db2db, stop
- * 0fc32051). A newer codex may normalise differently; a hash that does not match only makes codex ask again.
+ * itself wrote for the hooks this Core installed at the time (permission_request 777d6667, user_prompt_submit
+ * f23db2db, stop 0fc32051; the command has since grown `&pid=$PPID`, issue 460, and the test hashes the text
+ * codex reviewed). A newer codex may normalise differently; a hash that does not match only makes codex ask
+ * again.
  */
 export const CODEX_HOOK_HASH_VERIFIED = "0.160.0";
 

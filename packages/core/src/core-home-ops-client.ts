@@ -290,6 +290,18 @@ export async function resolveExecCwdViaCore(
   return cwd;
 }
 
+/** What `core` found for a Harness CLI: every match, and which of them are scripts. */
+export type ResolvedCommand = {
+  /** Every executable match, in search order. */
+  candidates: string[];
+  /**
+   * The matches that are interpreter scripts (`#!`), not native binaries. The
+   * npm `codex` wrapper is one; what the Core records the launcher shape from
+   * (issue 460, `harnessLauncherShape`).
+   */
+  scripts: string[];
+};
+
 /**
  * Every executable match for a Harness CLI on `searchPath`, found by `core`: the
  * Harness CLIs are in `~/.local/bin`, which the daemon cannot read. The daemon
@@ -299,12 +311,16 @@ export async function resolveCommandViaCore(
   command: string,
   searchPath: string | null,
   options: CoreHomeOpsOptions = {},
-): Promise<string[]> {
+): Promise<ResolvedCommand> {
   const answer = await coreHomeOp({ op: "resolveCommand", command, path: searchPath }, options);
-  const candidates = (answer as { candidates?: unknown } | null)?.candidates;
+  const paths = (raw: unknown): string[] =>
+    Array.isArray(raw) ? raw.filter((c): c is string => typeof c === "string" && c.length > 0) : [];
   // An answer that is not a list of paths finds nothing (the policy says binary-not-found)
-  // rather than a TypeError in the middle of a spawn.
-  return Array.isArray(candidates) ? candidates.filter((c): c is string => typeof c === "string" && c.length > 0) : [];
+  // rather than a TypeError in the middle of a spawn. A missing `scripts` is "none":
+  // the launcher is then taken as the harness, the guard's stricter reading.
+  const candidates = paths((answer as { candidates?: unknown } | null)?.candidates);
+  const scripts = paths((answer as { scripts?: unknown } | null)?.scripts).filter((s) => candidates.includes(s));
+  return { candidates, scripts };
 }
 
 /**

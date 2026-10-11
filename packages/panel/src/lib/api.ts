@@ -39,6 +39,7 @@ import type {
   StopTaskResponse,
 } from "~/shared/task-wire";
 import type { ApiKeyView, WebhookDeliveryView, WebhookView } from "~/shared/api-integrations-wire";
+import type { ApiKeyPermission } from "~/shared/api-key-permissions";
 
 export type AppSettings = {
   agentSystemBannerDisabled: boolean;
@@ -457,7 +458,7 @@ export const api = {
   /** Settings › API & integrations: the Operator's API keys (no plaintext). */
   listApiKeys: () => req<{ apiKeys: ApiKeyView[] }>("/api/api-keys"),
   /** Create a key; the plaintext `key` is returned once and never again. */
-  createApiKey: (body: { name: string; coreIds?: string[] | null }) =>
+  createApiKey: (body: { name: string; coreIds?: string[] | null; permissions: ApiKeyPermission[]; expiresAt?: number | null }) =>
     req<{ apiKey: ApiKeyView; key: string }>("/api/api-keys", {
       method: "POST",
       body: JSON.stringify(body),

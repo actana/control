@@ -17,13 +17,16 @@ import {
 import { getShared, listShared } from "./mcp-shared";
 import { OPERATOR_TASK_STATUSES } from "./controllers/tasks.controller";
 import { scopeReaches } from "./services/api-keys";
+import type { ApiKeyPermission } from "~/shared/api-key-permissions";
 import { TASK_STATUSES } from "~/shared/tasks";
 
 /**
  * The MCP tools (#573). Each one is a thin call into the same handlers the
  * public REST API runs (`controllers/v1.controller.ts`), with the principal the
  * key gate resolved, so the owner and Core-scope rules exist once: a tool never
- * decides who it runs as or which Cores it may see.
+ * decides who it runs as or which Cores it may see. Each tool names the one
+ * permission it needs (#688), the same one its REST route needs; the server
+ * lists a key only the tools it may call and refuses the rest.
  */
 
 export type ApiKeyPrincipal = Extract<ApiPrincipal, { kind: "api-key" }>;
@@ -37,6 +40,8 @@ export type McpTool = {
   readOnly: boolean;
   /** A write that cannot be undone (MCP's `destructiveHint`). */
   destructive?: boolean;
+  /** The API key permission a call needs. */
+  permission: ApiKeyPermission;
   input: z.ZodObject;
   run(principal: ApiKeyPrincipal, args: never): Promise<ToolOutcome>;
 };
@@ -63,6 +68,7 @@ function tool<S extends z.ZodObject>(def: {
   description: string;
   readOnly: boolean;
   destructive?: boolean;
+  permission: ApiKeyPermission;
   input: S;
   run: (principal: ApiKeyPrincipal, args: z.infer<S>) => Promise<ToolOutcome>;
 }): McpTool {
@@ -85,6 +91,7 @@ export const MCP_TOOLS: readonly McpTool[] = [
     name: "list_cores",
     description: "List the Cores this API key can reach, with their connection state.",
     readOnly: true,
+    permission: "read",
     input: z.object({}),
     run: async (principal) => outcomeOf(await listCoresV1(principal)),
   }),
@@ -92,6 +99,7 @@ export const MCP_TOOLS: readonly McpTool[] = [
     name: "list_agents",
     description: "List the Agents (a named harness and its settings on one Core) the key can reach, optionally on one Core.",
     readOnly: true,
+    permission: "read",
     input: z.object({ coreId: coreIdArg.optional() }),
     run: async (principal, { coreId }) =>
       outcomeOf(coreId === undefined ? await listAgentsV1(principal) : await listCoreAgentsV1(principal, coreId)),
@@ -100,6 +108,7 @@ export const MCP_TOOLS: readonly McpTool[] = [
     name: "get_tasks",
     description: "List Tasks on the Cores the key can reach, optionally only one status or one Core.",
     readOnly: true,
+    permission: "read",
     input: z.object({ status: z.enum(TASK_STATUSES).optional(), coreId: coreIdArg.optional() }),
     run: async (principal, { status, coreId }) => {
       if (coreId !== undefined && !scopeReaches(principal.scope, coreId)) {
@@ -117,6 +126,7 @@ export const MCP_TOOLS: readonly McpTool[] = [
     name: "get_task",
     description: "One Task with its comment thread (the agent's report arrives here as a comment).",
     readOnly: true,
+    permission: "read",
     input: z.object({ taskId: taskIdArg }),
     run: async (principal, { taskId }) => outcomeOf(await getTaskV1(principal, taskId)),
   }),
@@ -126,6 +136,7 @@ export const MCP_TOOLS: readonly McpTool[] = [
       "Create a Task. It is a draft unless startNow is true, which creates it assigned so its Agent starts on it (needs coreId and agent). " +
       "timeoutMinutes sets its time limit per attempt (default 60 minutes; null = No limit).",
     readOnly: false,
+    permission: "tasks:write",
     input: z.object({
       title: z.string().min(1).describe("A short title."),
       description: z.string().optional().describe("What to do, in Markdown."),
@@ -143,6 +154,7 @@ export const MCP_TOOLS: readonly McpTool[] = [
       "in_progress, done, failed and partial belong to the dispatcher and the Agent's report. A Task that is in_progress " +
       "cannot be moved: stop_task it first.",
     readOnly: false,
+    permission: "tasks:write",
     input: z.object({ taskId: taskIdArg, status: z.enum(OPERATOR_TASK_STATUSES).default("assigned") }),
     run: async (principal, { taskId, status }) =>
       outcomeOf(await setTaskStatusV1(principal, taskId, asJsonRequest({ status }))),
@@ -152,6 +164,7 @@ export const MCP_TOOLS: readonly McpTool[] = [
     description: "Add a comment to a Task's thread. With reassign true, also send a finished Task back to its Agent (Comment & re-assign). " +
       "A Task that is in_progress is refused: stop_task it first, then comment again with reassign true.",
     readOnly: false,
+    permission: "tasks:write",
     input: z.object({ taskId: taskIdArg, body: z.string().min(1), reassign: z.boolean().optional() }),
     run: async (principal, { taskId, body, reassign }) =>
       outcomeOf(await addTaskCommentV1(principal, taskId, asJsonRequest({ body, ...(reassign === undefined ? {} : { reassign }) }))),
@@ -162,6 +175,7 @@ export const MCP_TOOLS: readonly McpTool[] = [
       "Stop a Task that is in_progress: stops its Session, fails it with a system comment; then comment_task reassign works. " +
       "The result says whether the Session was stopped (a Core that is offline leaves it running).",
     readOnly: false,
+    permission: "tasks:write",
     destructive: true,
     input: z.object({ taskId: taskIdArg, reason: z.string().max(2000).optional().describe("Why it is stopped; recorded in the Task's comment.") }),
     run: async (principal, { taskId, reason }) =>
@@ -174,6 +188,7 @@ export const MCP_TOOLS: readonly McpTool[] = [
       "Task is in_progress, because its Session already has the prompt; the time limit can be changed at any status, " +
       "including in_progress, and applies to the running attempt within a minute.",
     readOnly: false,
+    permission: "tasks:write",
     input: z
       .object({
         taskId: taskIdArg,
@@ -193,6 +208,7 @@ export const MCP_TOOLS: readonly McpTool[] = [
       "Delete a Task with its comments and history. Refused while the Task is in_progress; files it left in the Shared " +
       "folder stay.",
     readOnly: false,
+    permission: "tasks:write",
     destructive: true,
     input: z.object({ taskId: taskIdArg }),
     run: async (principal, { taskId }) => {
@@ -206,6 +222,7 @@ export const MCP_TOOLS: readonly McpTool[] = [
       "List a folder in a Core's Shared folder (read-only), where Agents leave their results. path is relative to the " +
       "Shared folder, with no .. and no leading /; omit it for the top.",
     readOnly: true,
+    permission: "read",
     input: z.object({ coreId: coreIdArg, path: z.string().optional() }),
     run: (principal, args) => listShared(principal, args),
   }),
@@ -215,6 +232,7 @@ export const MCP_TOOLS: readonly McpTool[] = [
       "Read one text file from a Core's Shared folder (read-only). path is relative to the Shared folder, with no .. and no " +
       "leading /. A file over 256 KiB is refused.",
     readOnly: true,
+    permission: "read",
     input: z.object({ coreId: coreIdArg, path: z.string() }),
     run: (principal, args) => getShared(principal, args),
   }),
