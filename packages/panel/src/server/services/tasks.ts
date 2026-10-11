@@ -21,9 +21,13 @@ import {
   DELETABLE_TASK_STATUSES,
   EDITABLE_TASK_STATUSES,
   FINISHED_TASK_STATUSES,
+  TASK_STATUSES,
+  TASK_TIMEOUT_DEFAULT_MINUTES,
   canMoveTask,
   formatTaskStopComment,
+  formatTaskTimeLimitChangeComment,
   isTaskStatus,
+  isValidTaskTimeoutMinutes,
   parseTaskDispatchComment,
   statusesBefore,
   type CommentAuthorKind,
@@ -109,6 +113,17 @@ export type NewTask = {
   agent?: string | null;
   /** Start now: create the Task `assigned`, in one call, instead of `draft`. */
   startNow?: boolean;
+  /** Minutes per attempt, 1 to 43200 (#724). undefined: 60. null: No limit. */
+  timeoutMinutes?: number | null;
+};
+
+export type TaskUpdate = {
+  title?: string;
+  description?: string;
+  /** Allowed at any status (#724). null: No limit. */
+  timeoutMinutes?: number | null;
+  /** Who changed it, for the system comment on a changed time limit. Default "operator". */
+  changedBy?: string;
 };
 
 export type NewComment = {
@@ -159,6 +174,7 @@ function taskPayload(task: TaskRow) {
     coreId: task.coreId,
     agent: task.agent,
     attemptCount: task.attemptCount,
+    timeoutMinutes: task.timeoutMinutes,
     createdAt: task.createdAt,
     updatedAt: task.updatedAt,
   };
@@ -183,11 +199,19 @@ function outboxEvent(
   };
 }
 
+function assertTimeoutMinutes(v: unknown): void {
+  if (!isValidTaskTimeoutMinutes(v)) {
+    throw new ValidationError("a time limit is a whole number of minutes from 1 to 43200, or null for No limit");
+  }
+}
+
 export async function createTask(ownerId: number, input: NewTask, now = Date.now()): Promise<Task> {
   const title = input.title.trim();
   if (!title) throw new ValidationError("a Task needs a title");
   const coreId = input.coreId ?? null;
   if (coreId && !(await findCoreById(ownerId, coreId))) throw new NotFoundError("core not found");
+  const timeoutMinutes = input.timeoutMinutes === undefined ? TASK_TIMEOUT_DEFAULT_MINUTES : input.timeoutMinutes;
+  assertTimeoutMinutes(timeoutMinutes);
   const row: TaskRow = {
     id: newId("task"),
     ownerId,
@@ -199,6 +223,7 @@ export async function createTask(ownerId: number, input: NewTask, now = Date.now
     attemptCount: 0,
     dispatchedAt: null,
     lastError: null,
+    timeoutMinutes,
     createdAt: now,
     updatedAt: now,
   };
@@ -229,25 +254,75 @@ export async function listTaskComments(ownerId: number, id: string): Promise<Tas
 }
 
 /**
- * Update a Task's title and description; emits `task.updated`. Only in
- * {@link EDITABLE_TASK_STATUSES}, checked once the row is locked (#722).
+ * Update a Task's title, description and time limit; emits `task.updated`. The
+ * title and description only in {@link EDITABLE_TASK_STATUSES}; a request with
+ * only a time limit (#724) is allowed at any status, including `in_progress`.
+ * A request with both is refused as a whole while `in_progress`. Checked once
+ * the row is locked (#722). A changed time limit also writes a system comment.
  */
 export async function updateTask(
   ownerId: number,
   id: string,
-  input: { title?: string; description?: string },
+  input: TaskUpdate,
   now = Date.now(),
 ): Promise<Task> {
   const title = input.title?.trim();
   if (input.title !== undefined && !title) throw new ValidationError("a Task needs a title");
+  if (input.timeoutMinutes !== undefined) assertTimeoutMinutes(input.timeoutMinutes);
+  const touchesText = input.title !== undefined || input.description !== undefined;
+  const legalFrom = touchesText || input.timeoutMinutes === undefined ? EDITABLE_TASK_STATUSES : TASK_STATUSES;
   const patch = {
     ...(title === undefined ? {} : { title }),
     ...(input.description === undefined ? {} : { description: input.description }),
+    ...(input.timeoutMinutes === undefined ? {} : { timeoutMinutes: input.timeoutMinutes }),
     updatedAt: now,
   };
-  const result = await updateTaskRow(ownerId, id, EDITABLE_TASK_STATUSES, patch, (task) => [
-    outboxEvent(ownerId, "task.updated", { task: taskPayload(task) }, task.coreId, now),
-  ]);
+  const newLimit = input.timeoutMinutes;
+  const result = await updateTaskRow(
+    ownerId,
+    id,
+    legalFrom,
+    patch,
+    ({ task, comment }) => {
+      const events: NewOutboxRow[] = [];
+      if (comment) {
+        events.push(
+          outboxEvent(
+            ownerId,
+            "comment.created",
+            {
+              comment: {
+                id: comment.id,
+                taskId: id,
+                authorKind: comment.authorKind,
+                authorName: comment.authorName,
+                sourceFile: comment.sourceFile ?? null,
+                body: comment.body,
+                createdAt: now,
+              },
+              task: taskPayload(task),
+            },
+            task.coreId,
+            now,
+          ),
+        );
+      }
+      events.push(outboxEvent(ownerId, "task.updated", { task: taskPayload(task) }, task.coreId, now));
+      return events;
+    },
+    (before) =>
+      newLimit === undefined || newLimit === before.timeoutMinutes
+        ? null
+        : cleanComment({
+            authorKind: "system",
+            authorName: "Panel",
+            body: formatTaskTimeLimitChangeComment({
+              from: before.timeoutMinutes,
+              to: newLimit,
+              changedBy: input.changedBy ?? "operator",
+            }),
+          }),
+  );
   if (result.kind === "missing") throw new NotFoundError("task not found");
   if (result.kind === "illegal") throw new TaskNotChangeableError("edit", result.from);
   return result.task;

@@ -121,10 +121,16 @@ export const tasks = pgTable(
     attemptCount: integer("attempt_count").notNull().default(0),
     dispatchedAt: epochMs("dispatched_at"),
     lastError: text("last_error"),
+    /** The time limit per attempt, in minutes (#724). NULL = No limit. */
+    timeoutMinutes: integer("timeout_minutes").default(60),
     createdAt: epochMs("created_at").notNull(),
     updatedAt: epochMs("updated_at").notNull(),
   },
   (t) => [
+    check(
+      "tasks_timeout_minutes_check",
+      sql`${t.timeoutMinutes} is null or (${t.timeoutMinutes} >= 1 and ${t.timeoutMinutes} <= 43200)`,
+    ),
     check(
       "tasks_status_check",
       sql`${t.status} in ('draft', 'assigned', 'in_progress', 'done', 'failed', 'partial')`,

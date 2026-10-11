@@ -13,9 +13,10 @@ import { formatRelativeTime } from "~/lib/format-relative-time";
 import { requestSessionOpen } from "~/lib/session-notification-store";
 import { TASK_STATUS_LABEL } from "~/lib/task-board";
 import { queryKeys, useArchivedSessions, useCoreAgents, useSessions, useTask } from "~/queries";
-import { FINISHED_TASK_STATUSES, canDeleteTask, canEditTask, canStopTask, parseTaskDispatchComment } from "~/shared/tasks";
+import { FINISHED_TASK_STATUSES, canDeleteTask, formatTaskTimeLimit, canEditTask, canStopTask, parseTaskDispatchComment } from "~/shared/tasks";
 import { taskFolderPath } from "~/shared/shared-files";
-import type { TaskCommentDto } from "~/shared/task-wire";
+import type { TaskCommentDto, TaskDto } from "~/shared/task-wire";
+import { TimeLimitPicker } from "~/components/views/TimeLimitPicker";
 import { TaskAttachments } from "~/components/views/TaskAttachments";
 import type { TaskAttachment } from "~/lib/task-attachments";
 
@@ -40,6 +41,25 @@ function topBarBottom(): number {
 }
 
 const STOP_OFFLINE_HINT = "The Core is offline; the Task will be failed, its Session may keep running";
+
+/** "40 min left on attempt 2 · started 20 minutes ago" for a running Task; re-rendered every 30 s. */
+function TimeLeft({ task }: { task: TaskDto }) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 30_000);
+    return () => clearInterval(t);
+  }, []);
+  if (task.status !== "in_progress" || task.dispatchedAt === null) return null;
+  const started = `started ${formatRelativeTime(task.dispatchedAt)}`;
+  if (task.timeoutMinutes === null) return <span style={{ color: "var(--text-dim)" }}>No limit · {started}</span>;
+  const leftMs = task.dispatchedAt + task.timeoutMinutes * 60_000 - now;
+  if (leftMs <= 0) return <span style={{ color: "var(--text-dim)" }}>time is up; the Panel ends it within a minute · {started}</span>;
+  return (
+    <span style={{ color: "var(--text-dim)" }}>
+      {formatTaskTimeLimit(Math.ceil(leftMs / 60_000))} left on attempt {task.attemptCount} · {started}
+    </span>
+  );
+}
 
 function message(e: unknown): string | null {
   return e ? (e instanceof Error ? e.message : String(e)) : null;
@@ -201,6 +221,10 @@ export function TaskDetail({ taskId, onClose, focusComposer = false }: { taskId:
       await refresh();
     },
   });
+  const setLimit = useMutation({
+    mutationFn: (timeoutMinutes: number | null) => api.updateTask(taskId, { timeoutMinutes }),
+    onSuccess: refresh,
+  });
   const remove = useMutation({
     mutationFn: () => api.deleteTask(taskId),
     onSuccess: async () => {
@@ -333,6 +357,15 @@ export function TaskDetail({ taskId, onClose, focusComposer = false }: { taskId:
             {core ? <Badge>{core.label}</Badge> : null}
             {agent ? <Badge>Agent: {agent.name}</Badge> : null}
           </div>
+          <section aria-label="Time limit" style={{ display: "flex", flexDirection: "column", gap: 8, padding: 14, border: "1px solid var(--border)", borderRadius: 8 }}>
+            <div style={{ display: "flex", gap: 12, alignItems: "baseline", flexWrap: "wrap" }}>
+              <span style={{ fontFamily: "var(--mono)", fontSize: 11, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--text-dim)" }}>Time limit</span>
+              <strong>{formatTaskTimeLimit(task.timeoutMinutes)}</strong>
+              <TimeLeft task={task} />
+            </div>
+            <TimeLimitPicker commitCustom="explicit" idPrefix="task-time-limit" value={task.timeoutMinutes} disabled={setLimit.isPending} onChange={(m) => setLimit.mutate(m)} />
+            <FormErrorBox error={message(setLimit.error)} />
+          </section>
           {task.description && !editing ? <TaskMarkdown>{task.description}</TaskMarkdown> : null}
           {stopNotice ? <FormErrorBox error={stopNotice} /> : null}
           {task.lastError ? <FormErrorBox error={task.lastError} /> : null}

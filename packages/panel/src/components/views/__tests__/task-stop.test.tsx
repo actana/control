@@ -51,7 +51,7 @@ function dispatchComment(attempt: number, sessionId: string): TaskCommentDto {
 }
 
 function mount(status: TaskStatus, opts: { attemptCount?: number; comments?: TaskCommentDto[] } = {}) {
-  const task: TaskDto = { id: "T-7", title: "Rotate keys", description: "", status, coreId: "core_a", agent: null, attemptCount: opts.attemptCount ?? 1, dispatchedAt: 1, lastError: null, createdAt: 1, updatedAt: 1 };
+  const task: TaskDto = { id: "T-7", title: "Rotate keys", description: "", status, coreId: "core_a", agent: null, attemptCount: opts.attemptCount ?? 1, dispatchedAt: 1, lastError: null, timeoutMinutes: 60, createdAt: 1, updatedAt: 1 };
   api.getTask.mockResolvedValue({ task, comments: opts.comments ?? [dispatchComment(1, "s-1")] });
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(

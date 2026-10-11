@@ -59,6 +59,7 @@
           "attemptCount": { "type": "integer" },
           "dispatchedAt": { "type": ["integer", "null"] },
           "lastError": { "type": ["string", "null"] },
+          "timeoutMinutes": { "type": ["integer", "null"], "minimum": 1, "maximum": 43200, "description": "The Task's time limit per attempt, in minutes (1-43200). null = No limit: the attempt runs until the agent reports or its Session ends." },
           "createdAt": { "type": "integer" },
           "updatedAt": { "type": "integer" }
         }
@@ -264,7 +265,8 @@
                   "description": { "type": "string" },
                   "coreId": { "type": ["string", "null"] },
                   "agent": { "type": ["string", "null"] },
-                  "startNow": { "type": "boolean" }
+                  "startNow": { "type": "boolean" },
+                  "timeoutMinutes": { "type": ["integer", "null"], "minimum": 1, "maximum": 43200, "default": 60, "description": "Time limit per attempt, in minutes (1-43200). Omit for 60; null = No limit." }
                 }
               }
             }
@@ -293,8 +295,8 @@
       },
       "patch": {
         "operationId": "updateTask",
-        "summary": "Change a Task's title, description or both",
-        "description": "Fires `task.updated`. Allowed in draft, assigned, done, failed and partial; refused with 409 while the Task is `in_progress`, because its Session already has the prompt.",
+        "summary": "Change a Task's title, description, time limit or any of them",
+        "description": "Fires `task.updated`. `title` and `description` are allowed in draft, assigned, done, failed and partial; refused with 409 while the Task is `in_progress`, because its Session already has the prompt. `timeoutMinutes` is allowed at any status, including `in_progress` (the running attempt picks it up within a minute), and a change adds a system comment to the Task's thread. A request that carries `timeoutMinutes` together with `title` or `description` on an `in_progress` Task is refused as a whole.",
         "parameters": [{ "name": "taskId", "in": "path", "required": true, "schema": { "type": "string" } }],
         "requestBody": {
           "required": true,
@@ -305,7 +307,8 @@
                 "minProperties": 1,
                 "properties": {
                   "title": { "type": "string", "minLength": 1 },
-                  "description": { "type": "string" }
+                  "description": { "type": "string" },
+                  "timeoutMinutes": { "type": ["integer", "null"], "minimum": 1, "maximum": 43200, "description": "Time limit per attempt, in minutes (1-43200); null = No limit." }
                 }
               }
             }
@@ -313,7 +316,7 @@
         },
         "responses": {
           "200": { "description": "Updated Task" },
-          "400": { "description": "Neither field given, or an empty title" },
+          "400": { "description": "No field given, an empty title, or a time limit that is not null or a whole number 1-43200" },
           "403": { "description": "Key does not reach the Task's Core" },
           "404": { "description": "No such Task" },
           "409": { "description": "The Task is in_progress" },

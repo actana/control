@@ -6,7 +6,7 @@ import {
   type SharedFile,
   type SharedWatchResult,
 } from "@actana/sdk/shared";
-import type { DispatchLog, SessionStarter, SessionStopResult, SessionStopper, StartSessionRequest, StartedSession } from "../types";
+import type { DispatchLog, SessionLiveness, SessionStarter, SessionStopResult, SessionStopper, StartSessionRequest, StartedSession } from "../types";
 
 /** A clock a test moves by hand. */
 export class FakeClock {
@@ -142,6 +142,16 @@ export class FakeCore {
   /** What a stop answers: `unreachable` is a Core that is offline. */
   stopOutcome: SessionStopResult = { outcome: "stopped", detail: null };
 
+  /** The Sessions the Core reports live; null is an unreachable Core (no answer). Started Sessions are added. */
+  live: Set<string> | null = new Set();
+  /** Every Core the Panel asked about, in order. */
+  readonly liveCalls: string[] = [];
+
+  readonly liveSessions: SessionLiveness = async (coreId) => {
+    this.liveCalls.push(coreId);
+    return this.live ? new Set(this.live) : null;
+  };
+
   readonly stopSession: SessionStopper = async (target) => {
     this.stops.push({ ...target });
     return this.stopOutcome;
@@ -160,6 +170,7 @@ export class FakeCore {
       disposed: false,
     };
     this.sessions.push(record);
+    this.live?.add(id);
     const started: StartedSession = {
       sessionId: id,
       onExit: (cb) => {

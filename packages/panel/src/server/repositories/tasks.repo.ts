@@ -8,6 +8,8 @@ import { insertOutboxInTx, type NewOutboxRow, type PanelTx } from "./webhooks.re
 export type TaskRow = typeof tasks.$inferSelect;
 export type TaskCommentRow = typeof taskComments.$inferSelect;
 export type NewTaskCommentRow = typeof taskComments.$inferInsert;
+/** A comment as the repository inserts it: the Task, owner and time are filled in here. */
+export type CommentInsert = Omit<NewTaskCommentRow, "taskId" | "ownerId" | "createdAt">;
 export type TaskStatusHistoryRow = typeof taskStatusHistory.$inferSelect;
 
 /**
@@ -120,18 +122,26 @@ export async function transitionTask(
 }
 
 /**
- * Update title/description, if the Task is in one of `legalFrom` once its row is
- * locked (#722): a dispatcher that claims the Task first wins, and the edit then
- * reads `illegal`. Outbox events ride the same transaction. `legalFrom` is the
- * service's rule, not this file's.
+ * Update title, description and time limit, if the Task is in one of `legalFrom`
+ * once its row is locked (#722, #724): a dispatcher that claims the Task first
+ * wins, and the edit then reads `illegal`. With `commentFor`, the comment it
+ * returns (from the row as it was) is inserted in the same transaction. Outbox
+ * events ride the same transaction. `legalFrom` is the service's rule, not this
+ * file's.
  */
 export async function updateTaskRow(
   ownerId: number,
   id: string,
   legalFrom: readonly TaskStatus[],
   /** Only the fields given are written. */
-  patch: { title?: string; description?: string; updatedAt: number },
-  outboxFor?: (task: TaskRow) => NewOutboxRow[],
+  patch: { title?: string; description?: string; timeoutMinutes?: number | null; updatedAt: number },
+  outboxFor?: (args: {
+    before: TaskRow;
+    task: TaskRow;
+    comment: CommentInsert | null;
+  }) => NewOutboxRow[],
+  /** A system comment to write with the change, decided from the locked row. */
+  commentFor?: (before: TaskRow) => CommentInsert | null,
 ): Promise<TransitionResult> {
   return panelDb().transaction(async (tx): Promise<TransitionResult> => {
     const locked = await tx
@@ -143,17 +153,24 @@ export async function updateTaskRow(
     if (!current) return { kind: "missing" };
     const from = current.status as TaskStatus;
     if (!legalFrom.includes(from)) return { kind: "illegal", from };
+    const comment = commentFor?.(current) ?? null;
+    if (comment) {
+      await tx
+        .insert(taskComments)
+        .values({ ...comment, taskId: id, ownerId, createdAt: patch.updatedAt });
+    }
     const updated = await tx
       .update(tasks)
       .set({
         ...(patch.title === undefined ? {} : { title: patch.title }),
         ...(patch.description === undefined ? {} : { description: patch.description }),
+        ...(patch.timeoutMinutes === undefined ? {} : { timeoutMinutes: patch.timeoutMinutes }),
         updatedAt: patch.updatedAt,
       })
       .where(ownedBy(tasks, ownerId, eq(tasks.id, id)))
       .returning();
     const task = updated[0]!;
-    await writeOutbox(tx, outboxFor?.(task));
+    await writeOutbox(tx, outboxFor?.({ before: current, task, comment }));
     return { kind: "ok", task };
   });
 }

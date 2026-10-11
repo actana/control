@@ -14,7 +14,7 @@ vi.mock("~/lib/fleet-context", () => ({
   useFleet: () => ({ cores, fleet: { rows: [], offlineCores: [], singleCore: false }, loading: false, error: null, refresh: vi.fn() }),
 }));
 
-const finished: TaskDto = { id: "t4", title: "Review PR", description: "", status: "failed", coreId: "c1", agent: "ag-c1", attemptCount: 1, dispatchedAt: 1, lastError: null, createdAt: 1, updatedAt: 1 };
+const finished: TaskDto = { id: "t4", title: "Review PR", description: "", status: "failed", coreId: "c1", agent: "ag-c1", attemptCount: 1, dispatchedAt: 1, lastError: null, timeoutMinutes: 60, createdAt: 1, updatedAt: 1 };
 const api = vi.hoisted(() => ({
   getKeybindings: vi.fn(async () => ({ bindings: {} })),
   listTasks: vi.fn(async () => ({ tasks: [] })),

@@ -145,6 +145,17 @@ describe("a Task created with attachments", () => {
     expect(comments[0]!.body).toContain("- design/mock/a.png");
   });
 
+  it("takes the time limit in the json field: null is No limit, a number is kept, omitted is 60 (#724)", async () => {
+    const core = await attachedCore();
+    const make = async (extra: Record<string, unknown>) =>
+      (await (await createWith({ title: "t", coreId: core, agent: `agent-${core}`, ...extra }, [{ path: "a.md", content: "a" }])).json()).task.timeoutMinutes;
+    expect(await make({ timeoutMinutes: null })).toBeNull();
+    expect(await make({ timeoutMinutes: 90 })).toBe(90);
+    expect(await make({})).toBe(60);
+    const bad = await createWith({ title: "t", coreId: core, agent: `agent-${core}`, timeoutMinutes: 0 }, [{ path: "a.md", content: "a" }]);
+    expect(bad.status).toBe(400);
+  });
+
   it("with Start now is assigned only after every file is written, and never before", async () => {
     const { s3 } = rigState;
     const core = await attachedCore();

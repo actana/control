@@ -188,7 +188,6 @@ describe.skipIf(!configured)("the Task result watcher against real SeaweedFS and
     const throughCore = vi.fn(async () => coreDisk);
     const agent = { id: "agent_1", ownerId: 1, coreId, name: "Claude Code", harness: "claude-code" as const, model: null, flags: [] as string[], isDefault: false, createdAt: 1, updatedAt: 1 };
     mods.startTaskDispatch({
-      env: {},
       throughCore,
       startSession: core.startSession,
       agents: { get: async () => agent, resolve: async () => ({ agentId: agent.id, coreId, harness: agent.harness, model: null, flags: [] }) },

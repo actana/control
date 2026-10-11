@@ -441,3 +441,88 @@ describe("stopping a Task (#723)", () => {
     await expect(findCurrentTaskSession(B, id)).rejects.toBeInstanceOf(NotFoundError);
   });
 });
+
+describe("the time limit (#724)", () => {
+  const commentsOf = async (id: string) =>
+    (await testDb.pool.query("select author_kind, author_name, body from task_comments where task_id = $1 order by created_at, id", [id])).rows;
+
+  it("defaults to 60, and keeps null and a given value", async () => {
+    expect((await createTask(A, { title: "t" })).timeoutMinutes).toBe(60);
+    expect((await createTask(A, { title: "t", timeoutMinutes: null })).timeoutMinutes).toBeNull();
+    const t = await createTask(A, { title: "t", timeoutMinutes: 240 });
+    expect(t.timeoutMinutes).toBe(240);
+    expect((await getTask(A, t.id)).timeoutMinutes).toBe(240);
+  });
+
+  it.each([0, 43201, 1.5, "60", -1, Number.NaN])("refuses %j on create", async (bad) => {
+    await expect(createTask(A, { title: "t", timeoutMinutes: bad as never })).rejects.toBeInstanceOf(ValidationError);
+    await expect(createTask(A, { title: "t", timeoutMinutes: bad as never })).rejects.toThrow(/whole number of minutes from 1 to 43200/);
+  });
+
+  it("puts the limit in the webhook payload", async () => {
+    const t = await createTask(A, { title: "t", timeoutMinutes: 30 });
+    const created = (await outboxFor(t.id)).find((e) => e.type === "task.created");
+    expect(created?.task).toMatchObject({ timeoutMinutes: 30 });
+  });
+
+  it("changes the limit of an in_progress Task, with a system comment and both events", async () => {
+    const id = await taskIn("in_progress");
+    const updated = await updateTask(A, id, { timeoutMinutes: 240, changedBy: "Mehdi" }, 900);
+    expect(updated).toMatchObject({ status: "in_progress", timeoutMinutes: 240, title: "t", updatedAt: 900 });
+    expect(await commentsOf(id)).toEqual([
+      { author_kind: "system", author_name: "Panel", body: "Time limit changed from 1 hour to 4 hours by Mehdi." },
+    ]);
+    const types = (await outboxFor(id)).map((e) => e.type);
+    expect(types).toContain("comment.created");
+    expect(types.filter((t) => t === "task.updated")).toHaveLength(1);
+  });
+
+  it("sets No limit, and names the operator by default", async () => {
+    const id = await taskIn("in_progress");
+    await updateTask(A, id, { timeoutMinutes: null });
+    expect((await getTask(A, id)).timeoutMinutes).toBeNull();
+    expect((await commentsOf(id)).at(-1)?.body).toBe("Time limit changed from 1 hour to No limit by operator.");
+  });
+
+  it("changes the limit at every status", async () => {
+    for (const status of TASK_STATUSES) {
+      const id = await taskIn(status);
+      expect((await updateTask(A, id, { timeoutMinutes: 5 })).timeoutMinutes, status).toBe(5);
+    }
+  });
+
+  it("refuses title plus limit on an in_progress Task as a whole", async () => {
+    const id = await taskIn("in_progress");
+    await expect(updateTask(A, id, { title: "late", timeoutMinutes: 240 })).rejects.toBeInstanceOf(TaskNotChangeableError);
+    expect(await getTask(A, id)).toMatchObject({ title: "t", timeoutMinutes: 60 });
+    expect(await commentsOf(id)).toEqual([]);
+  });
+
+  it("still refuses a title-only edit on an in_progress Task", async () => {
+    const id = await taskIn("in_progress");
+    await expect(updateTask(A, id, { title: "late" })).rejects.toBeInstanceOf(TaskNotChangeableError);
+  });
+
+  it("writes no comment when the limit does not change, but still emits task.updated", async () => {
+    const id = await taskIn("assigned");
+    await updateTask(A, id, { timeoutMinutes: 60 }, 900);
+    expect(await commentsOf(id)).toEqual([]);
+    const types = (await outboxFor(id)).map((e) => e.type);
+    expect(types).toContain("task.updated");
+    expect(types).not.toContain("comment.created");
+    expect((await getTask(A, id)).updatedAt).toBe(900);
+  });
+
+  it("refuses an invalid limit on update, and another owner's Task", async () => {
+    const id = await taskIn("in_progress");
+    await expect(updateTask(A, id, { timeoutMinutes: 0 })).rejects.toBeInstanceOf(ValidationError);
+    await expect(updateTask(A, id, { timeoutMinutes: 43201 })).rejects.toBeInstanceOf(ValidationError);
+    await expect(updateTask(B, id, { timeoutMinutes: 5 })).rejects.toBeInstanceOf(NotFoundError);
+    expect((await getTask(A, id)).timeoutMinutes).toBe(60);
+  });
+
+  it("keeps the limit on the claimed row", async () => {
+    const t = await createTask(A, { title: "t", startNow: true, timeoutMinutes: 7 });
+    expect((await claimTask(A, t.id))?.timeoutMinutes).toBe(7);
+  });
+});

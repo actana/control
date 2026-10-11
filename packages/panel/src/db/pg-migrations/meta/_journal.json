@@ -71,6 +71,13 @@
       "when": 1791056816245,
       "tag": "0009_panel_storage_issuer_endpoint",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1791681609178,
+      "tag": "0012_panel_task_timeout",
+      "breakpoints": true
     }
   ]
 }

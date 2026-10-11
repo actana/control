@@ -98,4 +98,17 @@ describe("OpenAPI v1", () => {
     const text = JSON.stringify(doc.paths["/api/v1/tasks/{taskId}/status"]) + JSON.stringify(doc.paths["/api/v1/tasks/{taskId}/comments"]);
     expect(text).toContain("/stop");
   });
+
+  it("describes timeoutMinutes on the Task, the create body and the update body (#724)", () => {
+    const d = doc as unknown as {
+      components: { schemas: { Task: { properties: Record<string, unknown> } } };
+      paths: Record<string, Record<string, { requestBody?: { content: { "application/json": { schema: { properties: Record<string, unknown> } } } } }>>;
+    };
+    const expected = { type: ["integer", "null"], minimum: 1, maximum: 43200 };
+    const task = d.components.schemas.Task.properties.timeoutMinutes;
+    const create = d.paths["/api/v1/tasks"]!.post!.requestBody!.content["application/json"].schema.properties.timeoutMinutes;
+    const patch = d.paths["/api/v1/tasks/{taskId}"]!.patch!.requestBody!.content["application/json"].schema.properties.timeoutMinutes;
+    for (const prop of [task, create, patch]) expect(prop).toMatchObject(expected);
+    expect(create).toMatchObject({ default: 60 });
+  });
 });

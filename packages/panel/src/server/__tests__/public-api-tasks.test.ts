@@ -267,6 +267,77 @@ describe("v1 Task edit and delete (#722)", () => {
   });
 });
 
+describe("v1 Task time limit (#724)", () => {
+  type TaskBody = { task: { id: string; timeoutMinutes: number | null } };
+  const create = async (key: string, extra: Record<string, unknown> = {}) => {
+    const res = await call("/api/v1/tasks", { method: "POST", bearer: key, json: { title: "t", ...extra } });
+    return { res, body: (await res.json()) as TaskBody & { error?: string } };
+  };
+
+  it("gives 60 when no limit is given, stores null as No limit and keeps an explicit value", async () => {
+    const { key } = await createKey();
+    expect((await create(key)).body.task.timeoutMinutes).toBe(60);
+    expect((await create(key, { timeoutMinutes: null })).body.task.timeoutMinutes).toBeNull();
+    const kept = await create(key, { timeoutMinutes: 120 });
+    expect(kept.res.status).toBe(201);
+    expect(kept.body.task.timeoutMinutes).toBe(120);
+    expect(((await (await call(`/api/v1/tasks/${kept.body.task.id}`, { bearer: key })).json()) as TaskBody).task.timeoutMinutes).toBe(120);
+  });
+
+  it("refuses a limit outside 1..43200 or not a whole number with 400", async () => {
+    const { key } = await createKey();
+    for (const timeoutMinutes of [0, 43201, 1.5, "60", -5]) {
+      expect((await create(key, { timeoutMinutes })).res.status, String(timeoutMinutes)).toBe(400);
+    }
+    expect((await create(key, { timeoutMinutes: 1 })).res.status).toBe(201);
+    expect((await create(key, { timeoutMinutes: 43200 })).res.status).toBe(201);
+  });
+
+  it("changes the limit of an in_progress Task, adds a system comment, and fires task.updated", async () => {
+    const { key } = await createKey();
+    const { body } = await create(key, { coreId: "core-a", agent: "agent-a", startNow: true });
+    const id = body.task.id;
+    expect(await tasksService.claimTask(A, id)).not.toBeNull();
+    const res = await call(`/api/v1/tasks/${id}`, { method: "PATCH", bearer: key, json: { timeoutMinutes: 240 } });
+    expect(res.status).toBe(200);
+    const task = ((await res.json()) as TaskBody).task as TaskBody["task"] & { status: string };
+    expect(task).toMatchObject({ status: "in_progress", timeoutMinutes: 240 });
+    const thread = (await (await call(`/api/v1/tasks/${id}/comments`, { bearer: key })).json()) as { comments: { authorKind: string; body: string }[] };
+    expect(thread.comments.map((c) => c.body)).toContain("Time limit changed from 1 hour to 4 hours by Test Operator.");
+    expect(thread.comments.find((c) => c.body.startsWith("Time limit changed"))?.authorKind).toBe("system");
+    expect(await outboxTypes(id)).toContain("task.updated");
+    const none = await call(`/api/v1/tasks/${id}`, { method: "PATCH", bearer: key, json: { timeoutMinutes: null } });
+    expect(((await none.json()) as TaskBody).task.timeoutMinutes).toBeNull();
+  });
+
+  it("still answers 409 to a title edit while in_progress, and refuses a mixed edit as a whole", async () => {
+    const { key } = await createKey();
+    const { body } = await create(key, { title: "run", coreId: "core-a", agent: "agent-a", startNow: true, timeoutMinutes: 30 });
+    const id = body.task.id;
+    await tasksService.claimTask(A, id);
+    expect((await call(`/api/v1/tasks/${id}`, { method: "PATCH", bearer: key, json: { title: "x" } })).status).toBe(409);
+    expect((await call(`/api/v1/tasks/${id}`, { method: "PATCH", bearer: key, json: { title: "x", timeoutMinutes: 90 } })).status).toBe(409);
+    const now = await tasksService.getTask(A, id);
+    expect(now).toMatchObject({ title: "run", timeoutMinutes: 30 });
+  });
+
+  it("refuses {} and an invalid limit with 400", async () => {
+    const { key } = await createKey();
+    const { body } = await create(key);
+    const patch = (json: unknown) => call(`/api/v1/tasks/${body.task.id}`, { method: "PATCH", bearer: key, json });
+    expect((await patch({})).status).toBe(400);
+    expect((await patch({ timeoutMinutes: 0 })).status).toBe(400);
+    expect((await patch({ timeoutMinutes: 43201 })).status).toBe(400);
+  });
+
+  it("answers 403 to a key that does not reach the Task's Core, and leaves the limit alone", async () => {
+    const { key } = await createKey({ name: "b only", coreIds: ["core-b"] });
+    const t = await tasksService.createTask(A, { title: "on a", coreId: "core-a" });
+    expect((await call(`/api/v1/tasks/${t.id}`, { method: "PATCH", bearer: key, json: { timeoutMinutes: 5 } })).status).toBe(403);
+    expect((await tasksService.getTask(A, t.id)).timeoutMinutes).toBe(60);
+  });
+});
+
 describe("v1 Task stop (#723)", () => {
   /** An in_progress Task with a dispatch comment for the current attempt, as the dispatcher leaves it. */
   async function runningTask(key: string): Promise<string> {

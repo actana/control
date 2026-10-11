@@ -1,5 +1,5 @@
 import { CoreSharedError, type CoreShared, type SharedChange } from "@actana/sdk/shared";
-import { DuplicateTaskCommentSourceError, addTaskComment, applyTaskResult } from "../services/tasks";
+import { DuplicateTaskCommentSourceError, addTaskComment, applyTaskResult, listTasks } from "../services/tasks";
 import { NotFoundError } from "../errors";
 import {
   REPORT_END_MARKER,
@@ -12,8 +12,9 @@ import {
   taskResultPath,
   type TaskResult,
 } from "~/shared/task-report";
+import { formatTaskTimeoutReason } from "~/shared/tasks";
 import { isFolderScoped } from "./shared-factory";
-import { consoleDispatchLog, messageOf, type Clock, type DispatchLog, type SessionStopper } from "./types";
+import { consoleDispatchLog, messageOf, type Clock, type DispatchLog, type SessionLiveness, type SessionStopper } from "./types";
 
 /**
  * The result watcher (#570): turns `success.md`, `fail.md` and `partial-<n>.md`
@@ -33,6 +34,10 @@ import { consoleDispatchLog, messageOf, type Clock, type DispatchLog, type Sessi
  *
  * A Task whose agent exits without a result, or that runs out of time, gets a
  * `fail.md` written by the Panel and is then failed through the same path.
+ * The time limit is the Task's own (#724): `null` is No limit, and the check is skipped.
+ *
+ * Once a minute (on the injected clock) a pass also (a) re-reads the limits of the `in_progress` Tasks, so a
+ * changed limit applies within a minute, and (b) asks each Core which Sessions are live (see `liveSessions`).
  *
  * Time is injected (`now`) and a tick is a plain method, so a test drives the
  * whole thing with a fake clock and no timers.
@@ -50,13 +55,13 @@ export type WatchedDispatch = {
   authorName: string;
   /** The Session running this attempt, when known: stopped by the Panel if the dispatch times out (#723). */
   sessionId?: string | null;
+  /** The Task's time limit in minutes, counted from `dispatchedAt`; null is No limit (#724). */
+  timeoutMinutes: number | null;
 };
 
 export type ResultWatcherOptions = {
   ownerId: number;
   now?: Clock;
-  /** How long a dispatch may run with no result before the Panel writes `fail.md`. */
-  timeoutMs?: number;
   /**
    * After the agent exits, how long to keep looking for a result before the Panel
    * writes `fail.md`. The Shared folder reaches S3 a few seconds after it is
@@ -67,9 +72,19 @@ export type ResultWatcherOptions = {
   log?: DispatchLog;
   /** Stops a Session whose dispatch timed out, so a hung agent does not run on after its Task failed (#723). */
   stopSession?: SessionStopper;
+  /**
+   * Which Sessions are live on a Core. Asked once a minute per Core: a Session missing twice in a row counts as
+   * exited (the safety net for a No-limit Task whose exit the Panel never heard). `null` = no answer, which
+   * changes nothing: it neither adds a miss nor clears one (only a present answer clears).
+   */
+  liveSessions?: SessionLiveness;
+  /** How often the minute pass runs. */
+  minutePassMs?: number;
 };
 
-export const DEFAULT_TASK_TIMEOUT_MS = 60 * 60_000;
+export const DEFAULT_MINUTE_PASS_MS = 60_000;
+/** Consecutive missing answers after which a Session counts as exited. */
+export const LIVENESS_MISSES_TO_EXIT = 2;
 export const DEFAULT_EXIT_GRACE_MS = 30_000;
 export const DEFAULT_WATCH_POLL_MS = 2_000;
 /** A report is read whole into memory and stored as a comment; a larger file is kept on the Shared folder and pointed to. */
@@ -78,7 +93,9 @@ export const MAX_REPORT_BYTES = 1024 * 1024;
 type Tracked = WatchedDispatch & {
   /** Null until the first look, which is a `watch()` with no cursor: every file there is. */
   cursor: string | null;
-  exit: { at: number; code: number } | null;
+  exit: { at: number; code: number | null } | null;
+  /** Consecutive liveness checks that did not find the Session. */
+  misses: number;
   /** Result files this dispatch has finished with. */
   done: Set<string>;
   release: () => void;
@@ -88,15 +105,12 @@ function oversizeNote(path: string, size: number): string {
   return `${REPORT_END_MARKER}\nThis result is ${size} bytes, over the ${MAX_REPORT_BYTES} the Panel keeps as a comment. Read it at ${path} in the Shared folder.\n${REPORT_END_MARKER}`;
 }
 
-function minutes(ms: number): string {
-  const n = Math.max(1, Math.round(ms / 60_000));
-  return `${n} minute${n === 1 ? "" : "s"}`;
-}
-
 export class ResultWatcher {
   private readonly ownerId: number;
   private readonly now: Clock;
-  private readonly timeoutMs: number;
+  private readonly liveSessions: SessionLiveness | null;
+  private readonly minutePassMs: number;
+  private lastMinutePass = -Infinity;
   private readonly exitGraceMs: number;
   private readonly pollMs: number;
   private readonly log: DispatchLog;
@@ -109,7 +123,8 @@ export class ResultWatcher {
   constructor(opts: ResultWatcherOptions) {
     this.ownerId = opts.ownerId;
     this.now = opts.now ?? Date.now;
-    this.timeoutMs = opts.timeoutMs ?? DEFAULT_TASK_TIMEOUT_MS;
+    this.liveSessions = opts.liveSessions ?? null;
+    this.minutePassMs = opts.minutePassMs ?? DEFAULT_MINUTE_PASS_MS;
     this.exitGraceMs = opts.exitGraceMs ?? DEFAULT_EXIT_GRACE_MS;
     this.pollMs = opts.pollMs ?? DEFAULT_WATCH_POLL_MS;
     this.log = opts.log ?? consoleDispatchLog;
@@ -122,6 +137,7 @@ export class ResultWatcher {
       ...dispatch,
       cursor: null,
       exit: null,
+      misses: 0,
       done: new Set(),
       release,
     });
@@ -142,7 +158,7 @@ export class ResultWatcher {
   }
 
   /** The agent's process exited. If it left no result, `fail.md` follows once the grace has passed. */
-  markExited(taskId: string, exitCode: number): void {
+  markExited(taskId: string, exitCode: number | null): void {
     const t = this.tracked.get(taskId);
     if (t && !t.exit) t.exit = { at: this.now(), code: exitCode };
   }
@@ -167,6 +183,7 @@ export class ResultWatcher {
   tick(): Promise<void> {
     if (this.running) return this.running;
     const run = (async () => {
+      await this.minutePass();
       for (const t of [...this.tracked.values()]) {
         if (this.stopped) return;
         try {
@@ -180,6 +197,59 @@ export class ResultWatcher {
     });
     this.running = run;
     return run;
+  }
+
+  /** Refresh the limits and check liveness, at most once per `minutePassMs`. Never throws. */
+  private async minutePass(): Promise<void> {
+    const now = this.now();
+    if (now - this.lastMinutePass < this.minutePassMs || this.tracked.size === 0) return;
+    this.lastMinutePass = now;
+    try {
+      for (const row of await listTasks(this.ownerId, ["in_progress"])) {
+        const t = this.tracked.get(row.id);
+        if (t) t.timeoutMinutes = row.timeoutMinutes;
+      }
+    } catch (err) {
+      this.log.error(`could not refresh the time limits: ${messageOf(err)}`);
+    }
+    await this.checkLiveness();
+  }
+
+  /**
+   * One question per Core. A dispatch without a known Session (adopted with no dispatch comment) cannot be
+   * probed: with No limit it stays until an operator stops it (#723).
+   */
+  private async checkLiveness(): Promise<void> {
+    const liveSessions = this.liveSessions;
+    if (!liveSessions) return;
+    const byCore = new Map<string, Tracked[]>();
+    for (const t of this.tracked.values()) {
+      if (!t.sessionId || t.exit) continue;
+      byCore.set(t.coreId, [...(byCore.get(t.coreId) ?? []), t]);
+    }
+    for (const [coreId, dispatches] of byCore) {
+      if (this.stopped) return;
+      let live: ReadonlySet<string> | null;
+      try {
+        live = await liveSessions(coreId);
+      } catch (err) {
+        this.log.error(`liveness of Core ${coreId}: ${messageOf(err)}`);
+        live = null;
+      }
+      if (!live) continue;
+      for (const t of dispatches) {
+        if (this.tracked.get(t.taskId) !== t || t.exit) continue;
+        if (live.has(t.sessionId!)) {
+          t.misses = 0;
+          continue;
+        }
+        t.misses += 1;
+        if (t.misses >= LIVENESS_MISSES_TO_EXIT) {
+          this.log.info(`task ${t.taskId}: Session ${t.sessionId} is not live on Core ${coreId} (missed ${t.misses} checks); treating it as exited`);
+          this.markExited(t.taskId, null);
+        }
+      }
+    }
   }
 
   private drop(t: Tracked): void {
@@ -211,9 +281,14 @@ export class ResultWatcher {
     }
     const now = this.now();
     if (t.exit && now - t.exit.at >= this.exitGraceMs) {
-      await this.synthesize(t, `The agent exited (code ${t.exit.code}) without writing a result file.`);
-    } else if (now - t.dispatchedAt >= this.timeoutMs) {
-      await this.synthesize(t, `The agent wrote no result within ${minutes(this.timeoutMs)} of dispatch.`, true);
+      await this.synthesize(
+        t,
+        t.exit.code === null
+          ? "The agent's Session is no longer running on its Core, and it wrote no result file."
+          : `The agent exited (code ${t.exit.code}) without writing a result file.`,
+      );
+    } else if (t.timeoutMinutes !== null && now - t.dispatchedAt >= t.timeoutMinutes * 60_000) {
+      await this.synthesize(t, formatTaskTimeoutReason(t.timeoutMinutes), true);
     }
   }
 

@@ -48,8 +48,8 @@ const INTERNAL_ERROR = -32603;
 
 const INSTRUCTIONS =
   "Tasks on the Operator's Cores. Every call runs as the API key's owner and sees only the Cores the key reaches. " +
-  "assign_task only asks for the operator moves (assigned, draft). update_task changes a Task's title or description and " +
-  "delete_task removes it; both are refused while the Task is in_progress, and so is a re-assign: stop_task stops a running Task (its Session too) and fails it, after which it can be re-assigned. list_shared and get_shared read a Core's Shared folder.";
+  "assign_task only asks for the operator moves (assigned, draft). update_task changes a Task's title, description or time limit (timeoutMinutes; null = No limit) and " +
+  "delete_task removes it; delete_task and the title and description edits are refused while the Task is in_progress (the time limit can be changed at any status), and so is a re-assign: stop_task stops a running Task (its Session too) and fails it, after which it can be re-assigned. list_shared and get_shared read a Core's Shared folder.";
 
 const rpcId = z.union([z.string(), z.number()]);
 const rpcMessage = z.object({

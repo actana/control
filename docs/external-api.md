@@ -324,11 +324,19 @@ separate from the browser's session-cookie routes.
 
 Status moves go through the Tasks service. A key client may only ask for the
 operator moves `assigned` and `draft` (the dispatcher and the result watcher
-own the rest). `PATCH /api/v1/tasks/:id` changes the title, the description
-or both and fires `task.updated`; `DELETE` removes the Task with its comments
-and history and fires `task.deleted`. Both answer `409` while the Task is
+own the rest). `PATCH /api/v1/tasks/:id` changes the title, the description,
+the time limit or any of them and fires `task.updated`; `DELETE` removes the Task with its comments
+and history and fires `task.deleted`. `DELETE`, and a PATCH of the title or description, answer `409` while the Task is
 `in_progress`, because its Session already has the prompt
-([#722](https://github.com/actana/control/issues/722)). `POST /api/v1/tasks/:id/stop` (optional body
+([#722](https://github.com/actana/control/issues/722)).
+
+Each Task has a time limit per attempt, `timeoutMinutes` (whole minutes, 1 to 43200). `POST /api/v1/tasks` takes it:
+omit it for 60, or send `null` for No limit (the attempt runs until the agent reports or its Session ends). `PATCH`
+changes it at any status, including `in_progress`, where the running attempt picks the new limit up within a minute;
+a change adds the system comment "Time limit changed from 1 hour to 4 hours by …". A PATCH that carries
+`timeoutMinutes` together with `title` or `description` on an `in_progress` Task is refused as a whole (`409`). The
+Task always carries `timeoutMinutes`. The old Panel-wide timeout environment variable is gone: the limit is
+per Task ([#724](https://github.com/actana/control/issues/724)). `POST /api/v1/tasks/:id/stop` (optional body
 `{"reason": "…"}`) stops a Task that is `in_progress`: its Session is stopped on the Core and the Task becomes `failed`
 with a system comment, so it can be re-assigned (a new Session). The answer is `{task, session}`; `session.outcome` is
 `stopped`, `not-running`, `unreachable` (Core offline: the Task is still failed, the Session may keep running) or
@@ -364,11 +372,11 @@ the tools below are available to the model.
 | `list_agents` | Agents, optionally on one Core |
 | `get_tasks` | Tasks, optionally one `status` or one `coreId` |
 | `get_task` | one Task with its comment thread |
-| `create_task` | a draft, or an assigned Task with `startNow` (needs `coreId` and `agent`) |
+| `create_task` | a draft, or an assigned Task with `startNow` (needs `coreId` and `agent`); optional `timeoutMinutes` (default 60, `null` = No limit) |
 | `assign_task` | `assigned` (default) or `draft`, the operator moves only; every other status is refused |
 | `comment_task` | a comment; `reassign: true` also sends a finished Task back (Comment & re-assign) |
 | `stop_task` | stops an `in_progress` Task: its Session is stopped and the Task fails with a system comment, after which `comment_task` with `reassign` works (marked `destructiveHint`); `409` for any other status |
-| `update_task` | a Task's `title`, `description` or both; refused (`409`) while it is `in_progress` |
+| `update_task` | a Task's `title`, `description` and/or `timeoutMinutes`; the title and description are refused (`409`) while it is `in_progress`, the time limit is allowed at any status |
 | `delete_task` | removes a Task with its comments and history (marked `destructiveHint`); refused (`409`) while it is `in_progress` |
 | `list_shared` | a folder of a Core's Shared folder, read-only, cut at 500 entries |
 | `get_shared` | one UTF-8 text file from it, read-only, refused over 256 KiB |

@@ -14,6 +14,8 @@ export type TaskDto = {
   attemptCount: number;
   dispatchedAt: number | null;
   lastError: string | null;
+  /** The time limit per attempt in minutes (#724); null = No limit. */
+  timeoutMinutes: number | null;
   createdAt: number;
   updatedAt: number;
 };
@@ -45,12 +47,19 @@ export type NewTaskRequest = {
   agent?: string | null;
   /** On: created `assigned`. Off: created `draft`. */
   startNow?: boolean;
+  /** Minutes per attempt, 1 to 43200 (#724). Omitted: 60. null: No limit. */
+  timeoutMinutes?: number | null;
 };
 
-/** An edit (#722): the fields to change, at least one. Refused while the Task is `in_progress`. */
+/**
+ * An edit (#722): the fields to change, at least one. The title and description
+ * are refused while the Task is `in_progress`; the time limit (#724) is allowed
+ * at any status.
+ */
 export type UpdateTaskRequest = {
   title?: string;
   description?: string;
+  timeoutMinutes?: number | null;
 };
 
 export type NewTaskCommentRequest = {
