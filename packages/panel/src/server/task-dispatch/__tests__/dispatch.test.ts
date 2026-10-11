@@ -1,5 +1,6 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { closePanelTestDb, openPanelTestDb } from "../../__tests__/_panel-test-db";
+import type { SessionLiveness } from "../types";
 import { FakeClock, FakeCore, FakeShared, collectingLog } from "./fakes";
 
 /**
@@ -51,7 +52,7 @@ afterAll(async () => {
   await closePanelTestDb(testDb);
 });
 
-function rig(ownerId = A) {
+function rig(ownerId = A, liveOverride?: SessionLiveness) {
   const clock = new FakeClock();
   const shared = new FakeShared(clock);
   const core = new FakeCore();
@@ -66,7 +67,7 @@ function rig(ownerId = A) {
       return { agentId: AGENT.id, coreId: AGENT.coreId, harness: AGENT.harness, model: AGENT.model, flags: [...AGENT.flags] };
     },
   };
-  const watcher = new ResultWatcher({ ownerId, now: clock.now, timeoutMs: TIMEOUT_MS, exitGraceMs: GRACE_MS, log, stopSession: core.stopSession });
+  const watcher = new ResultWatcher({ ownerId, now: clock.now, exitGraceMs: GRACE_MS, log, stopSession: core.stopSession, liveSessions: liveOverride ?? core.liveSessions });
   const dispatcher = new TaskDispatcher({
     ownerId,
     startSession: core.startSession,
@@ -83,7 +84,7 @@ function rig(ownerId = A) {
 }
 
 const assign = (clock: FakeClock, overrides: Partial<Parameters<typeof createTask>[1]> = {}, owner = A) =>
-  createTask(owner, { title: "Fix the build", description: "The CI build is red on main.", agent: AGENT.id, startNow: true, ...overrides }, clock.now());
+  createTask(owner, { title: "Fix the build", description: "The CI build is red on main.", agent: AGENT.id, startNow: true, timeoutMinutes: 2, ...overrides }, clock.now());
 
 const result = (id: string, name: string) => `tasks/${id}/${name}`;
 const promptFile = (id: string, attempt: number) => `tasks/${id}/prompt-attempt-${attempt}.md`;
@@ -441,8 +442,8 @@ describe("turning a result file into a comment and a status", () => {
     await watcher.tick();
 
     // A Panel that restarted and watches the same Task again reads the same file from the start.
-    const again = new ResultWatcher({ ownerId: A, now: clock.now, timeoutMs: TIMEOUT_MS, exitGraceMs: GRACE_MS, log });
-    again.track({ taskId: task.id, attempt: 1, dispatchedAt: (await getTask(A, task.id)).dispatchedAt!, coreId: "core_1", shared, authorName: "Claude Code" });
+    const again = new ResultWatcher({ ownerId: A, now: clock.now, exitGraceMs: GRACE_MS, log });
+    again.track({ taskId: task.id, attempt: 1, dispatchedAt: (await getTask(A, task.id)).dispatchedAt!, coreId: "core_1", shared, authorName: "Claude Code", timeoutMinutes: 2 });
     await again.tick();
 
     expect((await listTaskComments(A, task.id)).filter((c) => c.authorKind === "agent")).toHaveLength(1);
@@ -505,7 +506,7 @@ describe("turning a result file into a comment and a status", () => {
     const mine = rig(A);
     const theirs = await assign(mine.clock, {}, B);
     await claimTask(B, theirs.id, mine.clock.now());
-    mine.watcher.track({ taskId: theirs.id, attempt: 1, dispatchedAt: mine.clock.now(), coreId: "core_1", shared: mine.shared, authorName: "x" });
+    mine.watcher.track({ taskId: theirs.id, attempt: 1, dispatchedAt: mine.clock.now(), coreId: "core_1", shared: mine.shared, authorName: "x", timeoutMinutes: 2 });
     mine.clock.advance(1_000);
     mine.shared.write(result(theirs.id, "success.md"), report("not yours"));
 
@@ -572,7 +573,7 @@ describe("an agent that exits without a result, and the timeout", () => {
     await watcher.tick();
 
     expect((await getTask(A, task.id)).status).toBe("failed");
-    expect(shared.text(result(task.id, "fail.md"))).toContain("no result within 2 minutes");
+    expect(shared.text(result(task.id, "fail.md"))).toContain("2-minute time limit");
     const agent = (await listTaskComments(A, task.id)).filter((c) => c.authorKind === "agent");
     expect(agent.map((c) => c.sourceFile)).toEqual(["attempt-1-fail.md"]);
   });
@@ -1211,5 +1212,280 @@ describe("a Task that times out has its Session stopped (#723)", () => {
 
     expect((await getTask(A, task.id)).status).toBe("done");
     expect(core.stops).toEqual([]);
+  });
+});
+
+describe("a time limit per Task (#724)", () => {
+  const MIN = 60_000;
+  const failText = (shared: InstanceType<typeof FakeShared>, id: string) => shared.text(result(id, "fail.md"));
+  const { updateTask } = tasksService;
+
+  /** A new Panel process over the same database and Shared folder as `before`. */
+  async function restarted(before: ReturnType<typeof rig>) {
+    const after = rig();
+    after.clock.t = before.clock.t;
+    const dispatcher = new TaskDispatcher({ ownerId: A, startSession: after.core.startSession, sharedFor: async () => before.shared, watcher: after.watcher, agents: after.agents, now: after.clock.now, log: after.log });
+    return { ...after, shared: before.shared, dispatcher };
+  }
+
+  it("fails a 2-minute Task at 2 minutes with the time-limit message, and stops its Session", async () => {
+    const { clock, shared, core, dispatcher, watcher } = rig();
+    const task = await assign(clock, { timeoutMinutes: 2 });
+    await dispatcher.dispatchOnce();
+
+    clock.advance(2 * MIN - 1);
+    await watcher.tick();
+    expect((await getTask(A, task.id)).status).toBe("in_progress");
+    clock.advance(1);
+    await watcher.tick();
+
+    expect((await getTask(A, task.id)).status).toBe("failed");
+    const text = failText(shared, task.id)!;
+    expect(text).toContain("wrote no result within its 2-minute time limit");
+    expect(text).toContain("change the time limit or set No limit");
+    expect(core.stops).toEqual([{ coreId: "core_1", sessionId: "session_1" }]);
+    const system = (await listTaskComments(A, task.id)).filter((c) => c.authorKind === "system").map((c) => c.body);
+    expect(system).toContain("Session session_1 on Core core_1 stopped after the timeout.");
+  });
+
+  it("a No-limit Task is still in progress after the old 60 minutes, and nothing is stopped", async () => {
+    const { clock, shared, core, dispatcher, watcher } = rig();
+    const task = await assign(clock, { timeoutMinutes: null });
+    await dispatcher.dispatchOnce();
+
+    for (let i = 0; i < 61; i += 1) {
+      clock.advance(MIN);
+      await watcher.tick();
+    }
+
+    expect((await getTask(A, task.id)).status).toBe("in_progress");
+    expect(failText(shared, task.id)).toBeNull();
+    expect(core.stops).toEqual([]);
+  });
+
+  it("a shortened limit applies to the running attempt within a minute", async () => {
+    const { clock, core, dispatcher, watcher } = rig();
+    const task = await assign(clock, { timeoutMinutes: 60 });
+    await dispatcher.dispatchOnce();
+    clock.advance(10 * MIN);
+    await watcher.tick();
+    expect((await getTask(A, task.id)).status).toBe("in_progress");
+
+    await updateTask(A, task.id, { timeoutMinutes: 5, changedBy: "Mehdi" }, clock.now());
+    clock.advance(30_000);
+    await watcher.tick(); // the minute pass is not due yet
+    expect((await getTask(A, task.id)).status).toBe("in_progress");
+    clock.advance(30_000);
+    await watcher.tick();
+
+    expect((await getTask(A, task.id)).status).toBe("failed");
+    expect(core.stops).toHaveLength(1);
+  });
+
+  it("a raised limit applies within a minute too", async () => {
+    const { clock, dispatcher, watcher } = rig();
+    const task = await assign(clock, { timeoutMinutes: 2 });
+    await dispatcher.dispatchOnce();
+    clock.advance(MIN);
+    await watcher.tick();
+
+    await updateTask(A, task.id, { timeoutMinutes: 240, changedBy: "Mehdi" }, clock.now());
+    for (let i = 0; i < 2; i += 1) {
+      clock.advance(MIN);
+      await watcher.tick();
+    }
+
+    expect((await getTask(A, task.id)).status).toBe("in_progress");
+  });
+
+  it("a Task changed to No limit while it runs is no longer timed out", async () => {
+    const { clock, dispatcher, watcher } = rig();
+    const task = await assign(clock, { timeoutMinutes: 2 });
+    await dispatcher.dispatchOnce();
+    clock.advance(MIN);
+    await watcher.tick();
+    await updateTask(A, task.id, { timeoutMinutes: null, changedBy: "Mehdi" }, clock.now());
+    for (let i = 0; i < 10; i += 1) {
+      clock.advance(MIN);
+      await watcher.tick();
+    }
+    expect((await getTask(A, task.id)).status).toBe("in_progress");
+  });
+
+  it("after a restart, a No-limit Task whose Session died fails: two missed checks, then the exit grace", async () => {
+    const before = rig();
+    const task = await assign(before.clock, { timeoutMinutes: null });
+    await before.dispatcher.dispatchOnce();
+    await before.dispatcher.stop();
+
+    const after = await restarted(before);
+    expect(after.core.live).toEqual(new Set()); // the Session is not on the Core any more
+    await after.dispatcher.adoptInProgress();
+
+    await after.watcher.tick(); // miss 1
+    expect((await getTask(A, task.id)).status).toBe("in_progress");
+    after.clock.advance(MIN);
+    await after.watcher.tick(); // miss 2: counts as exited, the grace starts
+    expect((await getTask(A, task.id)).status).toBe("in_progress");
+    after.clock.advance(GRACE_MS);
+    await after.watcher.tick();
+
+    expect((await getTask(A, task.id)).status).toBe("failed");
+    expect(failText(after.shared, task.id)).toContain("The agent's Session is no longer running on its Core, and it wrote no result file.");
+    expect(after.core.stops).toEqual([]);
+    expect(after.core.liveCalls).toEqual(["core_1", "core_1"]);
+  });
+
+  it("a Session the Core still has live is not failed, however long it runs", async () => {
+    const before = rig();
+    const task = await assign(before.clock, { timeoutMinutes: null });
+    await before.dispatcher.dispatchOnce();
+    await before.dispatcher.stop();
+    const after = await restarted(before);
+    after.core.live = new Set(["session_1"]);
+    await after.dispatcher.adoptInProgress();
+
+    for (let i = 0; i < 10; i += 1) {
+      await after.watcher.tick();
+      after.clock.advance(MIN);
+    }
+
+    expect((await getTask(A, task.id)).status).toBe("in_progress");
+  });
+
+  it("a Core whose session list is empty but whose PTY is alive does not fail the Task (#724)", async () => {
+    const { liveSessionsOnCore } = await import("../session-liveness");
+    const sessionsList = vi.fn(async () => []); // what a Core answers when its SQLite read fails
+    const findBySession = vi.fn(async () => ({ ptyId: "pty_1" }));
+    const probe: SessionLiveness = (coreId, ids) => liveSessionsOnCore(coreId, ids, () => ({ sdk: { sessionsList, findBySession } as never }));
+    const { clock, dispatcher, watcher } = rig(A, probe);
+    const task = await assign(clock, { timeoutMinutes: null });
+    await dispatcher.dispatchOnce();
+
+    for (let i = 0; i < 6; i += 1) {
+      clock.advance(MIN);
+      await watcher.tick();
+    }
+    clock.advance(GRACE_MS * 2);
+    await watcher.tick();
+
+    expect(findBySession).toHaveBeenCalledWith("session_1");
+    expect(sessionsList).not.toHaveBeenCalled();
+    expect((await getTask(A, task.id)).status).toBe("in_progress");
+  });
+
+  it("two null-ptyId answers from the PTY table, then the grace, fail the Task (#724)", async () => {
+    const { liveSessionsOnCore } = await import("../session-liveness");
+    const probe: SessionLiveness = (coreId, ids) => liveSessionsOnCore(coreId, ids, () => ({ sdk: { findBySession: async () => ({ ptyId: null }) } as never }));
+    const { clock, dispatcher, watcher } = rig(A, probe);
+    const task = await assign(clock, { timeoutMinutes: null });
+    await dispatcher.dispatchOnce();
+
+    await watcher.tick(); // miss 1
+    clock.advance(MIN);
+    await watcher.tick(); // miss 2: the grace starts
+    expect((await getTask(A, task.id)).status).toBe("in_progress");
+    clock.advance(GRACE_MS);
+    await watcher.tick();
+
+    expect((await getTask(A, task.id)).status).toBe("failed");
+  });
+
+  it("a Core that cannot be reached never fails a No-limit Task", async () => {
+    const { clock, core, dispatcher, watcher } = rig();
+    const task = await assign(clock, { timeoutMinutes: null });
+    await dispatcher.dispatchOnce();
+    core.live = null;
+
+    for (let i = 0; i < 5 * 60; i += 1) {
+      clock.advance(MIN);
+      await watcher.tick();
+    }
+
+    expect((await getTask(A, task.id)).status).toBe("in_progress");
+    expect(core.liveCalls.length).toBeGreaterThan(100);
+  });
+
+  it("an unreachable answer neither adds nor clears a miss: miss, unreachable, miss is two in a row", async () => {
+    const { clock, core, dispatcher, watcher } = rig();
+    const task = await assign(clock, { timeoutMinutes: null });
+    await dispatcher.dispatchOnce();
+
+    core.live = new Set();
+    await watcher.tick(); // miss 1
+    core.live = null;
+    for (let i = 0; i < 3; i += 1) {
+      clock.advance(MIN);
+      await watcher.tick();
+    }
+    core.live = new Set();
+    clock.advance(MIN);
+    await watcher.tick(); // miss 2
+    clock.advance(GRACE_MS);
+    await watcher.tick();
+
+    expect((await getTask(A, task.id)).status).toBe("failed");
+  });
+
+  it("a Session seen again resets the count: miss, present, miss does not end the Task", async () => {
+    const { clock, core, dispatcher, watcher } = rig();
+    const task = await assign(clock, { timeoutMinutes: null });
+    await dispatcher.dispatchOnce();
+    const all = new Set(core.live!);
+
+    core.live = new Set();
+    await watcher.tick();
+    core.live = all;
+    clock.advance(MIN);
+    await watcher.tick();
+    core.live = new Set();
+    clock.advance(MIN);
+    await watcher.tick();
+    clock.advance(GRACE_MS * 2);
+    await watcher.tick();
+
+    expect((await getTask(A, task.id)).status).toBe("in_progress");
+  });
+
+  it("asks each Core once per pass, however many Tasks run on it", async () => {
+    const { clock, core, dispatcher, watcher } = rig();
+    await assign(clock, { timeoutMinutes: null, title: "one" });
+    await assign(clock, { timeoutMinutes: null, title: "two" });
+    await dispatcher.dispatchOnce();
+    await dispatcher.dispatchOnce();
+    core.liveCalls.length = 0;
+
+    clock.advance(MIN);
+    await watcher.tick();
+    await watcher.tick(); // the same minute: no second pass
+
+    expect(core.liveCalls).toEqual(["core_1"]);
+  });
+
+  it("Comment & re-assign after a timeout reuses the limit, and the previous Session is still stopped", async () => {
+    const { clock, core, dispatcher, watcher } = rig();
+    const task = await assign(clock, { timeoutMinutes: 2 });
+    await dispatcher.dispatchOnce();
+    clock.advance(2 * MIN);
+    await watcher.tick();
+    expect((await getTask(A, task.id)).status).toBe("failed");
+    expect(core.stops).toHaveLength(1);
+
+    await commentAndReassign(A, task.id, { authorKind: "user", authorName: "Operator", body: "once more" }, clock.now());
+    await dispatcher.dispatchOnce();
+    // The new timeout text is still recognised as a timeout: the previous Session is stopped again before attempt 2.
+    expect(core.stops).toEqual([
+      { coreId: "core_1", sessionId: "session_1" },
+      { coreId: "core_1", sessionId: "session_1" },
+    ]);
+    expect(core.starts).toHaveLength(2);
+
+    clock.advance(2 * MIN - 1);
+    await watcher.tick();
+    expect((await getTask(A, task.id)).status).toBe("in_progress");
+    clock.advance(1);
+    await watcher.tick();
+    expect((await getTask(A, task.id)).status).toBe("failed");
+    expect(core.stops).toHaveLength(3);
   });
 });

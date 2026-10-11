@@ -95,10 +95,43 @@ describe("tools/list", () => {
     const byName = Object.fromEntries(tools.map((t) => [t.name, t]));
     expect(byName.update_task!.annotations.readOnlyHint).toBe(false);
     expect(byName.update_task!.inputSchema.required).toEqual(["taskId"]);
-    expect(Object.keys(byName.update_task!.inputSchema.properties).sort()).toEqual(["description", "taskId", "title"]);
+    expect(Object.keys(byName.update_task!.inputSchema.properties).sort()).toEqual(["description", "taskId", "timeoutMinutes", "title"]);
     expect(byName.delete_task!.annotations).toEqual({ readOnlyHint: false, destructiveHint: true });
     expect(byName.delete_task!.inputSchema.required).toEqual(["taskId"]);
     expect(byName.create_task!.annotations.destructiveHint).toBeUndefined();
+  });
+});
+
+describe("time limit tools (#724)", () => {
+  it("lists timeoutMinutes on create_task and update_task and mentions the time limit", async () => {
+    const tools = await (await client(A)).listTools();
+    const byName = Object.fromEntries(tools.map((t) => [t.name, t]));
+    for (const name of ["create_task", "update_task"]) {
+      const prop = byName[name]!.inputSchema.properties.timeoutMinutes;
+      expect(prop, name).toBeDefined();
+      expect(prop.description).toContain("No limit");
+      expect(byName[name]!.description).toContain("time limit");
+    }
+  });
+
+  it("create_task stores the limit: 30, null, and 60 when omitted", async () => {
+    const c = await client(A);
+    expect(dataOf(await c.call("create_task", { title: "a", timeoutMinutes: 30 })).task.timeoutMinutes).toBe(30);
+    expect(dataOf(await c.call("create_task", { title: "b", timeoutMinutes: null })).task.timeoutMinutes).toBeNull();
+    expect(dataOf(await c.call("create_task", { title: "c" })).task.timeoutMinutes).toBe(60);
+    expect(textOf(await c.call("create_task", { title: "d", timeoutMinutes: 0 }))).toContain("invalid arguments");
+  });
+
+  it("update_task with only timeoutMinutes succeeds on an in_progress Task and leaves a system comment", async () => {
+    const task = await tasksService.createTask(A, { title: "run", coreId: "core-a", agent: "agent-a", startNow: true });
+    await tasksService.claimTask(A, task.id);
+    const c = await client(A);
+    const updated = dataOf(await c.call("update_task", { taskId: task.id, timeoutMinutes: 240 })).task;
+    expect(updated).toMatchObject({ status: "in_progress", timeoutMinutes: 240 });
+    const comments = await tasksService.listTaskComments(A, task.id);
+    expect(comments.map((x) => x.body)).toContain("Time limit changed from 1 hour to 4 hours by Test Operator.");
+    // The title is still locked while it runs.
+    expect(textOf(await c.call("update_task", { taskId: task.id, title: "late" }))).toMatch(/^409/);
   });
 });
 

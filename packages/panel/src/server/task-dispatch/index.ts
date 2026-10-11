@@ -2,14 +2,15 @@ import type { Task } from "../services/tasks";
 import type { TaskSessionStopDto } from "~/shared/task-wire";
 import { OPERATOR_ID } from "../services/operator";
 import { TaskDispatcher } from "./dispatcher";
-import { ResultWatcher, DEFAULT_TASK_TIMEOUT_MS } from "./result-watcher";
+import { ResultWatcher } from "./result-watcher";
 import { SharedChangeFeed, createS3Factory, createSharedFactory, createThroughCoreFactory, type SharedFactoryDeps } from "./shared-factory";
 import { startSessionOnCore } from "./session-starter";
+import { liveSessionsOnCore } from "./session-liveness";
 import { stopSessionOnCore } from "./session-stopper";
 import { stopTaskRun } from "./stop-task";
 import { coreLinkManager } from "../services/core-link-manager";
 import type { CoreS3Shared } from "../services/core-s3-shared";
-import { consoleDispatchLog, type Clock, type DispatchLog, type SessionStarter, type SessionStopper } from "./types";
+import { consoleDispatchLog, type Clock, type DispatchLog, type SessionLiveness, type SessionStarter, type SessionStopper } from "./types";
 import type { AgentLookup } from "./dispatcher";
 
 /**
@@ -17,25 +18,16 @@ import type { AgentLookup } from "./dispatcher";
  * `startTaskDispatch` once the database is up and the links are dialing, and the
  * server's shutdown calls `stopTaskDispatch` before it closes the database.
  *
- * `AC_PANEL_TASK_TIMEOUT_MINUTES` sets how long a Task may run with no result
- * before the Panel writes `fail.md` (default 60).
+ * How long a Task may run with no result is the Task's own time limit (#724), not a Panel setting.
  *
  * The result files are read in S3 with the Core's server-held key whenever storage is configured, so a result is seen
  * while the Core is paused; the through-the-Core mode is the fallback when it is not.
  */
 
-export const TASK_TIMEOUT_ENV = "AC_PANEL_TASK_TIMEOUT_MINUTES";
-
-export function taskTimeoutMs(env: NodeJS.ProcessEnv = process.env): number {
-  const minutes = Number(env[TASK_TIMEOUT_ENV]);
-  return Number.isFinite(minutes) && minutes > 0 ? Math.round(minutes * 60_000) : DEFAULT_TASK_TIMEOUT_MS;
-}
-
 let running: { dispatcher: TaskDispatcher; detachFeed: () => void; watcher: ResultWatcher; stopSession: SessionStopper; now?: Clock } | null = null;
 
 /** What `bootPanel` leaves alone; a test hands in fakes for the Core, the clock and the object store. */
 export type StartTaskDispatchOptions = {
-  env?: NodeJS.ProcessEnv;
   /** The S3 mode for a Core. The Files tab's per-Core mode over the Panel's storage settings by default. */
   s3?: SharedFactoryDeps["s3"];
   modes?: CoreS3Shared;
@@ -43,6 +35,9 @@ export type StartTaskDispatchOptions = {
   startSession?: SessionStarter;
   /** How a Session is stopped (#723). The Panel's own link to the Core by default. */
   stopSession?: SessionStopper;
+  /** Which Sessions are live on a Core, for the watcher's once-a-minute check. The Panel's own link by default. */
+  liveSessions?: SessionLiveness;
+  minutePassMs?: number;
   agents?: AgentLookup;
   now?: Clock;
   pollMs?: number;
@@ -59,7 +54,8 @@ export function startTaskDispatch(opts: StartTaskDispatchOptions = {}): void {
   const watcher = new ResultWatcher({
     stopSession,
     ownerId: OPERATOR_ID,
-    timeoutMs: taskTimeoutMs(opts.env),
+    liveSessions: opts.liveSessions ?? liveSessionsOnCore,
+    ...(opts.minutePassMs !== undefined ? { minutePassMs: opts.minutePassMs } : {}),
     ...(opts.now ? { now: opts.now } : {}),
     ...(opts.watchPollMs ? { pollMs: opts.watchPollMs } : {}),
     ...(opts.exitGraceMs !== undefined ? { exitGraceMs: opts.exitGraceMs } : {}),

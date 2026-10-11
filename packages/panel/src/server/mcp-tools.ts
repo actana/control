@@ -70,6 +70,14 @@ function tool<S extends z.ZodObject>(def: {
 }
 
 const taskIdArg = z.string().min(1).describe("The Task's id, from get_tasks.");
+const timeoutMinutesArg = z
+  .number()
+  .int()
+  .min(1)
+  .max(43200)
+  .nullable()
+  .optional()
+  .describe("Time limit in minutes per attempt (1–43200). Omit for 60; null = No limit: the attempt runs until the agent reports or exits.");
 const coreIdArg = z.string().min(1).describe("A Core's id, from list_cores.");
 
 export const MCP_TOOLS: readonly McpTool[] = [
@@ -115,7 +123,8 @@ export const MCP_TOOLS: readonly McpTool[] = [
   tool({
     name: "create_task",
     description:
-      "Create a Task. It is a draft unless startNow is true, which creates it assigned so its Agent starts on it (needs coreId and agent).",
+      "Create a Task. It is a draft unless startNow is true, which creates it assigned so its Agent starts on it (needs coreId and agent). " +
+      "timeoutMinutes sets its time limit per attempt (default 60 minutes; null = No limit).",
     readOnly: false,
     input: z.object({
       title: z.string().min(1).describe("A short title."),
@@ -123,6 +132,7 @@ export const MCP_TOOLS: readonly McpTool[] = [
       coreId: coreIdArg.nullable().optional(),
       agent: z.string().min(1).nullable().optional().describe("An Agent's id on that Core, from list_agents."),
       startNow: z.boolean().optional(),
+      timeoutMinutes: timeoutMinutesArg,
     }),
     run: async (principal, args) => outcomeOf(await createTaskV1(principal, asJsonRequest(args))),
   }),
@@ -160,16 +170,20 @@ export const MCP_TOOLS: readonly McpTool[] = [
   tool({
     name: "update_task",
     description:
-      "Change a Task's title, description or both. Allowed in draft, assigned, done, failed and partial; refused while " +
-      "the Task is in_progress, because its Session already has the prompt.",
+      "Change a Task's title, description, time limit or any of them. The title and description are refused while the " +
+      "Task is in_progress, because its Session already has the prompt; the time limit can be changed at any status, " +
+      "including in_progress, and applies to the running attempt within a minute.",
     readOnly: false,
     input: z
       .object({
         taskId: taskIdArg,
         title: z.string().min(1).optional().describe("The new title."),
         description: z.string().optional().describe("The new description, in Markdown. It replaces the old one."),
+        timeoutMinutes: timeoutMinutesArg,
       })
-      .refine((a) => a.title !== undefined || a.description !== undefined, { message: "give a title, a description or both" }),
+      .refine((a) => a.title !== undefined || a.description !== undefined || a.timeoutMinutes !== undefined, {
+        message: "give a title, a description or a time limit",
+      }),
     run: async (principal, { taskId, ...fields }) =>
       outcomeOf(await updateTaskV1(principal, taskId, asJsonRequest(fields, "PATCH"))),
   }),

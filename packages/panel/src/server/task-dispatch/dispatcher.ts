@@ -152,8 +152,9 @@ export class TaskDispatcher {
 
   /**
    * Watch the Tasks that are `in_progress` and not watched by this process: the Panel restarted while their
-   * Sessions ran. Their exit cannot be heard any more, so a result file or the timeout (from the original
-   * dispatch time) ends them. No Task is left with nothing watching it:
+   * Sessions ran. Their exit cannot be heard any more, so a result file, the Task's time limit (from the original
+   * dispatch time) or the watcher's liveness check ends them. One with no known Session cannot be probed; with
+   * No limit it stays until an operator stops it. No Task is left with nothing watching it:
    * - an Agent that is gone (deleted while its Task ran) falls back to the Task's own Core;
    * - a Task with no Core to look on fails with the reason;
    * - a Core whose Shared folder cannot be reached right now is still watched, through a handle that asks again
@@ -191,6 +192,7 @@ export class TaskDispatcher {
           coreId,
           shared,
           authorName: agent?.name ?? "agent",
+          timeoutMinutes: task.timeoutMinutes,
         });
         adopted += 1;
       } catch (err) {
@@ -333,6 +335,7 @@ export class TaskDispatcher {
           shared,
           authorName: agent.name,
           sessionId,
+          timeoutMinutes: claimed.timeoutMinutes,
         },
         () => session.dispose(),
       );

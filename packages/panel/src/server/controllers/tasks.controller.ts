@@ -36,12 +36,16 @@ import { stopTask } from "../task-dispatch";
  * refuse it, 404 for a Task or Agent that is not the owner's).
  */
 
+/** A time limit (#724): whole minutes 1 to 43200 (30 days), or null for No limit. */
+export const timeoutMinutesSchema = z.number().int().min(1).max(43200).nullable();
+
 const newTaskBody = z.object({
   title: z.string(),
   description: z.string().optional(),
   coreId: z.string().nullable().optional(),
   agent: z.string().nullable().optional(),
   startNow: z.boolean().optional(),
+  timeoutMinutes: timeoutMinutesSchema.optional(),
 });
 // Only the moves an operator makes by hand. `in_progress` is the dispatcher's claim and
 // done, failed and partial are the result watcher's: a client that made them would leave a
@@ -51,10 +55,15 @@ const statusBody = z.object({ status: z.enum(OPERATOR_TASK_STATUSES) });
 const commentBody = z.object({ body: z.string(), reassign: z.boolean().optional() });
 /** Stopping a running Task (#723): an optional reason, recorded in the system comment. */
 export const stopTaskBody = z.object({ reason: z.string().trim().max(2000).optional() });
-/** An edit (#722): the fields to change, at least one. The service says whether the Task's status allows it. */
+/**
+ * An edit (#722): the fields to change, at least one. The service says whether the Task's status allows it:
+ * title and description not while `in_progress`, the time limit (#724) at any status.
+ */
 export const updateTaskBody = z
-  .object({ title: z.string().optional(), description: z.string().optional() })
-  .refine((b) => b.title !== undefined || b.description !== undefined, { message: "give a title, a description or both" });
+  .object({ title: z.string().optional(), description: z.string().optional(), timeoutMinutes: timeoutMinutesSchema.optional() })
+  .refine((b) => b.title !== undefined || b.description !== undefined || b.timeoutMinutes !== undefined, {
+    message: "give a title, a description or a time limit",
+  });
 
 function taskDto(t: Task): TaskDto {
   return {
@@ -67,6 +76,7 @@ function taskDto(t: Task): TaskDto {
     attemptCount: t.attemptCount,
     dispatchedAt: t.dispatchedAt,
     lastError: t.lastError,
+    timeoutMinutes: t.timeoutMinutes,
     createdAt: t.createdAt,
     updatedAt: t.updatedAt,
   };
@@ -166,7 +176,7 @@ export async function create(ownerId: number, request: Request): Promise<Respons
     ? await parseMultipart(ownerId, request, newTaskBody)
     : await parseJsonBody(request, newTaskBody).then((b) => (b.ok ? { ...b, files: [] as AttachmentFile[] } : b));
   if (!parsed.ok) return parsed.response;
-  const { title, description, coreId, agent, startNow } = parsed.data;
+  const { title, description, coreId, agent, startNow, timeoutMinutes } = parsed.data;
   try {
     // The Agent is the chosen Core's: the picker only offers those, and the
     // route holds the same line for a client that skips the picker.
@@ -183,6 +193,7 @@ export async function create(ownerId: number, request: Request): Promise<Respons
       coreId: coreId ?? null,
       agent: agent ?? null,
       startNow: startNow === true,
+      ...(timeoutMinutes === undefined ? {} : { timeoutMinutes }),
     };
     const task =
       parsed.files.length > 0
@@ -215,12 +226,12 @@ export async function setStatus(ownerId: number, id: string, request: Request): 
   }
 }
 
-/** Edit the title and description (#722). 409 while the Task is `in_progress`. */
+/** Edit the title, description (#722; 409 while `in_progress`) or time limit (#724; any status). */
 export async function update(ownerId: number, id: string, request: Request): Promise<Response> {
   const body = await parseJsonBody(request, updateTaskBody);
   if (!body.ok) return body.response;
   try {
-    return json({ task: taskDto(await updateTask(ownerId, id, body.data)) });
+    return json({ task: taskDto(await updateTask(ownerId, id, { ...body.data, changedBy: await authorName() })) });
   } catch (e) {
     return rethrowUnlessDomain(e);
   }

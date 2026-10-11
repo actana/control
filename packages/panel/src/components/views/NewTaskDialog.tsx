@@ -5,29 +5,16 @@ import { FormErrorBox } from "~/components/ui/FormErrorBox";
 import { Modal } from "~/components/ui/Modal";
 import { MarkdownField } from "~/components/views/MarkdownField";
 import { api, ApiError } from "~/lib/api";
+import { PickCard } from "~/components/views/PickCard";
+import { TimeLimitPicker } from "~/components/views/TimeLimitPicker";
 import { TaskAttachments } from "~/components/views/TaskAttachments";
 import type { TaskAttachment } from "~/lib/task-attachments";
 import { useFleet } from "~/lib/fleet-context";
 import { queryKeys, useRunnableCoreAgents } from "~/queries";
 import type { NewTaskRequest } from "~/shared/task-wire";
+import { TASK_TIMEOUT_DEFAULT_MINUTES, type TaskTimeoutMinutes } from "~/shared/tasks";
 
 const labelStyle = { fontFamily: "var(--mono)", fontSize: 11, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--text-dim)" } as const;
-
-function Pick({ selected, disabled, onClick, children }: { selected: boolean; disabled?: boolean; onClick: () => void; children: React.ReactNode }) {
-  return (
-    <button
-      type="button"
-      role="radio"
-      aria-checked={selected}
-      disabled={disabled}
-      onClick={onClick}
-      style={{ textAlign: "left", padding: "10px 12px", borderRadius: 8, border: `1px solid ${selected ? "var(--brand-accent)" : "var(--border)"}`, background: selected ? "var(--accent-subtle-bg)" : "transparent", color: "inherit", fontFamily: "var(--mono)", fontSize: 13, cursor: "pointer" }}
-    >
-      {children}
-      {selected ? <span aria-hidden style={{ float: "right" }}>✓</span> : null}
-    </button>
-  );
-}
 
 function Form({ onClose, initialCoreId, onCreated }: { onClose: () => void; initialCoreId: string | null; onCreated?: (id: string) => void }) {
   const { cores } = useFleet();
@@ -37,6 +24,8 @@ function Form({ onClose, initialCoreId, onCreated }: { onClose: () => void; init
   const [coreId, setCoreId] = useState<string>(initialCoreId ?? cores[0]?.id ?? "");
   const [pickedAgent, setPickedAgent] = useState<string | null>(null);
   const [startNow, setStartNow] = useState(true);
+  const [timeoutMinutes, setTimeoutMinutes] = useState<TaskTimeoutMinutes>(TASK_TIMEOUT_DEFAULT_MINUTES);
+  const [limitValid, setLimitValid] = useState(true);
   const { data: agents = [], isLoading: agentsLoading } = useRunnableCoreAgents(coreId);
   // The Agent is one of the chosen Core's. A pick made on another Core is not it.
   const agent = agents.find((a) => a.id === pickedAgent) ?? agents.find((a) => a.isDefault) ?? agents[0] ?? null;
@@ -67,8 +56,9 @@ function Form({ onClose, initialCoreId, onCreated }: { onClose: () => void; init
       coreId: coreId || null,
       agent: agent?.id ?? null,
       startNow: assign,
+      timeoutMinutes,
     });
-  const hasTitle = title.trim().length > 0;
+  const hasTitle = title.trim().length > 0 && limitValid;
   const canAssign = hasTitle && !!coreId && !!agent;
 
   return (
@@ -119,9 +109,9 @@ function Form({ onClose, initialCoreId, onCreated }: { onClose: () => void; init
           <div role="radiogroup" aria-label="Core" style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             <span style={labelStyle}>Core</span>
             {cores.map((c) => (
-              <Pick key={c.id} selected={coreId === c.id} onClick={() => { setCoreId(c.id); setPickedAgent(null); }}>
+              <PickCard key={c.id} selected={coreId === c.id} onClick={() => { setCoreId(c.id); setPickedAgent(null); }}>
                 {c.label} · {c.dial.state === "connected" ? "online" : "offline"}
-              </Pick>
+              </PickCard>
             ))}
           </div>
           <div role="radiogroup" aria-label="Agent" style={{ display: "flex", flexDirection: "column", gap: 8 }}>
@@ -129,16 +119,20 @@ function Form({ onClose, initialCoreId, onCreated }: { onClose: () => void; init
             {!coreId ? <span style={{ color: "var(--text-dim)" }}>Pick a Core first.</span> : null}
             {coreId && !agentsLoading && agents.length === 0 ? <span style={{ color: "var(--text-dim)" }}>This Core has no Agents.</span> : null}
             {agents.map((a) => (
-              <Pick key={a.id} selected={agent?.id === a.id} onClick={() => setPickedAgent(a.id)}>
+              <PickCard key={a.id} selected={agent?.id === a.id} onClick={() => setPickedAgent(a.id)}>
                 {a.harness} · {a.model ?? "default"}
                 {a.name !== a.harness ? ` · ${a.name}` : ""}
-              </Pick>
+              </PickCard>
             ))}
           </div>
         </div>
         <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
           <span style={labelStyle}>Attachments · kept in the Core's Shared folder under tasks/&lt;id&gt;/attachments</span>
           <TaskAttachments items={attachments} onChange={setAttachments} folder />
+        </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+          <span style={labelStyle}>Time limit · per attempt</span>
+          <TimeLimitPicker value={timeoutMinutes} onChange={setTimeoutMinutes} onValidChange={setLimitValid} />
         </div>
         <label style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16, padding: 14, border: "1px solid var(--border)", borderRadius: 8 }}>
           <span>

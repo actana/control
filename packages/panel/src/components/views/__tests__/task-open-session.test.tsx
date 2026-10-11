@@ -116,6 +116,7 @@ beforeEach(() => {
     attemptCount: 1,
     dispatchedAt: 1,
     lastError: null,
+    timeoutMinutes: 60,
     createdAt: 1,
     updatedAt: 1,
   };
