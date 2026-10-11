@@ -3,6 +3,7 @@ import pkg from "../../package.json";
 import { authenticateApiKeyOnly } from "./api-key-auth";
 import { jsonError } from "./http-responses";
 import { MCP_TOOLS } from "./mcp-tools";
+import { hasPermission, missingPermissionMessage } from "./services/api-keys";
 import {
   HTTP_ACCEPTED,
   HTTP_BAD_REQUEST,
@@ -25,6 +26,9 @@ import {
  *   `Allow: POST`, the status the spec names for a server that does not offer one.
  * - **Key only.** The Bearer API key is the whole credential; the Operator's
  *   session cookie is never consulted (`authenticateApiKeyOnly`).
+ * - **The key's permissions** (#688) decide the tools: `tools/list` names only
+ *   the tools the key may call, and a call to any other is a tool error that
+ *   says which permission is missing, the same 403 the REST route gives.
  */
 
 export const MCP_PATH = "/mcp";
@@ -47,7 +51,8 @@ const INVALID_PARAMS = -32602;
 const INTERNAL_ERROR = -32603;
 
 const INSTRUCTIONS =
-  "Tasks on the Operator's Cores. Every call runs as the API key's owner and sees only the Cores the key reaches. " +
+  "Tasks on the Operator's Cores. Every call runs as the API key's owner, sees only the Cores the key reaches, " +
+  "and may use only the tools the key's permissions allow (tools/list names those). " +
   "assign_task only asks for the operator moves (assigned, draft). update_task changes a Task's title, description or time limit (timeoutMinutes; null = No limit) and " +
   "delete_task removes it; delete_task and the title and description edits are refused while the Task is in_progress (the time limit can be changed at any status), and so is a re-assign: stop_task stops a running Task (its Session too) and fails it, after which it can be re-assigned. list_shared and get_shared read a Core's Shared folder.";
 
@@ -120,7 +125,11 @@ async function handleMessage(
     case "ping":
       return { jsonrpc: "2.0", id, result: {} };
     case "tools/list":
-      return { jsonrpc: "2.0", id, result: { tools: MCP_TOOLS.map(describeTool) } };
+      return {
+        jsonrpc: "2.0",
+        id,
+        result: { tools: MCP_TOOLS.filter((t) => hasPermission(principal, t.permission)).map(describeTool) },
+      };
     case "tools/call":
       return await callTool(id, params, principal);
     default:
@@ -137,6 +146,9 @@ async function callTool(
   if (!call.success) return rpcError(id, INVALID_PARAMS, "tools/call needs a tool name and object arguments");
   const tool = MCP_TOOLS.find((t) => t.name === call.data.name);
   if (!tool) return rpcError(id, INVALID_PARAMS, `unknown tool: ${call.data.name}`);
+  if (!hasPermission(principal, tool.permission)) {
+    return toolResult(id, { ok: false, message: `403 ${missingPermissionMessage(tool.permission)}` });
+  }
 
   const args = tool.input.safeParse(call.data.arguments ?? {});
   if (!args.success) {

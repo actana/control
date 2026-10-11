@@ -283,6 +283,63 @@ describe("a PTY exit settles a Session that never started a turn (issue 387)", (
   });
 });
 
+describe("a killed or signalled exit never reads as a finish (issue 292)", () => {
+  // The report: `session kill` against a live Claude Code turn closed the PTY,
+  // the harness caught the hang-up and exited 0, and the exit-code-only settle
+  // wrote `finished` — a completion ding for work that had just been destroyed.
+  const EXITED = "MissionControlSessionEnded";
+
+  function midTurn() {
+    const h = harness();
+    h.post({ hook_event_name: "UserPromptSubmit", prompt: "go" });
+    expect(h.session.status).toBe("running");
+    return h;
+  }
+
+  it("settles a killed running turn as terminated even when the harness exits 0", () => {
+    const h = midTurn();
+    h.post({ hook_event_name: EXITED, exit_code: 0, killed: true });
+    expect(h.session.status).toBe("terminated");
+    expect(h.writes).not.toContain("finished");
+  });
+
+  it("settles a killed turn parked on a question as terminated too", () => {
+    const h = midTurn();
+    h.post({ hook_event_name: "Notification", notification_type: "permission_prompt" });
+    expect(h.session.status).toBe("needs-input");
+    h.post({ hook_event_name: EXITED, exit_code: 0, killed: true });
+    expect(h.session.status).toBe("terminated");
+  });
+
+  it("settles a signalled exit as terminated whatever the exit code", () => {
+    // node-pty reports a SIGHUP'd process as exit code 0 with signal 1.
+    const h = midTurn();
+    h.post({ hook_event_name: EXITED, exit_code: 0, signal: 1 });
+    expect(h.session.status).toBe("terminated");
+  });
+
+  it("still settles a clean, unsignalled, unrequested exit mid-turn as finished", () => {
+    const h = midTurn();
+    h.post({ hook_event_name: EXITED, exit_code: 0, signal: 0 });
+    expect(h.session.status).toBe("finished");
+  });
+
+  it("never leaves a killed Session on ready", () => {
+    // A bare Session has no turn to terminate; it settles as it always did.
+    const h = harness();
+    h.post({ hook_event_name: EXITED, exit_code: 0, killed: true });
+    expect(h.session.status).toBe("disconnected");
+  });
+
+  it("does not overwrite a turn that had already finished before the kill", () => {
+    const h = midTurn();
+    h.post({ hook_event_name: "Stop" });
+    expect(h.session.status).toBe("finished");
+    h.post({ hook_event_name: EXITED, exit_code: 0, killed: true });
+    expect(h.session.status).toBe("finished");
+  });
+});
+
 describe("a turn end from a session this session never captured (issue 390)", () => {
   // The miss this pins (issue 390): a `Stop` is not a session-capture event, so
   // one arriving under a session id that is not the stored one used to return

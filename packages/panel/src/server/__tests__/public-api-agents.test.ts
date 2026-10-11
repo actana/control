@@ -2,6 +2,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { ALL_API_KEY_PERMISSIONS } from "~/shared/api-key-permissions";
 import { closePanelTestDb, openPanelTestDb, resetPanelState } from "./_panel-test-db";
 
 /**
@@ -41,7 +42,7 @@ async function call(
 }
 
 const createKey = async (body: Record<string, unknown> = { name: "k" }) => {
-  const res = await call("/api/api-keys", { method: "POST", json: body, cookie: true });
+  const res = await call("/api/api-keys", { method: "POST", json: { permissions: ALL_API_KEY_PERMISSIONS, ...body }, cookie: true });
   expect(res.status).toBe(201);
   return (await res.json()) as { key: string };
 };

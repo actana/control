@@ -46,6 +46,7 @@ import {
   HOOK_TOKEN_ENV,
   HOOK_URL_ENV,
 } from "./harness-hook-env";
+import { HOOK_PID_PARAM } from "./harness-hook-origin";
 import { HARNESS_HOOK_TRUST_FLAGS } from "@actana/shared/harness-cli-config";
 import type { Harness } from "@actana/shared/domain";
 import { installOpencodeHooks, OPENCODE_PLUGIN_PATH } from "./harness-hooks-opencode";
@@ -113,6 +114,19 @@ export {
  * `-o /dev/null` is new too, and not cosmetic: Claude Code reads a hook's
  * stdout as control JSON, so the receiver's answer had no business being
  * printed there.
+ *
+ * `pid=$PPID` is the process that ran this hook (issue 460). The env the
+ * command reads is inherited by everything the harness starts, so a harness
+ * nested inside the Session — a `claude -p` the agent runs, one the operator
+ * starts from the Session's shell — would otherwise post under the Session's
+ * id and take its card over. The pid is the one fact a nested process cannot
+ * inherit: the receiver compares it with the pid the Core spawned, climbing
+ * through nothing but shells to get there — or, for the npm `codex` wrapper,
+ * through the one native child it runs (`harness-hook-origin.ts`). It is
+ * `$PPID` rather than `$$` because the harness runs the entry as
+ * `/bin/sh -c "sh -c '…'"`: the inner shell's parent is the harness where
+ * `/bin/sh` execs (bash) and the outer shell where it forks (dash), and the
+ * climb covers both.
  */
 export function hookCommand(slug: string, event: string): string {
   return (
@@ -121,7 +135,8 @@ export function hookCommand(slug: string, event: string): string {
     `-H "Content-Type: application/json" ` +
     `--data-binary @- ` +
     `"$${HOOK_URL_ENV}/api/hooks/${slug}` +
-    `?sessionId=$${HOOK_SESSION_ID_ENV}&hookEvent=${encodeURIComponent(event)}"; ` +
+    `?sessionId=$${HOOK_SESSION_ID_ENV}&hookEvent=${encodeURIComponent(event)}` +
+    `&${HOOK_PID_PARAM}=$PPID"; ` +
     `s=$?; [ "$s" = 0 ] || ` +
     `printf "%s\\t%s\\t%s\\t%s\\n" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" ` +
     `"$${HOOK_SESSION_ID_ENV}" "${event}" "$s" ` +

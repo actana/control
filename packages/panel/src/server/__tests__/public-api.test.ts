@@ -2,6 +2,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { ALL_API_KEY_PERMISSIONS } from "~/shared/api-key-permissions";
 import { closePanelTestDb, openPanelTestDb, resetPanelState } from "./_panel-test-db";
 
 /**
@@ -44,7 +45,7 @@ async function call(
 }
 
 const createKey = async (body: Record<string, unknown>) => {
-  const res = await call("/api/api-keys", { method: "POST", json: body, cookie: true });
+  const res = await call("/api/api-keys", { method: "POST", json: { permissions: ALL_API_KEY_PERMISSIONS, ...body }, cookie: true });
   expect(res.status).toBe(201);
   return (await res.json()) as { key: string; apiKey: { id: string } };
 };
@@ -190,7 +191,7 @@ describe("a revoked key", () => {
 describe("two owners", () => {
   it("runs every call as the key's owner, never as the session beside it", async () => {
     const { createApiKey } = await import("../services/api-keys");
-    const { key } = await createApiKey(B, { name: "owner-2" });
+    const { key } = await createApiKey(B, { name: "owner-2", permissions: ALL_API_KEY_PERMISSIONS });
     const list = await call("/api/v1/cores", { bearer: key, cookie: true });
     expect(((await list.json()) as { cores: { id: string }[] }).cores.map((c) => c.id)).toEqual(["core-x"]);
     expect((await call("/api/v1/cores/core-a", { bearer: key, cookie: true })).status).toBe(404);
