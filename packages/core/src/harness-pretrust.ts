@@ -7,9 +7,13 @@
 //
 //   claude-code  `~/.claude.json`  `projects[<dir>].hasTrustDialogAccepted = true`
 //                (the entry Claude Code 2.1.289 writes after "Yes, I trust this
-//                folder"; read off a real `~/.claude.json` after a manual trust)
+//                folder"; read off a real `~/.claude.json` after a manual trust; the
+//                lock described below is from 2.1.296)
 //   codex        `~/.codex/config.toml`  `[projects."<dir>"] trust_level = "trusted"`
-//                (documented key; `"trusted" | "untrusted"`)
+//                (documented key; `"trusted" | "untrusted"`. Checked on codex-cli
+//                0.160.0 (#702): answering its "Trust this folder?" dialog by hand
+//                writes exactly this table, and a repository the writer has
+//                recorded opens on the composer with no dialog)
 //
 //   codex hooks  `~/.codex/config.toml`  `[hooks.state."<hooks.json>:<event>:<group>:<handler>"]
 //                trusted_hash = "sha256:<hex>"`, one per hook this Core installs (`trustCodexHooks`:
@@ -19,7 +23,11 @@
 //                `{ "trustedAt": <ISO time>, "workspacePath": <dir> }`
 //                (cursor-agent 2026.10.01-e373342: trusting /home/core by hand
 //                created `~/.cursor/projects/home-core/.workspace-trusted`; its
-//                `--trust` flag is headless-only, so the marker is the mechanism)
+//                `--trust` flag is headless-only, so the marker is the mechanism.
+//                The slug is Cursor's own mapping, read off that version's bundle:
+//                see `cursorProjectSlug`. Cursor keeps `projects/` under
+//                `$CURSOR_DATA_DIR` when that is set, `~/.cursor` otherwise; a Core
+//                does not set it, and the home is where this helper is confined to.)
 //
 // Pi has no writer on purpose: its trust is answered by the global extension
 // (ADR 0040).
@@ -28,12 +36,39 @@
 // other key, and writes a temp file beside the target before renaming it over, so
 // a reader never sees half a file. A file it cannot parse is left alone and
 // reported: overwriting someone's config to add a trust line is the wrong trade.
-// This code runs as `core` in the helper (`core-home-ops`), never in the daemon.
+//
+// `~/.claude.json` is also rewritten by Claude Code itself, while a Session runs.
+// Claude Code 2.1.296 saves it in `saveConfigWithLock`, under a `proper-lockfile`
+// lock whose directory is `${configPath}.lock` (stale when its mtime is over 10 s
+// old). When it finds the lock held it retries with backoff (200 ms up to 4 s) and
+// then re-reads the file under the lock. So the Claude Code writer takes that same
+// lock (`claude-config-lock.ts`): a lock-honouring Claude Code waits for us, and we
+// wait for it. If the lock stays held past our budget the writer writes nothing and
+// throws, which `pretrustWorkspaces` reports as `failed`; the next availability
+// round or spawn tries again. There is no unlocked fallback.
+//
+// The lock is not the whole answer, because not every writer takes it: Claude Code
+// also has an unlocked fallback write after a failed locked save and a "storage v5"
+// write path behind a flag, and older versions (2.1.289 and before) may not lock at
+// all. Claude Code's exit-time saves (`saveGlobalConfigSyncForExit` and
+// `saveCurrentProjectConfigSyncForExit`) skip the lock too, and are probably the
+// lock-ignoring writer met most often. So inside the lock the writer still compares
+// and retries (#699): just before the rename it re-reads the file, and when it no
+// longer holds what the change was built from, it drops the change, pauses briefly,
+// and starts again from the new text. The window left is a writer that ignores the
+// lock saving between our re-read and our rename.
+//
+// This code runs as `core` in the helper (`core-home-ops`) when the Core has its own
+// identity, and inside the daemon on metal installs (`coreIdentity` null). So every
+// wait here (the lock wait and the compare back-off) is async and never blocks the
+// event loop.
 
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { hookEndpointSlug } from "@actana/shared/mission-control-hook-env";
+import { withClaudeConfigLock, type ClaudeConfigLockOptions } from "./claude-config-lock";
 import { canonicalJson, codexGroup, CODEX_HOOK_EVENTS } from "./harness-hooks";
 
 export type PretrustOutcome = "written" | "unchanged" | "failed";
@@ -56,8 +91,19 @@ export function codexConfigPath(home: string): string {
   return path.join(home, ".codex", "config.toml");
 }
 
-/** Temp file in the same directory, then rename: atomic on one filesystem. */
-function writeAtomic(file: string, text: string, fallbackMode: number): void {
+/**
+ * Temp file in the same directory, then rename: atomic on one filesystem.
+ *
+ * With `expected` (the text the change was built from, null for no file), the file is re-read after the temp
+ * write and the rename happens only when it still holds exactly that; otherwise the temp file is removed, nothing
+ * is written, and the result is false. Without it the result is always true.
+ */
+function writeAtomic(
+  file: string,
+  text: string,
+  fallbackMode: number,
+  guard?: { expected: string | null; beforeCommit?: () => void },
+): boolean {
   // Write through a link rather than replacing it: a symlinked config is the
   // user's arrangement, and the confinement check has already followed it.
   let target = file;
@@ -72,7 +118,15 @@ function writeAtomic(file: string, text: string, fallbackMode: number): void {
   const temp = path.join(path.dirname(target), `.${path.basename(target)}.${process.pid}.${Date.now()}.tmp`);
   try {
     fs.writeFileSync(temp, text, { encoding: "utf8", mode });
+    if (guard) {
+      guard.beforeCommit?.();
+      if (readIfExists(target) !== guard.expected) {
+        fs.rmSync(temp, { force: true });
+        return false;
+      }
+    }
     fs.renameSync(temp, target);
+    return true;
   } catch (err) {
     fs.rmSync(temp, { force: true });
     throw err;
@@ -90,8 +144,11 @@ function readIfExists(file: string): string | null {
 
 // ─── Claude Code ─────────────────────────────────────────────────────
 
-export function trustClaudeCode(file: string, dirs: readonly string[]): "written" | "unchanged" {
-  const raw = readIfExists(file);
+/** How many times the Claude Code writer re-reads a `~/.claude.json` that changed under it before it gives up. */
+export const CLAUDE_TRUST_ATTEMPTS = 5;
+
+/** The text `~/.claude.json` should hold with every dir trusted, or null when it already does. */
+function claudeTrustedText(file: string, raw: string | null, dirs: readonly string[]): string | null {
   let config: Record<string, unknown> = {};
   if (raw !== null && raw.trim() !== "") {
     const parsed: unknown = JSON.parse(raw);
@@ -115,10 +172,66 @@ export function trustClaudeCode(file: string, dirs: readonly string[]): "written
     projects[dir] = { ...(entry as Record<string, unknown> | undefined), hasTrustDialogAccepted: true };
     changed = true;
   }
-  if (!changed) return "unchanged";
+  if (!changed) return null;
   config.projects = projects;
-  writeAtomic(file, JSON.stringify(config, null, 2) + "\n", 0o600);
-  return "written";
+  return JSON.stringify(config, null, 2) + "\n";
+}
+
+function timerSleep(ms: number): Promise<void> {
+  return delay(ms);
+}
+
+/** The pause after the Nth compare miss is this times N (25, 50, 75, 100 ms), so a burst of writes gets time to finish. */
+const CLAUDE_TRUST_BACKOFF_MS = 25;
+
+/**
+ * Trust `dirs` in `~/.claude.json`, holding Claude Code's own lock on it (`withClaudeConfigLock`: Claude Code
+ * 2.1.296 saves the file in `saveConfigWithLock` under a `proper-lockfile` lock at `${file}.lock`, stale after
+ * 10 s, retrying with backoff and re-reading under the lock). The whole read, build, temp write, re-read and
+ * rename happens inside the lock, so a lock-honouring Claude Code waits for this write and this write waits for it.
+ *
+ * Inside the lock the compare-and-retry stays, as the defence against writers that do not take it (older Claude
+ * Code, its unlocked fallback write, its storage-v5 path, its unlocked exit-time saves
+ * `saveGlobalConfigSyncForExit` / `saveCurrentProjectConfigSyncForExit`): a change is renamed over the file only when the file
+ * still holds the text it was built from (`writeAtomic`'s `expected`). When it does not, the change is rebuilt from
+ * the new text after a short, increasing pause (25 ms times the attempt), up to `attempts` times (an integer of at
+ * least 1, checked before anything is touched; the pause is async, so the event loop is never blocked); after that the file is left as the other writer left it and the call
+ * throws. What remains is a lock-ignoring writer saving between the re-read and the rename.
+ *
+ * When the lock stays held past its budget, or something that is not a directory sits at the lock path, nothing is
+ * written and the error propagates: `pretrustWorkspaces` reports `failed` and the next round tries again. There is no
+ * unlocked fallback. `beforeCommit` runs between the temp write and the re-read; it is there for tests to change the
+ * file in that window.
+ */
+export async function trustClaudeCode(
+  file: string,
+  dirs: readonly string[],
+  {
+    attempts = CLAUDE_TRUST_ATTEMPTS,
+    beforeCommit,
+    lock,
+  }: { attempts?: number; beforeCommit?: () => void; lock?: ClaudeConfigLockOptions } = {},
+): Promise<"written" | "unchanged"> {
+  if (typeof attempts !== "number" || !Number.isInteger(attempts) || attempts < 1) {
+    throw new TypeError(`claude trust: attempts must be an integer of at least 1, got ${String(attempts)}`);
+  }
+  const sleep = lock?.sleep ?? timerSleep;
+  return await withClaudeConfigLock(
+    file,
+    async () => {
+      for (let attempt = 1; ; attempt++) {
+        const raw = readIfExists(file);
+        const text = claudeTrustedText(file, raw, dirs);
+        if (text === null) return "unchanged";
+        if (writeAtomic(file, text, 0o600, { expected: raw, beforeCommit })) return "written";
+        if (attempt >= attempts) {
+          throw new Error(`${file} changed while trust was being written, ${attempts} times in a row; left as it is`);
+        }
+        await sleep(CLAUDE_TRUST_BACKOFF_MS * attempt);
+      }
+    },
+    lock,
+  );
 }
 
 // ─── Codex ───────────────────────────────────────────────────────────
@@ -127,6 +240,55 @@ const TOML_BASIC_ESCAPES: Record<string, string> = { b: "\b", t: "\t", n: "\n", 
 
 function tomlQuote(value: string): string {
   return `"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+}
+
+/**
+ * For each line of a TOML file, whether it continues a value begun on an earlier line: the inside of a
+ * multi-line basic or literal string (`"""` / `'''`), or of an array still open from a previous line. Such a line
+ * is text or data, never a table header or a key, however much it looks like one (`["a", "b"]` as the last
+ * element of a nested array, `[hooks]` quoted in a string), so the line scanners below skip it (#705).
+ *
+ * Single-line strings and `#` comments are stepped over so that a bracket or quote inside them counts for
+ * nothing. Only what codex's own strict parser would accept matters: an unclosed single-line string ends with
+ * its line, and a `]` with nothing open is ignored.
+ */
+export function tomlContinuationLines(lines: readonly string[]): boolean[] {
+  const out: boolean[] = [];
+  let depth = 0;
+  let multi: '"' | "'" | null = null;
+  for (const line of lines) {
+    out.push(depth > 0 || multi !== null);
+    let i = 0;
+    while (i < line.length) {
+      const ch = line[i]!;
+      if (multi !== null) {
+        if (ch === "\\" && multi === '"') {
+          i += 2;
+        } else if (line.startsWith(multi.repeat(3), i)) {
+          // The delimiter is the last three of a run of quotes: `""""` is one `"` of content, then the end.
+          while (line[i] === multi) i++;
+          multi = null;
+        } else i++;
+        continue;
+      }
+      if (ch === "#") break;
+      if (ch === '"' || ch === "'") {
+        if (line.startsWith(ch.repeat(3), i)) {
+          multi = ch;
+          i += 3;
+          continue;
+        }
+        i++;
+        while (i < line.length && line[i] !== ch) i += ch === '"' && line[i] === "\\" ? 2 : 1;
+        i++;
+        continue;
+      }
+      if (ch === "[" || ch === "{") depth++;
+      else if ((ch === "]" || ch === "}") && depth > 0) depth--;
+      i++;
+    }
+  }
+  return out;
 }
 
 /** The key a `[projects.<key>]` header names, or null when it is some other table. */
@@ -144,7 +306,16 @@ function projectHeaderKey(line: string): string | null {
  * a second definition would make the file invalid TOML.
  */
 function definesProjectsElsewhere(lines: readonly string[]): boolean {
-  return lines.some((line) => /^\s*projects\s*[=.]/.test(line) || /^\s*\[\s*projects\s*\]/.test(line));
+  const continued = tomlContinuationLines(lines);
+  return lines.some((line, i) => !continued[i] && (/^\s*projects\s*[=.]/.test(line) || /^\s*\[\s*projects\s*\]/.test(line)));
+}
+
+/** The index of the first line after `header` that opens another table, or the end of the file. */
+function tableEnd(lines: readonly string[], continued: readonly boolean[], header: number): number {
+  for (let i = header + 1; i < lines.length; i++) {
+    if (!continued[i] && /^\s*\[/.test(lines[i]!)) return i;
+  }
+  return lines.length;
 }
 
 export function trustCodex(file: string, dirs: readonly string[]): "written" | "unchanged" {
@@ -156,7 +327,8 @@ export function trustCodex(file: string, dirs: readonly string[]): "written" | "
   }
   let changed = false;
   for (const dir of dirs) {
-    const header = lines.findIndex((line) => projectHeaderKey(line) === dir);
+    const continued = tomlContinuationLines(lines);
+    const header = lines.findIndex((line, i) => !continued[i] && projectHeaderKey(line) === dir);
     if (header === -1) {
       // One blank line between the old text and the new table (`""` last means the
       // file already ended in a newline).
@@ -165,14 +337,8 @@ export function trustCodex(file: string, dirs: readonly string[]): "written" | "
       changed = true;
       continue;
     }
-    let end = lines.length;
-    for (let i = header + 1; i < lines.length; i++) {
-      if (/^\s*\[/.test(lines[i]!)) {
-        end = i;
-        break;
-      }
-    }
-    const level = lines.findIndex((line, i) => i > header && i < end && /^\s*trust_level\s*=/.test(line));
+    const end = tableEnd(lines, continued, header);
+    const level = lines.findIndex((line, i) => i > header && i < end && !continued[i] && /^\s*trust_level\s*=/.test(line));
     if (level === -1) {
       lines.splice(header + 1, 0, 'trust_level = "trusted"');
       changed = true;
@@ -191,14 +357,18 @@ export function trustCodex(file: string, dirs: readonly string[]): "written" | "
 // ─── Codex hook trust ────────────────────────────────────────────────
 
 /**
- * The codex version whose hook hash this file reproduces (codex-rs `hooks/src/engine/discovery.rs` `hook_hash`
- * and `config/src/fingerprint.rs` `version_for_toml`, tag rust-v0.160.0). Checked against three entries codex
- * itself wrote for the hooks this Core installed at the time (permission_request 777d6667, user_prompt_submit
- * f23db2db, stop 0fc32051; the command has since grown `&pid=$PPID`, issue 460, and the test hashes the text
- * codex reviewed). A newer codex may normalise differently; a hash that does not match only makes codex ask
- * again.
+ * The newest codex release this file's hook hash is known to match (codex-rs `hooks/src/engine/discovery.rs`
+ * `hook_hash` and `config/src/fingerprint.rs` `version_for_toml`). Read off three entries codex 0.160.0 itself wrote
+ * for the hooks this Core installed then (permission_request 777d6667, user_prompt_submit f23db2db, stop 0fc32051),
+ * and confirmed on 0.162.0 through codex's own `hooks/list` (`codex-hook-trust-check.ts`), which reported the same
+ * three hashes and read the entries this writer makes as `trusted`. The command has since grown `&pid=$PPID`
+ * (issue 460), so those hashes are over the text codex reviewed, not over today's command.
+ *
+ * A newer codex may normalise differently; a hash that does not match only makes codex ask again. The Core asks
+ * the codex it has on every upgrade and logs the answer (#703), and `codex-hook-trust-check.test.ts` fails on a
+ * host whose codex is newer than this, so the constant moves up with the evidence and never ahead of it.
  */
-export const CODEX_HOOK_HASH_VERIFIED = "0.160.0";
+export const CODEX_HOOK_HASH_VERIFIED = "0.162.0";
 
 /** codex's `hook_event_key_label`: the event as it is spelled in a hook's key and in its hashed identity. */
 const CODEX_EVENT_LABELS: Readonly<Record<string, string>> = {
@@ -351,11 +521,13 @@ function tomlKeyPath(text: string): string[] | null {
  * `[hooks.state]` table (also written dotted or quoted) define `hooks.state` some other way (an inline table, dotted
  * keys), and a second `[hooks.state."k"]` beside any of them is invalid TOML that codex cannot load. A `hooks` key
  * in another table is something else and is ignored: `[features] hooks = true` is codex's own switch for
- * `--enable hooks`.
+ * `--enable hooks`. A line that continues a multi-line string or array is skipped (`tomlContinuationLines`).
  */
 export function hookStateConflict(lines: readonly string[]): string | null {
+  const continued = tomlContinuationLines(lines);
   let table: string[] = [];
-  for (const line of lines) {
+  for (const [i, line] of lines.entries()) {
+    if (continued[i]) continue;
     const header = /^\s*(\[\[?)\s*(.*?)\s*\]\]?\s*(?:#.*)?$/.exec(line);
     if (header && !/^\s*[A-Za-z0-9_"'-]+[^\]]*=/.test(line)) {
       table = tomlKeyPath(header[2]!) ?? ["?"];
@@ -386,7 +558,8 @@ export function trustCodexHooks(file: string, entries: readonly (readonly [strin
   if (conflict) throw new Error(`${file} defines "hooks.state" as ${conflict}, a form this writer does not edit`);
   let changed = false;
   for (const [key, hash] of entries) {
-    const header = lines.findIndex((line) => hookStateHeaderKey(line) === key);
+    const continued = tomlContinuationLines(lines);
+    const header = lines.findIndex((line, i) => !continued[i] && hookStateHeaderKey(line) === key);
     const want = `trusted_hash = ${tomlQuote(hash)}`;
     if (header === -1) {
       if (lines.length > 0 && lines[lines.length - 1] !== "") lines.push("");
@@ -394,14 +567,8 @@ export function trustCodexHooks(file: string, entries: readonly (readonly [strin
       changed = true;
       continue;
     }
-    let end = lines.length;
-    for (let i = header + 1; i < lines.length; i++) {
-      if (/^\s*\[/.test(lines[i]!)) {
-        end = i;
-        break;
-      }
-    }
-    const at = lines.findIndex((line, i) => i > header && i < end && /^\s*trusted_hash\s*=/.test(line));
+    const end = tableEnd(lines, continued, header);
+    const at = lines.findIndex((line, i) => i > header && i < end && !continued[i] && /^\s*trusted_hash\s*=/.test(line));
     if (at === -1) {
       lines.splice(header + 1, 0, want);
       changed = true;
@@ -420,17 +587,29 @@ export function trustCodexHooks(file: string, entries: readonly (readonly [strin
 // ─── Cursor CLI ──────────────────────────────────────────────────────
 
 /**
- * The directory name Cursor gives a workspace: the absolute path with the leading
- * slash dropped and every other slash turned into a dash (`/home/core` ->
- * `home-core`). **The mapping is not injective**: a dash already in the path stays
- * a dash, so `/home/a-b` and `/home/a/b` are both `home-a-b`. Cursor itself has
- * that ambiguity; the marker's `workspacePath` is what tells them apart, and an
- * existing marker is never overwritten, so the second of two colliding paths is
- * simply not written (it is reported as unchanged and the setup check still
- * catches a dialog that shows).
+ * The directory name Cursor gives a workspace, as cursor-agent 2026.10.01-e373342
+ * computes it (`utils/dist/workspace-paths.js` in its bundle, joined under
+ * `projects/` by `cursor-config/dist/paths.js`): every character that is not an
+ * ASCII letter or digit becomes a dash, a run of dashes collapses to one, and
+ * leading and trailing dashes are dropped. So `/home/core` -> `home-core`, and
+ * `/home/core/my.app_v2 (beta)/` -> `home-core-my-app-v2-beta`; a dot, an
+ * underscore, a space, a trailing slash or a non-ASCII letter never reaches the
+ * folder name. The three replaces below are Cursor's, verbatim (no `u` flag
+ * either, so a character outside the BMP is two dashes that collapse to one).
+ *
+ * **The mapping is not injective**: `/home/a-b`, `/home/a/b`, `/home/a.b` and
+ * `/home/a b` are all `home-a-b`. Cursor itself has that ambiguity; the marker's
+ * `workspacePath` is what tells them apart, and an existing marker is never
+ * overwritten, so the second of two colliding paths is simply not written (it is
+ * reported as unchanged and the setup check still catches a dialog that shows).
+ * A path with no letter or digit at all (the root) maps to `""`, and `trustCursor`
+ * skips it.
  */
 export function cursorProjectSlug(dir: string): string {
-  return dir.replace(/^\/+/, "").replace(/\//g, "-");
+  return dir
+    .replace(/[^a-zA-Z0-9]/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-+|-+$/g, "");
 }
 
 export function cursorMarkerPath(home: string, dir: string): string {
@@ -473,18 +652,18 @@ export function trustCursor(home: string, dirs: readonly string[], now: () => Da
  * Trust `dirs` in each of `harnesses` that has a writer. One Harness failing does
  * not stop the next; the failure is the result, not a throw.
  */
-export function pretrustWorkspaces(
+export async function pretrustWorkspaces(
   home: string,
   harnesses: readonly string[],
   dirs: readonly string[],
-): PretrustResult[] {
+): Promise<PretrustResult[]> {
   const results: PretrustResult[] = [];
   for (const harness of PRETRUST_HARNESSES) {
     if (!harnesses.includes(harness)) continue;
     try {
       const outcome =
         harness === "claude-code"
-          ? trustClaudeCode(claudeConfigPath(home), dirs)
+          ? await trustClaudeCode(claudeConfigPath(home), dirs)
           : harness === "codex"
             ? trustCodex(codexConfigPath(home), dirs)
             : trustCursor(home, dirs);
