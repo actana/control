@@ -14,6 +14,7 @@ import {
   composeUpCoreCommand,
   coreImageTag,
   coreInstallPaths,
+  coreUpdatePaths,
   firstRunStepFromSearch,
   labelRefusal,
   pairNewCommand,
@@ -329,5 +330,25 @@ describe("the Compose disclaimer", () => {
     for (const copy of [COMPOSE_SHORTCUT_ACTION, COMPOSE_SHORTCUT_NOTICE]) {
       expect(copy).not.toMatch(/skip|dismiss|later|not now|close|continue anyway|explore/i);
     }
+  });
+});
+
+describe("coreUpdatePaths", () => {
+  it("mirrors the install ids and names the Panel's tag and the compose directory", () => {
+    const paths = coreUpdatePaths(VERSION);
+    expect(paths.map((p) => p.id)).toEqual(coreInstallPaths(VERSION).map((p) => p.id));
+    const compose = paths.find((p) => p.id === "compose");
+    expect(compose?.note).toContain(`ACTANA_TAG=${coreImageTag(VERSION)}`);
+    expect(compose?.title).toMatch(/deploy\//);
+    expect(compose?.title).toMatch(/on the host/i);
+  });
+
+  it("scopes the compose command to the same service the wizard brings up", () => {
+    const compose = coreUpdatePaths(VERSION).find((p) => p.id === "compose");
+    const service = composeUpCoreCommand(VERSION).split(" ").pop();
+    expect(service).toBe("core");
+    expect(compose?.command.endsWith(` ${service}`)).toBe(true);
+    expect(compose?.command).toMatch(/pull core && /);
+    expect(compose?.note).toContain("core2");
   });
 });

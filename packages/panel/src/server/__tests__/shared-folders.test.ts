@@ -156,6 +156,10 @@ describe("attaching the Shared folder", () => {
     await expect(offline.finishPairing(coreId)).rejects.toMatchObject({ code: "not-connected" });
     r.link.capability = null;
     await expect(r.service.finishPairing(coreId)).rejects.toMatchObject({ code: "cannot-mount" });
+    // A container Core refuses `actana update`, so the error must also name the command that works for it.
+    await expect(r.service.finishPairing(coreId)).rejects.toThrow(
+      /docker compose pull core && docker compose up -d core/,
+    );
     expect(r.link.frames).toEqual([]);
     expect((await findSharedFolder(1, coreId))?.state).toBe("pending");
   });

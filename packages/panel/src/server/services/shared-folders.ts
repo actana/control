@@ -312,7 +312,7 @@ export class SharedFolders {
     if (!link) throw new SharedFolderError("This Core is not connected, so its Shared folder cannot be attached.", "not-connected");
     if (link.sharedCapability && link.sharedCapability() === null) {
       throw new SharedFolderError(
-        "This Core cannot mount a Shared folder: update it (`actana update`) and try again.",
+        "This Core cannot mount a Shared folder: update it (`actana update` on its machine, or `docker compose pull core && docker compose up -d core` on the host for a container Core) and try again.",
         "cannot-mount",
       );
     }

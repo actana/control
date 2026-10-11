@@ -6,7 +6,7 @@
 // else. Every string in this file is therefore a **Core-side** command: it is
 // pasted into a terminal on the machine being paired, never run by the Panel
 // and never run by the browser. That is why they live beside `cores.ts`'s
-// `CORE_UPDATE_COMMAND` rather than in a component — a command an operator
+// `CORE_UPDATE_COMMAND` and this file's `coreUpdatePaths` rather than in a component — a command an operator
 // pastes on another machine is a fact about the product, and it belongs
 // somewhere a test can read it.
 //
@@ -17,6 +17,12 @@
 // print, or describes output the CLI no longer emits, is worse than no wizard
 // at all. `__tests__/core-onboarding.test.ts` reads the CLI's own pinned
 // contract rather than a copy of this file, so that drift is a red suite.
+
+import {
+  CORE_IMAGE_UPDATE_COMMAND,
+  CORE_UPDATE_COMMAND,
+  type CoreUpdatePath,
+} from "./cores";
 
 /** One documented way to put a Core on a machine. */
 export type CoreInstallPath = {
@@ -95,6 +101,37 @@ export function coreInstallPaths(panelVersion: string): readonly CoreInstallPath
         composeUpCoreCommand(panelVersion),
       ],
       note: `\`ACTANA_TAG\` pins both services to one line, and it is set here because the file's default is \`:latest\`, which does not resolve until a release is published. \`${coreImageTag(panelVersion)}\` is the line this Panel is on. Once a release exists, that line's tag is \`${panelVersion}\`.`,
+    },
+  ];
+}
+
+/**
+ * The two ways to update a Core that is behind, installer first — the update
+ * counterpart of `coreInstallPaths`, with the same ids.
+ *
+ * The Panel cannot see how a Core was installed, so both are offered. The
+ * Compose path is concrete about the tag because no compose Core saved one:
+ * the README and the wizard both set `ACTANA_TAG` inline, so a bare
+ * `docker compose pull && docker compose up -d` either finds no compose file
+ * (at a clone's root) or pulls `:latest`, which does not resolve until a
+ * release is published.
+ */
+export function coreUpdatePaths(panelVersion: string): readonly CoreUpdatePath[] {
+  return [
+    {
+      id: "installer",
+      title: "Installed with the installer — run on that machine",
+      command: CORE_UPDATE_COMMAND,
+      note: null,
+      copyLabel: "installer",
+    },
+    {
+      id: "compose",
+      title:
+        "Running from the Core image (Docker Compose) — run on the host, in the directory holding its compose file (`deploy/` in a clone), not inside the container",
+      command: CORE_IMAGE_UPDATE_COMMAND,
+      note: `Set \`ACTANA_TAG=${coreImageTag(panelVersion)}\` (this Panel's line) in \`.env\` beside the file first. The file's default \`:latest\` does not resolve until a release is published. The README and this Panel's setup wizard set the tag inline, so it was never saved. A second Core in the same file: use its service name (e.g. \`core2\`) in both places.`,
+      copyLabel: "container",
     },
   ];
 }

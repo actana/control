@@ -21,7 +21,8 @@ you would rather stay anonymous.
 
 Only the **latest release** is supported. There are no backport branches — if
 you are on an older tag, the fix is to upgrade. The Panel upgrades by pulling a
-new image; a Core upgrades with `actana update` on its machine.
+new image; a Core upgrades with `actana update` on its machine (or
+`docker compose pull && docker compose up -d` for a container Core).
 
 A **beta** is not a release. The open train is installable — as the
 `beta-x.y.z` and `x.y.z-beta` images, and on metal from the train's own ref
