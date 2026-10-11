@@ -417,7 +417,9 @@ export function NewHarnessDialog({
                           {cliOutdated
                             ? `Update required: ${availability.label ?? a.label} ${availability.requiredVersion ?? "latest"} or newer.`
                             : cliNeedsSetup
-                              ? `Needs setup (${availability.setupDialog}): start a Session and finish it in ${a.label}.`
+                              ? availability.setupError !== undefined
+                                ? `Could not start on this Core (${availability.setupError}): a Session may show why.`
+                                : `Needs setup (${availability.setupDialog}): start a Session and finish it in ${a.label}.`
                               : "Checking PATH..."}
                         </div>
                       )}

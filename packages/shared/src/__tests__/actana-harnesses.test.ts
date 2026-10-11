@@ -135,6 +135,12 @@ describe("missing detection", () => {
     ).not.toContain("pi");
   });
 
+  it("does not reinstall a Harness the setup check could not start: it is installed (#700)", () => {
+    expect(
+      missingHarnesses({ ...ALL_MISSING, pi: { status: "missing", reason: "setup-check-failed: EACCES", path: "/bin/pi" } }),
+    ).not.toContain("pi");
+  });
+
   it("leaves an outdated CLI alone — updating it is the vendor's job", () => {
     expect(
       missingHarnesses({ ...ALL_MISSING, codex: { status: "outdated", version: "0.1.0" } }),
