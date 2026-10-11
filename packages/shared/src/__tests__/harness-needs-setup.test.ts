@@ -42,6 +42,7 @@ describe("setup-check-failed reason (#700)", () => {
     const kept = setupCheckFailure(setupCheckFailedReason(long))!;
     expect(kept).toHaveLength(SETUP_CHECK_FAILED_MAX_CHARS);
     expect(kept.endsWith("…")).toBe(true);
+    expect(setupCheckFailure(setupCheckFailedReason("\nEACCES"))).toBe("EACCES");
     expect(setupCheckFailure(setupCheckFailedReason(""))).toBe("unknown error");
     expect(setupCheckFailure(setupCheckFailedReason("\n\n"))).toBe("unknown error");
   });

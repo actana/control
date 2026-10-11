@@ -179,6 +179,11 @@ describe("why a harness cannot run an Agent yet (#706)", () => {
     ["outdated", { status: "outdated", reason: "outdated", version: "1.2.0", requiredVersion: "1.4.0" }, "outdated: 1.2.0 installed, 1.4.0 or newer required"],
     ["version-unknown", { status: "outdated", reason: "version-unknown" }, "outdated (version-unknown)"],
     ["needs setup", { status: "missing", reason: "needs-setup: folder-trust" }, "needs setup: folder-trust"],
+    [
+      "setup check failed",
+      { status: "missing", reason: "setup-check-failed: posix_spawnp failed: EACCES" },
+      "could not start for its setup check: posix_spawnp failed: EACCES",
+    ],
     ["not found", { status: "missing", reason: "not-found" }, "missing (not-found)"],
     ["disabled", { status: "missing", reason: "disabled" }, "missing (disabled)"],
     ["not reported", null, "not reported"],
