@@ -98,7 +98,8 @@ That one value is two-and-a-half things at once (ADR 0038):
    may name more than one address, and
 3. by default, the **endpoint a pairing hands back** to the client that redeems
    a code: the first entry, unless that code chose another of them with
-   `pair new --public-host`.
+   `pair new --public-host`. The Panel does not use that answer: it keeps the
+   address you typed into "Add Core" (ADR 0038 D8).
 
 So it lives in the compose file you edit, next to the service it names — never
 in `.env`, which has room for one value and a fleet needs one per Core, and
@@ -137,6 +138,10 @@ Then pair each client to the address it can actually reach:
 docker compose exec -u actana core actana pair new --label panel  --public-host core
 docker compose exec -u actana core actana pair new --label laptop --public-host 192.168.1.20
 ```
+
+The Panel stores the address you typed into "Add Core", so for it `--public-host`
+changes nothing; it matters for clients that use the Core's answer, such as
+`actana core pair` on the host machine.
 
 `--public-host` **chooses** from that list; it can never add to it. Name an
 address that is not configured and `pair new` refuses and prints the ones that

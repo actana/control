@@ -44,6 +44,7 @@
 
 import { signBearer, type BearerSecret } from "@actana/shared/core-link-bearer";
 import type { LocalCoreWiring } from "@actana/shared/local-core-wiring";
+import { wssEndpoint } from "@actana/shared/public-hosts";
 import { wireLocalCoreViaCore } from "./core-home-ops-client";
 import type { PersistedMaterial } from "@actana/shared/core-material-store";
 
@@ -94,14 +95,9 @@ export function localDialHost(bindHost: string): string {
   return host;
 }
 
-/** An IPv6 literal needs brackets before it can be a URL authority. */
-function endpointHost(dialHost: string): string {
-  return dialHost.includes(":") && !dialHost.startsWith("[") ? `[${dialHost}]` : dialHost;
-}
-
 /** `wss://host:port`, as it goes into the credential and into the log line. */
 export function localEndpoint(dialHost: string, port: number): string {
-  return `wss://${endpointHost(dialHost)}:${port}`;
+  return wssEndpoint(dialHost, port);
 }
 
 /**

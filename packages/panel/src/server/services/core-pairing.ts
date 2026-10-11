@@ -1,4 +1,5 @@
 import { hostname } from "node:os";
+import { wssEndpoint } from "@actana/shared/public-hosts";
 import {
   PairingError,
   fetchCorePairingIdentity,
@@ -30,7 +31,9 @@ import type { Core } from "~/shared/cores";
  * and the redemption are `@actana/sdk/core-pairing` — the same function
  * `actana core pair` calls (#285) — and this module adds an address, a label
  * and a registry write around it. A behaviour that differs between the Panel
- * and the CLI would be a bug in one of them, not a choice.
+ * and the CLI would be a bug in one of them, not a choice. One deliberate exception: the Panel stores
+ * the address it dialed rather than the Core's reported `endpoint` (ADR 0038 D8,
+ * #409); the CLI follows when the SDK returns the dialed endpoint.
  *
  * **What this module refuses to say.** Nothing here logs, and nothing here
  * forwards an SDK error message. Both are deliberate: `parsePairingTicket`
@@ -116,6 +119,16 @@ export type PairCoreInput = {
 };
 
 /**
+ * The core-link endpoint for the address the operator gave — exactly what the
+ * SDK dials, spelled the one way this repo spells an endpoint. Throws the same
+ * `bad-address` {@link PairingError} as `parseCoreAddress`.
+ */
+export function dialedEndpoint(address: string): string {
+  const { host, port } = parseCoreAddress(address);
+  return wssEndpoint(host, port);
+}
+
+/**
  * Redeem a code against a Core and register what comes back.
  *
  * The credential the SDK returns is `CoreRegistrationBlob`-shaped with a
@@ -124,6 +137,12 @@ export type PairCoreInput = {
  * {@link registerCoreFromCredential}, which since #287 is the only door there
  * is. Nothing downstream knows a pairing happened, which is the point:
  * `core-link-manager.ts` dials the result unchanged.
+ *
+ * **The stored endpoint is the address that was dialed, not the one the Core
+ * answered with** (ADR 0038 D8, #409). The Core's `endpoint` is its own guess
+ * about a network it cannot see; the redemption, by contrast, succeeded on the
+ * dialed address under the pinned CA and a hostname check, so that address is
+ * proven reachable from here and covered by the Core's certificate.
  */
 export async function pairCore(input: PairCoreInput): Promise<Core> {
   await refuseIfAlreadyRegistered(input.address);
@@ -146,7 +165,10 @@ export async function pairCore(input: PairCoreInput): Promise<Core> {
   // the operator to mint a code they do not need.
   // A Core paired from the Panel is not finished until its Shared folder is attached (#564, ADR 0041 D5): it
   // is registered with the folder pending, and `finishPairing` in `shared-folders.ts` is the last step.
-  return await registerCoreFromCredential(credential, { label: input.label ?? "", pendingSharedFolder: true });
+  return await registerCoreFromCredential(
+    { ...credential, endpoint: dialedEndpoint(input.address) },
+    { label: input.label ?? "", pendingSharedFolder: true },
+  );
 }
 
 /**
@@ -157,9 +179,11 @@ export async function pairCore(input: PairCoreInput): Promise<Core> {
  * certificate for a client this Panel never stored — a credential nobody can
  * use and nobody has revoked. The check inside
  * {@link registerCoreFromCredential} still runs and is still the authority,
- * because a Core reports its own endpoint and that need not be the address it
- * was reached on. This one only moves the ordinary case — an operator pairing a
- * machine that is already in the fleet — to before the irreversible step.
+ * because it is the registry's own invariant. This one agrees with it byte for
+ * byte — both key on {@link dialedEndpoint}, since the Core's own answer is no
+ * longer what gets stored (ADR 0038 D8) — and only moves the ordinary case, an
+ * operator pairing a machine that is already in the fleet, to before the
+ * irreversible step.
  *
  * A bad address falls through to `pairWithCore`, which owns that failure and
  * words it. Nothing here dials, so nothing here is slow.
@@ -167,9 +191,7 @@ export async function pairCore(input: PairCoreInput): Promise<Core> {
 async function refuseIfAlreadyRegistered(address: string): Promise<void> {
   let endpoint: string;
   try {
-    // Via `httpsOrigin` rather than by reassembling host and port: it keeps the
-    // brackets an IPv6 authority needs, which a `${host}:${port}` would lose.
-    endpoint = `wss://${parseCoreAddress(address).httpsOrigin.slice("https://".length)}`;
+    endpoint = dialedEndpoint(address);
   } catch {
     return;
   }
