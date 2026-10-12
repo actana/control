@@ -23,6 +23,11 @@
 
 @import "@xterm/xterm/css/xterm.css";
 
+/* One fixed look, copied from Actana Studio — see
+   docs/adr/0015-one-fixed-look-from-actana-studio.md before adding a colour,
+   a font or a theme option here. The only operator axis is dark / light
+   (system-following); a new colour is a sync question with Studio, not a
+   taste question. */
 @theme {
   --font-sans: "JetBrains Mono", ui-sans-serif, -apple-system, system-ui,
     "Segoe UI", Helvetica, "Apple Color Emoji", Arial, sans-serif,

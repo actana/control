@@ -407,9 +407,11 @@ project runbooks yet; revisit when a second project actually needs one.
   ratified 0006 stands unqualified, and a forward pointer to a proposal would
   say otherwise. The note is named here so it is somebody's job at ratification
   rather than nobody's afterwards.
-- **`docs/specs/05-remove-bundled-skills.md:210` has been honoured.** *"Any
-  future feature that would require Panel-installed skills has to relitigate ADR
-  0006 first"* — this is that relitigation, and its verdict is the beta gate's.
+- **The former remove-bundled-skills spec's closing rule has been honoured.**
+  *"Any future feature that would require Panel-installed skills has to
+  relitigate ADR 0006 first"* — that spec is deleted (ADR 0016 D46), and
+  [0006](0006-no-bundled-skills.md) is its surviving record. This is that
+  relitigation, and its verdict is the beta gate's.
 - **`docs/upstream/DIVERGENCE.md` line 92 is now wrong.** *"Extension mechanism
   (skills/MCP) — moves from IDENTICAL to NON-EXISTENT"* stops being true for
   skills on the day this is accepted.

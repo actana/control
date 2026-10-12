@@ -152,7 +152,7 @@ do **not** import the Panel's stylesheet (it is an app stylesheet, and the
 landing page must not grow a dependency on the workspace build).
 
 **Typography: JetBrains Mono, self-hosted.** It is already the product's
-primary UI font (Studio look, spec 12) and the brand-asset font
+primary UI font (Studio look, ADR 0015) and the brand-asset font
 (`docs/assets/README.md`), so the page uses it for everything — headings,
 body, code — the way the app does, not just for code blocks. (Among the
 references only Bun pushes mono into headings; for us it is not a stunt, it is
