@@ -57,8 +57,8 @@
 # Alpine and node:24-alpine were eliminated on the musl gate — the glibc Node
 # bundled in the Core tarball exits 127 for a missing ELF interpreter.
 #
-# ubuntu:24.04 == noble-20260730.1 at the time of writing.
-FROM ubuntu:24.04@sha256:561618e2c15bf2397621dd04f96926663a3b5616c189cf7e38db7e82f5c538ea
+# ubuntu:24.04 == noble-20260917 at the time of writing.
+FROM ubuntu:24.04@sha256:534baea6a22c03a63003dbc8dbe78fe34bc0d7e595d9a9dc9834884ff530eb55
 
 # ARG, not ENV: `noninteractive` is right for this build and wrong for the
 # interactive shells a Harness opens later, so it must not survive the build.

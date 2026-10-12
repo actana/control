@@ -6,17 +6,20 @@ import { describe, expect, it } from "vitest";
 import {
   DOCKERFILE_FILENAME_REGEX,
   NOT_COVERED,
+  RETIRED_CORE_BASE_DIGESTS,
   SHIPPED_DOCKERFILES,
   dockerUpdateDirectories,
   formatReport,
   isCovered,
   latestVersionForMajor,
   parseFromLines,
+  readCoreBaseNote,
   readNodeVersionArg,
   setNodeVersionArg,
   splitImageRef,
   updateStrategyFor,
 } from "../lib/base-pins.mjs";
+import { RETIRED_PANEL_RUNTIME_DIGESTS, readPanelRuntimeNote } from "../lib/base-pins.mjs";
 
 const repoRoot = path.resolve(import.meta.dirname, "..", "..");
 const read = (rel) => fs.readFileSync(path.join(repoRoot, rel), "utf8");
@@ -201,6 +204,33 @@ describe("the NODE_VERSION ARG", () => {
   });
 });
 
+describe("readCoreBaseNote", () => {
+  it("reads the point release named on the line above the base", () => {
+    const text = [
+      "# some prose",
+      "# ubuntu:24.04 == noble-20260917 at the time of writing.",
+      `FROM ubuntu:24.04@sha256:${"a".repeat(64)}`,
+    ].join("\n");
+
+    expect(readCoreBaseNote(text)).toEqual({ tag: "noble-20260917", line: 2 });
+  });
+
+  it("is null when the note is not directly above the FROM", () => {
+    const text = [
+      "# ubuntu:24.04 == noble-20260917 at the time of writing.",
+      "",
+      `FROM ubuntu:24.04@sha256:${"a".repeat(64)}`,
+    ].join("\n");
+
+    expect(readCoreBaseNote(text)).toBe(null);
+  });
+
+  it("is null when there is no note, or no FROM", () => {
+    expect(readCoreBaseNote(`FROM ubuntu:24.04@sha256:${"a".repeat(64)}\n`)).toBe(null);
+    expect(readCoreBaseNote("# ubuntu:24.04 == noble-20260917 at the time of writing.\n")).toBe(null);
+  });
+});
+
 describe("formatReport", () => {
   it("names the drifted rows and only those", () => {
     const report = formatReport([
@@ -261,6 +291,29 @@ describe("the shipped Dockerfiles", () => {
   it("carry a NODE_VERSION that no registry can bump for them", () => {
     expect(readNodeVersionArg(read("deploy/core.Dockerfile")).version).toMatch(/^24\.\d+\.\d+$/);
   });
+
+  // #548: core 0.4.5 shipped pinning a digest `ubuntu:24.04` had already left
+  // behind. The weekly rebuild only reports that (ADR 0023 D42), so the fix
+  // is a forward bump — and these two tests are what keeps it forward.
+  it("do not pin a Core base digest a release was found stale on (#548)", () => {
+    const base = parseFromLines(read("deploy/core.Dockerfile"))[0];
+    const retired = RETIRED_CORE_BASE_DIGESTS[base.digest];
+
+    expect(retired, `${base.digest} is ${retired?.tag}, retired by ${retired?.report}`).toBeUndefined();
+  });
+
+  it("name the point release the Core base digest came from, beside the pin", () => {
+    const note = readCoreBaseNote(read("deploy/core.Dockerfile"));
+
+    expect(note, "no `# ubuntu:24.04 == noble-… at the time of writing.` line above the FROM").not.toBe(null);
+    expect(note.tag).toMatch(/^noble-\d{8}(\.\d+)?$/);
+
+    // Newer than every point release a stale pin has been reported on. The
+    // tags carry their date, so the ordering is the string ordering.
+    for (const { tag } of Object.values(RETIRED_CORE_BASE_DIGESTS)) {
+      expect(note.tag > tag, `${note.tag} is not newer than the retired ${tag}`).toBe(true);
+    }
+  });
 });
 
 describe("every other Dockerfile in the tree", () => {
@@ -276,6 +329,58 @@ describe("every other Dockerfile in the tree", () => {
     for (const file of found) {
       const accounted = SHIPPED_DOCKERFILES.includes(file) || file in NOT_COVERED;
       expect(accounted, `${file} is neither shipped nor listed in NOT_COVERED`).toBe(true);
+    }
+  });
+});
+
+// #733: the Panel image shipped pinning a distroless digest `latest` had
+// already left behind (first reported by #312). Same shape as #548's Core
+// fix: a forward bump, held forward by these tests.
+describe("readPanelRuntimeNote", () => {
+  const pin = `FROM gcr.io/distroless/nodejs24@sha256:${"a".repeat(64)}`;
+
+  it("reads the date on the line above the runtime FROM", () => {
+    const text = [
+      "FROM node:24.15.0-trixie AS build",
+      "# gcr.io/distroless/nodejs24:latest == this digest on 2026-10-09.",
+      pin,
+    ].join("\n");
+
+    expect(readPanelRuntimeNote(text)).toEqual({ date: "2026-10-09", line: 2 });
+  });
+
+  it("is null when the note is not directly above the FROM", () => {
+    const text = ["# gcr.io/distroless/nodejs24:latest == this digest on 2026-10-09.", "", pin].join("\n");
+
+    expect(readPanelRuntimeNote(text)).toBe(null);
+  });
+
+  it("is null when there is no note, or no FROM", () => {
+    expect(readPanelRuntimeNote(`${pin}\n`)).toBe(null);
+    expect(readPanelRuntimeNote("# gcr.io/distroless/nodejs24:latest == this digest on 2026-10-09.\n")).toBe(null);
+  });
+});
+
+describe("the Panel runtime pin", () => {
+  const text = read("deploy/panel.Dockerfile");
+
+  it("is not a digest a released Panel image was found stale on (#733)", () => {
+    const runtime = parseFromLines(text).at(-1);
+    const retired = RETIRED_PANEL_RUNTIME_DIGESTS[runtime.digest];
+
+    expect(retired, `${runtime.digest} was retired by ${retired?.report}`).toBeUndefined();
+  });
+
+  it("is dated beside the pin, later than every drift report", () => {
+    const note = readPanelRuntimeNote(text);
+
+    expect(note, "no `# gcr.io/distroless/nodejs24:latest == this digest on YYYY-MM-DD.` line above the FROM").not.toBe(
+      null,
+    );
+
+    // ISO dates order as strings.
+    for (const { reported } of Object.values(RETIRED_PANEL_RUNTIME_DIGESTS)) {
+      expect(note.date > reported, `${note.date} is not later than the drift reported on ${reported}`).toBe(true);
     }
   });
 });

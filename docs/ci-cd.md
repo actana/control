@@ -1372,8 +1372,18 @@ republishes **`beta-0.4.5-f1`** — its own moving tag, so it cannot overwrite t
 plain train's image — and when it is done, merge it back:
 
 ```bash
-gh pr create --base beta/0.4.5 --head beta/0.4.5-f1 --title "chore(release): fold beta/0.4.5-f1 into beta/0.4.5"
+gh pr create --base beta/0.4.5 --head beta/0.4.5-f1 --title "gate: merge back beta/0.4.5-f1 into beta/0.4.5"
 ```
+
+**A gate pull request is titled `gate: …`**, and `gate` is a commit type in
+`commitlint.config.mjs` (#499). That covers both gates — the fixes going into
+`beta/0.4.5-f1`, and the merge-back above — and it is a type rather than a
+title-lint exemption on purpose: a gate is squash-merged like any other pull
+request, so its title becomes a commit on the train, and the merge-back's and
+the promotion's commit lint read that commit. An exemption would have let the
+title through and failed the commit one pull request later. The promotion's
+own title (`beta/0.4.5 → main`) stays unlinted (D38), because a fast-forward
+makes no commit of it.
 
 **`beta/0.4.5-f1` never promotes.** The release is `v0.4.5` with no suffix, so
 the plain train is what carries the promotion pull request and what

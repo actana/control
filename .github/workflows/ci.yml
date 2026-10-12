@@ -145,6 +145,14 @@ jobs:
       # make this strict again**: the promotion PR is opened by a workflow with
       # a subject describing a train, not a change. Commit linting below is
       # deliberately kept — the train's commits *are* what lands on `main`.
+      #
+      # A sub-train gate — `fix/... → beta/x.y.z-fN`, or the `-fN` merging
+      # back into `beta/x.y.z` — is **not** a second exemption (#499). Both are
+      # squash-merged, so the gate's title becomes a commit on the train that
+      # the merge-back's and the promotion's `Lint commits in PR` read; a skip
+      # here would move the same red one pull request downstream. `gate` is a
+      # commit type in commitlint.config.mjs instead (ADR 0023 D46), so the
+      # title passes here and the commit it becomes passes there.
       - name: Lint the PR title
         if: ${{ github.event_name == 'pull_request' && !(github.base_ref == 'main' && startsWith(github.head_ref, 'beta/')) }}
         env:
