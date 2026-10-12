@@ -1266,6 +1266,26 @@ describe("stopping a running Task", () => {
     expect(watcher.isTracking(task.id)).toBe(false);
   });
 
+  it("a Task stopped and then deleted while its Session is starting has that Session stopped, and is no longer watched", async () => {
+    const { clock, core, dispatcher, stop, watcher, log } = rig();
+    const task = await assign(clock);
+    core.onStart = async () => {
+      core.onStart = null;
+      await stop(task.id);
+      await tasksService.deleteTask(A, task.id, clock.now());
+    };
+    await dispatcher.dispatchOnce();
+
+    expect(core.stops).toEqual([{ coreId: "core_1", sessionId: "session_1" }]);
+    expect(watcher.isTracking(task.id)).toBe(false);
+    await expect(getTask(A, task.id)).rejects.toBeInstanceOf(NotFoundError);
+    expect(log.errors.join("\n")).not.toContain("could not stop Session");
+    clock.advance(TIMEOUT_MS);
+    await watcher.tick();
+    // Only the dispatch comment, which cannot be added to a deleted Task; the watcher never polls it.
+    expect(log.errors).toEqual([expect.stringContaining("could not add the dispatch comment")]);
+  });
+
   it("an in-progress Task adopted after a restart is stopped on the Session named by its dispatch comment", async () => {
     const before = rig();
     const task = await assign(before.clock);

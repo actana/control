@@ -256,8 +256,12 @@ export class TaskDispatcher {
    */
   private async stopIfStoppedWhileStarting(taskId: string, attempt: number, target: { coreId: string; sessionId: string }): Promise<void> {
     try {
-      const now = await getTask(this.ownerId, taskId);
-      if (now.status === "in_progress" && now.attemptCount === attempt) return;
+      // A Task stopped and then deleted while its Session was starting is as good as no longer in_progress.
+      const now = await getTask(this.ownerId, taskId).catch((err) => {
+        if (err instanceof NotFoundError) return null;
+        throw err;
+      });
+      if (now && now.status === "in_progress" && now.attemptCount === attempt) return;
       this.watcher.untrack(taskId);
       this.log.info(`task ${taskId}: stopped while Session ${target.sessionId} was starting; stopping it`);
       if (this.stopSession) await this.stopSession(target);
