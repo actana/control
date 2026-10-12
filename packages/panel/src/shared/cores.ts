@@ -99,11 +99,46 @@ export type CoreDialStatus = {
  * (`packages/cli/src/actana-update.ts`), and it is the only one of the three
  * that both lands the new tree and leaves the daemon running on it.
  *
- * A Core running as a container refuses `actana update` and names
- * `docker compose pull && docker compose up -d` instead, which is the right
- * answer there and is more than the one-liner ever gave that operator.
+ * This is the right command for a Core installed with the installer. A Core
+ * running from the image refuses it (`actana update` exits and names the
+ * compose command), and the Panel cannot tell which kind it is
+ * looking at: the `ready` frame carries no install fact, and a Core that is
+ * behind is by definition too old to announce one. So the notice offers both
+ * paths (`coreUpdatePaths`, in `core-onboarding.ts`), and the image path runs on the host.
  */
 export const CORE_UPDATE_COMMAND = "actana update";
+
+/**
+ * The same update for a Core running from the image: pull and recreate it on
+ * the host, beside its compose file. It is never run through `docker exec` —
+ * the container cannot replace its own image, which is why `actana update`
+ * refuses there.
+ *
+ * This is the CLI's refusal command scoped to the `core` service, not a copy of
+ * it. The refusal's bare `docker compose pull && docker compose up -d` also
+ * brings up `panel` and `postgres`, so on a Core the Panel's wizard started
+ * with `up -d core` it would either fail to bind 7420 against the operator's
+ * real Panel or quietly start a second, Operator-less one. `up -d core` still
+ * recreates `core-init` through `depends_on`, which uses the same image.
+ * `DOCKER_COMPOSE_UPDATE` in `@actana/shared` stays bare: it is printed inside
+ * a container that does not know its service name.
+ *
+ * `PANEL_UPDATE_COMMAND` is the same string with a different meaning, so it is
+ * not reused.
+ */
+export const CORE_IMAGE_UPDATE_COMMAND = "docker compose pull core && docker compose up -d core";
+
+export type CoreUpdatePath = {
+  /** Same ids as `CoreInstallPath`: how the Core was installed. */
+  id: "installer" | "compose";
+  /** May contain `backticked` runs; render with `Ticked`. */
+  title: string;
+  command: string;
+  /** May contain `backticked` runs; render with `Ticked`. */
+  note: string | null;
+  /** What the copy button is called, e.g. "installer" in "Copy the installer update command". */
+  copyLabel: string;
+};
 
 /**
  * The command that brings a Panel up to date.

@@ -4,8 +4,11 @@ import {
   isConfiguredPublicHost,
   parsePublicHosts,
   primaryPublicHost,
+  hostPort,
   samePublicHosts,
+  urlHost,
   widenedPublicHosts,
+  wssEndpoint,
 } from "../public-hosts";
 
 // `ACTANA_PUBLIC_HOST` became a comma-separated list in #347. The rules this
@@ -175,5 +178,25 @@ describe("widenedPublicHosts", () => {
     // There is no previous coverage to have preserved, so there is nothing to
     // reassure the operator about.
     expect(widenedPublicHosts([], ["core", "10.0.0.5"])).toBeNull();
+  });
+});
+
+describe("urlHost / hostPort / wssEndpoint", () => {
+  it("leaves a name or an IPv4 address alone", () => {
+    expect(urlHost("core")).toBe("core");
+    expect(urlHost("192.168.178.40")).toBe("192.168.178.40");
+    expect(wssEndpoint("core", 8443)).toBe("wss://core:8443");
+    expect(wssEndpoint("192.168.178.40", 8443)).toBe("wss://192.168.178.40:8443");
+  });
+
+  it("brackets an IPv6 literal", () => {
+    expect(urlHost("fd00::1")).toBe("[fd00::1]");
+    expect(wssEndpoint("fd00::1", 8443)).toBe("wss://[fd00::1]:8443");
+    expect(hostPort("fd00::1", 8443)).toBe("[fd00::1]:8443");
+  });
+
+  it("does not bracket an already-bracketed literal twice", () => {
+    expect(urlHost("[fd00::1]")).toBe("[fd00::1]");
+    expect(wssEndpoint("[fd00::1]", 8443)).toBe("wss://[fd00::1]:8443");
   });
 });

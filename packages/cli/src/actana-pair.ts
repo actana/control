@@ -62,6 +62,7 @@ import { certFingerprintSha256 } from "@actana/shared/core-cert-material";
 import {
   formatPublicHosts,
   isConfiguredPublicHost,
+  hostPort,
   primaryPublicHost,
 } from "@actana/shared/public-hosts";
 import { loadMaterialFromFile } from "@actana/shared/core-material-store";
@@ -530,12 +531,13 @@ export type PairingHandout = {
    * dialled (#357 review B2).
    *
    * Not the same question as "which address do I dial", and conflating the two
-   * is the bug this field exists to spell out. The endpoint a paired client
-   * keeps comes off the stored session, never off the address it dialled:
-   * `core-pairing-wiring.ts` reads `session.endpointHost` and falls back to the
-   * Core's primary. So a code minted with `--public-host` carries that host,
-   * and a code minted without one carries the primary for *every* command in
-   * the block — including the ones that dial something else.
+   * is the bug this field exists to spell out. What the Core *answers* at
+   * redemption comes off the stored session, never off the address dialled: it
+   * is the session's `endpointHost`, falling back to the Core's primary. So a
+   * code minted with `--public-host` carries that host, and a code minted
+   * without one carries the primary for *every* command in the block —
+   * including the ones that dial something else. The Panel keeps the address
+   * it dialled instead (ADR 0038 D8), so this is the address to type into it.
    */
   credentialHost: string;
   port: number;
@@ -587,10 +589,11 @@ export function pairingHandout(handout: PairingHandout): string[] {
    * into it.
    *
    * **It is `credentialHost`, not whichever address a command below dials.**
-   * The endpoint a paired client keeps comes off the stored session — see
+   * What the Core answers at redemption comes off the stored session — see
    * {@link PairingHandout.credentialHost} — so on a multi-address Core this row
-   * is the one address that is true of the credential no matter which command
-   * was pasted. The `# dial …` notes under `From a terminal` are what explain
+   * is the one address that is true of the answer no matter which command was
+   * pasted. The Panel keeps the address typed into it (ADR 0038 D8), so this is
+   * also the one to type there. The `# dial …` notes under `From a terminal` are what explain
    * the others; this row does not compete with them.
    */
   const credentialEndpoint = endpointAddress(handout.credentialHost, handout.port);
@@ -785,15 +788,9 @@ function handoutName(label: string): string {
  */
 export const NAME_PLACEHOLDER = "NAME";
 
-/**
- * `host:port`, with an IPv6 literal bracketed.
- *
- * The same rule `endpointFor` applies in `actana-config.ts`, for the same
- * reason: `fe80::1:8443` is not an address anything can parse.
- */
+/** `host:port`, with an IPv6 literal bracketed — the shared rule (#351 item 1). */
 function endpointAddress(host: string, port: number): string {
-  const bracketed = host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
-  return `${bracketed}:${port}`;
+  return hostPort(host, port);
 }
 
 /**

@@ -166,6 +166,23 @@ the wire with a `Host` header that lies. *(Adds to the surface 0034 D2 bounds:
 `POST /v1/pair/redeem` stays the one pre-auth route, its request shape is
 unchanged, and it reads one more field of state it already owned.)*
 
+**D8 — A client keeps the address it redeemed over.** D6 and D7 decide what the
+*Core* answers; they cannot make that answer reachable from the client, because
+the Core never sees the client's network (#409: a Panel dialed `core:8443`,
+was answered `wss://192.168.178.40:8443`, stored that, and then could not dial
+it). The Panel therefore stores `wss://<dialed host>:<dialed port>` — the
+address the redemption itself succeeded on, under the pinned CA and Node's
+hostname check, so it is both reachable from the Panel and inside the
+certificate. The Core's `endpoint` is advisory: what a client with no better
+knowledge, such as `actana core pair` on the host, still uses. D7 is untouched —
+the Core still never reads `Host`. The registry therefore dedupes only by dialed address: one Core paired as
+`core:8443` and again as `127.0.0.1:8443` becomes two entries, because there is
+no Core identity to dedupe on yet. D8 also relates to D5: the Panel may store
+`127.0.0.1` or `localhost` when the operator typed it, since that address is
+proven reachable from the Panel; D5 only limits what the Core hands out. Existing rows are not migrated; remove and
+re-pair. The SDK returning the dialed endpoint to its other callers is a
+follow-up in `actana/client`.
+
 ---
 
 ## C. Consequences
@@ -178,6 +195,8 @@ unchanged, and it reads one more field of state it already owned.)*
   every paired client stays paired and the address it holds stays covered.
   This is the reverse of the failure #347 reports, and D3a is what stops the
   daemon reporting it as the failure anyway.
+- A Panel stores the address it dialed, not the one the Core reported (D8), so
+  the same Core paired under two spellings is two registry entries.
 - `pair ls` does not show which endpoint a pending code will hand back. It
   could, and the JSON row is where it would go; it is left out because this
   record is already two halves and `pair ls`'s output is not one of them.
