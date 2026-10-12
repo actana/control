@@ -8,7 +8,6 @@ import { MAX_POINTER_CHARS, buildTaskPointer, buildTaskPrompt, cutAtCodePoint, t
 import { HARNESS_FILE_MENTION, fileReference } from "@actana/shared/harness-file-mention";
 import { HARNESSES } from "@actana/shared/domain";
 import { isTaskPointerPrompt, taskPromptFilePath } from "@actana/shared/task-prompt-file";
-import { taskTimeoutMs, TASK_TIMEOUT_ENV } from "../index";
 
 const fake = (name: string) => ({ name }) as unknown as CoreShared;
 
@@ -166,15 +165,6 @@ describe("a Shared folder looked up on each use", () => {
     });
     await expect(shared.list("")).rejects.toThrow("not yet");
     await expect(shared.list("")).resolves.toEqual([{ path: "a", kind: "file" }]);
-  });
-});
-
-describe("the timeout setting", () => {
-  it("defaults to an hour and reads minutes from the environment", () => {
-    expect(taskTimeoutMs({})).toBe(3_600_000);
-    expect(taskTimeoutMs({ [TASK_TIMEOUT_ENV]: "5" })).toBe(300_000);
-    expect(taskTimeoutMs({ [TASK_TIMEOUT_ENV]: "nope" })).toBe(3_600_000);
-    expect(taskTimeoutMs({ [TASK_TIMEOUT_ENV]: "0" })).toBe(3_600_000);
   });
 });
 

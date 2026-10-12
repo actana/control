@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useRouter } from "@tanstack/react-router";
 import { Btn } from "~/components/ui/Btn";
+import { ConfirmDialog } from "~/components/ui/ConfirmDialog";
 import { FormErrorBox } from "~/components/ui/FormErrorBox";
 import { Icon } from "~/components/ui/Icon";
 import { MarkdownField } from "~/components/views/MarkdownField";
@@ -12,9 +13,10 @@ import { formatRelativeTime } from "~/lib/format-relative-time";
 import { requestSessionOpen } from "~/lib/session-notification-store";
 import { TASK_STATUS_LABEL } from "~/lib/task-board";
 import { queryKeys, useArchivedSessions, useCoreAgents, useSessions, useTask } from "~/queries";
-import { FINISHED_TASK_STATUSES, parseTaskDispatchComment } from "~/shared/tasks";
+import { FINISHED_TASK_STATUSES, canDeleteTask, formatTaskTimeLimit, canEditTask, canStopTask, parseTaskDispatchComment } from "~/shared/tasks";
 import { taskFolderPath } from "~/shared/shared-files";
-import type { TaskCommentDto } from "~/shared/task-wire";
+import type { TaskCommentDto, TaskDto } from "~/shared/task-wire";
+import { TimeLimitPicker } from "~/components/views/TimeLimitPicker";
 import { TaskAttachments } from "~/components/views/TaskAttachments";
 import type { TaskAttachment } from "~/lib/task-attachments";
 
@@ -38,6 +40,27 @@ function topBarBottom(): number {
   return document.querySelector(".mc-topbar")?.getBoundingClientRect().bottom ?? 0;
 }
 
+const STOP_OFFLINE_HINT = "The Core is offline; the Task will be failed, its Session may keep running";
+
+/** "40 min left on attempt 2 · started 20 minutes ago" for a running Task; re-rendered every 30 s. */
+function TimeLeft({ task }: { task: TaskDto }) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 30_000);
+    return () => clearInterval(t);
+  }, []);
+  if (task.status !== "in_progress" || task.dispatchedAt === null) return null;
+  const started = `started ${formatRelativeTime(task.dispatchedAt)}`;
+  if (task.timeoutMinutes === null) return <span style={{ color: "var(--text-dim)" }}>No limit · {started}</span>;
+  const leftMs = task.dispatchedAt + task.timeoutMinutes * 60_000 - now;
+  if (leftMs <= 0) return <span style={{ color: "var(--text-dim)" }}>time is up; the Panel ends it within a minute · {started}</span>;
+  return (
+    <span style={{ color: "var(--text-dim)" }}>
+      {formatTaskTimeLimit(Math.ceil(leftMs / 60_000))} left on attempt {task.attemptCount} · {started}
+    </span>
+  );
+}
+
 function message(e: unknown): string | null {
   return e ? (e instanceof Error ? e.message : String(e)) : null;
 }
@@ -53,11 +76,14 @@ function OpenAttemptSession({
   coreId,
   sessionId,
   onOpened,
+  onStop,
 }: {
   attempt: number;
   coreId: string;
   sessionId: string;
   onOpened: () => void;
+  /** Present only on the current attempt of a running Task. */
+  onStop?: () => void;
 }) {
   const { cores } = useFleet();
   const router = useRouter({ warn: false });
@@ -101,6 +127,16 @@ function OpenAttemptSession({
       >
         Open session
       </Btn>
+      {onStop ? (
+        <Btn
+          variant="ghost"
+          icon="x"
+          title={coreReachable ? "Stop this Task: its Session is stopped and the Task fails" : STOP_OFFLINE_HINT}
+          onClick={onStop}
+        >
+          Stop
+        </Btn>
+      ) : null}
       {reason ? <span style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--text-dim)" }}>{reason}</span> : null}
     </div>
   );
@@ -110,6 +146,7 @@ function OpenAttemptSession({
  * A Task's detail (screen 07): badges, result files, the comment thread and a
  * large composer. Every status move is a call to the server; this view only
  * shows what comes back. Open folder jumps to the Task's folder in the Core's Files tab (#565); Attach file waits for a later PR.
+ * Edit and Delete (#722) are off while the Task is `in_progress`; the server holds the same line.
  */
 export function TaskDetail({ taskId, onClose, focusComposer = false }: { taskId: string; onClose: () => void; focusComposer?: boolean }) {
   const { cores } = useFleet();
@@ -122,6 +159,10 @@ export function TaskDetail({ taskId, onClose, focusComposer = false }: { taskId:
   const { data: agents = [] } = useCoreAgents(task?.coreId ?? "");
   const [draft, setDraft] = useState("");
   const [attachments, setAttachments] = useState<TaskAttachment[]>([]);
+  const [editing, setEditing] = useState<{ title: string; description: string } | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [stopping, setStopping] = useState<{ coreId: string } | null>(null);
+  const [stopReason, setStopReason] = useState("");
 
   // The drawer starts under the app top bar, so its header and Close stay in view.
   const [topOffset, setTopOffset] = useState(topBarBottom);
@@ -173,6 +214,45 @@ export function TaskDetail({ taskId, onClose, focusComposer = false }: { taskId:
     onSuccess: refresh,
   });
 
+  const save = useMutation({
+    mutationFn: (fields: { title: string; description: string }) => api.updateTask(taskId, fields),
+    onSuccess: async () => {
+      setEditing(null);
+      await refresh();
+    },
+  });
+  const setLimit = useMutation({
+    mutationFn: (timeoutMinutes: number | null) => api.updateTask(taskId, { timeoutMinutes }),
+    onSuccess: refresh,
+  });
+  const remove = useMutation({
+    mutationFn: () => api.deleteTask(taskId),
+    onSuccess: async () => {
+      setConfirmDelete(false);
+      onClose();
+      queryClient.removeQueries({ queryKey: queryKeys.task(taskId) });
+      await refresh();
+    },
+  });
+
+  const stop = useMutation({
+    mutationFn: (reason: string) => api.stopTask(taskId, reason ? { reason } : {}),
+    onSuccess: async () => {
+      setStopping(null);
+      setStopReason("");
+      await refresh();
+    },
+  });
+  const stopOutcome = stop.data?.session ?? null;
+  // Without a dispatch comment for the current attempt (the Session is still starting, the Panel restarted mid-start, or the
+  // comment failed to write) no per-attempt Stop exists, so the header offers the only one.
+  const hasCurrentDispatch =
+    !!task && comments.some((c) => c.authorKind === "system" && parseTaskDispatchComment(c.body)?.attempt === task.attemptCount);
+  const stopNotice =
+    stopOutcome && stopOutcome.outcome !== "stopped" && stopOutcome.outcome !== "not-running"
+      ? `The Task was failed, but its Session could not be stopped (${stopOutcome.outcome})${stopOutcome.detail ? `: ${stopOutcome.detail}` : ""}. It may still be running.`
+      : null;
+
   const finished = !!task && (FINISHED_TASK_STATUSES as readonly string[]).includes(task.status);
   const core = cores.find((c) => c.id === task?.coreId);
   const agent = agents.find((a) => a.id === task?.agent);
@@ -214,14 +294,80 @@ export function TaskDetail({ taskId, onClose, focusComposer = false }: { taskId:
       {error && !task ? <FormErrorBox error={message(error)} /> : null}
       {task ? (
         <>
-          <h2 style={{ margin: 0, fontSize: 26 }}>{task.title}</h2>
+          {editing ? (
+            <section aria-label="Edit Task" style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              <input
+                aria-label="Title"
+                autoFocus
+                value={editing.title}
+                onChange={(e) => setEditing({ ...editing, title: e.target.value })}
+                style={{ padding: "10px 12px", borderRadius: 8, border: "1px solid var(--border)", background: "transparent", color: "inherit", font: "inherit", fontSize: 20 }}
+              />
+              <MarkdownField value={editing.description} onChange={(description) => setEditing({ ...editing, description })} ariaLabel="Description" />
+              <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+                <Btn variant="ghost" disabled={save.isPending} onClick={() => { save.reset(); setEditing(null); }}>
+                  Cancel
+                </Btn>
+                <Btn variant="primary" disabled={!editing.title.trim() || save.isPending} onClick={() => save.mutate(editing)}>
+                  Save
+                </Btn>
+              </div>
+              <FormErrorBox error={message(save.error)} />
+            </section>
+          ) : (
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
+              <h2 style={{ margin: 0, fontSize: 26 }}>{task.title}</h2>
+              <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
+                {canStopTask(task.status) && !hasCurrentDispatch ? (
+                  <Btn
+                    variant="ghost"
+                    icon="x"
+                    onClick={() => {
+                      stop.reset();
+                      setStopping({ coreId: task.coreId ?? "" });
+                    }}
+                  >
+                    Stop
+                  </Btn>
+                ) : null}
+                <Btn
+                  variant="ghost"
+                  icon="pencil"
+                  disabled={!canEditTask(task.status)}
+                  title={canEditTask(task.status) ? "Edit the title and description" : "A running Task cannot be edited: its Session already has the prompt"}
+                  onClick={() => setEditing({ title: task.title, description: task.description })}
+                >
+                  Edit
+                </Btn>
+                <Btn
+                  variant="ghost"
+                  icon="trash"
+                  disabled={!canDeleteTask(task.status)}
+                  title={canDeleteTask(task.status) ? "Delete this Task" : "A running Task cannot be deleted"}
+                  onClick={() => setConfirmDelete(true)}
+                >
+                  Delete
+                </Btn>
+              </div>
+            </div>
+          )}
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
             <Badge tone="var(--accent-subtle-bg)">{TASK_STATUS_LABEL[task.status]}</Badge>
             {task.attemptCount > 0 ? <Badge>Attempt {task.attemptCount}</Badge> : null}
             {core ? <Badge>{core.label}</Badge> : null}
             {agent ? <Badge>Agent: {agent.name}</Badge> : null}
           </div>
-          {task.description ? <TaskMarkdown>{task.description}</TaskMarkdown> : null}
+          <section aria-label="Time limit" style={{ display: "flex", flexDirection: "column", gap: 8, padding: 14, border: "1px solid var(--border)", borderRadius: 8 }}>
+            <div style={{ display: "flex", gap: 12, alignItems: "baseline", flexWrap: "wrap" }}>
+              <span style={{ fontFamily: "var(--mono)", fontSize: 11, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--text-dim)" }}>Time limit</span>
+              <strong>{formatTaskTimeLimit(task.timeoutMinutes)}</strong>
+              <TimeLeft task={task} />
+            </div>
+            <TimeLimitPicker commitCustom="explicit" idPrefix="task-time-limit" value={task.timeoutMinutes} disabled={setLimit.isPending} onChange={(m) => setLimit.mutate(m)} />
+            <FormErrorBox error={message(setLimit.error)} />
+          </section>
+          {task.description && !editing ? <TaskMarkdown>{task.description}</TaskMarkdown> : null}
+          {stopNotice ? <FormErrorBox error={stopNotice} /> : null}
           {task.lastError ? <FormErrorBox error={task.lastError} /> : null}
           {task.status === "draft" || task.status === "assigned" ? (
             <div style={{ display: "flex", gap: 8 }}>
@@ -281,6 +427,14 @@ export function TaskDetail({ taskId, onClose, focusComposer = false }: { taskId:
                       coreId={dispatch.coreId}
                       sessionId={dispatch.sessionId}
                       onOpened={onClose}
+                      onStop={
+                        canStopTask(task.status) && dispatch.attempt === task.attemptCount
+                          ? () => {
+                              stop.reset();
+                              setStopping({ coreId: dispatch.coreId });
+                            }
+                          : undefined
+                      }
                     />
                   ) : null}
                 </article>
@@ -296,7 +450,7 @@ export function TaskDetail({ taskId, onClose, focusComposer = false }: { taskId:
                 variant="frame"
                 icon="refresh"
                 disabled={!hasBody || !finished || comment.isPending}
-                title={finished ? undefined : "Only a finished Task can be re-assigned"}
+                title={finished ? undefined : task.status === "in_progress" ? "Stop the Task first" : "Only a finished Task can be re-assigned"}
                 onClick={() => comment.mutate(true)}
               >
                 Comment &amp; re-assign
@@ -308,6 +462,55 @@ export function TaskDetail({ taskId, onClose, focusComposer = false }: { taskId:
             </div>
             <FormErrorBox error={message(comment.error) ?? message(move.error)} />
           </section>
+          <ConfirmDialog
+            open={!!stopping}
+            onClose={() => {
+              stop.reset();
+              setStopping(null);
+            }}
+            onConfirm={() => stop.mutate(stopReason.trim())}
+            title="Stop Task?"
+            confirmLabel="Stop"
+            variant="danger"
+            loading={stop.isPending}
+          >
+            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+              <p style={{ margin: 0, fontSize: 13, color: "var(--text-dim)", lineHeight: 1.5 }}>
+                Stop <strong style={{ color: "var(--text)" }}>{task.title}</strong>? Its Session is stopped and the Task fails; you can then re-assign it for a new attempt.
+              </p>
+              {stopping && cores.find((c) => c.id === stopping.coreId)?.dial.state !== "connected" ? (
+                <p style={{ margin: 0, fontSize: 13, color: "var(--warning)" }}>{STOP_OFFLINE_HINT}</p>
+              ) : null}
+              <input
+                aria-label="Reason"
+                placeholder="Reason (optional)"
+                value={stopReason}
+                maxLength={2000}
+                onChange={(e) => setStopReason(e.target.value)}
+                style={{ padding: "8px 10px", borderRadius: 6, border: "1px solid var(--border)", background: "transparent", color: "inherit", font: "inherit" }}
+              />
+              <FormErrorBox error={message(stop.error)} />
+            </div>
+          </ConfirmDialog>
+          <ConfirmDialog
+            open={confirmDelete}
+            onClose={() => {
+              remove.reset();
+              setConfirmDelete(false);
+            }}
+            onConfirm={() => remove.mutate()}
+            title="Delete Task?"
+            confirmLabel="Delete"
+            variant="danger"
+            loading={remove.isPending}
+          >
+            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+              <p style={{ margin: 0, fontSize: 13, color: "var(--text-dim)", lineHeight: 1.5 }}>
+                Delete <strong style={{ color: "var(--text)" }}>{task.title}</strong> with its comments and history? This cannot be undone. Files it left in the Shared folder stay.
+              </p>
+              <FormErrorBox error={message(remove.error)} />
+            </div>
+          </ConfirmDialog>
         </>
       ) : null}
     </aside>

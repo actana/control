@@ -175,7 +175,7 @@ describe("keys created before #689", () => {
           ? "insert into api_keys (id, owner_id, name, prefix, key_hash, permissions, created_at) values ('legacy', 1, 'legacy', 'ak_1_abcdef', 'h-legacy', '{read}', 1)"
           : "insert into api_keys (id, owner_id, name, prefix, key_hash, created_at) values ('legacy', 1, 'legacy', 'ak_1_abcdef', 'h-legacy', 1)",
       );
-      expect(await runMigrations(old.pool, all)).toEqual(["0011_panel_api_key_expiry"]);
+      expect(await runMigrations(old.pool, all)).toEqual(all.slice(at).map((m) => m.tag));
       const { rows } = await old.pool.query("select id, expires_at, revoked_at from api_keys");
       expect(rows).toEqual([{ id: "legacy", expires_at: null, revoked_at: null }]);
     } finally {

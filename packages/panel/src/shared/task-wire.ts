@@ -14,6 +14,8 @@ export type TaskDto = {
   attemptCount: number;
   dispatchedAt: number | null;
   lastError: string | null;
+  /** The time limit per attempt in minutes (#724); null = No limit. */
+  timeoutMinutes: number | null;
   createdAt: number;
   updatedAt: number;
 };
@@ -45,6 +47,19 @@ export type NewTaskRequest = {
   agent?: string | null;
   /** On: created `assigned`. Off: created `draft`. */
   startNow?: boolean;
+  /** Minutes per attempt, 1 to 43200 (#724). Omitted: 60. null: No limit. */
+  timeoutMinutes?: number | null;
+};
+
+/**
+ * An edit (#722): the fields to change, at least one. The title and description
+ * are refused while the Task is `in_progress`; the time limit (#724) is allowed
+ * at any status.
+ */
+export type UpdateTaskRequest = {
+  title?: string;
+  description?: string;
+  timeoutMinutes?: number | null;
 };
 
 export type NewTaskCommentRequest = {
@@ -52,3 +67,17 @@ export type NewTaskCommentRequest = {
   /** Comment & re-assign: the comment and the move back to `assigned`, in one call. */
   reassign?: boolean;
 };
+
+/** Stop a running Task (#723). */
+export type StopTaskRequest = { reason?: string };
+
+export type TaskSessionStopOutcome = "stopped" | "not-running" | "unreachable" | "failed";
+
+export type TaskSessionStopDto = {
+  coreId: string;
+  sessionId: string;
+  outcome: TaskSessionStopOutcome;
+  detail: string | null;
+};
+
+export type StopTaskResponse = { task: TaskDto; session: TaskSessionStopDto | null };

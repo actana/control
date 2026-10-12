@@ -1,4 +1,5 @@
 import type { Harness } from "~/shared/agents";
+import type { TaskSessionStopOutcome } from "~/shared/task-wire";
 
 /** A Session the dispatcher started on a Core: its id, and a way to hear it end. */
 export type StartedSession = {
@@ -20,6 +21,15 @@ export type StartSessionRequest = {
 
 /** How a Session is started on a Core. The default goes through the Core's client; a test hands in a fake. */
 export type SessionStarter = (request: StartSessionRequest) => Promise<StartedSession>;
+
+/** What happened when a Session was asked to stop (#723). */
+export type SessionStopResult = { outcome: TaskSessionStopOutcome; detail: string | null };
+
+/** How a Session is stopped on its Core. Never throws: every failure is an outcome. */
+export type SessionStopper = (target: { coreId: string; sessionId: string }) => Promise<SessionStopResult>;
+
+/** Which of the given Sessions have a live PTY on a Core; `null` means the Core gave no answer (no link, an error, too slow). */
+export type SessionLiveness = (coreId: string, sessionIds: readonly string[]) => Promise<ReadonlySet<string> | null>;
 
 export type Clock = () => number;
 

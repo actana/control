@@ -4,12 +4,15 @@ import { forbidden } from "./controllers/_helpers";
 import {
   addTaskCommentV1,
   createTaskV1,
+  deleteTaskV1,
   getTaskV1,
   listAgentsV1,
   listCoreAgentsV1,
   listCoresV1,
   listTasksV1,
   setTaskStatusV1,
+  stopTaskV1,
+  updateTaskV1,
 } from "./controllers/v1.controller";
 import { getShared, listShared } from "./mcp-shared";
 import { OPERATOR_TASK_STATUSES } from "./controllers/tasks.controller";
@@ -35,6 +38,8 @@ export type McpTool = {
   name: string;
   description: string;
   readOnly: boolean;
+  /** A write that cannot be undone (MCP's `destructiveHint`). */
+  destructive?: boolean;
   /** The API key permission a call needs. */
   permission: ApiKeyPermission;
   input: z.ZodObject;
@@ -50,9 +55,9 @@ async function outcomeOf(response: Response): Promise<ToolOutcome> {
 }
 
 /** The JSON body a v1 write handler reads, as the `Request` it takes: the tool's arguments are its body, validated by the same schema. */
-function asJsonRequest(body: Record<string, unknown>): Request {
+function asJsonRequest(body: Record<string, unknown>, method = "POST"): Request {
   return new Request("http://mcp.invalid/", {
-    method: "POST",
+    method,
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
   });
@@ -62,6 +67,7 @@ function tool<S extends z.ZodObject>(def: {
   name: string;
   description: string;
   readOnly: boolean;
+  destructive?: boolean;
   permission: ApiKeyPermission;
   input: S;
   run: (principal: ApiKeyPrincipal, args: z.infer<S>) => Promise<ToolOutcome>;
@@ -70,6 +76,14 @@ function tool<S extends z.ZodObject>(def: {
 }
 
 const taskIdArg = z.string().min(1).describe("The Task's id, from get_tasks.");
+const timeoutMinutesArg = z
+  .number()
+  .int()
+  .min(1)
+  .max(43200)
+  .nullable()
+  .optional()
+  .describe("Time limit in minutes per attempt (1–43200). Omit for 60; null = No limit: the attempt runs until the agent reports or exits.");
 const coreIdArg = z.string().min(1).describe("A Core's id, from list_cores.");
 
 export const MCP_TOOLS: readonly McpTool[] = [
@@ -119,7 +133,8 @@ export const MCP_TOOLS: readonly McpTool[] = [
   tool({
     name: "create_task",
     description:
-      "Create a Task. It is a draft unless startNow is true, which creates it assigned so its Agent starts on it (needs coreId and agent).",
+      "Create a Task. It is a draft unless startNow is true, which creates it assigned so its Agent starts on it (needs coreId and agent). " +
+      "timeoutMinutes sets its time limit per attempt (default 60 minutes; null = No limit).",
     readOnly: false,
     permission: "tasks:write",
     input: z.object({
@@ -128,6 +143,7 @@ export const MCP_TOOLS: readonly McpTool[] = [
       coreId: coreIdArg.nullable().optional(),
       agent: z.string().min(1).nullable().optional().describe("An Agent's id on that Core, from list_agents."),
       startNow: z.boolean().optional(),
+      timeoutMinutes: timeoutMinutesArg,
     }),
     run: async (principal, args) => outcomeOf(await createTaskV1(principal, asJsonRequest(args))),
   }),
@@ -135,7 +151,8 @@ export const MCP_TOOLS: readonly McpTool[] = [
     name: "assign_task",
     description:
       "Move a Task to assigned (its Agent starts on it) or back to draft. These are the only moves an operator makes; " +
-      "in_progress, done, failed and partial belong to the dispatcher and the Agent's report.",
+      "in_progress, done, failed and partial belong to the dispatcher and the Agent's report. A Task that is in_progress " +
+      "cannot be moved: stop_task it first.",
     readOnly: false,
     permission: "tasks:write",
     input: z.object({ taskId: taskIdArg, status: z.enum(OPERATOR_TASK_STATUSES).default("assigned") }),
@@ -144,12 +161,60 @@ export const MCP_TOOLS: readonly McpTool[] = [
   }),
   tool({
     name: "comment_task",
-    description: "Add a comment to a Task's thread. With reassign true, also send a finished Task back to its Agent (Comment & re-assign).",
+    description: "Add a comment to a Task's thread. With reassign true, also send a finished Task back to its Agent (Comment & re-assign). " +
+      "A Task that is in_progress is refused: stop_task it first, then comment again with reassign true.",
     readOnly: false,
     permission: "tasks:write",
     input: z.object({ taskId: taskIdArg, body: z.string().min(1), reassign: z.boolean().optional() }),
     run: async (principal, { taskId, body, reassign }) =>
       outcomeOf(await addTaskCommentV1(principal, taskId, asJsonRequest({ body, ...(reassign === undefined ? {} : { reassign }) }))),
+  }),
+  tool({
+    name: "stop_task",
+    description:
+      "Stop a Task that is in_progress: stops its Session, fails it with a system comment; then comment_task reassign works. " +
+      "The result says whether the Session was stopped (a Core that is offline leaves it running).",
+    readOnly: false,
+    permission: "tasks:write",
+    destructive: true,
+    input: z.object({ taskId: taskIdArg, reason: z.string().max(2000).optional().describe("Why it is stopped; recorded in the Task's comment.") }),
+    run: async (principal, { taskId, reason }) =>
+      outcomeOf(await stopTaskV1(principal, taskId, asJsonRequest({ ...(reason === undefined ? {} : { reason }) }))),
+  }),
+  tool({
+    name: "update_task",
+    description:
+      "Change a Task's title, description, time limit or any of them. The title and description are refused while the " +
+      "Task is in_progress, because its Session already has the prompt; the time limit can be changed at any status, " +
+      "including in_progress, and applies to the running attempt within a minute.",
+    readOnly: false,
+    permission: "tasks:write",
+    input: z
+      .object({
+        taskId: taskIdArg,
+        title: z.string().min(1).optional().describe("The new title."),
+        description: z.string().optional().describe("The new description, in Markdown. It replaces the old one."),
+        timeoutMinutes: timeoutMinutesArg,
+      })
+      .refine((a) => a.title !== undefined || a.description !== undefined || a.timeoutMinutes !== undefined, {
+        message: "give a title, a description or a time limit",
+      }),
+    run: async (principal, { taskId, ...fields }) =>
+      outcomeOf(await updateTaskV1(principal, taskId, asJsonRequest(fields, "PATCH"))),
+  }),
+  tool({
+    name: "delete_task",
+    description:
+      "Delete a Task with its comments and history. Refused while the Task is in_progress; files it left in the Shared " +
+      "folder stay.",
+    readOnly: false,
+    permission: "tasks:write",
+    destructive: true,
+    input: z.object({ taskId: taskIdArg }),
+    run: async (principal, { taskId }) => {
+      const deleted = await outcomeOf(await deleteTaskV1(principal, taskId));
+      return deleted.ok ? { ok: true, data: { deleted: taskId } } : deleted;
+    },
   }),
   tool({
     name: "list_shared",

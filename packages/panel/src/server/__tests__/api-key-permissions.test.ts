@@ -9,7 +9,7 @@ import { McpTestClient, textOf } from "./_mcp-client";
 /**
  * Per-key permissions (#688), through the real router and the real MCP
  * server. The acceptance lines live here: a read-only key gets 200 on every
- * GET and 403 on every POST and DELETE; a key without `agents:write` cannot
+ * GET and 403 on every POST, PATCH and DELETE; a key without `agents:write` cannot
  * create or delete Agents; the same holds for the `/mcp` tools; and a key's
  * permissions are chosen at creation, never defaulted.
  */
@@ -99,12 +99,14 @@ function sampleFor(method: string, pattern: RegExp): { path: string; json?: unkn
   if (path === "/api/v1/agents") return { path, json: { coreId: "core-a", name: "new", harness: "claude-code" } };
   if (path === "/api/v1/tasks") return { path, json: { title: "new task" } };
   if (path.endsWith("/status")) return { path, json: { status: "draft" } };
+  if (path.endsWith("/stop")) return { path, json: {} };
+  if (method === "PATCH") return { path, json: { title: "renamed" } };
   if (path.endsWith("/comments")) return { path, json: { body: "hello" } };
   throw new Error(`no sample for ${method} ${path}`);
 }
 
 describe("a read-only key", () => {
-  it("gets 200 on every GET route and 403 on every POST and DELETE route, naming the missing permission", async () => {
+  it("gets 200 on every GET route and 403 on every POST, PATCH and DELETE route, naming the missing permission", async () => {
     const { key } = await keyWith(["read"]);
     const seen: string[] = [];
     for (const route of API_KEY_ROUTES) {
@@ -118,7 +120,7 @@ describe("a read-only key", () => {
         expect(await errorOf(res)).toBe(`this API key lacks the ${route.permission} permission`);
       }
     }
-    expect(seen.filter((s) => s.startsWith("POST ") || s.startsWith("DELETE ")).length).toBe(5);
+    expect(seen.filter((s) => s.startsWith("POST ") || s.startsWith("PATCH ") || s.startsWith("DELETE ")).length).toBe(8);
     expect(seen.filter((s) => s.startsWith("GET ")).length).toBe(10);
     // Nothing was written: the 403 came from the gate, before any handler ran.
     expect((await testDb.pool.query("select count(*)::int as n from agents")).rows[0]).toEqual({ n: 2 });
@@ -230,7 +232,7 @@ describe("the /mcp tools apply the same permissions", () => {
 
   it("every tool names the permission its REST route needs: reads are read, the Task writes are tasks:write", () => {
     expect(readTools).toEqual(["get_shared", "get_task", "get_tasks", "list_agents", "list_cores", "list_shared"]);
-    expect(taskTools).toEqual(["assign_task", "comment_task", "create_task"]);
+    expect(taskTools).toEqual(["assign_task", "comment_task", "create_task", "delete_task", "stop_task", "update_task"]);
     for (const t of MCP_TOOLS) expect(t.readOnly, t.name).toBe(t.permission === "read");
   });
 
@@ -247,6 +249,9 @@ describe("the /mcp tools apply the same permissions", () => {
       ["create_task", { title: "x" }],
       ["assign_task", { taskId, status: "draft" }],
       ["comment_task", { taskId, body: "hi" }],
+      ["stop_task", { taskId }],
+      ["update_task", { taskId, title: "renamed" }],
+      ["delete_task", { taskId }],
     ] as const) {
       const result = await client.call(name, args);
       expect(result.isError, name).toBe(true);

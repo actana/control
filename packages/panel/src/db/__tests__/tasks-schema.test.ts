@@ -1,4 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { bundledPanelMigrations } from "../pg-migrations-bundle";
+import { runMigrations } from "../pg-migrate";
 import { createTestDb, type TestDb } from "../test-db";
 
 /** The tasks, task_comments and task_status_history tables a migration creates (#568, ADR 0041 D15, D18, D23). */
@@ -89,5 +91,60 @@ describe("the task tables", () => {
       "select (select count(*) from task_comments where task_id = 'd1')::int as c, (select count(*) from task_status_history where task_id = 'd1')::int as h",
     );
     expect(rows[0]).toEqual({ c: 0, h: 0 });
+  });
+});
+
+describe("tasks.timeout_minutes (#724)", () => {
+  const limitOf = async (id: string) =>
+    (await db.pool.query("select timeout_minutes from tasks where id = $1", [id])).rows[0]!.timeout_minutes;
+  const insertWith = (id: string, v: number | null) =>
+    db.pool.query(
+      "insert into tasks (id, owner_id, title, timeout_minutes, created_at, updated_at) values ($1, 1, 't', $2, 1, 1)",
+      [id, v],
+    );
+
+  it("reads 60 for a row inserted without the column", async () => {
+    await insertTask("tl-default");
+    expect(await limitOf("tl-default")).toBe(60);
+  });
+
+  it("accepts null (No limit)", async () => {
+    await insertWith("tl-null", null);
+    expect(await limitOf("tl-null")).toBeNull();
+  });
+
+  it("accepts 1 and 43200 and refuses 0 and 43201", async () => {
+    await insertWith("tl-1", 1);
+    await insertWith("tl-max", 43200);
+    await expect(insertWith("tl-0", 0)).rejects.toThrow(/tasks_timeout_minutes_check/);
+    await expect(insertWith("tl-over", 43201)).rejects.toThrow(/tasks_timeout_minutes_check/);
+  });
+
+  it("can run its statements again on a migrated database", async () => {
+    const m = bundledPanelMigrations().find((x) => x.tag === "0012_panel_task_timeout");
+    expect(m).toBeDefined();
+    await insertWith("tl-keep", 90);
+    for (const statement of m!.statements) await db.pool.query(statement);
+    expect(await limitOf("tl-keep")).toBe(90);
+    await expect(insertWith("tl-0b", 0)).rejects.toThrow(/tasks_timeout_minutes_check/);
+  });
+
+  it("gives a row that existed before the migration 60", async () => {
+    const all = bundledPanelMigrations();
+    const idx = all.findIndex((x) => x.tag === "0012_panel_task_timeout");
+    const old = await createTestDb({ env: {}, migrations: all.slice(0, idx) });
+    try {
+      await old.pool.query(
+        "insert into operator (id, name, password_hash, created_at, password_changed_at) values (1, 'o', 'h', 1, 1)",
+      );
+      await old.pool.query(
+        "insert into tasks (id, owner_id, title, created_at, updated_at) values ('before', 1, 't', 1, 1)",
+      );
+      await runMigrations(old.pool, all);
+      const { rows } = await old.pool.query("select timeout_minutes from tasks where id = 'before'");
+      expect(rows[0]!.timeout_minutes).toBe(60);
+    } finally {
+      await old.close();
+    }
   });
 });

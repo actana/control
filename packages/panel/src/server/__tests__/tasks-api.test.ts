@@ -21,6 +21,8 @@ const { operatorSessionCookie } = await import("./_operator-session");
 const tasksService = await import("../services/tasks");
 const tasksController = await import("../controllers/tasks.controller");
 
+const { formatTaskDispatchComment } = await import("~/shared/tasks");
+
 const A = 1;
 const B = 2;
 
@@ -160,5 +162,101 @@ describe("Task routes", () => {
     expect(mine.map((a) => a.id)).toEqual(["agent-a"]);
     expect((await call("/api/cores/core-b/agents")).status).toBe(404);
     expect((await (await tasksController.listCoreAgents(B, "core-b")).json()).agents.map((a: { id: string }) => a.id)).toEqual(["agent-b"]);
+  });
+
+  it("edit the title and description, and refuse it while the Task is in_progress (#722)", async () => {
+    const t = (await (await post("/api/tasks", { title: "old", description: "old body", coreId: "core-a", agent: "agent-a" })).json()).task;
+    const edited = await call(`/api/tasks/${t.id}`, { method: "PATCH", json: { title: "new", description: "new body" } });
+    expect(edited.status).toBe(200);
+    expect((await edited.json()).task).toMatchObject({ title: "new", description: "new body", status: "draft" });
+    expect((await call(`/api/tasks/${t.id}`, { method: "PATCH", json: {} })).status).toBe(400);
+    await tasksService.changeTaskStatus(A, t.id, "assigned");
+    await tasksService.changeTaskStatus(A, t.id, "in_progress");
+    expect((await call(`/api/tasks/${t.id}`, { method: "PATCH", json: { title: "late" } })).status).toBe(409);
+    expect((await tasksService.getTask(A, t.id)).title).toBe("new");
+  });
+
+  it("take a time limit on create and on edit, at any status, with a system comment (#724)", async () => {
+    const make = async (json: Record<string, unknown> = {}) => call("/api/tasks", { method: "POST", json: { title: "lim", coreId: "core-a", agent: "agent-a", ...json } });
+    expect((await (await make()).json()).task.timeoutMinutes).toBe(60);
+    expect((await (await make({ timeoutMinutes: null })).json()).task.timeoutMinutes).toBeNull();
+    for (const bad of [0, 43201, 1.5, "60"]) expect((await make({ timeoutMinutes: bad })).status, String(bad)).toBe(400);
+    const t = (await (await make({ timeoutMinutes: 120 })).json()).task;
+    expect(t.timeoutMinutes).toBe(120);
+    await tasksService.changeTaskStatus(A, t.id, "assigned");
+    await tasksService.claimTask(A, t.id);
+    const res = await call(`/api/tasks/${t.id}`, { method: "PATCH", json: { timeoutMinutes: 240 } });
+    expect(res.status).toBe(200);
+    expect((await res.json()).task).toMatchObject({ status: "in_progress", timeoutMinutes: 240 });
+    const comments = (await (await call(`/api/tasks/${t.id}`)).json()).comments as { authorKind: string; body: string }[];
+    expect(comments.find((c) => c.authorKind === "system")?.body).toMatch(/^Time limit changed from 2 hours to 4 hours by .+\.$/);
+    expect((await call(`/api/tasks/${t.id}`, { method: "PATCH", json: { timeoutMinutes: 0 } })).status).toBe(400);
+    expect((await call(`/api/tasks/${t.id}`, { method: "PATCH", json: { title: "x", timeoutMinutes: 5 } })).status).toBe(409);
+    expect((await tasksService.getTask(A, t.id)).timeoutMinutes).toBe(240);
+  });
+
+  it("delete a Task, refuse it while in_progress, and 404 for another owner's (#722)", async () => {
+    const t = (await (await post("/api/tasks", { title: "gone", coreId: "core-a", agent: "agent-a" })).json()).task;
+    expect((await call(`/api/tasks/${t.id}`, { method: "DELETE" })).status).toBe(204);
+    expect((await call(`/api/tasks/${t.id}`)).status).toBe(404);
+    const running = await tasksService.createTask(A, { title: "running", coreId: "core-a", agent: "agent-a", startNow: true });
+    await tasksService.changeTaskStatus(A, running.id, "in_progress");
+    expect((await call(`/api/tasks/${running.id}`, { method: "DELETE" })).status).toBe(409);
+    const theirs = await tasksService.createTask(B, { title: "theirs", coreId: "core-b", agent: "agent-b" });
+    expect((await call(`/api/tasks/${theirs.id}`, { method: "DELETE" })).status).toBe(404);
+    expect((await call(`/api/tasks/${theirs.id}`, { method: "PATCH", json: { title: "mine" } })).status).toBe(404);
+    expect((await tasksService.getTask(B, theirs.id)).title).toBe("theirs");
+  });
+
+  it("stop a running Task, then re-assign it; the same routes refuse a Task that is not running (#723)", async () => {
+    const t = (await (await post("/api/tasks", { title: "hung", coreId: "core-a", agent: "agent-a", startNow: true })).json()).task;
+    // Not running yet: 409, and nothing changes.
+    expect((await post(`/api/tasks/${t.id}/stop`, {})).status).toBe(409);
+    await tasksService.claimTask(A, t.id);
+    await tasksService.addTaskComment(A, t.id, {
+      authorKind: "system",
+      authorName: "Panel",
+      body: formatTaskDispatchComment({ attempt: 1, agentName: "claude-code", harness: "claude-code", coreId: "core-a", sessionId: "session_1" }),
+    });
+    // Re-assigning while it runs is refused with a message that names the stop call.
+    const refused = await post(`/api/tasks/${t.id}/comments`, { body: "again", reassign: true });
+    expect(refused.status).toBe(409);
+    expect((await refused.json()).error).toMatch(/\/stop/);
+    const refusedStatus = await post(`/api/tasks/${t.id}/status`, { status: "assigned" });
+    expect(refusedStatus.status).toBe(409);
+    expect((await refusedStatus.json()).error).toMatch(/\/stop/);
+
+    const stopped = await post(`/api/tasks/${t.id}/stop`, { reason: "hung" });
+    expect(stopped.status).toBe(200);
+    const body = await stopped.json();
+    expect(body.task).toMatchObject({ id: t.id, status: "failed" });
+    // No Core link in this test, so the Core counts as offline.
+    expect(body.session).toMatchObject({ coreId: "core-a", sessionId: "session_1", outcome: "unreachable" });
+    const read = await (await call(`/api/tasks/${t.id}`)).json();
+    expect(read.comments.some((c: { body: string }) => c.body.startsWith("Stopped by ") && c.body.includes("hung"))).toBe(true);
+    // A second stop is a 409: it is no longer running.
+    expect((await post(`/api/tasks/${t.id}/stop`, {})).status).toBe(409);
+    const again = await (await post(`/api/tasks/${t.id}/comments`, { body: "again", reassign: true })).json();
+    expect(again.task.status).toBe("assigned");
+  });
+
+  it("stop takes an empty body, refuses a bad reason, 404s for another owner's Task and needs the session (#723)", async () => {
+    const t = await tasksService.createTask(A, { title: "r", coreId: "core-a", agent: "agent-a", startNow: true });
+    await tasksService.claimTask(A, t.id);
+    expect((await post(`/api/tasks/${t.id}/stop`, { reason: 5 })).status).toBe(400);
+    expect((await post(`/api/tasks/${t.id}/stop`, { reason: "x".repeat(2001) })).status).toBe(400);
+    expect((await call(`/api/tasks/${t.id}/stop`, { anonymous: true, method: "POST" })).status).toBe(401);
+    expect((await tasksService.getTask(A, t.id)).status).toBe("in_progress");
+    const theirs = await tasksService.createTask(B, { title: "theirs", coreId: "core-b", agent: "agent-b", startNow: true });
+    await tasksService.claimTask(B, theirs.id);
+    expect((await post(`/api/tasks/${theirs.id}/stop`, {})).status).toBe(404);
+    expect((await tasksService.getTask(B, theirs.id)).status).toBe("in_progress");
+    expect((await call(`/api/tasks/${t.id}/stop`, { method: "POST" })).status).toBe(200);
+  });
+
+  it("need the operator's session to edit or delete (#722)", async () => {
+    const t = await tasksService.createTask(A, { title: "locked" });
+    expect((await call(`/api/tasks/${t.id}`, { anonymous: true, method: "PATCH", json: { title: "x" } })).status).toBe(401);
+    expect((await call(`/api/tasks/${t.id}`, { anonymous: true, method: "DELETE" })).status).toBe(401);
   });
 });

@@ -85,6 +85,13 @@
       "when": 1791654217365,
       "tag": "0011_panel_api_key_expiry",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1791681609178,
+      "tag": "0012_panel_task_timeout",
+      "breakpoints": true
     }
   ]
 }

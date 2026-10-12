@@ -5,7 +5,8 @@
  *
  * - `read`: every GET route and every read-only tool (Cores, Agents, Tasks,
  *   comments, a Core's Shared folder).
- * - `tasks:write`: create a Task, move it (assigned / draft), comment on it.
+ * - `tasks:write`: create, update and delete a Task, move it (assigned / draft),
+ *   stop it, comment on it.
  * - `agents:write`: create and delete Agents.
  *
  * The permissions are independent: a key with `tasks:write` alone can write
@@ -33,6 +34,6 @@ export function normalizeApiKeyPermissions(permissions: Iterable<ApiKeyPermissio
 /** What each permission is called and allows, for the dialog and the key list. */
 export const API_KEY_PERMISSION_LABELS: Record<ApiKeyPermission, { title: string; detail: string }> = {
   read: { title: "Read", detail: "List and read Cores, Agents, Tasks, comments and Shared folders." },
-  "tasks:write": { title: "Write Tasks", detail: "Create Tasks, assign them, comment on them." },
+  "tasks:write": { title: "Write Tasks", detail: "Create, update, delete, assign and stop Tasks, comment on them." },
   "agents:write": { title: "Write Agents", detail: "Create and delete Agents." },
 };

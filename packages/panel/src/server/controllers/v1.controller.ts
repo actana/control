@@ -3,6 +3,8 @@ import { forbidden, json, noContent, notFound, parseJsonBody, rethrowUnlessDomai
 import { NotFoundError, ValidationError } from "../errors";
 import { HTTP_CREATED } from "~/shared/http-status";
 import type { ApiPrincipal } from "../api-key-auth";
+import { stopTask } from "../task-dispatch";
+import { stopTaskBody } from "./tasks.controller";
 import { scopeReaches } from "../services/api-keys";
 import { getCore, listCores } from "../services/cores";
 import { coreLinkManager } from "../services/core-link-manager";
@@ -13,9 +15,11 @@ import {
   changeTaskStatus,
   commentAndReassign,
   createTask,
+  deleteTask,
   getTask,
   listTaskComments,
   listTasks,
+  updateTask,
   type Task,
   type TaskComment,
 } from "../services/tasks";
@@ -30,7 +34,7 @@ import {
 import { getOperator } from "../services/operator";
 import { findCoreById } from "../repositories/cores.repo";
 import { HARNESSES } from "~/shared/agents";
-import { OPERATOR_TASK_STATUSES } from "./tasks.controller";
+import { OPERATOR_TASK_STATUSES, timeoutMinutesSchema, updateTaskBody } from "./tasks.controller";
 
 /**
  * The public REST API under `/api/v1` (#572 PR 2). Every handler takes the
@@ -38,6 +42,9 @@ import { OPERATOR_TASK_STATUSES } from "./tasks.controller";
  * and see only the Cores in that key's scope; a session call sees the Owner's
  * whole fleet. Status moves go through the Tasks service, and a key client may
  * only ask for the operator moves `assigned` and `draft` (same line as #630).
+ * Edits and deletes (#722) go through the same service, which refuses both
+ * while the Task is `in_progress`; the exception is the time limit (#724,
+ * `timeoutMinutes`), which a PATCH may change at any status.
  */
 
 const newTaskBody = z.object({
@@ -46,6 +53,7 @@ const newTaskBody = z.object({
   coreId: z.string().nullable().optional(),
   agent: z.string().nullable().optional(),
   startNow: z.boolean().optional(),
+  timeoutMinutes: timeoutMinutesSchema.optional(),
 });
 const statusBody = z.object({ status: z.enum(OPERATOR_TASK_STATUSES) });
 const commentBody = z.object({ body: z.string(), reassign: z.boolean().optional() });
@@ -72,6 +80,7 @@ function taskDto(t: Task): TaskDto {
     attemptCount: t.attemptCount,
     dispatchedAt: t.dispatchedAt,
     lastError: t.lastError,
+    timeoutMinutes: t.timeoutMinutes,
     createdAt: t.createdAt,
     updatedAt: t.updatedAt,
   };
@@ -203,7 +212,7 @@ export async function listTasksV1(principal: ApiPrincipal): Promise<Response> {
 export async function createTaskV1(principal: ApiPrincipal, request: Request): Promise<Response> {
   const body = await parseJsonBody(request, newTaskBody);
   if (!body.ok) return body.response;
-  const { title, description, coreId, agent, startNow } = body.data;
+  const { title, description, coreId, agent, startNow, timeoutMinutes } = body.data;
   const denied = refuseOutsideScope(principal, coreId ?? null);
   if (denied) return denied;
   try {
@@ -222,6 +231,7 @@ export async function createTaskV1(principal: ApiPrincipal, request: Request): P
       coreId: coreId ?? null,
       agent: agent ?? null,
       startNow: startNow === true,
+      ...(timeoutMinutes === undefined ? {} : { timeoutMinutes }),
     });
     return json({ task: taskDto(task) }, { status: HTTP_CREATED });
   } catch (e) {
@@ -249,6 +259,48 @@ export async function setTaskStatusV1(principal: ApiPrincipal, id: string, reque
     const denied = refuseOutsideScope(principal, task.coreId);
     if (denied) return denied;
     return json({ task: taskDto(await changeTaskStatus(principal.ownerId, id, body.data.status)) });
+  } catch (e) {
+    return rethrowUnlessDomain(e);
+  }
+}
+
+/** `PATCH /api/v1/tasks/:id` (#722): title, description (409 while `in_progress`) or time limit (#724, any status). */
+export async function updateTaskV1(principal: ApiPrincipal, id: string, request: Request): Promise<Response> {
+  const body = await parseJsonBody(request, updateTaskBody);
+  if (!body.ok) return body.response;
+  try {
+    const task = await getTask(principal.ownerId, id);
+    const denied = refuseOutsideScope(principal, task.coreId);
+    if (denied) return denied;
+    return json({ task: taskDto(await updateTask(principal.ownerId, id, { ...body.data, changedBy: await authorName() })) });
+  } catch (e) {
+    return rethrowUnlessDomain(e);
+  }
+}
+
+/** `DELETE /api/v1/tasks/:id` (#722): 204, or 409 while the Task is `in_progress`. */
+export async function deleteTaskV1(principal: ApiPrincipal, id: string): Promise<Response> {
+  try {
+    const task = await getTask(principal.ownerId, id);
+    const denied = refuseOutsideScope(principal, task.coreId);
+    if (denied) return denied;
+    await deleteTask(principal.ownerId, id);
+    return noContent();
+  } catch (e) {
+    return rethrowUnlessDomain(e);
+  }
+}
+
+/** `POST /api/v1/tasks/:id/stop` (#723): stops the Task's Session and fails the Task; 409 unless it is `in_progress`. */
+export async function stopTaskV1(principal: ApiPrincipal, id: string, request: Request): Promise<Response> {
+  const body = await parseJsonBody(request, stopTaskBody);
+  if (!body.ok) return body.response;
+  try {
+    const task = await getTask(principal.ownerId, id);
+    const denied = refuseOutsideScope(principal, task.coreId);
+    if (denied) return denied;
+    const stopped = await stopTask(principal.ownerId, id, { stoppedBy: await authorName(), reason: body.data.reason });
+    return json({ task: taskDto(stopped.task), session: stopped.session });
   } catch (e) {
     return rethrowUnlessDomain(e);
   }
