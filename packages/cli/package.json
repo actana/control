@@ -1,7 +1,7 @@
 {
   "name": "@actana/core-cli",
   "private": true,
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "The built-in `actana` of a Core: the machine verbs (install, setup, status, daemon, pair), with the client nouns handed to the published @actana/cli.",
   "license": "MIT",
   "type": "module",
