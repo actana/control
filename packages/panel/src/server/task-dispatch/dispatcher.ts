@@ -1,20 +1,30 @@
 import { CoreSharedError, type CoreShared } from "@actana/sdk/shared";
 import { NotFoundError } from "../errors";
-import { getAgent, resolveAgent, type Agent, type ResolvedAgent } from "../services/agents";
+import {
+  CoreHarnessesUnavailableError,
+  HarnessNotReadyError,
+  getAgent,
+  resolveAgent,
+  type Agent,
+  type ResolvedAgent,
+} from "../services/agents";
 import {
   addTaskComment,
   claimTask,
   failTaskDispatch,
+  findCurrentTaskSession,
+  getTask,
   listTaskComments,
   listTasks,
   type Task,
+  type TaskComment,
 } from "../services/tasks";
 import { archivedTaskName, classifyTaskEntry, taskFolder } from "~/shared/task-report";
-import { formatTaskDispatchComment } from "~/shared/tasks";
+import { formatTaskDispatchComment, parseTaskDispatchComment } from "~/shared/tasks";
 import { ResultWatcher } from "./result-watcher";
 import { lazyShared, type SharedFor } from "./shared-factory";
 import { buildTaskPointer, buildTaskPrompt, taskPromptPath } from "./task-prompt";
-import { consoleDispatchLog, messageOf, type Clock, type DispatchLog, type SessionStarter } from "./types";
+import { consoleDispatchLog, messageOf, type Clock, type DispatchLog, type SessionStarter, type SessionStopper } from "./types";
 
 /**
  * The dispatcher (#570): claims `assigned` Tasks, starts a Session on the Agent's
@@ -24,6 +34,7 @@ import { consoleDispatchLog, messageOf, type Clock, type DispatchLog, type Sessi
  * The Session is told only a short pointer; the Task itself is a file in the Task's folder (`prompt-attempt-<n>.md`).
  *
  * Per Task, in this order:
+ *  0. WAIT while the Agent's Harness is still being checked (#706), before any claim; see below.
  *  1. CLAIM with one conditional update (`claimTask`): assigned to in_progress,
  *     attempt + 1, dispatch time set. Of two dispatchers only one gets the Task.
  *  2. RESOLVE the Task's Agent to the harness and Core it has right now.
@@ -33,6 +44,14 @@ import { consoleDispatchLog, messageOf, type Clock, type DispatchLog, type Sessi
  * Any failure before the Session runs moves the Task to `failed` with the reason
  * as its last error and a system comment (`failTaskDispatch`), so no Task is left
  * `in_progress` with nothing running and none is claimed again in a loop.
+ *
+ * The wait (step 0): a Harness that is `checking`, or whose check failed in a way that may pass (a probe that
+ * timed out, a Core that is restarting and does not answer), is not a reason to fail a Task. The Task is left
+ * `assigned`, with no claim, attempt, comment or history, and looked at again on the next poll, for up to
+ * `harnessWaitMs` from the first time this dispatcher saw it waiting. Then it is claimed and fails with the
+ * reason as usual. A Harness that is missing, outdated or needs setup fails at once. The wait lives in memory:
+ * a Panel restart starts it again. It is separate from the result watcher's run timeout, which only starts
+ * at dispatch.
  *
  * Every query is the owner's (`ownerId`).
  */
@@ -54,13 +73,22 @@ export type TaskDispatcherOptions = {
   coreFilesFor?: SharedFor;
   watcher: ResultWatcher;
   agents?: AgentLookup;
+  /**
+   * Stops a Session (#723): the one a Task was stopped under while it was still starting, and the previous
+   * attempt's before a re-run. Best effort; without it neither is done.
+   */
+  stopSession?: SessionStopper;
   now?: Clock;
   /** How often to look for `assigned` Tasks. */
   pollMs?: number;
+  /** How long an `assigned` Task waits for its Harness to finish being checked before it fails with that reason. */
+  harnessWaitMs?: number;
   log?: DispatchLog;
 };
 
 export const DEFAULT_DISPATCH_POLL_MS = 2_000;
+/** Covers a setup check (about 75 s), the probe retries and a Core link that reconnects. */
+export const DEFAULT_HARNESS_WAIT_MS = 5 * 60_000;
 
 const realAgents: AgentLookup = { get: getAgent, resolve: (ownerId, id) => resolveAgent(ownerId, id) };
 
@@ -71,8 +99,12 @@ export class TaskDispatcher {
   private readonly coreFilesFor: SharedFor;
   private readonly watcher: ResultWatcher;
   private readonly agents: AgentLookup;
+  private readonly stopSession: SessionStopper | null;
   private readonly now: Clock;
   private readonly pollMs: number;
+  private readonly harnessWaitMs: number;
+  /** Task id to the first time it was seen waiting for its Harness; dropped once it is claimed or leaves `assigned`. */
+  private readonly waitingSince = new Map<string, number>();
   private readonly log: DispatchLog;
   private timer: ReturnType<typeof setInterval> | null = null;
   private cycling: Promise<number> | null = null;
@@ -86,8 +118,10 @@ export class TaskDispatcher {
     this.coreFilesFor = opts.coreFilesFor ?? opts.sharedFor;
     this.watcher = opts.watcher;
     this.agents = opts.agents ?? realAgents;
+    this.stopSession = opts.stopSession ?? null;
     this.now = opts.now ?? Date.now;
     this.pollMs = opts.pollMs ?? DEFAULT_DISPATCH_POLL_MS;
+    this.harnessWaitMs = opts.harnessWaitMs ?? DEFAULT_HARNESS_WAIT_MS;
     this.log = opts.log ?? consoleDispatchLog;
   }
 
@@ -112,6 +146,8 @@ export class TaskDispatcher {
         this.log.error(`task dispatch: could not list assigned Tasks: ${messageOf(err)}`);
         return 0;
       }
+      const ids = new Set(waiting.map((t) => t.id));
+      for (const id of this.waitingSince.keys()) if (!ids.has(id)) this.waitingSince.delete(id);
       for (const task of waiting) {
         if (this.stopped) break;
         try {
@@ -142,8 +178,9 @@ export class TaskDispatcher {
 
   /**
    * Watch the Tasks that are `in_progress` and not watched by this process: the Panel restarted while their
-   * Sessions ran. Their exit cannot be heard any more, so a result file or the timeout (from the original
-   * dispatch time) ends them. No Task is left with nothing watching it:
+   * Sessions ran. Their exit cannot be heard any more, so a result file, the Task's time limit (from the original
+   * dispatch time) or the watcher's liveness check ends them. One with no known Session cannot be probed; with
+   * No limit it stays until an operator stops it. No Task is left with nothing watching it:
    * - an Agent that is gone (deleted while its Task ran) falls back to the Task's own Core;
    * - a Task with no Core to look on fails with the reason;
    * - a Core whose Shared folder cannot be reached right now is still watched, through a handle that asks again
@@ -172,13 +209,16 @@ export class TaskDispatcher {
         }
         // The Core's Shared folder as it is now, when it can be reached; otherwise a handle that asks again on each use.
         const shared = await this.sharedFor(coreId).catch(() => lazyShared(() => this.sharedFor(coreId)));
+        const session = await findCurrentTaskSession(this.ownerId, task.id).catch(() => null);
         this.watcher.track({
           taskId: task.id,
+          sessionId: session?.sessionId ?? null,
           attempt: task.attemptCount,
           dispatchedAt: task.dispatchedAt ?? this.now(),
           coreId,
           shared,
           authorName: agent?.name ?? "agent",
+          timeoutMinutes: task.timeoutMinutes,
         });
         adopted += 1;
       } catch (err) {
@@ -210,8 +250,79 @@ export class TaskDispatcher {
     await this.watcher.stop();
   }
 
-  /** True when this dispatcher claimed the Task (whether or not its Session then started). */
+  /**
+   * An operator may stop the Task while its Session is still starting (#723): the stop found no Session to kill.
+   * Now that this one is up, kill it and let go of it.
+   */
+  private async stopIfStoppedWhileStarting(taskId: string, attempt: number, target: { coreId: string; sessionId: string }): Promise<void> {
+    try {
+      // A Task stopped and then deleted while its Session was starting is as good as no longer in_progress.
+      const now = await getTask(this.ownerId, taskId).catch((err) => {
+        if (err instanceof NotFoundError) return null;
+        throw err;
+      });
+      if (now && now.status === "in_progress" && now.attemptCount === attempt) return;
+      this.watcher.untrack(taskId);
+      this.log.info(`task ${taskId}: stopped while Session ${target.sessionId} was starting; stopping it`);
+      if (this.stopSession) await this.stopSession(target);
+    } catch (err) {
+      this.log.error(`task ${taskId}: could not stop Session ${target.sessionId} of a Task stopped while starting: ${messageOf(err)}`);
+    }
+  }
+
+  /**
+   * Before attempt n: if attempt n-1 ended by an operator's stop or by the timeout, its Session may still be
+   * running (the stop could not reach the Core, or the kill failed) and could write a `success.md` the new
+   * attempt would count. Try to stop it again. Best effort and logged: a Core still unreachable does not hold
+   * the new attempt back. An attempt that ended on its own result is left alone, so its Session stays open to read.
+   */
+  private async stopPreviousSession(taskId: string, previous: number, comments: readonly TaskComment[]): Promise<void> {
+    if (!this.stopSession) return;
+    try {
+      let at = -1;
+      comments.forEach((c, i) => {
+        if (c.authorKind === "system" && parseTaskDispatchComment(c.body)?.attempt === previous) at = i;
+      });
+      if (at < 0) return;
+      const target = parseTaskDispatchComment(comments[at]!.body)!;
+      // Only the Panel's own words count: "Stopped by" is a system comment, and the timeout is the Panel's
+      // `fail.md` of that attempt (recorded as the agent's comment, but with that attempt's fail.md as its
+      // source and the Panel's signature in the body). A user or agent comment with the same phrase is not it.
+      const timeoutFile = archivedTaskName(previous, "fail.md");
+      const cutShort = comments.slice(at + 1).some(
+        (c) =>
+          (c.authorKind === "system" && c.body.startsWith("Stopped by ")) ||
+          (c.authorKind === "agent" && c.sourceFile === timeoutFile && c.body.includes("wrote no result within") && c.body.includes("written by the Panel")),
+      );
+      if (!cutShort) return;
+      const result = await this.stopSession({ coreId: target.coreId, sessionId: target.sessionId });
+      this.log.info(`task ${taskId}: previous Session ${target.sessionId} before attempt ${previous + 1}: ${result.outcome}${result.detail ? ` (${result.detail})` : ""}`);
+    } catch (err) {
+      this.log.error(`task ${taskId}: could not stop the previous attempt's Session: ${messageOf(err)}`);
+    }
+  }
+
+  /** True when this dispatcher claimed the Task (whether or not its Session then started). False also when the Task keeps waiting for its Harness. */
   private async dispatch(task: Task): Promise<boolean> {
+    // Ask before claiming: nothing moves a claimed Task back to `assigned`, so the wait has to happen here.
+    let early: { agentId: string; resolved?: ResolvedAgent; error?: unknown } | null = null;
+    if (task.agent) {
+      try {
+        early = { agentId: task.agent, resolved: await this.agents.resolve(this.ownerId, task.agent) };
+      } catch (err) {
+        if (err instanceof HarnessNotReadyError || err instanceof CoreHarnessesUnavailableError) {
+          const since = this.waitingSince.get(task.id) ?? this.now();
+          if (!this.waitingSince.has(task.id)) {
+            this.waitingSince.set(task.id, since);
+            this.log.info(`task ${task.id}: waiting for its Agent's Harness: ${messageOf(err)}`);
+          }
+          if (this.now() - since < this.harnessWaitMs) return false;
+        }
+        early = { agentId: task.agent, error: err };
+      }
+    }
+    this.waitingSince.delete(task.id);
+
     const claimed = await claimTask(this.ownerId, task.id, this.now());
     if (!claimed) return false; // another dispatcher got it, or it is no longer assigned
     const attempt = claimed.attemptCount;
@@ -228,7 +339,12 @@ export class TaskDispatcher {
     let resolved: ResolvedAgent;
     try {
       agent = await this.agents.get(this.ownerId, claimed.agent);
-      resolved = await this.agents.resolve(this.ownerId, claimed.agent);
+      if (early && early.agentId === claimed.agent) {
+        if (early.error !== undefined) throw early.error;
+        resolved = early.resolved!;
+      } else {
+        resolved = await this.agents.resolve(this.ownerId, claimed.agent); // reassigned since the list was read
+      }
     } catch (err) {
       await fail(`its Agent cannot run it: ${messageOf(err)}`);
       return true;
@@ -246,6 +362,7 @@ export class TaskDispatcher {
     let sessionId: string;
     try {
       const comments = await listTaskComments(this.ownerId, claimed.id);
+      if (attempt > 1) await this.stopPreviousSession(claimed.id, attempt - 1, comments);
       // The whole Task goes into a file the agent reads, not into the composer. The file is on the Core before
       // the pointer is typed, so the agent cannot be told to read a file that is not there.
       try {
@@ -271,6 +388,8 @@ export class TaskDispatcher {
           coreId: resolved.coreId,
           shared,
           authorName: agent.name,
+          sessionId,
+          timeoutMinutes: claimed.timeoutMinutes,
         },
         () => session.dispose(),
       );
@@ -302,6 +421,7 @@ export class TaskDispatcher {
       // The Session is running and being watched; a missing note is not a reason to fail the Task.
       this.log.error(`task ${claimed.id}: could not add the dispatch comment: ${messageOf(err)}`);
     }
+    await this.stopIfStoppedWhileStarting(claimed.id, attempt, { coreId: resolved.coreId, sessionId });
     this.log.info(`task ${claimed.id}: attempt ${attempt} running as Session ${sessionId} on Core ${resolved.coreId}`);
     return true;
   }

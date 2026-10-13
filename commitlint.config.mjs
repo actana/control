@@ -3,6 +3,8 @@
  * Keep the `type-enum` list in sync with:
  *   - .github/workflows/ci.yml (the Conventions job's PR title check)
  *   - CONTRIBUTING.md (documentation)
+ *   - scripts/check-conventions.sh (the branch types: this list plus the
+ *     aliases, minus `gate`, which names a pull request and never a branch)
  *
  * Self-contained on purpose: the Conventions job copies *this file alone* into
  * RUNNER_TEMP beside a throwaway commitlint install, so the rule below is an
@@ -122,6 +124,15 @@ export default {
         'ci',
         'chore',
         'revert',
+        // A sub-train gate pull request (#499, ADR 0023 D46): the fixes going
+        // into `beta/x.y.z-fN`, and the `-fN` merging back into `beta/x.y.z`.
+        // Both are squash-merged like any other pull request, so the title
+        // *is* a commit on the train and rides the promotion to `main` — a
+        // title the title lint skipped would be refused by the next pull
+        // request's commit lint instead. A type is the one answer that holds
+        // in both places. It is a commit type and not a branch type: a gate's
+        // head is `fix/...` or the sub-beta itself.
+        'gate',
       ],
     ],
     // Off, not "never sentence-case". This repo's subjects legitimately open

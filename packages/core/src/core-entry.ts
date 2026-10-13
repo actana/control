@@ -116,7 +116,7 @@ import {
   type CoreLinkSessionPromptDeliveredPayload,
 } from "@actana/sdk/core";
 import { CoreSessionWriter } from "./core-session-writer";
-import { CoreHarnessStatus } from "./core-harness-status";
+import { CoreHarnessStatus, hookEvidencesSession } from "./core-harness-status";
 import { CoreTitleGenerator } from "./core-title-generator";
 import { startHarnessHookReceiver, type HarnessHookReceiver } from "./harness-hook-receiver";
 import {
@@ -147,7 +147,8 @@ import log from "@actana/shared/log";
 import { bootstrapCoreDb } from "./core-db-bootstrap";
 import { HarnessAvailabilityStore } from "@actana/shared/harness-availability-store";
 import { HarnessSkillWatcher } from "./harness-skill-watcher";
-import { ensureOrchestrationSkillViaCore, pretrustWorkspacesViaCore } from "./core-home-ops-client";
+import { sanitizedProcessEnv } from "@actana/shared/shell-env";
+import { ensureOrchestrationSkillViaCore, pretrustWorkspacesViaCore, verifyCodexHookTrustViaCore } from "./core-home-ops-client";
 import { HarnessSetup } from "./harness-setup";
 import { runHarnessOnce } from "./harness-setup-run";
 import { coreAvailabilityProbe } from "./harness-availability-probe";
@@ -258,9 +259,16 @@ async function startCore(): Promise<void> {
   sweepStrandedSessions({ listBootSweepSessions, writer: sessionWriter });
 
   const titleGenerator = new CoreTitleGenerator({ writer: sessionWriter });
+  // Bound once the PTY core exists below; a hook cannot arrive before a PTY
+  // was spawned, and a PTY cannot be spawned before the core is.
+  let ptyCore: PtyCore | null = null;
   const harnessStatus = new CoreHarnessStatus({
     writer: sessionWriter,
     generateTitle: (sessionId, prompt) => titleGenerator.schedule(sessionId, prompt),
+    // The process every hook over the wire is held to (issue 460): what this
+    // Core spawned for the Session — the harness, or the npm codex wrapper
+    // that runs it — and nothing started underneath it.
+    spawned: (sessionId) => ptyCore?.spawnedProcessForSession(sessionId) ?? null,
   });
 
   // Loopback only, ephemeral port, token minted here — see the decisions
@@ -273,21 +281,21 @@ async function startCore(): Promise<void> {
 
   let hookReceiver: HarnessHookReceiver | null = null;
   try {
-    hookReceiver = await startHarnessHookReceiver((sessionId, payload, eventNameFallback) => {
-      const result = harnessStatus.receiveHook(sessionId, payload, eventNameFallback);
+    hookReceiver = await startHarnessHookReceiver((sessionId, payload, eventNameFallback, origin) => {
+      const result = harnessStatus.receiveHook(sessionId, payload, eventNameFallback, origin);
       // A hook that landed is this Session talking, whatever it said — that is
       // what keeps the quiet-Session backstop off a turn that is really
       // running (issue 243) — and it is also the end of the idle rule's claim
       // on the row, because the pipeline has just decided the status (issue
       // 391).
       //
-      // Reported *after* the pipeline, and only for a hook the pipeline
-      // accepted: `reconcileSessionId` drops a POST carrying another session's
-      // id (base `2bdcb56`), and a hook from a harness process this Session no
-      // longer owns is not evidence that this Session is alive. `ok` is the
-      // positive test — it is already false for a row this Core does not have
-      // — and `foreign-session` is the one rejection that answers `ok`.
-      if (result.ok && result.body?.ignored !== "foreign-session") {
+      // Reported *after* the pipeline, and only for a hook it accepted as the
+      // Session's own: `reconcileSessionId` drops a POST carrying another
+      // session's id (base `2bdcb56`), the origin check drops one from a
+      // process this Core did not spawn (issue 460), and neither is evidence
+      // that this Session's harness is alive. `hookEvidencesSession` is that
+      // test, shared with the backstop's own tests so the two cannot drift.
+      if (hookEvidencesSession(result)) {
         sessionBackstop?.noteActivity(sessionId, "hook");
       }
       return result;
@@ -324,9 +332,9 @@ async function startCore(): Promise<void> {
     // and the hook receiver's, for the same reason: killing it would silently
     // strand every running Session's status.
     getProtectedPorts: () => [port, hookReceiver?.port],
-    onSessionExit: ({ sessionId, exitCode }) => {
-      harnessStatus.sessionExited(sessionId, exitCode);
-      sessionBackstop?.forget(sessionId);
+    onSessionExit: (exit) => {
+      harnessStatus.sessionExited(exit);
+      sessionBackstop?.forget(exit.sessionId);
     },
     onSessionOutputSignal: ({ sessionId, signal }) => harnessStatus.outputSignal(sessionId, signal),
     // Issue 483. The status the signal above writes is what a client renders;
@@ -389,6 +397,7 @@ async function startCore(): Promise<void> {
   await ensureClaudeShiftEnterBinding();
 
   const core = new PtyCore(deps);
+  ptyCore = core;
 
   // Enrich `sessionsList` with live PTY ids: a session is "reattachable" when the
   // Core's PTY core currently has a running PTY for it. Wired here so the
@@ -438,6 +447,8 @@ async function startCore(): Promise<void> {
     workspaces: () => [coreHome()],
     pretrust: pretrustWorkspacesViaCore,
     runOnce: runHarnessOnce,
+    // #703: once per codex binary and version, ask codex itself whether the hook trust this Core writes holds.
+    verifyCodexHookTrust: () => verifyCodexHookTrustViaCore(sanitizedProcessEnv().PATH ?? null),
   });
   const availabilityStore = new HarnessAvailabilityStore({
     appendEvent: (kind, payload, opts) => {

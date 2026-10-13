@@ -28,7 +28,7 @@ const { saveStorageConfig, storageKeyIssuer } = await import("../../services/sto
 const { updateSharedFolder } = await import("../../repositories/core-shared-folders.repo");
 const { CoreS3Shared } = await import("../../services/core-s3-shared");
 const { createTask, getTask, listTaskComments } = await import("../../services/tasks");
-const { startTaskDispatch, stopTaskDispatch, TASK_TIMEOUT_ENV } = await import("../index");
+const { startTaskDispatch, stopTaskDispatch } = await import("../index");
 
 const OWNER = 1;
 const BUCKET = "actana-shared";
@@ -60,7 +60,7 @@ async function waitFor<T>(what: string, read: () => Promise<T>, done: (value: T)
   }
 }
 
-async function rig(coreId: string, env: NodeJS.ProcessEnv = {}) {
+async function rig(coreId: string) {
   const clock = new FakeClock();
   const s3 = new FakeS3(BUCKET);
   s3.clock = clock.now;
@@ -98,7 +98,6 @@ async function rig(coreId: string, env: NodeJS.ProcessEnv = {}) {
     updatedAt: 1,
   };
   startTaskDispatch({
-    env,
     modes,
     throughCore,
     startSession: core.startSession,
@@ -115,8 +114,8 @@ async function rig(coreId: string, env: NodeJS.ProcessEnv = {}) {
   return { clock, s3, sts, core, log, throughCore };
 }
 
-const assign = (clock: FakeClock) =>
-  createTask(OWNER, { title: "Fix the build", description: "Red on main.", agent: "agent_1", startNow: true }, clock.now());
+const assign = (clock: FakeClock, timeoutMinutes?: number | null) =>
+  createTask(OWNER, { title: "Fix the build", description: "Red on main.", agent: "agent_1", startNow: true, ...(timeoutMinutes === undefined ? {} : { timeoutMinutes }) }, clock.now());
 
 beforeEach(async () => {
   resetOperatorSessionForTests();
@@ -192,14 +191,14 @@ describe("the Core is unreachable and a result file in S3 still moves the Task",
 
   it("a Task that runs past the timeout gets a fail.md written to S3", async () => {
     const coreId = await attachedCore();
-    const { clock, s3, core, throughCore } = await rig(coreId, { [TASK_TIMEOUT_ENV]: "2" });
-    const task = await assign(clock);
+    const { clock, s3, core, throughCore } = await rig(coreId);
+    const task = await assign(clock, 2);
     await waitFor("the Session to start", async () => core.starts.length, (count) => count === 1);
 
     await clock.advance(2 * 60_000 + 1);
 
     await waitFor("the Task to fail", async () => (await getTask(OWNER, task.id)).status, (status) => status === "failed");
-    expect(s3.text(`${PREFIX}/${coreId}/tasks/${task.id}/fail.md`)).toContain("no result within 2 minutes");
+    expect(s3.text(`${PREFIX}/${coreId}/tasks/${task.id}/fail.md`)).toContain("2-minute time limit");
     expect(throughCore).toHaveBeenCalledTimes(1);
   });
 

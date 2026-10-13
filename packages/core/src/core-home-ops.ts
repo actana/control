@@ -37,6 +37,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { pickHarnessCandidateMeetingVersion, resolveAllHarnessCommandsOnPath } from "@actana/shared/harness-cli-resolution";
+import { isInterpreterScript } from "@actana/shared/shell-env";
 import { HARNESS_CLI_CONFIG_BY_COMMAND } from "@actana/shared/harness-cli-config";
 import type { HarnessVersionCheck } from "@actana/shared/harness-cli-version";
 import { registryPaths } from "@actana/shared/blob-registry";
@@ -44,6 +45,7 @@ import { wireLocalCore, type LocalCoreWiring } from "@actana/shared/local-core-w
 import { piAgentDir } from "@actana/shared/pi-agent-dir";
 import { ensureStatuslineTap, statuslineTapPath } from "@actana/shared/statusline-tap";
 import type { SkillInstallEntry } from "@actana/shared/orchestration-skill-install";
+import { checkCodexHookTrust, type CodexHookTrustCheck } from "./codex-hook-trust-check";
 import { hookWritePaths, installHarnessHooks, type HookInstallResult } from "./harness-hooks";
 import { installOrchestrationSkills, orchestrationSkillFolders } from "./orchestration-skill";
 import {
@@ -68,6 +70,7 @@ export const CORE_HOME_OPERATIONS = [
   "resolveCommand",
   "probeHarnessCli",
   "pretrustWorkspaces",
+  "verifyCodexHookTrust",
 ] as const;
 
 export type CoreHomeOperation = (typeof CORE_HOME_OPERATIONS)[number];
@@ -92,7 +95,9 @@ export type CoreHomeOpRequest =
   /** Find a Harness CLI on `path` and run its `--version`, both as core. Same fields as `resolveCommand`. */
   | { op: "probeHarnessCli"; command: string; path: string | null }
   /** Record trust for `dirs` in each named Harness's own config (#685). */
-  | { op: "pretrustWorkspaces"; harnesses: string[]; dirs: string[] };
+  | { op: "pretrustWorkspaces"; harnesses: string[]; dirs: string[] }
+  /** Ask the codex found on `path` (as `probeHarnessCli` finds it) whether it hashes this Core's hooks as this Core does (#703). */
+  | { op: "verifyCodexHookTrust"; path: string | null };
 
 export type RegistrationCredential = {
   endpoint: string;
@@ -119,8 +124,13 @@ export type CoreHomeOpResult = {
   wireLocalCore: LocalCoreWiring;
   spawnPathFacts: SpawnPathFacts;
   resolveExecCwd: { cwd: string };
-  /** Every executable match, in search order; the caller picks by version. */
-  resolveCommand: { candidates: string[] };
+  /**
+   * Every executable match, in search order; the caller picks by version.
+   * `scripts` is the subset that are interpreter scripts (`#!`) rather than
+   * native binaries — what tells the npm `codex` wrapper from the vendor binary
+   * (issue 460), read here because the file is in core's home.
+   */
+  resolveCommand: { candidates: string[]; scripts: string[] };
   /**
    * Every match, and the one that meets the version floor (or the first, with its
    * failed check), already version-checked. `meeting` is null when there is no
@@ -128,6 +138,8 @@ export type CoreHomeOpResult = {
    */
   probeHarnessCli: { candidates: string[]; meeting: { binary: string; check: HarnessVersionCheck } | null };
   pretrustWorkspaces: PretrustResult[];
+  /** The codex that was asked, the version it reported (null when unreadable), and what it said. */
+  verifyCodexHookTrust: { binary: string; version: string | null; check: CodexHookTrustCheck };
 };
 
 /** Where and as whom the operations run. */
@@ -252,6 +264,12 @@ export function parseCoreHomeOpRequest(raw: unknown): CoreHomeOpRequest {
     case "resolveExecCwd":
       noExtraFields(raw, ["cwd"]);
       return { op: "resolveExecCwd", cwd: optionalStr(raw.cwd, "cwd") };
+    case "verifyCodexHookTrust":
+      noExtraFields(raw, ["path"]);
+      return {
+        op: "verifyCodexHookTrust",
+        path: raw.path === null || raw.path === undefined ? null : str(raw.path, "path", MAX_SEARCH_PATH_LENGTH),
+      };
     case "pretrustWorkspaces": {
       noExtraFields(raw, ["harnesses", "dirs"]);
       if (!Array.isArray(raw.harnesses) || raw.harnesses.length > 8) refuse("bad-field", "harnesses must be a short list");
@@ -406,7 +424,8 @@ export function handleCoreHomeOpSync(request: CoreHomeOpRequest, ctx: CoreHomeOp
       // are in `~/.local/bin` and in `/usr/local/bin`. What it can see is what
       // `core` can see, and it answers with paths only.
       const env = request.path === null ? ctx.env : { ...ctx.env, PATH: request.path };
-      return { candidates: resolveAllHarnessCommandsOnPath(request.command, env, os.platform()) };
+      const candidates = resolveAllHarnessCommandsOnPath(request.command, env, os.platform());
+      return { candidates, scripts: candidates.filter((file) => isInterpreterScript(file)) };
     }
     case "probeHarnessCli": {
       // The `--version` of each match is run here, by core, in a process the daemon
@@ -448,23 +467,9 @@ export function handleCoreHomeOpSync(request: CoreHomeOpRequest, ctx: CoreHomeOp
       }
       return installed;
     }
-    case "pretrustWorkspaces": {
-      // Only directories inside the home, and only the two config files, each
-      // confined like any other write: a link in the home that leaves it is refused.
-      const dirs = new Set<string>();
-      for (const dir of request.dirs) {
-        const inside = confine(dir, ctx, "dir");
-        dirs.add(inside);
-        // Harnesses key a project by the path they were started in, which may be the
-        // resolved one when the home is a link; trust both spellings.
-        const real = realpathOrNull(inside);
-        if (real !== null) dirs.add(real);
-      }
-      confine(claudeConfigPath(ctx.home), ctx, "claude config");
-      confine(codexConfigPath(ctx.home), ctx, "codex config");
-      for (const dir of dirs) confine(cursorMarkerPath(ctx.home, dir), ctx, "cursor trust marker");
-      return pretrustWorkspaces(ctx.home, request.harnesses, [...dirs]);
-    }
+    case "pretrustWorkspaces":
+      // Asynchronous (the Claude Code writer waits on a lock without blocking): `handleCoreHomeOp` runs it.
+      throw new CoreHomeOpFailedError("pretrustWorkspaces runs through handleCoreHomeOp");
     case "ensureStatuslineTap": {
       const cwd = confine(request.cwd, ctx, "cwd");
       confine(path.join(cwd, ".claude", "settings.local.json"), ctx, "statusline settings file");
@@ -514,7 +519,67 @@ export function handleCoreHomeOpSync(request: CoreHomeOpRequest, ctx: CoreHomeOp
       if (!stat.isDirectory()) throw new CoreHomeOpFailedError(`Not a directory on this Core: ${raw}`);
       return { cwd: raw };
     }
+    case "verifyCodexHookTrust":
+      // Asynchronous (it waits on codex): `handleCoreHomeOp` runs it; the helper and the client both go through that.
+      throw new CoreHomeOpFailedError("verifyCodexHookTrust runs through handleCoreHomeOp");
   }
+}
+
+/** Where the check's throwaway workspace and `CODEX_HOME` are made: under the home, so codex's writes stay in it. */
+export function codexHookCheckRoot(home: string): string {
+  return path.join(home, ".cache", "actana");
+}
+
+/**
+ * The `verifyCodexHookTrust` op (#703): find codex the way `probeHarnessCli` does (a search of PATH, never a path
+ * from the request), and ask it to list this Core's hooks from a throwaway workspace (`codex-hook-trust-check.ts`).
+ * The binary and the version come from the same resolution as the availability probe, so what is checked is what
+ * a Session gets.
+ */
+async function verifyCodexHookTrust(
+  request: Extract<CoreHomeOpRequest, { op: "verifyCodexHookTrust" }>,
+  ctx: CoreHomeOpContext,
+): Promise<CoreHomeOpResult["verifyCodexHookTrust"]> {
+  const env = request.path === null ? ctx.env : { ...ctx.env, PATH: request.path };
+  const platform = os.platform();
+  const requirement = HARNESS_CLI_CONFIG_BY_COMMAND.codex;
+  const candidates = resolveAllHarnessCommandsOnPath("codex", env, platform);
+  const meeting = requirement ? pickHarnessCandidateMeetingVersion(candidates, requirement, env, platform) : null;
+  if (!meeting) throw new CoreHomeOpFailedError("codex is not on this Core's PATH");
+  const root = confine(codexHookCheckRoot(ctx.home), ctx, "check directory");
+  let check: CodexHookTrustCheck;
+  try {
+    check = await checkCodexHookTrust(meeting.binary, root, env);
+  } catch (err) {
+    throw new CoreHomeOpFailedError(err instanceof Error ? err.message : String(err));
+  }
+  const version = (meeting.check as { version?: unknown }).version;
+  return { binary: meeting.binary, version: typeof version === "string" ? version : null, check };
+}
+
+/**
+ * The `pretrustWorkspaces` op (#685): confine every path, then write. Asynchronous because the Claude Code writer
+ * waits for Claude Code's lock with timers; this runs in the daemon itself on metal installs, so it must never block.
+ */
+async function pretrustWorkspacesOp(
+  request: Extract<CoreHomeOpRequest, { op: "pretrustWorkspaces" }>,
+  ctx: CoreHomeOpContext,
+): Promise<CoreHomeOpResult["pretrustWorkspaces"]> {
+  // Only directories inside the home, and only the two config files, each
+  // confined like any other write: a link in the home that leaves it is refused.
+  const dirs = new Set<string>();
+  for (const dir of request.dirs) {
+    const inside = confine(dir, ctx, "dir");
+    dirs.add(inside);
+    // Harnesses key a project by the path they were started in, which may be the
+    // resolved one when the home is a link; trust both spellings.
+    const real = realpathOrNull(inside);
+    if (real !== null) dirs.add(real);
+  }
+  confine(claudeConfigPath(ctx.home), ctx, "claude config");
+  confine(codexConfigPath(ctx.home), ctx, "codex config");
+  for (const dir of dirs) confine(cursorMarkerPath(ctx.home, dir), ctx, "cursor trust marker");
+  return await pretrustWorkspaces(ctx.home, request.harnesses, [...dirs]);
 }
 
 /** {@link handleCoreHomeOpSync}, as a promise: the helper's entry and the in-process client both `await` it. */
@@ -523,5 +588,7 @@ export async function handleCoreHomeOp<Op extends CoreHomeOperation>(
   ctx: CoreHomeOpContext,
 ): Promise<CoreHomeOpResult[Op]>;
 export async function handleCoreHomeOp(request: CoreHomeOpRequest, ctx: CoreHomeOpContext): Promise<unknown> {
+  if (request.op === "verifyCodexHookTrust") return verifyCodexHookTrust(request, ctx);
+  if (request.op === "pretrustWorkspaces") return pretrustWorkspacesOp(request, ctx);
   return handleCoreHomeOpSync(request, ctx);
 }

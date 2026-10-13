@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { json, jsonError, parseJsonBody, rethrowUnlessDomain } from "./_helpers";
+import { json, jsonError, noContent, parseJsonBody, rethrowUnlessDomain } from "./_helpers";
 import { NotFoundError, ValidationError } from "../errors";
 import { HTTP_BAD_REQUEST, HTTP_CREATED, HTTP_PAYLOAD_TOO_LARGE } from "~/shared/http-status";
 import type { AgentDto, TaskCommentDto, TaskDto } from "~/shared/task-wire";
@@ -8,9 +8,11 @@ import {
   changeTaskStatus,
   commentAndReassign,
   createTask,
+  deleteTask,
   getTask,
   listTaskComments,
   listTasks,
+  updateTask,
   type Task,
   type TaskComment,
 } from "../services/tasks";
@@ -24,6 +26,7 @@ import {
 import { getAgent, listAgentsForCore, type Agent } from "../services/agents";
 import { getOperator } from "../services/operator";
 import { findCoreById } from "../repositories/cores.repo";
+import { stopTask } from "../task-dispatch";
 
 /**
  * Tasks and their comments, for the operator's browser (#571). Every handler
@@ -33,12 +36,16 @@ import { findCoreById } from "../repositories/cores.repo";
  * refuse it, 404 for a Task or Agent that is not the owner's).
  */
 
+/** A time limit (#724): whole minutes 1 to 43200 (30 days), or null for No limit. */
+export const timeoutMinutesSchema = z.number().int().min(1).max(43200).nullable();
+
 const newTaskBody = z.object({
   title: z.string(),
   description: z.string().optional(),
   coreId: z.string().nullable().optional(),
   agent: z.string().nullable().optional(),
   startNow: z.boolean().optional(),
+  timeoutMinutes: timeoutMinutesSchema.optional(),
 });
 // Only the moves an operator makes by hand. `in_progress` is the dispatcher's claim and
 // done, failed and partial are the result watcher's: a client that made them would leave a
@@ -46,6 +53,17 @@ const newTaskBody = z.object({
 export const OPERATOR_TASK_STATUSES = ["assigned", "draft"] as const;
 const statusBody = z.object({ status: z.enum(OPERATOR_TASK_STATUSES) });
 const commentBody = z.object({ body: z.string(), reassign: z.boolean().optional() });
+/** Stopping a running Task (#723): an optional reason, recorded in the system comment. */
+export const stopTaskBody = z.object({ reason: z.string().trim().max(2000).optional() });
+/**
+ * An edit (#722): the fields to change, at least one. The service says whether the Task's status allows it:
+ * title and description not while `in_progress`, the time limit (#724) at any status.
+ */
+export const updateTaskBody = z
+  .object({ title: z.string().optional(), description: z.string().optional(), timeoutMinutes: timeoutMinutesSchema.optional() })
+  .refine((b) => b.title !== undefined || b.description !== undefined || b.timeoutMinutes !== undefined, {
+    message: "give a title, a description or a time limit",
+  });
 
 function taskDto(t: Task): TaskDto {
   return {
@@ -58,6 +76,7 @@ function taskDto(t: Task): TaskDto {
     attemptCount: t.attemptCount,
     dispatchedAt: t.dispatchedAt,
     lastError: t.lastError,
+    timeoutMinutes: t.timeoutMinutes,
     createdAt: t.createdAt,
     updatedAt: t.updatedAt,
   };
@@ -157,7 +176,7 @@ export async function create(ownerId: number, request: Request): Promise<Respons
     ? await parseMultipart(ownerId, request, newTaskBody)
     : await parseJsonBody(request, newTaskBody).then((b) => (b.ok ? { ...b, files: [] as AttachmentFile[] } : b));
   if (!parsed.ok) return parsed.response;
-  const { title, description, coreId, agent, startNow } = parsed.data;
+  const { title, description, coreId, agent, startNow, timeoutMinutes } = parsed.data;
   try {
     // The Agent is the chosen Core's: the picker only offers those, and the
     // route holds the same line for a client that skips the picker.
@@ -174,6 +193,7 @@ export async function create(ownerId: number, request: Request): Promise<Respons
       coreId: coreId ?? null,
       agent: agent ?? null,
       startNow: startNow === true,
+      ...(timeoutMinutes === undefined ? {} : { timeoutMinutes }),
     };
     const task =
       parsed.files.length > 0
@@ -201,6 +221,39 @@ export async function setStatus(ownerId: number, id: string, request: Request): 
   if (!body.ok) return body.response;
   try {
     return json({ task: taskDto(await changeTaskStatus(ownerId, id, body.data.status)) });
+  } catch (e) {
+    return rethrowUnlessDomain(e);
+  }
+}
+
+/** Edit the title, description (#722; 409 while `in_progress`) or time limit (#724; any status). */
+export async function update(ownerId: number, id: string, request: Request): Promise<Response> {
+  const body = await parseJsonBody(request, updateTaskBody);
+  if (!body.ok) return body.response;
+  try {
+    return json({ task: taskDto(await updateTask(ownerId, id, { ...body.data, changedBy: await authorName() })) });
+  } catch (e) {
+    return rethrowUnlessDomain(e);
+  }
+}
+
+/** Stop a running Task (#723): its Session is stopped and the Task fails. 409 unless it is `in_progress`. */
+export async function stop(ownerId: number, id: string, request: Request): Promise<Response> {
+  const body = await parseJsonBody(request, stopTaskBody);
+  if (!body.ok) return body.response;
+  try {
+    const stopped = await stopTask(ownerId, id, { stoppedBy: await authorName(), reason: body.data.reason });
+    return json({ task: taskDto(stopped.task), session: stopped.session });
+  } catch (e) {
+    return rethrowUnlessDomain(e);
+  }
+}
+
+/** Delete the Task with its comments and history (#722). 409 while the Task is `in_progress`. */
+export async function remove(ownerId: number, id: string): Promise<Response> {
+  try {
+    await deleteTask(ownerId, id);
+    return noContent();
   } catch (e) {
     return rethrowUnlessDomain(e);
   }

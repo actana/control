@@ -80,6 +80,7 @@ describe("the helper bundle as a process", () => {
     await expect(coreHomeOp({ op: "resolveExecCwd", cwd: null }, options())).resolves.toEqual({ cwd: home });
     await expect(coreHomeOp({ op: "resolveCommand", command: "claude", path: bin }, options())).resolves.toEqual({
       candidates: [path.join(bin, "claude")],
+      scripts: [path.join(bin, "claude")],
     });
   });
 

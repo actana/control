@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Btn } from "~/components/ui/Btn";
 import { Icon } from "~/components/ui/Icon";
 import { TextField } from "~/components/ui/TextField";
+import { Ticked } from "~/components/ui/Ticked";
 import { AddCoreByPairing } from "~/components/views/AddCoreByPairing";
 import {
   ADD_CORE_LOCATION,
@@ -250,31 +251,6 @@ function ComposeShortcutBar({ label, onSkip }: { label: string; onSkip: () => vo
       </div>
       <CommandLine command={composePairNewCommand(label)} />
     </div>
-  );
-}
-
-/**
- * Prose with `backticked` runs rendered as code.
- *
- * The onboarding strings are written once and read by a person, and the two
- * values in this one — a command and an address — are things to be typed
- * exactly. Marking them in the string keeps the copy in
- * `core-onboarding.ts`, where a test can read it, rather than splitting one
- * sentence across three JSX children.
- */
-function Ticked({ text }: { text: string }) {
-  return (
-    <>
-      {text.split("`").map((piece, index) =>
-        index % 2 === 1 ? (
-          <code key={index} style={{ fontFamily: "var(--mono)", color: "var(--text)" }}>
-            {piece}
-          </code>
-        ) : (
-          <span key={index}>{piece}</span>
-        ),
-      )}
-    </>
   );
 }
 

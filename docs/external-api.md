@@ -312,20 +312,43 @@ separate from the browser's session-cookie routes.
 | Prefix | `/api/v1` |
 | Auth | `Authorization: Bearer ak_…` — an API key the Operator creates in Settings › API & integrations |
 | Who it runs as | the key's owner, every time; a presented key never falls back to the Operator's session cookie |
-| Scope | all of the owner's Cores by default, or chosen ones; outside the scope is `403`, a revoked key is `401` |
+| Scope | all of the owner's Cores, or chosen ones, picked when the key is created; outside the scope is `403`, a revoked key is `401` |
+| Permissions | picked when the key is created ([#688](https://github.com/actana/control/issues/688)): `read` (every GET), `tasks:write` (create, update, delete, assign, stop, comment), `agents:write` (create, delete). A route a key lacks the permission for is `403`. Keys from before #688 hold all three |
+| Expiry | optional, set when the key is created (7, 30 or 90 days, a date, or never); an expired key is `401`, the same as a revoked one. Keys created before 0.5.1 never expire |
 | Description | OpenAPI 3 at [`packages/panel/src/server/openapi/v1.json`](../packages/panel/src/server/openapi/v1.json) |
 
 | Area | Routes |
 | --- | --- |
 | Cores | `GET /api/v1/cores`, `GET /api/v1/cores/:id` |
 | Agents | `GET/POST /api/v1/agents`, `GET/DELETE /api/v1/agents/:id`, `GET /api/v1/cores/:id/agents` |
-| Tasks | `GET/POST /api/v1/tasks`, `GET /api/v1/tasks/:id`, `POST /api/v1/tasks/:id/status` |
+| Tasks | `GET/POST /api/v1/tasks`, `GET/PATCH/DELETE /api/v1/tasks/:id`, `POST /api/v1/tasks/:id/status`, `POST /api/v1/tasks/:id/stop` |
 | Comments | `GET/POST /api/v1/tasks/:id/comments` |
 
 Status moves go through the Tasks service. A key client may only ask for the
 operator moves `assigned` and `draft` (the dispatcher and the result watcher
-own the rest). API keys themselves are managed only with the Operator's
-session (`POST/GET /api/api-keys`, `POST /api/api-keys/:id/revoke`).
+own the rest). `PATCH /api/v1/tasks/:id` changes the title, the description,
+the time limit or any of them and fires `task.updated`; `DELETE` removes the Task with its comments
+and history and fires `task.deleted`. `DELETE`, and a PATCH of the title or description, answer `409` while the Task is
+`in_progress`, because its Session already has the prompt
+([#722](https://github.com/actana/control/issues/722)).
+
+Each Task has a time limit per attempt, `timeoutMinutes` (whole minutes, 1 to 43200). `POST /api/v1/tasks` takes it:
+omit it for 60, or send `null` for No limit (the attempt runs until the agent reports or its Session ends). `PATCH`
+changes it at any status, including `in_progress`, where the running attempt picks the new limit up within a minute;
+a change adds the system comment "Time limit changed from 1 hour to 4 hours by …". A PATCH that carries
+`timeoutMinutes` together with `title` or `description` on an `in_progress` Task is refused as a whole (`409`). The
+Task always carries `timeoutMinutes`. The old Panel-wide timeout environment variable is gone: the limit is
+per Task ([#724](https://github.com/actana/control/issues/724)). `POST /api/v1/tasks/:id/stop` (optional body
+`{"reason": "…"}`) stops a Task that is `in_progress`: its Session is stopped on the Core and the Task becomes `failed`
+with a system comment, so it can be re-assigned (a new Session). The answer is `{task, session}`; `session.outcome` is
+`stopped`, `not-running`, `unreachable` (Core offline: the Task is still failed, the Session may keep running) or
+`failed`. Any other status is `409`, and so is re-assigning an `in_progress` Task, with a message naming the stop call
+([#723](https://github.com/actana/control/issues/723)). API keys themselves are managed only with the Operator's
+session (`POST/GET /api/api-keys`, `POST /api/api-keys/:id/revoke`); a create
+names the key's `permissions` (at least one of the three) and, optionally, its
+`coreIds`. `POST /api/api-keys` also takes an optional `expiresAt` (epoch
+milliseconds, in the future; omitted or `null` means never), and every key in
+the list carries its `expiresAt`.
 
 ## The Panel's MCP server (`/mcp`)
 
@@ -343,9 +366,10 @@ the tools below are available to the model.
 
 | Property | Value |
 | --- | --- |
-| Auth | `Authorization: Bearer ak_…` and nothing else: no key, an unknown or a revoked key is `401` with `WWW-Authenticate: Bearer`; the Operator's session cookie is never read on this path |
+| Auth | `Authorization: Bearer ak_…` and nothing else: no key, an unknown, a revoked or an expired key is `401` with `WWW-Authenticate: Bearer`; the Operator's session cookie is never read on this path |
 | Who it runs as | the key's owner, every call; every tool runs the same handler the `/api/v1` route runs, so the owner and Core-scope rules are one implementation |
 | Scope | a key limited to some Cores sees only those; a tool aimed at another Core answers a tool error starting `403`, another owner's data `404` |
+| Permissions | `tools/list` names only the tools the key's permissions allow (`read` for the reads and the Shared folder, `tasks:write` for `create_task`, `assign_task`, `comment_task`, `stop_task`, `update_task`, `delete_task`); a call to any other is a tool error starting `403` that names the missing permission |
 | Transport | JSON-RPC over `POST /mcp`; a request gets one `application/json` answer, a notification gets `202`; no `Mcp-Session-Id`, nothing kept between requests |
 | `GET` / `DELETE /mcp` | `405` with `Allow: POST` (no server-to-client stream, no session to end) |
 
@@ -355,9 +379,12 @@ the tools below are available to the model.
 | `list_agents` | Agents, optionally on one Core |
 | `get_tasks` | Tasks, optionally one `status` or one `coreId` |
 | `get_task` | one Task with its comment thread |
-| `create_task` | a draft, or an assigned Task with `startNow` (needs `coreId` and `agent`) |
+| `create_task` | a draft, or an assigned Task with `startNow` (needs `coreId` and `agent`); optional `timeoutMinutes` (default 60, `null` = No limit) |
 | `assign_task` | `assigned` (default) or `draft`, the operator moves only; every other status is refused |
 | `comment_task` | a comment; `reassign: true` also sends a finished Task back (Comment & re-assign) |
+| `stop_task` | stops an `in_progress` Task: its Session is stopped and the Task fails with a system comment, after which `comment_task` with `reassign` works (marked `destructiveHint`); `409` for any other status |
+| `update_task` | a Task's `title`, `description` and/or `timeoutMinutes`; the title and description are refused (`409`) while it is `in_progress`, the time limit is allowed at any status |
+| `delete_task` | removes a Task with its comments and history (marked `destructiveHint`); refused (`409`) while it is `in_progress` |
 | `list_shared` | a folder of a Core's Shared folder, read-only, cut at 500 entries |
 | `get_shared` | one UTF-8 text file from it, read-only, refused over 256 KiB |
 

@@ -3,7 +3,7 @@
   "info": {
     "title": "Actana Control Panel public API",
     "version": "1.0.0",
-    "description": "Public REST API for Cores, Agents, Tasks and comments. Authenticate with an API key (`Authorization: Bearer ak_…`). Every call runs as the key's owner. A key restricted to chosen Cores gets 403 outside that scope; a revoked key gets 401."
+    "description": "Public REST API for Cores, Agents, Tasks and comments. Authenticate with an API key (`Authorization: Bearer ak_…`). Every call runs as the key's owner. A key restricted to chosen Cores gets 403 outside that scope; a key without the permission a route needs gets 403 too (every GET needs `read`, the Task writes `tasks:write`, the Agent writes `agents:write`); a revoked or expired key gets 401."
   },
   "servers": [{ "url": "/", "description": "The Panel origin" }],
   "security": [{ "ApiKey": [] }],
@@ -13,7 +13,7 @@
         "type": "http",
         "scheme": "bearer",
         "bearerFormat": "ak_",
-        "description": "An API key created in Settings › API & integrations. Shown once at create time."
+        "description": "An API key created in Settings › API & integrations, with its permissions (read, tasks:write, agents:write) and Core scope. Shown once at create time. It may carry an expiry chosen at creation; after it the key gets 401."
       }
     },
     "schemas": {
@@ -59,6 +59,7 @@
           "attemptCount": { "type": "integer" },
           "dispatchedAt": { "type": ["integer", "null"] },
           "lastError": { "type": ["string", "null"] },
+          "timeoutMinutes": { "type": ["integer", "null"], "minimum": 1, "maximum": 43200, "description": "The Task's time limit per attempt, in minutes (1-43200). null = No limit: the attempt runs until the agent reports or its Session ends." },
           "createdAt": { "type": "integer" },
           "updatedAt": { "type": "integer" }
         }
@@ -97,7 +98,7 @@
               }
             }
           },
-          "401": { "description": "Missing, unknown or revoked key", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+          "401": { "description": "Missing, unknown, revoked or expired key", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
         }
       }
     },
@@ -118,7 +119,7 @@
               }
             }
           },
-          "403": { "description": "Key does not reach this Core" },
+          "403": { "description": "Key does not reach this Core, or lacks the read permission" },
           "404": { "description": "No such Core of this owner" },
           "401": { "description": "Unauthorized" }
         }
@@ -143,7 +144,7 @@
               }
             }
           },
-          "403": { "description": "Key does not reach this Core" },
+          "403": { "description": "Key does not reach this Core, or lacks the read permission" },
           "404": { "description": "No such Core" },
           "401": { "description": "Unauthorized" }
         }
@@ -195,7 +196,7 @@
         "responses": {
           "201": { "description": "Created" },
           "400": { "description": "Validation error" },
-          "403": { "description": "Key does not reach the Core" },
+          "403": { "description": "Key does not reach the Core, or lacks the permission the route needs" },
           "404": { "description": "Core not found" },
           "409": { "description": "Conflict" },
           "401": { "description": "Unauthorized" }
@@ -209,7 +210,7 @@
         "parameters": [{ "name": "agentId", "in": "path", "required": true, "schema": { "type": "string" } }],
         "responses": {
           "200": { "description": "Agent" },
-          "403": { "description": "Key does not reach the Agent's Core" },
+          "403": { "description": "Key does not reach the Agent's Core, or lacks the permission the route needs" },
           "404": { "description": "No such Agent" },
           "401": { "description": "Unauthorized" }
         }
@@ -220,7 +221,7 @@
         "parameters": [{ "name": "agentId", "in": "path", "required": true, "schema": { "type": "string" } }],
         "responses": {
           "204": { "description": "Deleted" },
-          "403": { "description": "Key does not reach the Agent's Core" },
+          "403": { "description": "Key does not reach the Agent's Core, or lacks the permission the route needs" },
           "404": { "description": "No such Agent" },
           "409": { "description": "A default Agent cannot be deleted" },
           "401": { "description": "Unauthorized" }
@@ -264,7 +265,8 @@
                   "description": { "type": "string" },
                   "coreId": { "type": ["string", "null"] },
                   "agent": { "type": ["string", "null"] },
-                  "startNow": { "type": "boolean" }
+                  "startNow": { "type": "boolean" },
+                  "timeoutMinutes": { "type": ["integer", "null"], "minimum": 1, "maximum": 43200, "default": 60, "description": "Time limit per attempt, in minutes (1-43200). Omit for 60; null = No limit." }
                 }
               }
             }
@@ -273,7 +275,7 @@
         "responses": {
           "201": { "description": "Created" },
           "400": { "description": "Validation error" },
-          "403": { "description": "Key does not reach the Core" },
+          "403": { "description": "Key does not reach the Core, or lacks the permission the route needs" },
           "404": { "description": "Core or Agent not found" },
           "401": { "description": "Unauthorized" }
         }
@@ -286,8 +288,51 @@
         "parameters": [{ "name": "taskId", "in": "path", "required": true, "schema": { "type": "string" } }],
         "responses": {
           "200": { "description": "Task and comments" },
-          "403": { "description": "Key does not reach the Task's Core" },
+          "403": { "description": "Key does not reach the Task's Core, or lacks the permission the route needs" },
           "404": { "description": "No such Task" },
+          "401": { "description": "Unauthorized" }
+        }
+      },
+      "patch": {
+        "operationId": "updateTask",
+        "summary": "Change a Task's title, description, time limit or any of them",
+        "description": "Fires `task.updated`. `title` and `description` are allowed in draft, assigned, done, failed and partial; refused with 409 while the Task is `in_progress`, because its Session already has the prompt. `timeoutMinutes` is allowed at any status, including `in_progress` (the running attempt picks it up within a minute), and a change adds a system comment to the Task's thread. A request that carries `timeoutMinutes` together with `title` or `description` on an `in_progress` Task is refused as a whole.",
+        "parameters": [{ "name": "taskId", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "minProperties": 1,
+                "properties": {
+                  "title": { "type": "string", "minLength": 1 },
+                  "description": { "type": "string" },
+                  "timeoutMinutes": { "type": ["integer", "null"], "minimum": 1, "maximum": 43200, "description": "Time limit per attempt, in minutes (1-43200); null = No limit." }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Updated Task" },
+          "400": { "description": "No field given, an empty title, or a time limit that is not null or a whole number 1-43200" },
+          "403": { "description": "Key does not reach the Task's Core, or lacks the permission the route needs" },
+          "404": { "description": "No such Task" },
+          "409": { "description": "The Task is in_progress" },
+          "401": { "description": "Unauthorized" }
+        }
+      },
+      "delete": {
+        "operationId": "deleteTask",
+        "summary": "Delete a Task with its comments and history",
+        "description": "Fires `task.deleted`. Refused with 409 while the Task is `in_progress`. Files the Task left in the Shared folder stay.",
+        "parameters": [{ "name": "taskId", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "responses": {
+          "204": { "description": "Deleted" },
+          "403": { "description": "Key does not reach the Task's Core, or lacks the permission the route needs" },
+          "404": { "description": "No such Task" },
+          "409": { "description": "The Task is in_progress" },
           "401": { "description": "Unauthorized" }
         }
       }
@@ -315,10 +360,60 @@
         "responses": {
           "200": { "description": "Updated Task" },
           "400": { "description": "Status not allowed for a key client" },
-          "403": { "description": "Key does not reach the Task's Core" },
+          "403": { "description": "Key does not reach the Task's Core, or lacks the permission the route needs" },
           "404": { "description": "No such Task" },
-          "409": { "description": "Illegal status move" },
+          "409": { "description": "Illegal status move. A Task that is in_progress cannot be re-assigned or sent back to draft: stop it first with POST /api/v1/tasks/{taskId}/stop." },
           "401": { "description": "Unauthorized" }
+        }
+      }
+    },
+    "/api/v1/tasks/{taskId}/stop": {
+      "post": {
+        "operationId": "stopTask",
+        "summary": "Stop a running Task",
+        "description": "Only a Task that is `in_progress` can be stopped. Its Session is stopped on the Core and the Task becomes `failed` with a system comment (`Stopped by <name>: <reason>`), after which it can be re-assigned to run in a new Session. The Task is failed even when the Core is offline; `session.outcome` then says `unreachable` and the Session may still be running. A result file arriving later is kept as a comment and does not change the Task.",
+        "parameters": [{ "name": "taskId", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "reason": { "type": "string", "maxLength": 2000, "description": "Why it is stopped; recorded in the system comment." }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The failed Task and what happened to its Session (null when none was recorded)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "task": { "$ref": "#/components/schemas/Task" },
+                    "session": {
+                      "type": ["object", "null"],
+                      "properties": {
+                        "coreId": { "type": "string" },
+                        "sessionId": { "type": "string" },
+                        "outcome": { "type": "string", "enum": ["stopped", "not-running", "unreachable", "failed"] },
+                        "detail": { "type": ["string", "null"] }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": { "description": "Validation error" },
+          "401": { "description": "Unauthorized" },
+          "403": { "description": "Key does not reach the Task's Core, or lacks the permission the route needs" },
+          "404": { "description": "No such Task" },
+          "409": { "description": "The Task is not in_progress" }
         }
       }
     },
@@ -341,7 +436,7 @@
               }
             }
           },
-          "403": { "description": "Key does not reach the Task's Core" },
+          "403": { "description": "Key does not reach the Task's Core, or lacks the permission the route needs" },
           "404": { "description": "No such Task" },
           "401": { "description": "Unauthorized" }
         }
@@ -369,9 +464,9 @@
           "200": { "description": "Comment & re-assign result" },
           "201": { "description": "Comment created" },
           "400": { "description": "Validation error" },
-          "403": { "description": "Key does not reach the Task's Core" },
+          "403": { "description": "Key does not reach the Task's Core, or lacks the permission the route needs" },
           "404": { "description": "No such Task" },
-          "409": { "description": "Re-assign refused" },
+          "409": { "description": "Re-assign refused. A Task that is in_progress must be stopped first with POST /api/v1/tasks/{taskId}/stop." },
           "401": { "description": "Unauthorized" }
         }
       }

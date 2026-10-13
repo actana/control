@@ -2,12 +2,14 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { ALL_API_KEY_PERMISSIONS } from "~/shared/api-key-permissions";
 import { closePanelTestDb, openPanelTestDb, resetPanelState } from "./_panel-test-db";
 
 /**
  * Public `/api/v1` Tasks and comments (#572 PR 2): create, list, status moves
  * (only assigned and draft), comments and Comment & re-assign, all as the
- * key's owner through the Tasks service.
+ * key's owner through the Tasks service. Edit and delete (#722): PATCH and
+ * DELETE on `/api/v1/tasks/:id`, refused while the Task is `in_progress`.
  */
 
 const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ac-public-api-tasks-"));
@@ -18,6 +20,8 @@ const { handleApiRequest } = await import("../api-router");
 const testDb = await openPanelTestDb();
 const { operatorSessionCookie, resetOperatorSessionForTests } = await import("./_operator-session");
 const tasksService = await import("../services/tasks");
+
+const { formatTaskDispatchComment } = await import("~/shared/tasks");
 
 const ORIGIN = "http://panel.example.test";
 const A = 1;
@@ -42,7 +46,7 @@ async function call(
 }
 
 const createKey = async (body: Record<string, unknown> = { name: "k" }) => {
-  const res = await call("/api/api-keys", { method: "POST", json: body, cookie: true });
+  const res = await call("/api/api-keys", { method: "POST", json: { permissions: ALL_API_KEY_PERMISSIONS, ...body }, cookie: true });
   expect(res.status).toBe(201);
   return (await res.json()) as { key: string };
 };
@@ -185,5 +189,234 @@ describe("v1 Tasks", () => {
       json: { status: "draft" },
     });
     expect(bad.status).toBe(409);
+  });
+});
+
+/** The webhook events written for one Task, oldest first. */
+const outboxTypes = async (taskId: string) =>
+  (
+    await testDb.pool.query(
+      "select event_type from webhook_outbox where (payload::jsonb)->'data'->'task'->>'id' = $1 order by created_at, id",
+      [taskId],
+    )
+  ).rows.map((r) => r.event_type as string);
+
+async function v1Task(key: string, json: Record<string, unknown> = { title: "m", coreId: "core-a", agent: "agent-a" }) {
+  const res = await call("/api/v1/tasks", { method: "POST", bearer: key, json });
+  expect(res.status).toBe(201);
+  return ((await res.json()) as { task: { id: string } }).task.id;
+}
+
+describe("v1 Task edit and delete (#722)", () => {
+  it("updates the title and description with an API key, and task.updated fires", async () => {
+    const { key } = await createKey();
+    const id = await v1Task(key);
+    const res = await call(`/api/v1/tasks/${id}`, {
+      method: "PATCH",
+      bearer: key,
+      json: { title: " New title ", description: "New *instructions*" },
+    });
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { task: unknown }).task).toMatchObject({
+      id,
+      title: "New title",
+      description: "New *instructions*",
+      status: "draft",
+    });
+    expect(await outboxTypes(id)).toEqual(["task.created", "task.updated"]);
+    // Only the field given changes.
+    const titleOnly = await call(`/api/v1/tasks/${id}`, { method: "PATCH", bearer: key, json: { title: "Again" } });
+    expect(((await titleOnly.json()) as { task: unknown }).task).toMatchObject({ title: "Again", description: "New *instructions*" });
+  });
+
+  it("refuses an empty body and an empty title with 400", async () => {
+    const { key } = await createKey();
+    const id = await v1Task(key);
+    expect((await call(`/api/v1/tasks/${id}`, { method: "PATCH", bearer: key, json: {} })).status).toBe(400);
+    expect((await call(`/api/v1/tasks/${id}`, { method: "PATCH", bearer: key, json: { title: "  " } })).status).toBe(400);
+  });
+
+  it("deletes a Task with an API key, and task.deleted fires", async () => {
+    const { key } = await createKey();
+    const id = await v1Task(key);
+    const res = await call(`/api/v1/tasks/${id}`, { method: "DELETE", bearer: key });
+    expect(res.status).toBe(204);
+    expect((await call(`/api/v1/tasks/${id}`, { bearer: key })).status).toBe(404);
+    expect(await outboxTypes(id)).toEqual(["task.created", "task.deleted"]);
+    expect((await call(`/api/v1/tasks/${id}`, { method: "DELETE", bearer: key })).status).toBe(404);
+  });
+
+  it("answers 409 to an edit or a delete while the Task is in_progress, and changes nothing", async () => {
+    const { key } = await createKey();
+    const id = await v1Task(key, { title: "run", coreId: "core-a", agent: "agent-a", startNow: true });
+    await tasksService.changeTaskStatus(A, id, "in_progress");
+    const edit = await call(`/api/v1/tasks/${id}`, { method: "PATCH", bearer: key, json: { title: "x" } });
+    expect(edit.status).toBe(409);
+    expect(((await edit.json()) as { error: string }).error).toMatch(/in_progress cannot be edited/);
+    const del = await call(`/api/v1/tasks/${id}`, { method: "DELETE", bearer: key });
+    expect(del.status).toBe(409);
+    expect(((await del.json()) as { error: string }).error).toMatch(/in_progress cannot be deleted/);
+    expect((await tasksService.getTask(A, id)).title).toBe("run");
+  });
+
+  it("answers 403 to a key that does not reach the Task's Core, and leaves the Task alone", async () => {
+    const { key } = await createKey({ name: "b only", coreIds: ["core-b"] });
+    const t = await tasksService.createTask(A, { title: "on a", coreId: "core-a" });
+    expect((await call(`/api/v1/tasks/${t.id}`, { method: "PATCH", bearer: key, json: { title: "x" } })).status).toBe(403);
+    expect((await call(`/api/v1/tasks/${t.id}`, { method: "DELETE", bearer: key })).status).toBe(403);
+    expect((await tasksService.getTask(A, t.id)).title).toBe("on a");
+  });
+});
+
+describe("v1 Task time limit (#724)", () => {
+  type TaskBody = { task: { id: string; timeoutMinutes: number | null } };
+  const create = async (key: string, extra: Record<string, unknown> = {}) => {
+    const res = await call("/api/v1/tasks", { method: "POST", bearer: key, json: { title: "t", ...extra } });
+    return { res, body: (await res.json()) as TaskBody & { error?: string } };
+  };
+
+  it("gives 60 when no limit is given, stores null as No limit and keeps an explicit value", async () => {
+    const { key } = await createKey();
+    expect((await create(key)).body.task.timeoutMinutes).toBe(60);
+    expect((await create(key, { timeoutMinutes: null })).body.task.timeoutMinutes).toBeNull();
+    const kept = await create(key, { timeoutMinutes: 120 });
+    expect(kept.res.status).toBe(201);
+    expect(kept.body.task.timeoutMinutes).toBe(120);
+    expect(((await (await call(`/api/v1/tasks/${kept.body.task.id}`, { bearer: key })).json()) as TaskBody).task.timeoutMinutes).toBe(120);
+  });
+
+  it("refuses a limit outside 1..43200 or not a whole number with 400", async () => {
+    const { key } = await createKey();
+    for (const timeoutMinutes of [0, 43201, 1.5, "60", -5]) {
+      expect((await create(key, { timeoutMinutes })).res.status, String(timeoutMinutes)).toBe(400);
+    }
+    expect((await create(key, { timeoutMinutes: 1 })).res.status).toBe(201);
+    expect((await create(key, { timeoutMinutes: 43200 })).res.status).toBe(201);
+  });
+
+  it("changes the limit of an in_progress Task, adds a system comment, and fires task.updated", async () => {
+    const { key } = await createKey();
+    const { body } = await create(key, { coreId: "core-a", agent: "agent-a", startNow: true });
+    const id = body.task.id;
+    expect(await tasksService.claimTask(A, id)).not.toBeNull();
+    const res = await call(`/api/v1/tasks/${id}`, { method: "PATCH", bearer: key, json: { timeoutMinutes: 240 } });
+    expect(res.status).toBe(200);
+    const task = ((await res.json()) as TaskBody).task as TaskBody["task"] & { status: string };
+    expect(task).toMatchObject({ status: "in_progress", timeoutMinutes: 240 });
+    const thread = (await (await call(`/api/v1/tasks/${id}/comments`, { bearer: key })).json()) as { comments: { authorKind: string; body: string }[] };
+    expect(thread.comments.map((c) => c.body)).toContain("Time limit changed from 1 hour to 4 hours by Test Operator.");
+    expect(thread.comments.find((c) => c.body.startsWith("Time limit changed"))?.authorKind).toBe("system");
+    expect(await outboxTypes(id)).toContain("task.updated");
+    const none = await call(`/api/v1/tasks/${id}`, { method: "PATCH", bearer: key, json: { timeoutMinutes: null } });
+    expect(((await none.json()) as TaskBody).task.timeoutMinutes).toBeNull();
+  });
+
+  it("still answers 409 to a title edit while in_progress, and refuses a mixed edit as a whole", async () => {
+    const { key } = await createKey();
+    const { body } = await create(key, { title: "run", coreId: "core-a", agent: "agent-a", startNow: true, timeoutMinutes: 30 });
+    const id = body.task.id;
+    await tasksService.claimTask(A, id);
+    expect((await call(`/api/v1/tasks/${id}`, { method: "PATCH", bearer: key, json: { title: "x" } })).status).toBe(409);
+    expect((await call(`/api/v1/tasks/${id}`, { method: "PATCH", bearer: key, json: { title: "x", timeoutMinutes: 90 } })).status).toBe(409);
+    const now = await tasksService.getTask(A, id);
+    expect(now).toMatchObject({ title: "run", timeoutMinutes: 30 });
+  });
+
+  it("refuses {} and an invalid limit with 400", async () => {
+    const { key } = await createKey();
+    const { body } = await create(key);
+    const patch = (json: unknown) => call(`/api/v1/tasks/${body.task.id}`, { method: "PATCH", bearer: key, json });
+    expect((await patch({})).status).toBe(400);
+    expect((await patch({ timeoutMinutes: 0 })).status).toBe(400);
+    expect((await patch({ timeoutMinutes: 43201 })).status).toBe(400);
+  });
+
+  it("answers 403 to a key that does not reach the Task's Core, and leaves the limit alone", async () => {
+    const { key } = await createKey({ name: "b only", coreIds: ["core-b"] });
+    const t = await tasksService.createTask(A, { title: "on a", coreId: "core-a" });
+    expect((await call(`/api/v1/tasks/${t.id}`, { method: "PATCH", bearer: key, json: { timeoutMinutes: 5 } })).status).toBe(403);
+    expect((await tasksService.getTask(A, t.id)).timeoutMinutes).toBe(60);
+  });
+});
+
+describe("v1 Task stop (#723)", () => {
+  /** An in_progress Task with a dispatch comment for the current attempt, as the dispatcher leaves it. */
+  async function runningTask(key: string): Promise<string> {
+    const id = await v1Task(key, { title: "hung", coreId: "core-a", agent: "agent-a", startNow: true });
+    await tasksService.changeTaskStatus(A, id, "in_progress");
+    const task = await tasksService.getTask(A, id);
+    await tasksService.addTaskComment(A, id, {
+      authorKind: "system",
+      authorName: "Panel",
+      body: formatTaskDispatchComment({
+        attempt: task.attemptCount,
+        agentName: "A",
+        harness: "claude-code",
+        coreId: "core-a",
+        sessionId: "session_1",
+      }),
+    });
+    return id;
+  }
+  const commentBodies = async (id: string) => (await tasksService.listTaskComments(A, id)).map((c) => c.body);
+
+  it("stops an in_progress Task with a key: failed, a system comment, and the Core being offline is reported", async () => {
+    const { key } = await createKey();
+    const id = await runningTask(key);
+    const res = await call(`/api/v1/tasks/${id}/stop`, { method: "POST", bearer: key, json: { reason: "hung" } });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { task: { status: string }; session: { outcome: string; sessionId: string; coreId: string } };
+    expect(body.task.status).toBe("failed");
+    // No Core link in this test: the Core is offline, so the Task fails but the Session is unreachable.
+    expect(body.session).toMatchObject({ coreId: "core-a", sessionId: "session_1", outcome: "unreachable" });
+    expect((await commentBodies(id)).some((b) => b.startsWith("Stopped by ") && b.includes("hung"))).toBe(true);
+    expect((await tasksService.getTask(A, id)).status).toBe("failed");
+  });
+
+  it("accepts an empty body", async () => {
+    const { key } = await createKey();
+    const id = await runningTask(key);
+    const res = await call(`/api/v1/tasks/${id}/stop`, { method: "POST", bearer: key });
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { task: { status: string } }).task.status).toBe("failed");
+  });
+
+  it("answers 409 for a Task that is not in_progress, and 404 for a missing one", async () => {
+    const { key } = await createKey();
+    const draft = await v1Task(key);
+    const res = await call(`/api/v1/tasks/${draft}/stop`, { method: "POST", bearer: key });
+    expect(res.status).toBe(409);
+    expect(((await res.json()) as { error: string }).error).toMatch(/not running/);
+    expect((await tasksService.getTask(A, draft)).status).toBe("draft");
+    expect((await call("/api/v1/tasks/nope/stop", { method: "POST", bearer: key })).status).toBe(404);
+  });
+
+  it("answers 403 to a key that does not reach the Task's Core, and leaves the Task running", async () => {
+    const { key: all } = await createKey();
+    const id = await runningTask(all);
+    const { key } = await createKey({ name: "b only", coreIds: ["core-b"] });
+    expect((await call(`/api/v1/tasks/${id}/stop`, { method: "POST", bearer: key })).status).toBe(403);
+    expect((await tasksService.getTask(A, id)).status).toBe("in_progress");
+  });
+
+  it("needs a credential", async () => {
+    expect((await call("/api/v1/tasks/x/stop", { method: "POST" })).status).toBe(401);
+  });
+
+  it("lets the Task be re-assigned after a stop, and refuses it before, naming the stop call", async () => {
+    const { key } = await createKey();
+    const id = await runningTask(key);
+    const before = await call(`/api/v1/tasks/${id}/comments`, { method: "POST", bearer: key, json: { body: "again", reassign: true } });
+    expect(before.status).toBe(409);
+    expect(((await before.json()) as { error: string }).error).toMatch(/\/stop/);
+    const status = await call(`/api/v1/tasks/${id}/status`, { method: "POST", bearer: key, json: { status: "assigned" } });
+    expect(status.status).toBe(409);
+    expect(((await status.json()) as { error: string }).error).toMatch(/\/stop/);
+    expect((await tasksService.getTask(A, id)).status).toBe("in_progress");
+
+    expect((await call(`/api/v1/tasks/${id}/stop`, { method: "POST", bearer: key })).status).toBe(200);
+    const after = await call(`/api/v1/tasks/${id}/comments`, { method: "POST", bearer: key, json: { body: "again", reassign: true } });
+    expect(after.status).toBe(200);
+    expect(((await after.json()) as { task: { status: string } }).task.status).toBe("assigned");
   });
 });

@@ -67,7 +67,10 @@ describe("OpenAPI v1", () => {
       { method: "GET", path: "/api/v1/tasks", template: "/api/v1/tasks" },
       { method: "POST", path: "/api/v1/tasks", template: "/api/v1/tasks" },
       { method: "GET", path: "/api/v1/tasks/x", template: "/api/v1/tasks/{taskId}" },
+      { method: "PATCH", path: "/api/v1/tasks/x", template: "/api/v1/tasks/{taskId}" },
+      { method: "DELETE", path: "/api/v1/tasks/x", template: "/api/v1/tasks/{taskId}" },
       { method: "POST", path: "/api/v1/tasks/x/status", template: "/api/v1/tasks/{taskId}/status" },
+      { method: "POST", path: "/api/v1/tasks/x/stop", template: "/api/v1/tasks/{taskId}/stop" },
       { method: "GET", path: "/api/v1/tasks/x/comments", template: "/api/v1/tasks/{taskId}/comments" },
       { method: "POST", path: "/api/v1/tasks/x/comments", template: "/api/v1/tasks/{taskId}/comments" },
     ];
@@ -80,5 +83,32 @@ describe("OpenAPI v1", () => {
       const hit = samples.some((s) => s.method === route.method && route.pattern.test(s.path));
       expect(hit, `${route.method} ${route.pattern}`).toBe(true);
     }
+  });
+
+  it("documents stopTask (#723): an optional reason, the session outcome and 409 for a Task that is not running", () => {
+    const op = doc.paths["/api/v1/tasks/{taskId}/stop"]?.post as {
+      operationId: string;
+      requestBody: { required?: boolean; content: { "application/json": { schema: { properties: Record<string, unknown> } } } };
+      responses: Record<string, unknown>;
+    };
+    expect(op.operationId).toBe("stopTask");
+    expect(op.requestBody.required).toBeFalsy();
+    expect(Object.keys(op.requestBody.content["application/json"].schema.properties)).toEqual(["reason"]);
+    for (const code of ["200", "401", "403", "404", "409"]) expect(op.responses[code], code).toBeDefined();
+    const text = JSON.stringify(doc.paths["/api/v1/tasks/{taskId}/status"]) + JSON.stringify(doc.paths["/api/v1/tasks/{taskId}/comments"]);
+    expect(text).toContain("/stop");
+  });
+
+  it("describes timeoutMinutes on the Task, the create body and the update body (#724)", () => {
+    const d = doc as unknown as {
+      components: { schemas: { Task: { properties: Record<string, unknown> } } };
+      paths: Record<string, Record<string, { requestBody?: { content: { "application/json": { schema: { properties: Record<string, unknown> } } } } }>>;
+    };
+    const expected = { type: ["integer", "null"], minimum: 1, maximum: 43200 };
+    const task = d.components.schemas.Task.properties.timeoutMinutes;
+    const create = d.paths["/api/v1/tasks"]!.post!.requestBody!.content["application/json"].schema.properties.timeoutMinutes;
+    const patch = d.paths["/api/v1/tasks/{taskId}"]!.patch!.requestBody!.content["application/json"].schema.properties.timeoutMinutes;
+    for (const prop of [task, create, patch]) expect(prop).toMatchObject(expected);
+    expect(create).toMatchObject({ default: 60 });
   });
 });

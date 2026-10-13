@@ -134,9 +134,9 @@ export async function listCores(ownerId = OPERATOR_ID): Promise<Core[]> {
  * redemption costs the operator their one-time code and leaves the Core holding
  * a signed certificate for a client this Panel never stored.
  *
- * An answer here is advice, not a decision — the endpoint a Core reports is its
- * own, and need not be the address it was reached on. The check inside the
- * transaction stays the authority.
+ * An answer here is advice, not a decision — the check inside the transaction
+ * stays the authority, because two pairings can race between this read and the
+ * insert.
  */
 export async function coreRegisteredAt(endpoint: string, ownerId = OPERATOR_ID): Promise<boolean> {
   return (await findCoreByEndpoint(ownerId, endpoint.trim())) !== null;

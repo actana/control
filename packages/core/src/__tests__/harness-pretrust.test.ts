@@ -7,10 +7,12 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+  CLAUDE_TRUST_ATTEMPTS,
   CODEX_HOOK_HASH_VERIFIED,
   codexHookHash,
   codexHookKey,
   hookStateConflict,
+  tomlContinuationLines,
   cursorMarkerPath,
   cursorProjectSlug,
   ownedCodexHookTrust,
@@ -36,19 +38,21 @@ function parseToml(text: string): any {
   return JSON.parse(run.stdout);
 }
 
+/** Lock options for tests: no real waiting. */
+const noLockSleep = { sleep: async () => {} };
 const read = (file: string) => fs.readFileSync(file, "utf8");
 const leftovers = () => fs.readdirSync(dir).filter((name) => name.endsWith(".tmp"));
 
 describe("claude-code: ~/.claude.json projects[dir].hasTrustDialogAccepted", () => {
-  it("creates the file, owner-only, when there is none", () => {
+  it("creates the file, owner-only, when there is none", async () => {
     const file = path.join(dir, ".claude.json");
-    expect(trustClaudeCode(file, ["/home/core"])).toBe("written");
+    expect(await trustClaudeCode(file, ["/home/core"])).toBe("written");
     expect(JSON.parse(read(file))).toEqual({ projects: { "/home/core": { hasTrustDialogAccepted: true } } });
     expect(fs.statSync(file).mode & 0o777).toBe(0o600);
     expect(leftovers()).toEqual([]);
   });
 
-  it("keeps every other key, at the top and inside the project entry", () => {
+  it("keeps every other key, at the top and inside the project entry", async () => {
     const file = path.join(dir, ".claude.json");
     fs.writeFileSync(
       file,
@@ -61,7 +65,7 @@ describe("claude-code: ~/.claude.json projects[dir].hasTrustDialogAccepted", () 
       }),
       { mode: 0o640 },
     );
-    expect(trustClaudeCode(file, ["/home/core", "/srv/work"])).toBe("written");
+    expect(await trustClaudeCode(file, ["/home/core", "/srv/work"])).toBe("written");
     expect(JSON.parse(read(file))).toEqual({
       numStartups: 3,
       projects: {
@@ -73,21 +77,270 @@ describe("claude-code: ~/.claude.json projects[dir].hasTrustDialogAccepted", () 
     expect(fs.statSync(file).mode & 0o777).toBe(0o640);
   });
 
-  it("writes nothing when every directory is already trusted", () => {
+  it("writes nothing when every directory is already trusted", async () => {
     const file = path.join(dir, ".claude.json");
     const text = '{"projects":{"/home/core":{"hasTrustDialogAccepted":true}}}';
     fs.writeFileSync(file, text);
     const before = fs.statSync(file).mtimeMs;
-    expect(trustClaudeCode(file, ["/home/core"])).toBe("unchanged");
+    expect(await trustClaudeCode(file, ["/home/core"])).toBe("unchanged");
     expect(read(file)).toBe(text);
     expect(fs.statSync(file).mtimeMs).toBe(before);
   });
 
-  it("leaves a file it cannot parse exactly as it was", () => {
+  it("leaves a file it cannot parse exactly as it was", async () => {
     const file = path.join(dir, ".claude.json");
     fs.writeFileSync(file, "{ not json");
-    expect(() => trustClaudeCode(file, ["/home/core"])).toThrow();
+    await expect(trustClaudeCode(file, ["/home/core"])).rejects.toThrow();
     expect(read(file)).toBe("{ not json");
+  });
+});
+
+describe("claude-code: compare and retry against Claude Code's own writes (#699)", () => {
+  it("keeps a key Claude Code writes between the read and the rename, and still trusts the dir", async () => {
+    const file = path.join(dir, ".claude.json");
+    fs.writeFileSync(file, JSON.stringify({ numStartups: 3 }));
+    let calls = 0;
+    const result = await trustClaudeCode(file, ["/home/core"], {
+        lock: noLockSleep,
+      beforeCommit: () => {
+        if (calls++ === 0) fs.writeFileSync(file, JSON.stringify({ numStartups: 4, tipsHistory: { a: 1 } }));
+      },
+    });
+    expect(result).toBe("written");
+    expect(calls).toBe(2);
+    expect(JSON.parse(read(file))).toEqual({
+      numStartups: 4,
+      tipsHistory: { a: 1 },
+      projects: { "/home/core": { hasTrustDialogAccepted: true } },
+    });
+    expect(leftovers()).toEqual([]);
+  });
+
+  it("keeps a file Claude Code creates between the read and the rename", async () => {
+    const file = path.join(dir, ".claude.json");
+    let calls = 0;
+    expect(
+      await trustClaudeCode(file, ["/home/core"], {
+        lock: noLockSleep,
+        beforeCommit: () => {
+          if (calls++ === 0) fs.writeFileSync(file, JSON.stringify({ userID: "u1" }));
+        },
+      }),
+    ).toBe("written");
+    expect(JSON.parse(read(file))).toEqual({ userID: "u1", projects: { "/home/core": { hasTrustDialogAccepted: true } } });
+  });
+
+  it("writes nothing when the concurrent write already trusted the dir", async () => {
+    const file = path.join(dir, ".claude.json");
+    fs.writeFileSync(file, "{}");
+    const theirs = JSON.stringify({ projects: { "/home/core": { hasTrustDialogAccepted: true, lastCost: 2 } } });
+    let calls = 0;
+    expect(
+      await trustClaudeCode(file, ["/home/core"], {
+        lock: noLockSleep,
+        beforeCommit: () => {
+          calls++;
+          fs.writeFileSync(file, theirs);
+        },
+      }),
+    ).toBe("unchanged");
+    expect(calls).toBe(1);
+    expect(read(file)).toBe(theirs);
+    expect(leftovers()).toEqual([]);
+  });
+
+  it("gives up after the set number of tries on a file that keeps changing, and leaves it as it is", async () => {
+    const file = path.join(dir, ".claude.json");
+    fs.writeFileSync(file, JSON.stringify({ n: 0 }));
+    let calls = 0;
+    await expect(trustClaudeCode(file, ["/home/core"], {
+        lock: noLockSleep,
+        attempts: 3,
+        beforeCommit: () => fs.writeFileSync(file, JSON.stringify({ n: ++calls })),
+      })).rejects.toThrow(/changed while trust was being written, 3 times/);
+    expect(calls).toBe(3);
+    expect(JSON.parse(read(file))).toEqual({ n: 3 });
+    expect(leftovers()).toEqual([]);
+  });
+
+  it("retries CLAUDE_TRUST_ATTEMPTS times by default", async () => {
+    const file = path.join(dir, ".claude.json");
+    fs.writeFileSync(file, "{}");
+    let calls = 0;
+    await expect(trustClaudeCode(file, ["/home/core"], { lock: noLockSleep, beforeCommit: () => fs.writeFileSync(file, JSON.stringify({ n: ++calls })) })).rejects.toThrow();
+    expect(calls).toBe(CLAUDE_TRUST_ATTEMPTS);
+  });
+
+  it("writes through a symlinked config and compares against the file it points at", async () => {
+    const real = path.join(dir, "real.json");
+    const file = path.join(dir, ".claude.json");
+    fs.writeFileSync(real, JSON.stringify({ a: 1 }));
+    fs.symlinkSync(real, file);
+    let calls = 0;
+    expect(
+      await trustClaudeCode(file, ["/home/core"], {
+        lock: noLockSleep,
+        beforeCommit: () => {
+          if (calls++ === 0) fs.writeFileSync(real, JSON.stringify({ a: 2 }));
+        },
+      }),
+    ).toBe("written");
+    expect(fs.lstatSync(file).isSymbolicLink()).toBe(true);
+    expect(JSON.parse(read(real))).toEqual({ a: 2, projects: { "/home/core": { hasTrustDialogAccepted: true } } });
+  });
+});
+
+
+describe("claude-code: Claude Code's config lock (file.lock) (#699)", () => {
+  const lockDir = (file: string) => `${file}.lock`;
+  const hold = (file: string, ageSec = 0) => {
+    fs.mkdirSync(lockDir(file));
+    if (ageSec) {
+      const t = new Date(Date.now() - ageSec * 1000);
+      fs.utimesSync(lockDir(file), t, t);
+    }
+  };
+
+  it("holds the lock dir during the write and releases it after a write", async () => {
+    const file = path.join(dir, ".claude.json");
+    let seen = false;
+    expect(await trustClaudeCode(file, ["/home/core"], { lock: noLockSleep, beforeCommit: () => (seen = fs.existsSync(lockDir(file))) })).toBe("written");
+    expect(seen).toBe(true);
+    expect(fs.existsSync(lockDir(file))).toBe(false);
+  });
+
+  it("releases the lock when nothing changed, on a parse error, and after giving up", async () => {
+    const file = path.join(dir, ".claude.json");
+    fs.writeFileSync(file, '{"projects":{"/home/core":{"hasTrustDialogAccepted":true}}}');
+    expect(await trustClaudeCode(file, ["/home/core"], { lock: noLockSleep })).toBe("unchanged");
+    expect(fs.existsSync(lockDir(file))).toBe(false);
+
+    fs.writeFileSync(file, "{ not json");
+    await expect(trustClaudeCode(file, ["/home/core"], { lock: noLockSleep })).rejects.toThrow();
+    expect(fs.existsSync(lockDir(file))).toBe(false);
+
+    let calls = 0;
+    fs.writeFileSync(file, "{}");
+    await expect(trustClaudeCode(file, ["/home/core"], { attempts: 2, lock: noLockSleep, beforeCommit: () => fs.writeFileSync(file, JSON.stringify({ n: ++calls })) })).rejects.toThrow(/changed while trust/);
+    expect(fs.existsSync(lockDir(file))).toBe(false);
+  });
+
+  it("waits for a lock another writer holds, and writes once it is released", async () => {
+    const file = path.join(dir, ".claude.json");
+    hold(file);
+    let sleeps = 0;
+    const sleep = async () => {
+      if (++sleeps === 2) fs.rmdirSync(lockDir(file));
+    };
+    expect(await trustClaudeCode(file, ["/home/core"], { lock: { sleep } })).toBe("written");
+    expect(sleeps).toBe(2);
+    expect(JSON.parse(read(file)).projects["/home/core"].hasTrustDialogAccepted).toBe(true);
+    expect(fs.existsSync(lockDir(file))).toBe(false);
+  });
+
+  it("writes nothing and leaves the foreign lock when it is never released", async () => {
+    const file = path.join(dir, ".claude.json");
+    const text = JSON.stringify({ numStartups: 1 });
+    fs.writeFileSync(file, text);
+    hold(file);
+    await expect(trustClaudeCode(file, ["/home/core"], { lock: noLockSleep })).rejects.toThrow(/held/);
+    expect(read(file)).toBe(text);
+    expect(fs.existsSync(lockDir(file))).toBe(true);
+    expect(leftovers()).toEqual([]);
+  });
+
+  it("is reported as failed, with the reason, by pretrustWorkspaces when the lock stays held", async () => {
+    const file = path.join(dir, ".claude.json");
+    hold(file);
+    const results = await pretrustWorkspaces(dir, ["claude-code"], ["/home/core"]);
+    expect(results).toHaveLength(1);
+    expect(results[0]).toMatchObject({ harness: "claude-code", outcome: "failed" });
+    expect(results[0]!.detail).toMatch(/held/);
+    expect(fs.existsSync(file)).toBe(false);
+  }, 20_000);
+
+  it("does not block the event loop while the lock is held by another writer", async () => {
+    const file = path.join(dir, ".claude.json");
+    hold(file);
+    const ticks: number[] = [];
+    const timer = setInterval(() => ticks.push(Date.now()), 5);
+    const start = Date.now();
+    try {
+      await expect(trustClaudeCode(file, ["/home/core"], { lock: { delays: [60, 60] } })).rejects.toThrow(/held/);
+    } finally {
+      clearInterval(timer);
+    }
+    expect(Date.now() - start).toBeGreaterThanOrEqual(110);
+    expect(ticks.length).toBeGreaterThanOrEqual(5);
+    expect(fs.existsSync(file)).toBe(false);
+    expect(fs.existsSync(lockDir(file))).toBe(true);
+  });
+
+  it("does not block the event loop during the compare back-off", async () => {
+    const file = path.join(dir, ".claude.json");
+    fs.writeFileSync(file, "{}");
+    const ticks: number[] = [];
+    const timer = setInterval(() => ticks.push(Date.now()), 2);
+    let calls = 0;
+    try {
+      await expect(
+        trustClaudeCode(file, ["/home/core"], {
+          attempts: 3,
+          beforeCommit: () => fs.writeFileSync(file, JSON.stringify({ n: ++calls })),
+        }),
+      ).rejects.toThrow(/changed while trust/);
+    } finally {
+      clearInterval(timer);
+    }
+    // Back-off is 25 + 50 ms on a timer: ticks keep running in between.
+    expect(ticks.length).toBeGreaterThanOrEqual(5);
+    expect(fs.existsSync(lockDir(file))).toBe(false);
+  });
+
+  it("breaks a stale lock and writes", async () => {
+    const file = path.join(dir, ".claude.json");
+    hold(file, 60);
+    expect(await trustClaudeCode(file, ["/home/core"], { lock: noLockSleep })).toBe("written");
+    expect(fs.existsSync(lockDir(file))).toBe(false);
+  });
+
+  it("puts the lock beside a symlinked config, not beside its target", async () => {
+    const sub = path.join(dir, "sub");
+    fs.mkdirSync(sub);
+    const real = path.join(sub, "real.json");
+    const file = path.join(dir, ".claude.json");
+    fs.writeFileSync(real, "{}");
+    fs.symlinkSync(real, file);
+    const seen: boolean[] = [];
+    await trustClaudeCode(file, ["/home/core"], {
+      lock: noLockSleep,
+      beforeCommit: () => seen.push(fs.existsSync(`${file}.lock`), fs.existsSync(`${real}.lock`)),
+    });
+    expect(seen).toEqual([true, false]);
+    expect(fs.existsSync(`${file}.lock`)).toBe(false);
+  });
+
+  it("pauses for longer after each compare miss", async () => {
+    const file = path.join(dir, ".claude.json");
+    fs.writeFileSync(file, "{}");
+    const sleeps: number[] = [];
+    let calls = 0;
+    await expect(trustClaudeCode(file, ["/home/core"], {
+        attempts: 4,
+        lock: { sleep: async (ms) => void sleeps.push(ms) },
+        beforeCommit: () => fs.writeFileSync(file, JSON.stringify({ n: ++calls })),
+      })).rejects.toThrow();
+    expect(sleeps).toHaveLength(3);
+    expect(sleeps.every((ms, i) => i === 0 || ms > sleeps[i - 1]!)).toBe(true);
+    expect(sleeps[0]).toBeGreaterThan(0);
+  });
+
+  it.each([0, -1, 1.5, Number.NaN])("rejects attempts = %s with a TypeError before touching anything", async (attempts) => {
+    const file = path.join(dir, ".claude.json");
+    fs.writeFileSync(file, "{}");
+    await expect(trustClaudeCode(file, ["/home/core"], { attempts, lock: noLockSleep })).rejects.toThrow(TypeError);
+    expect(read(file)).toBe("{}");
+    expect(fs.existsSync(lockDir(file))).toBe(false);
   });
 });
 
@@ -96,6 +349,26 @@ describe("codex: ~/.codex/config.toml [projects.\"dir\"] trust_level", () => {
     const file = path.join(dir, ".codex", "config.toml");
     expect(trustCodex(file, ["/home/core"])).toBe("written");
     expect(read(file)).toBe('[projects."/home/core"]\ntrust_level = "trusted"\n');
+  });
+
+  it("writes the table codex 0.160.0 itself writes, beside one it wrote by hand (#702)", () => {
+    // `~/.codex/config.toml` of a throwaway home after codex-cli 0.160.0's "Trust this folder?" dialog was
+    // answered with "Trust and continue" for `/home/core/.cache/codex-702-capture/repo2`, verbatim.
+    const codexWrote =
+      '[tui]\nscreen_reader_detection_done = true\n\n[tui.model_availability_nux]\n"gpt-6.1-sol" = 1\n\n' +
+      '[projects."/home/core/.cache/codex-702-capture/repo2"]\ntrust_level = "trusted"\n';
+    const file = path.join(dir, "config.toml");
+    fs.writeFileSync(file, codexWrote);
+    expect(trustCodex(file, ["/home/core/.cache/codex-702-capture/repo2"])).toBe("unchanged");
+    expect(trustCodex(file, ["/home/core/.cache/codex-702-capture/repo"])).toBe("written");
+    // What the file held when codex 0.160.0, started again in `repo`, opened on its composer with no dialog
+    // (`fixtures/codex-0.160.0-trusted-boot.txt`).
+    expect(read(file)).toBe(codexWrote + '\n[projects."/home/core/.cache/codex-702-capture/repo"]\ntrust_level = "trusted"\n');
+    const parsed = parseToml(read(file));
+    if (parsed) {
+      expect(parsed.projects["/home/core/.cache/codex-702-capture/repo"]).toEqual({ trust_level: "trusted" });
+      expect(parsed.projects["/home/core/.cache/codex-702-capture/repo2"]).toEqual({ trust_level: "trusted" });
+    }
   });
 
   it("appends to a file with other keys and tables, keeping them", () => {
@@ -148,17 +421,17 @@ describe("codex: ~/.codex/config.toml [projects.\"dir\"] trust_level", () => {
 });
 
 describe("pretrustWorkspaces", () => {
-  it("writes only the Harnesses named, and reports a failure without throwing", () => {
+  it("writes only the Harnesses named, and reports a failure without throwing", async () => {
     fs.writeFileSync(path.join(dir, ".claude.json"), "{ broken");
-    const results = pretrustWorkspaces(dir, ["claude-code", "codex", "cursor-cli", "pi"], ["/home/core"]);
+    const results = await pretrustWorkspaces(dir, ["claude-code", "codex", "cursor-cli", "pi"], ["/home/core"]);
     expect(results.map((r) => [r.harness, r.outcome])).toEqual([
       ["claude-code", "failed"],
       ["codex", "written"],
       ["cursor-cli", "written"],
     ]);
     expect(fs.existsSync(path.join(dir, ".codex", "config.toml"))).toBe(true);
-    expect(pretrustWorkspaces(dir, ["pi"], ["/home/core"])).toEqual([]);
-    expect(pretrustWorkspaces(dir, ["cursor-cli"], ["/home/core"]).map((r) => [r.harness, r.outcome])).toEqual([["cursor-cli", "unchanged"]]);
+    expect(await pretrustWorkspaces(dir, ["pi"], ["/home/core"])).toEqual([]);
+    expect((await pretrustWorkspaces(dir, ["cursor-cli"], ["/home/core"])).map((r) => [r.harness, r.outcome])).toEqual([["cursor-cli", "unchanged"]]);
   });
 });
 
@@ -166,10 +439,57 @@ describe("cursor-cli: ~/.cursor/projects/<slug>/.workspace-trusted", () => {
   const at = () => new Date("2026-10-04T09:21:07.646Z");
   const marker = (slug: string) => path.join(dir, ".cursor", "projects", slug, ".workspace-trusted");
 
+  // The slug is cursor-agent 2026.10.01-e373342's own mapping (`utils/dist/workspace-paths.js` in its bundle:
+  // `replace(/[^a-zA-Z0-9]/g, "-").replace(/-+/g, "-").replace(/^-+|-+$/g, "")`), and `/home/core` -> `home-core`
+  // is what trusting /home/core by hand created on a Core.
   it("maps a path to its slug: leading slash dropped, other slashes become dashes", () => {
     expect(cursorProjectSlug("/home/core")).toBe("home-core");
     expect(cursorProjectSlug("/home/core/repos/x")).toBe("home-core-repos-x");
     expect(cursorMarkerPath("/h", "/home/core")).toBe("/h/.cursor/projects/home-core/.workspace-trusted");
+  });
+
+  it("maps a dot, an underscore, a space and any other non-alphanumeric character to a dash, as Cursor does", () => {
+    expect(cursorProjectSlug("/home/core/my.app")).toBe("home-core-my-app");
+    expect(cursorProjectSlug("/home/core/my_app")).toBe("home-core-my-app");
+    expect(cursorProjectSlug("/home/core/my app")).toBe("home-core-my-app");
+    expect(cursorProjectSlug("/home/core/.hidden")).toBe("home-core-hidden");
+    expect(cursorProjectSlug("/srv/app@2.0 (beta)+rc#1~x$y%z&w'q\"r,s;t:u=v!w?x*y[z]")).toBe(
+      "srv-app-2-0-beta-rc-1-x-y-z-w-q-r-s-t-u-v-w-x-y-z",
+    );
+    expect(cursorProjectSlug("/home/core/caf\u00e9/\u00fc\u00f1\u00efc\u00f6de")).toBe("home-core-caf-c-de");
+    expect(cursorProjectSlug("/home/core/\u65e5\u672c/x")).toBe("home-core-x");
+    expect(cursorProjectSlug("/home/core/\u{1F600}app")).toBe("home-core-app");
+  });
+
+  it("collapses runs of dashes and drops leading and trailing ones, as Cursor does", () => {
+    expect(cursorProjectSlug("/home/core/")).toBe("home-core");
+    expect(cursorProjectSlug("//home//core")).toBe("home-core");
+    expect(cursorProjectSlug("/home/core/a--b")).toBe("home-core-a-b");
+    expect(cursorProjectSlug("/home/core/-x-")).toBe("home-core-x");
+    expect(cursorProjectSlug("/home/core/._ -")).toBe("home-core");
+    expect(cursorProjectSlug("/")).toBe("");
+    expect(cursorProjectSlug("/-/_/.")).toBe("");
+  });
+
+  it("reproduces Cursor's mapping character for character on every printable ASCII byte", () => {
+    // Cursor's three replaces, verbatim from its bundle; the slug must equal them on any input.
+    const cursors = (p: string) => p.replace(/[^a-zA-Z0-9]/g, "-").replace(/-+/g, "-").replace(/^-+|-+$/g, "");
+    for (let code = 0x20; code < 0x7f; code++) {
+      const ch = String.fromCharCode(code);
+      for (const p of [`/home/core/${ch}`, `/home/${ch}core`, `/home/core${ch}`, `${ch}`]) {
+        expect(cursorProjectSlug(p)).toBe(cursors(p));
+      }
+    }
+  });
+
+  it("writes the marker where Cursor looks for a workspace with a dot, an underscore or a space in its path", () => {
+    expect(trustCursor(dir, ["/home/core/my.app", "/home/core/my_lib", "/home/core/my app"], at)).toBe("written");
+    expect(JSON.parse(read(marker("home-core-my-app"))).workspacePath).toBe("/home/core/my.app");
+    expect(fs.readdirSync(path.join(dir, ".cursor", "projects"))).toEqual(["home-core-my-app", "home-core-my-lib"]);
+    // Cursor would never read these: the names the old mapping produced.
+    expect(fs.existsSync(path.join(dir, ".cursor", "projects", "home-core-my.app"))).toBe(false);
+    expect(fs.existsSync(path.join(dir, ".cursor", "projects", "home-core-my app"))).toBe(false);
+    expect(trustCursor(dir, ["/home/core/my.app", "/home/core/my_lib", "/home/core/my app"], at)).toBe("unchanged");
   });
 
   it("creates the marker exactly as Cursor does: two keys, two-space indent, mode 644", () => {
@@ -197,31 +517,59 @@ describe("cursor-cli: ~/.cursor/projects/<slug>/.workspace-trusted", () => {
 
   it("is ambiguous for a dash in the path: the second colliding path is left to the existing marker", () => {
     expect(cursorProjectSlug("/home/a-b")).toBe(cursorProjectSlug("/home/a/b"));
+    expect(cursorProjectSlug("/home/a.b")).toBe("home-a-b");
+    expect(cursorProjectSlug("/home/a b")).toBe("home-a-b");
     expect(trustCursor(dir, ["/home/a-b"], at)).toBe("written");
     expect(trustCursor(dir, ["/home/a/b"], at)).toBe("unchanged");
     expect(JSON.parse(read(marker("home-a-b"))).workspacePath).toBe("/home/a-b");
   });
 
-  it("ignores a relative path and the root", () => {
-    expect(trustCursor(dir, ["relative/dir", "/"], at)).toBe("unchanged");
+  it("ignores a relative path, the root, and a path with no letter or digit", () => {
+    expect(trustCursor(dir, ["relative/dir", "/", "/-/_/."], at)).toBe("unchanged");
     expect(fs.existsSync(path.join(dir, ".cursor"))).toBe(false);
   });
 });
 
 // What codex 0.160.0 itself wrote to ~/.codex/config.toml after its hook review was answered by hand on a Core,
-// for the hooks `installHarnessHooks("codex")` writes (the first eight hex digits were read off that file; the rest
-// is this function's output, and the prefixes are what pin it to codex).
+// for the hooks `installHarnessHooks("codex")` wrote at the time (the first eight hex digits were read off that
+// file; the rest is this function's output, and the prefixes are what pin it to codex). codex 0.162.0 listed the
+// same three through `hooks/list` (#703, `codex-hook-trust-check.test.ts` runs that against a real codex when there
+// is one).
 const REAL_HASHES: Record<string, string> = {
   PermissionRequest: "sha256:777d6667e97d3543f8f43d42796281cd863fb133097563631d65ea5b657094f3",
   UserPromptSubmit: "sha256:f23db2db11919289814ac6c32a2b10ca0c24a4d8c4a7fbbf401520266e115a27",
   Stop: "sha256:0fc320513044eada106bd90279e5937b1283a78fd42f81efbf486a8e700e5cfd",
 };
 
+/**
+ * The command codex 0.160.0 reviewed: today's, before issue 460 added the pid of the process that ran the hook
+ * to its URL. The hashes above are over THAT text; what they verify is the hashing, not the command, which the
+ * Core is free to change — its pre-trust writes the new hash, and a stale one only makes codex ask again.
+ */
+function commandCodexReviewed(event: string): string {
+  const command = hookCommand("codex", event);
+  const reviewed = command.replace("&pid=$PPID", "");
+  expect(reviewed).not.toBe(command);
+  return reviewed;
+}
+
+/** The hash codex will compute for the hook this Core installs today. */
+const ourHash = (event: string) => codexHookHash(event, { command: hookCommand("codex", event) });
+
 describe("codex hook trust: [hooks.state.\"<hooks.json>:<event>:<group>:<handler>\"] trusted_hash", () => {
-  it("reproduces the hashes codex 0.160.0 wrote for the hooks this Core installs", () => {
-    expect(CODEX_HOOK_HASH_VERIFIED).toBe("0.160.0");
+  it("reproduces the hashes codex 0.160.0 wrote for the hooks this Core installed then, and 0.162.0 still reports", () => {
+    expect(CODEX_HOOK_HASH_VERIFIED).toBe("0.162.0");
     for (const [event, hash] of Object.entries(REAL_HASHES)) {
-      expect(codexHookHash(event, { command: hookCommand("codex", event) })).toBe(hash);
+      expect(codexHookHash(event, { command: commandCodexReviewed(event) })).toBe(hash);
+    }
+  });
+
+  it("hashes today's hook, which carries the pid, to a different value (issue 460)", () => {
+    // The Core's pre-trust writes this one, so an operator who answered codex's review for the old command is
+    // not asked again on the first spawn after the upgrade: a stale hash is rewritten, below.
+    for (const event of Object.keys(REAL_HASHES)) {
+      expect(ourHash(event)).toMatch(/^sha256:[0-9a-f]{64}$/);
+      expect(ourHash(event)).not.toBe(REAL_HASHES[event]);
     }
   });
 
@@ -252,7 +600,7 @@ describe("codex hook trust: [hooks.state.\"<hooks.json>:<event>:<group>:<handler
     expect(owned.map(([key]) => key).sort()).toEqual(
       [`${file}:permission_request:0:0`, `${file}:stop:1:0`, `${file}:user_prompt_submit:0:0`].sort(),
     );
-    expect(new Map(owned).get(`${file}:stop:1:0`)).toBe(REAL_HASHES.Stop);
+    expect(new Map(owned).get(`${file}:stop:1:0`)).toBe(ourHash("Stop"));
   });
 
   it("writes a table per hook into a fresh config.toml, owner-only", () => {
@@ -376,5 +724,105 @@ describe("codex hook trust: [hooks.state.\"<hooks.json>:<event>:<group>:<handler
     const file = path.join(dir, "config.toml");
     expect(trustCodexHooks(file, [])).toBe("unchanged");
     expect(fs.existsSync(file)).toBe(false);
+  });
+});
+
+// #705: a line inside a multi-line array or string can look like a table header or a key. The scanners that
+// read ~/.codex/config.toml line by line must skip such continuation lines, or a conflict is missed (a
+// duplicate `[hooks.state."key"]` table would then be written) or invented (a config nothing is wrong with is
+// refused).
+describe("codex config.toml scanners skip continuation lines (#705)", () => {
+  const STOP_KEY = "/h/.codex/hooks.json:stop:0:0";
+
+  it("marks the lines that continue a multi-line array or string, and nothing else", () => {
+    const text = [
+      'a = "[x]" # [hooks]', // 0: single-line string and comment: brackets count for nothing
+      "[tui]", // 1: a header opens and closes on its line
+      "[[arr]]", // 2
+      "m = [", // 3
+      '  ["a", "b"]', // 4: continuation
+      "]", // 5: continuation (closes the array)
+      'b = """', // 6
+      "[hooks]", // 7: continuation
+      '\\""" still open', // 8: continuation: an escaped quote does not close the string
+      '""""', // 9: continuation: content `"`, then the delimiter
+      "c = '''", // 10
+      "[hooks.state]", // 11: continuation
+      "'''", // 12: continuation (closes the string)
+      'd = ["""', // 13
+      '""", "x",', // 14: continuation: the string closes, the array stays open
+      "]", // 15: continuation
+      "e = 1", // 16
+      "f = { g = [1] }", // 17
+      '"[k]" = 2', // 18: a quoted key with brackets
+    ];
+    expect(tomlContinuationLines(text).map((flag, i) => (flag ? i : -1)).filter((i) => i >= 0)).toEqual([4, 5, 7, 8, 9, 11, 12, 14, 15]);
+    expect(tomlContinuationLines([])).toEqual([]);
+    expect(tomlContinuationLines(["]", "x = 1"])).toEqual([false, false]);
+  });
+
+  it.each([
+    ["a nested array whose last element sits on its own line", 'matrix = [\n  ["a", "b"]\n]\nhooks = { state = {} }\n', "a top-level `hooks` key"],
+    ["a multi-line array with a bracket line before a top-level hooks key", 'm = [\n  [1],\n  [2]\n]\n\nhooks.state."k".trusted_hash = "x"\n', "a top-level `hooks` key"],
+    ["a table header quoted in a multi-line basic string", 'note = """\n[tui]\n"""\nhooks = { state = {} }\n', "a top-level `hooks` key"],
+    ["a table header quoted in a multi-line literal string", "note = '''\n[tui]\n'''\nhooks = { state = {} }\n", "a top-level `hooks` key"],
+    ["a [hooks] header quoted in a string before a real [hooks] table", 'note = """\n[tui]\n"""\n[hooks]\nstate = {}\n', "a `state` key in [hooks]"],
+  ])("still sees the conflict after %s", (_name, text, why) => {
+    expect(hookStateConflict(text.split("\n"))).toBe(why);
+  });
+
+  it.each([
+    ["a [hooks] header quoted in a multi-line basic string", 'note = """\n[hooks]\n"""\nstate = {}\n'],
+    ["a [hooks] header quoted in a multi-line literal string", "note = '''\n[hooks]\n'''\nstate = {}\n"],
+    ["a [hooks.state] header quoted in a string", 'doc = """\n[hooks.state]\n"""\n'],
+    ["a hooks key quoted in a string", 'doc = """\nhooks = {}\nstate = {}\n"""\n'],
+    ["a hooks key on an array continuation line", 'm = [\n  1,\n  2\n]\n[tui]\nhooks = "x"\n'],
+    ["a hooks line after a string that closes with extra quotes", 'doc = """\n""""\n[tui]\nhooks = "x"\n'],
+  ])("invents no conflict from %s", (_name, text) => {
+    expect(hookStateConflict(text.split("\n"))).toBeNull();
+  });
+
+  it("edits the real [hooks.state.\"key\"] table, not a look-alike inside a string, and the output is valid TOML", () => {
+    const file = path.join(dir, "config.toml");
+    const before = `doc = """\n[hooks.state."${STOP_KEY}"]\ntrusted_hash = "sha256:quoted"\n"""\n`;
+    fs.writeFileSync(file, before);
+    expect(trustCodexHooks(file, [[STOP_KEY, REAL_HASHES.Stop!]])).toBe("written");
+    expect(read(file)).toBe(`${before}\n[hooks.state."${STOP_KEY}"]\ntrusted_hash = "${REAL_HASHES.Stop}"\n`);
+    const parsed = parseToml(read(file));
+    if (parsed) {
+      expect(parsed.doc).toBe(`[hooks.state."${STOP_KEY}"]\ntrusted_hash = "sha256:quoted"\n`);
+      expect(parsed.hooks.state[STOP_KEY]).toEqual({ trusted_hash: REAL_HASHES.Stop });
+    }
+    expect(trustCodexHooks(file, [[STOP_KEY, REAL_HASHES.Stop!]])).toBe("unchanged");
+  });
+
+  it("does not end a [hooks.state.\"key\"] table at a bracket line of its own multi-line array, so the stale hash is replaced and not duplicated", () => {
+    const file = path.join(dir, "config.toml");
+    fs.writeFileSync(file, `[hooks.state."${STOP_KEY}"]\ntags = [\n  [1],\n  [2]\n]\ntrusted_hash = "sha256:stale"\n\n[tui]\ntheme = "dark"\n`);
+    expect(trustCodexHooks(file, [[STOP_KEY, REAL_HASHES.Stop!]])).toBe("written");
+    const after = read(file);
+    expect(after).toBe(`[hooks.state."${STOP_KEY}"]\ntags = [\n  [1],\n  [2]\n]\ntrusted_hash = "${REAL_HASHES.Stop}"\n\n[tui]\ntheme = "dark"\n`);
+    expect(after.match(/trusted_hash/g)).toHaveLength(1);
+    const parsed = parseToml(after);
+    if (parsed) expect(parsed.hooks.state[STOP_KEY]).toEqual({ tags: [[1], [2]], trusted_hash: REAL_HASHES.Stop });
+  });
+
+  it("does the same for [projects.\"dir\"]: a look-alike in a string is not edited and a bracket line does not end the table", () => {
+    const file = path.join(dir, "config.toml");
+    fs.writeFileSync(
+      file,
+      `doc = """\nprojects = {}\n[projects."/h/a"]\n"""\n\n[projects."/h/b"]\nextra = [\n  [1]\n]\ntrust_level = "untrusted"\n`,
+    );
+    expect(trustCodex(file, ["/h/a", "/h/b"])).toBe("written");
+    const after = read(file);
+    expect(after).toBe(
+      `doc = """\nprojects = {}\n[projects."/h/a"]\n"""\n\n[projects."/h/b"]\nextra = [\n  [1]\n]\ntrust_level = "trusted"\n\n[projects."/h/a"]\ntrust_level = "trusted"\n`,
+    );
+    const parsed = parseToml(after);
+    if (parsed) {
+      expect(parsed.projects["/h/a"]).toEqual({ trust_level: "trusted" });
+      expect(parsed.projects["/h/b"]).toEqual({ extra: [[1]], trust_level: "trusted" });
+    }
+    expect(trustCodex(file, ["/h/a", "/h/b"])).toBe("unchanged");
   });
 });

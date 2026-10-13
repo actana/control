@@ -18,9 +18,17 @@ import {
 import type { NewOutboxRow } from "../repositories/webhooks.repo";
 import {
   COMMENT_AUTHOR_KINDS,
+  DELETABLE_TASK_STATUSES,
+  EDITABLE_TASK_STATUSES,
   FINISHED_TASK_STATUSES,
+  TASK_STATUSES,
+  TASK_TIMEOUT_DEFAULT_MINUTES,
   canMoveTask,
+  formatTaskStopComment,
+  formatTaskTimeLimitChangeComment,
   isTaskStatus,
+  isValidTaskTimeoutMinutes,
+  parseTaskDispatchComment,
   statusesBefore,
   type CommentAuthorKind,
   type TaskStatus,
@@ -51,8 +59,41 @@ export class IllegalTaskTransitionError extends ConflictError {
     readonly from: TaskStatus,
     readonly to: TaskStatus,
   ) {
-    super(`a Task cannot move from ${from} to ${to}`);
+    super(
+      from === "in_progress" && (to === "assigned" || to === "draft")
+        ? `a Task cannot move from ${from} to ${to}: it is running. Stop it first (POST /api/v1/tasks/:id/stop, MCP stop_task, or Stop in the Task detail), then re-assign it`
+        : `a Task cannot move from ${from} to ${to}`,
+    );
     this.name = "IllegalTaskTransitionError";
+  }
+}
+
+/**
+ * An edit or a delete of a Task whose status does not allow it (#722): today
+ * only `in_progress`, whose Session already has the prompt. Same 409 family as
+ * {@link IllegalTaskTransitionError}.
+ */
+export class TaskNotChangeableError extends ConflictError {
+  readonly code = "illegal_task_transition";
+  constructor(
+    readonly action: "edit" | "delete",
+    readonly status: TaskStatus,
+  ) {
+    super(
+      action === "edit"
+        ? `a Task that is ${status} cannot be edited: its Session already has the prompt. Wait for it to finish, then edit and re-assign it`
+        : `a Task that is ${status} cannot be deleted while its Session runs. Wait for it to finish, then delete it`,
+    );
+    this.name = "TaskNotChangeableError";
+  }
+}
+
+/** A stop of a Task that is not running (#723). Same 409 family as {@link IllegalTaskTransitionError}. */
+export class TaskNotRunningError extends ConflictError {
+  readonly code = "illegal_task_transition";
+  constructor(readonly taskStatus: TaskStatus) {
+    super(`a Task that is ${taskStatus} is not running: only an in_progress Task can be stopped`);
+    this.name = "TaskNotRunningError";
   }
 }
 
@@ -72,6 +113,17 @@ export type NewTask = {
   agent?: string | null;
   /** Start now: create the Task `assigned`, in one call, instead of `draft`. */
   startNow?: boolean;
+  /** Minutes per attempt, 1 to 43200 (#724). undefined: 60. null: No limit. */
+  timeoutMinutes?: number | null;
+};
+
+export type TaskUpdate = {
+  title?: string;
+  description?: string;
+  /** Allowed at any status (#724). null: No limit. */
+  timeoutMinutes?: number | null;
+  /** Who changed it, for the system comment on a changed time limit. Default "operator". */
+  changedBy?: string;
 };
 
 export type NewComment = {
@@ -122,6 +174,7 @@ function taskPayload(task: TaskRow) {
     coreId: task.coreId,
     agent: task.agent,
     attemptCount: task.attemptCount,
+    timeoutMinutes: task.timeoutMinutes,
     createdAt: task.createdAt,
     updatedAt: task.updatedAt,
   };
@@ -146,11 +199,19 @@ function outboxEvent(
   };
 }
 
+function assertTimeoutMinutes(v: unknown): void {
+  if (!isValidTaskTimeoutMinutes(v)) {
+    throw new ValidationError("a time limit is a whole number of minutes from 1 to 43200, or null for No limit");
+  }
+}
+
 export async function createTask(ownerId: number, input: NewTask, now = Date.now()): Promise<Task> {
   const title = input.title.trim();
   if (!title) throw new ValidationError("a Task needs a title");
   const coreId = input.coreId ?? null;
   if (coreId && !(await findCoreById(ownerId, coreId))) throw new NotFoundError("core not found");
+  const timeoutMinutes = input.timeoutMinutes === undefined ? TASK_TIMEOUT_DEFAULT_MINUTES : input.timeoutMinutes;
+  assertTimeoutMinutes(timeoutMinutes);
   const row: TaskRow = {
     id: newId("task"),
     ownerId,
@@ -162,6 +223,7 @@ export async function createTask(ownerId: number, input: NewTask, now = Date.now
     attemptCount: 0,
     dispatchedAt: null,
     lastError: null,
+    timeoutMinutes,
     createdAt: now,
     updatedAt: now,
   };
@@ -191,38 +253,92 @@ export async function listTaskComments(ownerId: number, id: string): Promise<Tas
   return findCommentsForTask(ownerId, id);
 }
 
-/** Update a Task's title and description; emits `task.updated`. */
+/**
+ * Update a Task's title, description and time limit; emits `task.updated`. The
+ * title and description only in {@link EDITABLE_TASK_STATUSES}; a request with
+ * only a time limit (#724) is allowed at any status, including `in_progress`.
+ * A request with both is refused as a whole while `in_progress`. Checked once
+ * the row is locked (#722). A changed time limit also writes a system comment.
+ */
 export async function updateTask(
   ownerId: number,
   id: string,
-  input: { title?: string; description?: string },
+  input: TaskUpdate,
   now = Date.now(),
 ): Promise<Task> {
-  const current = await getTask(ownerId, id);
-  const title = input.title !== undefined ? input.title.trim() : current.title;
-  if (!title) throw new ValidationError("a Task needs a title");
-  const description = input.description !== undefined ? input.description : current.description;
-  const outbox = [
-    outboxEvent(
-      ownerId,
-      "task.updated",
-      { task: taskPayload({ ...current, title, description, updatedAt: now }) },
-      current.coreId,
-      now,
-    ),
-  ];
-  const updated = await updateTaskRow(ownerId, id, { title, description, updatedAt: now }, outbox);
-  if (!updated) throw new NotFoundError("task not found");
-  return updated;
+  const title = input.title?.trim();
+  if (input.title !== undefined && !title) throw new ValidationError("a Task needs a title");
+  if (input.timeoutMinutes !== undefined) assertTimeoutMinutes(input.timeoutMinutes);
+  const touchesText = input.title !== undefined || input.description !== undefined;
+  const legalFrom = touchesText || input.timeoutMinutes === undefined ? EDITABLE_TASK_STATUSES : TASK_STATUSES;
+  const patch = {
+    ...(title === undefined ? {} : { title }),
+    ...(input.description === undefined ? {} : { description: input.description }),
+    ...(input.timeoutMinutes === undefined ? {} : { timeoutMinutes: input.timeoutMinutes }),
+    updatedAt: now,
+  };
+  const newLimit = input.timeoutMinutes;
+  const result = await updateTaskRow(
+    ownerId,
+    id,
+    legalFrom,
+    patch,
+    ({ task, comment }) => {
+      const events: NewOutboxRow[] = [];
+      if (comment) {
+        events.push(
+          outboxEvent(
+            ownerId,
+            "comment.created",
+            {
+              comment: {
+                id: comment.id,
+                taskId: id,
+                authorKind: comment.authorKind,
+                authorName: comment.authorName,
+                sourceFile: comment.sourceFile ?? null,
+                body: comment.body,
+                createdAt: now,
+              },
+              task: taskPayload(task),
+            },
+            task.coreId,
+            now,
+          ),
+        );
+      }
+      events.push(outboxEvent(ownerId, "task.updated", { task: taskPayload(task) }, task.coreId, now));
+      return events;
+    },
+    (before) =>
+      newLimit === undefined || newLimit === before.timeoutMinutes
+        ? null
+        : cleanComment({
+            authorKind: "system",
+            authorName: "Panel",
+            body: formatTaskTimeLimitChangeComment({
+              from: before.timeoutMinutes,
+              to: newLimit,
+              changedBy: input.changedBy ?? "operator",
+            }),
+          }),
+  );
+  if (result.kind === "missing") throw new NotFoundError("task not found");
+  if (result.kind === "illegal") throw new TaskNotChangeableError("edit", result.from);
+  return result.task;
 }
 
-/** Delete a Task; emits `task.deleted` with the last known row. */
+/**
+ * Delete a Task; emits `task.deleted` with the last known row. Only in
+ * {@link DELETABLE_TASK_STATUSES}, checked once the row is locked (#722).
+ */
 export async function deleteTask(ownerId: number, id: string, now = Date.now()): Promise<Task> {
-  const current = await getTask(ownerId, id);
-  const outbox = [outboxEvent(ownerId, "task.deleted", { task: taskPayload(current) }, current.coreId, now)];
-  const removed = await deleteTaskRow(ownerId, id, outbox);
-  if (!removed) throw new NotFoundError("task not found");
-  return removed;
+  const result = await deleteTaskRow(ownerId, id, DELETABLE_TASK_STATUSES, (task) => [
+    outboxEvent(ownerId, "task.deleted", { task: taskPayload(task) }, task.coreId, now),
+  ]);
+  if (result.kind === "missing") throw new NotFoundError("task not found");
+  if (result.kind === "illegal") throw new TaskNotChangeableError("delete", result.from);
+  return result.task;
 }
 
 /** Add a comment without changing the status. */
@@ -368,6 +484,51 @@ export async function failTaskDispatch(ownerId: number, id: string, reason: stri
     body: `Dispatch failed: ${reason}`,
   });
   return move(ownerId, id, "failed", now, comment, ["in_progress"], { lastError: reason });
+}
+
+/**
+ * An operator stops a running Task (#723): `in_progress` to `failed` with a system
+ * comment ("Stopped by X: reason") and the reason as the last error, in one
+ * transaction. A Task that is not `in_progress` throws {@link TaskNotRunningError}.
+ * Stopping the Session itself is the caller's job (`task-dispatch/stop-task.ts`).
+ */
+export async function markTaskStopped(
+  ownerId: number,
+  id: string,
+  input: { stoppedBy: string; reason?: string | null },
+  now = Date.now(),
+): Promise<Task> {
+  const body = formatTaskStopComment(input);
+  const comment = cleanComment({ authorKind: "system", authorName: "Panel", body });
+  try {
+    return await move(ownerId, id, "failed", now, comment, ["in_progress"], { lastError: body });
+  } catch (err) {
+    if (err instanceof IllegalTaskTransitionError) throw new TaskNotRunningError(err.from);
+    throw err;
+  }
+}
+
+/**
+ * The Core and Session of the Task's current attempt, read from the newest dispatch
+ * comment whose attempt is `attempt` (default: the Task's attempt count now; a caller that stopped
+ * a particular attempt passes that one, so a newer attempt is never picked). Null when there is none (not
+ * dispatched yet, or the comment could not be written).
+ */
+export async function findCurrentTaskSession(
+  ownerId: number,
+  id: string,
+  attempt?: number,
+): Promise<{ coreId: string; sessionId: string; attempt: number } | null> {
+  const wanted = attempt ?? (await getTask(ownerId, id)).attemptCount;
+  const comments = await listTaskComments(ownerId, id);
+  for (const c of [...comments].reverse()) {
+    if (c.authorKind !== "system") continue;
+    const parsed = parseTaskDispatchComment(c.body);
+    if (parsed && parsed.attempt === wanted) {
+      return { coreId: parsed.coreId, sessionId: parsed.sessionId, attempt: parsed.attempt };
+    }
+  }
+  return null;
 }
 
 export type TaskResultInput = {

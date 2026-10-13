@@ -281,13 +281,26 @@ to catch one. (`pnpm install --ignore-scripts` skips the hook install; run
 
 Commit messages and **PR titles** follow
 [Conventional Commits](https://www.conventionalcommits.org/):
-`<type>(<scope>): <subject>`. The types are the same list as the branch types.
-`commitlint.config.mjs` is the source of truth, and CI enforces it on both.
+`<type>(<scope>): <subject>`. The types are the same list as the branch types,
+plus `gate`. `commitlint.config.mjs` is the source of truth, and CI enforces it
+on both.
 
 ```
 feat(panel): badge Cores by reachability in Fleet view
 fix(core): replay from lastEventId after a socket drop
+gate: beta/0.4.5-f1 — prompt delivery and the send path
 ```
+
+**`gate` is for sub-train gate pull requests** ([ADR 0023](docs/adr/0023-release-trains-and-digest-promotion.md)
+D46): the fixes going into `beta/x.y.z-fN`, and the `-fN` merging back into
+`beta/x.y.z`. A gate is squash-merged like any other pull request, so its title
+is linted like any other and lands on the train as a commit; the type exists so
+that a title named the way gates are named passes both the title lint and the
+commit lint of the pull request after it (#499). It is a commit type only — a
+gate's head branch is a `fix/...` or the sub-beta itself, so there is no
+`gate/` branch. The one title `Conventions` does not lint is the promotion's
+(`beta/x.y.z → main`): `main` advances by fast-forward, so that title is never
+a commit.
 
 We **squash-merge, using the PR title as the commit message** — so the PR title
 is what lands on the train, rides the promotion to `main` unchanged, and is what

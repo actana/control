@@ -26,7 +26,7 @@ vi.mock("~/lib/api", () => ({ api, ApiError: class extends Error {} }));
 const { TaskDetail } = await import("../TaskDetail");
 
 function mount(coreId: string | null, onClose = vi.fn(), focusComposer = false) {
-  task = { id: "T-0142", title: "Rotate keys", description: "", status: "assigned", coreId, agent: null, attemptCount: 0, dispatchedAt: null, lastError: null, createdAt: 1, updatedAt: 1 };
+  task = { id: "T-0142", title: "Rotate keys", description: "", status: "assigned", coreId, agent: null, attemptCount: 0, dispatchedAt: null, lastError: null, timeoutMinutes: 60, createdAt: 1, updatedAt: 1 };
   api.getTask.mockResolvedValue({ task, comments: [] });
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(

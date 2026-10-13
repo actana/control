@@ -214,6 +214,7 @@ describe("HarnessAvailabilityStore.refresh with an asynchronous probe", () => {
   it("records a probe that throws as missing, not as a rejection", async () => {
     const store = new HarnessAvailabilityStore({
       appendEvent: () => 1,
+      probeRetryDelayMs: 0,
       probeAsync: async () => {
         throw new Error("helper did not finish");
       },
@@ -256,5 +257,180 @@ describe("HarnessAvailabilityStore afterProbe", () => {
     });
     await store.refresh();
     expect(store.snapshot()["claude-code"]!.status).toBe("available");
+  });
+});
+
+// #706: a `--version` that timed out at Core start is not an outdated CLI. A transient
+// failure is re-probed, past the failure cache, before anything is published.
+describe("HarnessAvailabilityStore probe retries", () => {
+  const enabled = UI_HARNESSES.filter((agent) => !HARNESS_REGISTRY[agent].disabled);
+  const slow = { status: "outdated" as const, reason: "version-check-failed" as const, path: "/bin/x" };
+  const ok = { status: "available" as const, path: "/bin/x" };
+
+  function publishedStatuses(appendEvent: ReturnType<typeof vi.fn<AppendEventFn>>): string[] {
+    return appendEvent.mock.calls.map(
+      ([, payload]) => (JSON.parse(payload as string) as { availability: Record<string, { status: string }> }).availability["claude-code"].status,
+    );
+  }
+
+  it("retries a slow version check with fresh: true and never publishes outdated", async () => {
+    const appendEvent: ReturnType<typeof vi.fn<AppendEventFn>> = vi.fn(() => 1);
+    const seen: Array<{ fresh?: boolean } | undefined> = [];
+    const store = new HarnessAvailabilityStore({
+      appendEvent,
+      probeRetryDelayMs: 0,
+      probeAsync: async (agent, opts) => {
+        if (agent !== "claude-code") return ok;
+        seen.push(opts);
+        return seen.length === 1 ? slow : ok;
+      },
+    });
+    await store.refresh();
+    expect(seen).toEqual([undefined, { fresh: true }]);
+    expect(store.snapshot()["claude-code"]).toEqual(ok);
+    expect(publishedStatuses(appendEvent)).toEqual(["available"]);
+  });
+
+  it("publishes outdated/version-check-failed after probeRetries + 1 probes", async () => {
+    const probeAsync = vi.fn(async () => slow);
+    const store = new HarnessAvailabilityStore({ appendEvent: () => 1, probeAsync, probeRetryDelayMs: 0, probeRetries: 3 });
+    await store.refresh();
+    expect(probeAsync).toHaveBeenCalledTimes(enabled.length * 4);
+    expect(store.snapshot()["claude-code"]).toEqual(slow);
+  });
+
+  it("retries twice by default", async () => {
+    const probeAsync = vi.fn(async () => slow);
+    const store = new HarnessAvailabilityStore({ appendEvent: () => 1, probeAsync, probeRetryDelayMs: 0 });
+    await store.refresh();
+    expect(probeAsync).toHaveBeenCalledTimes(enabled.length * 3);
+  });
+
+  it("does not retry a real outdated or a version-unknown", async () => {
+    const probeAsync = vi.fn(async (agent: Harness) =>
+      agent === "claude-code"
+        ? { status: "outdated" as const, reason: "outdated" as const, path: "/bin/x", version: "0.1.0" }
+        : { status: "outdated" as const, reason: "version-unknown" as const, path: "/bin/x" },
+    );
+    const store = new HarnessAvailabilityStore({ appendEvent: () => 1, probeAsync, probeRetryDelayMs: 0 });
+    await store.refresh();
+    expect(probeAsync).toHaveBeenCalledTimes(enabled.length);
+    expect(store.snapshot()["claude-code"]).toMatchObject({ status: "outdated", reason: "outdated" });
+  });
+
+  it("retries only the entries that need it", async () => {
+    const calls: string[] = [];
+    const store = new HarnessAvailabilityStore({
+      appendEvent: () => 1,
+      probeRetryDelayMs: 0,
+      probeAsync: async (agent) => {
+        calls.push(agent);
+        return agent === "claude-code" ? slow : ok;
+      },
+    });
+    await store.refresh();
+    expect(calls.filter((agent) => agent === "claude-code")).toHaveLength(3);
+    expect(calls.filter((agent) => agent !== "claude-code")).toHaveLength(enabled.length - 1);
+  });
+
+  it("retries a probe that throws, and records missing if it keeps throwing", async () => {
+    const probeAsync = vi.fn(async (): Promise<typeof ok> => {
+      throw new Error("helper did not finish");
+    });
+    const store = new HarnessAvailabilityStore({ appendEvent: () => 1, probeAsync, probeRetryDelayMs: 0 });
+    await store.refresh();
+    expect(probeAsync).toHaveBeenCalledTimes(enabled.length * 3);
+    expect(store.snapshot()["claude-code"]).toEqual({ status: "missing", reason: "helper did not finish" });
+  });
+
+  it("takes the answer of a retry after a throw", async () => {
+    let calls = 0;
+    const store = new HarnessAvailabilityStore({
+      appendEvent: () => 1,
+      probeRetryDelayMs: 0,
+      probeAsync: async (agent) => {
+        if (agent !== "claude-code") return ok;
+        calls += 1;
+        if (calls === 1) throw new Error("helper did not finish");
+        return ok;
+      },
+    });
+    await store.refresh();
+    expect(store.snapshot()["claude-code"]).toEqual(ok);
+  });
+
+  it("retries through the synchronous probe when afterProbe routes it through a round", async () => {
+    const seen: Array<{ fresh?: boolean } | undefined> = [];
+    const store = new HarnessAvailabilityStore({
+      appendEvent: () => 1,
+      probeRetryDelayMs: 0,
+      probe: (agent, opts) => {
+        if (agent !== "claude-code") return ok;
+        seen.push(opts);
+        return seen.length === 1 ? slow : ok;
+      },
+      afterProbe: async (map) => map,
+    });
+    await store.refresh();
+    expect(seen).toEqual([undefined, { fresh: true }]);
+    expect(store.snapshot()["claude-code"]).toEqual(ok);
+  });
+
+  it("waits probeRetryDelayMs between tries and runs afterProbe only once, on the settled map", async () => {
+    vi.useFakeTimers();
+    try {
+      let calls = 0;
+      const afterProbe = vi.fn(async (map: Parameters<NonNullable<ConstructorParameters<typeof HarnessAvailabilityStore>[0]["afterProbe"]>>[0]) => map);
+      const store = new HarnessAvailabilityStore({
+        appendEvent: () => 1,
+        probeRetryDelayMs: 2_000,
+        afterProbe,
+        probeAsync: async (agent) => {
+          if (agent !== "claude-code") return ok;
+          calls += 1;
+          return calls === 1 ? slow : ok;
+        },
+      });
+      const round = store.refresh();
+      await vi.advanceTimersByTimeAsync(1_999);
+      expect(calls).toBe(1);
+      expect(afterProbe).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      await round;
+      expect(calls).toBe(2);
+      expect(afterProbe).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("ends the retry wait at once when stopped, without waiting out a long delay", async () => {
+    const probeAsync = vi.fn(async () => slow);
+    const store = new HarnessAvailabilityStore({ appendEvent: () => 1, probeAsync, probeRetryDelayMs: 60_000 });
+    const round = store.refresh();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const started = Date.now();
+    store.stop();
+    await round;
+    expect(Date.now() - started).toBeLessThan(1_000);
+    expect(probeAsync).toHaveBeenCalledTimes(enabled.length);
+    expect(store.snapshot()["claude-code"]).toEqual(slow);
+  });
+
+  it("publishes what it has, without another probe, when stopped during the wait", async () => {
+    vi.useFakeTimers();
+    try {
+      const probeAsync = vi.fn(async () => slow);
+      const store = new HarnessAvailabilityStore({ appendEvent: () => 1, probeAsync, probeRetryDelayMs: 2_000 });
+      const round = store.refresh();
+      await vi.advanceTimersByTimeAsync(0);
+      store.stop();
+      await vi.advanceTimersByTimeAsync(2_000);
+      await round;
+      expect(probeAsync).toHaveBeenCalledTimes(enabled.length);
+      expect(store.snapshot()["claude-code"]).toEqual(slow);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

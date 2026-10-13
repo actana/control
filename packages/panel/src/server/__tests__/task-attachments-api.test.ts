@@ -145,6 +145,17 @@ describe("a Task created with attachments", () => {
     expect(comments[0]!.body).toContain("- design/mock/a.png");
   });
 
+  it("takes the time limit in the json field: null is No limit, a number is kept, omitted is 60 (#724)", async () => {
+    const core = await attachedCore();
+    const make = async (extra: Record<string, unknown>) =>
+      (await (await createWith({ title: "t", coreId: core, agent: `agent-${core}`, ...extra }, [{ path: "a.md", content: "a" }])).json()).task.timeoutMinutes;
+    expect(await make({ timeoutMinutes: null })).toBeNull();
+    expect(await make({ timeoutMinutes: 90 })).toBe(90);
+    expect(await make({})).toBe(60);
+    const bad = await createWith({ title: "t", coreId: core, agent: `agent-${core}`, timeoutMinutes: 0 }, [{ path: "a.md", content: "a" }]);
+    expect(bad.status).toBe(400);
+  });
+
   it("with Start now is assigned only after every file is written, and never before", async () => {
     const { s3 } = rigState;
     const core = await attachedCore();
@@ -372,6 +383,20 @@ describe("a comment with a file", () => {
     expect(again.status).toBe(409);
     expect(writes()).toHaveLength(writesBefore);
     expect(s3.objects.has(key(core, t.id, "late.md"))).toBe(false);
+  });
+
+  it("with Comment & re-assign on an in_progress Task answers 409 naming the stop call, and writes nothing (#723)", async () => {
+    const { s3 } = rigState;
+    const core = await attachedCore();
+    const t = await tasksService.createTask(A, { title: "T", coreId: core, agent: `agent-${core}`, startNow: true });
+    await tasksService.claimTask(A, t.id);
+    const writesBefore = writes().length;
+    const res = await call(`/api/tasks/${t.id}/comments`, { body: form({ body: "again", reassign: true }, [{ path: "run.md", content: "r" }]) });
+    expect(res.status).toBe(409);
+    expect((await res.json()).error).toMatch(/\/stop/);
+    expect(writes()).toHaveLength(writesBefore);
+    expect(s3.objects.has(key(core, t.id, "run.md"))).toBe(false);
+    expect(await statusOf(t.id)).toBe("in_progress");
   });
 
   it("adds no comment and moves nothing when the write fails", async () => {

@@ -22,7 +22,6 @@ dist-server
 .certs
 .cache
 .pnpm-store
-.scratch
 .claude
 .codex
 .cursor

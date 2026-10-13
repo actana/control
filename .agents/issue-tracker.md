@@ -34,12 +34,6 @@ Create a GitHub issue.
 
 Run `gh issue view <number> --comments`.
 
-## Historical working notes
-
-`.scratch/` and `docs/{specs,tickets}/` hold the pre-GitHub record — the specs
-and ticket breakdowns for work that shipped before issues moved to GitHub.
-Read them for context; do not add new tickets there.
-
 ## Wayfinding operations
 
 Used by `/wayfinder`. The **map** is a single issue with **child** issues as tickets.

@@ -111,14 +111,20 @@ type Rig = {
   origin: string;
   fingerprint: string;
   caCert: string;
-  openSession(label?: string): Promise<{ sessionId: string; code: string }>;
+  openSession(label?: string, endpointHost?: string): Promise<{ sessionId: string; code: string }>;
 };
 
 const running: PtyCoreLinkServer[] = [];
 const tempDirs: string[] = [];
 
-async function startCore(): Promise<Rig> {
-  const material = await generateCertMaterial({ hosts: ["127.0.0.1"] });
+/**
+ * `publicHosts` is what the Core believes its addresses are, in order: the first
+ * is what it answers a redeeming client with (ADR 0038 D7), and all of them go
+ * into the server certificate.
+ */
+async function startCore(opts: { publicHosts?: string[] } = {}): Promise<Rig> {
+  const publicHosts = opts.publicHosts ?? ["127.0.0.1"];
+  const material = await generateCertMaterial({ hosts: publicHosts });
   const port = await freePort();
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ac-panel-pairing-store-"));
   tempDirs.push(dir);
@@ -137,11 +143,11 @@ async function startCore(): Promise<Rig> {
       bearerSecret: SECRET,
       coreId: "core_paired",
       coreUuid: CORE_UUID,
-      serverHosts: ["127.0.0.1"],
+      serverHosts: publicHosts,
     },
     endpointScheme: "wss",
     port,
-    publicHosts: ["127.0.0.1"],
+    publicHosts,
     names: CORE_PAIRING_NAMES,
     clientLabel: "session-or-client",
     onRevoked: () => {},
@@ -174,7 +180,7 @@ async function startCore(): Promise<Rig> {
     origin: `https://127.0.0.1:${port}`,
     fingerprint: fingerprintOf(new X509Certificate(material.ca.cert).raw),
     caCert: material.ca.cert,
-    openSession: async (label = "the-panel") => {
+    openSession: async (label = "the-panel", endpointHost) => {
       const code = generatePairingCode();
       const sessionId = `ps_${running.length}_${Date.now().toString(16)}`;
       await store.createSession({
@@ -182,6 +188,7 @@ async function startCore(): Promise<Rig> {
         label,
         codeHash: hashPairingCode({ key: codeKey, sessionId, code }),
         now: Date.now(),
+        ...(endpointHost === undefined ? {} : { endpointHost }),
       });
       return { sessionId, code };
     },
@@ -548,4 +555,72 @@ describe("the failures an operator has to tell apart", () => {
     expect((await pair({ address: "127.0.0.1:1" })).status).toBe(400);
     expect((await pair({ code: "AAAA-BBBB" })).status).toBe(400);
   });
+});
+
+describe("a Core that names an address this Panel cannot reach (#409)", () => {
+  const UNREACHABLE = "core.unreachable.invalid";
+
+  async function pairAndExpectDialable(rig: Rig, session: { sessionId: string; code: string }) {
+    const response = await pair({
+      address: rig.address,
+      code: session.code,
+      sessionId: session.sessionId,
+      expectedFingerprint: rig.fingerprint,
+    });
+    expect(response.status).toBe(201);
+    const { core } = (await response.json()) as { core: { id: string; endpoint: string } };
+    // The address the redemption itself succeeded on, not the Core's answer.
+    expect(core.endpoint).toBe(`wss://127.0.0.1:${new URL(rig.origin).port}`);
+    await vi.waitFor(async () => expect((await dialOf(core.id)).state).toBe("connected"), {
+      timeout: 10_000,
+    });
+  }
+
+  it("keeps the address it dialed when the Core's first public host is unreachable", async () => {
+    const rig = await startCore({ publicHosts: [UNREACHABLE, "127.0.0.1"] });
+    await pairAndExpectDialable(rig, await rig.openSession());
+  }, 40_000);
+
+  it("keeps the address it dialed when the code was minted with another --public-host", async () => {
+    const rig = await startCore({ publicHosts: [UNREACHABLE, "127.0.0.1"] });
+    await pairAndExpectDialable(rig, await rig.openSession("the-panel", UNREACHABLE));
+  }, 40_000);
+
+  it("still refuses a second Core at the dialed address, without spending the code", async () => {
+    const rig = await startCore({ publicHosts: [UNREACHABLE, "127.0.0.1"] });
+    const first = await rig.openSession();
+    const firstResponse = await pair({
+      address: rig.address,
+      code: first.code,
+      sessionId: first.sessionId,
+      expectedFingerprint: rig.fingerprint,
+    });
+    expect(firstResponse.status).toBe(201);
+    const firstId = ((await firstResponse.json()) as { core: { id: string } }).core.id;
+
+    const second = await rig.openSession();
+    const response = await pair({
+      address: rig.address,
+      code: second.code,
+      sessionId: second.sessionId,
+      expectedFingerprint: rig.fingerprint,
+    });
+    expect(response.status).toBe(400);
+    const error = ((await response.json()) as { error: string }).error;
+    expect(error).toContain("already registered");
+    // Only the pre-redemption check says this; the insert conflict alone would
+    // also answer 400 "already registered" after spending the code.
+    expect(error).toContain("has not been used");
+    expect(await registryCounts()).toEqual({ cores: 1, secrets: 1 });
+
+    expect((await call(`/api/cores/${firstId}`, { method: "DELETE" })).status).toBe(204);
+    expect(
+      (await pair({
+        address: rig.address,
+        code: second.code,
+        sessionId: second.sessionId,
+        expectedFingerprint: rig.fingerprint,
+      })).status,
+    ).toBe(201);
+  }, 40_000);
 });

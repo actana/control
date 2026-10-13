@@ -19,7 +19,7 @@ vi.mock("~/lib/fleet-context", () => ({
 }));
 
 const task = (id: string, title: string, status: TaskDto["status"], coreId: string | null, extra: Partial<TaskDto> = {}): TaskDto => ({
-  id, title, description: "", status, coreId, agent: coreId ? `ag-${coreId}` : null, attemptCount: 0, dispatchedAt: null, lastError: null, createdAt: 1, updatedAt: 1, ...extra,
+  id, title, description: "", status, coreId, agent: coreId ? `ag-${coreId}` : null, attemptCount: 0, dispatchedAt: null, lastError: null, timeoutMinutes: 60, createdAt: 1, updatedAt: 1, ...extra,
 });
 const agentsByCore: Record<string, AgentDto[]> = {
   c1: [
