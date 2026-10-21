@@ -2,10 +2,10 @@
 // Do the image bases and the Core's Node still match upstream? (ADR 0016 D5,
 // D10, D20.)
 //
-// It resolves every pin against its real upstream, using the same tag
-// Dependabot would use for each, and says what has moved. Which pin is whose
-// job, and why there is a checker as well as a Dependabot config, is written
-// up once in docs/ci-cd.md § "The image bases, and what moves them".
+// It resolves every pin against its real upstream, using the tag each pin
+// follows (see updateStrategyFor), and says what has moved. Which pin is whose
+// job is written up once in docs/ci-cd.md § "The image bases, and what moves
+// them".
 //
 // Usage:
 //   node scripts/check-base-pins.mjs
@@ -49,11 +49,11 @@ const NODE_INDEX_URL = "https://nodejs.org/dist/index.json";
 const NODE_ROW = "NODE_VERSION";
 
 /**
- * Who opens the PR for a drifted pin. Named here rather than spelled out at
- * each use because housekeeping.yml branches on it: a bare string matched
- * across that language boundary is a rename waiting to fail silently.
+ * Who moves a drifted base digest: a person, from the issue the `base-pins`
+ * job opens. Named here rather than spelled out at each use so the string the
+ * output filter compares against cannot drift from the one the rows carry.
  */
-const DEPENDABOT = "dependabot";
+const BY_HAND = "by hand (housekeeping issue)";
 const THIS_WORKFLOW = "housekeeping.yml (base-pins)";
 
 // Both list and OCI forms. Asking for only the Docker list media type gets a
@@ -154,11 +154,11 @@ for (const { file, reference, strategy } of pinnedBases()) {
 
   if (upstream === null) {
     // Only reachable for the tagless pin, and it is the failure this script
-    // was written for: no `latest`, no Dependabot update, and nothing anywhere
-    // else would have said so.
+    // was written for: no `latest`, no upstream digest to compare against, and
+    // nothing anywhere else would have said so.
     fail(
       `${label} does not exist. ${file}:${reference.line} is pinned by digest with no tag, ` +
-        "so Dependabot resolves its update from that tag — without it the base stops being updated silently.",
+        "so this checker resolves its upstream digest from that tag — without it the base can no longer be checked.",
     );
   }
 
@@ -169,7 +169,7 @@ for (const { file, reference, strategy } of pinnedBases()) {
     line: reference.line,
     pinned: reference.digest,
     upstream,
-    owner: DEPENDABOT,
+    owner: BY_HAND,
   });
 }
 
@@ -209,7 +209,7 @@ if (fixNode && hasDrifted(nodeRow)) {
 
 console.log(formatReport(rows));
 for (const row of drifted) {
-  log(`${row.label} is ${row.owner}'s to bump — ${row.file}:${row.line}`);
+  log(`${row.label} has drifted, moved by ${row.owner} — ${row.file}:${row.line}`);
 }
 
 if (jsonPath) {
@@ -220,7 +220,7 @@ if (jsonPath) {
 // in a shell step: "has this drifted, and whose is it" would then have two
 // definitions in two languages, and only one of them is tested.
 if (githubOutputPath) {
-  const digestDrift = drifted.filter((row) => row.owner === DEPENDABOT);
+  const digestDrift = drifted.filter((row) => row.owner === BY_HAND);
 
   fs.appendFileSync(
     githubOutputPath,

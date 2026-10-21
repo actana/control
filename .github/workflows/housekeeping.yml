@@ -13,7 +13,8 @@ name: Housekeeping
 #
 #   stale             daily   labels and closes an inactive issue or PR
 #   open-train        daily   no `beta/*` on origin — opens an issue, cuts nothing
-#   base-pins         weekly  opens the NODE_VERSION bump PR, reports digest drift
+#   base-pins         weekly  opens the NODE_VERSION bump PR; opens an issue when
+#                             a base digest is behind upstream
 #   release-detector  weekly  base drift or a new fixable CVE in a released
 #                             image — opens an issue, publishes nothing
 #   dev-tag-sweep     weekly  deletes stale `pr-*` / `sha-*` tags from the two
@@ -22,15 +23,17 @@ name: Housekeeping
 #   dev-audit         weekly  `pnpm audit` over the dev tree — opens an issue
 #   harness-canary    weekly  the vendors' real installers — opens an issue
 #
-# Four of them deliberately end in `gh issue create` rather than a red run.
+# Five of them deliberately end in `gh issue create` rather than a red run.
 # `dev-audit` (ADR 0016 D37) is red for advisories in packages that never ship,
 # `harness-canary` (D38) is red when a vendor changes their installer, and
 # `release-detector` (ADR 0023 D42) is red when a base image someone else
 # maintains grows a CVE — none is payable by the person whose PR happens to be
 # open, and a permanently red scheduled workflow is how a team learns that red
-# means nothing. `open-train` (ADR 0023 D25, as amended by #325) is the fourth,
-# and it is the one whose red state is *expected*: every promotion ends with no
-# train open, and cutting the next one is a person's decision.
+# means nothing. `base-pins` is red when a base digest in the working tree has
+# drifted from upstream, and a person bumps it by hand. `open-train` (ADR 0023
+# D25, as amended by #325) is the fifth, and it is the one whose red state is
+# *expected*: every promotion ends with no train open, and cutting the next one
+# is a person's decision.
 #
 # Nine jobs, eight chores: `release-ref` is `release-detector`'s resolver
 # rather than a chore of its own — it is a separate job only because a matrix
@@ -67,11 +70,9 @@ on:
     # sweep of a registry is a property of a vendor's build farm, not something
     # worth imitating here.
     #
-    # The time is base-pins' and the reason is base-pins': it is after the 06:00
-    # Europe/Berlin the `docker` entry in .github/dependabot.yml is scheduled
-    # for (05:00 UTC in winter, 04:00 in summer). Ordering matters only for the
-    # reporting — a digest Dependabot has just opened a PR for should not also
-    # be listed here as one nobody has moved.
+    # Early in the week, so a drifted base digest or a new Node release is in
+    # front of a person at the start of it. Nothing else is scheduled around
+    # this time; it is a convention, not an ordering constraint.
     - cron: "0 7 * * 1"
   workflow_dispatch:
     inputs:
@@ -240,15 +241,17 @@ jobs:
 
   # ----------------------------------------------------------------- weekly
 
-  # ADR 0016 D10's second and third mechanisms. Which pin is whose job, and why
-  # a checker exists alongside the Dependabot config at all, is written up once
-  # in docs/ci-cd.md § "The image bases, and what moves them" — this job
-  # implements that split rather than re-arguing it:
+  # ADR 0016 D10's second and third mechanisms. Which pin is whose job is
+  # written up once in docs/ci-cd.md § "The image bases, and what moves them" —
+  # this job implements that split rather than re-arguing it:
   #
-  #   opens PRs for   `ARG NODE_VERSION`, which is a nodejs.org tarball (D8) and
-  #                   so invisible to Dependabot's docker ecosystem
-  #   reports only    the two base digests, which are Dependabot's to open PRs
-  #                   for; two bots racing on one PR is worse than one bot
+  #   opens a PR for  `ARG NODE_VERSION`, which is a nodejs.org tarball (D8),
+  #                   not an image reference, so no registry-watching bot could
+  #                   move it
+  #   opens an issue  when either base digest is behind upstream. A person
+  #                   bumps it by hand in a PR; no bot opens one for digests,
+  #                   so there is nothing to race and nothing to review that
+  #                   a person did not decide to make
   #   not here        the same question asked of the *released* images, which is
   #                   `release-detector` below. This job looks at the working
   #                   tree; that one looks at what operators are running.
@@ -267,6 +270,7 @@ jobs:
     runs-on: ubuntu-24.04
     permissions:
       contents: write
+      issues: write
       pull-requests: write
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -300,27 +304,71 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
           node scripts/check-base-pins.mjs \
             --fix-node \
+            --json "$RUNNER_TEMP/pins.json" \
             --github-output "$GITHUB_OUTPUT" \
             | tee -a "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
 
-      # Report-only, and the wording matters: this is not a failure, it is
-      # Dependabot's PR being late or absent. Someone reading the run should
-      # know which of those to go and check.
-      - name: Note any digest Dependabot has not moved
+      # An issue, not a red run: a base that moved upstream is news for a person
+      # to act on, and nobody who opened a pull request caused it. One at a
+      # time — if the issue is still open, a second week of drift adds nothing.
+      - name: Open an issue for a base digest behind upstream
         if: steps.check.outputs.digest-drift != ''
         env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TITLE: "Base image digests behind upstream"
           DRIFTED: ${{ steps.check.outputs.digest-drift }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
+
           {
             echo ""
             echo "### Digests behind upstream"
             echo ""
-            echo "\`$DRIFTED\` — these are Dependabot's to bump (.github/dependabot.yml, \`docker\`)."
-            echo "If no PR is open for them, check the updater's own log at"
-            echo "\`https://github.com/$GITHUB_REPOSITORY/network/updates\`."
+            echo "\`$DRIFTED\` — bumped by hand; see the issue this run opens."
           } >> "$GITHUB_STEP_SUMMARY"
+
+          open="$(gh issue list --state open --search "\"$TITLE\" in:title" \
+            --json number,title --jq "map(select(.title == \"$TITLE\")) | .[0].number // empty")"
+          if [[ -n "$open" ]]; then
+            echo "::notice title=Already tracked::#$open is open for this. Not filing another."
+            exit 0
+          fi
+
+          # Rows come from the checker's own JSON, selected by the labels its
+          # `digest-drift` output named, so the digests in the issue are the ones
+          # it just resolved rather than a second resolution in shell.
+          {
+            echo "At least one base image digest pinned in this repository is behind what its"
+            echo "upstream tag serves now. Nothing opens a pull request for these: **a person"
+            echo "bumps the digest by hand.**"
+            echo ""
+            jq -r --arg drifted "$DRIFTED" '
+              ($drifted | split(" ")) as $labels
+              | .rows[] | select(.label as $l | $labels | index($l))
+              | "- `\(.label)` — `\(.file):\(.line)`: `\(.pinned)` → `\(.upstream)`"
+            ' "$RUNNER_TEMP/pins.json"
+            echo ""
+            echo "**To bump:** in a pull request, edit the \`@sha256:\` on that line of the"
+            echo "Dockerfile to the upstream digest, and update the dated note directly above the"
+            echo "\`FROM\` (\`# ubuntu:24.04 == noble-… at the time of writing.\` for the Core,"
+            echo "\`# gcr.io/distroless/nodejs24:latest == this digest on YYYY-MM-DD.\` for the Panel"
+            echo "runtime) — the tests in \`scripts/__tests__/base-pins.test.mjs\` hold that note"
+            echo "to the pin. See docs/ci-cd.md § \"The image bases, and what moves them\"."
+            echo ""
+            echo "Close this once the digest is merged. This chore runs weekly and will file it"
+            echo "again if it is closed while a digest is still behind."
+            echo ""
+            echo "[Run]($RUN_URL)"
+          } > "$RUNNER_TEMP/issue.md"
+
+          # `needs-triage` and nothing else. `gh issue create` fails outright on a
+          # label the repo does not have, which would turn "open an issue" into
+          # the red run this job exists to avoid.
+          gh issue create --title "$TITLE" --body-file "$RUNNER_TEMP/issue.md" \
+            --label needs-triage
 
       - name: Open the NODE_VERSION bump
         if: steps.check.outputs.node-drifted == 'true'
@@ -359,7 +407,7 @@ jobs:
             echo ""
             echo "Opened by the \`base-pins\` job in \`.github/workflows/housekeeping.yml\`, which"
             echo "owns this pin because it is a nodejs.org tarball rather than an image reference,"
-            echo "so Dependabot's \`docker\` ecosystem cannot see it (ADR 0016 D8, D10)."
+            echo "so no registry-watching update tool could see it (ADR 0016 D8, D10)."
             echo ""
             echo "The tarball is SHA-256 verified against that release's own \`SHASUMS256.txt\`"
             echo "inside the build, so a wrong version fails the image build rather than shipping."

@@ -64,7 +64,7 @@ RUN mkdir -p /staged/data
 # line. Pinned by digest because the repository carries 6,980 tags and not one
 # of them contains a version number: four mutable names plus opaque build
 # SHAs, so a tag is not a pin and the Node patch version would drift silently
-# between builds. Renovate/Dependabot must update the digest (D20).
+# between builds. The digest is bumped by hand from the housekeeping issue (D20).
 #
 # The default tag, not `:nonroot`: every distroless variant already ships
 # `nonroot:x:65532:65532` in /etc/passwd, so the USER below drops privilege
