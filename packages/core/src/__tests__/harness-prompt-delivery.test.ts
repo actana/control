@@ -293,11 +293,12 @@ const CURSOR_IDLE_COMPOSER =
  * BLOCKING_DIALOGS} could have settled it: **the menu is letter-keyed.**
  *
  * `[a] Trust this workspace` / `[q] Quit` is a menu {@link readDialogOptions}
- * cannot read, because `OPTION_LINE` requires a digit followed by `.` or `)`.
- * So the entry that gives cursor-cli `folder-trust` makes the dialog
- * *recognised* — which is what routes it to the abandon path and a
- * `needs-input` Session instead of a prompt typed into a trust dialog — and it
- * does not make it *answerable*. Reading letter keys is issue #273.
+ * could not read while `OPTION_LINE` required a digit, so the entry that gave
+ * cursor-cli `folder-trust` made the dialog *recognised* and not *answerable*
+ * — every delivery abandoned to `needs-input`. Issue #273 taught the reader
+ * letter keys; the tests below hold it to answering this screen with the key
+ * printed on it, and the box borders around each row are part of what they
+ * read through.
  *
  * The synthesised numbered menu in the test above this one proves the digit
  * path works and is worth keeping; what it cannot do is stand in for this,
@@ -319,8 +320,8 @@ const CURSOR_TRUST_DIALOG = readFileSync(
  * The fixture is here for the defence-in-depth path: if the dialog still
  * appears, `folder-trust` must recognise it and abandon rather than type.
  * The menu is arrow-keyed (`→ Trust` / `Do not trust`), so
- * {@link readDialogOptions} returns empty and the answer is null — the same
- * shape as cursor-cli's letter-keyed trust screen.
+ * {@link readDialogOptions} returns empty and the answer is null: no row
+ * carries a key to press.
  */
 const PI_TRUST_DIALOG = readFileSync(
   path.resolve(__dirname, "fixtures/pi-0.85.1-project-trust.txt"),
@@ -639,28 +640,50 @@ describe("lastScreenClearIndex", () => {
 describe("readDialogOptions", () => {
   it("reads a numbered menu through its highlight and cursor glyph", () => {
     expect(readDialogOptions(TRUST_DIALOG)).toEqual([
-      { number: 1, label: "No, exit", highlighted: true },
-      { number: 2, label: "Yes, proceed", highlighted: false },
+      { key: "1", label: "No, exit", highlighted: true },
+      { key: "2", label: "Yes, proceed", highlighted: false },
     ]);
   });
 
   it("reads reverse video as the highlight even with no pointer glyph", () => {
     expect(readDialogOptions(`  1. No, exit\n${ESC}[7m  2. Yes, proceed${ESC}[0m`)).toEqual([
-      { number: 1, label: "No, exit", highlighted: false },
-      { number: 2, label: "Yes, proceed", highlighted: true },
+      { key: "1", label: "No, exit", highlighted: false },
+      { key: "2", label: "Yes, proceed", highlighted: true },
     ]);
   });
 
   it("does not read a bullet or a dash as a selection", () => {
     expect(readDialogOptions("- 1. No, exit\n* 2. Yes, proceed")).toEqual([
-      { number: 1, label: "No, exit", highlighted: false },
-      { number: 2, label: "Yes, proceed", highlighted: false },
+      { key: "1", label: "No, exit", highlighted: false },
+      { key: "2", label: "Yes, proceed", highlighted: false },
     ]);
+  });
+
+  it("reads letter keys written as `[a]` and as `a)`", () => {
+    expect(readDialogOptions("▶ [a] Trust this workspace\n  [q] Quit")).toEqual([
+      { key: "a", label: "Trust this workspace", highlighted: true },
+      { key: "q", label: "Quit", highlighted: false },
+    ]);
+    expect(readDialogOptions("  a) Trust\n❯ b) Quit")).toEqual([
+      { key: "a", label: "Trust", highlighted: false },
+      { key: "b", label: "Quit", highlighted: true },
+    ]);
+  });
+
+  it("does not read a capital and a full stop as a letter key — that is prose", () => {
+    expect(readDialogOptions("J. Smith wrote this\nA. Nother reviewed it")).toEqual([]);
+  });
+
+  it("reads a menu that mixes `1.` with `[b]` as no menu at all", () => {
+    // Two notations on one screen is either two things or a thing never seen;
+    // there is no key in it worth pressing.
+    expect(readDialogOptions("❯ 1. Yes, trust this folder\n  [b] Quit")).toEqual([]);
+    expect(readDialogOptions("  [a] Trust this workspace\n  b) Quit")).toEqual([]);
   });
 
   it("takes the most recent paint of a repeated option", () => {
     expect(readDialogOptions("1. No, exit\n1. No, exit (still)")).toEqual([
-      { number: 1, label: "No, exit (still)", highlighted: false },
+      { key: "1", label: "No, exit (still)", highlighted: false },
     ]);
   });
 });
@@ -670,8 +693,8 @@ describe("the harness as it really paints", () => {
     // Deleting the column moves the way every other escape is deleted yields
     // `1.Yes,Itrustthisfolder` — one word, and no menu at all.
     expect(readDialogOptions(REAL_TRUST_DIALOG)).toEqual([
-      { number: 1, label: "Yes, I trust this folder", highlighted: true },
-      { number: 2, label: "No, exit", highlighted: false },
+      { key: "1", label: "Yes, I trust this folder", highlighted: true },
+      { key: "2", label: "No, exit", highlighted: false },
     ]);
   });
 
@@ -679,7 +702,7 @@ describe("the harness as it really paints", () => {
     const match = matchBlockingDialog(REAL_TRUST_DIALOG, dialogsForHarness("claude-code"))!;
     expect(match.spec.id).toBe("folder-trust");
     expect(match.answer).toEqual({
-      number: 1,
+      key: "1",
       label: "Yes, I trust this folder",
       highlighted: true,
     });
@@ -756,7 +779,7 @@ describe("the harness as it really paints", () => {
 
 describe("highlightIsOn", () => {
   const options = readDialogOptions(TRUST_DIALOG_SELECTED);
-  const affirmative = options.find((o) => o.number === 2)!;
+  const affirmative = options.find((o) => o.key === "2")!;
 
   it("is true only when the harness put its selection on that option", () => {
     expect(highlightIsOn(options, affirmative)).toBe(true);
@@ -778,7 +801,7 @@ describe("chooseDialogOption", () => {
     // The observed default is `1. No, exit`, so "whatever is highlighted" and
     // "whatever is first" are both the wrong answer.
     expect(chooseDialogOption(readDialogOptions(TRUST_DIALOG), trust)).toMatchObject({
-      number: 2,
+      key: "2",
       label: "Yes, proceed",
     });
   });
@@ -786,22 +809,47 @@ describe("chooseDialogOption", () => {
   it("picks by label even when the affirmative option is numbered first", () => {
     const flipped = "❯ 1. Yes, proceed\n  2. No, exit\n";
     expect(chooseDialogOption(readDialogOptions(flipped), trust)).toMatchObject({
-      number: 1,
+      key: "1",
       label: "Yes, proceed",
     });
   });
 
   it("refuses a menu with no refusing option — that is not a trust dialog", () => {
     expect(
-      chooseDialogOption([{ number: 1, label: "Yes, proceed", highlighted: false }], trust),
+      chooseDialogOption([{ key: "1", label: "Yes, proceed", highlighted: false }], trust),
     ).toBeNull();
+  });
+
+  it("picks by label on a letter-keyed menu too, wherever the key falls", () => {
+    expect(
+      chooseDialogOption(readDialogOptions("  [q] Quit\n▶ [t] Trust this workspace"), trust),
+    ).toMatchObject({ key: "t", label: "Trust this workspace" });
+  });
+
+  it("counts `Quit` as refusing — it was already in the folder-trust row", () => {
+    expect(trust.refuse.test("Quit")).toBe(true);
+    expect(trust.affirmative.test("Quit")).toBe(false);
+  });
+
+  it("refuses a letter-keyed menu with no refusing option", () => {
+    const options = readDialogOptions("▶ [a] Trust this workspace\n  [s] Skip for now");
+    expect(options).toHaveLength(2);
+    expect(chooseDialogOption(options, trust)).toBeNull();
+  });
+
+  it("refuses a letter-keyed menu offering two affirmatives", () => {
+    const options = readDialogOptions(
+      "▶ [a] Trust this workspace\n  [p] Trust the parent folder\n  [q] Quit",
+    );
+    expect(options).toHaveLength(3);
+    expect(chooseDialogOption(options, trust)).toBeNull();
   });
 
   it("refuses an ambiguous menu rather than guessing", () => {
     const ambiguous = [
-      { number: 1, label: "Yes, proceed", highlighted: false },
-      { number: 2, label: "Yes, and remember this folder", highlighted: false },
-      { number: 3, label: "No, exit", highlighted: true },
+      { key: "1", label: "Yes, proceed", highlighted: false },
+      { key: "2", label: "Yes, and remember this folder", highlighted: false },
+      { key: "3", label: "No, exit", highlighted: true },
     ];
     expect(chooseDialogOption(ambiguous, trust)).toBeNull();
   });
@@ -824,7 +872,7 @@ describe("dialogsForHarness", () => {
     // Finding 3: cursor-agent's trust prompt was never answered because the
     // matcher was scoped to a harness it is not. The entry it gets carries no
     // Claude-specific wording and, crucially, no Claude-specific *key* — the
-    // digit comes off the menu on screen.
+    // key comes off the menu on screen.
     expect(dialogsForHarness("cursor-cli").map((d) => d.id)).toEqual(["folder-trust"]);
   });
 
@@ -861,7 +909,7 @@ describe("cursor-agent's trust prompt (issue 177 finding 3)", () => {
     expect(match?.spec.id).toBe("folder-trust");
     // The digit is read, not assumed. This is the exact failure the issue
     // warned a careless partial match would introduce.
-    expect(match?.answer?.number).toBe(2);
+    expect(match?.answer?.key).toBe("2");
     expect(match?.answer?.label).toContain("Yes");
   });
 
@@ -880,35 +928,117 @@ describe("cursor-agent's trust prompt (issue 177 finding 3)", () => {
     expect(matchBlockingDialog(screen, specs)).toBeNull();
   });
 
-  it("recognises the real trust screen and answers nothing on it", () => {
-    // The fixture, not a synthesis. `matchBlockingDialog` fires — the widened
-    // nouns catch `workspace` and `directory` — and `readDialogOptions` comes
-    // back empty, because the menu offers `[a]` and `[q]` rather than `1.` and
-    // `2.`. That combination is the whole of what this entry buys cursor-cli
-    // today: the dialog is seen, so delivery abandons and the Session reports
-    // `needs-input`; the dialog is not answered, and cannot be until
-    // `readDialogOptions` learns letter keys (issue #273).
-    const match = matchBlockingDialog(CURSOR_TRUST_DIALOG, specs);
-    expect(match?.spec.id).toBe("folder-trust");
-    expect(readDialogOptions(CURSOR_TRUST_DIALOG)).toEqual([]);
-    expect(match?.answer).toBeNull();
+  it("reads the real letter-keyed menu, inside its box, off the screen (issue 273)", () => {
+    // The fixture, not a synthesis. The keys are `[a]` and `[q]`, the pointer
+    // is `▶`, and every row sits between `│` borders — neither border may end
+    // up in a label, and the left one is not a selection.
+    expect(readDialogOptions(CURSOR_TRUST_DIALOG)).toEqual([
+      { key: "a", label: "Trust this workspace", highlighted: true },
+      { key: "q", label: "Quit", highlighted: false },
+    ]);
   });
 
-  it("replays the real screen into an abandoned delivery, writing nothing", () => {
-    // What the entry is actually worth, end to end, on bytes rather than on a
-    // description of them. Before this PR the same screen produced `settled` →
-    // `delivered` and typed the prompt and a carriage return into the trust
-    // dialog while reporting success; a `needs-input` Session is the honest
-    // outcome and this is the test that holds the line at it.
+  it("answers the real trust screen with the key it reads there", () => {
+    // `Quit` is what makes this a dialog rather than a list with "trust" in
+    // it: the guard wants exactly one yes and at least one no, unchanged.
+    const match = matchBlockingDialog(CURSOR_TRUST_DIALOG, specs);
+    expect(match?.spec.id).toBe("folder-trust");
+    expect(match?.answer).toEqual({
+      key: "a",
+      label: "Trust this workspace",
+      highlighted: true,
+    });
+  });
+
+  it("takes the key off the screen rather than assuming `a`", () => {
+    // The same dialog with its keys relabelled. A hard-coded `a` would now
+    // press nothing — or worse, whatever `a` means on this build.
+    const relabelled = CURSOR_TRUST_DIALOG.replace("[a]", "[t]").replace("[q]", "[x]");
+    const match = matchBlockingDialog(relabelled, specs);
+    expect(match?.answer?.key).toBe("t");
+  });
+
+  it("replays the real screen into an answered dialog and a delivered prompt", () => {
+    // End to end, on the fixture's bytes. Before #272 this screen got the
+    // prompt and a carriage return typed into it while delivery reported
+    // success; after #272 it abandoned to `needs-input`. Now the key it reads
+    // goes out — `a`, and on its own — and the prompt waits for the composer
+    // like any other.
+    //
+    // On its own matters: cursor-agent says "Enter to select, or press the …",
+    // so the letter *is* the selection. The Enter the digit path holds back is
+    // only spent if the same dialog is seen again after the key, so a letter
+    // that took the dialog away leaves nothing for it to confirm, and no `\r`
+    // lands between the key and the prompt.
     const h = startDelivery("refactor the picker", { harness: "cursor-cli" });
     h.delivery.onOutput(CURSOR_TRUST_DIALOG);
+    h.clock.advance(PROFILE.quietGapMs + 1);
+
+    expect(h.writes).toEqual(["a"]);
+    expect(h.events).toContainEqual({
+      phase: "dialog",
+      dialog: "folder-trust",
+      option: "a",
+      label: "Trust this workspace",
+    });
+
+    h.delivery.onOutput(CURSOR_IDLE_COMPOSER);
+    h.clock.advance(PROFILE.quietGapMs + 1);
+    expect(h.writes).toEqual(["a", "refactor the picker"]);
+    expect(h.events.some((e) => e.phase === "dialog-unreadable")).toBe(false);
+    expect(h.events.some((e) => e.phase === "dialog-unconfirmed")).toBe(false);
+  });
+
+  it("confirms with Enter only while the highlight is on the trust row", () => {
+    // The screen comes back unchanged after `a`, its `▶` still on `[a]`. That
+    // is the case the digit path confirms, and the rule carries over: Enter
+    // selects the highlighted row, and the highlighted row is the one read as
+    // the answer, so the Enter can only mean "trust".
+    const h = startDelivery("refactor the picker", { harness: "cursor-cli" });
+    h.delivery.onOutput(CURSOR_TRUST_DIALOG);
+    h.clock.advance(PROFILE.quietGapMs + 1);
+    h.delivery.onOutput(CURSOR_TRUST_DIALOG);
+    h.clock.advance(PROFILE.quietGapMs + 1);
+    expect(h.writes).toEqual(["a", "\r"]);
+  });
+
+  it("never confirms when the highlight sits on Quit", () => {
+    // The same screen with the pointer moved to `[q] Quit`. An Enter there
+    // quits the harness, so after `a` nothing more is typed and delivery
+    // abandons with the dialog on screen.
+    const onQuit = CURSOR_TRUST_DIALOG.replace("▶ [a]", "  [a]").replace("  [q]", "▶ [q]");
+    const h = startDelivery("refactor the picker", { harness: "cursor-cli" });
+    h.delivery.onOutput(onQuit);
+    h.clock.advance(PROFILE.quietGapMs + 1);
+    h.delivery.onOutput(onQuit);
+    h.clock.advance(PROFILE.maxWaitMs * 2);
+
+    expect(h.writes).toEqual(["a"]);
+    expect(h.events).toContainEqual({ phase: "dialog-unconfirmed", dialog: "folder-trust" });
+    expect(h.delivery.currentPhase).toBe("abandoned");
+  });
+
+  it("types nothing into a trust screen whose menu mixes keys", () => {
+    const mixed = CURSOR_TRUST_DIALOG.replace("[a]", "1.");
+    const h = startDelivery("refactor the picker", { harness: "cursor-cli" });
+    h.delivery.onOutput(mixed);
     h.clock.advance(PROFILE.maxWaitMs * 2);
 
     expect(h.writes).toEqual([]);
-    expect(h.delivery.currentPhase).toBe("abandoned");
     expect(h.events).toContainEqual({ phase: "dialog-unreadable", dialog: "folder-trust" });
     expect(h.events.at(-1)).toEqual({ phase: "abandoned", reason: "blocked by folder-trust" });
-    expect(h.events.some((e) => e.phase === "delivered")).toBe(false);
+  });
+
+  it("types nothing into a letter-keyed trust screen with two affirmatives or no refusal", () => {
+    const twoYes = CURSOR_TRUST_DIALOG.replace("[q] Quit", "[p] Trust the parent folder\n│    [q] Quit");
+    for (const screen of [twoYes, CURSOR_TRUST_DIALOG.replace("[q] Quit", "[s] Skip")]) {
+      const h = startDelivery("refactor the picker", { harness: "cursor-cli" });
+      h.delivery.onOutput(screen);
+      h.clock.advance(PROFILE.maxWaitMs * 2);
+
+      expect(h.writes).toEqual([]);
+      expect(h.events.at(-1)).toEqual({ phase: "abandoned", reason: "blocked by folder-trust" });
+    }
   });
 
   it("does not hand cursor-cli Claude Code's bypass-permissions screen", () => {
@@ -929,8 +1059,8 @@ describe("Pi's project-trust prompt (ADO #4987)", () => {
   const readiness = readinessFor("pi");
 
   it("recognises the real trust screen and answers nothing on it", () => {
-    // Arrow-keyed menu (`→ Trust`), not digits — same unreadable shape as
-    // cursor-cli. Recognition is what routes delivery to abandon.
+    // Arrow-keyed menu (`→ Trust`): no digit and no letter on any row, so
+    // nothing to press. Recognition is what routes delivery to abandon.
     const match = matchBlockingDialog(PI_TRUST_DIALOG, specs);
     expect(match?.spec.id).toBe("folder-trust");
     expect(readDialogOptions(PI_TRUST_DIALOG)).toEqual([]);
@@ -1017,19 +1147,19 @@ describe("matchBlockingDialog", () => {
   it("finds the folder-trust dialog and its answer", () => {
     const match = matchBlockingDialog(TRUST_DIALOG, specs)!;
     expect(match.spec.id).toBe("folder-trust");
-    expect(match.answer).toEqual({ number: 2, label: "Yes, proceed", highlighted: false });
+    expect(match.answer).toEqual({ key: "2", label: "Yes, proceed", highlighted: false });
   });
 
   it("keeps the highlight, which stripAnsi would have dropped", () => {
     const match = matchBlockingDialog(TRUST_DIALOG_SELECTED, specs)!;
-    expect(match.answer).toEqual({ number: 2, label: "Yes, proceed", highlighted: true });
-    expect(match.options.find((o) => o.number === 1)!.highlighted).toBe(false);
+    expect(match.answer).toEqual({ key: "2", label: "Yes, proceed", highlighted: true });
+    expect(match.options.find((o) => o.key === "1")!.highlighted).toBe(false);
   });
 
   it("finds the bypass-permissions warning behind auto mode", () => {
     const match = matchBlockingDialog(BYPASS_DIALOG, specs)!;
     expect(match.spec.id).toBe("bypass-permissions");
-    expect(match.answer).toEqual({ number: 2, label: "Yes, I accept", highlighted: false });
+    expect(match.answer).toEqual({ key: "2", label: "Yes, I accept", highlighted: false });
   });
 
   it("does not fire on a ready composer", () => {
@@ -1150,7 +1280,7 @@ describe("HarnessPromptDelivery", () => {
     expect(h.events[0]).toEqual({
       phase: "dialog",
       dialog: "folder-trust",
-      option: 2,
+      option: "2",
       label: "Yes, proceed",
     });
 
@@ -2320,17 +2450,22 @@ describe("delivering to cursor-cli (issue 232)", () => {
     expect(h.writes).toEqual(["say hello"]);
   });
 
-  it("still abandons on the trust screen instead of typing into it (issue 177)", () => {
-    // Readiness is checked *after* the dialog table, so nothing here weakens
-    // what #272 bought: cursor-agent's letter-keyed menu is unreadable, the
-    // answer is null, and delivery abandons rather than typing the prompt into
-    // the dialog and reporting success.
+  it("answers the trust screen and then waits for the composer (issues 177, 273)", () => {
+    // Readiness is checked *after* the dialog table, so the dialog is answered
+    // first and the prompt still waits for `→ Plan, search, build anything`:
+    // nothing is typed into the trust screen but the key it offers.
     const h = startDelivery("say hello", { harness: "cursor-cli" });
     h.delivery.onOutput(CURSOR_TRUST_DIALOG);
-    h.clock.advance(PROFILE.maxWaitMs * 2);
-    expect(h.writes).toEqual([]);
-    expect(h.delivery.currentPhase).toBe("abandoned");
-    expect(h.events.at(-1)).toEqual({ phase: "abandoned", reason: "blocked by folder-trust" });
+    h.clock.advance(PROFILE.quietGapMs + 1);
+    expect(h.writes).toEqual(["a"]);
+
+    h.delivery.onOutput(CURSOR_BOOT);
+    h.clock.advance(PROFILE.quietGapMs + 1);
+    expect(h.writes).toEqual(["a"]);
+
+    h.delivery.onOutput(CURSOR_IDLE_COMPOSER);
+    h.clock.advance(PROFILE.quietGapMs + 1);
+    expect(h.writes).toEqual(["a", "say hello"]);
   });
 });
 

@@ -85,18 +85,26 @@ same reason: they make the entry less dependent on one vendor's wording, not
 more. D5 is unchanged and is what makes the widening safe — a screen whose menu
 does not parse yields no answer, and no answer means no keystroke.
 
-**What the entry achieves, precisely: recognition, not an answer.**
-cursor-agent's trust screen has since been observed on a machine that has the
-harness installed, and is committed as bytes at
+**What the entry achieves, precisely: recognition, and since issue 273 an
+answer.** cursor-agent's trust screen has since been observed on a machine that
+has the harness installed, and is committed as bytes at
 `packages/core/src/__tests__/fixtures/cursor-agent-2026.08.11-folder-trust.txt`.
 The nouns catch it. The menu is **letter-keyed** — `[a] Trust this workspace` /
-`[q] Quit` — and `readDialogOptions` reads digits, so it returns an empty list,
-`chooseDialogOption` returns null, and a cursor-cli delivery that meets this
-screen always abandons. The row makes the dialog *recognised*; answering it
-needs a menu reader this module does not have, which is
-[issue 273](https://github.com/actana/control/issues/273). The win is real and
-it is the change below: before the row, the prompt and a carriage return were
-typed into the trust dialog and the delivery reported `delivered`.
+`[q] Quit` — and when this row landed `readDialogOptions` read digits only, so
+the row made the dialog *recognised* and nothing more: every cursor-cli
+delivery that met the screen abandoned to `needs-input`. That was already a
+win — before the row, the prompt and a carriage return were typed into the
+trust dialog and the delivery reported `delivered`.
+[Issue 273](https://github.com/actana/control/issues/273) taught the reader
+letter keys (`[a] Label` and `a) Label`, beside `1. Label` and `1) Label`), and
+the box border `│` the screen draws around each row. The fixture now reads as
+two options, `Quit` counts as refusing under the row's existing `refuse`
+pattern, and the guard in `chooseDialogOption` — exactly one affirmative, at
+least one refusal — picks `[a]`; the Core presses `a`, the key it read, never
+one it was told. The letter goes out alone, as a digit does, and D4a's confirm
+applies unchanged: an Enter follows only if the same dialog is still on screen
+with its highlight on the trust row. A menu that mixes notations (`1.` beside
+`[b]`) reads as no menu, and D5 applies to it as to any other unreadable one.
 
 **Recognition is not a net under a harness the table has never heard of, and
 this record previously said it was.** An *unrecognised* dialog does not abandon:
