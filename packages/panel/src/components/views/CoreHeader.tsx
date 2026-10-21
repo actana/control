@@ -121,7 +121,7 @@ export function CoreHeader({
         </span>
         <span>· {pill.shared}</span>
       </span>
-      <nav role="tablist" aria-label="Core sections" style={{ display: "inline-flex", gap: 4 }}>
+      <nav role="tablist" aria-label="Core sections" className="mc-core-header-tabs" style={{ display: "inline-flex", gap: 4 }}>
         {CORE_TABS.map((t) => (
           <button
             key={t.id}

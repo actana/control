@@ -5,6 +5,7 @@ import { Btn } from "~/components/ui/Btn";
 import { ConfirmDialog } from "~/components/ui/ConfirmDialog";
 import { FormErrorBox } from "~/components/ui/FormErrorBox";
 import { Icon } from "~/components/ui/Icon";
+import { useIsPhone } from "~/lib/breakpoint";
 import { MarkdownField } from "~/components/views/MarkdownField";
 import { TaskMarkdown } from "~/components/views/TaskMarkdown";
 import { api } from "~/lib/api";
@@ -149,6 +150,7 @@ function OpenAttemptSession({
  * Edit and Delete (#722) are off while the Task is `in_progress`; the server holds the same line.
  */
 export function TaskDetail({ taskId, onClose, focusComposer = false }: { taskId: string; onClose: () => void; focusComposer?: boolean }) {
+  const isPhone = useIsPhone();
   const { cores } = useFleet();
   // Outside a router (a bare render) there is nothing to navigate: the button then stays off.
   const router = useRouter({ warn: false });
@@ -283,13 +285,20 @@ export function TaskDetail({ taskId, onClose, focusComposer = false }: { taskId:
       role="dialog"
       aria-modal="true"
       aria-label="Task detail"
+      data-mc-drawer
       style={{ position: "fixed", top: topOffset, right: 0, bottom: 0, width: "min(720px, 100vw)", zIndex: 9000, overflowY: "auto", padding: 24, background: "var(--surface-card)", borderLeft: "1px solid var(--border)", boxShadow: "-8px 0 32px rgba(0,0,0,0.3)", display: "flex", flexDirection: "column", gap: 16 }}
     >
       <div style={{ display: "flex", justifyContent: "space-between", fontFamily: "var(--mono)", fontSize: 12, color: "var(--text-dim)" }}>
         <span>TASK · {taskId}{task ? ` · created ${formatRelativeTime(task.createdAt)}` : ""}</span>
-        <button type="button" aria-label="Close" onClick={onClose} className="mc-btn mc-btn-ghost mc-btn-sm">
-          <Icon name="x" />
-        </button>
+        {isPhone ? (
+          <button type="button" aria-label="Back" onClick={onClose} className="mc-btn mc-btn-ghost mc-btn-sm">
+            <Icon name="chevron-left" /> Back
+          </button>
+        ) : (
+          <button type="button" aria-label="Close" onClick={onClose} className="mc-btn mc-btn-ghost mc-btn-sm">
+            <Icon name="x" />
+          </button>
+        )}
       </div>
       {error && !task ? <FormErrorBox error={message(error)} /> : null}
       {task ? (
