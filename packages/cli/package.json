@@ -23,7 +23,7 @@
   },
   "dependencies": {
     "@actana/cli": "0.6.0-next.10",
-    "@actana/sdk": "0.6.0-next.4",
+    "@actana/sdk": "0.6.0",
     "selfsigned": "^5.5.0",
     "undici": "8.10.2",
     "ws": "8.21.0"
