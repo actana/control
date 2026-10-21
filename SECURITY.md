@@ -64,8 +64,9 @@ The things this project actually controls:
 - **The harness CLIs themselves** (claude, opencode, codex, …). Report those to
   their own vendors.
 - Findings from automated scanners with no demonstrated impact, and
-  vulnerabilities in dependencies that are already flagged by Dependabot and
-  the `dependency-audit` CI job.
+  vulnerabilities in dependencies that are already flagged by the
+  `dependency-audit` CI job or the weekly `dev-audit` run. (Dependabot alerts,
+  security updates and version updates are off.)
 
 ## Hardening notes for operators
 

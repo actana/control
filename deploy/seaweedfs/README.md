@@ -77,9 +77,9 @@ flag the service uses (`-ip`, `-ip.bind`, `-filer`, `-s3`, `-s3.port`,
 `-s3.ip.bind`, `-s3.port.iceberg`, `-s3.port.lance`, `-s3.iam.config`,
 `-s3.iam.readOnly`) exists in 4.47's `weed/command/server.go`.
 
-Nothing reads a compose file by default, so the pin is kept current by a
-`docker-compose` entry for `/deploy` in `.github/dependabot.yml` (weekly, with a
-7-day cooldown), next to the `docker` entry that moves the two Dockerfile bases.
+Nothing reads a compose file by default, so the pin is bumped by hand: an
+exact version and its index digest, the image at least a week old. The
+`base-pins` issue in `housekeeping.yml` covers the two Dockerfile bases only.
 
 ## What listens where
 

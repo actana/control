@@ -973,8 +973,8 @@ mechanisms, because they catch different drift".
 
 | Input | Where | Moved by |
 | --- | --- | --- |
-| `ubuntu:24.04@sha256:…` | [`core.Dockerfile`](../deploy/core.Dockerfile) | Dependabot, `docker` ecosystem |
-| `gcr.io/distroless/nodejs24@sha256:…` | [`panel.Dockerfile`](../deploy/panel.Dockerfile) | Dependabot, `docker` ecosystem |
+| `ubuntu:24.04@sha256:…` | [`core.Dockerfile`](../deploy/core.Dockerfile) | a person, from the `base-pins` issue |
+| `gcr.io/distroless/nodejs24@sha256:…` | [`panel.Dockerfile`](../deploy/panel.Dockerfile) | a person, from the `base-pins` issue |
 | `ARG NODE_VERSION=…` | [`core.Dockerfile`](../deploy/core.Dockerfile) | [`housekeeping.yml`](../.github/workflows/housekeeping.yml)'s `base-pins` job |
 | everything `apt` installs | `core.Dockerfile`'s one `RUN` | the weekly rebuild, via D5's in-layer `apt-get upgrade` |
 
@@ -985,8 +985,9 @@ upgrade freezes the CVEs too, and the cadence becomes theatre (D5).
 
 ### The two digests are pinned in different shapes on purpose
 
-Dependabot updates a digest from a *tag*, and which tag depends on whether the
-pin carries one:
+A digest is re-resolved from a *tag*, and which tag depends on whether the pin
+carries one (until #825 Dependabot's `docker` ecosystem applied the same rule;
+now the checker does):
 
 - **`ubuntu:24.04@sha256:…` — tag and digest.** Within the LTS line the tag
   does not move, so a point release is a digest-only change; the jump to the
@@ -995,31 +996,34 @@ pin carries one:
   far it may roll.
 - **`gcr.io/distroless/nodejs24@sha256:…` — digest, no tag.** This is the only
   pin the registry supports: 7,040 tags, and not one of them carries a version
-  number — four mutable names plus per-arch build SHAs (D20). Dependabot's
-  tagless branch resolves the update from the **`latest` tag's digest**, which
-  is exactly what this pin means. Writing `:latest@sha256:…` instead would take
-  the other branch and hunt for a tag *newer than* `latest`, which cannot
-  exist.
+  number — four mutable names plus per-arch build SHAs (D20). The checker
+  resolves a tagless pin from the **`latest` tag's digest**, which is exactly
+  what this pin means. Writing `:latest@sha256:…` instead would make the tag
+  the boundary, and a tag *newer than* `latest` cannot exist.
 
-### Why there is a checker as well as a config
+### The checker, and what it does when a pin moves
 
 `pnpm bases:check` ([`check-base-pins.mjs`](../scripts/check-base-pins.mjs))
 resolves all three pins against their real upstreams — the registry HTTP API
-and `nodejs.org/dist/index.json` — using the same tag Dependabot would use for
-each, and prints what has moved. `housekeeping.yml`'s `base-pins` job runs it
-weekly.
+and `nodejs.org/dist/index.json` — using the tag rule above for each, and
+prints what has moved. `housekeeping.yml`'s `base-pins` job runs it weekly
+(Mondays, 07:00 UTC). Since #825 it is the only thing that watches the two
+digests; `.github/dependabot.yml` is gone and Dependabot version updates are
+off.
 
-It exists because two of the three have failure modes a config file cannot
-rule out:
+What it does with a drift depends on the pin:
 
-- The distroless pin follows the `latest` tag. If that tag ever leaves the
-  registry's tag list, Dependabot's `latest_digest` returns nothing and the
-  updater goes **quiet** — no error, no PR, and the Panel's runtime silently
-  stops being updated. The checker fails loudly on exactly that.
-- `ARG NODE_VERSION` is a nodejs.org tarball (D8), not an image reference.
-  Dependabot's `docker` ecosystem cannot see it at all, so without this nothing
-  bumps it and the Core's system Node drifts a patch release at a time.
-  the `base-pins` job opens that PR itself.
+- **A drifted image digest opens an issue, not a PR.** When one or both of the
+  `ubuntu` and distroless digests are behind upstream, the job opens one issue,
+  `Base image digests behind upstream`, labelled `needs-triage`, listing each
+  drifted digest (file:line, pinned → upstream) and the run link. While one is
+  open it does not open a second. **A person bumps the digest by hand**, in a
+  pull request from that issue; no bot opens digest pull requests.
+- **A distroless pin whose `latest` tag has left the registry fails loudly.**
+  The checker errors on exactly that, so the Panel's runtime cannot silently
+  stop being updated.
+- **`ARG NODE_VERSION` opens its own PR.** It is a nodejs.org tarball (D8), not
+  an image reference, and the `base-pins` job opens that PR itself.
 
   What the bump buys is Node's own security fixes, and **not** a greener CVE
   gate. D10 calls it "the only thing that clears the Node-attributed findings";
@@ -1031,35 +1035,35 @@ rule out:
 
 To see it work rather than take its word for it, edit either digest in
 `deploy/` to something wrong and run `pnpm bases:check`: it reports the pin as
-drifted and names the digest that should replace it — which, for both
-registries, is the one Dependabot's own `digest_of(<tag>)` resolves. Put the
-digest back afterwards.
+drifted and names the digest that should replace it — which is the
+one a bump should use. Put the digest back afterwards.
 
-The checker deliberately does **not** open PRs for the digests. Dependabot
-already does, with its own cooldowns, grouping and dashboard, and two bots
-racing to open the same PR is worse than one; a drifted digest is a job summary
-pointing at `/network/updates` instead.
+The checker deliberately does **not** open PRs for the two image digests. A
+digest bump changes what every published image is built on, and the issue puts
+a person in front of it: they read the upstream change, bump `core.Dockerfile`
+and `panel.Dockerfile` as needed, and let the image checks run on that PR. Which
+Dockerfiles are covered is asserted in
+[`base-pins.test.mjs`](../scripts/__tests__/base-pins.test.mjs): every shipped
+base must be digest-pinned, and every tracked Dockerfile must be listed in
+`SHIPPED_DOCKERFILES`, so the checker watches its base; a new Dockerfile not
+added there fails that test.
 
-That the config *reaches* both Dockerfiles is asserted in
-[`base-pins.test.mjs`](../scripts/__tests__/base-pins.test.mjs), against the
-rules Dependabot actually applies rather than the ones its documentation
-implies. Three of them bite:
+The compose pins in `deploy/docker-compose.yml` (Postgres, SeaweedFS) are not
+the checker's: they were Dependabot's `docker-compose` entry's, and are now
+**bumped by hand** — an exact version and its index digest, the image at least
+a week old, as the comments beside each pin say.
 
-1. Its docker fetcher matches `/dockerfile|containerfile/i` against the **file
-   name**, which is why `core.Dockerfile` and `panel.Dockerfile` are seen at
-   all despite not being named `Dockerfile`.
-2. It lists a configured directory's own contents and **does not recurse**.
-   `deploy/dev/core.Dockerfile` is therefore outside the `/deploy` entry —
-   deliberately: it is a local fixture, published nowhere, and deleted entirely
-   by D40. A new Dockerfile that is neither shipped nor listed with a reason
-   fails that test.
-3. There has to be a digest to move, so every shipped base is digest-pinned.
+`ci.yml` and `scripts/check-conventions.sh` keep their branch-name exemption for
+`dependabot/` heads: a pull request Dependabot opened before 0.5.2 reaches
+`main`, or one from a re-enabled security update, must still pass `Conventions`.
+Until 0.5.2 is promoted Dependabot may still open pull requests (GitHub reads
+its config from `main`); close them by hand.
 
 The `node:24.15.0-trixie` build stage in `panel.Dockerfile` is a fourth image
 and is tag-pinned rather than digest-pinned. Nothing from it reaches the runtime
 (D20), so it is not a CVE surface; it is pinned to the exact patch CI tests
-against, and `panel-image.test.mjs` asserts the two agree. A Dependabot PR that
-bumps it and not CI's Node is *meant* to go red there.
+against, and `panel-image.test.mjs` asserts the two agree. A PR that bumps it
+and not CI's Node is *meant* to go red there.
 
 ## Registries
 
@@ -1137,8 +1141,8 @@ What that means in practice:
   that built the Panel image many times in parallel would not.
 - **There is no mirror configured, deliberately.** Copying the base into
   another registry and building `FROM` that would trade Google's availability
-  for a copy that can go stale and for a second thing Dependabot would have to
-  be taught to update. The pin is a digest, so a `gcr.io` outage delays a
+  for a copy that can go stale and for a second digest somebody would have to
+  remember to bump. The pin is a digest, so a `gcr.io` outage delays a
   build; it cannot change what a build produces.
 
 Two registries are therefore in play, doing two different jobs:

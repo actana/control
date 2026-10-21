@@ -1,17 +1,18 @@
 // What pins the container images to, and who is responsible for moving each
-// pin. ADR 0016 D5, D10, D20 and D26.
+// pin. ADR 0016 D5, D10, D20 and D26; ADR 0016 D10 as changed by #825.
 //
 // Three inputs decide what OS and what Node end up inside a published image,
 // and no single mechanism moves all three:
 //
-//   `ubuntu:24.04@sha256:…`               deploy/core.Dockerfile   Dependabot
-//   `gcr.io/distroless/nodejs24@sha256:…` deploy/panel.Dockerfile  Dependabot
-//   `ARG NODE_VERSION=…`                  deploy/core.Dockerfile   nobody, until now
+//   `ubuntu:24.04@sha256:…`               deploy/core.Dockerfile   a person, by hand
+//   `gcr.io/distroless/nodejs24@sha256:…` deploy/panel.Dockerfile  a person, by hand
+//   `ARG NODE_VERSION=…`                  deploy/core.Dockerfile   the base-pins PR
 //
-// The last row is the one no registry can help with: it is a tarball fetched
-// from nodejs.org (D8), so it is not an image reference and Dependabot's
-// docker ecosystem cannot see it. It is bumped by scripts/check-base-pins.mjs,
-// run weekly from housekeeping.yml's `base-pins` job.
+// scripts/check-base-pins.mjs, run weekly from housekeeping.yml's `base-pins`
+// job, resolves each pin against its upstream. A drifted digest becomes an
+// issue a person acts on; no bot opens a pull request for it. The last row is
+// the one no registry can help with: it is a tarball fetched from nodejs.org
+// (D8), not an image reference, so the same job bumps it and opens the PR.
 //
 // What that bump does and does not buy, stated the way D10's own amendment
 // corrects it: it collects Node's security fixes, and it does **not** clear
@@ -24,53 +25,19 @@
 // against the repository's own files. The network lives in the CLI.
 //
 // ---------------------------------------------------------------------------
-// The Dependabot behaviour encoded below is read off dependabot-core, not
-// inferred from its documentation, because the documentation does not say what
-// happens to a digest pin that carries no tag — and that is exactly the shape
-// the Panel runtime has to use.
+// Which tag a digest is resolved from is the rule the checker applies. It is
+// the conventional rule of image-update tooling, and it is spelled out here
+// because it is not documented for a digest pin that carries no tag:
 //
-//   Which files it fetches   docker/lib/dependabot/docker/file_fetcher.rb
-//                            `DOCKER_REGEXP = /dockerfile|containerfile/i`,
-//                            matched against the *file name*, over the listed
-//                            directory's own contents. It does not recurse.
-//
-//   What it updates them to  docker/lib/dependabot/docker/update_checker.rb,
-//                            `updated_requirements`:
-//
-//                              if tag    → bump the tag, then re-resolve the
-//                                          digest for whatever tag it landed on
-//                              elsif digest → digest_of("latest")
+//   if tag    → the tag's own digest
+//   elsif digest → the digest of `latest`
 //
 // That second branch is why the two pins are written in different shapes —
 // the argument for each shape is in docs/ci-cd.md § "The two digests are
 // pinned in different shapes on purpose", and is not repeated here.
 
-import * as path from "node:path";
-
-/**
- * The names Dependabot's docker file fetcher recognises.
- *
- * Copied from `DOCKER_REGEXP` in dependabot-core. It is a substring match on
- * the file name, which is the reason `core.Dockerfile` and `panel.Dockerfile`
- * are picked up at all despite not being called `Dockerfile`.
- */
-export const DOCKERFILE_FILENAME_REGEX = /dockerfile|containerfile/i;
-
-/** The Dockerfiles that build a published image. Both must stay covered. */
+/** The Dockerfiles that build a published image. Both are checked. */
 export const SHIPPED_DOCKERFILES = ["deploy/core.Dockerfile", "deploy/panel.Dockerfile"];
-
-/**
- * Dockerfiles deliberately left outside the docker ecosystem's directories,
- * each with the reason. A new entry here is a decision, not a build fix — the
- * test that reads this map exists so that adding a Dockerfile and forgetting
- * about its base is a red test rather than an image nobody updates.
- */
-export const NOT_COVERED = {
-  "deploy/dev/core.Dockerfile":
-    "A local dev fixture, published nowhere, and deleted entirely by ADR 0016 D40. " +
-    "Covering it would only produce PRs proposing Ubuntu's next LTS for a container " +
-    "whose whole job is to imitate the 24.04 machine the installer e2es run against.",
-};
 
 /** The Node major the Core image installs. Bumping this is an ADR change (D8). */
 export const NODE_MAJOR = 24;
@@ -176,9 +143,9 @@ export function parseFromLines(text) {
 }
 
 /**
- * How Dependabot will move this reference, and what it reads to decide.
+ * Which tag the checker resolves this reference's upstream digest from.
  *
- * `resolvesFrom` is the tag whose digest becomes the new pin — literally
+ * `resolvesFrom` is the tag whose digest the pin is compared with — literally
  * `"latest"` for a tagless digest, which is the whole reason this function
  * exists rather than a boolean.
  */
@@ -186,81 +153,6 @@ export function updateStrategyFor({ tag, digest }) {
   if (digest && !tag) return { kind: "digest-only", resolvesFrom: "latest" };
   if (digest) return { kind: "tag-and-digest", resolvesFrom: tag };
   return { kind: "tag-only", resolvesFrom: tag };
-}
-
-const ECOSYSTEM_LINE = /^(\s*)-\s*package-ecosystem:\s*["']?([\w-]+)["']?\s*$/;
-const DIRECTORY_LINE = /^\s*directory:\s*["']?(\S+?)["']?\s*$/;
-const DIRECTORIES_LINE = /^\s*directories:\s*$/;
-const LIST_ITEM = /^\s*-\s*["']?(\S+?)["']?\s*$/;
-
-/**
- * The directories every `docker` entry in a dependabot.yml covers.
- *
- * Hand-rolled rather than a YAML parse: this reads one file with one shape,
- * and the alternative is a dependency in the root manifest for a build script
- * that runs once a week. It understands both `directory:` and `directories:`
- * because the two are interchangeable in the config and a future edit may well
- * switch forms.
- */
-export function dockerUpdateDirectories(yaml) {
-  const lines = yaml.split("\n");
-  const directories = [];
-
-  let inDocker = false;
-  let inList = false;
-
-  for (const line of lines) {
-    const ecosystem = ECOSYSTEM_LINE.exec(line);
-    if (ecosystem) {
-      inDocker = ecosystem[2] === "docker";
-      inList = false;
-      continue;
-    }
-    if (!inDocker) continue;
-
-    if (DIRECTORIES_LINE.test(line)) {
-      inList = true;
-      continue;
-    }
-
-    const single = DIRECTORY_LINE.exec(line);
-    if (single) {
-      directories.push(single[1]);
-      inList = false;
-      continue;
-    }
-
-    if (inList) {
-      const item = LIST_ITEM.exec(line);
-      if (item) {
-        directories.push(item[1]);
-        continue;
-      }
-      inList = false;
-    }
-  }
-
-  return directories;
-}
-
-/**
- * Would Dependabot fetch this repo-relative path under those directories?
- *
- * Two conditions, both of which have bitten real repositories: the file name
- * has to match the fetcher's regex, and the file has to be *directly* in a
- * listed directory. A `*` segment matches one path segment, as it does in the
- * config's own `directories` globs.
- */
-export function isCovered(directories, filePath) {
-  if (!DOCKERFILE_FILENAME_REGEX.test(path.basename(filePath))) return false;
-
-  const parent = path.dirname(filePath).split(path.sep).filter((s) => s !== ".");
-
-  return directories.some((directory) => {
-    const pattern = directory.split("/").filter(Boolean);
-    if (pattern.length !== parent.length) return false;
-    return pattern.every((segment, i) => segment === "*" || segment === parent[i]);
-  });
 }
 
 /** The highest release inside a major, from nodejs.org's index.json. */
