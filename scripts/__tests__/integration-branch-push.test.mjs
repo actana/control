@@ -76,8 +76,18 @@ const filterMatches = (pattern, name) => {
 
 const triggers = (name) => pushPatterns().some((p) => filterMatches(p, name));
 
-/** Evaluate a job `if:` for one event. Only what these conditions use is supported. */
-const evaluate = (expr, github) => {
+/**
+ * `scope`'s outputs (#842) on an event that is not a lint-only or parked pull
+ * request — which is every event below. `ci-scope.test.mjs` covers the others.
+ */
+const FULL = { scope: { outputs: { lint_only: "false", parked: "false" } } };
+
+/**
+ * Evaluate a job `if:` for one event. Only what these conditions use is
+ * supported: `github` and `needs`, `startsWith`, and `cancelled()`, which is
+ * false because no run here is cancelled.
+ */
+const evaluate = (expr, github, needs = FULL) => {
   if (expr === null) return true;
   const js = expr
     .replace(/^\$\{\{\s*|\s*\}\}$/g, "")
@@ -87,7 +97,10 @@ const evaluate = (expr, github) => {
     /^[\w.()',/\s!&|=-]+$/,
   );
   const startsWith = (s, p) => String(s).startsWith(p);
-  return Boolean(new Function("github", "startsWith", `return (${js});`)(github, startsWith));
+  const cancelled = () => false;
+  return Boolean(
+    new Function("github", "needs", "startsWith", "cancelled", `return (${js});`)(github, needs, startsWith, cancelled),
+  );
 };
 
 const PUBLISHING = ["train-versions", "train-tags", "panel-image-train", "core-image-train"];
@@ -275,6 +288,7 @@ const resolve = ({ env, skipResolver = false, resolverFile = null }) => {
       HEAD_SHA: "",
       DRAFT: "",
       CHANGED_FILES: "",
+      LINT_ONLY: "",
       ...env,
     };
     const run = (script) =>
@@ -369,6 +383,44 @@ describe("the image-mode resolver on a pull request is unchanged (#584)", () => 
     expect(out.mode).toBe("build");
     expect(out.push).toBe("true");
     expect(out.dev_tags).toMatch(/^pr-584\d{6}$/);
+  });
+});
+
+describe("the image-mode resolver on a lint-only Task pull request (#842)", () => {
+  const task = {
+    EVENT_NAME: "pull_request",
+    REF_NAME: "900/merge",
+    PR: "900",
+    BASE: "feat/0.5.2-ci-images",
+    HEAD: "task/842-lean-ci",
+    HEAD_REPO: "actana/control",
+    HEAD_SHA: "fedcba9876543210fedcba9876543210fedcba98",
+    CHANGED_FILES: "1",
+    DRAFT: "false",
+  };
+
+  it("resolves to pass, publishes nothing and never asks the API for the file list", () => {
+    const { out, resolver, ghCalled } = resolve({ env: { ...task, LINT_ONLY: "true" } });
+    expect(resolver.status, resolver.stdout).toBe(0);
+    expect(resolver.stdout).toContain("lint only (#842)");
+    expect(out.mode).toBe("pass");
+    expect(out.push).toBe("false");
+    expect(out.dev_tags).toBe("");
+    expect(ghCalled).toBe(false);
+  });
+
+  it("builds as before when scope said nothing, so a failed scope job fails open", () => {
+    for (const LINT_ONLY of ["", "false"]) {
+      const { out, ghCalled } = resolve({ env: { ...task, LINT_ONLY } });
+      expect(out.mode, `LINT_ONLY=${JSON.stringify(LINT_ONLY)}`).toBe("build");
+      expect(ghCalled).toBe(true);
+    }
+  });
+
+  it("still lets a push to feat/x.y.z build for real, whatever LINT_ONLY says", () => {
+    const { out } = resolve({ env: { ...push, LINT_ONLY: "true" } });
+    expect(out.mode).toBe("build");
+    expect(out.push).toBe("false");
   });
 });
 

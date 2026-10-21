@@ -1566,8 +1566,15 @@ describe("sub-beta trains (ADR 0023 D46)", () => {
     // the workflows is enumerated and held to the same suffix.
     const trainPatterns = [];
     for (const file of ["ci.yml", "promote.yml", "beta-release.yml"]) {
-      for (const match of read(file).matchAll(/\[0-9\]\+\\\.\[0-9\]\+\\\.\[0-9\]\+([^\s"']*)/g)) {
-        trainPatterns.push([file, match[1]]);
+      for (const match of read(file).matchAll(/(\^feat\/)?\[0-9\]\+\\\.\[0-9\]\+\\\.\[0-9\]\+([^\s"']*)/g)) {
+        // `^feat/x.y.z-<area>` is a Feature branch (#842), not a train: `ci.yml`'s
+        // `scope` job reads it to decide a pull request is lint-only. It is held
+        // to its own one suffix rather than waved through.
+        if (match[1]) {
+          expect(["$", "-[a-z0-9]"], `${file} carries a feat/ suffix #842 does not define: ${match[2]}`).toContain(match[2]);
+          continue;
+        }
+        trainPatterns.push([file, match[2]]);
       }
     }
     expect(trainPatterns.length, "no train-name patterns found — the shape moved").toBeGreaterThan(
@@ -1904,7 +1911,8 @@ describe("the real-Postgres job (#567, ADR 0041 D19)", () => {
       expect(run, file).toContain(`src/db/__tests__/${file}.test.ts`);
     }
     expect(job).not.toMatch(/\b(?:build|typecheck|docker|pnpm test|pnpm -r)\b/);
-    expect(job).not.toContain("needs:");
+    // `scope` is the one job it waits for (#842), and that job runs no build.
+    expect(job.match(/^ {4}needs: (.+)$/m)?.[1]).toBe("scope");
   });
 
   it("fails when a real-server test was skipped, instead of passing without it", () => {
@@ -1915,8 +1923,12 @@ describe("the real-Postgres job (#567, ADR 0041 D19)", () => {
     expect(job).toContain("--reporter=json --outputFile=");
   });
 
-  it("has no job-level `if:`, so it runs on pull requests and on feat and beta pushes like the others", () => {
-    expect(job).not.toMatch(/^ {4}if:/m);
+  // #842: its only job-level `if:` is the shared heavy-job gate, so it still runs on feat and beta pushes and on
+  // every pull request but a lint-only Task pull request or a parked draft, like the other heavy jobs.
+  it("carries only the shared heavy-job gate as its job-level `if:`, like the others", () => {
+    expect(job.match(/^ {4}if: (.+)$/m)?.[1]).toBe(
+      "${{ !cancelled() && needs.scope.outputs.lint_only != 'true' && needs.scope.outputs.parked != 'true' }}",
+    );
   });
 
   // The change that makes this job required (adds its name to `docs/rulesets/*.json`) must remove or invert this

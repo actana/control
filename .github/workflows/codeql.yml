@@ -14,10 +14,22 @@ name: CodeQL
 #
 # There is no `paths` filter, on purpose: a required check whose workflow is
 # filtered out of a run stays Pending forever (see the note on `landing.yml` in
-# `scripts/__tests__/workflows.test.mjs`).
+# `scripts/__tests__/workflows.test.mjs`). The `pull_request` branch filter
+# (#842) leaves out only Feature branches, and no ruleset requires a check
+# there.
 
 on:
   pull_request:
+    # Every level but the Task pull request (#842). A Task pull request into a
+    # Feature branch `feat/x.y.z-<area>` runs lint only; the Feature pull
+    # request into `feat/x.y.z` that carries the same commits is scanned here,
+    # and so is every push to `feat/x.y.z` and `beta/**` below. The same glob
+    # `ci.yml` uses for `feat/x.y.z`, so a Feature branch does not match it.
+    branches:
+      - main
+      - "beta/**"
+      - "feat/[0-9]+.[0-9]+.[0-9]+"
+      - "release/**"
   push:
     branches:
       # The same two filters `ci.yml` uses since #585: the train, and a

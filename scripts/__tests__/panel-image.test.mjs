@@ -871,7 +871,8 @@ describe("the pull request image", () => {
   it("cannot fail the required check on a publish", () => {
     for (const job of ["panel-image:", "core-image:"]) {
       const start = ciWorkflow.indexOf(`\n  ${job}`);
-      expect(ciWorkflow.slice(start, start + 900)).toContain("push_required: false");
+      // 1000, not 900: the `if:` grew a `!cancelled() && (…)` wrapper in #842.
+      expect(ciWorkflow.slice(start, start + 1000)).toContain("push_required: false");
     }
     expect(imageWorkflowCode).toContain("continue-on-error: ${{ !inputs.push_required }}");
   });

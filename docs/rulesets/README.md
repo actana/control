@@ -13,6 +13,18 @@ restorable form of the same thing.
 | [`release-retired.json`](release-retired.json) | one retired line, named explicitly | `POST` — template, one per retirement |
 | [`tag-release-cut.json`](tag-release-cut.json) | `refs/tags/v*` | `PUT` over existing ruleset **20390424** |
 | [`tag-immutable.json`](tag-immutable.json) | `refs/tags/v*` | not applied — the capture of live ruleset **20390423** |
+| [`feature.json`](feature.json) | `refs/heads/feat/*.*.*` — release branches `feat/x.y.z` and Feature branches `feat/x.y.z-<area>` | not applied — the capture of live ruleset **24781729** |
+
+`feature.json` is a capture too, taken 2026-10-21 for
+[#842](https://github.com/actana/control/issues/842) from
+`GET /repos/actana/control/rulesets/24781729` reduced to the fields the API
+takes. It requires one approval and refuses a force push, and **requires no
+status check**. That is what lets a Task pull request into a Feature branch run
+lint only (`ci.yml`'s `scope` job, [docs/ci-cd.md § What each pull request
+level runs](../ci-cd.md#what-each-pull-request-level-runs)): if a check is ever
+required here, it must be one a Task pull request still runs — `Conventions` or
+`Lint` — or every Task pull request sits Pending. `scripts/__tests__/ci-scope.test.mjs`
+holds this file to that.
 
 `tag-immutable.json` is here for restorability rather than for the cutover.
 Ruleset 20390423 ("Release tags are immutable") is unchanged by this effort and
