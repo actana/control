@@ -84,6 +84,17 @@ export const ActanaControl = async () => {
   // than guessed at from ordering.
   const children = new Set();
 
+  // Sessions whose current turn the operator cancelled (issue 392). opencode
+  // 1.18.18's SessionProcessor.halt publishes \`session.error\` carrying a
+  // \`MessageAbortedError\` and only THEN sets the session idle, which
+  // publishes \`session.status\` idle and \`session.idle\`. An aborted turn's
+  // idle is therefore an interrupt, not a finish: the Core would otherwise
+  // settle the card \`finished\` and raise \`session:finished\` for work the
+  // operator cancelled. The mark lasts until the next turn starts (a busy or a
+  // user message) so BOTH idle events of the same turn read as the interrupt.
+  const aborted = new Set();
+  const turnEnd = (sessionID) => (aborted.has(sessionID) ? "UserInterrupt" : "Stop");
+
   // Posts are chained so they arrive in the order the harness produced them:
   // a Stop that overtook the UserPromptSubmit carrying the session id would be
   // discarded by the Core as belonging to a session it has never heard of.
@@ -168,6 +179,7 @@ export const ActanaControl = async () => {
         .map((part) => part.text)
         .join("\\n")
         .trim();
+      if (input?.sessionID) aborted.delete(input.sessionID);
       post("UserPromptSubmit", input?.sessionID, prompt ? { prompt } : {});
     },
 
@@ -188,12 +200,28 @@ export const ActanaControl = async () => {
       // bug this file exists for.
       if (type === "session.status") {
         const status = props.status?.type;
-        if (status === "busy") post("UserPromptSubmit", props.sessionID, {});
-        else if (status === "idle") post("Stop", props.sessionID, {});
+        if (status === "busy") {
+          aborted.delete(props.sessionID);
+          post("UserPromptSubmit", props.sessionID, {});
+        } else if (status === "idle") post(turnEnd(props.sessionID), props.sessionID, {});
         return;
       }
       if (type === "session.idle") {
-        post("Stop", props.sessionID, {});
+        post(turnEnd(props.sessionID), props.sessionID, {});
+        return;
+      }
+
+      // The harness reporting the abort itself (issue 392). Only the abort
+      // name counts — any other session error still ends in a plain idle, which
+      // stays a Stop exactly as before. A subagent's abort is its own.
+      if (type === "session.error") {
+        if (
+          props.sessionID &&
+          !children.has(props.sessionID) &&
+          props.error?.name === "MessageAbortedError"
+        ) {
+          aborted.add(props.sessionID);
+        }
         return;
       }
 

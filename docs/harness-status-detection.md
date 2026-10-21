@@ -47,6 +47,7 @@ below): `ready` is not a resting place for a Session whose process is gone.
 | _(agent respawn)_                  | `ready`         | Harness up again for a Session that never worked |
 | `UserPromptSubmit`                 | `running`       | Prompt submitted; work began             |
 | `Stop`                             | `finished`\*    | Foreground turn ended (see below)        |
+| Cursor `stop` with `status: "aborted"` | `interrupted` | Esc mid-turn (see Interrupt fallback, #392) |
 | `SubagentStart` / `SubagentStop`   | _(bookkeeping)_ | Tracks still-active subagents            |
 | `PermissionRequest`                | `needs-input`   | Permission / tool approval requested     |
 | `Notification` `permission_prompt` | `needs-input`   | Claude permission notification fallback  |
@@ -275,7 +276,8 @@ expires on its own after two hours.
 
 **A harness parked on a dialog nobody matched is not idle (issue 469).** Only
 `hasClaudeInterruptPrompt` and `hasCodexHookReviewPrompt` turn a screen into
-`needs-input`; any other permission or approval box repaints unchanged for as
+`needs-input` (the interrupt matchers of #392 yield `interrupted`, not
+`needs-input`, and are not dialogs); any other permission or approval box repaints unchanged for as
 long as nobody answers. It used to satisfy the idle condition exactly and was
 settled `finished` at ~9–10 minutes while it waited for a human, firing
 `session:finished` for it. What differs from the #391 spinner is that the
@@ -1016,10 +1018,67 @@ that hop a Core-owned Cursor Session could never be named at all.
 
 ## Interrupt fallback
 
+Esc mid-turn must not read as a finish: a finish raises `session:finished` and
+unblocks `actana session wait` for work the operator threw away. Issue #392 found
+that only Claude reached `interrupted`; every other harness either stayed
+`running` or settled `finished`. Each now reaches it by the signal that harness
+actually gives, and none of them is the same as another's.
+
+| Harness | Signal | Result |
+| --- | --- | --- |
+| claude-code | PTY screen "Interrupted by user", or "Interrupted" with "What should Claude do instead" (`hasClaudeInterruptPrompt`) | `interrupted` |
+| codex | PTY history line "Conversation interrupted" (`hasCodexInterruptLine`) | `interrupted` |
+| cursor | `stop` hook with `status: "aborted"` | `interrupted` (`completed` / `error` stay `finished`) |
+| opencode | `session.error` (`MessageAbortedError`), then `session.status` idle / `session.idle` | plugin posts `UserInterrupt` instead of `Stop` -> `interrupted` |
+| pi | `agent_settled` with `aborted: true`, or an aborted last assistant message in `agent_end` | extension posts `UserInterrupt` instead of `Stop` -> `interrupted` |
+
 Claude does not expose `UserInterrupt` as a settings hook event. The `interrupted`
 status is reached by a synthetic `UserInterrupt` payload posted to the same
-receiver; `hasClaudeInterruptPrompt` in `pty-manager.ts` is what recognizes the
-prompt in the PTY's output.
+receiver; the PTY output path in `pty-manager.ts` recognizes the screen of the
+two screen-read harnesses. Which screen counts is chosen per harness from the PTY's
+own agent (`INTERRUPT_SCREEN` in `pty-manager.ts`), so one harness's text in
+another's output — a Claude session reading a file that contains codex's message
+— cannot fire it. A harness absent from that table has no screen we can honestly
+read and reports through its hooks instead.
+
+**Codex has no `Stop` on an interrupted turn.** A live run on codex-cli 0.162.0
+showed its `Interrupt` hook firing and `Stop` not; the same string is in the
+0.160.0 binary. Without the screen signal the card would stay `running` and the
+idle backstop would eventually settle it `finished`, a finish codex never
+reported. Codex paints the line a word at a time with cursor-positioning escapes
+between them, so the matcher turns terminal escapes into separators before
+comparing rather than deleting them. Once the row is `interrupted` the backstop
+leaves it alone (it sweeps only `running` rows) and the next `UserPromptSubmit`
+returns it to `running`. Codex's `Interrupt` hook event is not installed
+(`CODEX_HOOK_EVENTS` is `UserPromptSubmit` / `Stop` / `PermissionRequest`):
+adding it would change the codex trust hash, so the screen path is used.
+
+**Cursor aborts, then runs the turn's tail.** cursor-agent 2026.10.01-e373342
+runs the `stop` hook from its abort callback with `status: "aborted"`, then still
+fires `afterAgentResponse` and a second `stop` (`completed`, or `error` when the
+run throws) under the same `generation_id`. The pipeline remembers the aborted
+generation per session and ignores that tail, so the abort wins for its own turn
+only. Two honest limits:
+
+- Abort and tail travel as separate hook processes, so their arrival order is not
+  guaranteed: a tail that arrives first would flash `finished` before the abort
+  lands.
+- Cursor sends no turn-start hook, so the next turn is recognised only by its
+  different `generation_id`. The card stays `interrupted` through the next Cursor
+  turn until that turn's finish.
+
+**OpenCode and Pi mark the abort, then translate the turn end.** opencode 1.18.18
+publishes the `MessageAbortedError` before it goes idle; the plugin marks the
+session on the error and posts `UserInterrupt` for both idle events, clearing the
+mark on the next `busy` or user message. A subagent's abort never interrupts the
+parent's card. Pi 1.1.0 and later carry `aborted` on `agent_settled`; Pi 0.84.4
+has no such field, so the extension reads the last assistant message of the
+latest `agent_end` for `stopReason: "aborted"`.
+
+The evidence differs in kind. The Codex screen was read from a live PTY on
+0.162.0 (the Claude screen predates #392). The Cursor, OpenCode and Pi paths are read from the
+shipped bundles, binaries and package sources; there is no live Esc capture for
+any of them.
 
 ## Other harnesses
 
@@ -1054,6 +1113,7 @@ What it maps, and where each name came from — all of it read out of opencode
 | `session.status` → `busy` | `UserPromptSubmit` | `running` |
 | `session.status` → `idle` | `Stop` | `finished` |
 | `session.idle` | `Stop` | `finished` |
+| `session.error` (`MessageAbortedError`), then `session.status` idle / `session.idle` | `UserInterrupt` (in place of `Stop`) | `interrupted` (#392) |
 | `permission.asked` / `permission.updated` | `PermissionRequest` | `needs-input` |
 | `permission.replied` | `PermissionReplied` | back to `running` |
 
@@ -1136,6 +1196,7 @@ What it maps, from Pi ≥ 0.84.4's extension API:
 | `session_start` | `SessionStart` (+ session UUID) | captures the session id, no status change |
 | `input` (text stashed) + `agent_start` | `UserPromptSubmit` (+ prompt text) | `running`; captures the session id; names an unnamed Session |
 | `agent_settled` | `Stop` | `finished` |
+| `agent_settled` with `aborted: true`, or an aborted last assistant message in `agent_end` | `UserInterrupt` (in place of `Stop`) | `interrupted` (#392) |
 | `ui_prompt_start` (inside a run) | `QuestionRequest` | `needs-input` |
 | `ui_prompt_end` (inside a run) | `PermissionReplied` | back to `running` |
 
