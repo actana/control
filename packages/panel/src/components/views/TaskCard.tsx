@@ -1,6 +1,7 @@
 import { Icon } from "~/components/ui/Icon";
 import { formatRelativeTime } from "~/lib/format-relative-time";
 import { TASK_STATUS_LABEL } from "~/lib/task-board";
+import type { TaskCardDrag } from "~/lib/use-board-drag";
 import { FINISHED_TASK_STATUSES } from "~/shared/tasks";
 import type { TaskDto } from "~/shared/task-wire";
 
@@ -20,6 +21,7 @@ export function TaskCard({
   agentLabel,
   onOpen,
   onReply,
+  drag,
 }: {
   task: TaskDto;
   coreLabel: string | null;
@@ -27,6 +29,8 @@ export function TaskCard({
   onOpen: (id: string) => void;
   /** A finished Task offers Reply, which opens it on the composer. */
   onReply?: (id: string) => void;
+  /** On the board the card can be dragged to another column (#827); Space then picks it up. */
+  drag?: TaskCardDrag;
 }) {
   const finished = (FINISHED_TASK_STATUSES as readonly string[]).includes(task.status);
   const detail =
@@ -46,11 +50,21 @@ export function TaskCard({
       tabIndex={0}
       data-task-card={task.id}
       aria-label={`Open task ${task.title}`}
-      onClick={() => onOpen(task.id)}
+      aria-roledescription={drag ? "draggable Task" : undefined}
+      aria-describedby={drag?.describedBy}
+      onClick={() => {
+        // The click a drag ends with is not a request to open the Task.
+        if (drag?.consumeClick()) return;
+        onOpen(task.id);
+      }}
+      onPointerDown={drag?.onPointerDown}
+      onBlur={drag?.onBlur}
       onKeyDown={(e) => {
         // A key on the Reply button inside is the button's, not the card's.
         if (e.target !== e.currentTarget) return;
-        if (e.key === "Enter" || e.key === " ") {
+        if (drag?.onKeyDown(e)) return;
+        // Enter opens it; so does Space, when Space is not the drag's.
+        if (e.key === "Enter" || (e.key === " " && !drag)) {
           e.preventDefault();
           onOpen(task.id);
         }
@@ -63,8 +77,15 @@ export function TaskCard({
         borderRadius: 10,
         border: "1px solid var(--border)",
         background: "var(--surface-card)",
-        cursor: "pointer",
+        cursor: drag?.lifted ? "grabbing" : "pointer",
         minWidth: 0,
+        // The carried card stays in its slot, faded, while its ghost follows the pointer.
+        opacity: drag?.lifted ? 0.4 : undefined,
+        // A long press lifts the card, so it must not select text or open the
+        // iOS callout. No touch-action: none, so a swipe across it still scrolls.
+        userSelect: drag ? "none" : undefined,
+        WebkitUserSelect: drag ? "none" : undefined,
+        WebkitTouchCallout: drag ? "none" : undefined,
       }}
     >
       <span

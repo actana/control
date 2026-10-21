@@ -260,3 +260,92 @@ describe("Task routes", () => {
     expect((await call(`/api/tasks/${t.id}`, { anonymous: true, method: "DELETE" })).status).toBe(401);
   });
 });
+
+describe("a board move is the button's move (#827)", () => {
+  /** The webhook events written for one Task, oldest first. */
+  async function outboxFor(taskId: string): Promise<{ type: string; data: Record<string, any> }[]> {
+    const rows = (
+      await testDb.pool.query(
+        "select event_type, payload from webhook_outbox where (payload::jsonb)->'data'->'task'->>'id' = $1 order by created_at, id",
+        [taskId],
+      )
+    ).rows as { event_type: string; payload: string }[];
+    return rows.map((r) => ({ type: r.event_type, data: JSON.parse(r.payload).data }));
+  }
+  const draftTask = async (title: string) =>
+    (await (await post("/api/tasks", { title, coreId: "core-a", agent: "agent-a" })).json()).task as { id: string };
+  const failedTask = async (title: string) => {
+    const t = (await (await post("/api/tasks", { title, coreId: "core-a", agent: "agent-a", startNow: true })).json()).task as { id: string };
+    await tasksService.claimTask(A, t.id);
+    await tasksService.applyTaskResult(A, t.id, { to: "failed", authorName: "claude-code", body: "broke", sourceFile: `${title}.md` });
+    return t;
+  };
+  /** A status_changed payload without what differs per Task: id, title and every timestamp. */
+  const comparable = (data: Record<string, any>) => {
+    const { id: _id, title: _title, ...task } = data.task;
+    for (const k of Object.keys(task)) if (/At$/.test(k)) delete task[k];
+    return { ...data, task };
+  };
+
+  it("assign writes one history row and one task.status_changed from draft to assigned", async () => {
+    const t = await draftTask("drag assign");
+    expect((await post(`/api/tasks/${t.id}/status`, { status: "assigned" })).status).toBe(200);
+    const events = await outboxFor(t.id);
+    expect(events.map((e) => e.type)).toEqual(["task.created", "task.status_changed"]);
+    expect(events[1]!.data).toMatchObject({ from: "draft", to: "assigned", task: { id: t.id, status: "assigned" } });
+    expect((await tasksService.listTaskHistory(A, t.id)).map((h) => [h.fromStatus, h.toStatus])).toEqual([[null, "draft"], ["draft", "assigned"]]);
+  });
+
+  it("back to draft writes task.status_changed from assigned to draft", async () => {
+    const t = await draftTask("drag draft");
+    await post(`/api/tasks/${t.id}/status`, { status: "assigned" });
+    expect((await post(`/api/tasks/${t.id}/status`, { status: "draft" })).status).toBe(200);
+    const last = (await outboxFor(t.id)).at(-1)!;
+    expect(last.type).toBe("task.status_changed");
+    expect(last.data).toMatchObject({ from: "assigned", to: "draft", task: { status: "draft" } });
+  });
+
+  it("re-assign without a comment is Comment & re-assign's move, minus the comment", async () => {
+    const x = await failedTask("drag-x");
+    const y = await failedTask("drag-y");
+    const xBefore = (await outboxFor(x.id)).length;
+    const yBefore = (await outboxFor(y.id)).length;
+    expect((await post(`/api/tasks/${x.id}/status`, { status: "assigned" })).status).toBe(200);
+    expect((await post(`/api/tasks/${y.id}/comments`, { body: "again", reassign: true })).status).toBe(200);
+
+    const xNew = (await outboxFor(x.id)).slice(xBefore);
+    const yNew = (await outboxFor(y.id)).slice(yBefore);
+    expect(xNew.map((e) => e.type)).toEqual(["task.status_changed"]);
+    // Both rows share one timestamp, so their order is the row id's: compare as a set.
+    expect(yNew.map((e) => e.type).sort()).toEqual(["comment.created", "task.status_changed"]);
+    expect(xNew[0]!.data).toMatchObject({ from: "failed", to: "assigned" });
+    expect(comparable(xNew[0]!.data)).toEqual(comparable(yNew.find((e) => e.type === "task.status_changed")!.data));
+
+    const lastRow = async (id: string) => (await tasksService.listTaskHistory(A, id)).at(-1);
+    expect(await lastRow(x.id)).toMatchObject({ fromStatus: "failed", toStatus: "assigned" });
+    expect(await lastRow(y.id)).toMatchObject({ fromStatus: "failed", toStatus: "assigned" });
+
+    const attempts = (await tasksService.getTask(A, x.id)).attemptCount;
+    expect((await tasksService.claimTask(A, x.id))?.attemptCount).toBe(attempts + 1);
+  });
+
+  it("an empty-body re-assign is refused with 400 and changes nothing, so the drag does not use it", async () => {
+    const t = await failedTask("drag-empty");
+    const events = (await outboxFor(t.id)).length;
+    const history = await tasksService.listTaskHistory(A, t.id);
+    expect((await post(`/api/tasks/${t.id}/comments`, { body: "", reassign: true })).status).toBe(400);
+    expect((await tasksService.getTask(A, t.id)).status).toBe("failed");
+    expect(await outboxFor(t.id)).toHaveLength(events);
+    expect(await tasksService.listTaskHistory(A, t.id)).toEqual(history);
+  });
+
+  it("refuses a running Task's move to assigned with 409 and to in_progress with 400, writing no event", async () => {
+    const t = await tasksService.createTask(A, { title: "drag-running", coreId: "core-a", agent: "agent-a", startNow: true });
+    await tasksService.claimTask(A, t.id);
+    const events = (await outboxFor(t.id)).length;
+    expect((await post(`/api/tasks/${t.id}/status`, { status: "assigned" })).status).toBe(409);
+    expect((await post(`/api/tasks/${t.id}/status`, { status: "in_progress" })).status).toBe(400);
+    expect(await outboxFor(t.id)).toHaveLength(events);
+    expect((await tasksService.getTask(A, t.id)).status).toBe("in_progress");
+  });
+});
