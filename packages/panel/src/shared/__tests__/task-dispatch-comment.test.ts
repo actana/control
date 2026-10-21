@@ -50,4 +50,14 @@ describe("task dispatch comment format/parse", () => {
     const body = `Dispatched (attempt 1) to OpenCode (opencode) on Core core_a: Session ${CRAFTED_SESSION}.`;
     expect(parseTaskDispatchComment(body)).toBeNull();
   });
+
+  it("round-trips an agent name that itself contains ` on Core `", () => {
+    const fields = { ...base, agentName: "Reviewer on Core X" };
+    expect(parseTaskDispatchComment(formatTaskDispatchComment(fields))).toEqual(fields);
+  });
+
+  it("does not parse a hostile agent name that carries a whole fake separator", () => {
+    const body = "Dispatched (attempt 1) to X (h) on Core core_b: Session t-b (opencode) on Core core_a: Session t-alive.";
+    expect(parseTaskDispatchComment(body)).toBeNull();
+  });
 });
