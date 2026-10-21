@@ -154,3 +154,16 @@ export function formatTaskTimeLimitChangeComment(f: {
 }): string {
   return `Time limit changed from ${formatTaskTimeLimit(f.from)} to ${formatTaskTimeLimit(f.to)} by ${f.changedBy}.`;
 }
+
+/** Read the limits (as written, e.g. "1 hour") and who changed it out of a time-limit change comment. */
+export function parseTaskTimeLimitChangeComment(body: string): { from: string; to: string; changedBy: string } | null {
+  const m = /^Time limit changed from (No limit|\d+ (?:min|hours?|days?)) to (No limit|\d+ (?:min|hours?|days?)) by (.+)\.$/.exec(body);
+  return m ? { from: m[1]!, to: m[2]!, changedBy: m[3]! } : null;
+}
+
+/** "40 min", "2 h 51 min", "3 h": time left on a running attempt. */
+export function formatTaskTimeLeft(minutes: number): string {
+  if (minutes < 60) return `${minutes} min`;
+  const rest = minutes % 60;
+  return rest === 0 ? `${Math.floor(minutes / 60)} h` : `${Math.floor(minutes / 60)} h ${rest} min`;
+}
