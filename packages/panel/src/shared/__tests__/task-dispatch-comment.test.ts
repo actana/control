@@ -31,4 +31,23 @@ describe("task dispatch comment format/parse", () => {
   it("returns null for a body that is not a dispatch comment", () => {
     expect(parseTaskDispatchComment("Attempt 1 started")).toBeNull();
   });
+
+  // #680: ids come from the Core, and the parser reads them back out of prose.
+  const CRAFTED_SESSION = "s (x) on Core core_b: Session t-b";
+  const base = { attempt: 1, agentName: "OpenCode", harness: "opencode", coreId: "core_a", sessionId: "t-alive" };
+
+  it("rejects a Session id that would smuggle another Core and Session into the comment", () => {
+    expect(() => formatTaskDispatchComment({ ...base, sessionId: CRAFTED_SESSION })).toThrow(/session id/i);
+  });
+
+  it("rejects a Core id outside the id charset", () => {
+    expect(() => formatTaskDispatchComment({ ...base, coreId: "core_a: Session x" })).toThrow(/core id/i);
+    expect(() => formatTaskDispatchComment({ ...base, coreId: "core a" })).toThrow(/core id/i);
+    expect(() => formatTaskDispatchComment({ ...base, coreId: "" })).toThrow(/core id/i);
+  });
+
+  it("does not parse ids out of a hand-written comment with a crafted Session id", () => {
+    const body = `Dispatched (attempt 1) to OpenCode (opencode) on Core core_a: Session ${CRAFTED_SESSION}.`;
+    expect(parseTaskDispatchComment(body)).toBeNull();
+  });
 });
