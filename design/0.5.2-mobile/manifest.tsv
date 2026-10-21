@@ -1,0 +1,48 @@
+group	screen	light file	dark file	light WxH	dark WxH
+	M00 · Cover	M00-cover.png		1440x782	
+A	M01 · Login	M01-login-light.png	M01-login-dark.png	390x844	390x844
+A	M02 · Login › Set up your Panel	M02-login-set-up-your-panel-light.png	M02-login-set-up-your-panel-dark.png	390x844	390x844
+A	M03 · Setup › Install the Core	M03-setup-install-the-core-light.png	M03-setup-install-the-core-dark.png	390x2032	390x2032
+A	M04 · Setup › Mint a pairing code	M04-setup-mint-a-pairing-code-light.png	M04-setup-mint-a-pairing-code-dark.png	390x2341	390x2341
+A	M05 · Setup › Pair a Core (redeem)	M05-setup-pair-a-core-redeem-light.png	M05-setup-pair-a-core-redeem-dark.png	390x2014	390x2014
+A	M06 · Setup › Shared folder	M06-setup-shared-folder-light.png	M06-setup-shared-folder-dark.png	390x1884	390x1884
+A	M07 · Fleet (home)	M07-fleet-home-light.png	M07-fleet-home-dark.png	390x1098	390x1098
+A	M07 · Fleet (home) — tablet	M07-fleet-home-tablet-light.png	M07-fleet-home-tablet-dark.png	744x1133	744x1133
+A	M08 · Fleet + Cores drawer	M08-fleet-cores-drawer-light.png	M08-fleet-cores-drawer-dark.png	390x844	390x844
+A	M09 · Fleet — empty	M09-fleet-empty-light.png	M09-fleet-empty-dark.png	390x844	390x844
+A	M10 · Core › Needs update	M10-core-needs-update-light.png	M10-core-needs-update-dark.png	390x961	390x961
+B	M20 · Core › Sessions	M20-core-sessions-light.png	M20-core-sessions-dark.png	390x1659	390x1659
+B	M20 · Core › Sessions — tablet	M20-core-sessions-tablet-light.png	M20-core-sessions-tablet-dark.png	744x1133	744x1133
+B	M21 · Session terminal	M21-session-terminal-light.png	M21-session-terminal-dark.png	390x844	390x844
+B	M22 · Session terminal — question	M22-session-terminal-question-light.png	M22-session-terminal-question-dark.png	390x844	390x844
+B	M23 · New session	M23-new-session-light.png	M23-new-session-dark.png	390x1366	390x1366
+B	M24 · Core › Files	M24-core-files-light.png	M24-core-files-dark.png	390x1109	390x1109
+B	M25 · Core › Files — file opened	M25-core-files-file-opened-light.png	M25-core-files-file-opened-dark.png	390x971	390x971
+B	M26 · Core › Files — New menu & offline	M26-core-files-new-menu-offline-light.png	M26-core-files-new-menu-offline-dark.png	390x844	390x844
+B	M27 · Core › Workspace	M27-core-workspace-light.png	M27-core-workspace-dark.png	390x1351	390x1351
+B	M28 · User terminal	M28-user-terminal-light.png	M28-user-terminal-dark.png	390x844	390x844
+B	M29 · Terminal tab switcher	M29-terminal-tab-switcher-light.png	M29-terminal-tab-switcher-dark.png	390x844	390x844
+C	M40 · Tasks board	M40-tasks-board-light.png	M40-tasks-board-dark.png	390x844	390x844
+C	M40 · Tasks board — tablet	M40-tasks-board-tablet-light.png	M40-tasks-board-tablet-dark.png	744x1133	744x1133
+C	M40b · Core › Tasks	M40b-core-tasks-light.png	M40b-core-tasks-dark.png	390x844	390x844
+C	M41 · Tasks board — drag and drop	M41-tasks-board-drag-and-drop-light.png	M41-tasks-board-drag-and-drop-dark.png	390x844	390x844
+C	M41b · Refused drop toast	M41b-refused-drop-toast-light.png	M41b-refused-drop-toast-dark.png	390x158	390x158
+C	M42 · Task detail	M42-task-detail-light.png	M42-task-detail-dark.png	390x2113	390x2113
+C	M43 · Task detail — Stop Task?	M43-task-detail-stop-task-light.png	M43-task-detail-stop-task-dark.png	390x844	390x844
+C	M44 · New Task	M44-new-task-light.png	M44-new-task-dark.png	390x1852	390x1852
+C	M45 · New Task — Time limit Custom	M45-new-task-time-limit-custom-light.png	M45-new-task-time-limit-custom-dark.png	390x844	390x844
+D	M60 · Settings list	M60-settings-list-light.png	M60-settings-list-dark.png	390x844	390x844
+D	M60 · Settings list — tablet	M60-settings-list-tablet-light.png	M60-settings-list-tablet-dark.png	744x1185	744x1185
+D	M61 · Settings › General	M61-settings-general-light.png	M61-settings-general-dark.png	390x1201	390x1201
+D	M62 · Settings › Providers	M62-settings-providers-light.png	M62-settings-providers-dark.png	390x1137	390x1137
+D	M63 · Settings › Usage	M63-settings-usage-light.png	M63-settings-usage-dark.png	390x1086	390x1086
+D	M64 · Settings › Storage	M64-settings-storage-light.png	M64-settings-storage-dark.png	390x1828	390x1828
+D	M65 · Settings › API & integrations	M65-settings-api-integrations-light.png	M65-settings-api-integrations-dark.png	390x1774	390x1774
+D	M66 · Create API key	M66-create-api-key-light.png	M66-create-api-key-dark.png	390x934	390x934
+D	M67 · Settings › Cores	M67-settings-cores-light.png	M67-settings-cores-dark.png	390x1762	390x1762
+D	M68 · Settings › Operator	M68-settings-operator-light.png	M68-settings-operator-dark.png	390x844	390x844
+D	M69 · Settings › Keybindings	M69-settings-keybindings-light.png	M69-settings-keybindings-dark.png	305x2400	305x2400
+D	M70 · Settings › Terminal	M70-settings-terminal-light.png	M70-settings-terminal-dark.png	390x1087	390x1087
+D	M71 · Settings › Defaults	M71-settings-defaults-light.png	M71-settings-defaults-dark.png	390x1178	390x1178
+D	M72 · Settings › Interface	M72-settings-interface-light.png	M72-settings-interface-dark.png	390x1143	390x1143
+D	M73 · Settings › Appearance	M73-settings-appearance-light.png	M73-settings-appearance-dark.png	390x844	390x844
