@@ -95,6 +95,12 @@ so a green check is self-describing (D38, *one check name, four behaviours*).
 One rule, three places it bites; see [The pull request
 image](#the-pull-request-image-and-what-it-is-not).
 
+**The pull request levels (#842) keep to it.** A Task pull request into a
+Feature branch skips its heavy jobs with a job-level `if:`, which is safe only
+because no ruleset requires a check on a Feature branch; the image checks there
+still go through `pass` rather than a skip, so their names report on every
+level. See [What each pull request level runs](#what-each-pull-request-level-runs).
+
 Both container images have **one** build implementation:
 [`container-image.yml`](../.github/workflows/container-image.yml), a reusable
 workflow called by the PR, train and release paths with `image: panel` or
@@ -187,10 +193,65 @@ before it goes to the train. The model is three moves:
 What the workflow enforces is the push trigger and what it runs. **It does not
 enforce the routing**: nothing in `ci.yml` requires ticket pull requests to
 target `feat/x.y.z`, or limits the train to one pull request from it. That part
-is convention. A pull request *based on* `feat/x.y.z` gets the same checks as
-any pull request, except that `Train rules` has nothing to say about it: its
-base is neither `main`, a train nor a release line, so it ends at the notice
-*"No train rules apply"* (the final `*)` arm of its `case "$BASE"`).
+is convention. A pull request *based on* `feat/x.y.z` — a Feature pull request
+— gets the same checks as any ready pull request, except that `Train rules` has
+nothing to say about it: its base is neither `main`, a train nor a release line,
+so it ends at the notice *"No train rules apply"* (the final `*)` arm of its
+`case "$BASE"`). A pull request based on a Feature branch `feat/x.y.z-<area>` —
+a Task pull request — runs lint only; see the next section.
+
+### What each pull request level runs
+
+Every pull request used to run the whole pipeline whatever its base. On 0.5.1
+that was ~40 job-minutes per Task pull request, paid again on the Feature pull
+request that carried the same commits (#842). Each level now runs what it is
+the gate for:
+
+| Level | Runs |
+| --- | --- |
+| Task PR `task/<n>-<slug>` → `feat/x.y.z-<area>` | **Lint only:** `Conventions`, `Lint`, `Train rules` and `Promotion gate` (both end early), and `Panel image` / `Core image` in `pass` mode. No typecheck, tests, audit, secret scan, e2e, tarballs, image builds or CodeQL. |
+| Feature PR `feat/x.y.z-<area>` → `feat/x.y.z` | Everything: `Typecheck`, `Unit Tests`, `Dependency Audit`, `Secret Scan`, `E2E — Panel service seam`, the Postgres and SeaweedFS jobs, the tarball smokes and installer e2e, both images built and smoked, CodeQL. **This is the gate for the Feature**: what a Task pull request no longer checks surfaces here, so it must not be merged red. |
+| Release PR `feat/x.y.z` → `beta/x.y.z`, a push to `beta/**` or `feat/x.y.z` | Everything, as before; the train push also publishes the train's images. |
+| Promotion PR `beta/x.y.z` → `main` | Everything, with the images in `verify` mode (D19); `Promotion gate` red by design. |
+
+A Feature or release pull request is opened as a **draft** until it is ready.
+While a pull request into `feat/x.y.z` or `beta/*` is a draft it is *parked*:
+the heavy jobs are skipped and the image checks resolve to `pass`, and marking
+it ready fires `ready_for_review` (#137), which runs everything.
+
+The first job, `scope` (*Resolve CI scope*), decides this from the event payload
+alone and writes two outputs: `lint_only` (a pull request whose base matches
+`^feat/[0-9]+(\.[0-9]+){2}-`) and `parked` (a draft whose base is `feat/x.y.z` or
+`beta/*`). Every heavy job carries `needs: scope` and
+
+```yaml
+if: ${{ !cancelled() && needs.scope.outputs.lint_only != 'true' && needs.scope.outputs.parked != 'true' }}
+```
+
+which **fails open**: if `scope` dies, its outputs are empty, nothing equals
+`'true'`, and every heavy job runs as it did before. `E2E — installer` keeps
+`needs: core-tarball-smoke` and is skipped with it. `pr-image-mode` reads
+`lint_only` and resolves to `pass` (*"a Task pull request into the Feature
+branch … lint only"*) instead of being skipped, so `Panel image` and `Core
+image` still report their names (D33), and no `pr-<prid><YYYYMM>` image is
+published for a Task pull request. `codeql.yml` takes the same line through its
+`pull_request` branch filter: `main`, `beta/**`, `feat/[0-9]+.[0-9]+.[0-9]+` and
+`release/**`, so a pull request into a Feature branch is not scanned.
+`scripts/__tests__/ci-scope.test.mjs` runs the `scope` script against a table
+of bases and evaluates every job's `if:` against its answers.
+
+Skipping is safe on a Task pull request only because **no ruleset requires a
+check on a Feature branch** (`Feature branches — feat/<version>[-<slug>]`, one
+approval, no force push). Requiring one there must never name a check that a
+Task pull request skips; `Conventions` and `Lint` are the two it could require.
+A draft into `beta/*` skips checks the train ruleset requires, which GitHub
+counts as passed — harmless, because a draft cannot be merged and undrafting
+re-runs them.
+
+`task` is a branch type (`scripts/check-conventions.sh`, `Train rules`,
+[CONTRIBUTING.md § Branch naming](../CONTRIBUTING.md#branch-naming)), so a
+`task/<n>-<slug>` branch passes `Conventions`. It is not a commit type: the
+commits on it still say `feat`, `fix`, `ci` and so on.
 
 ### What a push to `feat/x.y.z` runs
 
@@ -205,9 +266,12 @@ holds the table of names.
 | Job | On a push to `feat/x.y.z` | The line it rests on |
 | --- | --- | --- |
 | `Conventions` | runs | `if: github.event_name == 'pull_request' \|\| (github.event_name == 'push' && startsWith(github.ref, 'refs/heads/feat/'))` |
-| `Resolve PR image mode` | runs, and decides `build` with `push=false` | the same `if:` |
+| `Resolve CI scope` | runs, and answers `lint_only=false parked=false` | no job-level `if:` |
+| `Resolve PR image mode` | runs, and decides `build` with `push=false` | the same `if:` behind `!cancelled()`, `needs: scope` |
 | `Panel image`, `Core image` | run: the real build and smoke, amd64 only, on the pushed commit | the same `if:`, `needs: pr-image-mode` |
-| `Promotion gate`, `Typecheck`, `Unit Tests`, `Lint`, `Dependency Audit`, `Secret Scan`, `E2E — Panel service seam`, `Panel DB tests — real Postgres` (not a required check), `Smoke — Core release tarball`, `E2E — installer` | run | no job-level `if:`, so they run on every event |
+| `Promotion gate`, `Lint` | run | no job-level `if:`, so they run on every event |
+| `Typecheck`, `Unit Tests`, `Dependency Audit`, `Secret Scan`, `E2E — Panel service seam`, `Panel DB tests — real Postgres` (not a required check), `Core Shared folder — real SeaweedFS` (not a required check), `Smoke — Core release tarball` | run | `needs: scope` and the heavy-job gate (#842), whose outputs are both `false` on a push |
+| `E2E — installer` | runs | `needs: core-tarball-smoke`, no job-level `if:` |
 | `Train rules` | does not run | `if: github.event_name == 'pull_request'` |
 | `Train versions`, `Resolve train tags`, `Panel image (train)`, `Core image (train)` | do not run | `if: startsWith(github.ref, 'refs/heads/beta/')` |
 
@@ -637,7 +701,8 @@ for a re-run of the train's image jobs and says so on screen.
 
 ## The pull request image, and what it is not
 
-Every push to a non-draft pull request publishes an image a reviewer can *run*
+Every push to a non-draft pull request that is not a lint-only Task pull
+request (#842) publishes an image a reviewer can *run*
 rather than read ([ADR 0023](adr/0023-release-trains-and-digest-promotion.md)
 D32). It is the half of the design that is useful on its own, and it comes with
 three limits worth knowing before you file one of them as a bug.
@@ -651,7 +716,7 @@ name, four behaviours*):
 | build + push | same-repo, non-draft, touches code | `pr-<prid><YYYYMM>` to `panel-dev` / `core-dev` |
 | build, no push | the head is a fork | built and smoked; nothing published (D34) |
 | verify | the promotion pull request | the digest assertion instead of an hour of rebuilding (D19) |
-| pass | draft, or a documentation-only diff | green immediately, having built nothing (D33) |
+| pass | draft, a documentation-only diff, or a Task pull request into a Feature branch (#842) | green immediately, having built nothing (D33) |
 
 They are four modes of one job rather than four jobs precisely because the
 ruleset pins these names — the same reason `landing.yml` is its own file.
