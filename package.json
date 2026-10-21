@@ -1,6 +1,6 @@
 {
   "name": "actana-control",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "description": "Actana Control — self-hosted Panel service for driving AI coding agents across many Cores.",
   "license": "MIT",
   "private": true,
