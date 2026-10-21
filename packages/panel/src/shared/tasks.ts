@@ -78,17 +78,38 @@ export type TaskDispatchCommentFields = {
   sessionId: string;
 };
 
-/** The system comment body for one dispatch. Byte-stable: existing Tasks keep their Open session button. */
+/**
+ * The charset of a Core id and a Session id in a dispatch comment (#680). Both come from outside the
+ * Panel (a Core names its own Sessions) and are read back out of prose, so anything that could carry
+ * the comment's own separators (spaces, colons, parentheses, dots) is not an id.
+ */
+const TASK_DISPATCH_ID = /^[\w-]+$/;
+
+export function isTaskDispatchId(value: string): boolean {
+  return TASK_DISPATCH_ID.test(value);
+}
+
+/**
+ * The system comment body for one dispatch. Byte-stable: existing Tasks keep their Open session button.
+ * Throws when the Core id or Session id is outside the id charset, rather than writing a comment that
+ * could name another Core's Session.
+ */
 export function formatTaskDispatchComment(fields: TaskDispatchCommentFields): string {
+  if (!isTaskDispatchId(fields.coreId)) throw new Error("the Core id is not a valid id (letters, digits, _ and - only)");
+  if (!isTaskDispatchId(fields.sessionId)) throw new Error("the Session id is not a valid id (letters, digits, _ and - only)");
   return `Dispatched (attempt ${fields.attempt}) to ${fields.agentName} (${fields.harness}) on Core ${fields.coreId}: Session ${fields.sessionId}.`;
 }
 
 /**
  * Read attempt, agent, harness, Core and Session out of a dispatch comment.
  * Agent names may contain parentheses; the harness is the last `(…)` before ` on Core`.
+ * Core id and Session id are only ever read as `[\w-]+`, and the agent name may not contain
+ * the whole separator ` on Core <id>: Session `, so text inside a name cannot pose as the Core
+ * and Session (#680). A name may still contain ` on Core ` on its own. A comment that
+ * does not fit returns null.
  */
 export function parseTaskDispatchComment(body: string): TaskDispatchCommentFields | null {
-  const m = /^Dispatched \(attempt (\d+)\) to (.+) \(([^)]+)\) on Core (.+): Session (.+)\.$/.exec(body);
+  const m = /^Dispatched \(attempt (\d+)\) to ((?:(?! on Core [\w-]+: Session ).)+) \(([^)]+)\) on Core ([\w-]+): Session ([\w-]+)\.$/.exec(body);
   if (!m) return null;
   return {
     attempt: Number(m[1]),
