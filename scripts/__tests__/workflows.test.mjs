@@ -546,6 +546,28 @@ describe("housekeeping.yml", () => {
     },
   );
 
+  // #825. Version updates are off; the base digests have a by-hand path.
+  it("has no Dependabot version-update config", () => {
+    expect(fs.existsSync(path.join(repoRoot, ".github/dependabot.yml"))).toBe(false);
+  });
+
+  it("opens one issue, labelled needs-triage, when a base digest drifts (base-pins)", () => {
+    const job = code(jobBlock(source, "base-pins"));
+    expect(job).toContain("issues: write");
+
+    const step = job.slice(job.indexOf("- name: Open an issue for a base digest behind upstream"));
+    expect(step).toContain("steps.check.outputs.digest-drift != ''");
+    expect(step).toContain('TITLE: "Base image digests behind upstream"');
+    expect(step).toContain("gh issue list --state open");
+    expect(step).toContain("exit 0");
+    expect(step).toMatch(/gh issue create --title "\$TITLE"[^\n]*\\\n\s+--label needs-triage\n/);
+    expect(step.indexOf("gh issue list")).toBeLessThan(step.indexOf("gh issue create"));
+  });
+
+  it("names no Dependabot in housekeeping.yml", () => {
+    expect(source.toLowerCase()).not.toContain("dependabot");
+  });
+
   it("audits the whole dev tree, which is the half ci.yml's --prod audit skips", () => {
     const job = jobBlock(source, "dev-audit");
     expect(job).toMatch(/pnpm audit --audit-level high/);

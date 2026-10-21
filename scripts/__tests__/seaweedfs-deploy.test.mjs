@@ -400,7 +400,6 @@ describe("no secret is committed", () => {
 
 describe("the docs and the update path", () => {
   const readme = fs.readFileSync(path.join(repoRoot, "deploy/seaweedfs/README.md"), "utf8");
-  const dependabot = fs.readFileSync(path.join(repoRoot, ".github/dependabot.yml"), "utf8");
 
   it("names the case rule, the unescaped substitution and the trailing slash", () => {
     expect(readme).toMatch(/lowercase, or at least unique ignoring case/);
@@ -414,9 +413,11 @@ describe("the docs and the update path", () => {
     expect(readme).not.toMatch(/`docker` ecosystem\s+already watches/);
   });
 
-  it("has a docker-compose Dependabot entry for /deploy, so the pin has an owner", () => {
-    expect(dependabot).toMatch(/package-ecosystem: "docker-compose"\n\s+directory: "\/deploy"/);
-    expect(dependabot).toMatch(/cooldown:\n\s+default-days: 7/);
+  it("names the by-hand path for the compose pin, and no bot", () => {
+    for (const [name, text] of [["deploy/seaweedfs/README.md", readme], ["deploy/docker-compose.yml", COMPOSE]]) {
+      expect(text, name).toContain("bumped by hand");
+      expect(text.toLowerCase(), name).not.toContain("dependabot");
+    }
   });
 
   it("lists seaweedfs-data where the volumes are documented", () => {

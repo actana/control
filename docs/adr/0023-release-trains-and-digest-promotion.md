@@ -249,7 +249,7 @@ What it does not change: the push triggers (D41, #584), the required-check lists
 
 - **ADR 0016 D30** — the edge fold. Superseded by D13: there is no edge publish to fold.
 - **ADR 0016 D34** — the entry-point count, already revised from three to four by `landing.yml`. Now **five**: `ci.yml`, `release.yml`, `promote.yml`, `housekeeping.yml`, `landing.yml`, plus the one reusable `container-image.yml`. `scripts/__tests__/workflows.test.mjs` asserts this set and is updated with the same kind of comment `landing.yml` carried.
-- **ADR 0016 D10** — three rebuild mechanisms. The weekly rebuild-and-republish becomes a detector (D42); Dependabot on the base digest and `NODE_VERSION` bumps are unchanged.
+- **ADR 0016 D10** — three rebuild mechanisms. The weekly rebuild-and-republish becomes a detector (D42); Dependabot on the base digest and `NODE_VERSION` bumps are unchanged. **Amended 2026-10-21 ([#825](https://github.com/actana/control/issues/825)): "unchanged" no longer holds for the base digest.** Dependabot version updates are off and `.github/dependabot.yml` is deleted; `base-pins` opens an issue when a base digest drifts and a person bumps it by hand (D10's amendment of the same date). The detector and the `NODE_VERSION` bump are unaffected.
 - **ADR 0016 D33** — the descriptions job's gating rationale, which moves with the job (D43).
 
 ADR 0018 (Docker Hub as the only registry) is unchanged and assumed throughout. ADR 0016 D29's installer contract — the `SHA256SUMS` and tarball asset names, and `bin/actana` inside the archive — is untouched: releases still cut a GitHub Release with all three tarballs (D9 restricts *betas* only).

@@ -1059,7 +1059,11 @@ changelog is assembled from.
 - [ ] **⚠ before public** — enable **Private vulnerability reporting**
       (Settings → Security). [`SECURITY.md`](../SECURITY.md) makes it the only
       reporting channel
-- [ ] Enable Dependabot alerts + security updates
+- [ ] Leave **Dependabot alerts and security updates off**, and do not add a
+      `dependabot.yml`: version updates are off by #825. Dependencies are
+      covered by `ci.yml`'s `dependency-audit` and `housekeeping.yml`'s
+      `dev-audit` (`pnpm audit`); the base-image digests by the `base-pins`
+      issue, which a person acts on
 - [ ] Enable secret scanning + push protection
 - [ ] Check that **all four Docker Hub pages render** — `actana/panel`,
       `actana/core`, `actana/panel-dev` and `actana/core-dev`. Nothing here is
