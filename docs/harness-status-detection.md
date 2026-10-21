@@ -159,7 +159,7 @@ those bytes mean fifteen minutes of total silence never arrives and the card
 claims `running` indefinitely.
 
 So the bytes are read rather than counted. `pty-output-activity.ts` takes each
-five-second burst of PTY output and asks three questions in order:
+five-second burst of PTY output and asks three questions in order (a fourth, below, is asked only of a repaint):
 
 1. **Did the burst erase anything?** A repaint is defined by what it destroys —
    a carriage return, an erase, a cursor jump. A burst that only appends
@@ -180,7 +180,7 @@ five-second burst of PTY output and asks three questions in order:
    every line).
 3. **Is any word new?** What survives — escapes, control bytes and spinner
    glyphs dropped, whitespace collapsed — is the frame's words. The burst is
-   `output` when it carries a word the last two bursts (about ten seconds of
+   `output` when it carries a word the last two non-empty bursts (about ten seconds of
    screen) do not already contain, and `redraw` when every word in it was
    already on screen a moment ago. The scan runs from the *end* of the burst,
    where a TUI puts what is new, and as deep as the memory it is compared
@@ -191,7 +191,7 @@ five-second burst of PTY output and asks three questions in order:
    two new words a second. A burst that erases the display and puts nothing in
    its place empties the memory: the screen is blank, so the next line is new.
 
-The memory is two bursts and not the whole turn on purpose: a harness that
+The memory is two non-empty bursts (a burst that reduces to nothing is not stored) and not the whole turn on purpose: a harness that
 reads the same file twice is working, not repainting. A hook is its own kind of
 activity and always counts as progress — nothing a harness bothers to POST is a
 repaint.
@@ -202,7 +202,7 @@ whichever fires first:
 | Rule | Fires when | Window |
 | --- | --- | --- |
 | Quiet | nothing at all — no hook, no byte of any kind | 15 minutes |
-| Idle | bytes still arriving (heard within the last 2 minutes), nothing new on screen, no hook, **and** nothing printed since the last hook *within the 15-minute deference bound below* | 8 minutes, confirmed by 2 consecutive sweeps |
+| Idle | bytes still arriving **and the frame moving** (a non-`static` burst within the last 2 minutes), nothing new on screen, no hook, **and** nothing printed since the last hook *within the 15-minute deference bound below* | 8 minutes, confirmed by 2 consecutive sweeps |
 
 The idle rule is the finish-class backstop the quiet rule cannot be: it does not
 wait for the redraws to stop, because they never do. Three things narrow it, and
@@ -273,16 +273,49 @@ session wait` unblocks on) and clears the tracked subagent set. The reopen puts
 the status back; it cannot un-send a notification or restore that set, which
 expires on its own after two hours.
 
-**A harness parked on a dialog nobody matched is settled too.** Only
+**A harness parked on a dialog nobody matched is not idle (issue 469).** Only
 `hasClaudeInterruptPrompt` and `hasCodexHookReviewPrompt` turn a screen into
-`needs-input`; any other permission or approval box repaints statically, which
-is the idle condition exactly, so the Session is settled `finished` at ~9–10
-minutes while it waits for a human — and `needs-input` being out of the sweep's
-scope does not help, because the row never reached `needs-input`. The reopen
-cannot help either until somebody answers. This is the same harness class the
-rule targets (the one whose hooks are not arriving is the one whose
-`needs-input` hook is also not arriving), and it is tracked as
-[#469](https://github.com/actana/control/issues/469) rather than fixed here.
+`needs-input`; any other permission or approval box repaints unchanged for as
+long as nobody answers. It used to satisfy the idle condition exactly and was
+settled `finished` at ~9–10 minutes while it waited for a human, firing
+`session:finished` for it. What differs from the #391 spinner is that the
+spinner's frame *moves* — the glyph rotates, the counter ticks — and the dialog's
+does not. So the classifier asks a fourth question of any burst that already
+read as a repaint:
+
+4. **Did anything at all change?** The burst is reduced a second time keeping
+   spinner glyphs and digits, and every token of that is looked for in the last
+   two non-empty bursts' same reduction. All present — `12s` included — means the burst is
+   **`static`**; a token that is not (`17s`, an unseen glyph) leaves it a
+   `redraw`. A token with a digit is matched whole (`5s` is inside `15s`);
+   anything else, and the first and last token of a burst, may match inside the
+   memory, so a frame cut by a burst boundary still reads as already seen.
+
+The backstop hears a `static` burst (the harness is there, so the quiet rule
+stays off) but counts it as neither progress nor movement: it touches no clock,
+resets no sweep count and reopens nothing. The idle rule's premise becomes
+"painting a **moving** frame" — it applies only while the frame has moved within
+the last 2 minutes. A dialog that has sat unchanged for two minutes is outside
+the rule; if the spinner resumes, the rule applies again with its output clock
+untouched. By design, **neither rule settles a Session that keeps
+repainting a completely static screen**: like `needs-input`, it may wait
+indefinitely. That is narrower than "a static screen is never settled": a dialog
+that sends no bytes at all (Ink and ratatui usually write nothing when nothing
+changed) is not repainting, and the quiet rule still settles it `finished` after
+15 minutes. #391 is
+unchanged — Codex with no hooks repaints a spinner and a clock forever, the
+clock moves, and it settles exactly as before.
+
+Its limits, stated rather than argued away: a spinner whose frame has **no
+counter** and a static phrase reads `static` (its glyph cycle is fully seen
+inside ten seconds of memory) and is not idle-settled; and a harness at an idle
+prompt that repaints it statically after a dropped `Stop` is not settled either.
+Both fail safe — the operator sees `running`, never a wrong `finished`. Movement
+is also judged on the 2-minute window: a counter that changes less often than
+that reads static, and a minute-resolution clock has about 2x slack. The reverse
+does not fail safe: a dialog with a live element (`auto-deny in 59s`), or a
+harness whose spinner clock keeps ticking above the approval box, still has a
+moving frame, reads `redraw`, and is idle-settled at ~9–10 minutes as before.
 
 The classifier's own limits, which bound how often that can happen: a turn whose
 tool prints nothing at all is indistinguishable from one that ended; a progress

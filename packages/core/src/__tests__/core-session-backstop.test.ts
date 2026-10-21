@@ -672,6 +672,108 @@ describe("settling a turn whose end nobody reported", () => {
   // The same two cases again, with the real classifier in the loop rather than
   // a hand-written `kind`: bytes in, status out. This is what the operator's
   // Codex pane actually does.
+  // ─── Issue 469: a dialog nobody matched is waiting on a human, not idle ───
+  //
+  // A harness parked on an approval box no matcher recognises repaints it
+  // unchanged. The classifier calls that `static`; the backstop must not read
+  // it as a spinner that has nothing new to say.
+  describe("a screen that has stopped moving", () => {
+    const paintFor = (backstop: CoreSessionBackstop, ms: number, kind: "redraw" | "static") => {
+      for (let elapsed = 0; elapsed < ms; elapsed += FRAME_MS) {
+        nowMs += FRAME_MS;
+        backstop.noteActivity("t-1", kind);
+      }
+    };
+    /** Sweep once a minute across `ms`, collecting everything that settled. */
+    const sweepFor = (backstop: CoreSessionBackstop, ms: number, kind: "redraw" | "static") => {
+      const settled: string[] = [];
+      for (let elapsed = 0; elapsed < ms; elapsed += MINUTE) {
+        paintFor(backstop, MINUTE, kind);
+        settled.push(...backstop.sweepOnce());
+      }
+      return settled;
+    };
+
+    it("is not settled by either rule, however long it sits and however many sweeps run", () => {
+      insert("t-1", "running");
+      const backstop = makeBackstop();
+      const before = lastEventId();
+
+      // The dialog arrives (real output), then nobody answers for an hour while
+      // its bytes keep coming: past the idle window, its sweeps and the quiet
+      // window all at once.
+      backstop.noteActivity("t-1", "output");
+      expect(sweepFor(backstop, 60 * MINUTE, "static")).toEqual([]);
+      expect(statusOf("t-1")).toBe("running");
+      expect(kindsSince(before)).not.toContain("session:finished");
+    });
+
+    it("is not settled when static bursts are the first thing this Core ever heard", () => {
+      insert("t-1", "running");
+      const backstop = makeBackstop();
+      expect(sweepFor(backstop, 30 * MINUTE, "static")).toEqual([]);
+      expect(statusOf("t-1")).toBe("running");
+    });
+
+    it("still settles a spinner whose frame keeps moving", () => {
+      insert("t-1", "running");
+      const backstop = makeBackstop();
+      backstop.noteActivity("t-1", "output");
+      expect(sweepFor(backstop, IDLE_MS + 2 * MINUTE, "redraw")).toEqual(["t-1"]);
+      expect(statusOf("t-1")).toBe("finished");
+    });
+
+    it("stands down for a dialog after a spinner, and applies again once the spinner resumes", () => {
+      insert("t-1", "running");
+      const backstop = makeBackstop();
+      backstop.noteActivity("t-1", "output");
+
+      // A spinner for a minute, then the dialog, unanswered for twenty.
+      expect(sweepFor(backstop, MINUTE, "redraw")).toEqual([]);
+      expect(sweepFor(backstop, 20 * MINUTE, "static")).toEqual([]);
+      expect(statusOf("t-1")).toBe("running");
+
+      // The operator answers and the harness is painting a spinner again. The
+      // output clock was never touched by the static bursts, so the window is
+      // long past: one sweep to see it, the next to confirm it.
+      paintFor(backstop, MINUTE, "redraw");
+      expect(backstop.sweepOnce()).toEqual([]);
+      paintFor(backstop, MINUTE, "redraw");
+      expect(backstop.sweepOnce()).toEqual(["t-1"]);
+      expect(statusOf("t-1")).toBe("finished");
+    });
+
+    it("does not reopen a row the idle rule settled", () => {
+      insert("t-1", "running");
+      const backstop = makeBackstop();
+      backstop.noteActivity("t-1", "output");
+      expect(sweepFor(backstop, IDLE_MS + 2 * MINUTE, "redraw")).toEqual(["t-1"]);
+      expect(statusOf("t-1")).toBe("finished");
+
+      // A dialog's repaint afterwards is not the harness proving the turn was
+      // live; only an `output` burst is.
+      paintFor(backstop, 5 * MINUTE, "static");
+      expect(statusOf("t-1")).toBe("finished");
+    });
+
+    it("holds with the real classifier: a repainted dialog is never finished", () => {
+      insert("t-1", "running");
+      const backstop = makeBackstop();
+      const watcher = new PtyOutputActivityWatcher();
+      const dialog =
+        "\x1b[2K\x1b[G┌────────────────┐\r\n\x1b[2K│ Allow this command? │\r\n" +
+        "\x1b[2K│ 1. Yes 2. No, and tell Codex what to do │\r\n\x1b[2K└────────────────┘\x1b[4A";
+
+      for (let second = 0; second < 30 * 60; second += 1) {
+        nowMs += FRAME_MS;
+        const kind = watcher.push(dialog, nowMs);
+        if (kind) backstop.noteActivity("t-1", kind);
+        if (second % 60 === 0) expect(backstop.sweepOnce()).toEqual([]);
+      }
+      expect(statusOf("t-1")).toBe("running");
+    });
+  });
+
   describe("with the PTY output classifier wired in", () => {
     const idleFrame = (spinner: string, seconds: number) =>
       `\x1b[2K\x1b[G${spinner} Working (${seconds}s • Esc to interrupt)`;

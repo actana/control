@@ -325,7 +325,9 @@ export type PtyCoreDeps = {
    * so a harness redrawing its spinner does not cost a callback per chunk.
    *
    * `kind` is what those bytes were (issue 391): `output` if the burst put
-   * something new on screen, `redraw` if it repainted what was already there.
+   * something new on screen, `redraw` if it repainted what was already there
+   * with the frame still moving, `static` if it repainted it with nothing at
+   * all changed (issue 469).
    * A harness whose hooks are not arriving paints its spinner forever, so
    * "bytes arrived" on its own can never end a turn — see
    * `pty-output-activity.ts` and the two rules in `core-session-backstop.ts`.

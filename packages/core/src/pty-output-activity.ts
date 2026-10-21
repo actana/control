@@ -24,7 +24,8 @@
 //
 // ─── How a repaint is told from real output ───
 //
-// Three tests, in the order they are cheapest to be sure of.
+// Three tests, in the order they are cheapest to be sure of — and a fourth,
+// below, that only a burst which passed them as a redraw is asked.
 //
 // **Did the burst erase anything?** A repaint is defined by what it destroys:
 // a carriage return, an erase-line or erase-display, a cursor jump. Text that
@@ -59,9 +60,46 @@
 // two new words every second. Both are substrings of a `Thinking` already
 // remembered, so a split frame stays a redraw.
 //
+// ─── A repaint that did not move at all (issue 469) ───
+//
+// `redraw` still says "the harness is there, painting" — and that is true of a
+// spinner and of a dialog alike. A harness blocked on an approval box nobody
+// pattern-matched repaints the box unchanged for as long as nobody answers,
+// which `redraw` cannot tell from the Codex spinner of issue 391: both put no
+// new word on screen. Settling the box as idle finished a Session that was
+// waiting on a human.
+//
+// What does tell them apart is that a spinner's frame keeps *moving* — the
+// glyph rotates, the elapsed-time counter ticks — and the box's does not. So a
+// fourth question, asked only of a burst that is already a redraw:
+//
+// **Did anything at all change?** The burst is reduced a second time, keeping
+// what the words test throws away: spinner glyphs and every digit (escapes and
+// control bytes still go, whitespace still collapses). Every token of that is
+// looked for in the last {@link REMEMBERED_BURSTS} non-empty bursts' same reduction. If
+// all of them are on screen already — `12s` included — nothing moved and the
+// burst is `static`; if one is not (`17s`, a glyph the memory has not seen) the
+// frame is moving and it stays `redraw`. A token that carries a digit is
+// matched whole, because `5s` is a substring of `15s` and a counter that reads
+// as already-seen is a live spinner read as a dialog; everything else, and the
+// first and last token of any burst, may match inside the memory, because a
+// burst boundary can cut a token and `1.` + ` Yes` must not read as new.
+//
 // ─── What this cannot tell apart ───
 //
-// Three limits, stated here rather than discovered later.
+// Six limits, stated here rather than discovered later.
+//
+// A spinner whose frame has **no counter** and whose phrase is static reads as
+// `static`: its glyph cycle is fully seen inside ten seconds of memory, so
+// nothing distinguishes it from a dialog. That fails safe — the caller never
+// settles a static screen, so the worst case is a card that says `running`
+// where it used to say `finished`. A harness parked at an idle prompt that
+// repaints it statically after a dropped `Stop` is the same case.
+//
+// The reverse does not fail safe: a dialog with a live element (`auto-deny in
+// 59s`), or a harness whose spinner clock keeps ticking above the approval
+// box, still has a moving frame. It reads `redraw` and is idle-settled at
+// about nine or ten minutes, as before.
 //
 // A turn whose tool prints **nothing at all** is indistinguishable from a turn
 // that ended. A progress line that is **both** spinner-prefixed and
@@ -81,8 +119,13 @@
 // only idle here is taken back by the next `output` burst — see
 // `core-session-backstop.ts`.
 
-/** What a burst of PTY output was: something new on screen, or a repaint. */
-export type PtyOutputActivityKind = "output" | "redraw";
+/**
+ * What a burst of PTY output was: something new on screen (`output`), a
+ * repaint of a frame that is still moving — a spinner glyph or a clock ticking
+ * (`redraw`) — or a repaint in which nothing changed at all (`static`, issue
+ * 469: a dialog waiting for a human).
+ */
+export type PtyOutputActivityKind = "output" | "redraw" | "static";
 
 /**
  * How often a talking PTY reports that it is talking. The consumer only asks
@@ -203,6 +246,26 @@ export function repaintsInPlace(text: string): boolean {
   );
 }
 
+/** Escapes and control bytes out; CSI layout moves become line breaks. */
+function stripTerminalControls(text: string): string {
+  return text
+    .replace(OSC_PATTERN, " ")
+    .replace(SGR_PATTERN, "")
+    .replace(CSI_PATTERN, "\n")
+    .replace(ESCAPE_PATTERN, " ")
+    .replace(CONTROL_PATTERN, " ");
+}
+
+/**
+ * The second, lossless-enough reduction behind `static` (issue 469): the same
+ * as {@link normalizePtyOutput} up to the point it starts discarding what a
+ * repaint changes. Spinner glyphs and digits stay, so a rotating glyph or a
+ * ticking counter is a difference here. Exported for the tests.
+ */
+export function exactPtyOutput(text: string): string {
+  return stripTerminalControls(text).replace(/\s+/g, " ").trim();
+}
+
 /**
  * Reduce a burst of PTY output to the words on screen: no escapes, no control
  * bytes, no spinner glyphs, single-spaced — and no digits *on a line that is
@@ -211,12 +274,7 @@ export function repaintsInPlace(text: string): boolean {
  * the reduction looks like.
  */
 export function normalizePtyOutput(text: string): string {
-  const plain = text
-    .replace(OSC_PATTERN, " ")
-    .replace(SGR_PATTERN, "")
-    .replace(CSI_PATTERN, "\n")
-    .replace(ESCAPE_PATTERN, " ")
-    .replace(CONTROL_PATTERN, " ");
+  const plain = stripTerminalControls(text);
   const lines = plain.split(/[\r\n]+/).map((line) => {
     // A line a spinner is drawing is a frame, and every number on it is part
     // of the frame — the elapsed time, the token count, the context percentage.
@@ -249,6 +307,8 @@ export class PtyOutputActivityWatcher {
   private readonly remembered: string[] = [];
   /** {@link remembered} as a word set, rebuilt when it changes. */
   private rememberedSet: Set<string> | null = null;
+  /** The same bursts under {@link exactPtyOutput}, for the `static` test. */
+  private readonly rememberedExact: string[] = [];
 
   /**
    * Take a chunk. Returns the kind when the window has elapsed and this burst
@@ -280,13 +340,22 @@ export class PtyOutputActivityWatcher {
     this.repaintedLast = repainted;
 
     const normalized = normalizePtyOutput(burst);
+    const exact = exactPtyOutput(burst);
     // A burst that reduces to nothing is pure cursor movement — a repaint of
     // the same characters, or of none. If it wiped the display and put nothing
     // in its place, the screen is now blank: what was on it is not "already on
     // screen" any more, and the next line to arrive is new (review of PR 455).
+    // Blanking the screen is a change, so it is a `redraw`; movement that
+    // leaves every character where it was (a cursor blink) is `static`, as
+    // long as whatever glyphs and digits it did carry were already there.
     if (!normalized) {
-      if (ERASE_DISPLAY_PATTERN.test(burst)) this.forgetScreen();
-      return "redraw";
+      if (ERASE_DISPLAY_PATTERN.test(burst)) {
+        this.forgetScreen();
+        return "redraw";
+      }
+      const still = this.unchangedOnScreen(exact);
+      this.rememberExact(exact);
+      return still ? "static" : "redraw";
     }
     // Nothing was erased, so nothing was replaced: this text scrolled onto the
     // screen and is new whatever it says. The exception is a screen that was
@@ -295,13 +364,44 @@ export class PtyOutputActivityWatcher {
     // of appended output.
     if (!repainted && !wasRepainting) {
       this.remember(normalized);
+      this.rememberExact(exact);
       return "output";
     }
 
     const words = normalized.split(" ");
     const novel = this.hasNewWord(words);
+    // Only a redraw can be static, and only if the exact reduction — glyphs
+    // and digits included — is also entirely on screen already (issue 469).
+    const still = !novel && this.unchangedOnScreen(exact);
     this.remember(normalized);
-    return novel ? "output" : "redraw";
+    this.rememberExact(exact);
+    return novel ? "output" : still ? "static" : "redraw";
+  }
+
+  /**
+   * Is every token of this burst, glyphs and digits included, already in the
+   * remembered bursts? The frame did not move if so.
+   *
+   * Scanned from the end like {@link hasNewWord}, over the same depth. A token
+   * with a digit is matched whole (`5s` is inside `15s`); everything else may
+   * sit inside the remembered text, and so may the first and last token of the
+   * burst, which are the two a burst boundary can cut in half.
+   */
+  private unchangedOnScreen(exact: string): boolean {
+    if (!exact) return true;
+    const onScreen = ` ${this.rememberedExact.join(" ")} `;
+    const onScreenTokens = new Set(onScreen.split(" "));
+    const tokens = exact.split(" ");
+    let scanned = 0;
+    for (let i = tokens.length - 1; i >= 0 && scanned < MAX_SCANNED_CHARS; i -= 1) {
+      const token = tokens[i];
+      scanned += token.length + 1;
+      if (onScreenTokens.has(token)) continue;
+      const mayBeCut = i === 0 || i === tokens.length - 1;
+      if ((mayBeCut || !/\d/.test(token)) && onScreen.includes(token)) continue;
+      return false;
+    }
+    return true;
   }
 
   /**
@@ -348,7 +448,25 @@ export class PtyOutputActivityWatcher {
   /** The screen was wiped; nothing that was on it counts as being on it. */
   private forgetScreen(): void {
     this.remembered.length = 0;
+    this.rememberedExact.length = 0;
     this.rememberedSet = null;
+  }
+
+  /**
+   * Remember a burst's exact reduction. An empty one is not kept: a burst of
+   * bare cursor movement must not push the dialog it is moving around out of a
+   * two-burst memory.
+   */
+  private rememberExact(exact: string): void {
+    if (!exact) return;
+    let kept = exact;
+    if (kept.length > MAX_REMEMBERED_CHARS) {
+      kept = kept.slice(-MAX_REMEMBERED_CHARS);
+      const firstSpace = kept.indexOf(" ");
+      if (firstSpace > 0) kept = kept.slice(firstSpace + 1);
+    }
+    this.rememberedExact.push(kept);
+    while (this.rememberedExact.length > REMEMBERED_BURSTS) this.rememberedExact.shift();
   }
 
   private remember(normalized: string): void {

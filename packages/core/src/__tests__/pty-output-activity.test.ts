@@ -81,8 +81,11 @@ describe("telling an idle repaint from real output", () => {
 
     for (let tick = 1; tick <= 20; tick += 1) {
       now += WINDOW + 1;
-      expect(watcher.push("\x1b[2K\x1b[G⠸ Work", now)).toBe("redraw");
+      // The head of the frame has nothing in it that moved, so it may read
+      // `static` (issue 469) — what it must never read is `output`.
+      expect(watcher.push("\x1b[2K\x1b[G⠸ Work", now)).not.toBe("output");
       now += WINDOW + 1;
+      // The tail carries the clock, which is the part that moved.
       expect(watcher.push(`ing (${tick}s • Esc to interrupt)`, now)).toBe("redraw");
     }
   });
@@ -362,7 +365,7 @@ describe("finding what is new at the end of a very large burst", () => {
     expect(watcher.push(`\x1b[2J\x1b[H${viewport}`, now)).toBe("output");
 
     now += WINDOW + 1;
-    expect(watcher.push(`\x1b[2J\x1b[H${viewport}`, now)).toBe("redraw");
+    expect(watcher.push(`\x1b[2J\x1b[H${viewport}`, now)).toBe("static");
 
     now += WINDOW + 1;
     expect(
@@ -381,7 +384,7 @@ describe("finding what is new at the end of a very large burst", () => {
     expect(watcher.push(`\x1b[2J\x1b[H${body} ${footer}`, now)).toBe("output");
 
     now += WINDOW + 1;
-    expect(watcher.push(`\x1b[2J\x1b[H${body} ${footer}`, now)).toBe("redraw");
+    expect(watcher.push(`\x1b[2J\x1b[H${body} ${footer}`, now)).toBe("static");
 
     now += WINDOW + 1;
     expect(
@@ -404,7 +407,7 @@ describe("finding what is new at the end of a very large burst", () => {
     expect(watcher.push(`\x1b[2J\x1b[H${huge}`, now)).toBe("output");
 
     now += WINDOW + 1;
-    expect(watcher.push(`\x1b[2J\x1b[H${huge}`, now)).toBe("redraw");
+    expect(watcher.push(`\x1b[2J\x1b[H${huge}`, now)).toBe("static");
 
     now += WINDOW + 1;
     expect(watcher.push(`\x1b[2J\x1b[H${huge} Ran pnpm build`, now)).toBe("output");
@@ -425,5 +428,99 @@ describe("finding what is new at the end of a very large burst", () => {
     }
     now += WINDOW + 1;
     expect(watcher.push("\r\x1b[Ktail line that nobody has seen", now)).toBe("output");
+  });
+});
+
+// Issue 469: a dialog nobody matched repaints unchanged for as long as nobody
+// answers, which the words test alone reads as a `redraw` — the same as the
+// Codex spinner above — and the backstop settled it idle. What differs is that
+// the spinner's frame moves (glyph, clock) and the dialog's does not, so a
+// burst in which nothing at all changed is `static`.
+describe("telling a dialog that is not moving from a spinner that is", () => {
+  /** A four-line bordered approval box, repainted in place the way a TUI does. */
+  const dialogFrame =
+    "\x1b[2K\x1b[G┌──────────────────────────────────────┐\r\n" +
+    "\x1b[2K│ Allow this command? ls -la /etc        │\r\n" +
+    "\x1b[2K│ 1. Yes  2. No, and tell Codex what to do │\r\n" +
+    "\x1b[2K└──────────────────────────────────────┘\x1b[4A";
+
+  it("reads a dialog repainted identically across many bursts as static after the first", () => {
+    const watcher = new PtyOutputActivityWatcher();
+    let now = WINDOW + 1;
+    expect(watcher.push(dialogFrame, now)).toBe("output");
+    for (let burst = 0; burst < 120; burst += 1) {
+      now += WINDOW + 1;
+      // Three repaints per window, as a TUI that redraws on a timer would.
+      expect(watcher.push(dialogFrame.repeat(3), now)).toBe("static");
+    }
+  });
+
+  it("still reads the dialog as static when bursts are cut mid-frame at different offsets", () => {
+    const watcher = new PtyOutputActivityWatcher();
+    const stream = dialogFrame.repeat(60);
+    const cuts = [337, 421, 389, 503, 359, 467];
+    let offset = 0;
+    let now = WINDOW + 1;
+    const kinds: Array<string | null> = [];
+    for (let i = 0; offset < stream.length - 400; i += 1) {
+      const end = offset + cuts[i % cuts.length];
+      // A chunk per window: each push is one burst, cut wherever it falls.
+      kinds.push(watcher.push(stream.slice(offset, end), now));
+      offset = end;
+      now += WINDOW + 1;
+    }
+    // The first bursts are the dialog arriving, half a frame at a time. Once
+    // the memory holds a whole frame, a frame cut anywhere is still the
+    // frame already on screen.
+    expect(kinds.length).toBeGreaterThan(20);
+    expect(kinds.slice(4)).toEqual(Array(kinds.length - 4).fill("static"));
+  });
+
+  it("keeps a Codex spinner whose counter advances a redraw, never static (issue 391)", () => {
+    const watcher = new PtyOutputActivityWatcher();
+    let now = WINDOW + 1;
+    expect(watcher.push(idleFrame("⠹", "0s"), now)).toBe("output");
+    for (let tick = 1; tick <= 60; tick += 1) {
+      now += WINDOW + 1;
+      // Five frames in the window, the glyph rotating and the clock moving on.
+      const glyphs = ["⠹", "⠸", "⠼", "⠴", "⠦"];
+      const burst = glyphs
+        .map((glyph, i) => idleFrame(glyph, `${tick * 5 + i}s`))
+        .join("");
+      expect(watcher.push(burst, now)).toBe("redraw");
+    }
+  });
+
+  it("reads a dialog as static even while a cursor blink is the only thing in a burst", () => {
+    const watcher = new PtyOutputActivityWatcher();
+    let now = WINDOW + 1;
+    watcher.push(dialogFrame, now);
+    now += WINDOW + 1;
+    expect(watcher.push(dialogFrame, now)).toBe("static");
+    now += WINDOW + 1;
+    expect(watcher.push("\x1b[?25l\x1b[?25h", now)).toBe("static");
+    // ...and the blink did not push the dialog out of the memory.
+    now += WINDOW + 1;
+    expect(watcher.push(dialogFrame, now)).toBe("static");
+  });
+
+  it("reads new content under a static dialog as output", () => {
+    const watcher = new PtyOutputActivityWatcher();
+    let now = WINDOW + 1;
+    watcher.push(dialogFrame, now);
+    now += WINDOW + 1;
+    expect(watcher.push(dialogFrame, now)).toBe("static");
+    now += WINDOW + 1;
+    expect(watcher.push(`${dialogFrame}\x1b[2K\x1b[G• Ran cargo build --release`, now)).toBe(
+      "output",
+    );
+  });
+
+  it("reads appended text as output, as before", () => {
+    const watcher = new PtyOutputActivityWatcher();
+    let now = WINDOW + 1;
+    expect(watcher.push("compiling resolver\r\n", now)).toBe("output");
+    now += WINDOW + 1;
+    expect(watcher.push("compiling resolver\r\n", now)).toBe("output");
   });
 });
