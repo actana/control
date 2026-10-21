@@ -81,9 +81,10 @@ describe("telling an idle repaint from real output", () => {
 
     for (let tick = 1; tick <= 20; tick += 1) {
       now += WINDOW + 1;
-      // The head of the frame has nothing in it that moved, so it may read
-      // `static` (issue 469) — what it must never read is `output`.
-      expect(watcher.push("\x1b[2K\x1b[G⠸ Work", now)).not.toBe("output");
+      // The first head burst is a redraw: its `⠸` replaces the `⠹` on screen.
+      // Every later one repeats a head already painted, so on its own it reads
+      // `static` (issue 469). What it must never read is `output`.
+      expect(watcher.push("\x1b[2K\x1b[G⠸ Work", now)).toBe(tick === 1 ? "redraw" : "static");
       now += WINDOW + 1;
       // The tail carries the clock, which is the part that moved.
       expect(watcher.push(`ing (${tick}s • Esc to interrupt)`, now)).toBe("redraw");

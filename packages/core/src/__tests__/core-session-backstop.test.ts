@@ -669,9 +669,6 @@ describe("settling a turn whose end nobody reported", () => {
     });
   });
 
-  // The same two cases again, with the real classifier in the loop rather than
-  // a hand-written `kind`: bytes in, status out. This is what the operator's
-  // Codex pane actually does.
   // ─── Issue 469: a dialog nobody matched is waiting on a human, not idle ───
   //
   // A harness parked on an approval box no matcher recognises repaints it
@@ -774,6 +771,9 @@ describe("settling a turn whose end nobody reported", () => {
     });
   });
 
+  // The same two cases again, with the real classifier in the loop rather than
+  // a hand-written `kind`: bytes in, status out. This is what the operator's
+  // Codex pane actually does.
   describe("with the PTY output classifier wired in", () => {
     const idleFrame = (spinner: string, seconds: number) =>
       `\x1b[2K\x1b[G${spinner} Working (${seconds}s • Esc to interrupt)`;

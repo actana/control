@@ -260,9 +260,9 @@ function stripTerminalControls(text: string): string {
  * The second, lossless-enough reduction behind `static` (issue 469): the same
  * as {@link normalizePtyOutput} up to the point it starts discarding what a
  * repaint changes. Spinner glyphs and digits stay, so a rotating glyph or a
- * ticking counter is a difference here. Exported for the tests.
+ * ticking counter is a difference here.
  */
-export function exactPtyOutput(text: string): string {
+function exactPtyOutput(text: string): string {
   return stripTerminalControls(text).replace(/\s+/g, " ").trim();
 }
 
