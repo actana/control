@@ -217,4 +217,83 @@ describe("the OpenCode plugin the Core writes (issue 230)", () => {
     ).resolves.toBeUndefined();
     expect(posts).toEqual([]);
   });
+  // Issue 392: Esc mid-turn. opencode 1.18.18's SessionProcessor.halt publishes
+  // `session.error` with `MessageAbortedError` and only then sets the session
+  // idle, which publishes `session.status` idle followed by `session.idle`.
+  // The order below is that order.
+  const abortedError = {
+    type: "session.error",
+    properties: {
+      sessionID: SESSION,
+      error: { name: "MessageAbortedError", data: { message: "The operation was aborted." } },
+    },
+  };
+  const busy = { type: "session.status", properties: { sessionID: SESSION, status: { type: "busy" } } };
+  const idle = { type: "session.status", properties: { sessionID: SESSION, status: { type: "idle" } } };
+  const idleLegacy = { type: "session.idle", properties: { sessionID: SESSION } };
+
+  it("reports an Esc-cancelled turn as UserInterrupt, never as Stop (issue 392)", async () => {
+    const hooks = await loadPlugin(WIRED);
+    await events(hooks)(
+      { type: "session.created", properties: { info: { id: SESSION } } },
+      busy,
+      abortedError,
+      idle,
+      idleLegacy,
+    );
+    const names = posts.map((p) => p.body.hook_event_name);
+    expect(names).toEqual(["SessionStart", "UserPromptSubmit", "UserInterrupt", "UserInterrupt"]);
+    expect(names).not.toContain("Stop");
+  });
+
+  it("goes back to a normal Stop on the turn after an abort (issue 392)", async () => {
+    const hooks = await loadPlugin(WIRED);
+    await events(hooks)(busy, abortedError, idle, idleLegacy);
+    await events(hooks)(busy, idle, idleLegacy);
+    expect(posts.map((p) => p.body.hook_event_name)).toEqual([
+      "UserPromptSubmit",
+      "UserInterrupt",
+      "UserInterrupt",
+      "UserPromptSubmit",
+      "Stop",
+      "Stop",
+    ]);
+  });
+
+  it("clears the abort when a prompt arrives before the next busy (issue 392)", async () => {
+    const hooks = await loadPlugin(WIRED);
+    await events(hooks)(abortedError);
+    await hooks["chat.message"]?.({ sessionID: SESSION }, { parts: [] });
+    await events(hooks)(idle);
+    expect(posts.map((p) => p.body.hook_event_name)).toEqual(["UserPromptSubmit", "Stop"]);
+  });
+
+  it("still reports Stop after a session.error that is not an abort (issue 392)", async () => {
+    const hooks = await loadPlugin(WIRED);
+    await events(hooks)(
+      busy,
+      {
+        type: "session.error",
+        properties: { sessionID: SESSION, error: { name: "APIError", data: { message: "boom" } } },
+      },
+      idle,
+    );
+    expect(posts.map((p) => p.body.hook_event_name)).toEqual(["UserPromptSubmit", "Stop"]);
+  });
+
+  it("does not let a subagent's abort interrupt the Session's card (issue 392)", async () => {
+    const hooks = await loadPlugin(WIRED);
+    await events(hooks)(
+      { type: "session.created", properties: { info: { id: SESSION } } },
+      { type: "session.created", properties: { info: { id: CHILD, parentID: SESSION } } },
+      busy,
+      { type: "session.error", properties: { sessionID: CHILD, error: { name: "MessageAbortedError", data: {} } } },
+      idle,
+    );
+    expect(posts.map((p) => p.body.hook_event_name)).toEqual([
+      "SessionStart",
+      "UserPromptSubmit",
+      "Stop",
+    ]);
+  });
 });

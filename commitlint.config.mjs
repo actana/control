@@ -4,7 +4,8 @@
  *   - .github/workflows/ci.yml (the Conventions job's PR title check)
  *   - CONTRIBUTING.md (documentation)
  *   - scripts/check-conventions.sh (the branch types: this list plus the
- *     aliases, minus `gate`, which names a pull request and never a branch)
+ *     aliases and `task`, minus `gate`, which names a pull request and never a
+ *     branch; `task` names a Task card's branch and never a commit, #842)
  *
  * Self-contained on purpose: the Conventions job copies *this file alone* into
  * RUNNER_TEMP beside a throwaway commitlint install, so the rule below is an

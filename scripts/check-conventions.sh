@@ -28,8 +28,11 @@ config="${COMMITLINT_CONFIG:-$root/commitlint.config.mjs}"
 
 # Keep this list in sync with CONTRIBUTING.md § Branch naming and the type list
 # in commitlint.config.mjs (branch types are the commit types plus the aliases,
-# minus `gate`: a gate names a pull request, never a branch — #499).
-branch_types='feat|feature|fix|bugfix|hotfix|release|chore|docs|refactor|perf|test|ci|revert'
+# minus `gate`: a gate names a pull request, never a branch — #499). `task` is a
+# branch type and not a commit type: it names the branch of one Task card, cut
+# from its Feature branch (`task/<issue>-<slug>`, #842); the commits on it still
+# carry a real type such as `feat` or `ci`.
+branch_types='feat|feature|fix|bugfix|hotfix|release|chore|docs|refactor|perf|test|ci|revert|task'
 branch_pattern="^($branch_types)/[a-z0-9]+([._-][a-z0-9]+)*\$"
 
 check_branch() {

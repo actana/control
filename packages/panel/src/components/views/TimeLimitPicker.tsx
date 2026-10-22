@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Btn } from "~/components/ui/Btn";
 import { PickCard } from "~/components/views/PickCard";
 import {
+  TASK_TIMEOUT_DEFAULT_MINUTES,
   TASK_TIMEOUT_MAX_MINUTES,
   TASK_TIMEOUT_MIN_MINUTES,
   TASK_TIME_LIMIT_PRESETS,
@@ -12,10 +13,15 @@ import {
 
 const isPreset = (v: number | null) => v !== null && (TASK_TIME_LIMIT_PRESETS as readonly number[]).includes(v);
 
+const headingStyle = { fontFamily: "var(--mono)", fontSize: 11, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--text-dim)" } as const;
+
+const RUNS_OUT = "When it runs out, the Panel stops the Session and fails the attempt with fail.md.";
+
 /**
  * The Time limit pick cards (#724): the presets, "Custom…" with a minutes field, and "No limit".
  * `onChange` only gets valid values. `onValidChange` says whether a Custom entry is usable,
- * so the parent can keep its submit off while it is not.
+ * so the parent can keep its submit off while it is not. `hints` adds the New Task texts of
+ * the 0.5.1 design (#826); the Task detail has its own note instead.
  */
 export function TimeLimitPicker({
   value,
@@ -24,6 +30,7 @@ export function TimeLimitPicker({
   disabled,
   commitCustom = "change",
   idPrefix = "time-limit",
+  hints = true,
 }: {
   value: TaskTimeoutMinutes;
   onChange: (minutes: TaskTimeoutMinutes) => void;
@@ -33,6 +40,7 @@ export function TimeLimitPicker({
   /** "change": every valid Custom entry calls onChange. "explicit": only Set or Enter. */
   commitCustom?: "change" | "explicit";
   idPrefix?: string;
+  hints?: boolean;
 }) {
   const [custom, setCustom] = useState(value !== null && !isPreset(value));
   const [text, setText] = useState(value !== null && !isPreset(value) ? String(value) : "");
@@ -76,48 +84,56 @@ export function TimeLimitPicker({
         </PickCard>
       </div>
       {custom ? (
-        <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13 }}>
-          <input
-            id={`${idPrefix}-minutes`}
-            type="number"
-            aria-label="Minutes"
-            aria-invalid={!customValid}
-            min={TASK_TIMEOUT_MIN_MINUTES}
-            max={TASK_TIMEOUT_MAX_MINUTES}
-            step={1}
-            value={text}
-            onChange={(e) => {
-              setText(e.target.value);
-              if (commitCustom === "explicit") return;
-              const n = e.target.value.trim() === "" ? NaN : Number(e.target.value);
-              if (isValidTaskTimeoutMinutes(n) && n !== null) onChange(n);
-            }}
-            onKeyDown={(e) => {
-              if (commitCustom === "explicit" && e.key === "Enter") {
-                e.preventDefault();
-                if (!disabled) commit();
-              }
-            }}
-            style={{ width: 120, padding: "8px 10px", borderRadius: 8, border: "1px solid var(--border)", background: "transparent", color: "inherit", font: "inherit" }}
-          />
-          {commitCustom === "explicit" ? (
-            <Btn variant="primary" disabled={disabled || !customValid} onClick={commit}>
-              Set
-            </Btn>
-          ) : null}
-          <span style={{ color: "var(--text-dim)" }}>minutes ({TASK_TIMEOUT_MIN_MINUTES} to {TASK_TIMEOUT_MAX_MINUTES})</span>
-        </label>
+        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+          <span style={headingStyle}>
+            Minutes<span style={{ textTransform: "none" }}> · {TASK_TIMEOUT_MIN_MINUTES} to {TASK_TIMEOUT_MAX_MINUTES} ({formatTaskTimeLimit(TASK_TIMEOUT_MAX_MINUTES)})</span>
+          </span>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13 }}>
+            <input
+              id={`${idPrefix}-minutes`}
+              type="number"
+              aria-label="Minutes"
+              aria-invalid={!customValid}
+              min={TASK_TIMEOUT_MIN_MINUTES}
+              max={TASK_TIMEOUT_MAX_MINUTES}
+              step={1}
+              value={text}
+              onChange={(e) => {
+                setText(e.target.value);
+                if (commitCustom === "explicit") return;
+                const n = e.target.value.trim() === "" ? NaN : Number(e.target.value);
+                if (isValidTaskTimeoutMinutes(n) && n !== null) onChange(n);
+              }}
+              onKeyDown={(e) => {
+                if (commitCustom === "explicit" && e.key === "Enter") {
+                  e.preventDefault();
+                  if (!disabled) commit();
+                }
+              }}
+              style={{ width: 120, padding: "8px 10px", borderRadius: 8, border: "1px solid var(--border)", background: "transparent", color: "inherit", font: "inherit" }}
+            />
+            {commitCustom === "explicit" ? (
+              <Btn variant="primary" disabled={disabled || !customValid} onClick={commit}>
+                Set
+              </Btn>
+            ) : null}
+          </div>
+        </div>
       ) : null}
       {!valid ? (
         <div role="alert" style={{ fontSize: 13, color: "var(--danger, #e5484d)" }}>
           Give a whole number of minutes from {TASK_TIMEOUT_MIN_MINUTES} to {TASK_TIMEOUT_MAX_MINUTES}.
         </div>
       ) : null}
-      <small style={{ color: "var(--text-dim)" }}>
-        {value === null && !custom
-          ? "The attempt runs until the agent reports or its Session ends; the Panel still checks once a minute that the Session is alive."
-          : `If the agent has written no result after ${formatTaskTimeLimit(value)}, the Panel fails the attempt and stops its Session.`}
-      </small>
+      {hints ? (
+        <small style={{ color: "var(--text-dim)" }}>
+          {custom
+            ? `Custom: a whole number of minutes.${customValid ? ` Shown on the Task as ${formatTaskTimeLimit(parsed)}.` : ""} ${RUNS_OUT}`
+            : value === null
+              ? "No limit: the Panel never fails this Task for taking long. It still fails if its Session exits or dies without writing a result, and you can stop it from the Task at any time."
+              : `Default ${formatTaskTimeLimit(TASK_TIMEOUT_DEFAULT_MINUTES)}. ${RUNS_OUT} You can change it later on the Task, even while it runs.`}
+        </small>
+      ) : null}
     </div>
   );
 }
