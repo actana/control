@@ -1,16 +1,19 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
+import { ActionSheet, type ActionSheetItem } from "~/components/ui/ActionSheet";
 import { Banner } from "~/components/ui/Banner";
 import { Btn } from "~/components/ui/Btn";
 import { ConfirmDialog } from "~/components/ui/ConfirmDialog";
 import { EmptyState } from "~/components/ui/EmptyState";
 import { Icon } from "~/components/ui/Icon";
 import { FileDetails } from "~/components/views/FileDetails";
+import { FileScreen } from "~/components/views/FileScreen";
 import { MoveDialog, NameDialog } from "~/components/views/FilesDialogs";
 import { FilesMain } from "~/components/views/FilesMain";
 import { FilesTree } from "~/components/views/FilesTree";
 import { api } from "~/lib/api";
+import { useIsCompact } from "~/lib/breakpoint";
 import { filesDrive, useFilesDrive, type UploadItem } from "~/lib/files-drive-store";
 import { readLastVisit, writeLastVisit } from "~/lib/files-last-visit";
 import { useSharedFeed } from "~/lib/shared-feed";
@@ -71,6 +74,9 @@ function FilesDriveOfCore({
   const uploads = useFilesDrive((s) => s.uploads);
   const [dialog, setDialog] = useState<Dialog | null>(null);
   const [menu, setMenu] = useState(false);
+  const [folderMenu, setFolderMenu] = useState(false);
+  // Phone and small tablet (#833, M24–M26): one column, no tree, the opened file full screen, menus as bottom sheets.
+  const compact = useIsCompact();
   const [dragging, setDragging] = useState(false);
   const [search, setSearch] = useState("");
   const fileInput = useRef<HTMLInputElement>(null);
@@ -156,6 +162,61 @@ function FilesDriveOfCore({
   };
 
   const crumbs = breadcrumbs(path);
+  const crumbItems = crumbs.map((c, i) => (
+    <span key={c.path} style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+      {i > 0 ? <Icon name="chevron-right" size={11} /> : null}
+      {i === crumbs.length - 1 ? (
+        <strong aria-current="page">{c.label}</strong>
+      ) : (
+        <button type="button" className="mc-btn mc-btn-ghost mc-btn-sm" onClick={() => { setSearch(""); onPath(c.path); }}>{c.label}</button>
+      )}
+    </span>
+  ));
+  const listing =
+    folder.error && !searching ? (
+      <EmptyState title="The Shared folder could not be read" subtitle={folder.error instanceof Error ? folder.error.message : String(folder.error)} icon="folder" />
+    ) : folder.isPending && !searching ? (
+      <div style={{ color: "var(--text-dim)", padding: 16 }}>Loading…</div>
+    ) : searching ? (
+      <FilesMain
+        coreId={coreId}
+        view="list"
+        entries={entries}
+        selected={selected}
+        newPaths={newPaths}
+        onOpenFolder={(p) => { setSearch(""); onPath(p); }}
+        onSelect={(p) => { setSearch(""); onPath(parentOf(p)); filesDrive.select(p); }}
+        compact={compact}
+      />
+    ) : (
+      <FilesMain
+        coreId={coreId}
+        view={view}
+        entries={entries}
+        selected={selected}
+        newPaths={newPaths}
+        onOpenFolder={onPath}
+        onSelect={(p) => filesDrive.select(p)}
+        onNewFolder={() => setDialog({ kind: "newFolder" })}
+        compact={compact}
+      />
+    );
+  const usage = summary.data ? (
+    <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--text-dim)", marginTop: "auto" }}>
+      {formatBytes(summary.data.usedBytes)} used · {summary.data.backend}
+    </div>
+  ) : null;
+  const newItems: ActionSheetItem[] = [
+    { label: "New folder", icon: "folder", onSelect: () => setDialog({ kind: "newFolder" }) },
+    { label: "Upload files", icon: "upload", onSelect: () => fileInput.current?.click() },
+    { label: "Upload folder", icon: "upload", onSelect: () => folderInput.current?.click() },
+    { label: "New text file", icon: "file", onSelect: () => setDialog({ kind: "newText" }) },
+  ];
+  const folderItems: ActionSheetItem[] = [
+    { label: "Rename folder", icon: "pencil", onSelect: () => setDialog({ kind: "rename", path: `${path}/` }) },
+    { label: "Move folder", icon: "arrow-up-right", onSelect: () => setDialog({ kind: "move", path: `${path}/` }) },
+    { label: "Delete folder", icon: "trash", danger: true, onSelect: () => setDialog({ kind: "delete", path: `${path}/` }) },
+  ];
   const selectedIsNew = selected ? newPaths.has(selected) : false;
   const finished = uploads.some((u) => u.status === "done" || u.status === "error");
 
@@ -186,72 +247,137 @@ function FilesDriveOfCore({
       ) : null}
       {sharedFolder.error ? <Banner variant="danger">The Core's key could not be renewed: {sharedFolder.error}</Banner> : null}
 
-      <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-        <div style={{ position: "relative" }} onClick={(e) => e.stopPropagation()}>
-          <Btn variant="primary" icon="plus" aria-haspopup="menu" aria-expanded={menu} onClick={() => setMenu(!menu)}>New</Btn>
-          {menu ? (
-            <div
-              role="menu"
-              style={{ position: "absolute", top: "100%", left: 0, marginTop: 4, zIndex: 50, minWidth: 190, padding: 6, background: "var(--surface-card)", border: "1px solid var(--border)", borderRadius: 8, display: "flex", flexDirection: "column" }}
-            >
-              {(
-                [
-                  ["New folder", "folder", () => setDialog({ kind: "newFolder" })],
-                  ["Upload files", "upload", () => fileInput.current?.click()],
-                  ["Upload folder", "upload", () => folderInput.current?.click()],
-                  ["New text file", "file", () => setDialog({ kind: "newText" })],
-                ] as const
-              ).map(([label, icon, run]) => (
-                <button
-                  key={label}
-                  role="menuitem"
-                  type="button"
-                  className="mc-btn mc-btn-ghost mc-btn-md"
-                  style={{ justifyContent: "flex-start" }}
-                  onClick={() => {
-                    setMenu(false);
-                    run();
-                  }}
-                >
-                  <span className="mc-btn-content"><Icon name={icon} size={13} /> {label}</span>
-                </button>
-              ))}
+      {compact ? (
+        <>
+          <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+            <nav aria-label="Breadcrumbs" style={{ display: "flex", alignItems: "center", gap: 2, fontFamily: "var(--mono)", fontSize: 14, flex: 1, minWidth: 0, overflowX: "auto", whiteSpace: "nowrap" }}>
+              {crumbItems}
+            </nav>
+            {path ? <Btn variant="ghost" icon="more" aria-label="Folder actions" aria-haspopup="menu" aria-expanded={folderMenu} onClick={() => setFolderMenu(true)} /> : null}
+          </div>
+          <label style={{ display: "flex", alignItems: "center", gap: 8, minHeight: 44, border: "1px solid var(--border)", borderRadius: 8, padding: "0 12px", background: "var(--surface-card)", fontFamily: "var(--mono)", fontSize: 13 }}>
+            <Icon name="search" size={14} />
+            <input
+              type="search"
+              aria-label="Search in Shared folder"
+              placeholder="Search in Shared folder"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              style={{ flex: 1, minWidth: 0, background: "transparent", border: 0, outline: 0, color: "var(--text)", fontFamily: "inherit" }}
+            />
+          </label>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+            <Btn variant="primary" icon="plus" aria-haspopup="menu" aria-expanded={menu} onClick={() => setMenu(true)}>New</Btn>
+            <div role="group" aria-label="View" style={{ display: "inline-flex", gap: 4, padding: 3, border: "1px solid var(--border)", borderRadius: 8, background: "var(--surface-card)" }}>
+              <Btn variant={view === "grid" ? "frame" : "ghost"} icon="grid" aria-pressed={view === "grid"} onClick={() => filesDrive.setView("grid")}>Grid</Btn>
+              <Btn variant={view === "list" ? "frame" : "ghost"} icon="list" aria-pressed={view === "list"} onClick={() => filesDrive.setView("list")}>List</Btn>
             </div>
+          </div>
+          <div style={{ minWidth: 0 }}>{listing}</div>
+          {usage}
+          <ActionSheet open={menu} title="New" items={newItems} onClose={() => setMenu(false)} />
+          <ActionSheet open={folderMenu && !!path} title={crumbs[crumbs.length - 1]?.label ?? "Folder"} items={folderItems} onClose={() => setFolderMenu(false)} />
+          {selected ? (
+            <FileScreen path={selected} onBack={() => filesDrive.select(null)}>
+              <FileDetails
+                coreId={coreId}
+                path={selected}
+                isNew={selectedIsNew}
+                coreChange={feed.changes.get(selected)}
+                coreLive={!offline}
+                layout="screen"
+                onRename={() => setDialog({ kind: "rename", path: selected })}
+                onMove={() => setDialog({ kind: "move", path: selected })}
+                onDelete={() => setDialog({ kind: "delete", path: selected })}
+              />
+            </FileScreen>
           ) : null}
-        </div>
-        <nav aria-label="Breadcrumbs" style={{ display: "flex", alignItems: "center", gap: 6, fontFamily: "var(--mono)", fontSize: 13, flex: 1, minWidth: 0 }}>
-          {crumbs.map((c, i) => (
-            <span key={c.path} style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
-              {i > 0 ? <Icon name="chevron-right" size={11} /> : null}
-              {i === crumbs.length - 1 ? (
-                <strong aria-current="page">{c.label}</strong>
-              ) : (
-                <button type="button" className="mc-btn mc-btn-ghost mc-btn-sm" onClick={() => { setSearch(""); onPath(c.path); }}>{c.label}</button>
-              )}
-            </span>
-          ))}
-          {path ? (
-            <span style={{ marginLeft: 8, display: "inline-flex", gap: 2 }}>
-              <Btn size="sm" variant="ghost" icon="pencil" aria-label="Rename this folder" onClick={() => setDialog({ kind: "rename", path: `${path}/` })} />
-              <Btn size="sm" variant="ghost" icon="arrow-up-right" aria-label="Move this folder" onClick={() => setDialog({ kind: "move", path: `${path}/` })} />
-              <Btn size="sm" variant="ghost" icon="trash" aria-label="Delete this folder" onClick={() => setDialog({ kind: "delete", path: `${path}/` })} />
-            </span>
-          ) : null}
-        </nav>
-        <label style={{ display: "inline-flex", alignItems: "center", gap: 6, border: "1px solid var(--border)", borderRadius: 8, padding: "4px 10px", fontFamily: "var(--mono)", fontSize: 13 }}>
-          <Icon name="search" size={13} />
-          <input
-            type="search"
-            aria-label="Search in Shared folder"
-            placeholder="Search in Shared folder"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            style={{ background: "transparent", border: 0, outline: 0, color: "var(--text)", fontFamily: "inherit", width: 190 }}
-          />
-        </label>
-        <Btn variant={view === "grid" ? "frame" : "ghost"} icon="grid" aria-pressed={view === "grid"} onClick={() => filesDrive.setView("grid")}>Grid</Btn>
-        <Btn variant={view === "list" ? "frame" : "ghost"} icon="list" aria-pressed={view === "list"} onClick={() => filesDrive.setView("list")}>List</Btn>
-      </div>
+        </>
+      ) : (
+        <>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+            <div style={{ position: "relative" }} onClick={(e) => e.stopPropagation()}>
+              <Btn variant="primary" icon="plus" aria-haspopup="menu" aria-expanded={menu} onClick={() => setMenu(!menu)}>New</Btn>
+              {menu ? (
+                <div
+                  role="menu"
+                  style={{ position: "absolute", top: "100%", left: 0, marginTop: 4, zIndex: 50, minWidth: 190, padding: 6, background: "var(--surface-card)", border: "1px solid var(--border)", borderRadius: 8, display: "flex", flexDirection: "column" }}
+                >
+                  {(
+                    [
+                      ["New folder", "folder", () => setDialog({ kind: "newFolder" })],
+                      ["Upload files", "upload", () => fileInput.current?.click()],
+                      ["Upload folder", "upload", () => folderInput.current?.click()],
+                      ["New text file", "file", () => setDialog({ kind: "newText" })],
+                    ] as const
+                  ).map(([label, icon, run]) => (
+                    <button
+                      key={label}
+                      role="menuitem"
+                      type="button"
+                      className="mc-btn mc-btn-ghost mc-btn-md"
+                      style={{ justifyContent: "flex-start" }}
+                      onClick={() => {
+                        setMenu(false);
+                        run();
+                      }}
+                    >
+                      <span className="mc-btn-content"><Icon name={icon} size={13} /> {label}</span>
+                    </button>
+                  ))}
+                </div>
+              ) : null}
+            </div>
+            <nav aria-label="Breadcrumbs" style={{ display: "flex", alignItems: "center", gap: 6, fontFamily: "var(--mono)", fontSize: 13, flex: 1, minWidth: 0 }}>
+              {crumbItems}
+              {path ? (
+                <span style={{ marginLeft: 8, display: "inline-flex", gap: 2 }}>
+                  <Btn size="sm" variant="ghost" icon="pencil" aria-label="Rename this folder" onClick={() => setDialog({ kind: "rename", path: `${path}/` })} />
+                  <Btn size="sm" variant="ghost" icon="arrow-up-right" aria-label="Move this folder" onClick={() => setDialog({ kind: "move", path: `${path}/` })} />
+                  <Btn size="sm" variant="ghost" icon="trash" aria-label="Delete this folder" onClick={() => setDialog({ kind: "delete", path: `${path}/` })} />
+                </span>
+              ) : null}
+            </nav>
+            <label style={{ display: "inline-flex", alignItems: "center", gap: 6, border: "1px solid var(--border)", borderRadius: 8, padding: "4px 10px", fontFamily: "var(--mono)", fontSize: 13 }}>
+              <Icon name="search" size={13} />
+              <input
+                type="search"
+                aria-label="Search in Shared folder"
+                placeholder="Search in Shared folder"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                style={{ background: "transparent", border: 0, outline: 0, color: "var(--text)", fontFamily: "inherit", width: 190 }}
+              />
+            </label>
+            <Btn variant={view === "grid" ? "frame" : "ghost"} icon="grid" aria-pressed={view === "grid"} onClick={() => filesDrive.setView("grid")}>Grid</Btn>
+            <Btn variant={view === "list" ? "frame" : "ghost"} icon="list" aria-pressed={view === "list"} onClick={() => filesDrive.setView("list")}>List</Btn>
+          </div>
+
+          <div style={{ display: "grid", gridTemplateColumns: `260px minmax(0, 1fr)${selected ? " 340px" : ""}`, gap: 12, flex: 1, minHeight: 0 }}>
+            <div style={{ display: "flex", flexDirection: "column", gap: 10, overflowY: "auto", borderRight: "1px solid var(--border)", paddingRight: 8 }}>
+              <FilesTree coreId={coreId} current={path} poll={offline} onOpen={(p) => { setSearch(""); onPath(p); }} />
+              {usage}
+            </div>
+            <div style={{ overflowY: "auto", minWidth: 0 }}>
+              {listing}
+            </div>
+            {selected ? (
+              <div style={{ borderLeft: "1px solid var(--border)", minHeight: 0, overflowY: "auto" }}>
+                <FileDetails
+                  coreId={coreId}
+                  path={selected}
+                  isNew={selectedIsNew}
+                  coreChange={feed.changes.get(selected)}
+                  coreLive={!offline}
+                  onRename={() => setDialog({ kind: "rename", path: selected })}
+                  onMove={() => setDialog({ kind: "move", path: selected })}
+                  onDelete={() => setDialog({ kind: "delete", path: selected })}
+                />
+              </div>
+            ) : null}
+          </div>
+        </>
+      )}
 
       <input ref={fileInput} type="file" multiple hidden aria-label="Upload files" onChange={(e) => { void upload(sourcesFromFileList(e.target.files ?? [])); e.target.value = ""; }} />
       <input
@@ -266,59 +392,6 @@ function FilesDriveOfCore({
         onChange={(e) => { void upload(sourcesFromFileList(e.target.files ?? [])); e.target.value = ""; }}
       />
 
-      <div style={{ display: "grid", gridTemplateColumns: `260px minmax(0, 1fr)${selected ? " 340px" : ""}`, gap: 12, flex: 1, minHeight: 0 }}>
-        <div style={{ display: "flex", flexDirection: "column", gap: 10, overflowY: "auto", borderRight: "1px solid var(--border)", paddingRight: 8 }}>
-          <FilesTree coreId={coreId} current={path} poll={offline} onOpen={(p) => { setSearch(""); onPath(p); }} />
-          {summary.data ? (
-            <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--text-dim)", marginTop: "auto" }}>
-              {formatBytes(summary.data.usedBytes)} used · {summary.data.backend}
-            </div>
-          ) : null}
-        </div>
-        <div style={{ overflowY: "auto", minWidth: 0 }}>
-          {folder.error && !searching ? (
-            <EmptyState title="The Shared folder could not be read" subtitle={folder.error instanceof Error ? folder.error.message : String(folder.error)} icon="folder" />
-          ) : folder.isPending && !searching ? (
-            <div style={{ color: "var(--text-dim)", padding: 16 }}>Loading…</div>
-          ) : searching ? (
-            <FilesMain
-              coreId={coreId}
-              view="list"
-              entries={entries}
-              selected={selected}
-              newPaths={newPaths}
-              onOpenFolder={(p) => { setSearch(""); onPath(p); }}
-              onSelect={(p) => { setSearch(""); onPath(parentOf(p)); filesDrive.select(p); }}
-            />
-          ) : (
-            <FilesMain
-              coreId={coreId}
-              view={view}
-              entries={entries}
-              selected={selected}
-              newPaths={newPaths}
-              onOpenFolder={onPath}
-              onSelect={(p) => filesDrive.select(p)}
-              onNewFolder={() => setDialog({ kind: "newFolder" })}
-            />
-          )}
-        </div>
-        {selected ? (
-          <div style={{ borderLeft: "1px solid var(--border)", minHeight: 0, overflowY: "auto" }}>
-            <FileDetails
-              coreId={coreId}
-              path={selected}
-              isNew={selectedIsNew}
-              coreChange={feed.changes.get(selected)}
-              coreLive={!offline}
-              onRename={() => setDialog({ kind: "rename", path: selected })}
-              onMove={() => setDialog({ kind: "move", path: selected })}
-              onDelete={() => setDialog({ kind: "delete", path: selected })}
-            />
-          </div>
-        ) : null}
-      </div>
-
       {dragging ? (
         <div aria-hidden style={{ position: "absolute", inset: 0, border: "2px dashed var(--brand-accent)", borderRadius: 10, background: "rgba(56,189,248,0.08)", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "var(--mono)", pointerEvents: "none" }}>
           Drop to upload into {displayPath(path)}
@@ -326,7 +399,7 @@ function FilesDriveOfCore({
       ) : null}
 
       {uploads.length > 0 ? (
-        <section aria-label="Uploads" style={{ position: "absolute", right: 8, bottom: 8, width: 340, maxHeight: 260, overflowY: "auto", background: "var(--surface-card)", border: "1px solid var(--border)", borderRadius: 8, padding: 10, display: "flex", flexDirection: "column", gap: 8 }}>
+        <section aria-label="Uploads" style={{ ...(compact ? { position: "fixed", left: 16, right: 16, bottom: "calc(76px + env(safe-area-inset-bottom))", zIndex: 30 } : { position: "absolute", right: 8, bottom: 8, width: 340 }), maxHeight: 260, overflowY: "auto", background: "var(--surface-card)", border: "1px solid var(--border)", borderRadius: 8, padding: 10, display: "flex", flexDirection: "column", gap: 8 }}>
           <div style={{ display: "flex", justifyContent: "space-between", fontFamily: "var(--mono)", fontSize: 12 }}>
             <strong>Uploads</strong>
             {finished ? <button type="button" className="mc-btn mc-btn-ghost mc-btn-sm" onClick={() => filesDrive.clearFinishedUploads()}>Clear</button> : null}

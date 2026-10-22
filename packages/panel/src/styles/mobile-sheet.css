@@ -80,6 +80,76 @@
   justify-content: center;
 }
 
+/* Bottom action sheet (#833, M26): a menu that comes up from the bottom. */
+.mc-action-sheet-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 9500;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  background: rgba(0, 0, 0, 0.35);
+}
+.mc-action-sheet {
+  display: flex;
+  flex-direction: column;
+  max-height: 85dvh;
+  overflow-y: auto;
+  padding: 8px 16px calc(16px + env(safe-area-inset-bottom));
+  background: var(--surface-1);
+  color: var(--text);
+  border-top-left-radius: 16px;
+  border-top-right-radius: 16px;
+  box-shadow: 0 -8px 32px rgba(0, 0, 0, 0.2);
+  outline: none;
+}
+.mc-action-sheet-handle {
+  align-self: center;
+  width: 36px;
+  height: 4px;
+  margin-bottom: 12px;
+  border-radius: 2px;
+  background: var(--border-strong);
+}
+.mc-action-sheet-title {
+  padding: 4px 0 8px;
+  font-family: var(--mono);
+  font-size: 14px;
+  font-weight: 600;
+}
+.mc-action-sheet-items {
+  display: flex;
+  flex-direction: column;
+}
+.mc-action-sheet-item {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  min-height: 52px;
+  padding: 0 2px;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 14px;
+  text-align: left;
+  cursor: pointer;
+}
+.mc-action-sheet-item[data-danger] {
+  color: var(--status-failed);
+}
+.mc-action-sheet-cancel {
+  min-height: 48px;
+  margin-top: 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 14px;
+  cursor: pointer;
+}
+
 @media (max-width: 767px) {
   /* iOS Safari zooms on focus below 16px. */
   input,
