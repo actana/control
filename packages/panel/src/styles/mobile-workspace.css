@@ -1,0 +1,149 @@
+/* Core > Workspace on phone and tablet (#832, screen M27): one stacked column of
+   Session cards under a scope control and New. Everything sits behind a
+   max-width query so desktop is untouched. */
+
+@media (max-width: 1023px) {
+  .mc-ws-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 12px 16px;
+  }
+  .mc-ws-scope {
+    display: inline-flex;
+    margin-right: auto;
+    padding: 2px;
+    gap: 2px;
+    background: var(--surface-0);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+  }
+  .mc-ws-scope button {
+    min-height: 44px;
+    padding: 0 12px;
+    font-family: var(--mono);
+    font-size: 13px;
+    color: var(--text-dim);
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    cursor: pointer;
+  }
+  .mc-ws-scope button[aria-pressed="true"] {
+    color: var(--accent-ink);
+    background: color-mix(in srgb, var(--accent) 14%, transparent);
+    border-color: color-mix(in srgb, var(--accent) 40%, transparent);
+  }
+  .mc-ws-scope-count {
+    margin-left: 4px;
+    font-variant-numeric: tabular-nums;
+  }
+  .mc-ws-toolbar .mc-btn {
+    min-height: 44px;
+  }
+  .mc-ws-settings {
+    min-width: 44px;
+  }
+
+  .mc-ws-list {
+    padding-bottom: 16px;
+  }
+
+  .mc-ws-card {
+    display: flex;
+    flex-direction: column;
+    cursor: pointer;
+  }
+  .mc-ws-card-hit {
+    position: absolute;
+    inset: 0;
+    z-index: 1;
+    padding: 0;
+    margin: 0;
+    background: transparent;
+    border: 0;
+    border-radius: inherit;
+  }
+  .mc-ws-card-head {
+    position: relative;
+    z-index: 2;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 4px 4px 4px 14px;
+    pointer-events: none;
+  }
+  .mc-ws-card-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+  .mc-ws-card-titles {
+    flex: 1;
+    min-width: 0;
+  }
+  .mc-ws-card-title {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-family: var(--mono);
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text);
+  }
+  .mc-ws-card-status {
+    font-family: var(--mono);
+    font-size: 13px;
+  }
+  .mc-ws-card-open {
+    pointer-events: auto;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 44px;
+    min-width: 44px;
+    height: 44px;
+    min-height: 44px;
+    color: var(--text-dim);
+    background: transparent;
+    border: 0;
+    cursor: pointer;
+  }
+  .mc-ws-card-tail {
+    position: relative;
+    z-index: 2;
+    padding: 8px 14px 12px;
+    pointer-events: none;
+    font-family: var(--mono);
+    font-size: 12.5px;
+    line-height: 1.5;
+    color: var(--text);
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    display: -webkit-box;
+    -webkit-line-clamp: 6;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  .mc-ws-card-actions {
+    position: relative;
+    z-index: 2;
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 4px;
+    padding: 0 8px 4px 14px;
+  }
+  .mc-ws-card-updated {
+    margin-right: auto;
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--text-faint);
+  }
+  .mc-ws-card-actions .mc-btn {
+    min-width: 44px;
+    min-height: 44px;
+    padding: 0;
+  }
+}

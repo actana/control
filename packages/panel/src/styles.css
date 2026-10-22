@@ -25,6 +25,9 @@
 
 @import "./styles/mobile-shell.css";
 @import "./styles/mobile-sheet.css";
+@import "./styles/mobile-sessions.css";
+@import "./styles/mobile-workspace.css";
+@import "./styles/mobile-terminal.css";
 
 /* One fixed look, copied from Actana Studio — see
    docs/adr/0015-one-fixed-look-from-actana-studio.md before adding a colour,
