@@ -39,6 +39,7 @@ const rows = [
 
 const onOpenSettings = vi.fn();
 const onClose = vi.fn();
+const onNavigate = vi.fn();
 
 function Harness({ activeCoreId }: { activeCoreId: string | null }) {
   const [open, setOpen] = useState(true);
@@ -55,6 +56,7 @@ function Harness({ activeCoreId }: { activeCoreId: string | null }) {
         fleet={{ rows }}
         activeCoreId={activeCoreId}
         onOpenSettings={onOpenSettings}
+        onNavigate={onNavigate}
       />
     </>
   );
@@ -136,6 +138,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
   onOpenSettings.mockClear();
   onClose.mockClear();
+  onNavigate.mockClear();
 });
 
 describe("CoresDrawer", () => {
@@ -241,5 +244,29 @@ describe("CoresDrawer", () => {
       fireEvent.click(await screen.findByRole("button", { name: /Operator/ }));
     });
     expect(onOpenSettings).toHaveBeenLastCalledWith("operator");
+  });
+
+  it("Fleet and Core rows call onNavigate as well as onClose; the Settings rows do not", async () => {
+    await mount();
+    await act(async () => {
+      fireEvent.click(screen.getByRole("link", { name: /Fleet/ }));
+    });
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(onNavigate).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Open Cores menu" }));
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("link", { name: /workstation-berlin/ }));
+    });
+    expect(onNavigate).toHaveBeenCalledTimes(2);
+    onNavigate.mockClear();
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Open Cores menu" }));
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+    });
+    expect(onNavigate).not.toHaveBeenCalled();
   });
 });

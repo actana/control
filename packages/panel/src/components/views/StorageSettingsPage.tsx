@@ -235,6 +235,7 @@ export function StorageSettingsPage() {
     <SettingsSection title="Shared folder storage" subtitle="Where each Core's ~/shared is stored." headingLevel="h1">
       <div
         role="tablist"
+        className="mc-storage-tabs"
         aria-label="Storage backend"
         style={{ display: "flex", gap: 0, borderBottom: "1px solid var(--border)", marginBottom: 4 }}
       >
@@ -493,7 +494,7 @@ export function StorageSettingsPage() {
         </button>
       </div>
 
-      <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+      <div className="mc-storage-actions" style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
         <Btn variant="frame" size="md" onClick={() => void handleTest()} disabled={busy}>
           {testing ? "Testing…" : "Test connection"}
         </Btn>
@@ -557,6 +558,7 @@ export function StorageSettingsPage() {
             <div
               key={c.coreId}
               data-core-folder={c.coreId}
+              className="mc-storage-core-row"
               style={{
                 display: "flex",
                 alignItems: "center",

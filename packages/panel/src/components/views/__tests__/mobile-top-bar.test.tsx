@@ -82,4 +82,30 @@ describe("MobileTopBar", () => {
     );
     expect(screen.getByTestId("place-status-dot").style.background).toBe("var(--text-faint)");
   });
+
+  it("leading and title override the menu and place; without them output is unchanged", () => {
+    const base = render(<MobileTopBar place={{ label: "Fleet" }} onMenu={() => {}} bell={null} />);
+    const before = base.container.innerHTML;
+    base.unmount();
+    const same = render(
+      <MobileTopBar place={{ label: "Fleet" }} onMenu={() => {}} bell={null} leading={undefined} title={undefined} />,
+    );
+    expect(same.container.innerHTML).toBe(before);
+    same.unmount();
+
+    render(
+      <MobileTopBar
+        place={{ label: "Fleet" }}
+        onMenu={() => {}}
+        bell={null}
+        leading={<button aria-label="Back" />}
+        title={<span>Usage</span>}
+      />,
+    );
+    const bar = screen.getByRole("banner");
+    expect(within(bar).getByRole("button", { name: "Back" })).toBeTruthy();
+    expect(within(bar).queryByRole("button", { name: "Open Cores menu" })).toBeNull();
+    expect(within(bar).getByText("Usage")).toBeTruthy();
+    expect(within(bar).queryByText("Fleet")).toBeNull();
+  });
 });

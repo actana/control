@@ -10,30 +10,38 @@ export function MobileTopBar({
   place,
   onMenu,
   bell,
+  leading,
+  title,
 }: {
   place: ShellPlace;
   onMenu: () => void;
   bell: ReactNode;
+  // Replace the menu button / the place label (the Settings screen swaps in a
+  // Back button and its own title).
+  leading?: ReactNode;
+  title?: ReactNode;
 }) {
   return (
     <header role="banner" className="mc-mobile-topbar">
-      <button
-        type="button"
-        className="mc-mobile-topbar-menu"
-        aria-label="Open Cores menu"
-        onClick={onMenu}
-        style={{
-          display: "inline-flex",
-          alignItems: "center",
-          justifyContent: "center",
-          border: 0,
-          background: "transparent",
-          color: "var(--text)",
-          cursor: "pointer",
-        }}
-      >
-        <PanelLeft size={20} aria-hidden />
-      </button>
+      {leading ?? (
+        <button
+          type="button"
+          className="mc-mobile-topbar-menu"
+          aria-label="Open Cores menu"
+          onClick={onMenu}
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            justifyContent: "center",
+            border: 0,
+            background: "transparent",
+            color: "var(--text)",
+            cursor: "pointer",
+          }}
+        >
+          <PanelLeft size={20} aria-hidden />
+        </button>
+      )}
       <div
         style={{
           minWidth: 0,
@@ -47,20 +55,24 @@ export function MobileTopBar({
           color: "var(--text)",
         }}
       >
-        {place.coreId ? (
-          <i
-            data-testid="place-status-dot"
-            aria-hidden
-            style={{
-              flexShrink: 0,
-              width: 8,
-              height: 8,
-              borderRadius: "50%",
-              background: place.online ? "var(--status-ready)" : "var(--text-faint)",
-            }}
-          />
-        ) : null}
-        <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{place.label}</span>
+        {title ?? (
+          <>
+          {place.coreId ? (
+            <i
+              data-testid="place-status-dot"
+              aria-hidden
+              style={{
+                flexShrink: 0,
+                width: 8,
+                height: 8,
+                borderRadius: "50%",
+                background: place.online ? "var(--status-ready)" : "var(--text-faint)",
+              }}
+            />
+          ) : null}
+          <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{place.label}</span>
+          </>
+        )}
       </div>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", minWidth: 44 }}>{bell}</div>
     </header>

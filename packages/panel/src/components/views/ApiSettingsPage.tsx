@@ -9,6 +9,7 @@ import { Modal } from "~/components/ui/Modal";
 import { TextField } from "~/components/ui/TextField";
 import { CodeBlock, SettingsSection, useCopy } from "~/components/views/SettingsParts";
 import { api, ApiError } from "~/lib/api";
+import { useIsPhone } from "~/lib/breakpoint";
 import { formatRelativeTime } from "~/lib/format-relative-time";
 import { useCores } from "~/lib/use-fleet";
 import { queryKeys, useApiKeys, useWebhooks } from "~/queries";
@@ -464,6 +465,7 @@ function ApiKeyRow({
   onToggle: () => void;
   onRevoke: () => void;
 }) {
+  const isPhone = useIsPhone();
   const revoked = apiKey.revokedAt !== null;
   const expiry = expiryLabel(apiKey.expiresAt);
   const expired = !revoked && expiry.expired;
@@ -492,7 +494,7 @@ function ApiKeyRow({
         style={{
           width: "100%",
           display: "flex",
-          alignItems: "center",
+          alignItems: isPhone ? "flex-start" : "center",
           gap: 10,
           padding: "10px 12px",
           background: "transparent",
@@ -516,6 +518,12 @@ function ApiKeyRow({
           <div style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-dim)" }}>
             {apiKey.prefix}…
           </div>
+          {isPhone && (
+            <div style={{ fontSize: 11, color: "var(--text-dim)", textAlign: "left", marginTop: 4 }}>
+              <div data-api-key-permissions style={{ fontFamily: "var(--mono)" }}>{permissions}</div>
+              <div data-api-key-scope>{status}</div>
+            </div>
+          )}
         </div>
         {expired && (
           <span
@@ -533,14 +541,22 @@ function ApiKeyRow({
             Expired
           </span>
         )}
-        <div style={{ fontSize: 11, color: "var(--text-dim)", textAlign: "right" }}>
-          <div data-api-key-permissions style={{ fontFamily: "var(--mono)" }}>{permissions}</div>
-          <div data-api-key-scope>{status}</div>
-        </div>
+        {!isPhone && (
+          <div style={{ fontSize: 11, color: "var(--text-dim)", textAlign: "right" }}>
+            <div data-api-key-permissions style={{ fontFamily: "var(--mono)" }}>{permissions}</div>
+            <div data-api-key-scope>{status}</div>
+          </div>
+        )}
         <Icon name={expanded ? "chevron-down" : "chevron-right"} size={12} />
       </button>
       {expanded && !revoked && (
-        <div style={{ padding: "0 12px 12px", display: "flex", justifyContent: "flex-end" }}>
+        <div
+          style={{
+            padding: "0 12px 12px",
+            display: "flex",
+            justifyContent: isPhone ? "center" : "flex-end",
+          }}
+        >
           <Btn variant="danger" size="sm" onClick={onRevoke}>
             Revoke
           </Btn>
@@ -726,6 +742,7 @@ function CreateApiKeyDialog({
   const [permissions, setPermissions] = useState<Set<ApiKeyPermission>>(new Set<ApiKeyPermission>(["read"]));
   const [expiry, setExpiry] = useState<ExpiryChoice>("never");
   const [customDate, setCustomDate] = useState("");
+  const isPhone = useIsPhone();
 
   const toggle = (id: string) => {
     setSelected((prev) => {
@@ -747,6 +764,13 @@ function CreateApiKeyDialog({
   const scopeChosen = allCores === true || (allCores === false && selected.size > 0);
   const expiresAt = expiryInstant(expiry, customDate);
   const canSubmit = name.trim().length > 0 && permissions.size > 0 && scopeChosen && expiresAt !== undefined;
+  const submit = () =>
+    onCreate({
+      name: name.trim(),
+      coreIds: allCores ? null : [...selected],
+      permissions: normalizeApiKeyPermissions(permissions),
+      expiresAt: expiresAt ?? null,
+    });
 
   return (
     <Modal
@@ -754,37 +778,34 @@ function CreateApiKeyDialog({
       onClose={onClose}
       title="Create API key"
       width={480}
+      primaryAction={{ label: "Create", onClick: submit, disabled: !canSubmit || loading }}
       footer={
-        <>
-          <Btn variant="ghost" onClick={onClose} disabled={loading}>
-            Cancel
-          </Btn>
-          <Btn
-            variant="accent"
-            disabled={!canSubmit || loading}
-            onClick={() =>
-              onCreate({
-                name: name.trim(),
-                coreIds: allCores ? null : [...selected],
-                permissions: normalizeApiKeyPermissions(permissions),
-                expiresAt: expiresAt ?? null,
-              })
-            }
-          >
+        isPhone ? (
+          <Btn variant="accent" disabled={!canSubmit || loading} onClick={submit}>
             {loading ? "Creating…" : "Create"}
           </Btn>
-        </>
+        ) : (
+          <>
+            <Btn variant="ghost" onClick={onClose} disabled={loading}>
+              Cancel
+            </Btn>
+            <Btn variant="accent" disabled={!canSubmit || loading} onClick={submit}>
+              {loading ? "Creating…" : "Create"}
+            </Btn>
+          </>
+        )
       }
     >
       <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
         <TextField label="Name" value={name} onChange={setName} placeholder="ci-deploy" autoFocus />
-        <PermissionPicker selected={permissions} onToggle={togglePermission} />
+        <PermissionPicker selected={permissions} onToggle={togglePermission} isPhone={isPhone} />
         <CoreScopePicker
           cores={cores}
           allCores={allCores}
           selected={selected}
           onAllCores={setAllCores}
           onToggle={toggle}
+          isPhone={isPhone}
         />
         <ExpiryPicker
           choice={expiry}
@@ -792,6 +813,7 @@ function CreateApiKeyDialog({
           onChoice={setExpiry}
           onCustomDate={setCustomDate}
           invalidCustom={expiry === "custom" && expiresAt === undefined && customDate !== ""}
+          isPhone={isPhone}
         />
         <FormErrorBox error={error} />
       </div>
@@ -945,32 +967,48 @@ const pickerChoice: CSSProperties = {
   marginBottom: 6,
 };
 
+// Phone-only touch sizing (#835, M66): choice rows >= 44px, controls 18px, text >= 13px.
+const PHONE_CHOICE_ROW: CSSProperties = { minHeight: 44, gap: 12, marginBottom: 0 };
+const PHONE_CHECK: CSSProperties = { width: 18, height: 18, margin: 0, flex: "none" };
+const PHONE_HEADING: CSSProperties = { fontSize: 13 };
+
 /** The permissions a new key gets (#688): one checkbox each, with what it allows. */
 function PermissionPicker({
   selected,
   onToggle,
+  isPhone = false,
 }: {
   selected: Set<ApiKeyPermission>;
   onToggle: (p: ApiKeyPermission) => void;
+  isPhone?: boolean;
 }) {
   return (
     <div data-permissions>
-      <div style={pickerHeading}>Permissions</div>
+      <div style={{ ...pickerHeading, ...(isPhone ? PHONE_HEADING : null) }}>Permissions</div>
       <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
         {API_KEY_PERMISSIONS.map((p) => (
-          <label key={p} style={{ ...pickerChoice, alignItems: "flex-start", marginBottom: 0 }}>
+          <label
+            key={p}
+            style={{
+              ...pickerChoice,
+              alignItems: "flex-start",
+              marginBottom: 0,
+              ...(isPhone ? { ...PHONE_CHOICE_ROW, paddingTop: 10, paddingBottom: 10 } : null),
+            }}
+          >
             <input
               type="checkbox"
               checked={selected.has(p)}
               onChange={() => onToggle(p)}
               aria-label={p}
-              style={{ marginTop: 3 }}
+              style={isPhone ? { ...PHONE_CHECK, marginTop: 2 } : { marginTop: 3 }}
             />
             <span>
-              <span style={{ fontFamily: "var(--mono)", fontSize: 12 }}>{p}</span>
-              <span style={{ color: "var(--text-dim)", fontSize: 12 }}>
-                {" "}
-                · {API_KEY_PERMISSION_LABELS[p].detail}
+              <span style={{ fontFamily: "var(--mono)", fontSize: isPhone ? 13 : 12 }}>{p}</span>
+              <span style={{ color: "var(--text-dim)", fontSize: isPhone ? 13 : 12 }}>
+                {isPhone ? <br /> : " "}
+                {isPhone ? "" : "· "}
+                {API_KEY_PERMISSION_LABELS[p].detail}
               </span>
             </span>
           </label>
@@ -997,22 +1035,27 @@ function ExpiryPicker({
   onChoice,
   onCustomDate,
   invalidCustom,
+  isPhone = false,
 }: {
   choice: ExpiryChoice;
   customDate: string;
   onChoice: (choice: ExpiryChoice) => void;
   onCustomDate: (date: string) => void;
   invalidCustom: boolean;
+  isPhone?: boolean;
 }) {
+  const control: CSSProperties = isPhone
+    ? { ...pickerControl, minHeight: 44, flex: 1, minWidth: 0, fontSize: 13 }
+    : pickerControl;
   return (
     <div data-expiry>
-      <div style={pickerHeading}>Expiry</div>
-      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+      <div style={{ ...pickerHeading, ...(isPhone ? PHONE_HEADING : null) }}>Expiry</div>
+      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: isPhone ? "nowrap" : "wrap" }}>
         <select
           aria-label="Expiry"
           value={choice}
           onChange={(e) => onChoice(e.target.value as ExpiryChoice)}
-          style={pickerControl}
+          style={control}
         >
           <option value="never">Never</option>
           {API_KEY_EXPIRY_PRESET_DAYS.map((days) => (
@@ -1030,11 +1073,11 @@ function ExpiryPicker({
             value={customDate}
             min={tomorrowDay()}
             onChange={(e) => onCustomDate(e.target.value)}
-            style={{ ...pickerControl, borderColor: invalidCustom ? "var(--danger)" : undefined }}
+            style={{ ...control, borderColor: invalidCustom ? "var(--danger)" : undefined }}
           />
         )}
       </div>
-      <div style={{ fontSize: 11, color: "var(--text-dim)", marginTop: 6 }}>
+      <div style={{ fontSize: isPhone ? 13 : 11, color: "var(--text-dim)", marginTop: 6 }}>
         {choice === "never"
           ? "The key works until you revoke it."
           : invalidCustom
@@ -1056,28 +1099,34 @@ function CoreScopePicker({
   selected,
   onAllCores,
   onToggle,
+  isPhone = false,
 }: {
   cores: { id: string; label: string }[];
   allCores: boolean | null;
   selected: Set<string>;
   onAllCores: (all: boolean) => void;
   onToggle: (id: string) => void;
+  isPhone?: boolean;
 }) {
+  const choiceStyle: CSSProperties = isPhone ? { ...pickerChoice, ...PHONE_CHOICE_ROW } : pickerChoice;
+  const checkStyle = isPhone ? PHONE_CHECK : undefined;
   return (
     <div data-core-scope>
-      <div style={pickerHeading}>Core scope</div>
-      <label style={pickerChoice}>
+      <div style={{ ...pickerHeading, ...(isPhone ? PHONE_HEADING : null) }}>Core scope</div>
+      <label style={choiceStyle}>
         <input
           type="radio"
+          style={checkStyle}
           name="core-scope"
           checked={allCores === true}
           onChange={() => onAllCores(true)}
         />
         All Cores
       </label>
-      <label style={pickerChoice}>
+      <label style={choiceStyle}>
         <input
           type="radio"
+          style={checkStyle}
           name="core-scope"
           checked={allCores === false}
           onChange={() => onAllCores(false)}
@@ -1085,9 +1134,9 @@ function CoreScopePicker({
         Only these Cores
       </label>
       {allCores === false && (
-        <div style={{ display: "flex", flexDirection: "column", gap: 4, paddingLeft: 4 }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 4, paddingLeft: isPhone ? 30 : 4 }}>
           {cores.length === 0 && (
-            <div style={{ fontSize: 12, color: "var(--text-dim)" }}>No Cores paired yet.</div>
+            <div style={{ fontSize: isPhone ? 13 : 12, color: "var(--text-dim)" }}>No Cores paired yet.</div>
           )}
           {cores.map((core) => (
             <label
@@ -1099,10 +1148,12 @@ function CoreScopePicker({
                 fontSize: 13,
                 color: "var(--text)",
                 cursor: "pointer",
+                ...(isPhone ? { minHeight: 44, gap: 12 } : null),
               }}
             >
               <input
                 type="checkbox"
+                style={checkStyle}
                 checked={selected.has(core.id)}
                 onChange={() => onToggle(core.id)}
               />
