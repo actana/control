@@ -639,3 +639,89 @@ describe("matching-session Stop behaviour is unchanged (issue 390)", () => {
     expect(h.session.status).toBe("finished");
   });
 });
+
+// Issue 392: Esc mid-turn on Cursor must not read as a finish.
+//
+// cursor-agent 2026.10.01-e373342 (dist-package/7000.index.js, the turn
+// runner): the abort callback fires the `stop` hook with `status:"aborted"`
+// the moment the operator cancels. The turn runner then goes on to end the
+// turn through its normal tail, which can fire `afterAgentResponse` and a
+// second `stop` (`status:"completed"`, or `status:"error"` from the catch
+// block, which does not look at the abort) under the SAME `generation_id`. The
+// abort has to win over those for its own generation only.
+describe("Cursor Esc mid-turn is an interrupt, not a finish (issue 392)", () => {
+  const GEN = "gen-aaaa-1111";
+
+  it("maps a stop hook with status aborted to interrupted", () => {
+    const h = harness();
+    h.post({ hook_event_name: "stop", status: "completed", generation_id: "gen-warmup" });
+    expect(h.session.status).toBe("finished");
+    h.session.status = "running";
+
+    const result = h.post({ hook_event_name: "stop", status: "aborted", generation_id: GEN });
+    expect(result).toEqual({ outcome: "ok", event: "stop", status: "interrupted" });
+    expect(h.session.status).toBe("interrupted");
+  });
+
+  it("still maps a completed or errored stop hook to finished", () => {
+    for (const status of ["completed", "error", undefined]) {
+      const h = harness();
+      h.post({ hook_event_name: "beforeSubmitPrompt", prompt: "go" });
+      h.post({ hook_event_name: "stop", status, generation_id: GEN });
+      expect(h.session.status).toBe("finished");
+    }
+  });
+
+  it("lets the abort win over the turn tail of the same generation", () => {
+    // Tail 1: the run resolves normally after the cancel.
+    // Tail 2: the run throws, and the catch block posts status "error".
+    for (const tail of [
+      [
+        { hook_event_name: "afterAgentResponse", generation_id: GEN },
+        { hook_event_name: "stop", status: "completed", generation_id: GEN },
+      ],
+      [{ hook_event_name: "stop", status: "error", generation_id: GEN }],
+    ]) {
+      const h = harness();
+      h.post({ hook_event_name: "beforeSubmitPrompt", prompt: "go" });
+      h.post({ hook_event_name: "stop", status: "aborted", generation_id: GEN });
+      for (const payload of tail) {
+        expect(h.post(payload)).toEqual({ outcome: "ignored", event: payload.hook_event_name });
+      }
+      expect(h.session.status).toBe("interrupted");
+      expect(h.writes).toEqual(["running", "interrupted"]);
+    }
+  });
+
+  it("does not let an abort swallow the next turn's finish", () => {
+    // cursor-agent never fires beforeSubmitPrompt, so the next turn is told
+    // apart by its generation_id alone.
+    const h = harness();
+    h.post({ hook_event_name: "beforeSubmitPrompt", prompt: "first" });
+    h.post({ hook_event_name: "stop", status: "aborted", generation_id: GEN });
+    expect(h.session.status).toBe("interrupted");
+
+    h.post({ hook_event_name: "afterAgentResponse", generation_id: "gen-bbbb-2222" });
+    expect(h.session.status).toBe("finished");
+    h.post({ hook_event_name: "stop", status: "completed", generation_id: "gen-bbbb-2222" });
+    expect(h.session.status).toBe("finished");
+
+    // The aborted generation's own late tail is still held back.
+    expect(
+      h.post({ hook_event_name: "stop", status: "completed", generation_id: GEN }),
+    ).toEqual({ outcome: "ignored", event: "stop" });
+    expect(h.session.status).toBe("finished");
+  });
+
+  it("interrupts rather than settles finished when the abort arrives under a foreign session id", () => {
+    const h = harness();
+    h.post({ hook_event_name: "beforeSubmitPrompt", prompt: "go" });
+    h.post({
+      hook_event_name: "stop",
+      status: "aborted",
+      generation_id: GEN,
+      session_id: "some-other-session",
+    });
+    expect(h.session.status).toBe("interrupted");
+  });
+});

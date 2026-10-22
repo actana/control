@@ -4,13 +4,9 @@ import * as path from "node:path";
 import { describe, expect, it } from "vitest";
 
 import {
-  DOCKERFILE_FILENAME_REGEX,
-  NOT_COVERED,
   RETIRED_CORE_BASE_DIGESTS,
   SHIPPED_DOCKERFILES,
-  dockerUpdateDirectories,
   formatReport,
-  isCovered,
   latestVersionForMajor,
   parseFromLines,
   readCoreBaseNote,
@@ -89,8 +85,8 @@ describe("parseFromLines", () => {
 });
 
 describe("updateStrategyFor", () => {
-  // The three shapes matter because Dependabot resolves each from a different
-  // place — see docker/lib/dependabot/docker/update_checker.rb.
+  // The three shapes matter because the checker resolves each from a different
+  // tag.
   it("resolves a tagless digest pin from the `latest` tag", () => {
     const ref = { tag: null, digest: `sha256:${"d".repeat(64)}` };
     expect(updateStrategyFor(ref)).toEqual({ kind: "digest-only", resolvesFrom: "latest" });
@@ -106,61 +102,6 @@ describe("updateStrategyFor", () => {
       kind: "tag-only",
       resolvesFrom: "24.04",
     });
-  });
-});
-
-describe("dockerUpdateDirectories", () => {
-  it("reads the directory of every docker ecosystem entry", () => {
-    const yaml = [
-      "version: 2",
-      "updates:",
-      '  - package-ecosystem: "npm"',
-      "    directories:",
-      '      - "/"',
-      '      - "/packages/*"',
-      '  - package-ecosystem: "docker"',
-      '    directory: "/deploy"',
-      "    schedule:",
-      '      interval: "weekly"',
-    ].join("\n");
-
-    expect(dockerUpdateDirectories(yaml)).toEqual(["/deploy"]);
-  });
-
-  it("reads a docker entry that uses the plural form", () => {
-    const yaml = [
-      "updates:",
-      "  - package-ecosystem: docker",
-      "    directories:",
-      "      - /deploy",
-      "      - /deploy/dev",
-    ].join("\n");
-
-    expect(dockerUpdateDirectories(yaml)).toEqual(["/deploy", "/deploy/dev"]);
-  });
-
-  it("is empty when nothing covers docker", () => {
-    expect(dockerUpdateDirectories('updates:\n  - package-ecosystem: "npm"\n    directory: "/"\n')).toEqual(
-      [],
-    );
-  });
-});
-
-describe("isCovered", () => {
-  it("covers a Dockerfile sitting directly in a listed directory", () => {
-    expect(isCovered(["/deploy"], "deploy/core.Dockerfile")).toBe(true);
-  });
-
-  it("does not cover a subdirectory — Dependabot does not recurse", () => {
-    expect(isCovered(["/deploy"], "deploy/dev/core.Dockerfile")).toBe(false);
-  });
-
-  it("covers through a single-segment glob", () => {
-    expect(isCovered(["/packages/*"], "packages/panel/Dockerfile")).toBe(true);
-  });
-
-  it("does not cover a file whose name Dependabot's fetcher would skip", () => {
-    expect(isCovered(["/deploy"], "deploy/compose.yaml")).toBe(false);
   });
 });
 
@@ -244,25 +185,16 @@ describe("formatReport", () => {
   });
 });
 
-// The rest of this file is the demonstration the ticket asks for: the pins in
-// the repository, checked against the rules Dependabot actually applies,
-// rather than a configuration nobody proved reaches them.
+// The rest of this file checks the pins in the repository against the rules
+// the checker applies to them.
 describe("the shipped Dockerfiles", () => {
-  it("are all named something Dependabot's docker fetcher will pick up", () => {
-    for (const file of SHIPPED_DOCKERFILES) {
-      expect(path.basename(file)).toMatch(DOCKERFILE_FILENAME_REGEX);
-    }
-  });
+  it("are every Dockerfile the repo tracks, so a new one cannot go unchecked", () => {
+    const dockerfileName = /dockerfile|containerfile/i;
+    const tracked = execFileSync("git", ["ls-files"], { cwd: repoRoot, encoding: "utf8" })
+      .split("\n")
+      .filter((file) => dockerfileName.test(path.basename(file)));
 
-  it("sit in a directory the docker ecosystem covers", () => {
-    const directories = dockerUpdateDirectories(read(".github/dependabot.yml"));
-    expect(directories.length).toBeGreaterThan(0);
-
-    for (const file of SHIPPED_DOCKERFILES) {
-      expect(isCovered(directories, file), `${file} is not covered by ${directories.join(", ")}`).toBe(
-        true,
-      );
-    }
+    expect([...tracked].sort()).toEqual([...SHIPPED_DOCKERFILES].sort());
   });
 
   it("pin every base by digest, so a moved base is a diff and not a surprise", () => {
@@ -276,7 +208,7 @@ describe("the shipped Dockerfiles", () => {
     }
   });
 
-  it("pin the Panel runtime tagless, which is what makes `latest` the thing Dependabot follows", () => {
+  it("pin the Panel runtime tagless, which is what makes `latest` the thing the checker follows", () => {
     const runtime = parseFromLines(read("deploy/panel.Dockerfile")).at(-1);
     expect(runtime.registry).toBe("gcr.io");
     expect(updateStrategyFor(runtime)).toEqual({ kind: "digest-only", resolvesFrom: "latest" });
@@ -312,23 +244,6 @@ describe("the shipped Dockerfiles", () => {
     // tags carry their date, so the ordering is the string ordering.
     for (const { tag } of Object.values(RETIRED_CORE_BASE_DIGESTS)) {
       expect(note.tag > tag, `${note.tag} is not newer than the retired ${tag}`).toBe(true);
-    }
-  });
-});
-
-describe("every other Dockerfile in the tree", () => {
-  it("is either covered or listed with a reason", () => {
-    // `git ls-files`, not a directory walk: it is the tracked set, which is
-    // the set Dependabot sees, and it does not descend into node_modules.
-    const found = execFileSync("git", ["ls-files"], { cwd: repoRoot, encoding: "utf8" })
-      .split("\n")
-      .filter((file) => DOCKERFILE_FILENAME_REGEX.test(path.basename(file)));
-
-    expect(found.length).toBeGreaterThan(0);
-
-    for (const file of found) {
-      const accounted = SHIPPED_DOCKERFILES.includes(file) || file in NOT_COVERED;
-      expect(accounted, `${file} is neither shipped nor listed in NOT_COVERED`).toBe(true);
     }
   });
 });
@@ -381,6 +296,25 @@ describe("the Panel runtime pin", () => {
     // ISO dates order as strings.
     for (const { reported } of Object.values(RETIRED_PANEL_RUNTIME_DIGESTS)) {
       expect(note.date > reported, `${note.date} is not later than the drift reported on ${reported}`).toBe(true);
+    }
+  });
+});
+
+// #825: Dependabot version updates are off. The two base digests are bumped by
+// hand, from the issue the `base-pins` job opens, and nothing left in the
+// checker models Dependabot.
+describe("the by-hand owner of the base digests", () => {
+  const checker = read("scripts/check-base-pins.mjs");
+
+  it("is the owner every digest row carries, and the one `digest-drift` filters on", () => {
+    expect(checker).toMatch(/const BY_HAND = "by hand \(housekeeping issue\)";/);
+    expect(checker).toContain("owner: BY_HAND,");
+    expect(checker).toContain("row.owner === BY_HAND");
+  });
+
+  it("leaves no mention of Dependabot in the checker or its library", () => {
+    for (const file of ["scripts/check-base-pins.mjs", "scripts/lib/base-pins.mjs"]) {
+      expect(read(file).toLowerCase(), file).not.toContain("dependabot");
     }
   });
 });

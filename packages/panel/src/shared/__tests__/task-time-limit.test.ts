@@ -3,8 +3,10 @@ import {
   formatTaskTimeLimit,
   formatTaskTimeLimitAdjective,
   formatTaskTimeLimitChangeComment,
+  formatTaskTimeLeft,
   formatTaskTimeoutReason,
   isValidTaskTimeoutMinutes,
+  parseTaskTimeLimitChangeComment,
   TASK_TIME_LIMIT_PRESETS,
 } from "../tasks";
 
@@ -60,6 +62,34 @@ describe("formatTaskTimeLimitChangeComment", () => {
       "Time limit changed from 1 hour to No limit by Mehdi.",
     );
   });
+});
+
+describe("parseTaskTimeLimitChangeComment", () => {
+  it("reads back what formatTaskTimeLimitChangeComment wrote", () => {
+    for (const [from, to] of [[60, null], [null, 90], [240, 2880]] as const) {
+      expect(parseTaskTimeLimitChangeComment(formatTaskTimeLimitChangeComment({ from, to, changedBy: "Mehdi (admin)" }))).toEqual({
+        from: formatTaskTimeLimit(from),
+        to: formatTaskTimeLimit(to),
+        changedBy: "Mehdi (admin)",
+      });
+    }
+  });
+
+  it("ignores other comments", () => {
+    expect(parseTaskTimeLimitChangeComment("Time limit changed, see above.")).toBeNull();
+    expect(parseTaskTimeLimitChangeComment("Dispatched (attempt 1) to a (claude-code) on Core c1: Session s.")).toBeNull();
+  });
+});
+
+describe("formatTaskTimeLeft", () => {
+  it.each([
+    [1, "1 min"],
+    [40, "40 min"],
+    [60, "1 h"],
+    [90, "1 h 30 min"],
+    [171, "2 h 51 min"],
+    [1500, "25 h"],
+  ])("%j -> %s", (m, text) => expect(formatTaskTimeLeft(m)).toBe(text));
 });
 
 describe("isValidTaskTimeoutMinutes", () => {

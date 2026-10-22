@@ -380,4 +380,95 @@ describe("the Pi extension the Core writes (ADO #4985)", () => {
     ).resolves.toBeUndefined();
     expect(posts).toEqual([]);
   });
+  // Issue 392: Esc mid-turn. Pi 1.1.0+ puts `aborted` on `agent_settled`
+  // (CHANGELOG 1.1.0, #10607; types.d.ts `AgentSettledEvent`). Pi 0.84.4 has no
+  // such field; its `agent_end` carries the run's messages, and an Esc-cancelled
+  // run ends on an assistant message with `stopReason: "aborted"`
+  // (pi-agent-core 0.84.4 agent-loop.js).
+  const abortedAssistant = { role: "assistant", stopReason: "aborted", content: [] };
+  const doneAssistant = { role: "assistant", stopReason: "stop", content: [] };
+
+  it("posts UserInterrupt, never Stop, when agent_settled says aborted (Pi 1.1+, issue 392)", async () => {
+    const pi = await loadExtension(WIRED);
+    await pi.fire("session_start", { reason: "startup" });
+    await pi.fire("agent_start");
+    await pi.fire("agent_end", { messages: [abortedAssistant] });
+    await pi.fire("agent_settled", { aborted: true });
+    await settle();
+
+    const names = posts.map((p) => p.body.hook_event_name);
+    expect(names).toEqual(["SessionStart", "UserPromptSubmit", "UserInterrupt"]);
+    expect(names).not.toContain("Stop");
+  });
+
+  it("posts UserInterrupt on a Pi 0.84.4 abort, read from the last assistant message (issue 392)", async () => {
+    const pi = await loadExtension(WIRED);
+    await pi.fire("agent_start");
+    await pi.fire("agent_end", {
+      messages: [{ role: "user", content: "go" }, abortedAssistant, { role: "toolResult" }],
+    });
+    await pi.fire("agent_settled", {});
+    await settle();
+
+    expect(posts.map((p) => p.body.hook_event_name)).toEqual(["UserPromptSubmit", "UserInterrupt"]);
+  });
+
+  it("posts Stop when the run completed, with or without the aborted field (issue 392)", async () => {
+    const pi = await loadExtension(WIRED);
+    await pi.fire("agent_start");
+    await pi.fire("agent_end", { messages: [doneAssistant] });
+    await pi.fire("agent_settled", { aborted: false });
+    await pi.fire("agent_start");
+    await pi.fire("agent_end", { messages: [doneAssistant] });
+    await pi.fire("agent_settled", {});
+    await settle();
+
+    expect(posts.map((p) => p.body.hook_event_name)).toEqual([
+      "UserPromptSubmit",
+      "Stop",
+      "UserPromptSubmit",
+      "Stop",
+    ]);
+  });
+
+  it("does not carry an abort into the next run (issue 392)", async () => {
+    const pi = await loadExtension(WIRED);
+    await pi.fire("agent_start");
+    await pi.fire("agent_end", { messages: [abortedAssistant] });
+    await pi.fire("agent_settled", {});
+    await pi.fire("agent_start");
+    await pi.fire("agent_end", { messages: [doneAssistant] });
+    await pi.fire("agent_settled", {});
+    await settle();
+
+    expect(posts.map((p) => p.body.hook_event_name)).toEqual([
+      "UserPromptSubmit",
+      "UserInterrupt",
+      "UserPromptSubmit",
+      "Stop",
+    ]);
+  });
+
+  it("lets a later completed agent_end of the same run overrule an earlier aborted one (issue 392)", async () => {
+    // agent_end can fire more than once per run (retry, queued continuation).
+    // Only the last one describes how the run ended.
+    const pi = await loadExtension(WIRED);
+    await pi.fire("agent_start");
+    await pi.fire("agent_end", { messages: [abortedAssistant] });
+    await pi.fire("agent_end", { messages: [doneAssistant] });
+    await pi.fire("agent_settled", {});
+    await settle();
+
+    expect(posts.map((p) => p.body.hook_event_name)).toEqual(["UserPromptSubmit", "Stop"]);
+  });
+
+  it("tolerates an agent_end without messages (issue 392)", async () => {
+    const pi = await loadExtension(WIRED);
+    await pi.fire("agent_start");
+    await pi.fire("agent_end", {});
+    await pi.fire("agent_end", { messages: null });
+    await pi.fire("agent_settled", {});
+    await settle();
+    expect(posts.map((p) => p.body.hook_event_name)).toEqual(["UserPromptSubmit", "Stop"]);
+  });
 });

@@ -29,12 +29,22 @@ export const HARNESS_HOOK_EVENTS = {
   cursorAfterAgentResponse: "afterAgentResponse",
 } as const;
 
+/** The `status` Cursor's `stop` hook carries when the operator cancelled the turn. */
+export const CURSOR_STOP_ABORTED = "aborted";
+
 export type HarnessHookPayload = {
   hook_event_name?: string;
   notification_type?: string;
   message?: string;
   title?: string;
   tool_name?: string;
+  /**
+   * Cursor's `stop` hook: how the turn ended — `"completed"`, `"aborted"` (the
+   * operator pressed Esc) or `"error"`. cursor-agent 2026.10.01-e373342 builds
+   * the payload in its turn runner (`dist-package/7000.index.js`) and the
+   * abort callback is the only place that writes `"aborted"` (issue 392).
+   */
+  status?: string;
 };
 
 export function mapHookEventToStatus(payload: HarnessHookPayload): SessionStatus | null {
@@ -48,9 +58,17 @@ export function mapHookEventToStatus(payload: HarnessHookPayload): SessionStatus
     case HARNESS_HOOK_EVENTS.permissionReplied:
       return "running";
     case HARNESS_HOOK_EVENTS.stop:
-    case HARNESS_HOOK_EVENTS.cursorStop:
     case HARNESS_HOOK_EVENTS.cursorAfterAgentResponse:
       return "finished";
+    // Cursor's `stop` fires on a cancelled turn too, and says so: the operator's
+    // Esc posts `status: "aborted"`. That is the harness reporting the abort
+    // itself, so it maps to `interrupted` rather than to a finish that would
+    // raise `session:finished` for work the operator cancelled (issue 392).
+    // Any other status — `completed`, `error`, or none from an older build —
+    // keeps the finish. The pipeline holds the abort against the rest of the
+    // same generation's turn tail (`harness-hook-pipeline.ts`).
+    case HARNESS_HOOK_EVENTS.cursorStop:
+      return payload.status === CURSOR_STOP_ABORTED ? "interrupted" : "finished";
     case HARNESS_HOOK_EVENTS.userInterrupt:
       return "interrupted";
     case HARNESS_HOOK_EVENTS.permissionRequest:

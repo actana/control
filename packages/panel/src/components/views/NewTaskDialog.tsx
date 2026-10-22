@@ -131,7 +131,9 @@ function Form({ onClose, initialCoreId, onCreated }: { onClose: () => void; init
           <TaskAttachments items={attachments} onChange={setAttachments} folder />
         </div>
         <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-          <span style={labelStyle}>Time limit · per attempt</span>
+          <span style={labelStyle}>
+            Time limit<span style={{ textTransform: "none" }}> · how long one attempt may run without writing a result</span>
+          </span>
           <TimeLimitPicker value={timeoutMinutes} onChange={setTimeoutMinutes} onValidChange={setLimitValid} />
         </div>
         <label style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16, padding: 14, border: "1px solid var(--border)", borderRadius: 8 }}>

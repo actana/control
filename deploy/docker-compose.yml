@@ -102,8 +102,8 @@ services:
   #
   # The image is pinned to an exact version and its digest (never `latest`):
   # postgres:18.6-bookworm, pushed to Docker Hub 2026-09-19, the multi-arch
-  # index digest read from the registry. Dependabot's `docker-compose` entry
-  # keeps it current. The same pin is in scripts/lib/postgres-image.mjs, which
+  # index digest read from the registry. It is bumped by hand (exact version
+  # and index digest, the image at least a week old). The same pin is in scripts/lib/postgres-image.mjs, which
   # the smoke scripts boot, and a test holds the two together.
   #
   # The password is never in this file: set AC_PANEL_DB_PASSWORD in .env
@@ -256,9 +256,9 @@ services:
 #
 # The image is pinned to an exact version and its digest (never `latest`):
 # chrislusf/seaweedfs:4.47 (released 2026-09-14), the multi-arch index digest
-# read from the Docker Hub registry. It is kept current by Dependabot's
-# `docker-compose` ecosystem entry in .github/dependabot.yml, which is the only
-# thing that reads this file: the `docker` entry there matches Dockerfiles only.
+# read from the Docker Hub registry. It is bumped by hand (exact version and
+# index digest, the image at least a week old): nothing reads this file
+# automatically, and the base-pins issue covers the Dockerfiles only.
   seaweedfs:
     profiles: ["seaweedfs"]
     image: chrislusf/seaweedfs:4.47@sha256:ce9e796f1fe6f06968f4c04bdaf8f678dad9c8acdfef3d244133d71bfa6bf882
