@@ -22,6 +22,7 @@ export function SessionColumn({
   onTogglePinned,
   pinningSessionIds,
   headerAction,
+  compact = false,
 }: {
   title: string;
   color: string;
@@ -34,6 +35,8 @@ export function SessionColumn({
   onTogglePinned?: (id: string) => Promise<void> | void;
   pinningSessionIds?: ReadonlySet<string>;
   headerAction?: React.ReactNode;
+  /** Phone/tablet: no status header, one stacked column of compact cards. */
+  compact?: boolean;
 }) {
   const [showAll, setShowAll] = useState(false);
   if (sessions.length === 0) return null;
@@ -56,6 +59,7 @@ export function SessionColumn({
   const hiddenCount = sessions.length - visibleSessions.length;
   return (
     <div>
+      {!compact && (
       <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 18 }}>
         <span
           style={{
@@ -90,10 +94,11 @@ export function SessionColumn({
         </span>
         {headerAction && <div style={{ marginLeft: "auto" }}>{headerAction}</div>}
       </div>
+      )}
       <div
         style={{
           display: "grid",
-          gridTemplateColumns: "repeat(auto-fill, minmax(360px, 1fr))",
+          gridTemplateColumns: compact ? "minmax(0, 1fr)" : "repeat(auto-fill, minmax(360px, 1fr))",
           gap: 12,
         }}
       >
@@ -108,6 +113,7 @@ export function SessionColumn({
             onDelete={onDelete}
             onTogglePinned={onTogglePinned}
             pinning={pinningSessionIds?.has(t.id) ?? false}
+            compact={compact}
           />
         ))}
       </div>

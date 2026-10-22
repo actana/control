@@ -6,6 +6,7 @@ import {
   useRef,
   useState,
   type PointerEvent as ReactPointerEvent,
+  type ReactNode,
 } from "react";
 import { createPortal } from "react-dom";
 import type { FitAddon as XFitAddon } from "@xterm/addon-fit";
@@ -100,6 +101,13 @@ import {
   questionMenuSignatures,
 } from "~/lib/terminal-question-hold";
 import { isTerminalAutoReply } from "~/lib/terminal-user-input";
+import { TerminalKeyRow, useStickyCtrl } from "~/components/views/TerminalKeyRow";
+import {
+  MobileTerminalHeader,
+  MobileTerminalStatusRow,
+  phoneTerminalInput,
+} from "~/components/views/TerminalMobileChrome";
+import { formatRelativeTime } from "~/lib/format-relative-time";
 import { attachTerminalLinks } from "~/lib/terminal-links";
 import {
   createSettledFit,
@@ -202,6 +210,8 @@ function HeaderMoreMenu({
   canZoomOut,
   onZoomIn,
   onZoomOut,
+  onCloseSession,
+  triggerSize,
 }: {
   title: string;
   statusLabel: string;
@@ -225,6 +235,10 @@ function HeaderMoreMenu({
   canZoomOut: boolean;
   onZoomIn: () => void;
   onZoomOut: () => void;
+  /** Phone only: archive/close the Session (the desktop Cmd/Ctrl+W path). */
+  onCloseSession?: () => void;
+  /** Phone only: square tap target for the trigger, in px (default 34 wide). */
+  triggerSize?: number;
 }) {
   const [open, setOpen] = useState(false);
   const [menuRect, setMenuRect] = useState<{ top: number; right: number } | null>(null);
@@ -288,7 +302,11 @@ function HeaderMoreMenu({
           aria-haspopup="menu"
           aria-expanded={open}
           aria-label={`Session actions for ${title}`}
-          style={{ width: 34, padding: 0 }}
+          style={
+            triggerSize
+              ? { width: triggerSize, height: triggerSize, padding: 0 }
+              : { width: 34, padding: 0 }
+          }
         />
       </Tooltip>
       {open &&
@@ -377,6 +395,14 @@ function HeaderMoreMenu({
                 {expanded ? "Shrink panel" : "Expand panel"}
               </DropdownMenuItem>
             )}
+            {onCloseSession && (
+              <>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem icon="archive" danger onClick={() => pick(onCloseSession)}>
+                  Archive session
+                </DropdownMenuItem>
+              </>
+            )}
             {onHide && (
               <>
                 <DropdownMenuSeparator />
@@ -405,6 +431,9 @@ export function TerminalPane({
   hideHeader = false,
   onTogglePin,
   pinBusy = false,
+  phone = false,
+  onCloseSession,
+  bell,
 }: {
   session: Session;
   onHide?: () => void;
@@ -423,6 +452,17 @@ export function TerminalPane({
   onTogglePin?: () => void;
   /** True while a pin toggle is in flight — disables the control. */
   pinBusy?: boolean;
+  /**
+   * Phone/tablet chrome (#832): replaces the header with Back · title · bell and
+   * a status row with a "…" actions menu, docks the key row under the terminal
+   * (sticky Ctrl applies to the next typed character) and shows a harness
+   * question as a bottom sheet. `onHide` is Back. Desktop never sets it.
+   */
+  phone?: boolean;
+  /** Phone "…" menu → archive the Session (same path as Cmd/Ctrl+W). */
+  onCloseSession?: () => void;
+  /** Phone header: the notifications bell. */
+  bell?: ReactNode;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const paneRef = useRef<HTMLDivElement>(null);
@@ -430,6 +470,14 @@ export function TerminalPane({
   const fitRef = useRef<XFitAddon | null>(null);
   const termSurfaceRef = useRef<CachedTerminalControls | null>(null);
   const renameFormId = useId();
+  // Phone key row: sticky Ctrl is armed there and consumed by the next typed
+  // character in the PTY onData handler below (read through refs — the handler
+  // is wired once per surface build).
+  const stickyCtrl = useStickyCtrl();
+  const phoneRef = useRef(phone);
+  phoneRef.current = phone;
+  const consumeCtrlRef = useRef(stickyCtrl.consume);
+  consumeCtrlRef.current = stickyCtrl.consume;
   const queryClient = useQueryClient();
   const terminals = useTerminalActions();
   const [liveStatus, setLiveStatus] = useState("");
@@ -850,6 +898,11 @@ export function TerminalPane({
       // On screen again — exempt from parked-surface eviction while visible.
       cache.markMounted(surface.id);
       termSurfaceRef.current = surface.controls;
+      // The surface outlives this pane and its input handler was wired by
+      // whichever pane built it, so the current pane hands over its transform
+      // (sticky Ctrl on a phone) — and takes it back below.
+      surface.inputTransform = (data) =>
+        phoneRef.current ? phoneTerminalInput(data, consumeCtrlRef.current) : data;
       surface.controls.setFontSize(terminalFontSize);
       // A surface is cached per Session and reattached rather than rebuilt, so
       // a pane coming back on screen has to be told where it stands now — the
@@ -869,6 +922,7 @@ export function TerminalPane({
         settledFit.cancel();
         surface.gpu?.detach();
         if (termSurfaceRef.current === surface.controls) termSurfaceRef.current = null;
+        surface.inputTransform = undefined;
         cache.park(surface.id);
       };
     };
@@ -942,6 +996,7 @@ export function TerminalPane({
             if (surface.ptyId && ptyApi && mayWriteRef.current) void ptyApi.write(surface.ptyId, data);
           },
           setReadOnly: (readOnly) => setTerminalReadOnly(term, readOnly),
+          paste: (text) => term.paste(text),
         },
         fit: () => fitTerminalSurface(term, fit),
         teardown: () => undefined,
@@ -1209,6 +1264,7 @@ export function TerminalPane({
           if (surface.ptyId && ptyApi && mayWriteRef.current) void ptyApi.write(surface.ptyId, data);
         },
         setReadOnly: (readOnly) => setTerminalReadOnly(term, readOnly),
+        paste: (text) => term.paste(text),
       };
 
       const wireTerminalInput = (ptyId: string) => {
@@ -1223,7 +1279,8 @@ export function TerminalPane({
         // keystroke reaches the PTY exactly once however many times this pane
         // has tried to attach (issue 393).
         inputWiring.wire(() => [
-          term.onData((data) => {
+          term.onData((rawData) => {
+            const data = surface.inputTransform?.(rawData) ?? rawData;
             // A Reader sends nothing and reports nothing (issue 147). The return
             // is before the status and prompt-capture side effects deliberately:
             // they are writes of their own — a `running` patch and a title the
@@ -1634,7 +1691,46 @@ export function TerminalPane({
             )}
           </div>
         )}
-      {!hideHeader && (
+      {phone && (
+        <>
+          <MobileTerminalHeader
+            title={liveSession.title}
+            statusColor={statusMeta.color}
+            onBack={() => onHide?.()}
+            bell={bell}
+          />
+          <MobileTerminalStatusRow
+            statusLabel={statusMeta.label}
+            statusColor={statusMeta.color}
+            harness={meta?.label ?? liveSession.agent}
+            updated={formatRelativeTime(liveSession.updatedAt)}
+            actions={
+              <>
+                <HeaderMoreMenu
+                  title={liveSession.title}
+                  statusLabel={statusMeta.label}
+                  statusColor={statusMeta.color}
+                  showTitle={false}
+                  expanded={false}
+                  pinned={liveSession.pinned}
+                  pinBusy={pinBusy}
+                  buttons={sessionButtons}
+                  onRename={openRenameDialog}
+                  onClone={requestSessionClone}
+                  canZoomIn={canZoomIn}
+                  canZoomOut={canZoomOut}
+                  onZoomIn={zoomIn}
+                  onZoomOut={zoomOut}
+                  onCloseSession={onCloseSession}
+                  triggerSize={44}
+                />
+                {hideableMenu}
+              </>
+            }
+          />
+        </>
+      )}
+      {!hideHeader && !phone && (
       <div
         ref={headerRef}
         data-session-header
@@ -1877,6 +1973,7 @@ export function TerminalPane({
             pending={pendingQuestion}
             desynced={questionDesynced}
             narrow={tinyHeader}
+            sheet={phone}
             terminalOwnedFocus={() =>
               !!paneRef.current && paneRef.current.contains(document.activeElement)
             }
@@ -1887,6 +1984,15 @@ export function TerminalPane({
           />
         )}
       </div>
+      {phone && !showQuestionOverlay && writeState.access.writable && (
+        <div className="mc-term-m-keydock">
+          <TerminalKeyRow
+            ctrl={stickyCtrl}
+            onSend={(data) => termSurfaceRef.current?.writeToPty?.(data)}
+            onPaste={(text) => termSurfaceRef.current?.paste?.(text)}
+          />
+        </div>
+      )}
       </div>
       {/* The force takeover's confirmation (issue 147). It names the Session,
           because a grid of panes makes "are you sure?" genuinely ambiguous

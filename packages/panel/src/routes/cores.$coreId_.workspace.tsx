@@ -30,6 +30,7 @@ import {
 } from "~/lib/active-session-memory";
 import { readCoreRemember, writeCoreRemember } from "~/lib/core-remember";
 import { useCores } from "~/lib/use-fleet";
+import { useIsCompact } from "~/lib/breakpoint";
 import { useHideableMenu } from "~/lib/hideable-elements";
 import { DEFAULT_HEADER_BUTTON_VISIBILITY } from "~/shared/header-buttons";
 import { NewHarnessButton } from "~/components/views/NewHarnessButton";
@@ -284,7 +285,10 @@ function CoreWorkspacePage() {
   }, [overflowOpen]);
 
   const terminals = useTerminals();
-  const gridViewActive = terminals.gridView;
+  // Phone and tablet get one stacked list; the grid is a desktop layout, so a
+  // stored grid flag never takes over a compact screen (#832, M27).
+  const compact = useIsCompact();
+  const gridViewActive = terminals.gridView && !compact;
 
   // How many sessions the current scope's grid shows (drives "Archive all").
   const gridScopeSessionCount = useMemo(
@@ -443,7 +447,7 @@ function CoreWorkspacePage() {
       // selected scope, so the panel-switching logic below does
       // nothing visible. If the target session is live, just spotlight its cell
       // so the user can pick it out; the scope guards would otherwise no-op.
-      if (terminals.gridView && terminals.sessions.some((s) => s.sessionId === request.sessionId)) {
+      if (gridViewActive && terminals.sessions.some((s) => s.sessionId === request.sessionId)) {
         terminals.focusGridSession(request.sessionId);
         clearPendingSessionOpen(request);
         return;
@@ -464,10 +468,10 @@ function CoreWorkspacePage() {
         coreId,
       });
       // Now that the session is materialized in the grid, spotlight its cell.
-      if (terminals.gridView) terminals.focusGridSession(session.id);
+      if (gridViewActive) terminals.focusGridSession(session.id);
       clearPendingSessionOpen(request);
     },
-    [coreId, sessions, sessionsQuery.isLoading, terminals],
+    [coreId, sessions, sessionsQuery.isLoading, terminals, gridViewActive],
   );
 
   useEffect(() => {
@@ -567,7 +571,7 @@ function CoreWorkspacePage() {
       // user can type immediately. focusGridSession retries until the pane mounts
       // (and re-asserts across the awaitingCreate→persisted rebuild), so calling
       // it here — before the surface exists — is fine.
-      if (opts?.focusOnCreate && terminals.gridView) {
+      if (opts?.focusOnCreate && gridViewActive) {
         terminals.focusGridSession(optimisticSession.id);
       }
 
@@ -614,7 +618,7 @@ function CoreWorkspacePage() {
         }
       })();
     },
-    [coreId, queryClient, invalidateSessions, terminals, cliAvailability, showHarnessUpdateRequired],
+    [coreId, queryClient, invalidateSessions, terminals, gridViewActive, cliAvailability, showHarnessUpdateRequired],
   );
 
   // The session a fresh one should anchor on: the grid cell the user is looking
@@ -1315,7 +1319,8 @@ function CoreWorkspacePage() {
         style={{
           flex: 1,
           minHeight: 0,
-          overflow: showGrid ? "hidden" : "auto",
+          overflow: showGrid ? "hidden" : compact ? "visible" : "auto",
+          flexShrink: compact ? 0 : undefined,
           padding: 0,
           display: "flex",
           flexDirection: "column",
@@ -1330,12 +1335,57 @@ function CoreWorkspacePage() {
           flex: showGrid ? 1 : undefined,
           flexShrink: showGrid ? undefined : 0,
           boxSizing: "border-box",
-          padding: 8,
+          padding: compact ? 0 : 8,
           display: showGrid ? "flex" : undefined,
           flexDirection: showGrid ? "column" : undefined,
           overflow: showGrid ? "hidden" : undefined,
         }}
       >
+        {compact ? (
+          <div className="mc-ws-toolbar">
+            <WorkspaceScopeControl
+              view={sessionView}
+              activeCount={activeSessions.length}
+              pinnedCount={pinnedSessions.length}
+              archivedCount={archivedCount}
+              showArchivedTab={hasArchivedSessions || showArchived}
+              onChange={setSessionView}
+            />
+            {!showArchived && (
+              <>
+                {remembered.rememberHarnessSettings && remembered.savedHarness && (
+                  <Btn
+                    variant="ghost"
+                    icon="settings"
+                    className="mc-ws-settings"
+                    aria-label="Change session settings"
+                    onClick={() => setShowNewHarness(true)}
+                  />
+                )}
+                <Btn
+                  variant="primary"
+                  icon="plus"
+                  className="mc-ws-new"
+                  aria-label="New session"
+                  onClick={onNewHarnessPrimary}
+                >
+                  New
+                </Btn>
+              </>
+            )}
+            {showArchived && archivedSessions.length > 0 && (
+              <Btn
+                variant="danger"
+                icon="trash"
+                className="mc-ws-new"
+                onClick={() => setConfirmDeleteArchived(true)}
+                title="Permanently delete all archived sessions"
+              >
+                Delete all
+              </Btn>
+            )}
+          </div>
+        ) : (
         <div
           className="mc-core-header"
           style={{
@@ -1457,6 +1507,7 @@ function CoreWorkspacePage() {
             )}
           </div>
         </div>
+        )}
 
         {showGrid ? (
           <SessionGrid
@@ -1489,11 +1540,13 @@ function CoreWorkspacePage() {
         )}
 
         <div
+          className={compact ? "mc-ws-list" : undefined}
+          data-ws-stack={compact ? "" : undefined}
           style={{
             display: "flex",
             flexDirection: "column",
-            gap: 48,
-            paddingInline: 12,
+            gap: compact ? 12 : 48,
+            paddingInline: compact ? 16 : 12,
             boxSizing: "border-box",
           }}
         >
@@ -1588,6 +1641,7 @@ function CoreWorkspacePage() {
                   title="Pinned"
                   color="var(--accent)"
                   sessions={pinnedListSessions}
+                  compact={compact}
                   activeId={activeId}
                   onToggle={stableSelectTerminal}
                   onArchive={stableArchiveSession}
@@ -1616,6 +1670,7 @@ function CoreWorkspacePage() {
                   }
                   color={STATUS_META[status].color}
                   sessions={sessionsByStatus[status]}
+                  compact={compact}
                   activeId={activeId}
                   onToggle={stableSelectTerminal}
                   onArchive={showArchived ? undefined : stableArchiveSession}
@@ -1764,6 +1819,43 @@ function CoreWorkspacePage() {
 
       </div>
     </>
+  );
+}
+
+/** Phone/tablet scope switch: Active · Pinned (· Archived) with counts, always visible. */
+function WorkspaceScopeControl({
+  view,
+  activeCount,
+  pinnedCount,
+  archivedCount,
+  showArchivedTab,
+  onChange,
+}: {
+  view: SessionView;
+  activeCount: number;
+  pinnedCount: number;
+  archivedCount: number;
+  showArchivedTab: boolean;
+  onChange: (view: SessionView) => void;
+}) {
+  const tabs: Array<{ view: SessionView; label: string; count: number }> = [
+    { view: "active", label: "Active", count: activeCount },
+    { view: "pinned", label: "Pinned", count: pinnedCount },
+  ];
+  if (showArchivedTab) tabs.push({ view: "archived", label: "Archived", count: archivedCount });
+  return (
+    <div className="mc-ws-scope" role="group" aria-label="Show sessions by type">
+      {tabs.map((tab) => (
+        <button
+          key={tab.view}
+          type="button"
+          aria-pressed={view === tab.view}
+          onClick={() => onChange(tab.view)}
+        >
+          {tab.label} <span className="mc-ws-scope-count">{tab.count}</span>
+        </button>
+      ))}
+    </div>
   );
 }
 

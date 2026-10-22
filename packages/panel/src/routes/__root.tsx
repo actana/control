@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState, lazy, Suspense } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, lazy, Suspense, type ReactNode } from "react";
 import {
   ClientOnly,
   Outlet,
@@ -187,6 +187,7 @@ const CoreTerminalPanel = memo(function CoreTerminalPanel({
   onPtyReady,
   expanded,
   onToggleExpanded,
+  bell,
 }: {
   coreId: string;
   onClose: (sessionId: string, opts?: { activateSessionId?: string | null }) => Promise<void>;
@@ -194,6 +195,8 @@ const CoreTerminalPanel = memo(function CoreTerminalPanel({
   onPtyReady: (sessionId: string, ptyId: string | null, scopeKey?: string) => void;
   expanded: boolean;
   onToggleExpanded: () => void;
+  /** Compact shell only: the notifications bell for the full-screen terminal header. */
+  bell?: ReactNode;
 }) {
   const { activeFor } = useTerminals();
   return (
@@ -204,6 +207,7 @@ const CoreTerminalPanel = memo(function CoreTerminalPanel({
       onPtyReady={onPtyReady}
       expanded={expanded}
       onToggleExpanded={onToggleExpanded}
+      bell={bell}
     />
   );
 });
@@ -339,7 +343,7 @@ function Shell() {
   // Grid view takes over the whole workspace: the Outlet (which renders the
   // grid below the Core header) spans full width and the single right-hand
   // terminal panel is hidden.
-  const gridActive = !!workspaceCoreId && gridView;
+  const gridActive = !!workspaceCoreId && gridView && !compact;
   const goHome = () => {
     setActivePanel(null);
     if (settingsOpen) requestCloseSettings();
@@ -364,7 +368,9 @@ function Shell() {
   const closePanel = () => setActivePanel(null);
   const layout = shellLayout(compact ? "compact" : "desktop", {
     workspaceRoute: !!workspaceCoreId,
-    sessionExpanded,
+    // On compact the Session terminal is a full-screen overlay, so "expanded"
+    // must never hide the workspace the Back button returns to.
+    sessionExpanded: sessionExpanded && !compact,
     gridActive,
   });
   const notificationsBell = (
@@ -373,6 +379,19 @@ function Shell() {
       onClearNotification={clearAppNotificationItem}
       onClearNotifications={clearAllAppNotifications}
     />
+  );
+
+  // Memoised so the CoreTerminalPanel leaf stays quiet between notifications.
+  const terminalBell = useMemo(
+    () =>
+      compact ? (
+        <SessionNotificationsButton
+          notifications={appNotifications}
+          onClearNotification={clearAppNotificationItem}
+          onClearNotifications={clearAllAppNotifications}
+        />
+      ) : null,
+    [compact, appNotifications, clearAppNotificationItem, clearAllAppNotifications],
   );
 
   // Recompute + re-observe the workspace bounds whenever the workspace div is
@@ -565,6 +584,7 @@ function Shell() {
                 onPtyReady={setPtyId}
                 expanded={sessionExpanded}
                 onToggleExpanded={toggleTerminalExpanded}
+                bell={compact ? terminalBell : undefined}
               />
             )}
           </div>

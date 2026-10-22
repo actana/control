@@ -54,6 +54,8 @@ export function UserTerminalPane({
   onDelete,
   onRename,
   isLast: _isLast,
+  phone = false,
+  transformInput,
 }: {
   terminal: UserTerminal;
   ptyId: string | null;
@@ -70,13 +72,24 @@ export function UserTerminalPane({
   onDelete: () => void;
   onRename: (name: string) => void;
   isLast: boolean;
+  /** Phone: the panel owns the header and key row; the pane is just the surface. */
+  phone?: boolean;
+  /**
+   * Phone: applied to what the user types (sticky Ctrl) before it reaches the
+   * PTY. Never applied to terminal-generated replies — pass a function that
+   * skips them (`phoneTerminalInput`).
+   */
+  transformInput?: (data: string) => string;
 }) {
+  const transformInputRef = useRef(transformInput);
+  transformInputRef.current = transformInput;
   const containerRef = useRef<HTMLDivElement>(null);
   const cardRef = useRef<HTMLElement | null>(null);
   const termRef = useRef<{
     focus: () => void;
     clear: () => void;
     setFontSize: (fontSize: number) => void;
+    writeToPty?: (data: string) => void;
   } | null>(null);
   const {
     level: zoomLevel,
@@ -147,6 +160,9 @@ export function UserTerminalPane({
     // teardown + replay.
     const bindMount = (surface: PaneTerminalSurface) => {
       termRef.current = surface.controls;
+      // The surface outlives this pane and its input handler was wired by
+      // whichever pane built it, so the current pane hands over its transform.
+      surface.inputTransform = (data) => transformInputRef.current?.(data) ?? data;
       surface.controls.setFontSize(terminalFontSize);
       // Refit only after the resize settles — a live refit clears the WebGL
       // canvas on every cell-boundary crossing, strobing the whole grid.
@@ -162,6 +178,7 @@ export function UserTerminalPane({
         settledFit.cancel();
         surface.gpu?.detach();
         if (termRef.current === surface.controls) termRef.current = null;
+        surface.inputTransform = undefined;
         cache.park(surfaceId);
       };
     };
@@ -277,9 +294,17 @@ export function UserTerminalPane({
           // the settled debouncer, so the Harness repaints once per zoom gesture.
           applyTerminalFontSize(term, fit, nextFontSize);
         },
+        writeToPty: (data) => {
+          // activePtyId tracks respawns; keystrokes lost to a dropped link have
+          // no caller to tell (the link layer reports the disconnect).
+          const id = activePtyId;
+          if (id && ptyApi) ptyApi.write(id, data).catch(() => {});
+        },
+        paste: (text) => term.paste(text),
       };
       const wireTerminalInput = (id: string) => {
-        term.onData((data) => {
+        term.onData((rawData) => {
+          const data = surface.inputTransform?.(rawData) ?? rawData;
           // Keystrokes lost to a dropped link have no caller to tell; the link
           // layer reports the disconnect itself.
           if (ptyApi) ptyApi.write(id, data).catch(() => {});
@@ -478,6 +503,7 @@ export function UserTerminalPane({
       >
         {liveStatus}
       </div>
+      {!phone && (
       <div
         style={{
           display: "flex",
@@ -588,6 +614,7 @@ export function UserTerminalPane({
           />
         </div>
       </div>
+      )}
       <ConfirmDialog
         open={confirmDelete}
         onClose={() => setConfirmDelete(false)}
