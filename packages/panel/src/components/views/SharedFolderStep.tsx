@@ -1,7 +1,9 @@
 import { useEffect, useState } from "react";
 import { Btn } from "~/components/ui/Btn";
+import { Modal } from "~/components/ui/Modal";
 import { TextField } from "~/components/ui/TextField";
 import { api, ApiError } from "~/lib/api";
+import { useIsPhone } from "~/lib/breakpoint";
 import {
   connectionPassed,
   derivedFolder,
@@ -33,6 +35,10 @@ import type { CoreWithDial } from "~/shared/cores";
  * never handed it, and this page says so. When storage is already configured the key field is not shown at all.
  *
  * Finish stays disabled until a test with the current fields (or the stored config) passed.
+ *
+ * **On a phone** (#831, M06) the same form opens as a full-screen sheet: Back · Shared folder · Connect, with the finish
+ * button repeated in the footer. Back only closes the sheet; the half-paired Core stays here as a card whose Continue
+ * reopens it, and the form's state lives in this component, so nothing typed is lost.
  */
 
 const DEFAULTS = { endpoint: "", bucket: "", prefix: "cores", oidcIssuer: "", oidcAudience: "actana-shared", keyId: "" };
@@ -67,6 +73,9 @@ export function SharedFolderStep({
   const [error, setError] = useState<string | null>(null);
   // Edits after a passed test invalidate it: Finish belongs to the fields that were tested.
   const [tested, setTested] = useState(false);
+  const isPhone = useIsPhone();
+  // Opens by itself when the step first mounts; only read on phones.
+  const [sheetOpen, setSheetOpen] = useState(true);
 
   const applyStorage = (storage: StorageConfigView) => {
     setMasterKeySet(storage.masterKeySet);
@@ -196,7 +205,13 @@ export function SharedFolderStep({
   const storageAttr =
     storageLoad === "failed" ? "unread" : configured ? "configured" : storageLoad === "ok" ? "first-time" : "loading";
 
-  return (
+  const finishDisabled = busy || !passed;
+  const finishLabel = finishing ? "Connecting…" : "Connect and finish pairing";
+  // Phone: body text at a readable size and full-width, full-height buttons.
+  const textSize = isPhone ? 13 : undefined;
+  const wideBtn = isPhone ? { flex: 1, minHeight: 44 } : undefined;
+
+  const card = (
     <div
       data-step="shared-folder"
       data-storage={storageAttr}
@@ -213,7 +228,7 @@ export function SharedFolderStep({
       <div style={{ fontFamily: "var(--mono)", fontSize: 13, fontWeight: 600, color: "var(--text)" }}>
         4 · Connect the Shared folder
       </div>
-      <div style={{ fontFamily: "var(--mono)", fontSize: 11.5, color: "var(--text-dim)", lineHeight: 1.5 }}>
+      <div style={{ fontFamily: "var(--mono)", fontSize: textSize ?? 11.5, color: "var(--text-dim)", lineHeight: 1.5 }}>
         <strong>{core.label}</strong> is paired but not finished. Every Core gets ~/shared; paired with a Panel it is stored in
         S3, so reports and uploads stay readable while the Core sleeps. The Panel keeps the master key; the Core only ever
         holds a 1-hour key for its own folder. The Core opens once its Shared folder is connected.
@@ -314,11 +329,11 @@ export function SharedFolderStep({
 
       <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
         {storageLoad === "failed" && (
-          <Btn variant="frame" size="md" onClick={() => void loadStorage()} disabled={busy}>
+          <Btn variant="frame" size="md" style={wideBtn} onClick={() => void loadStorage()} disabled={busy}>
             Retry
           </Btn>
         )}
-        <Btn variant="frame" size="md" onClick={() => void handleTest()} disabled={busy || !ready}>
+        <Btn variant="frame" size="md" style={wideBtn} onClick={() => void handleTest()} disabled={busy || !ready}>
           {testing ? "Testing…" : "Test connection"}
         </Btn>
       </div>
@@ -368,17 +383,64 @@ export function SharedFolderStep({
         </div>
       )}
 
-      <div style={{ display: "flex", justifyContent: "flex-end" }}>
-        <Btn variant="primary" size="sm" icon="plus" onClick={() => void handleFinish()} disabled={busy || !passed}>
-          {finishing ? "Connecting…" : "Connect and finish pairing"}
-        </Btn>
-      </div>
+      {/* On a phone the sheet's header and footer carry Finish. */}
+      {!isPhone && (
+        <div style={{ display: "flex", justifyContent: "flex-end" }}>
+          <Btn variant="primary" size="sm" icon="plus" onClick={() => void handleFinish()} disabled={finishDisabled}>
+            {finishLabel}
+          </Btn>
+        </div>
+      )}
 
-      <div style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-dim)", lineHeight: 1.5 }}>
+      <div style={{ fontFamily: "var(--mono)", fontSize: textSize ?? 11, color: "var(--text-dim)", lineHeight: 1.5 }}>
         Required when pairing with a Panel. Unpair later and the S3 link is removed while ~/shared stays. Deleting the Core removes it
         from the Panel, empties its S3 folder and empties ~/shared on the machine; if the Core is not connected, the delete waits until its key ends and then leaves ~/shared on the machine.
       </div>
     </div>
+  );
+
+  if (!isPhone) return card;
+
+  if (!sheetOpen) {
+    return (
+      <div
+        data-step="shared-folder-paused"
+        style={{
+          padding: "14px 16px",
+          background: "var(--surface-0)",
+          border: "1px solid var(--border)",
+          borderRadius: 7,
+          display: "flex",
+          flexDirection: "column",
+          gap: 12,
+        }}
+      >
+        <div style={{ fontFamily: "var(--mono)", fontSize: 13, color: "var(--text-dim)", lineHeight: 1.5 }}>
+          <strong style={{ color: "var(--text)" }}>{core.label}</strong> is paired but not finished — connect its Shared
+          folder.
+        </div>
+        <Btn variant="primary" size="md" style={{ width: "100%", minHeight: 44 }} onClick={() => setSheetOpen(true)}>
+          Continue
+        </Btn>
+      </div>
+    );
+  }
+
+  return (
+    <Modal
+      open
+      onClose={() => setSheetOpen(false)}
+      title="Shared folder"
+      sheetCancelLabel="Back"
+      primaryAction={{ label: "Connect", onClick: () => void handleFinish(), disabled: finishDisabled }}
+      footer={
+        <Btn variant="primary" size="lg" style={{ minHeight: 44 }} onClick={() => void handleFinish()} disabled={finishDisabled}>
+          {finishLabel}
+        </Btn>
+      }
+    >
+      {card}
+    </Modal>
   );
 }
 

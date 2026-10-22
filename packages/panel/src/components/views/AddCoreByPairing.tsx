@@ -3,6 +3,7 @@ import { Btn } from "~/components/ui/Btn";
 import { SharedFolderStep } from "~/components/views/SharedFolderStep";
 import { TextField } from "~/components/ui/TextField";
 import { api, ApiError } from "~/lib/api";
+import { useIsPhone } from "~/lib/breakpoint";
 import {
   fingerprintCheck,
   normalizePairingCode,
@@ -70,6 +71,8 @@ export function AddCoreByPairing({ onPaired }: { onPaired: (core: CoreWithDial) 
   const [pairing, setPairing] = useState(false);
 
   const [refusal, setRefusal] = useState<CorePairingRefusal | null>(null);
+  // Phone: the address row stacks and both actions go full width.
+  const isPhone = useIsPhone();
 
   /**
    * The Core whose pairing is not finished (#564): redeemed, registered, and waiting for its Shared folder. Set by
@@ -200,14 +203,28 @@ export function AddCoreByPairing({ onPaired }: { onPaired: (core: CoreWithDial) 
         gap: 14,
       }}
     >
-      <div style={{ fontFamily: "var(--mono)", fontSize: 11.5, color: "var(--text-dim)" }}>
+      <div
+        style={{
+          fontFamily: "var(--mono)",
+          fontSize: isPhone ? 13 : 11.5,
+          lineHeight: isPhone ? 1.5 : undefined,
+          color: "var(--text-dim)",
+        }}
+      >
         On the machine, run <code>actana pair new</code>. It prints a one-time pairing code, this
         Core&apos;s CA fingerprint, and a session id. Enter the address first and compare the
         fingerprint — the Panel does not send the code until they match.
       </div>
 
       {/* Step 1 — reach the machine. Nothing secret is sent by this. */}
-      <div style={{ display: "flex", alignItems: "flex-end", gap: 8 }}>
+      <div
+        data-address-row
+        style={
+          isPhone
+            ? { display: "flex", flexDirection: "column", gap: 10 }
+            : { display: "flex", alignItems: "flex-end", gap: 8 }
+        }
+      >
         <div style={{ flex: 1, minWidth: 0 }}>
           <TextField
             label="Core address"
@@ -224,6 +241,7 @@ export function AddCoreByPairing({ onPaired }: { onPaired: (core: CoreWithDial) 
         <Btn
           variant="frame"
           size="md"
+          style={isPhone ? { width: "100%", minHeight: 44 } : undefined}
           onClick={() => void handleInspect()}
           disabled={inspecting || pairing || !address.trim()}
         >
@@ -298,8 +316,9 @@ export function AddCoreByPairing({ onPaired }: { onPaired: (core: CoreWithDial) 
       <div style={{ display: "flex", justifyContent: "flex-end" }}>
         <Btn
           variant="primary"
-          size="sm"
-          icon="plus"
+          size={isPhone ? "lg" : "sm"}
+          style={isPhone ? { width: "100%", minHeight: 44 } : undefined}
+          icon={isPhone ? undefined : "plus"}
           onClick={() => void handlePair()}
           disabled={pairing || !verified || !codeReady}
         >
@@ -439,6 +458,7 @@ function Fingerprint({
   value: string;
   color: string;
 }) {
+  const isPhone = useIsPhone();
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
       <div
@@ -456,9 +476,10 @@ function Fingerprint({
       <div
         style={{
           fontFamily: "var(--mono)",
-          fontSize: 11.5,
+          fontSize: isPhone ? 13 : 11.5,
           color,
           wordBreak: "break-all",
+          overflowWrap: isPhone ? "anywhere" : undefined,
           lineHeight: 1.5,
         }}
       >

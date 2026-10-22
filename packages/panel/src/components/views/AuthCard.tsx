@@ -1,5 +1,6 @@
 import type { FormEvent, ReactNode } from "react";
 import { Btn } from "~/components/ui/Btn";
+import { useIsPhone } from "~/lib/breakpoint";
 
 /**
  * The chrome shared by the two anonymous pages. Deliberately self-contained —
@@ -25,27 +26,46 @@ export function AuthCard({
   children: ReactNode;
   footer?: ReactNode;
 }) {
+  const isPhone = useIsPhone();
   return (
     <div
-      style={{
-        minHeight: "100vh",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        background: "var(--bg)",
-        padding: 24,
-      }}
+      data-auth-page
+      style={
+        isPhone
+          ? {
+              // Phone: the document scrolls (mobile-shell.css), so with the
+              // keyboard up the submit button can still be scrolled to. The
+              // card centres with auto margins, which give way to the top edge
+              // instead of pushing the card off it the way align-items does.
+              minHeight: "100dvh",
+              boxSizing: "border-box",
+              display: "flex",
+              flexDirection: "column",
+              background: "var(--bg)",
+              padding: 16,
+            }
+          : {
+              minHeight: "100vh",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              background: "var(--bg)",
+              padding: 24,
+            }
+      }
     >
       <form
         onSubmit={onSubmit}
         style={{
           width: "100%",
-          maxWidth: 380,
+          maxWidth: isPhone ? undefined : 380,
+          margin: isPhone ? "auto 0" : undefined,
+          boxSizing: isPhone ? "border-box" : undefined,
           background: "var(--surface-card)",
           border: "1px solid var(--border)",
           borderRadius: 12,
           boxShadow: "var(--shadow-card)",
-          padding: 28,
+          padding: isPhone ? 24 : 28,
           display: "flex",
           flexDirection: "column",
           gap: 16,
@@ -53,11 +73,11 @@ export function AuthCard({
       >
         <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
           <h1 style={{ fontSize: 18, fontWeight: 600, color: "var(--text-primary)" }}>{title}</h1>
-          <p style={{ fontSize: 12, color: "var(--text-muted)", lineHeight: 1.5 }}>{subtitle}</p>
+          <p style={{ fontSize: isPhone ? 13 : 12, color: "var(--text-muted)", lineHeight: 1.5 }}>{subtitle}</p>
         </div>
         {children}
         {error && (
-          <div role="alert" style={{ fontSize: 12, color: "var(--text-error)" }}>
+          <div role="alert" style={{ fontSize: isPhone ? 13 : 12, color: "var(--text-error)" }}>
             {error}
           </div>
         )}

@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Icon } from "~/components/ui/Icon";
 import { Ticked } from "~/components/ui/Ticked";
+import { useIsPhone } from "~/lib/breakpoint";
 import { CURRENT_MC_VERSION } from "~/queries/mission-control-version";
 import { coreUpdatePaths } from "~/shared/core-onboarding";
 import {
@@ -39,6 +40,8 @@ export function CoreNeedsUpdateNotice({
   // has not been upgraded while its fleet has is the same gate in the other
   // direction, and handing over the Core installer there fixes nothing.
   const panelBehind = coreDriftDirection(dial) === "panel-behind";
+  // Phone: body text at 13 px, commands wrap beside a 44 px copy button.
+  const isPhone = useIsPhone();
 
   return (
     <div
@@ -67,12 +70,12 @@ export function CoreNeedsUpdateNotice({
         >
           Needs update
         </span>
-        <span style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-dim)" }}>
+        <span style={{ fontFamily: "var(--mono)", fontSize: isPhone ? 12 : 11, color: "var(--text-dim)" }}>
           core-link {dial.coreVersion ?? "unknown"} · this Panel speaks{" "}
           {dial.panelVersion ?? "a newer protocol"}
         </span>
       </div>
-      <div style={{ fontSize: 12, color: "var(--text-dim)", lineHeight: 1.45 }}>
+      <div style={{ fontSize: isPhone ? 13 : 12, color: "var(--text-dim)", lineHeight: isPhone ? 1.5 : 1.45 }}>
         {panelBehind
           ? "This Core is ahead of this Panel. Its sessions stay hidden until the Panel itself is upgraded — pull a newer Panel and restart it."
           : "Its sessions stay hidden until the Core on that machine is updated. This Panel cannot see how that Core was installed — run the line that matches it. Both keep the pairing:"}
@@ -84,6 +87,7 @@ export function CoreNeedsUpdateNotice({
 }
 
 function CommandRow({ path }: { path: CoreUpdatePath }) {
+  const isPhone = useIsPhone();
   const [copied, setCopied] = useState(false);
 
   const copy = () => {
@@ -98,30 +102,44 @@ function CommandRow({ path }: { path: CoreUpdatePath }) {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-      <div style={{ fontSize: 12, color: "var(--text-dim)", lineHeight: 1.45 }}>
+      <div style={{ fontSize: isPhone ? 13 : 12, color: "var(--text-dim)", lineHeight: isPhone ? 1.5 : 1.45 }}>
         <Ticked text={path.title} />
       </div>
       <div
+        data-command-row
         style={{
           display: "flex",
           alignItems: "center",
           gap: 8,
-          padding: "6px 8px",
+          padding: isPhone ? "8px 8px 8px 12px" : "6px 8px",
           background: "var(--surface-1)",
           border: "1px solid var(--border)",
           borderRadius: 5,
         }}
       >
         <code
-          style={{
-            flex: 1,
-            minWidth: 0,
-            fontFamily: "var(--mono)",
-            fontSize: 11,
-            color: "var(--text)",
-            overflowX: "auto",
-            whiteSpace: "pre",
-          }}
+          style={
+            isPhone
+              ? {
+                  flex: 1,
+                  minWidth: 0,
+                  fontFamily: "var(--mono)",
+                  fontSize: 13,
+                  lineHeight: 1.5,
+                  color: "var(--text)",
+                  whiteSpace: "pre-wrap",
+                  overflowWrap: "anywhere",
+                }
+              : {
+                  flex: 1,
+                  minWidth: 0,
+                  fontFamily: "var(--mono)",
+                  fontSize: 11,
+                  color: "var(--text)",
+                  overflowX: "auto",
+                  whiteSpace: "pre",
+                }
+          }
         >
           {path.command}
         </code>
@@ -133,23 +151,24 @@ function CommandRow({ path }: { path: CoreUpdatePath }) {
             display: "inline-flex",
             alignItems: "center",
             gap: 4,
-            padding: "3px 7px",
+            padding: isPhone ? "0 12px" : "3px 7px",
+            minHeight: isPhone ? 44 : undefined,
             background: "transparent",
             border: "1px solid var(--border)",
-            borderRadius: 4,
+            borderRadius: isPhone ? 6 : 4,
             color: "var(--text-dim)",
             fontFamily: "var(--mono)",
-            fontSize: 10,
+            fontSize: isPhone ? 12 : 10,
             cursor: "pointer",
             flexShrink: 0,
           }}
         >
-          <Icon name={copied ? "check" : "copy"} size={11} />
+          <Icon name={copied ? "check" : "copy"} size={isPhone ? 12 : 11} />
           {copied ? "copied" : "copy"}
         </button>
       </div>
       {path.note && (
-        <div style={{ fontSize: 11, color: "var(--text-dim)", lineHeight: 1.45 }}>
+        <div style={{ fontSize: isPhone ? 12 : 11, color: "var(--text-dim)", lineHeight: 1.45 }}>
           <Ticked text={path.note} />
         </div>
       )}

@@ -139,3 +139,51 @@ describe("CoreNeedsUpdateNotice", () => {
     expect(document.body.textContent).toContain("unknown");
   });
 });
+
+// jsdom has no matchMedia: report "(max-width: Npx)" queries for a window width.
+function stubWidth(width: number) {
+  vi.stubGlobal("matchMedia", (query: string) => {
+    const max = /max-width:\s*(\d+)px/.exec(query);
+    return {
+      media: query,
+      matches: max ? width <= Number(max[1]) : false,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+    };
+  });
+}
+
+// On a phone (#831, M10) both commands wrap rather than scroll, beside a copy
+// button big enough to tap; desktop keeps the one-line rows.
+describe("CoreNeedsUpdateNotice by viewport", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("wraps both commands beside a 44 px copy button on a phone", () => {
+    stubWidth(390);
+    render(<CoreNeedsUpdateNotice dial={needsUpdate()} />);
+    for (const command of [CORE_UPDATE_COMMAND, CORE_IMAGE_UPDATE_COMMAND]) {
+      const code = screen.getByText(command);
+      expect(code.style.whiteSpace).toBe("pre-wrap");
+      expect(code.style.overflowWrap).toBe("anywhere");
+      expect(code.style.fontSize).toBe("13px");
+    }
+    const copies = screen.getAllByRole("button", { name: /update command/i });
+    expect(copies).toHaveLength(2);
+    for (const copy of copies) expect(copy.style.minHeight).toBe("44px");
+  });
+
+  it("keeps one-line scrolling rows and small copy buttons on desktop", () => {
+    stubWidth(1280);
+    render(<CoreNeedsUpdateNotice dial={needsUpdate()} />);
+    for (const command of [CORE_UPDATE_COMMAND, CORE_IMAGE_UPDATE_COMMAND]) {
+      const code = screen.getByText(command);
+      expect(code.style.whiteSpace).toBe("pre");
+      expect(code.style.overflowX).toBe("auto");
+      expect(code.style.fontSize).toBe("11px");
+    }
+    for (const copy of screen.getAllByRole("button", { name: /update command/i })) {
+      expect(copy.style.minHeight).toBe("");
+      expect(copy.style.padding).toBe("3px 7px");
+    }
+  });
+});

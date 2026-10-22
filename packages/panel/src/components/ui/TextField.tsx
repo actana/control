@@ -1,4 +1,5 @@
-import { useId, type ReactNode, type Ref } from "react";
+import { useId, useState, type ReactNode, type Ref } from "react";
+import { Icon } from "./Icon";
 
 export function TextField({
   label,
@@ -18,6 +19,7 @@ export function TextField({
   ariaInvalid,
   onBlur,
   disabled,
+  revealable,
 }: {
   label?: string;
   hint?: string;
@@ -36,7 +38,14 @@ export function TextField({
   ariaInvalid?: boolean;
   onBlur?: () => void;
   disabled?: boolean;
+  /**
+   * A password field gets a show/hide eye button (44 px, for touch). Off by
+   * default; the auth pages turn it on for phones only.
+   */
+  revealable?: boolean;
 }) {
+  const [shown, setShown] = useState(false);
+  const reveal = revealable === true && type === "password";
   const generatedId = useId();
   const inputId = `mc-text-field-${generatedId}`;
   const hintId = hint ? `${inputId}-hint` : undefined;
@@ -64,14 +73,14 @@ export function TextField({
           alignItems: "center",
           // Explicit height (not font-derived) so fields line up when placed
           // in a row with other 38px controls (selects, color triggers).
-          height: 38,
+          height: reveal ? 44 : 38,
           background: "var(--surface-0)",
           borderRadius: 7,
           overflow: "hidden",
         }}
       >
         <input
-          type={type}
+          type={reveal && shown ? "text" : type}
           id={inputId}
           value={value}
           onChange={(e) => onChange(e.target.value)}
@@ -98,6 +107,28 @@ export function TextField({
             fontSize: 13,
           }}
         />
+        {reveal && (
+          <button
+            type="button"
+            onClick={() => setShown((v) => !v)}
+            aria-label={shown ? "Hide password" : "Show password"}
+            aria-pressed={shown}
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              justifyContent: "center",
+              width: 44,
+              height: 44,
+              flexShrink: 0,
+              background: "transparent",
+              border: 0,
+              color: "var(--text-dim)",
+              cursor: "pointer",
+            }}
+          >
+            <Icon name={shown ? "eye-off" : "eye"} size={16} />
+          </button>
+        )}
         {rightAddon && (
           <div
             style={{
