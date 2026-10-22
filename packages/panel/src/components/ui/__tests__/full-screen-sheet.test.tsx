@@ -220,7 +220,7 @@ describe("TaskDetail as a drawer-screen", () => {
 
     phone();
     const onClose = mountTask();
-    await waitFor(() => expect(screen.getByText("Rotate keys")).toBeTruthy());
+    await waitFor(() => expect(screen.getByRole("heading", { name: "Rotate keys" })).toBeTruthy());
     expect(screen.getByRole("dialog", { name: "Task detail" }).hasAttribute("data-mc-drawer")).toBe(true);
     expect(screen.queryByRole("button", { name: "Close" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Back" }));

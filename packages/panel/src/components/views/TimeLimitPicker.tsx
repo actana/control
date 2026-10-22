@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { Btn } from "~/components/ui/Btn";
+import { useIsPhone } from "~/lib/breakpoint";
 import { PickCard } from "~/components/views/PickCard";
 import {
   TASK_TIMEOUT_DEFAULT_MINUTES,
@@ -42,6 +43,7 @@ export function TimeLimitPicker({
   idPrefix?: string;
   hints?: boolean;
 }) {
+  const phone = useIsPhone();
   const [custom, setCustom] = useState(value !== null && !isPreset(value));
   const [text, setText] = useState(value !== null && !isPreset(value) ? String(value) : "");
   const parsed = text.trim() === "" ? NaN : Number(text);
@@ -63,7 +65,7 @@ export function TimeLimitPicker({
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-      <div role="radiogroup" aria-label="Time limit" style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+      <div role="radiogroup" aria-label="Time limit" className="mc-time-limit-chips" style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
         {TASK_TIME_LIMIT_PRESETS.map((m) => (
           <PickCard key={m} selected={!custom && value === m} disabled={disabled} onClick={() => pick(m)}>
             {formatTaskTimeLimit(m)}
@@ -91,7 +93,11 @@ export function TimeLimitPicker({
           <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13 }}>
             <input
               id={`${idPrefix}-minutes`}
-              type="number"
+              // The phone shows the number pad for a text field with inputMode; a number input brings the decimal keyboard.
+              type={phone ? "text" : "number"}
+              {...(phone ? { inputMode: "numeric" as const, pattern: "[0-9]*", enterKeyHint: "done" as const, autoComplete: "off" } : {})}
+              onFocus={phone ? (e) => e.currentTarget.scrollIntoView?.({ block: "center" }) : undefined}
+              className={phone ? "mc-time-limit-minutes" : undefined}
               aria-label="Minutes"
               aria-invalid={!customValid}
               min={TASK_TIMEOUT_MIN_MINUTES}
@@ -110,7 +116,7 @@ export function TimeLimitPicker({
                   if (!disabled) commit();
                 }
               }}
-              style={{ width: 120, padding: "8px 10px", borderRadius: 8, border: "1px solid var(--border)", background: "transparent", color: "inherit", font: "inherit" }}
+              style={{ width: phone ? "100%" : 120, padding: "8px 10px", borderRadius: 8, border: "1px solid var(--border)", background: "transparent", color: "inherit", font: "inherit" }}
             />
             {commitCustom === "explicit" ? (
               <Btn variant="primary" disabled={disabled || !customValid} onClick={commit}>
