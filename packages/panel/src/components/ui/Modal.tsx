@@ -11,6 +11,8 @@ import { Icon } from "./Icon";
 import { CardFrame } from "./CardFrame";
 import { EscTooltip } from "./Tooltip";
 import { useHotkey } from "~/lib/use-hotkey";
+import { useIsPhone } from "~/lib/breakpoint";
+import { FullScreenSheet, type SheetPrimaryAction } from "./FullScreenSheet";
 
 export function Modal({
   open,
@@ -27,6 +29,8 @@ export function Modal({
   closeOnBackdropClick = true,
   contentStyle,
   footerStyle,
+  primaryAction,
+  sheetOnPhone = true,
 }: {
   open: boolean;
   onClose: () => void;
@@ -42,7 +46,12 @@ export function Modal({
   closeOnBackdropClick?: boolean;
   contentStyle?: CSSProperties;
   footerStyle?: CSSProperties;
+  /** Shown in the header of the phone sheet (Cancel · title · action). */
+  primaryAction?: SheetPrimaryAction;
+  /** On phones the dialog becomes a full-screen sheet; small confirmations opt out. */
+  sheetOnPhone?: boolean;
 }) {
+  const isPhone = useIsPhone();
   useHotkey(
     "escape",
     (e) => {
@@ -108,6 +117,23 @@ export function Modal({
   }, [open]);
 
   if (!open) return null;
+
+  if (isPhone && sheetOnPhone) {
+    const sheet = (
+      <FullScreenSheet
+        titleId={titleId}
+        title={title}
+        onClose={onClose}
+        primaryAction={primaryAction}
+        footer={footer}
+        zIndex={zIndex}
+        panelRef={setPanelRef}
+      >
+        {children}
+      </FullScreenSheet>
+    );
+    return typeof document === "undefined" ? sheet : createPortal(sheet, document.body);
+  }
 
   const panelStyle: CSSProperties = {
     width,

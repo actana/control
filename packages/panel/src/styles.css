@@ -23,6 +23,9 @@
 
 @import "@xterm/xterm/css/xterm.css";
 
+@import "./styles/mobile-shell.css";
+@import "./styles/mobile-sheet.css";
+
 /* One fixed look, copied from Actana Studio — see
    docs/adr/0015-one-fixed-look-from-actana-studio.md before adding a colour,
    a font or a theme option here. The only operator axis is dark / light
@@ -1194,7 +1197,7 @@ input[type="range"] {
   position: relative;
 }
 
-@media (max-width: 760px) {
+@media (max-width: 767px) {
   .mc-dashboard-hero {
     margin: -8px -8px 24px !important;
     padding: 24px 16px 20px !important;

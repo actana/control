@@ -7,6 +7,8 @@ import { Btn } from "~/components/ui/Btn";
 import { EmptyState } from "~/components/ui/EmptyState";
 import { GridViewToggleIcon } from "~/components/ui/GridViewToggleIcon";
 import { CoreHeader, type CoreTab } from "~/components/views/CoreHeader";
+import { CoreTabBar } from "~/components/views/CoreTabBar";
+import { useIsCompact } from "~/lib/breakpoint";
 import { CoreNeedsUpdateNotice } from "~/components/views/CoreNeedsUpdate";
 import { FleetSessionRow } from "~/components/views/FleetSessionRow";
 import { FilesDrive } from "~/components/views/FilesDrive";
@@ -43,6 +45,7 @@ import type { Harness } from "@actana/shared/domain";
  */
 export function CorePage({ coreId, tab, path = "" }: { coreId: string; tab: CoreTab; path?: string }) {
   const router = useRouter();
+  const compact = useIsCompact();
   const queryClient = useQueryClient();
   const cliAvailability = useCliAvailability(coreId);
   const { cores, fleet, loading, coresLoading, coresError, refreshCores } = useFleet();
@@ -368,6 +371,7 @@ export function CorePage({ coreId, tab, path = "" }: { coreId: string; tab: Core
           setRememberTick((n) => n + 1);
         }}
       />
+      {compact ? <CoreTabBar tab={tab} onTab={setTab} /> : null}
     </div>
   );
 }
