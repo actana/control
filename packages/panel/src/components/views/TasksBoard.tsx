@@ -1,4 +1,4 @@
-import { useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { ArrowUp, Lock } from "lucide-react";
 import { toast } from "sonner";
@@ -245,6 +245,11 @@ export function TasksBoard({ coreId = null, openTaskId = null }: { coreId?: stri
   const countOf = (statuses: (typeof BOARD_COLUMNS)[number]["statuses"]) => columnTasks(visible, statuses).length;
   // While a card is carried by pointer the segments become the drop targets, and the list below stops being one.
   const dropGrid = compact && drag?.via === "pointer";
+  // A held card cancels every touchmove, so the page cannot scroll to the grid: bring it into view once per lift.
+  const dropGridRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    if (dropGrid) dropGridRef.current?.scrollIntoView?.({ block: "nearest" });
+  }, [dropGrid]);
   const onSwipeEnd = (e: React.TouchEvent) => {
     const start = swipeStart.current;
     swipeStart.current = null;
@@ -289,7 +294,7 @@ export function TasksBoard({ coreId = null, openTaskId = null }: { coreId?: stri
         dropGrid && drag ? (
           <>
             <p className="mc-tasks-drop-help">Drop on a column to move the Task. Let go anywhere else to cancel.</p>
-            <div className="mc-tasks-drop-grid">
+            <div ref={dropGridRef} className="mc-tasks-drop-grid">
               {BOARD_COLUMNS.map((col) => {
                 const state = dropStateOf(col.id);
                 return (

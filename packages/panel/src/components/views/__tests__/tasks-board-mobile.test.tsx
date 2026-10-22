@@ -225,6 +225,22 @@ describe("phone: long-press drag onto the segments", () => {
     expect(document.querySelectorAll('[data-board-column="draft"]')).toHaveLength(1);
   });
 
+  it("scrolls the drop grid into view once when a card is lifted", async () => {
+    // jsdom has no scrollIntoView; while a card is held the page cannot scroll, so the grid must come to the finger.
+    const scrollIntoView = vi.fn();
+    Element.prototype.scrollIntoView = scrollIntoView;
+    try {
+      await mount();
+      await carry("t1");
+      moveTo("assigned");
+      expect(scrollIntoView).toHaveBeenCalledTimes(1);
+      expect(scrollIntoView).toHaveBeenCalledWith({ block: "nearest" });
+      expect((scrollIntoView.mock.contexts[0] as Element).classList.contains("mc-tasks-drop-grid")).toBe(true);
+    } finally {
+      delete (Element.prototype as Partial<Element>).scrollIntoView;
+    }
+  });
+
   it("an assigned Task offers Draft with its own hint", async () => {
     await mount();
     fireEvent.click(tab("Assigned"));
