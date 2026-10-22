@@ -478,17 +478,29 @@ function MintStep({ label, onLabel }: { label: string; onLabel: (next: string) =
  * never see again unless they forget every Core they have.
  */
 function RedeemStep({ onPaired }: { onPaired: (core: CoreWithDial) => Promise<void> }) {
+  const sameFormAside = (
+    <Aside>
+      This is the same form as <strong>{ADD_CORE_LOCATION}</strong>, which is where every Core
+      after this one is paired. The gear icon in the top bar is waiting for you on the other side
+      of this step.
+    </Aside>
+  );
   return (
     <StepBody
       title="Redeem the code here"
       lede="Give the Panel the Core's address, compare the fingerprint it is presented against the one on that terminal, and only then enter the code. The Panel does not send the code until the two match."
     >
-      <AddCoreByPairing onPaired={onPaired} />
-      <Aside>
-        This is the same form as <strong>{ADD_CORE_LOCATION}</strong>, which is where every Core
-        after this one is paired. The gear icon in the top bar is waiting for you on the other side
-        of this step.
-      </Aside>
+      <AddCoreByPairing
+        onPaired={onPaired}
+        sharedFolderNote={
+          // The phone sheet covers the wizard, so it repeats what sits behind it (M06).
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            {sameFormAside}
+            <Aside>The Panel opens as soon as a Core pairs.</Aside>
+          </div>
+        }
+      />
+      {sameFormAside}
     </StepBody>
   );
 }

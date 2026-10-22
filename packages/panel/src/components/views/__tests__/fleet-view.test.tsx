@@ -1,4 +1,6 @@
 // @vitest-environment jsdom
+import { readFileSync } from "node:fs";
+import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -173,7 +175,7 @@ describe("FleetView on compact viewports", () => {
     await mount();
     expect(screen.queryByRole("heading", { level: 1 })).toBeNull();
     const page = document.querySelector<HTMLElement>('[data-fleet-compact="phone"]')!;
-    expect(page.style.padding).toBe("16px");
+    expect(page.style.padding).toBe("var(--mc-fleet-gutter, 16px)");
     expect(document.querySelector(".mc-card-frame")).toBeNull();
     const summary = screen.getByText("1 active session across 3 Cores");
     expect(summary.style.fontSize).toBe("14px");
@@ -218,7 +220,10 @@ describe("FleetView on compact viewports", () => {
     cores = [core("a", "alpha")];
     await mount();
     expect(screen.queryByRole("heading", { level: 1 })).toBeNull();
-    expect(document.querySelector<HTMLElement>('[data-fleet-compact="phone"]')!.style.padding).toBe("16px");
+    // The 24 px tablet gutter comes from mobile-shell.css (600-767 px sets the variable).
+    expect(document.querySelector<HTMLElement>('[data-fleet-compact="phone"]')!.style.padding).toBe(
+      "var(--mc-fleet-gutter, 16px)",
+    );
     headerRow();
     expect(picker().style.height).toBe("44px");
     expect(action("Refresh").style.minHeight).toBe("44px");
@@ -232,5 +237,14 @@ describe("FleetView on compact viewports", () => {
     expect(document.querySelector<HTMLElement>('[data-fleet-compact="tablet"]')!.style.padding).toBe("24px");
     headerRow();
     expect(action("Refresh").style.minHeight).toBe("44px");
+  });
+});
+
+describe("Fleet gutter CSS (#831)", () => {
+  it("sets a 24 px gutter only from 600 to 767 px, so 390 keeps 16 and 744 gets the tablet gutter", () => {
+    const css = readFileSync(path.resolve(__dirname, "../../../styles/mobile-shell.css"), "utf8");
+    expect(css).toMatch(
+      /@media \(min-width: 600px\) and \(max-width: 767px\)\s*\{\s*\[data-fleet-compact\]\s*\{\s*--mc-fleet-gutter:\s*24px;/,
+    );
   });
 });

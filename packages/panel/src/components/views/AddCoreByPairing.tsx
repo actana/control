@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { Btn } from "~/components/ui/Btn";
 import { SharedFolderStep } from "~/components/views/SharedFolderStep";
 import { TextField } from "~/components/ui/TextField";
@@ -59,7 +59,14 @@ const FINGERPRINT_STATES: Record<
   mismatch: { label: "Mismatch", color: "var(--danger, #e5484d)", border: "var(--danger, #e5484d)" },
 };
 
-export function AddCoreByPairing({ onPaired }: { onPaired: (core: CoreWithDial) => Promise<void> }) {
+export function AddCoreByPairing({
+  onPaired,
+  sharedFolderNote,
+}: {
+  onPaired: (core: CoreWithDial) => Promise<void>;
+  /** Passed to the Shared folder step's phone sheet. */
+  sharedFolderNote?: ReactNode;
+}) {
   const [address, setAddress] = useState("");
   const [identity, setIdentity] = useState<CorePairingIdentity | null>(null);
   const [inspecting, setInspecting] = useState(false);
@@ -183,6 +190,7 @@ export function AddCoreByPairing({ onPaired }: { onPaired: (core: CoreWithDial) 
     return (
       <SharedFolderStep
         core={finishing}
+        sheetNote={sharedFolderNote}
         onFinished={async (core) => {
           setFinishing(null);
           await onPaired(core);

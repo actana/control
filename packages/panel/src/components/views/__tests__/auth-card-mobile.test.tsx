@@ -75,7 +75,8 @@ describe("AuthCard on a phone", () => {
     fireEvent.click(eye);
     expect(input.type).toBe("text");
     fireEvent.click(screen.getByRole("button", { name: "Hide password" }));
-    expect(input.type).toBe("password");
+    expect(input.type).toBe("password");    // One state signal only: the label flips, there is no aria-pressed as well.
+    expect(eye.hasAttribute("aria-pressed")).toBe(false);
   });
 
   it("gives both setup password fields their own eye, and none to the name", () => {

@@ -415,6 +415,27 @@ describe("pairing step 4 on a phone", () => {
     expect(button("Test connection").style.minHeight).toBe("44px");
   });
 
+  it("first-time storage: the write-only Master key gets the show/hide eye in the sheet (M06)", async () => {
+    stubWidth(390);
+    api.getStorage.mockImplementation(async () => ({ storage: STORAGE_EMPTY, cores: [] }));
+    await mountStep();
+    expect(screen.getByLabelText("Master key")).not.toBeNull();
+    expect(sheet()!.querySelector('[aria-label="Show password"]')).not.toBeNull();
+  });
+
+  it("shows the caller's note under the card inside the sheet", async () => {
+    stubWidth(390);
+    render(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <KeybindingsProvider>
+          <SharedFolderStep core={core()} onFinished={vi.fn(async () => {})} sheetNote={<p>The Panel opens as soon as a Core pairs.</p>} />
+        </KeybindingsProvider>
+      </QueryClientProvider>,
+    );
+    await act(async () => {});
+    expect(sheet()!.textContent).toContain("The Panel opens as soon as a Core pairs.");
+  });
+
   it("keeps Connect disabled until the test passed, then finishes from the header", async () => {
     stubWidth(390);
     const onFinished = await mountStep();

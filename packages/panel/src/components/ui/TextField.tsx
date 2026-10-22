@@ -112,7 +112,7 @@ export function TextField({
             type="button"
             onClick={() => setShown((v) => !v)}
             aria-label={shown ? "Hide password" : "Show password"}
-            aria-pressed={shown}
+            disabled={disabled}
             style={{
               display: "inline-flex",
               alignItems: "center",

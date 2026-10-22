@@ -105,7 +105,7 @@ export function FleetView() {
   // wider ones (744 px is still "phone") keep them beside a growing picker.
   if (compact) {
     return (
-      <div data-fleet-compact={breakpoint} style={{ flex: 1, overflow: "auto", padding: phone ? 16 : 24 }}>
+      <div data-fleet-compact={breakpoint} style={{ flex: 1, overflow: "auto", padding: phone ? "var(--mc-fleet-gutter, 16px)" : 24 }}>
         <div style={{ display: "flex", flexDirection: "column", gap: 12, marginBottom: 20 }}>
           <div style={{ fontSize: 14, color: "var(--text-dim)" }}>{summary}</div>
           <div data-fleet-header-row style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8 }}>

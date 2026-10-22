@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { Btn } from "~/components/ui/Btn";
 import { Modal } from "~/components/ui/Modal";
 import { TextField } from "~/components/ui/TextField";
@@ -57,9 +57,12 @@ type StorageLoad = "loading" | "ok" | "failed";
 export function SharedFolderStep({
   core,
   onFinished,
+  sheetNote,
 }: {
   core: CoreWithDial;
   onFinished: (core: CoreWithDial) => Promise<void>;
+  /** Shown under the card inside the phone sheet, where the page behind it is hidden. */
+  sheetNote?: ReactNode;
 }) {
   const [fields, setFields] = useState<Fields>(DEFAULTS);
   const [masterKey, setMasterKey] = useState("");
@@ -311,6 +314,7 @@ export function SharedFolderStep({
           <TextField
             label="Master key"
             type="password"
+            revealable={isPhone}
             value={masterKey}
             onChange={(v) => {
               setMasterKey(v);
@@ -440,6 +444,7 @@ export function SharedFolderStep({
       }
     >
       {card}
+      {sheetNote && <div style={{ marginTop: 14 }}>{sheetNote}</div>}
     </Modal>
   );
 }
