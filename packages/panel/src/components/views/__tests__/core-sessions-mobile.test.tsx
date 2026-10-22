@@ -35,6 +35,7 @@ const fleet = {
   rows: [
     row("s1", "running", "Implement issue 558", "claude-code"),
     row("s2", "needs-input", "Migrate sessions table", "codex"),
+    row("s3", "finished", "Consult on PR", "codex"),
   ],
   offlineCores: [],
   singleCore: false,
@@ -124,14 +125,15 @@ describe("Core Sessions on compact screens", () => {
     stubWidth(390);
     await mount();
     const cards = document.querySelectorAll("[data-session-card]");
-    expect(cards.length).toBe(2);
+    expect(cards.length).toBe(3);
     const first = cards[0] as HTMLElement;
     expect(first.tagName).toBe("BUTTON");
     expect(first.textContent).toContain("Running");
     expect(first.textContent).toContain("claude-code");
     expect(first.textContent).toContain("Implement issue 558");
     expect(first.textContent).toContain("2 minutes ago");
-    expect((cards[1] as HTMLElement).textContent).toContain("Needs-input");
+    expect((cards[1] as HTMLElement).textContent).toContain("Needs input");
+    expect((cards[2] as HTMLElement).textContent).toContain("Finished");
   });
 
   it("phone: tapping a card opens the workspace for that Session", async () => {
@@ -146,7 +148,7 @@ describe("Core Sessions on compact screens", () => {
   it("phone: shows the session count, the Core status line and a New session button", async () => {
     stubWidth(390);
     await mount();
-    expect(screen.getByText("2 sessions")).toBeTruthy();
+    expect(screen.getByText("3 sessions")).toBeTruthy();
     expect(screen.getByText(/online v3 · shared attached/)).toBeTruthy();
     expect(screen.getByRole("button", { name: /New session/ })).toBeTruthy();
     // The cards are the only layout here: there is no Grid/List switch to show.

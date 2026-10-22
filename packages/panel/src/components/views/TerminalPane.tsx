@@ -995,6 +995,7 @@ export function TerminalPane({
             // surface.ptyId mirrors the active pty across respawns.
             if (surface.ptyId && ptyApi && mayWriteRef.current) void ptyApi.write(surface.ptyId, data);
           },
+          applicationCursorKeys: () => term.modes.applicationCursorKeysMode,
           setReadOnly: (readOnly) => setTerminalReadOnly(term, readOnly),
           paste: (text) => term.paste(text),
         },
@@ -1263,6 +1264,11 @@ export function TerminalPane({
           // surface.ptyId mirrors the active pty across respawns.
           if (surface.ptyId && ptyApi && mayWriteRef.current) void ptyApi.write(surface.ptyId, data);
         },
+        // The key row's bytes skip `onData` like the key map's do, so they go
+        // through the same `writeToPty` that folds them into the running
+        // fallback (issue 386) and honours the write gate.
+        sendKeys: (data) => void writeToPty(data),
+        applicationCursorKeys: () => term.modes.applicationCursorKeysMode,
         setReadOnly: (readOnly) => setTerminalReadOnly(term, readOnly),
         paste: (text) => term.paste(text),
       };
@@ -1988,7 +1994,8 @@ export function TerminalPane({
         <div className="mc-term-m-keydock">
           <TerminalKeyRow
             ctrl={stickyCtrl}
-            onSend={(data) => termSurfaceRef.current?.writeToPty?.(data)}
+            onSend={(data) => termSurfaceRef.current?.sendKeys?.(data)}
+            applicationCursor={() => termSurfaceRef.current?.applicationCursorKeys?.() ?? false}
             onPaste={(text) => termSurfaceRef.current?.paste?.(text)}
           />
         </div>

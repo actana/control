@@ -36,6 +36,8 @@ vi.mock("~/lib/terminal-store", () => ({
   useTerminals: () => ({ gridFocusRequest: null, consumeGridFocusRequest: () => false }),
   useTerminalActions: () => ({ syncSession: noop }),
 }));
+const mutateSession = vi.fn(async (..._args: unknown[]) => ({}));
+vi.mock("~/lib/mutate-session-for-core", () => ({ mutateSessionForCore: mutateSession }));
 vi.mock("~/lib/user-terminal-store", () => ({ useUserTerminals: () => ({ panelOpen: false }) }));
 vi.mock("~/lib/use-hotkey", () => ({ useHotkey: noop }));
 const ptyWrite = vi.fn(async () => true);
@@ -58,7 +60,11 @@ vi.mock("~/lib/panel-bridge", () => ({
   getCorePtyBridge: () => ptyBridge,
 }));
 const dataHandlers: Array<(d: string) => void> = [];
+const terms: FakeTerminal[] = [];
 class FakeTerminal {
+  constructor() {
+    terms.push(this);
+  }
   cols = 80;
   rows = 24;
   options: Record<string, unknown> = {};
@@ -157,7 +163,7 @@ function stubPhone() {
   });
 }
 
-function renderPanel() {
+function renderPanel(sess: Session = session) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={client}>
@@ -169,7 +175,7 @@ function renderPanel() {
             startCommand: "claude",
             dangerouslySkipPermissions: false,
             coreId: "core1",
-            session,
+            session: sess,
           }}
           onClose={vi.fn()}
           onHide={vi.fn()}
@@ -186,6 +192,8 @@ beforeEach(() => {
   vi.stubGlobal("ResizeObserver", class { observe = noop; disconnect = noop; unobserve = noop; });
   stubPhone();
   dataHandlers.length = 0;
+  terms.length = 0;
+  state.session = session;
 });
 afterEach(() => {
   cleanup();
@@ -210,5 +218,39 @@ describe("phone: sticky Ctrl survives Back and reopen", () => {
     act(() => dataHandlers[0]!("c"));
     expect(ptyWrite).toHaveBeenCalledWith("pty1", "\x03");
     expect(screen.getByRole("button", { name: "Ctrl" }).getAttribute("aria-pressed")).toBe("false");
+  });
+
+  it("key-row arrows send the application-cursor form while DECCKM is on", async () => {
+    renderPanel();
+    await waitFor(() => expect(dataHandlers).toHaveLength(1));
+    terms[0]!.modes.applicationCursorKeysMode = true;
+    ptyWrite.mockClear();
+    fireEvent.click(screen.getByRole("button", { name: "Up" }));
+    expect(ptyWrite).toHaveBeenCalledWith("pty1", "\x1bOA");
+  });
+});
+
+describe("phone: key-row bytes feed the turn tracker (issue 386)", () => {
+  const cursorFinished = { ...session, agent: "cursor-cli", status: "finished" } as unknown as Session;
+  const runningPatches = () =>
+    mutateSession.mock.calls.filter(([, arg]) => (arg as { status?: string }).status === "running");
+
+  it("a recalled history entry (key-row Up) then Enter marks a finished Session running", async () => {
+    state.session = cursorFinished;
+    renderPanel(cursorFinished);
+    await waitFor(() => expect(dataHandlers).toHaveLength(1));
+    fireEvent.click(screen.getByRole("button", { name: "Up" }));
+    await act(async () => dataHandlers[0]!("\r"));
+    expect(runningPatches()).toHaveLength(1);
+  });
+
+  it("typed text cleared by key-row Esc then Enter does not mark it running", async () => {
+    state.session = cursorFinished;
+    renderPanel(cursorFinished);
+    await waitFor(() => expect(dataHandlers).toHaveLength(1));
+    await act(async () => dataHandlers[0]!("foo"));
+    fireEvent.click(screen.getByRole("button", { name: "Esc" }));
+    await act(async () => dataHandlers[0]!("\r"));
+    expect(runningPatches()).toHaveLength(0);
   });
 });

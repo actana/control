@@ -56,7 +56,11 @@ vi.mock("~/lib/panel-bridge", () => ({
   getCorePtyBridge: () => ptyBridge,
 }));
 const dataHandlers: Array<(d: string) => void> = [];
+const terms: FakeTerminal[] = [];
 class FakeTerminal {
+  constructor() {
+    terms.push(this);
+  }
   cols = 80;
   rows = 24;
   options: Record<string, unknown> = {};
@@ -138,6 +142,7 @@ beforeEach(() => {
   vi.stubGlobal("ResizeObserver", class { observe = noop; disconnect = noop; unobserve = noop; });
   stubPhone();
   dataHandlers.length = 0;
+  terms.length = 0;
   store.panelOpen = true;
 });
 afterEach(() => {
@@ -165,5 +170,14 @@ describe("phone: user terminal sticky Ctrl survives close and reopen", () => {
     act(() => dataHandlers[0]!("c"));
     expect(ptyWrite).toHaveBeenCalledWith("pty-t1", "\x03");
     expect(screen.getByRole("button", { name: "Ctrl" }).getAttribute("aria-pressed")).toBe("false");
+  });
+
+  it("key-row arrows send the application-cursor form while DECCKM is on", async () => {
+    render(panel());
+    await waitFor(() => expect(dataHandlers).toHaveLength(1));
+    terms[0]!.modes.applicationCursorKeysMode = true;
+    ptyWrite.mockClear();
+    fireEvent.click(screen.getByRole("button", { name: "Up" }));
+    expect(ptyWrite).toHaveBeenCalledWith("pty-t1", "\x1bOA");
   });
 });

@@ -166,6 +166,32 @@ describe("Core workspace on compact screens", () => {
     expect(screen.getByText("Migrate sessions table")).toBeTruthy();
   });
 
+  it("leaving compact drops a Pinned scope picked there, back to the full list", async () => {
+    const listeners = new Set<() => void>();
+    let width = 390;
+    vi.stubGlobal("matchMedia", (query: string) => {
+      const max = /max-width:\s*(\d+)px/.exec(query);
+      return {
+        media: query,
+        get matches() {
+          return max ? width <= Number(max[1]) : false;
+        },
+        addEventListener: (_: string, l: () => void) => listeners.add(l),
+        removeEventListener: (_: string, l: () => void) => listeners.delete(l),
+      };
+    });
+    await mount();
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /^Pinned\s*1$/ }));
+    });
+    expect(screen.queryByText("Implement #558")).toBeNull();
+    width = 1440;
+    await act(async () => {
+      listeners.forEach((l) => l());
+    });
+    expect(screen.getByText("Implement #558")).toBeTruthy();
+  });
+
   it("phone: New opens the New session dialog", async () => {
     stubWidth(390);
     await mount();

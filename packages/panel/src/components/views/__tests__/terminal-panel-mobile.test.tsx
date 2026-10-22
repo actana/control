@@ -108,7 +108,7 @@ function seedSurface() {
     buildKey: "0 0 0",
     ptyId: "pty1",
     destroyed: false,
-    controls: { focus: noop, clear: noop, setFontSize: noop, writeToPty, paste },
+    controls: { focus: noop, clear: noop, setFontSize: noop, writeToPty, sendKeys: writeToPty, paste },
     fit: noop,
     teardown: noop,
   } as never);

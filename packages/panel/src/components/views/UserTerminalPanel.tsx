@@ -710,6 +710,10 @@ function UserTerminalPhoneScreen() {
             onSend={(data) =>
               (terminalSurfaceCache.get(active.terminal.id) as PaneTerminalSurface | null)?.controls?.writeToPty?.(data)
             }
+            applicationCursor={() =>
+              (terminalSurfaceCache.get(active.terminal.id) as PaneTerminalSurface | null)?.controls
+                ?.applicationCursorKeys?.() ?? false
+            }
             onPaste={(text) =>
               (terminalSurfaceCache.get(active.terminal.id) as PaneTerminalSurface | null)?.controls?.paste?.(text)
             }

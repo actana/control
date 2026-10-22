@@ -90,6 +90,7 @@ export function UserTerminalPane({
     clear: () => void;
     setFontSize: (fontSize: number) => void;
     writeToPty?: (data: string) => void;
+    applicationCursorKeys?: () => boolean;
   } | null>(null);
   const {
     level: zoomLevel,
@@ -300,6 +301,7 @@ export function UserTerminalPane({
           const id = activePtyId;
           if (id && ptyApi) ptyApi.write(id, data).catch(() => {});
         },
+        applicationCursorKeys: () => term.modes.applicationCursorKeysMode,
         paste: (text) => term.paste(text),
       };
       const wireTerminalInput = (id: string) => {

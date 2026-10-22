@@ -47,6 +47,13 @@ export interface CachedTerminalControls {
   /** Write raw bytes to the surface's live PTY (tracks respawns). */
   writeToPty?(data: string): void;
   /**
+   * Write key-row bytes (arrows, Esc, Tab, ctrl chords): `writeToPty` plus the
+   * pane's turn bookkeeping, since these skip xterm's `onData` too.
+   */
+  sendKeys?(data: string): void;
+  /** `term.modes.applicationCursorKeysMode` now: DECCKM decides `ESC O A` vs `ESC [ A`. */
+  applicationCursorKeys?(): boolean;
+  /**
    * Paste text the way the keyboard shortcut does (`term.paste`): bracketed
    * paste when the program asked for it, and through `onData` so the pane's
    * paste latch and input bookkeeping see it.

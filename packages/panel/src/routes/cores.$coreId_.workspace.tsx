@@ -289,6 +289,11 @@ function CoreWorkspacePage() {
   // stored grid flag never takes over a compact screen (#832, M27).
   const compact = useIsCompact();
   const gridViewActive = terminals.gridView && !compact;
+  // Pinned is grid-only on desktop but the compact scope control can set it; drop
+  // back to Active when widening into a list that has no scope toggle.
+  useEffect(() => {
+    if (!compact && !gridViewActive && sessionView === "pinned") setSessionView("active");
+  }, [compact, gridViewActive, sessionView]);
 
   // How many sessions the current scope's grid shows (drives "Archive all").
   const gridScopeSessionCount = useMemo(
