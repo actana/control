@@ -995,9 +995,7 @@ export function TerminalPane({
             // surface.ptyId mirrors the active pty across respawns.
             if (surface.ptyId && ptyApi && mayWriteRef.current) void ptyApi.write(surface.ptyId, data);
           },
-          applicationCursorKeys: () => term.modes.applicationCursorKeysMode,
           setReadOnly: (readOnly) => setTerminalReadOnly(term, readOnly),
-          paste: (text) => term.paste(text),
         },
         fit: () => fitTerminalSurface(term, fit),
         teardown: () => undefined,

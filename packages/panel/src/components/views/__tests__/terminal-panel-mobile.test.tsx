@@ -3,7 +3,7 @@
 // #832 M21/M22: the Session terminal on a phone is a full-screen view with Back,
 // the status row, the key row and the harness question as a bottom sheet. The
 // edges are mocked: xterm (a pre-seeded surface in the surface cache whose
-// `writeToPty` is a spy), the stores, the link bridge. Desktop is asserted
+// `writeToPty` and `sendKeys` are spies), the stores, the link bridge. Desktop is asserted
 // unchanged below.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, renderHook, screen, waitFor } from "@testing-library/react";
@@ -99,7 +99,10 @@ function stubMatchMedia(width: number) {
   );
 }
 
+// Two spies: the key row must go through `sendKeys` (the pane's turn-tracked
+// write), the question sheet through the raw `writeToPty`.
 const writeToPty = vi.fn();
+const sendKeys = vi.fn();
 const paste = vi.fn();
 function seedSurface() {
   terminalSurfaceCache.set({
@@ -108,7 +111,7 @@ function seedSurface() {
     buildKey: "0 0 0",
     ptyId: "pty1",
     destroyed: false,
-    controls: { focus: noop, clear: noop, setFontSize: noop, writeToPty, sendKeys: writeToPty, paste },
+    controls: { focus: noop, clear: noop, setFontSize: noop, writeToPty, sendKeys, paste },
     fit: noop,
     teardown: noop,
   } as never);
@@ -185,7 +188,8 @@ describe("phone: Session terminal", () => {
     renderPanel();
     fireEvent.click(screen.getByRole("button", { name: "Esc" }));
     fireEvent.click(screen.getByRole("button", { name: "Up" }));
-    expect(writeToPty.mock.calls.map((c) => c[0])).toEqual(["\x1b", "\x1b[A"]);
+    expect(sendKeys.mock.calls.map((c) => c[0])).toEqual(["\x1b", "\x1b[A"]);
+    expect(writeToPty).not.toHaveBeenCalled();
   });
 
   it("the key row's Paste goes through the terminal's paste, not raw PTY bytes", async () => {
@@ -195,6 +199,7 @@ describe("phone: Session terminal", () => {
       fireEvent.click(screen.getByRole("button", { name: "Paste" }));
     });
     expect(paste).toHaveBeenCalledWith("echo hi");
+    expect(sendKeys).not.toHaveBeenCalled();
     expect(writeToPty).not.toHaveBeenCalled();
   });
 
@@ -238,6 +243,7 @@ describe("phone: Session terminal", () => {
     fireEvent.click(first);
     // Answering walks the TUI menu through the PTY (the overlay's existing path).
     await waitFor(() => expect(writeToPty).toHaveBeenCalled());
+    expect(sendKeys).not.toHaveBeenCalled();
   });
 });
 

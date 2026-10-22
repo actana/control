@@ -171,7 +171,17 @@ function CoreWorkspacePage() {
   // "newRow" is set by the grid's "New row" button so the result starts a fresh
   // row; "default" (the New session button / hotkey) uses the current row.
   const [newHarnessTarget, setNewHarnessTarget] = useState<"default" | "newRow">("default");
-  const [sessionView, setSessionView] = useState<SessionView>("active");
+  const terminals = useTerminals();
+  // Phone and tablet get one stacked list; the grid is a desktop layout, so a
+  // stored grid flag never takes over a compact screen (#832, M27).
+  const compact = useIsCompact();
+  const gridViewActive = terminals.gridView && !compact;
+  const [chosenSessionView, setSessionView] = useState<SessionView>("active");
+  // Pinned is grid-only on desktop, but the compact scope control can pick it
+  // outside the grid. The desktop list has no scope toggle, so there it reads as
+  // Active from the first render on instead of stranding the user on Pinned.
+  const sessionView: SessionView =
+    chosenSessionView === "pinned" && !compact && !gridViewActive ? "active" : chosenSessionView;
   const showArchived = sessionView === "archived";
   const showPinned = sessionView === "pinned";
   // A Core's list carries none of its archived rows (ADR 0019): the count rides
@@ -284,16 +294,11 @@ function CoreWorkspacePage() {
     };
   }, [overflowOpen]);
 
-  const terminals = useTerminals();
-  // Phone and tablet get one stacked list; the grid is a desktop layout, so a
-  // stored grid flag never takes over a compact screen (#832, M27).
-  const compact = useIsCompact();
-  const gridViewActive = terminals.gridView && !compact;
-  // Pinned is grid-only on desktop but the compact scope control can set it; drop
-  // back to Active when widening into a list that has no scope toggle.
-  useEffect(() => {
-    if (!compact && !gridViewActive && sessionView === "pinned") setSessionView("active");
-  }, [compact, gridViewActive, sessionView]);
+  // Keep the stored choice in line with what is shown, so entering the grid or
+  // going compact again later does not bring back a stale Pinned.
+  useLayoutEffect(() => {
+    if (chosenSessionView !== sessionView) setSessionView(sessionView);
+  }, [chosenSessionView, sessionView]);
 
   // How many sessions the current scope's grid shows (drives "Archive all").
   const gridScopeSessionCount = useMemo(

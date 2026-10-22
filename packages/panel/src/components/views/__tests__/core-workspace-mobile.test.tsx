@@ -190,6 +190,14 @@ describe("Core workspace on compact screens", () => {
       listeners.forEach((l) => l());
     });
     expect(screen.getByText("Implement #558")).toBeTruthy();
+    // The dropped choice stays dropped: narrowing again shows Active, not a stale Pinned.
+    width = 390;
+    await act(async () => {
+      listeners.forEach((l) => l());
+    });
+    expect(screen.getByRole("button", { name: /^Active\s*4$/ }).getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByRole("button", { name: /^Pinned\s*1$/ }).getAttribute("aria-pressed")).toBe("false");
+    expect(screen.getByText("Implement #558")).toBeTruthy();
   });
 
   it("phone: New opens the New session dialog", async () => {

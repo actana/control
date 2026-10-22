@@ -114,6 +114,18 @@ async function mount() {
   return router;
 }
 
+// What only the compact Sessions screen draws (M20). The phone test asserts each
+// one is there and the desktop test that none is, so the desktop guard cannot go
+// hollow when the fixture or the copy changes.
+const COMPACT_ONLY = [
+  "[data-sessions-cards]",
+  "[data-session-card]",
+  ".mc-sessions-count",
+  ".mc-sessions-toggle",
+  "[data-core-status-line]",
+];
+const SESSION_COUNT = /^\d+ sessions?$/;
+
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
@@ -148,7 +160,8 @@ describe("Core Sessions on compact screens", () => {
   it("phone: shows the session count, the Core status line and a New session button", async () => {
     stubWidth(390);
     await mount();
-    expect(screen.getByText("3 sessions")).toBeTruthy();
+    for (const selector of COMPACT_ONLY) expect(document.querySelector(selector), selector).toBeTruthy();
+    expect(screen.getByText(SESSION_COUNT).textContent).toBe(`${fleet.rows.length} sessions`);
     expect(screen.getByText(/online v3 · shared attached/)).toBeTruthy();
     expect(screen.getByRole("button", { name: /New session/ })).toBeTruthy();
     // The cards are the only layout here: there is no Grid/List switch to show.
@@ -181,10 +194,8 @@ describe("Core Sessions on compact screens", () => {
     expect(screen.getByRole("button", { name: "List view" })).toBeTruthy();
     expect(screen.getByRole("button", { name: /New session/ })).toBeTruthy();
     expect(document.querySelector("[data-sessions-list]")).toBeTruthy();
-    expect(document.querySelector("[data-sessions-cards]")).toBeNull();
-    expect(document.querySelector("[data-session-card]")).toBeNull();
-    expect(screen.queryByText("2 sessions")).toBeNull();
-    expect(document.querySelector("[data-core-status-line]")).toBeNull();
+    for (const selector of COMPACT_ONLY) expect(document.querySelector(selector), selector).toBeNull();
+    expect(screen.queryByText(SESSION_COUNT)).toBeNull();
     await act(async () => {
       screen.getByRole("button", { name: "Grid view" }).click();
     });
