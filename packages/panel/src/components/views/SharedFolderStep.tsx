@@ -438,7 +438,7 @@ export function SharedFolderStep({
       sheetCancelLabel="Back"
       primaryAction={{ label: "Connect", onClick: () => void handleFinish(), disabled: finishDisabled }}
       footer={
-        <Btn variant="primary" size="lg" style={{ minHeight: 44 }} onClick={() => void handleFinish()} disabled={finishDisabled}>
+        <Btn variant="frame" size="lg" style={{ minHeight: 44 }} onClick={() => void handleFinish()} disabled={finishDisabled}>
           {finishLabel}
         </Btn>
       }

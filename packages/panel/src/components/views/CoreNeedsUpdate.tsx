@@ -70,7 +70,15 @@ export function CoreNeedsUpdateNotice({
         >
           Needs update
         </span>
-        <span style={{ fontFamily: "var(--mono)", fontSize: isPhone ? 12 : 11, color: "var(--text-dim)" }}>
+        <span
+          style={{
+            fontFamily: "var(--mono)",
+            fontSize: isPhone ? 12 : 11,
+            color: "var(--text-dim)",
+            // Phone: stays beside the label and wraps there (M10).
+            ...(isPhone ? { flex: "1 1 0", minWidth: 0 } : {}),
+          }}
+        >
           core-link {dial.coreVersion ?? "unknown"} · this Panel speaks{" "}
           {dial.panelVersion ?? "a newer protocol"}
         </span>

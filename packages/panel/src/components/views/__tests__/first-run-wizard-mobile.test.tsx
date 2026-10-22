@@ -112,21 +112,34 @@ describe("FirstRunWizard on a phone", () => {
     for (const li of rail.querySelectorAll<HTMLElement>("li")) expect(li.style.flex).toBe("0 0 216px");
   });
 
-  it("scrolls the active step into view when the step changes", async () => {
-    const scrolled: Element[] = [];
-    const spy = vi.fn(function (this: Element) {
-      scrolled.push(this);
+  it("centres the active step by scrolling the rail sideways only, never the page", async () => {
+    // jsdom does no layout: card n sits at 224 * n, cards are 216 wide, the rail 358.
+    const proto = HTMLElement.prototype;
+    const saved = ["offsetLeft", "offsetWidth", "clientWidth", "scrollLeft"].map(
+      (k) => [k, Object.getOwnPropertyDescriptor(proto, k) ?? Object.getOwnPropertyDescriptor(Element.prototype, k)] as const,
+    );
+    const lefts: number[] = [];
+    Object.defineProperty(proto, "offsetLeft", {
+      configurable: true,
+      get(this: HTMLElement) {
+        return 224 * Array.from(this.closest("ol")?.querySelectorAll("button") ?? []).indexOf(this as HTMLButtonElement);
+      },
     });
-    Object.defineProperty(Element.prototype, "scrollIntoView", { value: spy, configurable: true, writable: true });
-    renderWizard();
-    await click("Next");
-    expect(spy).toHaveBeenLastCalledWith({ inline: "center", block: "nearest" });
-    expect(scrolled.at(-1)?.getAttribute("aria-current")).toBe("step");
-    expect(scrolled.at(-1)?.textContent).toMatch(/Step 2/);
-  });
-
-  it("does not throw where scrollIntoView does not exist (jsdom)", () => {
-    expect(() => renderWizard()).not.toThrow();
+    Object.defineProperty(proto, "offsetWidth", { configurable: true, get: () => 216 });
+    Object.defineProperty(proto, "clientWidth", { configurable: true, get: () => 358 });
+    Object.defineProperty(proto, "scrollLeft", { configurable: true, get: () => 0, set: (v: number) => void lefts.push(v) });
+    const intoView = vi.fn();
+    Object.defineProperty(Element.prototype, "scrollIntoView", { value: intoView, configurable: true, writable: true });
+    try {
+      renderWizard();
+      expect(lefts.at(-1)).toBe(0);
+      await click("Next");
+      expect(lefts.at(-1)).toBe(224 - (358 - 216) / 2);
+      expect(intoView).not.toHaveBeenCalled();
+    } finally {
+      for (const [k, d] of saved) if (d) Object.defineProperty(proto, k, d);
+      else delete (proto as unknown as Record<string, unknown>)[k];
+    }
   });
 
   it("makes Back and Next two equal large buttons", () => {

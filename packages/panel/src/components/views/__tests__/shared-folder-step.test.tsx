@@ -412,6 +412,8 @@ describe("pairing step 4 on a phone", () => {
     expect(sheet()!.querySelector('[data-step="shared-folder"]')).not.toBeNull();
     expect(screen.getAllByRole("button", { name: "Connect and finish pairing" })).toHaveLength(1);
     expect(footer().contains(button("Connect and finish pairing"))).toBe(true);
+    // M06: the footer action is outlined, like Test connection.
+    expect(button("Connect and finish pairing").className).toContain("mc-btn-frame");
     expect(button("Test connection").style.minHeight).toBe("44px");
   });
 

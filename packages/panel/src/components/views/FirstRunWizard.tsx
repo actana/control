@@ -277,9 +277,10 @@ function StepRail({ step, onStep }: { step: StepIndex; onStep: (next: StepIndex)
   const activeRef = useRef<HTMLButtonElement | null>(null);
   useEffect(() => {
     const el = activeRef.current;
-    // jsdom has no scrollIntoView.
-    if (!isPhone || !el || typeof el.scrollIntoView !== "function") return;
-    el.scrollIntoView({ inline: "center", block: "nearest" });
+    const rail = el?.closest<HTMLElement>("[data-step-rail]");
+    if (!isPhone || !el || !rail) return;
+    // Sideways only: scrollIntoView would also move the page on a short phone.
+    rail.scrollLeft = Math.max(0, el.offsetLeft - (rail.clientWidth - el.offsetWidth) / 2);
   }, [isPhone, step]);
   return (
     <ol
@@ -292,6 +293,8 @@ function StepRail({ step, onStep }: { step: StepIndex; onStep: (next: StepIndex)
         padding: 0,
         ...(isPhone
           ? {
+              // offsetLeft of the cards is measured from the rail.
+              position: "relative",
               overflowX: "auto",
               scrollSnapType: "x proximity",
               // The rail runs to the screen edge rather than stopping at the gutter.
