@@ -1,0 +1,130 @@
+/* Task detail on a phone (#834, M42/M43): a full-screen page with a pinned composer, and Stop Task? as a bottom sheet. */
+.mc-td-page {
+  position: fixed;
+  left: 0;
+  right: 0;
+  z-index: 9000;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  overflow: hidden;
+  background: var(--surface-card);
+  color: var(--text);
+  outline: none;
+}
+.mc-td-bar {
+  flex: none;
+  display: grid;
+  grid-template-columns: 44px 1fr 44px;
+  align-items: center;
+  min-height: 52px;
+  padding: 0 8px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-1);
+}
+.mc-td-back {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+}
+.mc-td-bar-title {
+  min-width: 0;
+  overflow: hidden;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+.mc-td-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 16px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.mc-td-meta {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text-dim);
+}
+.mc-td-titlerow {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.mc-td-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.mc-td-actions .mc-btn {
+  border: 1px solid var(--border-strong);
+}
+.mc-td-composer {
+  flex: none;
+  padding: 10px 16px calc(10px + env(safe-area-inset-bottom));
+  border-top: 1px solid var(--border);
+  background: var(--surface-1);
+}
+.mc-td-composer-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.mc-td-composer-buttons {
+  display: flex;
+  flex: 1;
+  gap: 8px;
+}
+.mc-td-composer-buttons .mc-btn {
+  flex: 1;
+  justify-content: center;
+}
+.mc-td-composer-buttons .mc-btn-primary {
+  flex: 1.2;
+}
+
+/* Stop Task? bottom sheet. */
+.mc-bottom-sheet {
+  gap: 4px;
+}
+.mc-td-reason {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-family: var(--mono);
+  font-size: 12px;
+}
+.mc-td-reason small {
+  color: var(--text-dim);
+  margin-left: 4px;
+}
+.mc-td-reason textarea {
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  resize: none;
+}
+.mc-td-sheet-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 16px;
+}
+.mc-td-sheet-actions .mc-btn {
+  width: 100%;
+  justify-content: center;
+}

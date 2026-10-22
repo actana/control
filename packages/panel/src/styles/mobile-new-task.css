@@ -1,0 +1,56 @@
+/* New Task sheet and time limit picker on phones (#834, M44/M45). Phone-only; desktop is untouched. */
+@media (max-width: 767px) {
+  .mc-new-task input[aria-label="Title"] {
+    min-height: 44px;
+    font-size: 16px;
+  }
+  /* The markdown toolbar scrolls sideways instead of wrapping. */
+  .mc-new-task [role="toolbar"] {
+    flex-wrap: nowrap !important;
+    overflow-x: auto;
+    white-space: nowrap;
+    -webkit-overflow-scrolling: touch;
+  }
+  .mc-new-task [role="toolbar"] .mc-btn {
+    flex: none;
+    min-height: 36px;
+  }
+  .mc-new-task textarea {
+    font-size: 16px !important;
+  }
+  /* Core and Agent: full-width rows with the check on the right. */
+  .mc-new-task-rows button[role="radio"] {
+    width: 100%;
+    min-height: 48px;
+    box-sizing: border-box;
+  }
+  .mc-new-task-core button[role="radio"] {
+    width: 100%;
+  }
+  .mc-new-task-dot {
+    color: var(--status-running, var(--brand-accent));
+  }
+  .mc-new-task-core[data-offline] button[role="radio"] {
+    opacity: 0.6;
+    color: var(--text-dim);
+  }
+  .mc-new-task-core[data-offline] .mc-new-task-dot {
+    color: var(--text-faint, var(--text-dim));
+  }
+  /* Attach file / Attach folder side by side. */
+  .mc-new-task [role="group"][aria-label="Attachments"] > div:first-child > .mc-btn {
+    flex: 1;
+    justify-content: center;
+    min-height: 44px;
+  }
+  .mc-time-limit-chips button[role="radio"] {
+    min-height: 44px;
+    padding-left: 14px !important;
+    padding-right: 14px !important;
+  }
+  .mc-time-limit-minutes {
+    min-height: 48px;
+    box-sizing: border-box;
+    font-size: 16px !important;
+  }
+}

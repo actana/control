@@ -1,0 +1,194 @@
+/* Tasks board on phone and tablet (#834, screens M40, M40b, M41). Everything
+   sits behind a max-width query so desktop is untouched. */
+
+@media (max-width: 1023px) {
+  .mc-tasks-page {
+    flex: 1;
+    padding: 12px 16px 96px;
+  }
+  .mc-tasks-intro {
+    margin: 0 0 12px;
+    color: var(--text-dim);
+    font-family: var(--mono);
+    font-size: 13px;
+    line-height: 1.5;
+  }
+
+  /* Core filter chips: one row that scrolls sideways, never wraps. */
+  .mc-tasks-chips {
+    flex-wrap: nowrap !important;
+    max-width: 100%;
+    overflow-x: auto;
+    scrollbar-width: none;
+    padding-bottom: 2px;
+  }
+  .mc-tasks-chips::-webkit-scrollbar {
+    display: none;
+  }
+  .mc-tasks-chips button {
+    flex: none;
+    min-height: 44px;
+    white-space: nowrap;
+  }
+
+  /* Segmented control: Draft / Assigned / In progress / Finished. */
+  .mc-tasks-segments {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 2px;
+    padding: 4px;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: var(--surface-1);
+  }
+  .mc-tasks-segment {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 2px;
+    min-height: 44px;
+    padding: 6px 4px;
+    border: 1px solid transparent;
+    border-radius: 9px;
+    background: transparent;
+    color: var(--text);
+    font-family: var(--mono);
+    font-size: 13px;
+    white-space: nowrap;
+    cursor: pointer;
+  }
+  .mc-tasks-segment[aria-selected="true"] {
+    border-color: var(--brand-accent);
+  }
+  .mc-tasks-segment-count {
+    color: var(--text-dim);
+  }
+  .mc-tasks-segment[aria-selected="true"] .mc-tasks-segment-count {
+    color: var(--brand-accent);
+  }
+
+  /* The column list: vertical scroll stays the browser's, a sideways swipe is the board's. */
+  .mc-tasks-columns {
+    touch-action: pan-y;
+  }
+  .mc-tasks-columns[data-columns="1"] {
+    grid-template-columns: minmax(0, 1fr) !important;
+  }
+  .mc-tasks-columns[data-columns="2"] {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  }
+  .mc-tasks-pager {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    margin-left: auto;
+    letter-spacing: 0;
+    text-transform: none;
+    color: var(--text-dim);
+  }
+  .mc-tasks-pager i {
+    width: 6px;
+    height: 6px;
+    border-radius: 999px;
+    background: var(--border-strong);
+  }
+  .mc-tasks-pager i[data-current="true"] {
+    width: 18px;
+    background: var(--brand-accent);
+  }
+  .mc-tasks-pager small {
+    margin-left: 2px;
+    font-size: 13px;
+  }
+  .mc-tasks-empty {
+    padding: 24px 12px;
+    border: 1px dashed var(--border);
+    border-radius: 10px;
+    color: var(--text-dim);
+    font-family: var(--mono);
+    font-size: 13px;
+    text-align: center;
+  }
+  [data-task-card][data-placeholder="true"] > * {
+    visibility: hidden;
+  }
+
+  /* While a card is carried (M41): the segments become a 2x2 grid of drop targets. */
+  .mc-tasks-drop-help {
+    margin: 0;
+    color: var(--text);
+    font-family: var(--mono);
+    font-size: 13px;
+    line-height: 1.5;
+  }
+  .mc-tasks-drop-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+  }
+  .mc-tasks-drop-target {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    min-height: 76px;
+    padding: 10px 12px;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: var(--surface-card);
+    font-family: var(--mono);
+    font-size: 13px;
+  }
+  .mc-tasks-drop-title {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-weight: 600;
+  }
+  .mc-tasks-drop-title span,
+  .mc-tasks-drop-hint {
+    color: var(--text-dim);
+    font-weight: 400;
+  }
+  .mc-tasks-drop-target[data-drop-state="origin"] {
+    border: 1.5px dashed var(--brand-accent);
+    background: var(--accent-subtle-bg);
+  }
+  .mc-tasks-drop-target[data-drop-state="allowed"] {
+    border-color: var(--brand-accent);
+    background: var(--accent-subtle-bg);
+    color: var(--brand-accent);
+  }
+  .mc-tasks-drop-target[data-drop-state="allowed"] .mc-tasks-drop-hint {
+    color: var(--brand-accent);
+  }
+  .mc-tasks-drop-target[data-drop-state="allowed"][data-drop-over="true"] {
+    border-width: 2px;
+  }
+  .mc-tasks-drop-target[data-drop-state="refused"] {
+    opacity: 0.55;
+  }
+
+  .mc-tasks-fab {
+    position: fixed;
+    right: 16px;
+    bottom: calc(24px + env(safe-area-inset-bottom));
+    z-index: 15;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 48px;
+    padding: 0 20px;
+    border: 0;
+    border-radius: 10px;
+    background: var(--brand-accent);
+    color: var(--accent-on-accent);
+    font-family: var(--mono);
+    font-size: 14px;
+    box-shadow: 0 6px 16px rgba(0, 0, 0, 0.25);
+    cursor: pointer;
+  }
+  /* The Core page's tab bar (64px) sits at the bottom. */
+  .mc-tasks-fab[data-tabbar="true"] {
+    bottom: calc(80px + env(safe-area-inset-bottom));
+  }
+}
