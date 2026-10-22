@@ -2,6 +2,8 @@ import { useEffect, useRef, type ReactNode } from "react";
 import { ArrowLeft } from "lucide-react";
 import { baseName } from "~/shared/shared-files";
 
+const FOCUSABLE = 'a[href], button, input, select, textarea, [tabindex]:not([tabindex="-1"])';
+
 /**
  * The opened file on a phone (#833, M25): the details pane beside the folder becomes its own screen over the page, Back ·
  * the file's name on top and the body scrolling under it, as Task detail does (#830). Back and Escape go back to the
@@ -9,16 +11,45 @@ import { baseName } from "~/shared/shared-files";
  */
 export function FileScreen({ path, onBack, children }: { path: string; onBack: () => void; children: ReactNode }) {
   const back = useRef<HTMLButtonElement>(null);
+  const screenRef = useRef<HTMLElement>(null);
+  // A modal screen: on open focus goes to Back and on close back to the row that opened it (mount only, so a rename or move, which changes the path, does not steal focus).
+  useEffect(() => {
+    const opener = document.activeElement;
+    return () => {
+      if (opener instanceof HTMLElement && opener.isConnected) opener.focus();
+    };
+  }, []);
   useEffect(() => {
     back.current?.focus();
   }, [path]);
+  const keepTabInside = (e: React.KeyboardEvent<HTMLElement>) => {
+    if (e.key !== "Tab" || !screenRef.current) return;
+    const items = [...screenRef.current.querySelectorAll<HTMLElement>(FOCUSABLE)].filter((el) => !el.hasAttribute("disabled"));
+    const first = items[0];
+    const last = items[items.length - 1];
+    if (!first || !last) {
+      e.preventDefault();
+      return;
+    }
+    const active = document.activeElement;
+    if (e.shiftKey && (active === first || active === screenRef.current)) {
+      e.preventDefault();
+      last.focus();
+    } else if (!e.shiftKey && active === last) {
+      e.preventDefault();
+      first.focus();
+    }
+  };
   return (
     <section
+      ref={screenRef}
+      tabIndex={-1}
       role="dialog"
       aria-modal="true"
       aria-label={`File ${baseName(path)}`}
       data-testid="file-screen"
       onKeyDown={(e) => {
+        keepTabInside(e);
         if (e.key !== "Escape") return;
         e.stopPropagation();
         onBack();

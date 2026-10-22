@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { KeybindingsProvider } from "~/lib/keybindings/store";
 import type { CoreWithDial } from "~/shared/cores";
@@ -93,7 +93,7 @@ function mount(c: CoreWithDial = core(), initial = "") {
     </QueryClientProvider>
   );
   const view = render(ui());
-  return { onPath, client };
+  return { onPath, client, rerenderWith: (next: CoreWithDial) => { c = next; view.rerender(ui()); } };
 }
 
 beforeEach(() => {
@@ -215,6 +215,39 @@ describe("the Files tab on a phone", () => {
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "File report-1.md" })).toBeNull());
   });
 
+  it("M25: Back returns focus to the file's row, and Tab from the last action wraps to Back", async () => {
+    mount(core(), "sessions/t-munykjig");
+    filesDrive.setView("list");
+    const row = await screen.findByRole("button", { name: /report-1\.md/ });
+    row.focus();
+    fireEvent.click(row);
+    const screenEl = await screen.findByRole("dialog", { name: "File report-1.md" });
+    const back = within(screenEl).getByRole("button", { name: "Back" });
+    const del = within(within(screenEl).getByTestId("file-actions")).getByRole("button", { name: "Delete" }) as HTMLButtonElement;
+    await waitFor(() => expect(del.disabled).toBe(false));
+    del.focus();
+    fireEvent.keyDown(del, { key: "Tab" });
+    expect(document.activeElement).toBe(back);
+    fireEvent.click(back);
+    expect(screen.queryByRole("dialog", { name: "File report-1.md" })).toBeNull();
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: /report-1\.md/ }));
+  });
+
+  it("M25: Move from the opened file is a full-screen sheet; picking a folder and Move here moves the file and closes it", async () => {
+    mount(core(), "sessions/t-munykjig");
+    fireEvent.click(await screen.findByRole("button", { name: /report-1\.md/ }));
+    const screenEl = await screen.findByRole("dialog", { name: "File report-1.md" });
+    const move = within(within(screenEl).getByTestId("file-actions")).getByRole("button", { name: "Move" }) as HTMLButtonElement;
+    await waitFor(() => expect(move.disabled).toBe(false));
+    fireEvent.click(move);
+    const sheet = await screen.findByRole("dialog", { name: /^Move / });
+    expect(sheet.hasAttribute("data-full-screen-sheet")).toBe(true);
+    fireEvent.click(await within(sheet).findByRole("button", { name: /^uploads/ }));
+    fireEvent.click(sheet.querySelector(".mc-sheet-header .mc-sheet-action-primary") as HTMLElement);
+    await waitFor(() => expect(api.moveSharedFile).toHaveBeenCalledWith("c1", "sessions/t-munykjig/report-1.md", "uploads"));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: /^Move / })).toBeNull());
+  });
+
   it("M26: + New opens a bottom action sheet with the four actions and Cancel", async () => {
     mount();
     await screen.findByText("readme.md");
@@ -258,6 +291,35 @@ describe("the Files tab on a phone", () => {
     fireEvent.click(screen.getByRole("button", { name: "New" }));
     fireEvent.click(screen.getByTestId("action-sheet-backdrop"));
     expect(screen.queryByRole("dialog", { name: "New" })).toBeNull();
+  });
+
+  it("M26: a re-render of the Files tab while the sheet is open leaves focus where it is; Escape then returns it to New", async () => {
+    const { rerenderWith } = mount();
+    await screen.findByText("readme.md");
+    const opener = screen.getByRole("button", { name: "New" });
+    opener.focus(); // fireEvent.click does not move focus the way a real tap does
+    fireEvent.click(opener);
+    const items = within(screen.getByRole("dialog", { name: "New" })).getAllByRole("menuitem");
+    items[2]!.focus();
+    act(() => rerenderWith(core()));
+    expect(document.activeElement).toBe(items[2]);
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(screen.queryByRole("dialog", { name: "New" })).toBeNull();
+    expect(document.activeElement).toBe(opener);
+  });
+
+  it("M26: Tab stays inside the open sheet, wrapping from Cancel to the first item and back", async () => {
+    mount();
+    await screen.findByText("readme.md");
+    fireEvent.click(screen.getByRole("button", { name: "New" }));
+    const sheet = screen.getByRole("dialog", { name: "New" });
+    const first = within(sheet).getAllByRole("menuitem")[0]!;
+    const cancel = within(sheet).getByRole("button", { name: "Cancel" });
+    cancel.focus();
+    fireEvent.keyDown(cancel, { key: "Tab" });
+    expect(document.activeElement).toBe(first);
+    fireEvent.keyDown(first, { key: "Tab", shiftKey: true });
+    expect(document.activeElement).toBe(cancel);
   });
 
   it("the open folder's Rename / Move / Delete are in a ⋯ action sheet", async () => {
