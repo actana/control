@@ -151,6 +151,44 @@ export function hasClaudeInterruptPrompt(text: string): boolean {
   );
 }
 
+// Terminal control sequences: CSI (cursor moves, colours, modes), OSC (window
+// title, ended by BEL or ST) and two-byte escapes.
+const TERMINAL_ESCAPES = /\u001B\[[0-9;?<>=!]*[ -/]*[@-~]|\u001B\][^\u0007\u001B]*(?:\u0007|\u001B\\)|\u001B[@-Z\\-_]/g;
+
+/**
+ * Codex's line for an Esc-interrupted turn (issue 392).
+ *
+ * Read off codex-cli 0.162.0 driven in a PTY against a mock Responses server
+ * that never completed the turn: Esc paints `■ Conversation interrupted - use
+ * /feedback if something went wrong` into the history, the `Interrupt` hook
+ * fires, and **`Stop` does not**. A card whose only turn-end signal is `Stop`
+ * therefore stays `running` — and the idle backstop would eventually settle it
+ * `finished`, a finish codex never reported. The same string is in the 0.160.0
+ * binary. Codex paints that line one word at a time with cursor-positioning
+ * escapes between them (`Conversation ESC[21;16H interrupted`), so the escapes
+ * become separators before the match rather than being deleted.
+ *
+ * Matched on the head of the message, not the `/feedback` tail, so a rewording
+ * of the tail does not blind it.
+ */
+export function hasCodexInterruptLine(text: string): boolean {
+  return text.replace(TERMINAL_ESCAPES, " ").replace(/\s+/g, " ").includes("Conversation interrupted");
+}
+
+/**
+ * Which interrupt screen means "Esc was pressed mid-turn" on this harness.
+ *
+ * Per harness on purpose: each recogniser is one harness's own text, so a
+ * Claude session reading a file that contains codex's message (or the reverse)
+ * does not report an interrupt it never had. A harness absent from the table
+ * has no screen we can honestly read and reports through its hooks instead
+ * (cursor `stop` status, opencode plugin, pi extension).
+ */
+const INTERRUPT_SCREEN: Record<string, (text: string) => boolean> = {
+  "claude-code": hasClaudeInterruptPrompt,
+  codex: hasCodexInterruptLine,
+};
+
 export function hasCodexHookReviewPrompt(text: string): boolean {
   const normalized = text.replace(/\s+/g, " ").toLowerCase();
   return (
@@ -1053,7 +1091,7 @@ export class PtyCore {
             }
           }
         }
-        const interrupted = hasClaudeInterruptPrompt(data);
+        const interrupted = (p.agent && INTERRUPT_SCREEN[p.agent]?.(data)) || false;
         if (interrupted && !interruptReported) {
           interruptReported = true;
           reportOutputSignal(this.deps, p.sessionId, "interrupted");

@@ -18,7 +18,11 @@
 // `subagent-activity.ts` — per process, so a Panel and a Core each track their
 // own Sessions and neither can see the other's.
 
-import { HARNESS_HOOK_EVENTS, mapHookEventToStatus } from "./harness-hook-events";
+import {
+  CURSOR_STOP_ABORTED,
+  HARNESS_HOOK_EVENTS,
+  mapHookEventToStatus,
+} from "./harness-hook-events";
 import { ASK_USER_QUESTION_TOOL, parseAskUserQuestionInput } from "./harness-questions";
 import {
   armDeferredFinish,
@@ -48,6 +52,10 @@ export type HarnessHookBody = {
   session_id?: string;
   conversation_id?: string;
   tool_name?: string;
+  /** Cursor `stop`: `"completed"` | `"aborted"` | `"error"` — see `HarnessHookPayload.status`. */
+  status?: string;
+  /** Cursor: one id per turn, shared by `afterAgentResponse` and every `stop` of that turn. */
+  generation_id?: string;
   tool_use_id?: string;
   /** SubagentStart/SubagentStop: the subagent instance, for pairing a stop with its start. */
   agent_id?: string;
@@ -119,6 +127,27 @@ export type HookPipelineResult =
    */
   | { outcome: "foreign-process"; event: string }
   | { outcome: "session-not-found"; event: string };
+
+/**
+ * The Cursor generation whose turn the operator cancelled, per session (issue
+ * 392). Module state like `subagent-activity`, and for the same reason: the
+ * pipeline is a function and the host's ports hold no such memory.
+ *
+ * cursor-agent 2026.10.01-e373342 posts `stop` with `status: "aborted"` the
+ * moment Esc lands, then runs the turn's normal tail under the SAME
+ * `generation_id` — `afterAgentResponse` plus a `stop` with `status:
+ * "completed"` when the run resolves, or a `stop` with `status: "error"` when
+ * it throws (that catch block does not look at the abort). Any of them would
+ * settle the card `finished` over the interrupt and raise `session:finished`
+ * for a cancelled turn. They are held against the generation, never the
+ * session: Cursor does not fire `beforeSubmitPrompt`, so the next turn is told
+ * apart only by its own, different `generation_id`, and its finish lands.
+ */
+const abortedCursorGeneration = new Map<string, string>();
+
+function generationOf(payload: HarnessHookBody): string {
+  return typeof payload.generation_id === "string" ? payload.generation_id.trim() : "";
+}
 
 function hookSessionId(payload: HarnessHookBody): string {
   if (typeof payload.session_id === "string" && payload.session_id.trim()) {
@@ -209,6 +238,29 @@ export function handleHarnessHookEvent(
   const session = ports.getSession(sessionId);
   if (!session) return { outcome: "session-not-found", event };
 
+  // Cursor's cancelled turn (issue 392): remember the generation on the abort,
+  // and hold the rest of that generation's turn tail against it. Before the
+  // foreign-session branch on purpose — the tail would otherwise settle a
+  // `running` card `finished` through `settleForeignTurnEnd`.
+  const generation = generationOf(payload);
+  if (event === HARNESS_HOOK_EVENTS.cursorStop && payload.status === CURSOR_STOP_ABORTED) {
+    if (generation) abortedCursorGeneration.set(sessionId, generation);
+  } else if (
+    (event === HARNESS_HOOK_EVENTS.cursorStop ||
+      event === HARNESS_HOOK_EVENTS.cursorAfterAgentResponse) &&
+    generation &&
+    abortedCursorGeneration.get(sessionId) === generation
+  ) {
+    return { outcome: "ignored", event };
+  }
+  if (
+    event === HARNESS_HOOK_EVENTS.userPromptSubmit ||
+    event === HARNESS_HOOK_EVENTS.cursorBeforeSubmitPrompt ||
+    event === HARNESS_HOOK_EVENTS.sessionProcessExited
+  ) {
+    abortedCursorGeneration.delete(sessionId);
+  }
+
   // Stash the transcript path (present on most Claude hooks incl. Stop) so a
   // host that reads whole sessions can. Latest wins; stable per session.
   // Subagent lifecycle hooks are excluded: they carry the SUBAGENT's own
@@ -280,7 +332,7 @@ export function handleHarnessHookEvent(
     // working parent's card is the status check in `settleForeignTurnEnd`.
     // That is stated plainly there rather than dressed up as a guarantee.
     if (!isTurnEndEvent(event)) return { outcome: "foreign-session", event };
-    return settleForeignTurnEnd(sessionId, session, event, ports);
+    return settleForeignTurnEnd(sessionId, session, event, ports, status);
   }
 
   // Sub-agent lifecycle bookkeeping. Claude fires the top-level Stop when the
@@ -526,6 +578,7 @@ function settleForeignTurnEnd(
   session: HookSessionFacts,
   event: string,
   ports: HookPipelinePorts,
+  mapped: SessionStatus | null,
 ): HookPipelineResult {
   clearSubagentActivity(sessionId);
   clearSessionFinished(sessionId);
@@ -534,6 +587,14 @@ function settleForeignTurnEnd(
     // settle is conditional, and echoing one would claim a transition that did
     // not happen. The outcome is still `ok` — the hook was understood.
     return { outcome: "ok", event };
+  }
+  // A cancelled Cursor turn (issue 392) is the turn end that is NOT a finish:
+  // settle the card, but as the interrupt it was.
+  if (mapped === "interrupted") {
+    if (!ports.updateStatus(sessionId, "interrupted")) {
+      return { outcome: "session-not-found", event };
+    }
+    return { outcome: "ok", event, status: "interrupted" };
   }
   if (!ports.updateStatus(sessionId, "finished")) return { outcome: "session-not-found", event };
   noteSessionFinished(sessionId);
