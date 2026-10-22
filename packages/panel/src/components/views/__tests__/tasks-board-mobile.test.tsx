@@ -287,6 +287,20 @@ describe("phone: long-press drag onto the segments", () => {
       description: expect.stringContaining("Only the Panel starts a Task"),
     });
   });
+
+  it("a long-press released where it started cancels, even over a drop target", async () => {
+    await mount();
+    await carry("t1");
+    // The drop bar appears under the unmoved finger: whatever it hit-tests to must not be dropped on.
+    document.elementFromPoint = (() =>
+      document.querySelector('.mc-tasks-dropbar [data-board-column="assigned"]') ?? document.body) as typeof document.elementFromPoint;
+    await act(async () => {
+      fireEvent.pointerUp(window, { pointerId: 1, clientX: 50, clientY: 300 });
+    });
+    expect(api.setTaskStatus).not.toHaveBeenCalled();
+    expect(toast.error).not.toHaveBeenCalled();
+    expect(document.querySelector(".mc-tasks-dropbar")).toBeNull();
+  });
 });
 
 describe("tablet: two columns", () => {
