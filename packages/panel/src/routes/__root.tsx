@@ -224,6 +224,9 @@ function Shell() {
   const [settingsRequest, setSettingsRequest] = useState<{
     panel: SettingsPanelId | null;
   } | null>(null);
+  // Bumped when the Cores drawer re-targets an already-open Settings (phone),
+  // so SettingsPanel remounts on the requested page or the list.
+  const [settingsRequestSeq, setSettingsRequestSeq] = useState(0);
   const settingsOpen = settingsRequest !== null;
   const openSettings = (initial: SettingsPanelId | null = null) => {
     setSettingsRequest((current) => current ?? { panel: initial });
@@ -594,8 +597,11 @@ function Shell() {
         {settingsOpen && (
           <Suspense fallback={null}>
             <SettingsPanel
+              key={settingsRequestSeq}
               initialPanel={settingsRequest?.panel ?? null}
               onBack={closeSettingsPanel}
+              bell={compact ? notificationsBell : undefined}
+              onMenu={() => setCoresDrawerOpen(true)}
             />
           </Suspense>
         )}
@@ -621,7 +627,17 @@ function Shell() {
           cores={cores}
           fleet={fleet}
           activeCoreId={routeCoreId}
-          onOpenSettings={(panel) => openSettings(panel ?? null)}
+          onOpenSettings={(panel) => {
+            if (settingsOpen) {
+              setSettingsRequest({ panel: panel ?? null });
+              setSettingsRequestSeq((n) => n + 1);
+            } else {
+              openSettings(panel ?? null);
+            }
+          }}
+          onNavigate={() => {
+            if (settingsOpen) requestCloseSettings();
+          }}
         />
       ) : null}
       <ConfirmDialog

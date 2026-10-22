@@ -1,9 +1,13 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { Btn } from "~/components/ui/Btn";
 import { CardFrame } from "~/components/ui/CardFrame";
 import { Icon, type IconName } from "~/components/ui/Icon";
+import { ArrowLeft, PanelLeft } from "lucide-react";
 import { StaticHotkeyTooltip } from "~/components/ui/Tooltip";
+import { useIsPhone } from "~/lib/breakpoint";
 import { CLOSE_SETTINGS_EVENT } from "~/lib/design-meta";
+import { useVisualViewport } from "~/lib/use-visual-viewport";
+import { CURRENT_MC_VERSION } from "~/queries/mission-control-version";
 import { useHotkey } from "~/lib/use-hotkey";
 import { Z_INDEX } from "~/lib/z-index";
 import { CoresSettingsPage } from "./CoresSettingsPage";
@@ -18,6 +22,7 @@ import { AppearanceSettingsPage } from "./AppearanceSettingsPage";
 import { UsageSettingsPage } from "./UsageSettingsPage";
 import { StorageSettingsPage } from "./StorageSettingsPage";
 import { ApiSettingsPage } from "./ApiSettingsPage";
+import { MobileTopBar } from "./MobileTopBar";
 
 // Single source of truth for settings panel ids lives in ./settings-panel-ids
 // (a dependency-free module) so eager importers don't pin this whole panel into
@@ -47,11 +52,59 @@ const SLIDE_IN_RIGHT = `mc-settings-slide-in-right ${SLIDE_IN_MS}ms ${SLIDE_IN_E
 const BACKDROP_IN = `mc-settings-backdrop-in ${SLIDE_IN_MS}ms ${SLIDE_IN_EASE} both`;
 const BACKDROP_OUT = `mc-settings-backdrop-out ${SLIDE_OUT_MS}ms ${SLIDE_OUT_EASE} both`;
 
+const NAV_ITEMS: NavItem[] = [
+  { id: "general", label: "General", icon: "settings" },
+  { id: "defaults", label: "Defaults", icon: "terminal" },
+  { id: "providers", label: "Providers", icon: "grid" },
+  { id: "usage", label: "Usage", icon: "chart" },
+  { id: "storage", label: "Storage", icon: "folder" },
+  { id: "api", label: "API & integrations", icon: "external-link" },
+  { id: "terminal", label: "Terminal", icon: "terminal" },
+  { id: "interface", label: "Interface", icon: "eye" },
+  { id: "appearance", label: "Appearance", icon: "sun" },
+  { id: "keybindings", label: "Keybindings", icon: "settings" },
+  { id: "cores", label: "Cores", icon: "globe" },
+  { id: "operator", label: "Operator", icon: "shield" },
+];
+
+function renderPage(id: SettingsPanelId) {
+  return id === "general" ? (
+    <GeneralSettingsPage />
+  ) : id === "defaults" ? (
+    <DefaultsSettingsPage />
+  ) : id === "providers" ? (
+    <ProvidersSettingsPage />
+  ) : id === "usage" ? (
+    <UsageSettingsPage />
+  ) : id === "storage" ? (
+    <StorageSettingsPage />
+  ) : id === "api" ? (
+    <ApiSettingsPage />
+  ) : id === "terminal" ? (
+    <TerminalSettingsPage />
+  ) : id === "interface" ? (
+    <InterfaceSettingsPage />
+  ) : id === "appearance" ? (
+    <AppearanceSettingsPage />
+  ) : id === "keybindings" ? (
+    <KeybindingsPage />
+  ) : id === "cores" ? (
+    <CoresSettingsPage />
+  ) : (
+    <OperatorSettingsPage />
+  );
+}
+
 export function SettingsPanel({
   onBack,
   initialPanel = null,
+  bell,
+  onMenu,
 }: {
   onBack: () => void;
+  // Phone only: the notifications bell and the Cores-drawer opener for the top bar.
+  bell?: ReactNode;
+  onMenu?: () => void;
   // An explicitly requested panel always wins; null means a generic open,
   // which restores the last-visited panel from localStorage.
   initialPanel?: SettingsPanelId | null;
@@ -63,6 +116,10 @@ export function SettingsPanel({
     return normalizeStoredPanel(stored, "general");
   });
   const [isExiting, setIsExiting] = useState(false);
+  const isPhone = useIsPhone();
+  // Phone: which page is open full screen. An explicit request opens its page;
+  // a generic open shows the list.
+  const [phonePage, setPhonePage] = useState<SettingsPanelId | null>(initialPanel);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -70,8 +127,10 @@ export function SettingsPanel({
   }, [activePanel]);
 
   const handleBack = useCallback(() => {
-    setIsExiting((current) => (current ? current : true));
-  }, []);
+    // The phone screen has no slide, so it closes at once.
+    if (isPhone) onBack();
+    else setIsExiting((current) => (current ? current : true));
+  }, [isPhone, onBack]);
 
   useEffect(() => {
     const onCloseRequest = () => handleBack();
@@ -84,20 +143,21 @@ export function SettingsPanel({
     allowWhenSettingsOpen: true,
   });
 
-  const items: NavItem[] = [
-    { id: "general", label: "General", icon: "settings" },
-    { id: "defaults", label: "Defaults", icon: "terminal" },
-    { id: "providers", label: "Providers", icon: "grid" },
-    { id: "usage", label: "Usage", icon: "chart" },
-    { id: "storage", label: "Storage", icon: "folder" },
-    { id: "api", label: "API & integrations", icon: "external-link" },
-    { id: "terminal", label: "Terminal", icon: "terminal" },
-    { id: "interface", label: "Interface", icon: "eye" },
-    { id: "appearance", label: "Appearance", icon: "sun" },
-    { id: "keybindings", label: "Keybindings", icon: "settings" },
-    { id: "cores", label: "Cores", icon: "globe" },
-    { id: "operator", label: "Operator", icon: "shield" },
-  ];
+  if (isPhone) {
+    return (
+      <PhoneSettings
+        activePanel={activePanel}
+        phonePage={phonePage}
+        onSelect={(id) => {
+          setActivePanel(id);
+          setPhonePage(id);
+        }}
+        onList={() => setPhonePage(null)}
+        bell={bell}
+        onMenu={onMenu}
+      />
+    );
+  }
 
   return (
     <div
@@ -229,7 +289,7 @@ export function SettingsPanel({
             Settings
           </div>
           <nav style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-            {items.map((item) => (
+            {NAV_ITEMS.map((item) => (
               <SettingsNavButton
                 key={item.id}
                 {...item}
@@ -259,37 +319,126 @@ export function SettingsPanel({
             overflow: "auto",
           }}
         >
-          {activePanel === "general" ? (
-            <GeneralSettingsPage />
-          ) : activePanel === "defaults" ? (
-            <DefaultsSettingsPage />
-          ) : activePanel === "providers" ? (
-            <ProvidersSettingsPage />
-          ) : activePanel === "usage" ? (
-            <UsageSettingsPage />
-          ) : activePanel === "storage" ? (
-            <StorageSettingsPage />
-          ) : activePanel === "api" ? (
-            <ApiSettingsPage />
-          ) : activePanel === "terminal" ? (
-            <TerminalSettingsPage />
-          ) : activePanel === "interface" ? (
-            <InterfaceSettingsPage />
-          ) : activePanel === "appearance" ? (
-            <AppearanceSettingsPage />
-          ) : activePanel === "keybindings" ? (
-            <KeybindingsPage />
-          ) : activePanel === "cores" ? (
-            <CoresSettingsPage />
-          ) : (
-            <OperatorSettingsPage />
-          )}
+          {renderPage(activePanel)}
         </CardFrame>
         </div>
       </div>
     </div>
   );
 }
+
+function PhoneSettings({
+  activePanel,
+  phonePage,
+  onSelect,
+  onList,
+  bell,
+  onMenu,
+}: {
+  activePanel: SettingsPanelId;
+  phonePage: SettingsPanelId | null;
+  onSelect: (id: SettingsPanelId) => void;
+  onList: () => void;
+  bell?: ReactNode;
+  onMenu?: () => void;
+}) {
+  const vv = useVisualViewport();
+  const pageLabel = NAV_ITEMS.find((item) => item.id === activePanel)?.label ?? "";
+  return (
+    <div
+      data-navigation-swipe-blocker
+      data-settings-overlay
+      className="mc-settings-phone"
+      data-view={phonePage ? "page" : "list"}
+      style={{
+        position: "fixed",
+        left: 0,
+        right: 0,
+        top: vv.offsetTop,
+        height: vv.height ?? "100dvh",
+        zIndex: Z_INDEX.settings,
+        display: "flex",
+        flexDirection: "column",
+        overflow: "hidden",
+        background: "var(--bg)",
+      }}
+    >
+      <MobileTopBar
+        place={{ label: "Settings" }}
+        onMenu={() => onMenu?.()}
+        bell={bell ?? null}
+        leading={
+          <>
+            <button
+              type="button"
+              className="mc-settings-menu"
+              aria-label="Open Cores menu"
+              onClick={() => onMenu?.()}
+              style={phoneBarButton}
+            >
+              <PanelLeft size={20} aria-hidden />
+            </button>
+            <button
+              type="button"
+              className="mc-settings-back"
+              aria-label="Back"
+              onClick={onList}
+              style={phoneBarButton}
+            >
+              <ArrowLeft size={22} aria-hidden />
+            </button>
+          </>
+        }
+        title={
+          <>
+            <span className="mc-settings-title-list" style={phoneTitle}>
+              Settings
+            </span>
+            <span className="mc-settings-title-page" style={phoneTitle}>
+              {pageLabel}
+            </span>
+          </>
+        }
+      />
+      <div className="mc-settings-phone-body" style={{ flex: 1, minHeight: 0, overflowY: "auto" }}>
+        <div className="mc-settings-list-col">
+          <nav className="mc-settings-list" aria-label="Settings">
+            {NAV_ITEMS.map((item) => {
+              const active = activePanel === item.id;
+              return (
+                <button
+                  key={item.id}
+                  type="button"
+                  className="mc-settings-row"
+                  aria-current={active ? "page" : undefined}
+                  onClick={() => onSelect(item.id)}
+                >
+                  <Icon name={item.icon} size={16} />
+                  <span className="mc-settings-row-label">{item.label}</span>
+                  <Icon name="chevron-right" size={14} />
+                </button>
+              );
+            })}
+          </nav>
+          <p className="mc-settings-version">Actana Control v{CURRENT_MC_VERSION}</p>
+        </div>
+        <section className="mc-settings-page" data-settings-page={activePanel}>
+          {renderPage(activePanel)}
+        </section>
+      </div>
+    </div>
+  );
+}
+
+// No inline display: CSS toggles which of menu / Back is shown.
+const phoneBarButton = {
+  border: 0,
+  background: "transparent",
+  color: "var(--text)",
+  cursor: "pointer",
+} as const;
+
+const phoneTitle = { overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } as const;
 
 function SettingsNavButton({
   label,

@@ -45,6 +45,7 @@ export function CoresDrawer({
   fleet,
   activeCoreId,
   onOpenSettings,
+  onNavigate,
 }: {
   open: boolean;
   onClose: () => void;
@@ -52,6 +53,8 @@ export function CoresDrawer({
   fleet: { rows: readonly { coreId: string; status: string }[] };
   activeCoreId: string | null;
   onOpenSettings: (panel?: SettingsPanelId | null) => void;
+  // Fleet / Core row chosen (the Settings screen closes behind the drawer).
+  onNavigate?: () => void;
 }) {
   const panelRef = useRef<HTMLElement | null>(null);
   const pathname = useRouterState({ select: (state) => state.location.pathname });
@@ -176,7 +179,10 @@ export function CoresDrawer({
 
         <Link
           to="/"
-          onClick={onClose}
+          onClick={() => {
+            onClose();
+            onNavigate?.();
+          }}
           aria-current={pathname === "/" || pathname === "/fleet" ? "page" : undefined}
           className="mc-cores-drawer-row"
           style={{
@@ -216,7 +222,10 @@ export function CoresDrawer({
                 key={core.id}
                 to="/cores/$coreId"
                 params={{ coreId: core.id }}
-                onClick={onClose}
+                onClick={() => {
+                  onClose();
+                  onNavigate?.();
+                }}
                 aria-current={active ? "page" : undefined}
                 className="mc-cores-drawer-row"
                 style={{ ...rowStyle, background: active ? "var(--surface-2)" : "transparent" }}
