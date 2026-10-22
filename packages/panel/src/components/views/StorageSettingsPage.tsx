@@ -558,6 +558,7 @@ export function StorageSettingsPage() {
             <div
               key={c.coreId}
               data-core-folder={c.coreId}
+              className="mc-storage-core-row"
               style={{
                 display: "flex",
                 alignItems: "center",

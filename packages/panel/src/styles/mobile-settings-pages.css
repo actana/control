@@ -96,6 +96,15 @@
     flex-wrap: nowrap !important;
     justify-content: flex-end !important;
   }
+  /* Storage per-Core rows: name, prefix, size and status in one column. */
+  .mc-settings-page .mc-storage-core-row {
+    flex-direction: column;
+    align-items: flex-start !important;
+    gap: 2px !important;
+  }
+  .mc-settings-page .mc-storage-core-row > div:last-child {
+    text-align: left !important;
+  }
 
   /* Nothing pushes the page wider than the screen. */
   .mc-settings-page input,

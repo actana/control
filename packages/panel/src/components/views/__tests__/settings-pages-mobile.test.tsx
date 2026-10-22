@@ -2,11 +2,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import type { StorageCoreFolderView } from "~/shared/storage-wire";
 
 const api = {
   getStorage: vi.fn(async () => ({
     storage: { configured: false, backend: null, masterKeySet: false, masterKeyRotatedAt: null, uploadSizeLimitBytes: null },
-    cores: [],
+    cores: [] as StorageCoreFolderView[],
   })),
   getAuthState: vi.fn(async () => ({ operator: { name: "Ada" } })),
   changePassword: vi.fn(async (_input: { currentPassword: string; newPassword: string }) => ({})),
@@ -87,6 +88,40 @@ describe("settings pages on phone: class hooks", () => {
       render(<StorageSettingsPage />);
     });
     expect(screen.getByRole("tablist", { name: /Storage backend/i }).classList.contains("mc-storage-tabs")).toBe(true);
+  });
+
+  it("Storage per-Core row carries mc-storage-core-row and keeps its desktop inline layout", async () => {
+    const offlineExpired: StorageCoreFolderView = {
+      coreId: "core-1",
+      label: "D1 Core",
+      prefix: "cores/core-1/",
+      sizeBytes: 2048,
+      keyExpiresAt: Date.now() - 60_000,
+      state: "attached",
+      offline: true,
+      error: null,
+    };
+    api.getStorage.mockResolvedValueOnce({
+      storage: { configured: false, backend: null, masterKeySet: false, masterKeyRotatedAt: null, uploadSizeLimitBytes: null },
+      cores: [offlineExpired],
+    });
+    stubWidth(390);
+    let container!: HTMLElement;
+    await act(async () => {
+      ({ container } = render(<StorageSettingsPage />));
+    });
+    expect(screen.getByText("offline · key expired – read-only")).toBeTruthy();
+    const row = container.querySelector('[data-core-folder="core-1"]') as HTMLElement;
+    expect(row).toBeTruthy();
+    expect(row.classList.contains("mc-storage-core-row")).toBe(true);
+    expect(row.style.display).toBe("flex");
+    expect(row.style.alignItems).toBe("center");
+    expect(row.style.justifyContent).toBe("space-between");
+    expect(row.style.gap).toBe("12px");
+    const right = row.lastElementChild as HTMLElement;
+    expect(right.textContent).toContain("offline · key expired – read-only");
+    expect(right.style.textAlign).toBe("right");
+    expect(right.style.flexShrink).toBe("0");
   });
 
   it("Operator: at 390 both password fields and Change password are in the DOM and submit calls the API", async () => {

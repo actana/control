@@ -29,6 +29,12 @@ describe("mobile-settings-pages.css", () => {
     expect(code).toMatch(/\.mc-storage-tabs\s*\{[^}]*overflow-x:\s*auto/);
     expect(code).toMatch(/\.mc-storage-tabs\s*\{[^}]*flex-wrap:\s*nowrap/);
   });
+  it("stacks .mc-storage-core-row into one left-aligned column", () => {
+    expect(code).toMatch(
+      /\.mc-settings-page \.mc-storage-core-row\s*\{[^}]*flex-direction:\s*column;[^}]*align-items:\s*flex-start\s*!important;[^}]*gap:\s*2px\s*!important/,
+    );
+    expect(code).toMatch(/\.mc-settings-page \.mc-storage-core-row > div:last-child\s*\{[^}]*text-align:\s*left\s*!important/);
+  });
   it("gives toggles, tabs and choice rows a 44px hit area", () => {
     expect(code).toMatch(/\.settings-toggle-switch::after\s*\{[^}]*inset:\s*-10px 0/);
     expect(code).toMatch(/\[role="tab"\][\s\S]*?min-height:\s*44px/);
