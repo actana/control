@@ -102,6 +102,7 @@ export function DefaultsSettingsPage() {
         headingLevel="h1"
       >
         <div
+          className="mc-defaults-grid"
           style={{
             display: "grid",
             gridTemplateColumns: "220px minmax(0, 1fr)",
