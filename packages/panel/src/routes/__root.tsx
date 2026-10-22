@@ -35,7 +35,7 @@ import {
 import { TerminalPanel } from "~/components/views/TerminalPanel";
 import { UserTerminalPanel } from "~/components/views/UserTerminalPanel";
 import { CoreRail } from "~/components/views/CoreRail";
-import { CoresDrawer } from "~/components/views/CoresDrawer";
+import { CoresDrawer, useCoresDrawerOpen } from "~/components/views/CoresDrawer";
 import { MobileTopBar } from "~/components/views/MobileTopBar";
 import { useIsCompact } from "~/lib/breakpoint";
 import { shellLayout, workspaceInsets } from "~/lib/shell-layout";
@@ -255,7 +255,7 @@ function Shell() {
   useEventStreamReconcile();
   const { cores, fleet } = useFleet();
   const compact = useIsCompact();
-  const [coresDrawerOpen, setCoresDrawerOpen] = useState(false);
+  const [coresDrawerOpen, setCoresDrawerOpen] = useCoresDrawerOpen(compact);
   // Pure actions (stable identity) + narrow flip-only subscriptions, so a
   // background session-status tick doesn't re-render the whole shell. The active
   // session itself lives in the CoreTerminalPanel leaf below.

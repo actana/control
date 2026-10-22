@@ -13,7 +13,8 @@ vi.mock("~/lib/api", () => ({
 
 const { RouterProvider, createRootRoute, createRoute, createRouter, createMemoryHistory } =
   await import("@tanstack/react-router");
-const { CoresDrawer } = await import("../CoresDrawer");
+const { CoresDrawer, useCoresDrawerOpen } = await import("../CoresDrawer");
+const { useIsCompact } = await import("~/lib/breakpoint");
 
 function core(id: string, label: string, state: CoreWithDial["dial"]["state"] = "connected"): CoreWithDial {
   return {
@@ -74,8 +75,65 @@ async function mount(path = "/", activeCoreId: string | null = null) {
   return router;
 }
 
+// jsdom has no matchMedia: answers "(max-width: Npx)" for a width the test
+// sets, and fires change listeners (as in breakpoint.test.ts).
+function stubMatchMedia(initialWidth: number) {
+  let width = initialWidth;
+  const listeners = new Set<() => void>();
+  vi.stubGlobal("matchMedia", (query: string) => ({
+    media: query,
+    get matches() {
+      const max = /max-width:\s*(\d+)px/.exec(query);
+      return max ? width <= Number(max[1]) : false;
+    },
+    addEventListener: (_: string, fn: () => void) => listeners.add(fn),
+    removeEventListener: (_: string, fn: () => void) => listeners.delete(fn),
+  }));
+  return {
+    setWidth(next: number) {
+      width = next;
+      for (const fn of [...listeners]) fn();
+    },
+  };
+}
+
+// The shell's wiring: the drawer exists only while compact.
+function ShellHarness() {
+  const compact = useIsCompact();
+  const [open, setOpen] = useCoresDrawerOpen(compact);
+  return (
+    <>
+      <button type="button" aria-label="Open Cores menu" onClick={() => setOpen(true)} />
+      {compact ? (
+        <CoresDrawer
+          open={open}
+          onClose={() => setOpen(false)}
+          cores={cores}
+          fleet={{ rows }}
+          activeCoreId={null}
+          onOpenSettings={onOpenSettings}
+        />
+      ) : null}
+    </>
+  );
+}
+
+async function mountShell() {
+  const root = createRootRoute({ component: ShellHarness });
+  const index = createRoute({ getParentRoute: () => root, path: "/", component: () => null });
+  const router = createRouter({
+    routeTree: root.addChildren([index]),
+    history: createMemoryHistory({ initialEntries: ["/"] }),
+  });
+  await act(async () => {
+    render(<RouterProvider router={router} />);
+    await router.load();
+  });
+}
+
 afterEach(() => {
   cleanup();
+  vi.unstubAllGlobals();
   onOpenSettings.mockClear();
   onClose.mockClear();
 });
@@ -139,6 +197,35 @@ describe("CoresDrawer", () => {
     });
     expect(screen.queryByRole("dialog", { name: "Cores" })).toBeNull();
     expect(document.activeElement).toBe(menu);
+  });
+
+  it("Tab and Shift+Tab stay inside the drawer", async () => {
+    await mount();
+    const drawer = screen.getByRole("dialog", { name: "Cores" });
+    const operator = await within(drawer).findByRole("button", { name: /Operator/ });
+    act(() => operator.focus());
+    await act(async () => {
+      fireEvent.keyDown(document, { key: "Tab" });
+    });
+    expect(document.activeElement).toBe(within(drawer).getByRole("link", { name: /Fleet/ }));
+    act(() => drawer.focus());
+    await act(async () => {
+      fireEvent.keyDown(document, { key: "Tab", shiftKey: true });
+    });
+    expect(document.activeElement).toBe(operator);
+  });
+
+  it("does not reopen by itself after a round trip through desktop width", async () => {
+    const media = stubMatchMedia(800);
+    await mountShell();
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Open Cores menu" }));
+    });
+    expect(screen.getByRole("dialog", { name: "Cores" })).toBeTruthy();
+    act(() => media.setWidth(1280));
+    expect(screen.queryByRole("dialog", { name: "Cores" })).toBeNull();
+    act(() => media.setWidth(800));
+    expect(screen.queryByRole("dialog", { name: "Cores" })).toBeNull();
   });
 
   it('Settings and Operator call onOpenSettings (null / "operator")', async () => {
