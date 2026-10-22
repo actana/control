@@ -255,17 +255,45 @@ export default function (pi) {
   // Turn start. agent_start fires when a low-level agent run begins.
   pi.on("agent_start", async (_event, ctx) => {
     inRun = true;
+    endedAborted = false;
     const prompt = lastPrompt;
     lastPrompt = null;
     post("UserPromptSubmit", idOf(ctx), prompt ? { prompt } : {});
   });
 
+  // How the latest agent_end described the run (issue 392). Pi 0.84.4 gives
+  // \`agent_settled\` no payload, so an Esc has to be read from the run itself:
+  // its interactive Esc handler calls \`agent.abort()\`, the agent loop ends the
+  // run on an assistant message with \`stopReason: "aborted"\` and emits
+  // \`agent_end\` with the run's messages (pi-agent-core 0.84.4 agent-loop.js).
+  // Only the LAST agent_end counts — a retry or queued continuation can emit
+  // several per run — and agent_start clears it. Pi 1.1.0 added \`aborted\` to
+  // \`agent_settled\` itself (CHANGELOG 1.1.0, #10607), which is read first.
+  let endedAborted = false;
+
+  pi.on("agent_end", async (event, _ctx) => {
+    const messages = event && Array.isArray(event.messages) ? event.messages : [];
+    let last = null;
+    for (let i = messages.length - 1; i >= 0; i -= 1) {
+      if (messages[i] && messages[i].role === "assistant") {
+        last = messages[i];
+        break;
+      }
+    }
+    endedAborted = !!last && last.stopReason === "aborted";
+  });
+
   // Turn end. agent_settled — not agent_end / turn_end — is the only signal
   // that fires after auto-retry and compaction have nowhere left to go, so a
-  // turn with either reports finished exactly once.
-  pi.on("agent_settled", async (_event, ctx) => {
+  // turn with either reports finished exactly once. A run the operator
+  // cancelled with Esc settles too, and is reported as UserInterrupt instead
+  // of Stop: posting Stop would mark the card finished and raise
+  // session:finished for work that was cancelled (issue 392).
+  pi.on("agent_settled", async (event, ctx) => {
     inRun = false;
-    post("Stop", idOf(ctx), {});
+    const aborted = (event && event.aborted === true) || endedAborted;
+    endedAborted = false;
+    post(aborted ? "UserInterrupt" : "Stop", idOf(ctx), {});
   });
 
   // Extension dialog (select / confirm / input / editor / custom). Posted as

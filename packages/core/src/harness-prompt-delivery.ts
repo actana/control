@@ -239,7 +239,12 @@ export type BlockingDialogSpec = {
 };
 
 export type DialogOption = {
-  number: number;
+  /**
+   * The key the menu says selects this row, exactly as painted: `"2"` for
+   * `2. Yes, proceed`, `"a"` for `[a] Trust this workspace`. It is what gets
+   * pressed, so it is never supplied from anywhere but the screen.
+   */
+  key: string;
   label: string;
   /**
    * Whether this row is the one the harness has selected — a pointer glyph in
@@ -292,7 +297,7 @@ export type BlockingDialogMatch = {
  * noun and a question mark together mean one is up, that an option meaning
  * "go ahead" is the one to take, and that an option meaning "no" is the one to
  * never take. Everything harness-specific — how many options there are, what
- * they are called, and *which digit* the affirmative one carries — is read off
+ * they are called, and *which key* the affirmative one carries — is read off
  * the screen in front of it by {@link readDialogOptions}, and if it cannot be
  * read then {@link chooseDialogOption} returns null and D5 applies unchanged:
  * nothing is typed, delivery is abandoned, and the Session is reported
@@ -305,14 +310,15 @@ export type BlockingDialogMatch = {
  * observed and is committed as
  * `__tests__/fixtures/cursor-agent-2026.08.11-folder-trust.txt`. The nouns
  * catch it — `workspace`, `directory`, question mark — so the dialog is
- * *recognised*. It is not *answered*, and cannot be: cursor-agent's menu is
- * letter-keyed (`[a] Trust this workspace` / `[q] Quit`), `OPTION_LINE`
- * below requires a digit, so {@link readDialogOptions} returns an empty list
- * and {@link chooseDialogOption} returns null. Every cursor-cli delivery that
- * meets this screen abandons. That is the whole of the win and it is still a
- * real one — before it, the prompt and a carriage return went into the trust
- * dialog and the delivery reported success. Teaching the reader letter keys is
- * issue 273; until it lands, "recognised" is the honest word for this row.
+ * *recognised*, and since issue 273 it is *answered*: the menu is
+ * letter-keyed (`[a] Trust this workspace` / `[q] Quit`), {@link
+ * readDialogOptions} reads letter keys as well as digits, `Quit` already
+ * counts as refusing, and {@link chooseDialogOption} picks `[a]` by its label.
+ * The key pressed is `a` because that is what the screen says, not because
+ * anything here knows cursor-agent's layout. Before the row, the prompt and a
+ * carriage return went into the trust dialog and the delivery reported
+ * success; between the row and issue 273, every such delivery abandoned to
+ * `needs-input`.
  *
  * **What recognition is not: a net under harnesses this table has never
  * heard of.** An *unrecognised* dialog does not abandon. `onQuiet` finds no
@@ -331,9 +337,9 @@ export const BLOCKING_DIALOGS: readonly BlockingDialogSpec[] = [
     // the global extension answering `project_trust` (ADR 0040), so this
     // screen should not appear on an Actana spawn. If it does — extension
     // missing, marker taken, hand-written argv — Pi's menu is arrow-keyed
-    // (`→ Trust` / `Do not trust`), `OPTION_LINE` finds no digit, and
-    // delivery abandons with `needs-input` rather than typing the prompt
-    // into the dialog. Same shape as cursor-cli's letter-keyed trust screen.
+    // (`→ Trust` / `Do not trust`) with no key on any row, `OPTION_LINE`
+    // finds nothing to press, and delivery abandons with `needs-input`
+    // rather than typing the prompt into the dialog.
     harnesses: ["claude-code", "cursor-cli", "pi"],
     // `workspace|project|repo` join the nouns because they are what a vendor
     // other than Anthropic is as likely to call the same thing. Widening the
@@ -378,36 +384,57 @@ export const BLOCKING_DIALOGS: readonly BlockingDialogSpec[] = [
   },
 ];
 
-// `❯ 2. Yes, proceed` / `2) Yes, proceed` / `  2. No, exit` — the leading run
+// `❯ 2. Yes, proceed` / `2) Yes, proceed` / `  2. No, exit` and, for a
+// letter-keyed menu, `▶ [a] Trust this workspace` / `a) Trust`. The leading run
 // is captured rather than skipped, because what is in it says which row the
-// harness has selected.
+// harness has selected. A box border (`│`) may sit in that run and after the
+// label: it is decoration on both sides, never part of the label and never a
+// selection.
+//
+// Letters are read only as `[a]` or `a)`, never as `a.` — a letter and a
+// full stop at the start of a line is how prose spells an initial (`J. Smith`),
+// and a menu this module misreads is a keystroke it sends into the wrong thing.
 const OPTION_LINE = new RegExp(
-  "^([\\s>❯➤→*·\\-" + HIGHLIGHT_MARK + "]*)(\\d{1,2})[.)]\\s+(\\S.*?)\\s*$",
+  "^([\\s│>❯➤→▶*·\\-" +
+    HIGHLIGHT_MARK +
+    "]*)(?:(\\d{1,2})[.)]|\\[([A-Za-z])\\]|([A-Za-z])\\))\\s+(\\S.*?)(?:\\s*│)?\\s*$",
 );
 
-/** Pointer glyphs; a bullet or a dash is decoration, a pointer is a selection. */
-const POINTER = /[>❯➤→]/;
+/** Pointer glyphs; a bullet, a dash or a box border is decoration, a pointer is a selection. */
+const POINTER = /[>❯➤→▶]/;
 
 /**
- * Read a numbered menu off a screen.
+ * Read a menu off a screen: numbered (`1.`, `1)`) or letter-keyed (`[a]`,
+ * `a)`).
  *
  * The screen is a scrollback of repaints, so the same dialog appears several
- * times over; the last paint of each option number wins, because that is the
- * one the operator would be looking at.
+ * times over; the last paint of each key wins, because that is the one the
+ * operator would be looking at.
+ *
+ * A menu that mixes notations — `1.` beside `[b]` — reads as no menu at all.
+ * Either it is two things on one screen, or it is one thing this module has
+ * never seen; in neither case is there a key it can justify pressing, and an
+ * empty list is what routes the caller to D5's "type nothing".
  */
 export function readDialogOptions(screen: string): DialogOption[] {
-  const byNumber = new Map<number, DialogOption>();
+  const byKey = new Map<string, DialogOption>();
+  const notations = new Set<string>();
   for (const line of stripAnsi(markHighlights(screen)).split("\n")) {
     const m = OPTION_LINE.exec(line);
     if (!m) continue;
     const marker = m[1]!;
-    byNumber.set(Number(m[2]), {
-      number: Number(m[2]),
-      label: m[3]!,
+    const key = m[2] ?? m[3] ?? m[4]!;
+    notations.add(m[2] !== undefined ? "digit" : m[3] !== undefined ? "bracket" : "paren");
+    byKey.set(key, {
+      key,
+      label: m[5]!,
       highlighted: marker.includes(HIGHLIGHT_MARK) || POINTER.test(marker),
     });
   }
-  return [...byNumber.values()].sort((a, b) => a.number - b.number);
+  if (notations.size > 1) return [];
+  return [...byKey.values()].sort((a, b) =>
+    a.key.localeCompare(b.key, "en", { numeric: true }),
+  );
 }
 
 /**
@@ -474,7 +501,7 @@ export function highlightIsOn(
   option: DialogOption,
 ): boolean {
   const highlighted = options.filter((o) => o.highlighted);
-  return highlighted.length === 1 && highlighted[0]!.number === option.number;
+  return highlighted.length === 1 && highlighted[0]!.key === option.key;
 }
 
 // ─── Readiness ───────────────────────────────────────────────────────
@@ -1134,9 +1161,9 @@ export type PromptDeliveryEvent =
   | { phase: "waiting-for-composer"; waitedMs: number }
   /** The prompt was written and never appeared. Typing it again. */
   | { phase: "prompt-swallowed"; attempt: number }
-  | { phase: "dialog"; dialog: string; option: number; label: string }
+  | { phase: "dialog"; dialog: string; option: string; label: string }
   | { phase: "dialog-unreadable"; dialog: string }
-  /** Its number went out and the harness did not move its highlight. */
+  /** Its key went out and the harness did not move its highlight. */
   | { phase: "dialog-unconfirmed"; dialog: string }
   | {
       phase: "delivered";
@@ -1230,7 +1257,7 @@ const CURSOR_POSITION = new RegExp("\\u001B\\[[0-9]*;?[0-9]*[Hf]", "g");
  * output.
  *
  * Feed it every chunk from the PTY and dispose it when the PTY exits. It
- * writes to the PTY at most: one digit and one carriage return per dialog, the
+ * writes to the PTY at most: one menu key and one carriage return per dialog, the
  * prompt, and the prompt's carriage return.
  */
 export class HarnessPromptDelivery {
@@ -1590,7 +1617,7 @@ export class HarnessPromptDelivery {
       return;
     }
 
-    // Same dialog still up after its number went out. Two different things
+    // Same dialog still up after its key went out. Two different things
     // look like this, and only one of them may be confirmed: a harness that
     // wants the digit confirmed has *moved its highlight onto the affirmative
     // option*, and a harness that never took the digit at all has left the
@@ -1625,10 +1652,10 @@ export class HarnessPromptDelivery {
     this.emit({
       phase: "dialog",
       dialog: dialog.spec.id,
-      option: dialog.answer.number,
+      option: dialog.answer.key,
       label: dialog.answer.label,
     });
-    this.press(String(dialog.answer.number));
+    this.press(dialog.answer.key);
   }
 
   /** The dialog is still up and unmoved by our digit. Type nothing more. */
