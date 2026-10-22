@@ -31,6 +31,7 @@ export function Modal({
   footerStyle,
   primaryAction,
   sheetOnPhone = true,
+  sheetCancelLabel,
 }: {
   open: boolean;
   onClose: () => void;
@@ -50,6 +51,8 @@ export function Modal({
   primaryAction?: SheetPrimaryAction;
   /** On phones the dialog becomes a full-screen sheet; small confirmations opt out. */
   sheetOnPhone?: boolean;
+  /** Left header button of the phone sheet; defaults to "Cancel". */
+  sheetCancelLabel?: string;
 }) {
   const isPhone = useIsPhone();
   useHotkey(
@@ -124,6 +127,7 @@ export function Modal({
         titleId={titleId}
         title={title}
         onClose={onClose}
+        cancelLabel={sheetCancelLabel}
         primaryAction={primaryAction}
         footer={footer}
         zIndex={zIndex}

@@ -1,5 +1,6 @@
 import { Icon } from "~/components/ui/Icon";
 import { formatRelativeTime } from "~/lib/format-relative-time";
+import { useIsCompact } from "~/lib/breakpoint";
 
 export function FleetSessionRow({
   row,
@@ -8,6 +9,8 @@ export function FleetSessionRow({
   row: { coreId: string; coreLabel: string; sessionId: string; title: string; agent: string; status: string; updatedAt: number };
   onOpen: () => void;
 }) {
+  // Compact (#831): a taller card with a full-size tap target.
+  const compact = useIsCompact();
   return (
     <button
       onClick={onOpen}
@@ -15,7 +18,8 @@ export function FleetSessionRow({
         display: "flex",
         alignItems: "center",
         gap: 12,
-        padding: "10px 14px",
+        padding: compact ? "12px 16px" : "10px 14px",
+        minHeight: compact ? 56 : undefined,
         background: "var(--surface-0)",
         border: "1px solid var(--border)",
         borderRadius: 7,
@@ -37,7 +41,7 @@ export function FleetSessionRow({
       </div>
       {/* Core label lives on the section heading now — the per-row badge
           would just repeat what's above the group. */}
-      <Icon name="chevron-right" size={12} style={{ color: "var(--text-faint)" }} />
+      <Icon name="chevron-right" size={compact ? 14 : 12} style={{ color: "var(--text-faint)", flexShrink: compact ? 0 : undefined }} />
     </button>
   );
 }

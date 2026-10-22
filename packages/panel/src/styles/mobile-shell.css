@@ -101,3 +101,11 @@
     min-height: 44px;
   }
 }
+
+/* Fleet gutter (#831): a 744px tablet frame is "phone" by breakpoint but has
+   the tablet's 24px gutter. FleetView reads the variable on phone only. */
+@media (min-width: 600px) and (max-width: 767px) {
+  [data-fleet-compact] {
+    --mc-fleet-gutter: 24px;
+  }
+}

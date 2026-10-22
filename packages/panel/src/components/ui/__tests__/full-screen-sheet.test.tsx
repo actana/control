@@ -110,6 +110,15 @@ describe("Modal as a full-screen sheet", () => {
     expect(within(header).queryAllByRole("button").map((b) => b.textContent)).toEqual(["Cancel"]);
   });
 
+  it("sheetCancelLabel renames the header's left button, which still closes", () => {
+    phone();
+    const onClose = renderModal({ sheetCancelLabel: "Back" });
+    const header = screen.getByRole("dialog").querySelector(".mc-sheet-header") as HTMLElement;
+    expect(header.firstElementChild!.textContent).toBe("Back");
+    fireEvent.click(within(header).getByRole("button", { name: "Back" }));
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
   it("Cancel in the sheet header calls onClose; Escape still closes", () => {
     phone();
     const onClose = renderModal();
@@ -230,5 +239,11 @@ describe("mobile-sheet.css", () => {
     expect(phoneBlocks).toMatch(/\[data-mc-drawer\][\s\S]*width:\s*100%\s*!important/);
     expect(phoneBlocks).toMatch(/\[data-testid="task-detail-backdrop"\][\s\S]*display:\s*none/);
     expect(css).toMatch(/\.mc-sheet-body[\s\S]*overflow-y:\s*auto/);
+  });
+
+  it("mobile-sheet.css: text fields are 44px tall on phone only, beating the 38px inline height (#831)", () => {
+    expect(phoneBlocks).toMatch(/:root \.mc-text-field\s*\{\s*height:\s*44px\s*!important/);
+    const desktopPart = css.split("@media (max-width: 767px)")[0];
+    expect(desktopPart).not.toMatch(/\.mc-text-field/);
   });
 });

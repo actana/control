@@ -14,6 +14,7 @@ import { useFleet } from "~/lib/fleet-context";
 import { setSelectedCoreId as writeSelectedCoreId } from "~/lib/selected-core-store";
 import { OPEN_SETTINGS_EVENT } from "~/lib/design-meta";
 import { coreOrder, type CoreWithDial } from "~/shared/cores";
+import { useBreakpoint } from "~/lib/breakpoint";
 
 // Fleet view — a live, non-persisted dashboard. `sessionRowsList` fans out to every
 // registered Core over this tab's one panel link and the answers merge keyed by
@@ -47,6 +48,80 @@ export function FleetView() {
   const pairCore = useCallback(() => {
     window.dispatchEvent(new CustomEvent(OPEN_SETTINGS_EVENT, { detail: { panel: "cores" } }));
   }, []);
+  const breakpoint = useBreakpoint();
+  const compact = breakpoint !== "desktop";
+  const phone = breakpoint === "phone";
+
+  const summary = `${fleet.rows.length} active ${fleet.rows.length === 1 ? "session" : "sessions"} across ${cores.length} ${cores.length === 1 ? "Core" : "Cores"}`;
+  const picker = <CorePicker cores={cores} onPick={(core) => openCore(core.id)} compact={compact} />;
+  // On compact each action is a full-size tap target.
+  const actionStyle = compact ? { minHeight: 44 } : undefined;
+  const actions = (
+    <>
+      <Btn variant="ghost" icon="check" style={actionStyle} onClick={() => void router.navigate({ to: "/tasks" })}>
+        Tasks
+      </Btn>
+      <Btn variant="ghost" icon="plus" style={actionStyle} onClick={pairCore}>
+        Pair a Core
+      </Btn>
+      <Btn variant="ghost" icon="refresh" style={actionStyle} onClick={refresh}>
+        Refresh
+      </Btn>
+    </>
+  );
+  const body =
+    cores.length === 0 ? (
+      <EmptyState
+        title="Add your first Core"
+        subtitle="A Core is a machine running the Core. Install it there, run `actana pair new` on it, and pair it with this Panel using the code it prints to see its sessions here."
+        icon="grid"
+      />
+    ) : error ? (
+      <EmptyState
+        title="Could not load the fleet"
+        subtitle={error}
+        icon="shield"
+        action={
+          <Btn variant="primary" icon="refresh" onClick={refresh}>
+            Retry
+          </Btn>
+        }
+      />
+    ) : (
+      <FleetDashboard
+        loading={loading}
+        cores={cores}
+        fleetRows={fleet.rows}
+        onOpenCore={openCore}
+        onOpenSession={openSession}
+        compact={compact}
+      />
+    );
+
+  // Compact (#831, M07/M09): the top bar already says "Fleet", so no h1 and no
+  // card frame or cursor glow — summary, picker, actions, then the Cores. The
+  // picker and actions share one wrapping row that follows the width, not the
+  // breakpoint: narrow screens wrap the actions under a full-width picker,
+  // wider ones (744 px is still "phone") keep them beside a growing picker.
+  if (compact) {
+    return (
+      <div data-fleet-compact={breakpoint} style={{ flex: 1, overflow: "auto", padding: phone ? "var(--mc-fleet-gutter, 16px)" : 24 }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 12, marginBottom: 20 }}>
+          <div style={{ fontSize: 14, color: "var(--text-dim)" }}>{summary}</div>
+          <div data-fleet-header-row style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8 }}>
+            {picker}
+            <div
+              data-fleet-actions
+              style={{ display: "flex", flex: "1 0 auto", justifyContent: "space-evenly", alignItems: "center", gap: 4 }}
+            >
+              {actions}
+            </div>
+          </div>
+        </div>
+        {body}
+      </div>
+    );
+  }
 
   return (
     <>
@@ -69,49 +144,16 @@ export function FleetView() {
                 Fleet
               </h1>
               <div style={{ marginTop: 4, fontSize: 14, color: "var(--text-dim)" }}>
-                {`${fleet.rows.length} active ${fleet.rows.length === 1 ? "session" : "sessions"} across ${cores.length} ${cores.length === 1 ? "Core" : "Cores"}`}
+                {summary}
               </div>
             </div>
             <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-              <CorePicker cores={cores} onPick={(core) => openCore(core.id)} />
-              <Btn variant="ghost" icon="check" onClick={() => void router.navigate({ to: "/tasks" })}>
-                Tasks
-              </Btn>
-              <Btn variant="ghost" icon="plus" onClick={pairCore}>
-                Pair a Core
-              </Btn>
-              <Btn variant="ghost" icon="refresh" onClick={refresh}>
-                Refresh
-              </Btn>
+              {picker}
+              {actions}
             </div>
           </div>
 
-          {cores.length === 0 ? (
-            <EmptyState
-              title="Add your first Core"
-              subtitle="A Core is a machine running the Core. Install it there, run `actana pair new` on it, and pair it with this Panel using the code it prints to see its sessions here."
-              icon="grid"
-            />
-          ) : error ? (
-            <EmptyState
-              title="Could not load the fleet"
-              subtitle={error}
-              icon="shield"
-              action={
-                <Btn variant="primary" icon="refresh" onClick={refresh}>
-                  Retry
-                </Btn>
-              }
-            />
-          ) : (
-            <FleetDashboard
-              loading={loading}
-              cores={cores}
-              fleetRows={fleet.rows}
-              onOpenCore={openCore}
-              onOpenSession={openSession}
-            />
-          )}
+          {body}
         </CardFrame>
       </div>
     </>
@@ -130,12 +172,14 @@ function FleetDashboard({
   fleetRows,
   onOpenCore,
   onOpenSession,
+  compact,
 }: {
   loading: boolean;
   cores: CoreWithDial[];
   fleetRows: ReturnType<typeof useFleet>["fleet"]["rows"];
   onOpenCore: (coreId: string) => void;
   onOpenSession: (coreId: string, sessionId: string) => void;
+  compact: boolean;
 }) {
   if (loading && fleetRows.length === 0) {
     return (
@@ -169,10 +213,16 @@ function FleetDashboard({
             labelSize={13}
           >
             <div data-core-section={core.id}>
-            <Btn variant="ghost" size="sm" icon="chevron-right" onClick={() => onOpenCore(core.id)}>
+            <Btn
+              variant="ghost"
+              size="sm"
+              icon="chevron-right"
+              style={compact ? { minHeight: 44, marginBottom: 8, maxWidth: "100%" } : undefined}
+              onClick={() => onOpenCore(core.id)}
+            >
               Open {core.label}
             </Btn>
-            <CoreDialLine dial={core.dial} />
+            <CoreDialLine dial={core.dial} compact={compact} />
             {core.dial.state === "needs-update" ? (
               // No rows, no "no active sessions": a Core whose protocol this
               // Panel doesn't speak has nothing true to say about its work, so
@@ -204,7 +254,7 @@ function FleetDashboard({
 // The Core's link, in one line. `connected` says nothing extra — the rows below
 // are the evidence. Every other state owes the operator a reason and a
 // last-seen, because what is (or isn't) below is then not the Core's fault.
-function CoreDialLine({ dial }: { dial: CoreWithDial["dial"] }) {
+function CoreDialLine({ dial, compact }: { dial: CoreWithDial["dial"]; compact: boolean }) {
   if (dial.state === "connected") return null;
   // `needs-update` gets the notice below instead — one statement of the fact,
   // with the command attached, rather than a status word above a status box.
@@ -217,8 +267,10 @@ function CoreDialLine({ dial }: { dial: CoreWithDial["dial"] }) {
         gap: 8,
         marginBottom: 10,
         fontFamily: "var(--mono)",
-        fontSize: 11,
+        fontSize: compact ? 12 : 11,
         color: "var(--text-dim)",
+        // Compact: state · last seen on one line, the detail wraps below it.
+        ...(compact ? { flexWrap: "wrap" as const, rowGap: 2 } : null),
       }}
     >
       <span
@@ -234,7 +286,14 @@ function CoreDialLine({ dial }: { dial: CoreWithDial["dial"] }) {
       <span style={{ color: "var(--text-faint)" }}>
         {dial.lastSeenAt ? `· last seen ${formatRelativeTime(dial.lastSeenAt)}` : "· never seen"}
       </span>
-      {dial.detail && <span style={{ color: "var(--text-faint)" }}>· {dial.detail}</span>}
+      {dial.detail &&
+        (compact ? (
+          <span data-dial-detail style={{ color: "var(--text-faint)", flexBasis: "100%", paddingLeft: 16, overflowWrap: "anywhere" }}>
+            {dial.detail}
+          </span>
+        ) : (
+          <span style={{ color: "var(--text-faint)" }}>· {dial.detail}</span>
+        ))}
     </div>
   );
 }
@@ -246,13 +305,22 @@ function CoreDialLine({ dial }: { dial: CoreWithDial["dial"] }) {
 function CorePicker({
   cores,
   onPick,
+  compact = false,
 }: {
   cores: CoreWithDial[];
   onPick: (core: CoreWithDial) => void;
+  compact?: boolean;
 }) {
   const sorted = [...cores].sort(coreOrder);
   return (
-    <div className="mc-input-frame" style={{ display: "flex", alignItems: "center", padding: "0 12px", height: 36 }}>
+    <div
+      className="mc-input-frame"
+      style={
+        compact
+          ? { display: "flex", alignItems: "center", padding: "0 12px", height: 44, flex: "1 1 260px", minWidth: "min(260px, 100%)" }
+          : { display: "flex", alignItems: "center", padding: "0 12px", height: 36 }
+      }
+    >
       <Icon name="globe" size={12} style={{ color: "var(--text-faint)", marginRight: 6 }} />
       <select
         value=""

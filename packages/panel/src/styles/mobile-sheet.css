@@ -94,6 +94,10 @@
   :root .mc-btn-lg {
     --mc-btn-height: 44px;
   }
+  /* Text fields set a 38px inline height; tap targets are 44px on phone. */
+  :root .mc-text-field {
+    height: 44px !important;
+  }
   /* Drawers open as full screens (the drawer carries its own Back button). */
   [data-mc-drawer] {
     top: 0 !important;
