@@ -225,20 +225,40 @@ describe("phone: long-press drag onto the segments", () => {
     expect(document.querySelectorAll('[data-board-column="draft"]')).toHaveLength(1);
   });
 
-  it("scrolls the drop grid into view once when a card is lifted", async () => {
-    // jsdom has no scrollIntoView; while a card is held the page cannot scroll, so the grid must come to the finger.
+  it("pins the help line and the drop grid in one drop bar instead of scrolling to them", async () => {
+    // jsdom has no scrollIntoView; the bar is position:fixed under the top bar, so nothing needs to scroll.
     const scrollIntoView = vi.fn();
     Element.prototype.scrollIntoView = scrollIntoView;
     try {
       await mount();
       await carry("t1");
       moveTo("assigned");
-      expect(scrollIntoView).toHaveBeenCalledTimes(1);
-      expect(scrollIntoView).toHaveBeenCalledWith({ block: "nearest" });
-      expect((scrollIntoView.mock.contexts[0] as Element).classList.contains("mc-tasks-drop-grid")).toBe(true);
+      const bar = document.querySelector(".mc-tasks-dropbar") as HTMLElement;
+      expect(bar).toBeTruthy();
+      expect(bar.querySelector(".mc-tasks-drop-help")).toBeTruthy();
+      const grid = bar.querySelector(".mc-tasks-drop-grid") as HTMLElement;
+      expect(grid).toBeTruthy();
+      expect(grid.querySelectorAll("[data-board-column]")).toHaveLength(4);
+      expect(scrollIntoView).not.toHaveBeenCalled();
     } finally {
       delete (Element.prototype as Partial<Element>).scrollIntoView;
     }
+  });
+
+  it("keeps the segmented control in its slot, hidden, while a card is carried", async () => {
+    await mount();
+    expect(document.querySelector(".mc-tasks-segments")?.hasAttribute("data-carrying")).toBe(false);
+    await carry("t1");
+    const seg = document.querySelector(".mc-tasks-segments") as HTMLElement;
+    expect(seg).toBeTruthy();
+    expect(seg.getAttribute("role")).toBe("tablist");
+    expect(seg.getAttribute("data-carrying")).toBe("true");
+    expect(seg.getAttribute("aria-hidden")).toBe("true");
+    await release("assigned");
+    const back = document.querySelector(".mc-tasks-segments") as HTMLElement;
+    expect(back.hasAttribute("data-carrying")).toBe(false);
+    expect(back.hasAttribute("aria-hidden")).toBe(false);
+    expect(document.querySelector(".mc-tasks-dropbar")).toBeNull();
   });
 
   it("an assigned Task offers Draft with its own hint", async () => {

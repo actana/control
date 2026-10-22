@@ -1,4 +1,4 @@
-import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { ArrowUp, Lock } from "lucide-react";
 import { toast } from "sonner";
@@ -243,13 +243,9 @@ export function TasksBoard({ coreId = null, openTaskId = null }: { coreId?: stri
   const first = compact ? Math.min(page, BOARD_COLUMNS.length - perPage) : 0;
   const shown = compact ? BOARD_COLUMNS.slice(first, first + perPage) : BOARD_COLUMNS;
   const countOf = (statuses: (typeof BOARD_COLUMNS)[number]["statuses"]) => columnTasks(visible, statuses).length;
-  // While a card is carried by pointer the segments become the drop targets, and the list below stops being one.
+  // While a card is carried by pointer a bar pinned under the top bar offers the four drop targets (a held card
+  // cancels touchmove, so nothing in the page flow could be reached); the segments stay in place, hidden.
   const dropGrid = compact && drag?.via === "pointer";
-  // A held card cancels every touchmove, so the page cannot scroll to the grid: bring it into view once per lift.
-  const dropGridRef = useRef<HTMLDivElement>(null);
-  useLayoutEffect(() => {
-    if (dropGrid) dropGridRef.current?.scrollIntoView?.({ block: "nearest" });
-  }, [dropGrid]);
   const onSwipeEnd = (e: React.TouchEvent) => {
     const start = swipeStart.current;
     swipeStart.current = null;
@@ -291,52 +287,57 @@ export function TasksBoard({ coreId = null, openTaskId = null }: { coreId?: stri
         )}
       </div>
       {compact ? (
-        dropGrid && drag ? (
-          <>
-            <p className="mc-tasks-drop-help">Drop on a column to move the Task. Let go anywhere else to cancel.</p>
-            <div ref={dropGridRef} className="mc-tasks-drop-grid">
-              {BOARD_COLUMNS.map((col) => {
-                const state = dropStateOf(col.id);
-                return (
-                  <div
-                    key={col.id}
-                    data-board-column={col.id}
-                    data-drop-state={state}
-                    data-drop-over={drag.over === col.id ? "true" : undefined}
-                    className="mc-tasks-drop-target"
-                  >
-                    <div className="mc-tasks-drop-title">
-                      {state === "origin" ? <ArrowUp size={14} aria-hidden /> : null}
-                      {state === "allowed" ? <Icon name="check" size={14} /> : null}
-                      {state === "refused" ? <Lock size={14} aria-hidden /> : null}
-                      {SHORT_LABEL[col.id]} <span>{countOf(col.statuses)}</span>
-                    </div>
-                    <div className="mc-tasks-drop-hint">{dropHint(col.id, state)}</div>
-                  </div>
-                );
-              })}
-            </div>
-          </>
-        ) : (
-          <div role="tablist" aria-label="Board column" className="mc-tasks-segments">
-            {BOARD_COLUMNS.map((col, i) => {
-              const selected = i >= first && i < first + perPage;
+        <div
+          role="tablist"
+          aria-label="Board column"
+          className="mc-tasks-segments"
+          data-carrying={dropGrid ? "true" : undefined}
+          aria-hidden={dropGrid ? true : undefined}
+        >
+          {BOARD_COLUMNS.map((col, i) => {
+            const selected = i >= first && i < first + perPage;
+            return (
+              <button
+                key={col.id}
+                type="button"
+                role="tab"
+                aria-selected={selected}
+                className="mc-tasks-segment"
+                onClick={() => setPage(i)}
+              >
+                <span>{SHORT_LABEL[col.id]}</span>
+                <span className="mc-tasks-segment-count">{countOf(col.statuses)}</span>
+              </button>
+            );
+          })}
+        </div>
+      ) : null}
+      {dropGrid && drag ? (
+        <div className="mc-tasks-dropbar">
+          <p className="mc-tasks-drop-help">Drop on a column to move the Task. Let go anywhere else to cancel.</p>
+          <div className="mc-tasks-drop-grid">
+            {BOARD_COLUMNS.map((col) => {
+              const state = dropStateOf(col.id);
               return (
-                <button
+                <div
                   key={col.id}
-                  type="button"
-                  role="tab"
-                  aria-selected={selected}
-                  className="mc-tasks-segment"
-                  onClick={() => setPage(i)}
+                  data-board-column={col.id}
+                  data-drop-state={state}
+                  data-drop-over={drag.over === col.id ? "true" : undefined}
+                  className="mc-tasks-drop-target"
                 >
-                  <span>{SHORT_LABEL[col.id]}</span>
-                  <span className="mc-tasks-segment-count">{countOf(col.statuses)}</span>
-                </button>
+                  <div className="mc-tasks-drop-title">
+                    {state === "origin" ? <ArrowUp size={14} aria-hidden /> : null}
+                    {state === "allowed" ? <Icon name="check" size={14} /> : null}
+                    {state === "refused" ? <Lock size={14} aria-hidden /> : null}
+                    {SHORT_LABEL[col.id]} <span>{countOf(col.statuses)}</span>
+                  </div>
+                  <div className="mc-tasks-drop-hint">{dropHint(col.id, state)}</div>
+                </div>
               );
             })}
           </div>
-        )
+        </div>
       ) : null}
       {error ? (
         <EmptyState title="Could not load Tasks" subtitle={error instanceof Error ? error.message : String(error)} icon="shield" />

@@ -114,6 +114,23 @@
   }
 
   /* While a card is carried (M41): the segments become a 2x2 grid of drop targets. */
+  .mc-tasks-segments[data-carrying="true"] {
+    visibility: hidden;
+  }
+  /* Pinned under the top bar (z 20) while a card is carried; the ghost (popover) stays above. */
+  .mc-tasks-dropbar {
+    position: fixed;
+    top: calc(56px + env(safe-area-inset-top));
+    left: 0;
+    right: 0;
+    z-index: 19;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    padding: 12px calc(16px + env(safe-area-inset-right)) 12px calc(16px + env(safe-area-inset-left));
+    background: var(--bg);
+    border-bottom: 1px solid var(--border);
+  }
   .mc-tasks-drop-help {
     margin: 0;
     color: var(--text);
