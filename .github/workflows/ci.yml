@@ -828,6 +828,13 @@ jobs:
   #
   # The Core runs as a local process here (scripts/lib/core-fixture.mjs);
   # pairing against a *containerised* Core is the `core-image` job.
+  #
+  # The phone step (#836) is the same boot with a browser in front: headless
+  # Chrome at 390 × 844 opens the Panel, a Core, a Session terminal, creates a
+  # Task, opens its detail and creates an API key in Settings, asserting no
+  # horizontal page scroll on each screen. It is a step here, not a job, so it
+  # reuses the built Panel and Core and runs exactly where the rest of the job
+  # does: not on a Task pull request (#842). A failure uploads its screenshots.
   panel-e2e:
     name: E2E — Panel service seam
     needs: scope
@@ -859,6 +866,20 @@ jobs:
       # always runs against freshly built code rather than a stale dist.
       - name: E2E — the Panel service, driven as a browser
         run: pnpm panel:e2e
+
+      # Reuses the artifacts `panel:e2e` just built. Screenshots go to the
+      # runner's temp dir and are uploaded only when a leg fails.
+      - name: E2E — the Panel on a phone (390 × 844)
+        run: pnpm panel:e2e:phone --screenshots "$RUNNER_TEMP/panel-phone"
+
+      - name: Upload the phone screenshots
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: panel-phone-screenshots
+          path: ${{ runner.temp }}/panel-phone
+          if-no-files-found: ignore
+          retention-days: 7
 
   # The Panel's database tests, against a real Postgres (#567, ADR 0041 D19).
   # `Unit Tests` runs the same files on PGlite, Postgres compiled to
