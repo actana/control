@@ -268,7 +268,8 @@ async function legOpenThePanel({ page, origin, coreLabel }) {
   // A full page load follows (login.tsx), so the next waits ride out a navigation.
   await waitFor(page, "Fleet for the phone (data-fleet-compact=phone) listing the one Core", {
     css: '[data-fleet-compact="phone"]',
-    match: "across 1 Core\\b",
+    // No \b after "Core": textContent runs elements together ("…1 CoreOpen a Core…"), so there is no word boundary.
+    match: "across 1 Core",
   });
   await waitFor(page, 'the top bar saying "Fleet"', { css: "header.mc-mobile-topbar", match: "Fleet" });
   await waitFor(page, `the Fleet button "Open ${coreLabel}"`, { css: "button", text: `Open ${coreLabel}` });
@@ -290,7 +291,7 @@ async function legOpenACore({ page, coreId, coreLabel }) {
   await waitForGone(page, "the Cores drawer to close", { css: '[role="dialog"][aria-label="Cores"]' });
   await waitFor(page, `the top bar saying "${coreLabel}"`, { css: "header.mc-mobile-topbar", match: escapeRegExp(coreLabel) });
   // "online · shared —": the link state is the first word of the status line.
-  await waitFor(page, "the Core's status line to say online", { css: "[data-core-status-line]", match: "^online\\b" });
+  await waitFor(page, "the Core's status line to say online", { css: "[data-core-status-line]", match: "^online" });
   const sections = "nav[aria-label='Core sections']";
   for (const tab of ["Sessions", "Files", "Tasks"]) {
     await waitFor(page, `the ${tab} tab of the bottom tab bar`, { css: `${sections} button`, text: tab });
