@@ -181,7 +181,7 @@ export function UserTerminalProvider({ children }: { children: ReactNode }) {
   );
   const togglePanel = useCallback(() => {
     if (!scopeKey) return;
-    setPanelOpenByCore((prev) => ({ ...prev, [scopeKey]: !(prev[scopeKey] ?? true) }));
+    setPanelOpenByCore((prev) => ({ ...prev, [scopeKey]: !(prev[scopeKey] ?? false) }));
   }, [scopeKey]);
   const setPanelMaximized = useCallback(
     (maximized: boolean) => {
