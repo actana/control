@@ -210,7 +210,7 @@ the gate for:
 | Level | Runs |
 | --- | --- |
 | Task PR `task/<n>-<slug>` → `feat/x.y.z-<area>` | **Lint only:** `Conventions`, `Lint`, `Train rules` and `Promotion gate` (both end early), and `Panel image` / `Core image` in `pass` mode. No typecheck, tests, audit, secret scan, e2e, tarballs, image builds or CodeQL. |
-| Feature PR `feat/x.y.z-<area>` → `feat/x.y.z` | Everything: `Typecheck`, `Unit Tests`, `Dependency Audit`, `Secret Scan`, `E2E — Panel service seam`, the Postgres and SeaweedFS jobs, the tarball smokes and installer e2e, both images built and smoked, CodeQL. **This is the gate for the Feature**: what a Task pull request no longer checks surfaces here, so it must not be merged red. |
+| Feature PR `feat/x.y.z-<area>` → `feat/x.y.z` | Everything: `Typecheck`, `Unit Tests`, `Dependency Audit`, `Secret Scan`, `E2E — Panel service seam` (which also drives the Panel in headless Chrome at a 390 × 844 phone viewport, #836), the Postgres and SeaweedFS jobs, the tarball smokes and installer e2e, both images built and smoked, CodeQL. **This is the gate for the Feature**: what a Task pull request no longer checks surfaces here, so it must not be merged red. |
 | Release PR `feat/x.y.z` → `beta/x.y.z`, a push to `beta/**` or `feat/x.y.z` | Everything, as before; the train push also publishes the train's images. |
 | Promotion PR `beta/x.y.z` → `main` | Everything, with the images in `verify` mode (D19); `Promotion gate` red by design. |
 
