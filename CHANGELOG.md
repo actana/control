@@ -9,10 +9,12 @@ layout: the page scrolls like any other page, a top bar carries the menu, the
 place you are in and the notification bell, and the menu opens a drawer that
 lists Fleet, every Core with its status, Settings and Operator. Inside a Core, a
 bottom tab bar switches between Sessions, Files and Tasks. Dialogs open as
-full-screen sheets with Cancel, the title and the main action in the header and
-the same action repeated in the footer, and the sheet follows the on-screen
-keyboard so the buttons stay reachable. Small tablets (768 to 1023 px) get the
-same shell with wider layouts. Desktop (1024 px and up) is unchanged.
+full-screen sheets with Cancel and the title in the header; forms (New session,
+New Task, the Files dialogs, the Shared folder step, Create API key) also put
+their main action there and repeat it in the footer, and the sheet follows the
+on-screen keyboard so the buttons stay reachable. Short confirmations stay
+centred. Small tablets (768 to 1023 px) get the same shell with wider layouts.
+Desktop (1024 px and up) is unchanged.
 
 Sign in, first-run setup and Fleet fit a phone. The password fields have a
 show/hide eye, long install and pairing commands wrap beside a large copy
@@ -123,7 +125,9 @@ Session everywhere on the wire**, in frames, events, the database, the SDK and
 the CLI, with no alias, and the protocol version is bumped: **a 0.5.0 Core and a
 0.4.x Panel, SDK or CLI do not talk to each other, so update every Core and
 every client together.** A Core refuses a `spawn` that carries a `cwd` or a
-`projectId` and names the field. Sessions can be renamed.
+`projectId` and names the field. The `actana` CLI for a machine that only drives
+Cores, and the SDK, now come from actana/client (`npm i -g @actana/cli`); a beta
+prerelease no longer carries a CLI tarball.
 
 The Core is locked down. `core` has no sudo, and root is used only by the
 container's own startup. The daemon runs as its own user, `actana`, with its
