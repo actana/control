@@ -62,6 +62,7 @@ export function ConfirmDialog({
       onClose={onClose}
       title={title}
       width={width}
+      sheetOnPhone={false}
       footer={
         <>
           <StaticHotkeyTooltip hotkey="Esc">

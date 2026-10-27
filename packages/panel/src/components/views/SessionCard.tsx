@@ -5,6 +5,7 @@ import { Btn } from "~/components/ui/Btn";
 import { ConfirmDialog } from "~/components/ui/ConfirmDialog";
 import { HotkeyTooltip } from "~/components/ui/Tooltip";
 import { HarnessLogo } from "~/components/ui/HarnessLogo";
+import { Icon } from "~/components/ui/Icon";
 import { SessionIcon } from "~/components/ui/SessionIcon";
 import { HARNESS_META, STATUS_META } from "~/lib/design-meta";
 import { isSentinelTitle } from "~/lib/session-sentinels";
@@ -26,6 +27,8 @@ type SessionCardProps = {
   onTogglePinned?: (sessionId: string) => Promise<void> | void;
   /** True while the pin/unpin mutation for this session is saving. */
   pinning?: boolean;
+  /** Phone/tablet workspace: a stacked card with a 44 px open button (#832, M27). */
+  compact?: boolean;
 };
 
 function SessionCardImpl({
@@ -37,6 +40,7 @@ function SessionCardImpl({
   onDelete,
   onTogglePinned,
   pinning = false,
+  compact = false,
 }: SessionCardProps) {
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [confirmArchiveOpen, setConfirmArchiveOpen] = useState(false);
@@ -63,6 +67,152 @@ function SessionCardImpl({
   // instead of the underlying pre-archive status label.
   const subtitle =
     session.preview?.trim() || (archived ? "Archived" : statusMeta.label);
+
+  if (compact) {
+    const tail = session.preview?.trim();
+    return (
+      <CardFrame
+        className="mc-ws-card"
+        data-ws-card=""
+        data-status={session.status}
+        focused={selected}
+        style={{ width: "100%", cursor: "pointer", zIndex: 0 }}
+      >
+        <ShimmerBar active={isRunning} color={meta?.color} />
+        <button
+          type="button"
+          className="mc-ws-card-hit"
+          tabIndex={-1}
+          aria-hidden
+          onClick={selectSession}
+        />
+        <div className="mc-ws-card-head">
+          {statusMeta.dot && (
+            <span
+              aria-hidden
+              className="mc-ws-card-dot"
+              style={{ background: statusMeta.color }}
+            />
+          )}
+          <div className="mc-ws-card-titles">
+            <div
+              className="mc-ws-card-title"
+              style={{
+                color: sentinel ? "var(--text-dim)" : undefined,
+                fontStyle: sentinel ? "italic" : undefined,
+              }}
+            >
+              {session.title}
+            </div>
+            <div className="mc-ws-card-status" style={{ color: statusMeta.color }}>
+              {archived ? "Archived" : statusMeta.label}
+            </div>
+          </div>
+          <button
+            type="button"
+            className="mc-ws-card-open"
+            aria-label={`Open ${session.title}`}
+            aria-pressed={selected}
+            onClick={selectSession}
+          >
+            <Icon name="terminal" size={16} />
+          </button>
+        </div>
+        {tail ? <div className="mc-ws-card-tail">{tail}</div> : null}
+        {(onTogglePinned || onArchive || onRestore || onDelete) && (
+          <div className="mc-ws-card-actions">
+            <span className="mc-ws-card-updated">{updated}</span>
+            {!archived && onTogglePinned && (
+              <Btn
+                variant="ghost"
+                icon={session.pinned ? "pin-fill" : "pin"}
+                disabled={pinning}
+                aria-busy={pinning}
+                aria-label={`${session.pinned ? "Unpin" : "Pin"} ${session.title}`}
+                onClick={() => {
+                  if (pinning) return;
+                  void onTogglePinned(session.id);
+                }}
+              />
+            )}
+            {archived && onRestore && (
+              <Btn
+                variant="ghost"
+                icon="refresh"
+                aria-label={`Restore ${session.title}`}
+                onClick={() => onRestore(session.id)}
+              />
+            )}
+            {!archived && onArchive && (
+              <Btn
+                variant="ghost"
+                icon="archive"
+                aria-label={`Archive ${session.title}`}
+                onClick={() => {
+                  if (isRunning) setConfirmArchiveOpen(true);
+                  else onArchive(session.id);
+                }}
+              />
+            )}
+            {onDelete && (
+              <Btn
+                variant="ghost"
+                icon="trash"
+                aria-label={`Delete ${session.title}`}
+                onClick={() => setConfirmOpen(true)}
+              />
+            )}
+          </div>
+        )}
+        {onArchive && (
+          <ConfirmDialog
+            open={confirmArchiveOpen}
+            onClose={() => setConfirmArchiveOpen(false)}
+            onConfirm={() => {
+              onArchive(session.id);
+              setConfirmArchiveOpen(false);
+            }}
+            title="Archive running session?"
+            confirmLabel="Archive"
+            cancelLabel="Keep running"
+            variant="danger"
+            icon="archive"
+            width={420}
+          >
+            <div style={{ fontSize: 13, color: "var(--text)", marginBottom: 6, overflowWrap: "anywhere" }}>
+              &ldquo;{session.title}&rdquo; is still running.
+            </div>
+            <div style={{ fontSize: 12, color: "var(--text-dim)" }}>
+              Archiving disconnects its terminal and stops the in-progress agent.
+              You can restore the session later, but the current run won&rsquo;t
+              resume.
+            </div>
+          </ConfirmDialog>
+        )}
+        {onDelete && (
+          <ConfirmDialog
+            open={confirmOpen}
+            onClose={() => setConfirmOpen(false)}
+            onConfirm={() => {
+              onDelete(session.id);
+              setConfirmOpen(false);
+            }}
+            title="Delete session?"
+            confirmLabel="Delete"
+            icon="trash"
+            width={420}
+          >
+            <div style={{ fontSize: 13, color: "var(--text)", marginBottom: 6, overflowWrap: "anywhere" }}>
+              Delete &ldquo;{session.title}&rdquo;?
+            </div>
+            <div style={{ fontSize: 12, color: "var(--text-dim)" }}>
+              This session will be removed. This cannot be undone.
+            </div>
+          </ConfirmDialog>
+        )}
+      </CardFrame>
+    );
+  }
 
   return (
     <CardFrame
@@ -438,6 +588,7 @@ export const SessionCard = memo(
   (prev, next) =>
     prev.selected === next.selected &&
     prev.pinning === next.pinning &&
+    prev.compact === next.compact &&
     prev.onToggle === next.onToggle &&
     prev.onArchive === next.onArchive &&
     prev.onRestore === next.onRestore &&

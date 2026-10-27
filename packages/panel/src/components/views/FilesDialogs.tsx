@@ -55,6 +55,7 @@ export function NameDialog({
       onClose={onClose}
       title={title}
       width={420}
+      primaryAction={{ label: confirmLabel, onClick: () => void submit(), disabled: busy || !value.trim() }}
       footer={
         <>
           <Btn variant="ghost" onClick={onClose}>Cancel</Btn>
@@ -109,6 +110,16 @@ export function MoveDialog({
       onClose={onClose}
       title={`Move ${displayPath(path)}`}
       width={460}
+      primaryAction={{
+        label: "Move here",
+        disabled: busy || unchanged,
+        onClick: () => {
+          setBusy(true);
+          onMove(target)
+            .then(onClose, (e: unknown) => setError(e instanceof Error ? e.message : String(e)))
+            .finally(() => setBusy(false));
+        },
+      }}
       footer={
         <>
           <Btn variant="ghost" onClick={onClose}>Cancel</Btn>

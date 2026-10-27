@@ -185,7 +185,9 @@ export function useBoardDrag({
 
     const onPointerUp = (e: PointerEvent) => {
       if (e.pointerId !== pointerId) return;
-      finish(active ? columnAt(e.clientX, e.clientY) : null);
+      // The drop bar appears under a finger that has not moved; releasing in place is "let go to cancel".
+      const still = touch && Math.hypot(e.clientX - startX, e.clientY - startY) <= LONG_PRESS_SLOP_PX;
+      finish(active && !still ? columnAt(e.clientX, e.clientY) : null);
     };
     const onPointerCancel = (e: PointerEvent) => {
       if (e.pointerId === pointerId) finish(null);

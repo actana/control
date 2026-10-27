@@ -7,6 +7,10 @@ import { Btn } from "~/components/ui/Btn";
 import { EmptyState } from "~/components/ui/EmptyState";
 import { GridViewToggleIcon } from "~/components/ui/GridViewToggleIcon";
 import { CoreHeader, type CoreTab } from "~/components/views/CoreHeader";
+import { CoreTabBar } from "~/components/views/CoreTabBar";
+import { useBreakpoint, useIsCompact } from "~/lib/breakpoint";
+import { CoreSessionCard } from "~/components/views/CoreSessionCard";
+import { corePillParts } from "~/lib/core-rail";
 import { CoreNeedsUpdateNotice } from "~/components/views/CoreNeedsUpdate";
 import { FleetSessionRow } from "~/components/views/FleetSessionRow";
 import { FilesDrive } from "~/components/views/FilesDrive";
@@ -43,6 +47,8 @@ import type { Harness } from "@actana/shared/domain";
  */
 export function CorePage({ coreId, tab, path = "" }: { coreId: string; tab: CoreTab; path?: string }) {
   const router = useRouter();
+  const compact = useIsCompact();
+  const breakpoint = useBreakpoint();
   const queryClient = useQueryClient();
   const cliAvailability = useCliAvailability(coreId);
   const { cores, fleet, loading, coresLoading, coresError, refreshCores } = useFleet();
@@ -181,7 +187,26 @@ export function CorePage({ coreId, tab, path = "" }: { coreId: string; tab: Core
   }
 
   const sessionsToolbar =
-    tab === "sessions" && core.dial.state !== "needs-update" ? (
+    tab === "sessions" && core.dial.state !== "needs-update" && compact ? (
+      <div data-sessions-toolbar className="mc-sessions-toolbar">
+        <span className="mc-sessions-count">
+          {rows.length} {rows.length === 1 ? "session" : "sessions"}
+        </span>
+        <Btn
+          variant="ghost"
+          icon="terminal"
+          className="mc-sessions-toggle"
+          aria-label="Terminals"
+          aria-pressed={panelOpen}
+          onClick={togglePanel}
+        />
+        {rows.length > 0 && (
+          <Btn variant="primary" icon="plus" onClick={() => void openNewSessionDialog()}>
+            New session
+          </Btn>
+        )}
+      </div>
+    ) : tab === "sessions" && core.dial.state !== "needs-update" ? (
       <div
         data-sessions-toolbar
         style={{
@@ -230,17 +255,27 @@ export function CorePage({ coreId, tab, path = "" }: { coreId: string; tab: Core
       </div>
     ) : null;
 
+  const pill = corePillParts(core.dial, core.sharedFolder);
+  const statusLine = `${pill.link}${pill.version ? ` ${pill.version}` : ""} · ${pill.shared}`;
+
   return (
     <div style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0 }}>
-      <CoreHeader
-        core={core}
-        cores={cores}
-        tab={tab}
-        onTab={setTab}
-        onSwitchCore={switchCore}
-        onToggleTerminal={togglePanel}
-        terminalOpen={panelOpen}
-      />
+      <div className="mc-core-header-wrap" data-tab={tab}>
+        <CoreHeader
+          core={core}
+          cores={cores}
+          tab={tab}
+          onTab={setTab}
+          onSwitchCore={switchCore}
+          onToggleTerminal={togglePanel}
+          terminalOpen={panelOpen}
+        />
+      </div>
+      {compact && tab === "sessions" ? (
+        <div data-core-status-line className="mc-core-status-line">
+          {statusLine}
+        </div>
+      ) : null}
       <CardFrame style={{ flex: 1, minHeight: 0, overflow: "auto", padding: 16, border: 0 }}>
         {tab === "sessions" ? (
           core.dial.state === "needs-update" ? (
@@ -248,7 +283,17 @@ export function CorePage({ coreId, tab, path = "" }: { coreId: string; tab: Core
           ) : rows.length > 0 ? (
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
               {sessionsToolbar}
-              {sessionsView === "grid" ? (
+              {compact ? (
+                <div
+                  data-sessions-cards
+                  data-columns={breakpoint === "tablet" ? 2 : 1}
+                  className="mc-sessions-cards"
+                >
+                  {rows.map((row) => (
+                    <CoreSessionCard key={row.sessionId} row={row} onOpen={() => openWorkspace(row.sessionId)} />
+                  ))}
+                </div>
+              ) : sessionsView === "grid" ? (
                 <div
                   data-sessions-grid
                   style={{
@@ -368,6 +413,7 @@ export function CorePage({ coreId, tab, path = "" }: { coreId: string; tab: Core
           setRememberTick((n) => n + 1);
         }}
       />
+      {compact ? <CoreTabBar tab={tab} onTab={setTab} /> : null}
     </div>
   );
 }

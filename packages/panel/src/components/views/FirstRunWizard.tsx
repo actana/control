@@ -4,6 +4,7 @@ import { Icon } from "~/components/ui/Icon";
 import { TextField } from "~/components/ui/TextField";
 import { Ticked } from "~/components/ui/Ticked";
 import { AddCoreByPairing } from "~/components/views/AddCoreByPairing";
+import { useIsPhone } from "~/lib/breakpoint";
 import {
   ADD_CORE_LOCATION,
   COMPOSE_SHORTCUT_ACTION,
@@ -102,6 +103,7 @@ export function FirstRunWizard({
   // command. Kept here rather than inside step 2 so stepping away and back
   // does not silently drop what was typed.
   const [label, setLabel] = useState("");
+  const isPhone = useIsPhone();
 
   return (
     <div
@@ -118,10 +120,10 @@ export function FirstRunWizard({
         style={{
           maxWidth: 780,
           margin: "0 auto",
-          padding: "48px 24px 64px",
+          padding: isPhone ? "24px 16px 32px" : "48px 24px 64px",
           display: "flex",
           flexDirection: "column",
-          gap: 22,
+          gap: isPhone ? 18 : 22,
         }}
       >
         <Header />
@@ -227,6 +229,8 @@ function RegistryErrorBox({ message }: { message: string }) {
  * who needed it.
  */
 function ComposeShortcutBar({ label, onSkip }: { label: string; onSkip: () => void }) {
+  // Phone: text, then the jump button, then the command — stacked, not wrapped.
+  const isPhone = useIsPhone();
   return (
     <div
       data-compose-shortcut
@@ -241,11 +245,23 @@ function ComposeShortcutBar({ label, onSkip }: { label: string; onSkip: () => vo
         borderRadius: 7,
       }}
     >
-      <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
-        <div style={{ flex: 1, minWidth: 220, fontSize: 12.5, lineHeight: 1.5, color: "var(--text-dim)" }}>
+      <div
+        style={
+          isPhone
+            ? { display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 10 }
+            : { display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }
+        }
+      >
+        <div
+          style={
+            isPhone
+              ? { fontSize: 13, lineHeight: 1.5, color: "var(--text-dim)" }
+              : { flex: 1, minWidth: 220, fontSize: 12.5, lineHeight: 1.5, color: "var(--text-dim)" }
+          }
+        >
           <Ticked text={COMPOSE_SHORTCUT_NOTICE} />
         </div>
-        <Btn variant="frame" size="sm" onClick={onSkip}>
+        <Btn variant="frame" size={isPhone ? "md" : "sm"} onClick={onSkip}>
           {COMPOSE_SHORTCUT_ACTION}
         </Btn>
       </div>
@@ -256,22 +272,52 @@ function ComposeShortcutBar({ label, onSkip }: { label: string; onSkip: () => vo
 
 /** The three steps as a rail — where you are, and what is still ahead. */
 function StepRail({ step, onStep }: { step: StepIndex; onStep: (next: StepIndex) => void }) {
+  // Phone: a horizontal scroller of fixed-width cards, kept on the active one.
+  const isPhone = useIsPhone();
+  const activeRef = useRef<HTMLButtonElement | null>(null);
+  useEffect(() => {
+    const el = activeRef.current;
+    const rail = el?.closest<HTMLElement>("[data-step-rail]");
+    if (!isPhone || !el || !rail) return;
+    // Sideways only: scrollIntoView would also move the page on a short phone.
+    rail.scrollLeft = Math.max(0, el.offsetLeft - (rail.clientWidth - el.offsetWidth) / 2);
+  }, [isPhone, step]);
   return (
     <ol
+      data-step-rail
       style={{
         listStyle: "none",
         display: "flex",
         gap: 8,
         margin: 0,
         padding: 0,
+        ...(isPhone
+          ? {
+              // offsetLeft of the cards is measured from the rail.
+              position: "relative",
+              overflowX: "auto",
+              scrollSnapType: "x proximity",
+              // The rail runs to the screen edge rather than stopping at the gutter.
+              marginRight: -16,
+              paddingRight: 16,
+            }
+          : {}),
       }}
     >
       {STEPS.map((entry, index) => {
         const active = index === step;
         return (
-          <li key={entry.id} style={{ flex: 1, minWidth: 0 }}>
+          <li
+            key={entry.id}
+            style={
+              isPhone
+                ? { flex: "0 0 216px", minWidth: 0, scrollSnapAlign: "center" }
+                : { flex: 1, minWidth: 0 }
+            }
+          >
             <button
               type="button"
+              ref={active ? activeRef : undefined}
               onClick={() => onStep(index as StepIndex)}
               aria-current={active ? "step" : undefined}
               style={{
@@ -435,23 +481,70 @@ function MintStep({ label, onLabel }: { label: string; onLabel: (next: string) =
  * never see again unless they forget every Core they have.
  */
 function RedeemStep({ onPaired }: { onPaired: (core: CoreWithDial) => Promise<void> }) {
+  const sameFormAside = (
+    <Aside>
+      This is the same form as <strong>{ADD_CORE_LOCATION}</strong>, which is where every Core
+      after this one is paired. The gear icon in the top bar is waiting for you on the other side
+      of this step.
+    </Aside>
+  );
   return (
     <StepBody
       title="Redeem the code here"
       lede="Give the Panel the Core's address, compare the fingerprint it is presented against the one on that terminal, and only then enter the code. The Panel does not send the code until the two match."
     >
-      <AddCoreByPairing onPaired={onPaired} />
-      <Aside>
-        This is the same form as <strong>{ADD_CORE_LOCATION}</strong>, which is where every Core
-        after this one is paired. The gear icon in the top bar is waiting for you on the other side
-        of this step.
-      </Aside>
+      <AddCoreByPairing
+        onPaired={onPaired}
+        sharedFolderNote={
+          // The phone sheet covers the wizard, so it repeats what sits behind it (M06).
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            {sameFormAside}
+            <Aside>The Panel opens as soon as a Core pairs.</Aside>
+          </div>
+        }
+      />
+      {sameFormAside}
     </StepBody>
   );
 }
 
 /** Back / forward. There is no third button, and there never will be. */
 function Footer({ step, onStep }: { step: StepIndex; onStep: (next: StepIndex) => void }) {
+  const isPhone = useIsPhone();
+  if (isPhone) {
+    // Phone: two equal large buttons; on step 3 Back alone, the line below it.
+    const half = { flex: 1, minHeight: 44, justifyContent: "center" } as const;
+    return (
+      <div data-wizard-footer style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+        <div style={{ display: "flex", gap: 10 }}>
+          <Btn
+            variant="frame"
+            size="lg"
+            style={half}
+            onClick={() => onStep((step - 1) as StepIndex)}
+            disabled={step === 0}
+          >
+            Back
+          </Btn>
+          {step < 2 && (
+            <Btn
+              variant="primary"
+              size="lg"
+              style={half}
+              onClick={() => onStep((step + 1) as StepIndex)}
+            >
+              Next
+            </Btn>
+          )}
+        </div>
+        {step === 2 && (
+          <span style={{ fontFamily: "var(--mono)", fontSize: 13, color: "var(--text-dim)" }}>
+            The Panel opens as soon as a Core pairs.
+          </span>
+        )}
+      </div>
+    );
+  }
   return (
     <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
       <Btn
@@ -485,13 +578,14 @@ function StepBody({
   lede: string;
   children: React.ReactNode;
 }) {
+  const isPhone = useIsPhone();
   return (
     <section
       style={{
         display: "flex",
         flexDirection: "column",
         gap: 12,
-        padding: "18px 20px",
+        padding: isPhone ? "18px 16px" : "18px 20px",
         background: "var(--surface-0)",
         border: "1px solid var(--border)",
         borderRadius: 9,
@@ -505,8 +599,9 @@ function StepBody({
 }
 
 function Prose({ children }: { children: React.ReactNode }) {
+  const isPhone = useIsPhone();
   return (
-    <p style={{ margin: 0, fontSize: 12.5, lineHeight: 1.55, color: "var(--text-dim)" }}>
+    <p style={{ margin: 0, fontSize: isPhone ? 13 : 12.5, lineHeight: 1.55, color: "var(--text-dim)" }}>
       {children}
     </p>
   );
@@ -536,6 +631,9 @@ function Aside({ children }: { children: React.ReactNode }) {
  * eye is how an operator ends up debugging their own typo.
  */
 function CommandLine({ command }: { command: string }) {
+  // Phone: the command wraps instead of scrolling sideways, and the copy
+  // button is a 44 px tap target beside it.
+  const isPhone = useIsPhone();
   const [copied, setCopied] = useState(false);
   // The "copied" flash outlives the step it was clicked on: copy on step 1,
   // press Next inside a second and a half, and the timer would fire into an
@@ -561,26 +659,41 @@ function CommandLine({ command }: { command: string }) {
 
   return (
     <div
+      data-command-line
       style={{
         display: "flex",
-        alignItems: "center",
+        alignItems: isPhone ? "flex-start" : "center",
         gap: 8,
-        padding: "7px 9px",
+        padding: isPhone ? "8px 8px 8px 12px" : "7px 9px",
         background: "var(--surface-1)",
         border: "1px solid var(--border)",
         borderRadius: 5,
       }}
     >
       <code
-        style={{
-          flex: 1,
-          minWidth: 0,
-          fontFamily: "var(--mono)",
-          fontSize: 11.5,
-          color: "var(--text)",
-          overflowX: "auto",
-          whiteSpace: "pre",
-        }}
+        style={
+          isPhone
+            ? {
+                flex: 1,
+                minWidth: 0,
+                alignSelf: "center",
+                fontFamily: "var(--mono)",
+                fontSize: 13,
+                lineHeight: 1.5,
+                color: "var(--text)",
+                whiteSpace: "pre-wrap",
+                overflowWrap: "anywhere",
+              }
+            : {
+                flex: 1,
+                minWidth: 0,
+                fontFamily: "var(--mono)",
+                fontSize: 11.5,
+                color: "var(--text)",
+                overflowX: "auto",
+                whiteSpace: "pre",
+              }
+        }
       >
         {command}
       </code>
@@ -592,18 +705,19 @@ function CommandLine({ command }: { command: string }) {
           display: "inline-flex",
           alignItems: "center",
           gap: 4,
-          padding: "3px 7px",
+          padding: isPhone ? "0 12px" : "3px 7px",
+          minHeight: isPhone ? 44 : undefined,
           background: "transparent",
           border: "1px solid var(--border)",
-          borderRadius: 4,
+          borderRadius: isPhone ? 6 : 4,
           color: "var(--text-dim)",
           fontFamily: "var(--mono)",
-          fontSize: 10,
+          fontSize: isPhone ? 12 : 10,
           cursor: "pointer",
           flexShrink: 0,
         }}
       >
-        <Icon name={copied ? "check" : "copy"} size={11} />
+        <Icon name={copied ? "check" : "copy"} size={isPhone ? 12 : 11} />
         {copied ? "copied" : "copy"}
       </button>
     </div>

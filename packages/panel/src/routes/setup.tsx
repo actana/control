@@ -4,6 +4,7 @@ import { AuthCard } from "~/components/views/AuthCard";
 import { TextField } from "~/components/ui/TextField";
 import { api, ApiError } from "~/lib/api";
 import { withCarriedQuery } from "~/lib/auth-paths";
+import { useIsPhone } from "~/lib/breakpoint";
 import { MIN_PASSWORD_LENGTH } from "~/shared/operator-password";
 
 // First boot: the Panel serves this page, and only this page, until the single
@@ -19,6 +20,8 @@ function SetupPage() {
   const [confirm, setConfirm] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // Phones get a show/hide eye on the password fields; desktop is unchanged.
+  const isPhone = useIsPhone();
 
   const submit = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -64,6 +67,7 @@ function SetupPage() {
       <TextField
         label="Password"
         type="password"
+        revealable={isPhone}
         autoComplete="new-password"
         hint={`At least ${MIN_PASSWORD_LENGTH} characters.`}
         required
@@ -73,6 +77,7 @@ function SetupPage() {
       <TextField
         label="Confirm password"
         type="password"
+        revealable={isPhone}
         autoComplete="new-password"
         required
         value={confirm}

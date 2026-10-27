@@ -47,6 +47,19 @@ export interface CachedTerminalControls {
   /** Write raw bytes to the surface's live PTY (tracks respawns). */
   writeToPty?(data: string): void;
   /**
+   * Write key-row bytes (arrows, Esc, Tab, ctrl chords): `writeToPty` plus the
+   * pane's turn bookkeeping, since these skip xterm's `onData` too.
+   */
+  sendKeys?(data: string): void;
+  /** `term.modes.applicationCursorKeysMode` now: DECCKM decides `ESC O A` vs `ESC [ A`. */
+  applicationCursorKeys?(): boolean;
+  /**
+   * Paste text the way the keyboard shortcut does (`term.paste`): bracketed
+   * paste when the program asked for it, and through `onData` so the pane's
+   * paste latch and input bookkeeping see it.
+   */
+  paste?(text: string): void;
+  /**
    * Render this surface read-only, or editable again (issue 147).
    *
    * A **state of this terminal**, not a second terminal: the same xterm keeps
@@ -66,6 +79,14 @@ export interface CachedTerminalControls {
 export interface PaneTerminalSurface extends TerminalSurface {
   buildKey: string;
   controls: CachedTerminalControls;
+  /**
+   * Phone: rewrites what the user types before it reaches the PTY (sticky
+   * Ctrl). Set by whichever pane currently shows this surface and cleared when
+   * it lets go, because the surface outlives the pane that built it — the
+   * `onData` handler is wired once, at build, and must not close over a pane
+   * that may be gone.
+   */
+  inputTransform?: (data: string) => string;
   /** Re-fit the xterm to whatever container it's currently parented in. */
   fit(): void;
   /**

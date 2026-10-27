@@ -1,0 +1,386 @@
+/* Session terminal on phone and tablet (#832, M21/M22). Every rule is behind a
+   max-width media query so desktop (>= 1024 px) is untouched; the components
+   only render this chrome when the compact breakpoint is active as well. */
+@media (max-width: 1023px) {
+  .mc-terminal-screen {
+    color: var(--text);
+  }
+
+  /* Header: Back · status dot · title · bell. */
+  .mc-term-m-header {
+    flex: none;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-height: calc(56px + env(safe-area-inset-top));
+    padding: env(safe-area-inset-top) calc(8px + env(safe-area-inset-right)) 0
+      calc(8px + env(safe-area-inset-left));
+    background: var(--surface-1);
+  }
+  .mc-term-m-back {
+    flex: none;
+    width: 44px;
+    min-width: 44px;
+    height: 44px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    background: transparent;
+    border: 0;
+    color: var(--text);
+    font-size: 22px;
+    cursor: pointer;
+  }
+  .mc-term-m-dot {
+    flex: none;
+    width: 8px;
+    height: 8px;
+    border-radius: 999px;
+  }
+  .mc-term-m-title {
+    flex: 1;
+    min-width: 0;
+    font-family: var(--mono);
+    font-size: 15px;
+    font-weight: 600;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .mc-term-m-bell {
+    flex: none;
+    min-width: 44px;
+    min-height: 44px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .mc-term-m-bell button {
+    min-width: 44px;
+    min-height: 44px;
+  }
+
+  /* Status row: dot · label · harness · time · "…". */
+  .mc-term-m-status {
+    flex: none;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 44px;
+    padding: 0 calc(8px + env(safe-area-inset-right)) 0 calc(16px + env(safe-area-inset-left));
+    background: var(--surface-1);
+    border-top: 1px solid var(--border);
+    border-bottom: 1px solid var(--border);
+    font-family: var(--mono);
+    font-size: 13px;
+  }
+  .mc-term-m-status-label {
+    flex: none;
+    font-weight: 600;
+  }
+  .mc-term-m-status-meta {
+    min-width: 0;
+    color: var(--text-dim);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .mc-term-m-status-actions {
+    margin-left: auto;
+    flex: none;
+    display: inline-flex;
+    align-items: center;
+  }
+
+  /* Key row dock: sits right above the on-screen keyboard (the screen is sized
+     to the visual viewport); the safe-area gap only shows with no keyboard. */
+  .mc-term-m-keydock {
+    flex: none;
+    padding-bottom: env(safe-area-inset-bottom);
+    background: var(--surface-1);
+  }
+
+  /* Harness question as a bottom sheet (M22). */
+  .mc-aq-sheet {
+    padding-bottom: env(safe-area-inset-bottom);
+    box-shadow: 0 -8px 24px -8px rgba(0, 0, 0, 0.35);
+  }
+  .mc-aq-sheet [role="listbox"] {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 4px 16px 12px !important;
+  }
+  .mc-aq-sheet-option {
+    width: 100%;
+    min-height: 44px;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: 2px;
+    padding: 10px 14px;
+    text-align: left;
+    font-family: var(--mono);
+    font-size: 14px;
+    color: var(--text);
+    background: transparent;
+    border: 1px solid var(--border-strong);
+    border-radius: 8px;
+    cursor: pointer;
+  }
+  .mc-aq-sheet-option[data-dim] {
+    color: var(--text-dim);
+  }
+  .mc-aq-sheet-option[data-highlighted] {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: var(--accent-on-accent);
+  }
+  .mc-aq-sheet-option-desc {
+    font-size: 12px;
+    opacity: 0.8;
+  }
+  .mc-aq-sheet [aria-label="Hide question"],
+  .mc-aq-sheet [aria-label="Collapse to see the terminal"] {
+    min-width: 44px;
+    min-height: 44px;
+  }
+
+  /* User terminals on phone (#832, M28/M29): tab strip row. */
+  .mc-userterm-m-strip-row {
+    flex: none;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px calc(8px + env(safe-area-inset-right)) 6px calc(8px + env(safe-area-inset-left));
+    background: var(--surface-1);
+  }
+  .mc-userterm-m-strip {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  .mc-userterm-m-strip::-webkit-scrollbar {
+    display: none;
+  }
+  .mc-userterm-m-tab {
+    flex: none;
+    display: inline-flex;
+    align-items: center;
+    min-height: 44px;
+    max-width: 240px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    color: var(--text);
+    font-family: var(--mono);
+    font-size: 13px;
+  }
+  .mc-userterm-m-tab[data-active="true"] {
+    background: var(--accent-soft, var(--surface-2));
+    border-color: var(--accent);
+    color: var(--accent-ink, var(--accent));
+  }
+  .mc-userterm-m-tab-main,
+  .mc-userterm-m-tab-close,
+  .mc-userterm-m-new,
+  .mc-userterm-m-switch {
+    min-height: 44px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: transparent;
+    border: 0;
+    color: inherit;
+    font: inherit;
+    cursor: pointer;
+  }
+  .mc-userterm-m-tab-main {
+    min-width: 0;
+    gap: 8px;
+    padding: 0 4px 0 12px;
+  }
+  .mc-userterm-m-tab-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .mc-userterm-m-tab-close {
+    width: 44px;
+    min-width: 44px;
+    padding: 0;
+  }
+  .mc-userterm-m-new {
+    flex: none;
+    width: 44px;
+    min-width: 44px;
+    padding: 0;
+    color: var(--text-dim);
+  }
+  .mc-userterm-m-switch {
+    flex: none;
+    width: 44px;
+    min-width: 44px;
+    padding: 0;
+    color: var(--text);
+    border: 1px solid var(--border-strong);
+    border-radius: 10px;
+  }
+  .mc-userterm-m-body {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    background: var(--terminal-bg);
+  }
+  .mc-userterm-m-body > * {
+    flex: 1;
+    min-height: 0;
+    border-radius: 0;
+    border: 0;
+  }
+
+  /* Tab switcher bottom sheet (M29). */
+  .mc-term-switcher-backdrop {
+    position: fixed;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-end;
+    background: rgba(0, 0, 0, 0.35);
+  }
+  .mc-term-switcher {
+    display: flex;
+    flex-direction: column;
+    max-height: 85dvh;
+    padding-bottom: env(safe-area-inset-bottom);
+    background: var(--surface-1);
+    color: var(--text);
+    border-radius: 16px 16px 0 0;
+    box-shadow: 0 -8px 24px -8px rgba(0, 0, 0, 0.35);
+    outline: none;
+  }
+  .mc-term-switcher-handle {
+    flex: none;
+    min-height: 44px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: transparent;
+    border: 0;
+    cursor: pointer;
+  }
+  .mc-term-switcher-grip {
+    width: 36px;
+    height: 4px;
+    border-radius: 999px;
+    background: var(--border-strong);
+  }
+  .mc-term-switcher-title {
+    margin: 0;
+    padding: 0 16px 8px;
+    font-size: 17px;
+    font-weight: 600;
+  }
+  .mc-term-switcher-scroll {
+    overflow-y: auto;
+    padding: 0 8px 16px;
+  }
+  .mc-term-switcher-section {
+    margin: 12px 8px 4px;
+    font-family: var(--mono);
+    font-size: 12px;
+    font-weight: 500;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--text-dim);
+  }
+  .mc-term-switcher-list {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+  .mc-term-switcher-row {
+    display: flex;
+    align-items: center;
+    min-height: 44px;
+    border-radius: 10px;
+  }
+  .mc-term-switcher-row[data-active] {
+    background: var(--accent-soft, var(--surface-2));
+    color: var(--accent-ink, var(--accent));
+  }
+  .mc-term-switcher-main,
+  .mc-term-switcher-close,
+  .mc-term-switcher-new,
+  .mc-term-switcher-session {
+    min-height: 44px;
+    display: flex;
+    align-items: center;
+    background: transparent;
+    border: 0;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+  .mc-term-switcher-main {
+    flex: 1;
+    min-width: 0;
+    gap: 12px;
+    padding: 0 8px 0 12px;
+    font-family: var(--mono);
+    font-size: 15px;
+  }
+  .mc-term-switcher-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .mc-term-switcher-close {
+    width: 44px;
+    justify-content: center;
+    padding: 0;
+  }
+  .mc-term-switcher-new {
+    width: 100%;
+    gap: 12px;
+    padding: 0 12px;
+    color: var(--accent-ink, var(--accent));
+    font-family: var(--mono);
+    font-size: 15px;
+  }
+  .mc-term-switcher-session {
+    width: 100%;
+    gap: 12px;
+    padding: 6px 12px;
+  }
+  .mc-term-switcher-dot {
+    flex: none;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+  }
+  .mc-term-switcher-session-text {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .mc-term-switcher-session-title {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 15px;
+  }
+  .mc-term-switcher-session-sub {
+    font-family: var(--mono);
+    font-size: 13px;
+    color: var(--text-dim);
+  }
+}

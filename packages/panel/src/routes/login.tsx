@@ -4,6 +4,7 @@ import { AuthCard } from "~/components/views/AuthCard";
 import { TextField } from "~/components/ui/TextField";
 import { api, ApiError } from "~/lib/api";
 import { withCarriedQuery } from "~/lib/auth-paths";
+import { useIsPhone } from "~/lib/breakpoint";
 
 // The Panel's only anonymous page once an Operator exists. Reached by every
 // unauthenticated navigation (server/panel-auth.ts:documentAuthRedirect).
@@ -15,6 +16,8 @@ function LoginPage() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // Phones get a show/hide eye on the password fields; desktop is unchanged.
+  const isPhone = useIsPhone();
 
   const submit = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -48,6 +51,7 @@ function LoginPage() {
       <TextField
         label="Password"
         type="password"
+        revealable={isPhone}
         autoComplete="current-password"
         autoFocus
         required

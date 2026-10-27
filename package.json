@@ -51,6 +51,8 @@
     "native:node": "node scripts/ensure-node-sqlite.mjs",
     "native:node:rebuild": "pnpm rb better-sqlite3",
     "panel:e2e": "pnpm --filter @actana/core build && pnpm --filter @actana/panel build && node scripts/e2e-panel-smoke.mjs",
+    "prepanel:e2e:phone": "node scripts/require-node-24.mjs",
+    "panel:e2e:phone": "node scripts/e2e-panel-phone.mjs",
     "panel:image:smoke": "node scripts/smoke-panel-image.mjs",
     "core:image:smoke": "pnpm build && node scripts/smoke-core-image.mjs",
     "build:core-tarball-bundles": "pnpm --filter @actana/core build && pnpm --filter @actana/core-cli build",
