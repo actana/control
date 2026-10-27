@@ -1964,3 +1964,47 @@ describe("the real-Postgres job (#567, ADR 0041 D19)", () => {
     }
   });
 });
+
+describe("the Panel on a phone, in the Panel e2e job (#836)", () => {
+  const ci = read("ci.yml");
+  const job = code(jobBlock(ci, "panel-e2e"));
+  const steps = job.slice(job.indexOf("\n    steps:"));
+  const phone = steps.slice(steps.indexOf("- name: E2E — the Panel on a phone (390 × 844)"));
+
+  it("runs the phone e2e as a step of panel-e2e, after the desktop one", () => {
+    expect(steps).toContain("- name: E2E — the Panel on a phone (390 × 844)");
+    expect(steps.indexOf("run: pnpm panel:e2e\n")).toBeGreaterThan(-1);
+    expect(steps.indexOf("run: pnpm panel:e2e\n")).toBeLessThan(steps.indexOf("pnpm panel:e2e:phone"));
+  });
+
+  it("writes screenshots to a runner temp dir and does not rebuild", () => {
+    expect(phone).toMatch(/run: pnpm panel:e2e:phone --screenshots "\$RUNNER_TEMP\/panel-phone"\n/);
+    expect(phone.split("\n- ")[0]).not.toMatch(/\bbuild\b/);
+  });
+
+  it("uploads the screenshots on failure only, with the upload-artifact pin used elsewhere", () => {
+    const upload = phone.slice(phone.indexOf("- name: Upload the phone screenshots"));
+    const pin = upload.match(/uses: (actions\/upload-artifact@[0-9a-f]{40})( #.*)?\n/)?.[1];
+    expect(pin, "the upload step").toBeTruthy();
+    // The same sha, with its version comment, is already used by the tarball upload.
+    expect(ci).toMatch(new RegExp(`uses: ${pin} # v\\d+\\.\\d+\\.\\d+\\n`));
+    expect(ci.split(pin).length - 1).toBeGreaterThan(1);
+    expect(phone).toMatch(/if: failure\(\)\n/);
+    expect(upload).toContain("${{ runner.temp }}/panel-phone");
+  });
+
+  // #842: the step sits in the job, so it runs where the job runs — every pull request but a lint-only Task pull
+  // request or a parked draft — and carries no `if:` of its own that would narrow that.
+  it("runs under the job's shared heavy-job gate, not its own", () => {
+    expect(job.match(/^ {4}if: (.+)$/m)?.[1]).toBe(
+      "${{ !cancelled() && needs.scope.outputs.lint_only != 'true' && needs.scope.outputs.parked != 'true' }}",
+    );
+    expect(job.match(/^ {4}needs: (.+)$/m)?.[1]).toBe("scope");
+    const runStep = phone.split("\n      - ")[0];
+    expect(runStep).not.toMatch(/\n\s+if:/);
+  });
+
+  it("leaves the job enough time for a Chrome launch and six UI legs", () => {
+    expect(Number(job.match(/^ {4}timeout-minutes: (\d+)$/m)[1])).toBeGreaterThanOrEqual(20);
+  });
+});
