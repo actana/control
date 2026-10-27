@@ -25,7 +25,7 @@
     "@actana/cli": "0.6.0-next.10",
     "@actana/sdk": "0.6.0-next.4",
     "selfsigned": "^5.5.0",
-    "undici": "8.10.2",
+    "undici": "8.12.3",
     "ws": "8.21.0"
   },
   "devDependencies": {
