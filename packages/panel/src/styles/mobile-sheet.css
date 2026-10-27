@@ -168,8 +168,8 @@
   :root .mc-text-field {
     height: 44px !important;
   }
-  /* Drawers open as full screens (the drawer carries its own Back button). */
-  [data-mc-drawer] {
+  /* Drawers open as full screens (the drawer carries its own Back button); the Task detail page (#834) is its own full-screen page. */
+  [data-mc-drawer]:not(.mc-td-page) {
     top: 0 !important;
     left: 0 !important;
     right: 0 !important;
