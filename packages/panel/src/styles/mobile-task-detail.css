@@ -11,6 +11,7 @@
   background: var(--surface-card);
   color: var(--text);
   outline: none;
+  padding-top: env(safe-area-inset-top);
 }
 .mc-td-bar {
   flex: none;
