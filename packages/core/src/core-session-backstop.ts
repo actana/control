@@ -97,12 +97,46 @@
 // reopen puts the status back; it cannot un-send a notification or restore
 // that set, which expires on its own (#464 — which also records that a hooked
 // harness flaps the same way a hookless one does, and that `forget()` drops
-// `hookAt` with the rest of the stamps). A harness parked on a permission
-// dialog nobody pattern-matched repaints it statically, which is this rule's
-// condition exactly, so it is settled like any idle screen (#469). And the
-// reopen cannot tell the harness's own output from the echo of an operator
-// typing, so a correct finish can be taken back by somebody starting to type
-// (#475).
+// `hookAt` with the rest of the stamps). And the reopen cannot tell the
+// harness's own output from the echo of an operator typing, so a correct
+// finish can be taken back by somebody starting to type (#475).
+//
+// ─── A screen that does not move is not idle (issue 469) ───
+//
+// The idle rule's premise was "the harness is there, painting, and nothing new
+// is on screen". A harness blocked on an approval or permission dialog that no
+// pattern matcher recognises (only `hasClaudeInterruptPrompt` and
+// `hasCodexHookReviewPrompt` turn a screen into `needs-input`) satisfies all
+// of it: it repaints the dialog unchanged for as long as nobody answers, so it
+// used to be settled `finished` at nine or ten minutes — firing
+// `session:finished` for a Session that was waiting on a human.
+//
+// What differs from the #391 spinner is that the spinner's frame *moves*: the
+// glyph rotates and the counter ticks. The classifier reports a burst in which
+// nothing changed at all as `static` (`pty-output-activity.ts`), and the
+// premise becomes "painting a *moving* frame": the idle rule applies only
+// while the frame has moved within {@link STILL_PAINTING_MS}. A `static` burst
+// is heard (it keeps the quiet rule off, as any byte does) but is not progress
+// and not movement — it touches no clock, resets no sweep count and reopens
+// nothing. Once a dialog has sat unchanged for two minutes the idle rule
+// stands down; if the spinner resumes, the frame is moving again, the rule
+// applies again, and its clock (`outputAt`) was never touched.
+//
+// So, by design, **neither rule settles a Session that keeps *repainting* a
+// completely static screen**: like `needs-input` it may wait indefinitely.
+// That is a narrower claim than "a static screen is never settled". A dialog
+// that sends no bytes at all (Ink and ratatui usually write nothing when
+// nothing changed) is not repainting anything, and the quiet rule still
+// settles it `finished` after {@link QUIET_SETTLE_MS}.
+//
+// The limits are the ones the classifier states. A spinner with no counter
+// reads static, and a harness at an idle prompt that repaints statically after
+// a dropped `Stop` is not settled either; both fail safe — the operator sees
+// `running`, never a wrong `finished`. The other direction does not fail safe:
+// a dialog with a live element (`auto-deny in 59s`), or a harness whose
+// spinner clock keeps ticking above the approval box, still has a moving
+// frame, reads `redraw`, and is idle-settled at about nine or ten minutes as
+// before (issue 469 does not cover it).
 //
 // Only `running` is in scope. `needs-input` is a Session waiting on a human,
 // which is a state it is allowed to sit in indefinitely and silently; a card
@@ -206,13 +240,18 @@ const IDLE_REOPEN_MS = 30 * 60 * 1000;
 const HOOK_DEFERENCE_MS = 15 * 60 * 1000;
 
 /**
- * How recently bytes must have arrived for the idle rule to apply at all.
+ * How recently the frame must have moved for the idle rule to apply at all.
  *
- * The idle rule's whole premise is "the harness is still there, and painting".
+ * The idle rule's whole premise is "the harness is still there, and painting a
+ * moving frame" (issue 469: a frame that has stopped moving is a dialog, not a
+ * spinner, and is outside the rule). So this is also a threshold on frame
+ * *movement*, not only on bytes: a counter that changes less often than every
+ * two minutes reads static, and a clock with minute resolution moves about
+ * every 60 s, so two minutes is roughly 2x slack there.
  * A Session that has gone properly silent is the other rule's business, at the
  * window that rule was tuned for — so a lull in a chatty harness never gets
- * settled on the shorter clock by accident. A painting TUI redraws about once
- * a second, so two minutes is slack, not a threshold.
+ * settled on the shorter clock by accident. A painting TUI with a seconds counter
+ * redraws about once a second, so two minutes is 120x slack for that shape.
  */
 const STILL_PAINTING_MS = 2 * 60 * 1000;
 
@@ -267,15 +306,27 @@ export type CoreSessionBackstopDeps = {
  * because new content on screen with no hook behind it is the harness itself
  * saying the turn was not over.
  *
- * `redraw` is a burst that repainted what was already there, and is the only
- * kind that leaves the idle rule's clock running.
+ * `redraw` is a burst that repainted what was already there while the frame
+ * kept moving (a glyph, a counter), and is the only kind that leaves the idle
+ * rule's clock running.
+ *
+ * `static` (issue 469) is a repaint in which nothing changed at all: a dialog
+ * waiting on a human. It is heard — the harness is there, so the quiet rule
+ * stays off — but it is neither progress nor movement, so it leaves every
+ * clock alone, and the idle rule stands outside a Session whose frame has
+ * stopped moving.
  */
-export type SessionActivityKind = "hook" | "output" | "redraw";
+export type SessionActivityKind = "hook" | "output" | "redraw" | "static";
 
 /** What this Core has heard from one Session, and what it made of it. */
 type SessionActivity = {
   /** Last time anything at all arrived — a hook, or any byte. */
   heardAt: number;
+  /**
+   * Last time the frame moved: any hook or burst except a `static` one. `0`
+   * for a Session first heard through a static burst — not moving.
+   */
+  movedAt: number;
   /** Last time something new appeared: a hook, or an `output` burst. */
   outputAt: number;
   /** Last hook, or `0` if this Core has never had one for this Session. */
@@ -295,7 +346,7 @@ type SessionActivity = {
  * receiver and the PTY output path feed it, and it feeds the session writer.
  */
 export class CoreSessionBackstop {
-  /** Per Session: what this Core has heard from it. A redraw moves `heardAt` only. */
+  /** Per Session: what this Core has heard from it. A redraw moves `heardAt` and `movedAt`; only `static` moves `heardAt` alone. */
   private readonly lastActivity = new Map<string, SessionActivity>();
   /**
    * Sessions this instance's *idle* rule wrote a `finished` for, and when.
@@ -323,10 +374,12 @@ export class CoreSessionBackstop {
     const prior = this.lastActivity.get(sessionId);
     // Re-insert so insertion order approximates recency for the cap below.
     this.lastActivity.delete(sessionId);
-    const progress = kind !== "redraw";
+    const progress = kind === "hook" || kind === "output";
     const isHook = kind === "hook";
     this.lastActivity.set(sessionId, {
       heardAt: now,
+      // Only a static burst leaves the frame where it was (issue 469).
+      movedAt: kind === "static" ? (prior?.movedAt ?? 0) : now,
       // A redraw is the harness being there, not the turn getting anywhere:
       // it keeps the quiet rule off and leaves the idle rule's clock running.
       outputAt: progress ? now : (prior?.outputAt ?? 0),
@@ -448,7 +501,9 @@ export class CoreSessionBackstop {
         // Idle: the harness is demonstrably still painting, nothing new has
         // appeared on screen for the window, and its hooks are not the thing
         // carrying the turn (issue 391, narrowed by the review of PR 455).
-        const painting = now - stamps.heardAt <= paintingMs;
+        // ...and that frame is still moving (issue 469): a screen that has sat
+        // completely unchanged is a dialog waiting on a human, not a spinner.
+        const painting = now - stamps.heardAt <= paintingMs && now - stamps.movedAt <= paintingMs;
         const lastOutput = Math.max(stamps.outputAt, session.updatedAt);
         // A Session whose hooks arrive has a better witness than its pixels:
         // if it has printed anything real since its last hook, it is mid-turn

@@ -103,6 +103,7 @@ vi.mock("sonner", () => ({ toast: toasts }));
 const { QueryClient, QueryClientProvider } = await import("@tanstack/react-query");
 const { CoresSettingsPage } = await import("../CoresSettingsPage");
 const { KeybindingsProvider } = await import("~/lib/keybindings/store");
+const { SharedFolderStep } = await import("../SharedFolderStep");
 
 async function openSettings(): Promise<void> {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -375,5 +376,106 @@ describe("delete: the Core and its Shared folder", () => {
     await openSettings();
     expect(document.querySelector('[data-shared-folder="error"]')).not.toBeNull();
     expect(screen.getByRole("alert").textContent).toContain("core-link request timed out");
+  });
+});
+
+// #831 (M06): on a phone step 4 is a full-screen sheet; Back keeps the half-paired Core on the page.
+describe("pairing step 4 on a phone", () => {
+  function stubWidth(width: number) {
+    vi.stubGlobal("matchMedia", (query: string) => {
+      const max = /max-width:\s*(\d+)px/.exec(query);
+      return { media: query, matches: max ? width <= Number(max[1]) : false, addEventListener: () => {}, removeEventListener: () => {} };
+    });
+  }
+  afterEach(() => vi.unstubAllGlobals());
+
+  async function mountStep(onFinished = vi.fn(async () => {})) {
+    render(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <KeybindingsProvider>
+          <SharedFolderStep core={core()} onFinished={onFinished} />
+        </KeybindingsProvider>
+      </QueryClientProvider>,
+    );
+    await act(async () => {});
+    return onFinished;
+  }
+  const sheet = () => document.querySelector<HTMLElement>("[data-full-screen-sheet]");
+  const header = () => sheet()!.querySelector<HTMLElement>(".mc-sheet-header")!;
+  const footer = () => sheet()!.querySelector<HTMLElement>(".mc-sheet-footer")!;
+
+  it("opens as a sheet on mount: Back · Shared folder · Connect, the form inside, Finish only in header and footer", async () => {
+    stubWidth(390);
+    await mountStep();
+    expect(sheet()).not.toBeNull();
+    expect(Array.from(header().children).map((n) => n.textContent)).toEqual(["Back", "Shared folder", "Connect"]);
+    expect(sheet()!.querySelector('[data-step="shared-folder"]')).not.toBeNull();
+    expect(screen.getAllByRole("button", { name: "Connect and finish pairing" })).toHaveLength(1);
+    expect(footer().contains(button("Connect and finish pairing"))).toBe(true);
+    // M06: the footer action is outlined, like Test connection.
+    expect(button("Connect and finish pairing").className).toContain("mc-btn-frame");
+    expect(button("Test connection").style.minHeight).toBe("44px");
+  });
+
+  it("first-time storage: the write-only Master key gets the show/hide eye in the sheet (M06)", async () => {
+    stubWidth(390);
+    api.getStorage.mockImplementation(async () => ({ storage: STORAGE_EMPTY, cores: [] }));
+    await mountStep();
+    expect(screen.getByLabelText("Master key")).not.toBeNull();
+    expect(sheet()!.querySelector('[aria-label="Show password"]')).not.toBeNull();
+  });
+
+  it("shows the caller's note under the card inside the sheet", async () => {
+    stubWidth(390);
+    render(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <KeybindingsProvider>
+          <SharedFolderStep core={core()} onFinished={vi.fn(async () => {})} sheetNote={<p>The Panel opens as soon as a Core pairs.</p>} />
+        </KeybindingsProvider>
+      </QueryClientProvider>,
+    );
+    await act(async () => {});
+    expect(sheet()!.textContent).toContain("The Panel opens as soon as a Core pairs.");
+  });
+
+  it("keeps Connect disabled until the test passed, then finishes from the header", async () => {
+    stubWidth(390);
+    const onFinished = await mountStep();
+    expect(button("Connect").disabled).toBe(true);
+    expect(button("Connect and finish pairing").disabled).toBe(true);
+    await click("Test connection");
+    expect(button("Connect").disabled).toBe(false);
+    expect(button("Connect and finish pairing").disabled).toBe(false);
+    await click("Connect");
+    expect(api.finishCorePairing).toHaveBeenCalledWith("core_new");
+    expect(onFinished).toHaveBeenCalledTimes(1);
+  });
+
+  it("Back closes the sheet and leaves a Continue card for the half-paired Core; Continue reopens it with the test kept", async () => {
+    stubWidth(390);
+    await mountStep();
+    await click("Test connection");
+    await click("Back");
+    expect(sheet()).toBeNull();
+    expect(api.finishCorePairing).not.toHaveBeenCalled();
+    const paused = document.querySelector<HTMLElement>('[data-step="shared-folder-paused"]')!;
+    expect(paused.textContent).toContain("workstation-berlin is paired but not finished — connect its Shared folder");
+    expect(button("Continue").style.minHeight).toBe("44px");
+    await click("Continue");
+    expect(sheet()).not.toBeNull();
+    expect(document.querySelector('[data-connection="passed"]')).not.toBeNull();
+    expect(button("Connect").disabled).toBe(false);
+  });
+
+  it("desktop stays the inline card with its own Finish button and no sheet", async () => {
+    stubWidth(1280);
+    await mountStep();
+    expect(sheet()).toBeNull();
+    const step = document.querySelector<HTMLElement>('[data-step="shared-folder"]')!;
+    expect(step.style.padding).toBe("14px 16px");
+    expect(step.contains(button("Connect and finish pairing"))).toBe(true);
+    expect(button("Test connection").style.minHeight).toBe("");
+    expect(screen.queryByRole("button", { name: "Back" })).toBeNull();
+    expect(step.children[1]!.getAttribute("style")).toContain("font-size: 11.5px");
   });
 });

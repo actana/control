@@ -2,9 +2,12 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useRouter } from "@tanstack/react-router";
 import { Btn } from "~/components/ui/Btn";
+import { BottomSheet } from "~/components/ui/BottomSheet";
 import { ConfirmDialog } from "~/components/ui/ConfirmDialog";
 import { FormErrorBox } from "~/components/ui/FormErrorBox";
 import { Icon } from "~/components/ui/Icon";
+import { useIsPhone } from "~/lib/breakpoint";
+import { useVisualViewport } from "~/lib/use-visual-viewport";
 import { MarkdownField } from "~/components/views/MarkdownField";
 import { TaskMarkdown } from "~/components/views/TaskMarkdown";
 import { api } from "~/lib/api";
@@ -13,7 +16,16 @@ import { formatRelativeTime } from "~/lib/format-relative-time";
 import { requestSessionOpen } from "~/lib/session-notification-store";
 import { TASK_STATUS_LABEL } from "~/lib/task-board";
 import { queryKeys, useArchivedSessions, useCoreAgents, useSessions, useTask } from "~/queries";
-import { FINISHED_TASK_STATUSES, canDeleteTask, formatTaskTimeLimit, canEditTask, canStopTask, parseTaskDispatchComment } from "~/shared/tasks";
+import {
+  FINISHED_TASK_STATUSES,
+  canDeleteTask,
+  formatTaskTimeLeft,
+  formatTaskTimeLimit,
+  canEditTask,
+  canStopTask,
+  parseTaskDispatchComment,
+  parseTaskTimeLimitChangeComment,
+} from "~/shared/tasks";
 import { taskFolderPath } from "~/shared/shared-files";
 import type { TaskCommentDto, TaskDto } from "~/shared/task-wire";
 import { TimeLimitPicker } from "~/components/views/TimeLimitPicker";
@@ -42,7 +54,12 @@ function topBarBottom(): number {
 
 const STOP_OFFLINE_HINT = "The Core is offline; the Task will be failed, its Session may keep running";
 
-/** "40 min left on attempt 2 · started 20 minutes ago" for a running Task; re-rendered every 30 s. */
+/** "11:41": when an attempt started, as a local clock time. */
+function clockTime(ms: number): string {
+  return new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+/** "2 h 51 min left · attempt 2 started 11:41" for a running Task (#826); re-rendered every 30 s. */
 function TimeLeft({ task }: { task: TaskDto }) {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
@@ -50,15 +67,34 @@ function TimeLeft({ task }: { task: TaskDto }) {
     return () => clearInterval(t);
   }, []);
   if (task.status !== "in_progress" || task.dispatchedAt === null) return null;
-  const started = `started ${formatRelativeTime(task.dispatchedAt)}`;
-  if (task.timeoutMinutes === null) return <span style={{ color: "var(--text-dim)" }}>No limit · {started}</span>;
+  const started = `attempt ${task.attemptCount} started ${clockTime(task.dispatchedAt)}`;
+  if (task.timeoutMinutes === null) return <span style={{ color: "var(--text-dim)" }}>{started}</span>;
   const leftMs = task.dispatchedAt + task.timeoutMinutes * 60_000 - now;
   if (leftMs <= 0) return <span style={{ color: "var(--text-dim)" }}>time is up; the Panel ends it within a minute · {started}</span>;
   return (
     <span style={{ color: "var(--text-dim)" }}>
-      {formatTaskTimeLimit(Math.ceil(leftMs / 60_000))} left on attempt {task.attemptCount} · {started}
+      {formatTaskTimeLeft(Math.ceil(leftMs / 60_000))} left · {started}
     </span>
   );
+}
+
+/**
+ * The note under the Time limit picker (#826): the last change, from its system comment,
+ * and, while an attempt runs, when a change takes effect.
+ */
+function TimeLimitNote({ task, comments }: { task: TaskDto; comments: TaskCommentDto[] }) {
+  const last = comments
+    .filter((c) => c.authorKind === "system")
+    .map((c) => ({ at: c.createdAt, change: parseTaskTimeLimitChangeComment(c.body) }))
+    .filter((c) => c.change !== null)
+    .at(-1);
+  const parts = [
+    last ? `Changed from ${last.change!.from} by ${last.change!.changedBy} at ${clockTime(last.at)}.` : null,
+    task.status === "in_progress"
+      ? "Applies to the running attempt within a minute, counted from when the attempt started. Lowering it below the time already run fails the attempt."
+      : null,
+  ].filter(Boolean);
+  return parts.length ? <small style={{ color: "var(--text-dim)" }}>{parts.join(" ")}</small> : null;
 }
 
 function message(e: unknown): string | null {
@@ -149,6 +185,8 @@ function OpenAttemptSession({
  * Edit and Delete (#722) are off while the Task is `in_progress`; the server holds the same line.
  */
 export function TaskDetail({ taskId, onClose, focusComposer = false }: { taskId: string; onClose: () => void; focusComposer?: boolean }) {
+  const isPhone = useIsPhone();
+  const viewport = useVisualViewport();
   const { cores } = useFleet();
   // Outside a router (a bare render) there is nothing to navigate: the button then stays off.
   const router = useRouter({ warn: false });
@@ -161,6 +199,7 @@ export function TaskDetail({ taskId, onClose, focusComposer = false }: { taskId:
   const [attachments, setAttachments] = useState<TaskAttachment[]>([]);
   const [editing, setEditing] = useState<{ title: string; description: string } | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [changingLimit, setChangingLimit] = useState(false);
   const [stopping, setStopping] = useState<{ coreId: string } | null>(null);
   const [stopReason, setStopReason] = useState("");
 
@@ -271,29 +310,9 @@ export function TaskDetail({ taskId, onClose, focusComposer = false }: { taskId:
     return () => document.removeEventListener("keydown", onKeyDown);
   });
 
-  return (
+
+  const taskContent = task ? (
     <>
-    {/* The backdrop is a sibling of the drawer, never its parent: a text-selection drag that starts in the drawer and ends on the
-     * backdrop then sends its click to their common ancestor, not to the backdrop, so it does not close the drawer. */}
-    <div data-testid="task-detail-backdrop" onClick={dismiss} style={{ position: "fixed", inset: 0, zIndex: 8999, background: "rgba(0,0,0,0.35)" }} />
-    <aside
-      ref={drawerRef}
-      tabIndex={-1}
-      onKeyDown={keepTabInside}
-      role="dialog"
-      aria-modal="true"
-      aria-label="Task detail"
-      style={{ position: "fixed", top: topOffset, right: 0, bottom: 0, width: "min(720px, 100vw)", zIndex: 9000, overflowY: "auto", padding: 24, background: "var(--surface-card)", borderLeft: "1px solid var(--border)", boxShadow: "-8px 0 32px rgba(0,0,0,0.3)", display: "flex", flexDirection: "column", gap: 16 }}
-    >
-      <div style={{ display: "flex", justifyContent: "space-between", fontFamily: "var(--mono)", fontSize: 12, color: "var(--text-dim)" }}>
-        <span>TASK · {taskId}{task ? ` · created ${formatRelativeTime(task.createdAt)}` : ""}</span>
-        <button type="button" aria-label="Close" onClick={onClose} className="mc-btn mc-btn-ghost mc-btn-sm">
-          <Icon name="x" />
-        </button>
-      </div>
-      {error && !task ? <FormErrorBox error={message(error)} /> : null}
-      {task ? (
-        <>
           {editing ? (
             <section aria-label="Edit Task" style={{ display: "flex", flexDirection: "column", gap: 8 }}>
               <input
@@ -315,9 +334,9 @@ export function TaskDetail({ taskId, onClose, focusComposer = false }: { taskId:
               <FormErrorBox error={message(save.error)} />
             </section>
           ) : (
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
-              <h2 style={{ margin: 0, fontSize: 26 }}>{task.title}</h2>
-              <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
+            <div className={isPhone ? "mc-td-titlerow" : undefined} style={isPhone ? undefined : { display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
+              <h2 style={{ margin: 0, fontSize: isPhone ? 24 : 26 }}>{task.title}</h2>
+              <div className={isPhone ? "mc-td-actions" : undefined} style={isPhone ? undefined : { display: "flex", gap: 4, flexShrink: 0 }}>
                 {canStopTask(task.status) && !hasCurrentDispatch ? (
                   <Btn
                     variant="ghost"
@@ -357,13 +376,30 @@ export function TaskDetail({ taskId, onClose, focusComposer = false }: { taskId:
             {core ? <Badge>{core.label}</Badge> : null}
             {agent ? <Badge>Agent: {agent.name}</Badge> : null}
           </div>
-          <section aria-label="Time limit" style={{ display: "flex", flexDirection: "column", gap: 8, padding: 14, border: "1px solid var(--border)", borderRadius: 8 }}>
+          <section aria-label="Time limit" style={{ display: "flex", flexDirection: "column", gap: 8, padding: 14, border: "1px solid var(--border)", borderRadius: isPhone ? 12 : 8 }}>
             <div style={{ display: "flex", gap: 12, alignItems: "baseline", flexWrap: "wrap" }}>
               <span style={{ fontFamily: "var(--mono)", fontSize: 11, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--text-dim)" }}>Time limit</span>
               <strong>{formatTaskTimeLimit(task.timeoutMinutes)}</strong>
               <TimeLeft task={task} />
+              <span style={{ marginLeft: "auto" }}>
+                <Btn variant={changingLimit ? "primary" : "frame"} aria-expanded={changingLimit} onClick={() => setChangingLimit((v) => !v)}>
+                  {changingLimit ? "Done" : "Change"}
+                </Btn>
+              </span>
             </div>
-            <TimeLimitPicker commitCustom="explicit" idPrefix="task-time-limit" value={task.timeoutMinutes} disabled={setLimit.isPending} onChange={(m) => setLimit.mutate(m)} />
+            {changingLimit ? (
+              <>
+                <TimeLimitPicker
+                  commitCustom="explicit"
+                  idPrefix="task-time-limit"
+                  hints={false}
+                  value={task.timeoutMinutes}
+                  disabled={setLimit.isPending}
+                  onChange={(m) => setLimit.mutate(m)}
+                />
+                <TimeLimitNote task={task} comments={comments} />
+              </>
+            ) : null}
             <FormErrorBox error={message(setLimit.error)} />
           </section>
           {task.description && !editing ? <TaskMarkdown>{task.description}</TaskMarkdown> : null}
@@ -441,11 +477,14 @@ export function TaskDetail({ taskId, onClose, focusComposer = false }: { taskId:
               );
             })}
           </section>
+    </>
+  ) : null;
+  const composer = task ? (
           <section aria-label="Composer" style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-            <MarkdownField value={draft} onChange={setDraft} ariaLabel="Comment" toolbar={false} minRows={6} autoFocus={focusComposer} placeholder={agent ? `@${agent.name} · markdown supported` : "markdown supported"} />
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
+            <MarkdownField value={draft} onChange={setDraft} ariaLabel="Comment" toolbar={false} minRows={isPhone ? 3 : 6} autoFocus={focusComposer} placeholder={agent ? `@${agent.name} · markdown supported` : "markdown supported"} />
+            <div className={isPhone ? "mc-td-composer-row" : undefined} style={isPhone ? undefined : { display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
               <TaskAttachments items={attachments} onChange={setAttachments} folder={false} />
-              <div style={{ display: "flex", gap: 8 }}>
+              <div className={isPhone ? "mc-td-composer-buttons" : undefined} style={isPhone ? undefined : { display: "flex", gap: 8 }}>
               <Btn
                 variant="frame"
                 icon="refresh"
@@ -462,36 +501,8 @@ export function TaskDetail({ taskId, onClose, focusComposer = false }: { taskId:
             </div>
             <FormErrorBox error={message(comment.error) ?? message(move.error)} />
           </section>
-          <ConfirmDialog
-            open={!!stopping}
-            onClose={() => {
-              stop.reset();
-              setStopping(null);
-            }}
-            onConfirm={() => stop.mutate(stopReason.trim())}
-            title="Stop Task?"
-            confirmLabel="Stop"
-            variant="danger"
-            loading={stop.isPending}
-          >
-            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-              <p style={{ margin: 0, fontSize: 13, color: "var(--text-dim)", lineHeight: 1.5 }}>
-                Stop <strong style={{ color: "var(--text)" }}>{task.title}</strong>? Its Session is stopped and the Task fails; you can then re-assign it for a new attempt.
-              </p>
-              {stopping && cores.find((c) => c.id === stopping.coreId)?.dial.state !== "connected" ? (
-                <p style={{ margin: 0, fontSize: 13, color: "var(--warning)" }}>{STOP_OFFLINE_HINT}</p>
-              ) : null}
-              <input
-                aria-label="Reason"
-                placeholder="Reason (optional)"
-                value={stopReason}
-                maxLength={2000}
-                onChange={(e) => setStopReason(e.target.value)}
-                style={{ padding: "8px 10px", borderRadius: 6, border: "1px solid var(--border)", background: "transparent", color: "inherit", font: "inherit" }}
-              />
-              <FormErrorBox error={message(stop.error)} />
-            </div>
-          </ConfirmDialog>
+  ) : null;
+  const deleteDialog = task ? (
           <ConfirmDialog
             open={confirmDelete}
             onClose={() => {
@@ -511,8 +522,144 @@ export function TaskDetail({ taskId, onClose, focusComposer = false }: { taskId:
               <FormErrorBox error={message(remove.error)} />
             </div>
           </ConfirmDialog>
-        </>
+  ) : null;
+
+  const stopBody = task ? (
+    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+      <p style={{ margin: 0, fontSize: 13, color: "var(--text-dim)", lineHeight: 1.5 }}>
+        Stop <strong style={{ color: "var(--text)" }}>{task.title}</strong>? Its Session is stopped and the Task fails; you can then re-assign it for a new attempt.
+      </p>
+      {stopping && cores.find((c) => c.id === stopping.coreId)?.dial.state !== "connected" ? (
+        <p style={{ margin: 0, fontSize: 13, color: "var(--warning)" }}>{STOP_OFFLINE_HINT}</p>
       ) : null}
+      {isPhone ? (
+        <label className="mc-td-reason">
+          <span>
+            Reason <small>optional</small>
+          </span>
+          <textarea
+            aria-label="Reason"
+            placeholder={'Added to the Task\u2019s comments, e.g. "wrong cohort exports"'}
+            value={stopReason}
+            rows={3}
+            maxLength={2000}
+            onChange={(e) => setStopReason(e.target.value)}
+          />
+        </label>
+      ) : (
+        <input
+          aria-label="Reason"
+          placeholder="Reason (optional)"
+          value={stopReason}
+          maxLength={2000}
+          onChange={(e) => setStopReason(e.target.value)}
+          style={{ padding: "8px 10px", borderRadius: 6, border: "1px solid var(--border)", background: "transparent", color: "inherit", font: "inherit" }}
+        />
+      )}
+      <FormErrorBox error={message(stop.error)} />
+    </div>
+  ) : null;
+  const closeStop = () => {
+    stop.reset();
+    setStopping(null);
+  };
+  const stopDialog = task ? (
+    isPhone ? (
+      <BottomSheet open={!!stopping} onClose={closeStop} title="Stop Task?">
+        {stopBody}
+        <div className="mc-td-sheet-actions">
+          <Btn variant="danger" disabled={stop.isPending} onClick={() => stop.mutate(stopReason.trim())}>
+            {stop.isPending ? "Stop Task…" : "Stop Task"}
+          </Btn>
+          <Btn variant="frame" disabled={stop.isPending} onClick={closeStop}>
+            Cancel
+          </Btn>
+        </div>
+      </BottomSheet>
+    ) : (
+      <ConfirmDialog
+        open={!!stopping}
+        onClose={closeStop}
+        onConfirm={() => stop.mutate(stopReason.trim())}
+        title="Stop Task?"
+        confirmLabel="Stop"
+        variant="danger"
+        loading={stop.isPending}
+      >
+        {stopBody}
+      </ConfirmDialog>
+    )
+  ) : null;
+
+  const errorBox = error && !task ? <FormErrorBox error={message(error)} /> : null;
+
+  if (isPhone) {
+    // Full screen page (#834, M42): top bar, scrolling body, composer pinned above the on-screen keyboard.
+    return (
+      <aside
+        ref={drawerRef}
+        tabIndex={-1}
+        onKeyDown={keepTabInside}
+        role="dialog"
+        aria-modal="true"
+        aria-label="Task detail"
+        data-mc-drawer
+        data-task-detail-page
+        className="mc-td-page"
+        style={{ height: viewport.height === null ? "100dvh" : `${viewport.height}px`, top: viewport.offsetTop }}
+      >
+        <div className="mc-td-bar">
+          <button type="button" aria-label="Back" onClick={onClose} className="mc-td-back">
+            <Icon name="chevron-left" size={20} />
+          </button>
+          <div className="mc-td-bar-title">{task?.title ?? "Task"}</div>
+          <span />
+        </div>
+        <div className="mc-td-body" data-testid="task-detail-body">
+          <div className="mc-td-meta">
+            TASK · {taskId}
+            {task ? ` · created ${formatRelativeTime(task.createdAt)}` : ""}
+          </div>
+          {errorBox}
+          {taskContent}
+        </div>
+        {composer ? (
+          <footer className="mc-td-composer" data-testid="task-detail-composer">
+            {composer}
+          </footer>
+        ) : null}
+        {stopDialog}
+        {deleteDialog}
+      </aside>
+    );
+  }
+
+  return (
+    <>
+    {/* The backdrop is a sibling of the drawer, never its parent: a text-selection drag that starts in the drawer and ends on the
+     * backdrop then sends its click to their common ancestor, not to the backdrop, so it does not close the drawer. */}
+    <div data-testid="task-detail-backdrop" onClick={dismiss} style={{ position: "fixed", inset: 0, zIndex: 8999, background: "rgba(0,0,0,0.35)" }} />
+    <aside
+      ref={drawerRef}
+      tabIndex={-1}
+      onKeyDown={keepTabInside}
+      role="dialog"
+      aria-modal="true"
+      aria-label="Task detail"
+      data-mc-drawer
+      style={{ position: "fixed", top: topOffset, right: 0, bottom: 0, width: "min(720px, 100vw)", zIndex: 9000, overflowY: "auto", padding: 24, background: "var(--surface-card)", borderLeft: "1px solid var(--border)", boxShadow: "-8px 0 32px rgba(0,0,0,0.3)", display: "flex", flexDirection: "column", gap: 16 }}
+    >
+      <div style={{ display: "flex", justifyContent: "space-between", fontFamily: "var(--mono)", fontSize: 12, color: "var(--text-dim)" }}>
+        <span>TASK · {taskId}{task ? ` · created ${formatRelativeTime(task.createdAt)}` : ""}</span>
+        <button type="button" aria-label="Close" onClick={onClose} className="mc-btn mc-btn-ghost mc-btn-sm">
+          <Icon name="x" />
+        </button>
+      </div>
+      {errorBox}
+      {taskContent}
+      {composer}
+      {stopDialog}
+      {deleteDialog}
     </aside>
     </>
   );

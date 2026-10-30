@@ -1,0 +1,111 @@
+/* Mobile shell (#830): breakpoints phone < 768px, tablet 768-1023px, desktop
+   >= 1024px. Everything in this file sits behind a max-width query so desktop
+   is untouched. Rules are added by the shell work (top bar, Cores drawer, tab
+   bar, page scrolling); breakpoints live in src/lib/breakpoint.ts. */
+
+/* Compact shell (phone + tablet): the document scrolls as a whole. */
+@media (max-width: 1023px) {
+  /* Higher specificity than the unconditional base rules in styles.css, which
+     come later in source order (the @import sits at the top). */
+  :root,
+  :root body {
+    height: auto;
+    overflow: visible;
+  }
+  :root body {
+    overflow-x: hidden;
+  }
+  html #root {
+    height: auto;
+    min-height: 100dvh;
+  }
+
+  /* Core sections move to the bottom tab bar. */
+  .mc-core-header-tabs {
+    display: none !important;
+  }
+
+  /* Pages size their own scroll box with flex:1 + overflow:auto, which only
+     works under a fixed-height parent. Under the growing shell they grow. */
+  [data-shell="compact"] .mc-shell-outlet > *,
+  [data-shell="compact"] .mc-shell-outlet > * > [style*="overflow: auto"] {
+    flex: 1 0 auto !important;
+    min-height: auto !important;
+  }
+  [data-shell="compact"] .mc-shell-outlet > [style*="overflow: auto"],
+  [data-shell="compact"] .mc-shell-outlet > * > [style*="overflow: auto"] {
+    overflow: visible !important;
+  }
+
+  /* #root > * (styles.css) sets position/z-index at (1,0,0); beat it. */
+  #root[data-shell="compact"] > .mc-mobile-topbar {
+    position: sticky;
+    top: 0;
+    z-index: 20;
+    display: grid;
+    grid-template-columns: 44px minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 8px;
+    min-height: calc(56px + env(safe-area-inset-top));
+    padding: env(safe-area-inset-top) calc(8px + env(safe-area-inset-right)) 0
+      calc(8px + env(safe-area-inset-left));
+    background: var(--surface-1);
+    border-bottom: 1px solid var(--border);
+  }
+  .mc-mobile-topbar button,
+  .mc-mobile-topbar-menu {
+    min-width: 44px;
+    min-height: 44px;
+  }
+
+  /* No stacking context on the workspace, so TaskDetail and the tab bar stack
+     above the sticky bar inside #root. */
+  #root[data-shell="compact"] > .mc-shell-main {
+    z-index: auto;
+  }
+  [data-shell="compact"] .mc-shell-main {
+    padding-bottom: calc(64px + env(safe-area-inset-bottom));
+  }
+
+  .mc-core-tabbar {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 20;
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    padding-bottom: env(safe-area-inset-bottom);
+    background: var(--surface-1);
+    border-top: 1px solid var(--border);
+  }
+  .mc-core-tabbar button {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 2px;
+    min-height: 44px;
+    height: 64px;
+    border: 0;
+    background: transparent;
+    color: var(--text-dim);
+    font-size: 12px;
+    cursor: pointer;
+  }
+  .mc-core-tabbar button[aria-current="page"] {
+    color: var(--accent-ink);
+  }
+
+  .mc-cores-drawer-row {
+    min-height: 44px;
+  }
+}
+
+/* Fleet gutter (#831): a 744px tablet frame is "phone" by breakpoint but has
+   the tablet's 24px gutter. FleetView reads the variable on phone only. */
+@media (min-width: 600px) and (max-width: 767px) {
+  [data-fleet-compact] {
+    --mc-fleet-gutter: 24px;
+  }
+}

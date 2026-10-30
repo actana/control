@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Btn } from "~/components/ui/Btn";
 import { FormErrorBox } from "~/components/ui/FormErrorBox";
+import { useIsPhone } from "~/lib/breakpoint";
 import { Modal } from "~/components/ui/Modal";
 import { MarkdownField } from "~/components/views/MarkdownField";
 import { api, ApiError } from "~/lib/api";
@@ -17,6 +18,7 @@ import { TASK_TIMEOUT_DEFAULT_MINUTES, type TaskTimeoutMinutes } from "~/shared/
 const labelStyle = { fontFamily: "var(--mono)", fontSize: 11, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--text-dim)" } as const;
 
 function Form({ onClose, initialCoreId, onCreated }: { onClose: () => void; initialCoreId: string | null; onCreated?: (id: string) => void }) {
+  const phone = useIsPhone();
   const { cores } = useFleet();
   const queryClient = useQueryClient();
   const [title, setTitle] = useState("");
@@ -61,13 +63,36 @@ function Form({ onClose, initialCoreId, onCreated }: { onClose: () => void; init
   const hasTitle = title.trim().length > 0 && limitValid;
   const canAssign = hasTitle && !!coreId && !!agent;
 
+  const assignLabel = startNow ? "Create & assign" : "Create";
+  const assignDisabled = !canAssign || create.isPending || !!keptDraft;
+  const openDraft = keptDraft ? (
+    <Btn
+      variant="primary"
+      onClick={() => {
+        onClose();
+        onCreated?.(keptDraft);
+      }}
+    >
+      Open the draft
+    </Btn>
+  ) : null;
+
   return (
     <Modal
       open
       onClose={onClose}
       title="New Task"
       width={760}
+      primaryAction={{ label: assignLabel, onClick: () => submit(startNow), disabled: assignDisabled }}
       footer={
+        phone ? (
+          <>
+            {openDraft}
+            <Btn variant="primary" disabled={assignDisabled} onClick={() => submit(startNow)}>
+              {assignLabel}
+            </Btn>
+          </>
+        ) : (
         <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", width: "100%" }}>
           <Btn onClick={onClose}>Cancel</Btn>
           {keptDraft ? (
@@ -88,9 +113,10 @@ function Form({ onClose, initialCoreId, onCreated }: { onClose: () => void; init
             {startNow ? "Create & assign" : "Create"}
           </Btn>
         </div>
+        )
       }
     >
-      <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      <div className={phone ? "mc-new-task" : undefined} style={{ display: "flex", flexDirection: "column", gap: 16 }}>
         <label style={{ display: "flex", flexDirection: "column", gap: 6 }}>
           <span style={labelStyle}>Title</span>
           <input
@@ -105,16 +131,28 @@ function Form({ onClose, initialCoreId, onCreated }: { onClose: () => void; init
           <span style={labelStyle}>Description</span>
           <MarkdownField value={description} onChange={setDescription} ariaLabel="Description" agentNames={agent ? [agent.name] : []} />
         </div>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
-          <div role="radiogroup" aria-label="Core" style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        <div style={{ display: "grid", gridTemplateColumns: phone ? "1fr" : "1fr 1fr", gap: 16 }}>
+          <div role="radiogroup" aria-label="Core" className="mc-new-task-rows" style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             <span style={labelStyle}>Core</span>
-            {cores.map((c) => (
-              <PickCard key={c.id} selected={coreId === c.id} onClick={() => { setCoreId(c.id); setPickedAgent(null); }}>
-                {c.label} · {c.dial.state === "connected" ? "online" : "offline"}
-              </PickCard>
-            ))}
+            {cores.map((c) => {
+              const online = c.dial.state === "connected";
+              const card = (
+                <PickCard key={c.id} selected={coreId === c.id} onClick={() => { setCoreId(c.id); setPickedAgent(null); }}>
+                  {phone ? <span aria-hidden className="mc-new-task-dot">● </span> : null}
+                  {c.label} · {online ? "online" : "offline"}
+                </PickCard>
+              );
+              // Offline Cores stay selectable; on a phone they are dimmed with a grey dot.
+              return phone ? (
+                <div key={c.id} className="mc-new-task-core" data-offline={online ? undefined : ""}>
+                  {card}
+                </div>
+              ) : (
+                card
+              );
+            })}
           </div>
-          <div role="radiogroup" aria-label="Agent" style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          <div role="radiogroup" aria-label="Agent" className="mc-new-task-rows" style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             <span style={labelStyle}>Agent · harness + settings on that Core</span>
             {!coreId ? <span style={{ color: "var(--text-dim)" }}>Pick a Core first.</span> : null}
             {coreId && !agentsLoading && agents.length === 0 ? <span style={{ color: "var(--text-dim)" }}>This Core has no Agents.</span> : null}
@@ -131,7 +169,9 @@ function Form({ onClose, initialCoreId, onCreated }: { onClose: () => void; init
           <TaskAttachments items={attachments} onChange={setAttachments} folder />
         </div>
         <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-          <span style={labelStyle}>Time limit · per attempt</span>
+          <span style={labelStyle}>
+            Time limit<span style={{ textTransform: "none" }}> · how long one attempt may run without writing a result</span>
+          </span>
           <TimeLimitPicker value={timeoutMinutes} onChange={setTimeoutMinutes} onValidChange={setLimitValid} />
         </div>
         <label style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16, padding: 14, border: "1px solid var(--border)", borderRadius: 8 }}>
@@ -142,6 +182,11 @@ function Form({ onClose, initialCoreId, onCreated }: { onClose: () => void; init
           </span>
           <input type="checkbox" role="switch" aria-label="Start as soon as it is created" checked={startNow} onChange={(e) => setStartNow(e.target.checked)} />
         </label>
+        {phone ? (
+          <Btn variant="frame" disabled={!hasTitle || create.isPending || !!keptDraft} onClick={() => submit(false)}>
+            Save as draft
+          </Btn>
+        ) : null}
         <FormErrorBox error={create.error ? (create.error instanceof Error ? create.error.message : String(create.error)) : null} />
         {keptDraft ? <div role="status" style={{ fontSize: 13, color: "var(--text-dim)" }}>The Task was saved as a draft and was not assigned. Open it from the board to try the attachment again.</div> : null}
       </div>

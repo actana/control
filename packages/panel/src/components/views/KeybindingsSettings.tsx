@@ -259,6 +259,7 @@ function BindingRow({
 
   return (
     <div
+      className="mc-keybinding-row"
       style={{
         display: "grid",
         gridTemplateColumns: "1fr auto",
@@ -270,18 +271,22 @@ function BindingRow({
         borderRadius: 7,
       }}
     >
-      <div>
-        <div style={{ fontFamily: "var(--mono)", fontSize: 12, fontWeight: 600 }}>
+      <div className="mc-keybinding-main">
+        <div className="mc-keybinding-label" style={{ fontFamily: "var(--mono)", fontSize: 12, fontWeight: 600 }}>
           {meta.label}
         </div>
-        <div style={{ fontFamily: "var(--mono)", fontSize: 10.5, color: "var(--text-dim)", marginTop: 2 }}>
+        <div
+          className="mc-keybinding-desc"
+          style={{ fontFamily: "var(--mono)", fontSize: 10.5, color: "var(--text-dim)", marginTop: 2 }}
+        >
           {meta.description}
         </div>
       </div>
-      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+      <div className="mc-keybinding-actions" style={{ display: "flex", alignItems: "center", gap: 8 }}>
         {recording ? (
           <div
             ref={captureRef}
+            className="mc-keybinding-capture"
             tabIndex={0}
             aria-label="Press a key combination to bind"
             style={{

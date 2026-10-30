@@ -78,6 +78,83 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
+  # What a pull request's level buys (#842). Every pull request used to run the
+  # whole pipeline whatever its base: a Task pull request into a Feature branch
+  # paid ~40 job-minutes for typecheck, tests, audits, e2e, tarballs and two
+  # published dev images, and then paid them again on the Feature pull request
+  # that carries the same commits. Each level now runs what it is the gate for:
+  #
+  #   Task PR    → feat/x.y.z-<area>   lint only: Conventions, Lint, Train rules,
+  #                                     Promotion gate (the last two exit early)
+  #   Feature PR → feat/x.y.z          the real builds and tests: everything
+  #   Release PR → beta/x.y.z          everything, as before
+  #   push feat/x.y.z, beta/**         everything, as before (#584, D41)
+  #   Promotion  beta/x.y.z → main     everything, images in verify mode (D19)
+  #
+  # Two outputs, both strings, both `false` unless this job says otherwise:
+  #
+  #   lint_only  a pull request whose base is a Feature branch,
+  #              `feat/x.y.z-<area>`. Its heavy jobs are skipped.
+  #   parked     a *draft* pull request into `feat/x.y.z` or `beta/*`. A Feature
+  #              or release pull request is opened as a draft until it is ready;
+  #              its heavy jobs wait for `ready_for_review`, which re-runs this
+  #              workflow (#137) with `draft: false`.
+  #
+  # Every heavy job carries `needs: scope` and
+  # `!cancelled() && needs.scope.outputs.lint_only != 'true' && needs.scope.outputs.parked != 'true'`.
+  # `!cancelled()` and the `!= 'true'` comparisons make the gate fail open: if
+  # this job dies, its outputs are empty and every heavy job runs, as it did
+  # before #842. A wrongly skipped gate is the failure that hides a break, a
+  # wrongly run one only costs minutes.
+  #
+  # The image checks are not skipped: `pr-image-mode` reads `lint_only` and
+  # resolves to `pass`, so `Panel image` / `Core image` still report their check
+  # names green in seconds (ADR 0023 D33). Nothing in `docs/rulesets/` requires a
+  # check on a Feature branch, and every check a ruleset does require on
+  # `beta/*`, `release/*` or `main` runs in full on a ready pull request there.
+  #
+  # No checkout, no API call, no network: the answer is a function of the event
+  # payload alone, and `scripts/__tests__/ci-scope.test.mjs` runs this script
+  # against a table of bases.
+  scope:
+    name: Resolve CI scope
+    runs-on: ubuntu-24.04
+    permissions: {}
+    outputs:
+      lint_only: ${{ steps.scope.outputs.lint_only }}
+      parked: ${{ steps.scope.outputs.parked }}
+    steps:
+      - name: Work out the scope
+        id: scope
+        continue-on-error: true
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.ref }}
+          DRAFT: ${{ github.event.pull_request.draft }}
+        run: |
+          set -euo pipefail
+          lint_only=false
+          parked=false
+          why="not a pull request: the full run"
+          if [[ "$EVENT_NAME" == "pull_request" ]]; then
+            why="a pull request into $BASE: the full run"
+            # A Feature branch is the release branch plus `-<area>` (Project ›
+            # Branches); `feat/0.5.2-ci-images` is one, `feat/0.5.2` is not, and
+            # neither is a ticket branch such as `feat/553-adopt-actana-client`.
+            if [[ "$BASE" =~ ^feat/[0-9]+\.[0-9]+\.[0-9]+-[a-z0-9] ]]; then
+              lint_only=true
+              why="a Task pull request into the Feature branch $BASE: lint only"
+            elif [[ "$DRAFT" == "true" && ( "$BASE" =~ ^feat/[0-9]+\.[0-9]+\.[0-9]+$ || "$BASE" == beta/* ) ]]; then
+              parked=true
+              why="a draft pull request into $BASE: the heavy jobs wait for ready_for_review"
+            fi
+          fi
+          echo "lint_only=$lint_only parked=$parked ($why)"
+          {
+            echo "lint_only=$lint_only"
+            echo "parked=$parked"
+          } >> "$GITHUB_OUTPUT"
+
   # The repo conventions, in one job (ADR 0016 D34):
   #   1. PR title follows Conventional Commits (it becomes the squash-merge subject)
   #   2. Every commit message in the PR follows Conventional Commits (commitlint)
@@ -463,7 +540,7 @@ jobs:
                 # of another line targeting this train is still nonsense.
                 # Everything else stays refused, because the `beta/*` allowlist
                 # in `Conventions` above would otherwise wave it through.
-                PATTERN='^(feat|feature|fix|bugfix|hotfix|release|chore|docs|refactor|perf|test|ci|revert)\/[a-z0-9]+([._-][a-z0-9]+)*$'
+                PATTERN='^(feat|feature|fix|bugfix|hotfix|release|chore|docs|refactor|perf|test|ci|revert|task)\/[a-z0-9]+([._-][a-z0-9]+)*$'
                 if echo "$HEAD" | grep -qE '^(dependabot|renovate)/'; then
                   echo "  ✅ $HEAD is bot-generated"
                 elif [[ "$version" == "$line" && "$HEAD" =~ ^beta/${line//./\\.}-f[0-9]+$ ]]; then
@@ -571,6 +648,8 @@ jobs:
 
   typecheck:
     name: Typecheck
+    needs: scope
+    if: ${{ !cancelled() && needs.scope.outputs.lint_only != 'true' && needs.scope.outputs.parked != 'true' }}
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -587,6 +666,8 @@ jobs:
 
   unit-tests:
     name: Unit Tests
+    needs: scope
+    if: ${{ !cancelled() && needs.scope.outputs.lint_only != 'true' && needs.scope.outputs.parked != 'true' }}
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -696,6 +777,8 @@ jobs:
   # opens an issue instead of gating a PR (housekeeping.yml).
   dependency-audit:
     name: Dependency Audit
+    needs: scope
+    if: ${{ !cancelled() && needs.scope.outputs.lint_only != 'true' && needs.scope.outputs.parked != 'true' }}
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -712,6 +795,8 @@ jobs:
 
   secret-scan:
     name: Secret Scan
+    needs: scope
+    if: ${{ !cancelled() && needs.scope.outputs.lint_only != 'true' && needs.scope.outputs.parked != 'true' }}
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -743,8 +828,17 @@ jobs:
   #
   # The Core runs as a local process here (scripts/lib/core-fixture.mjs);
   # pairing against a *containerised* Core is the `core-image` job.
+  #
+  # The phone step (#836) is the same boot with a browser in front: headless
+  # Chrome at 390 × 844 opens the Panel, a Core, a Session terminal, creates a
+  # Task, opens its detail and creates an API key in Settings, asserting no
+  # horizontal page scroll on each screen. It is a step here, not a job, so it
+  # reuses the built Panel and Core and runs exactly where the rest of the job
+  # does: not on a Task pull request (#842). A failure uploads its screenshots.
   panel-e2e:
     name: E2E — Panel service seam
+    needs: scope
+    if: ${{ !cancelled() && needs.scope.outputs.lint_only != 'true' && needs.scope.outputs.parked != 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -773,6 +867,20 @@ jobs:
       - name: E2E — the Panel service, driven as a browser
         run: pnpm panel:e2e
 
+      # Reuses the artifacts `panel:e2e` just built. Screenshots go to the
+      # runner's temp dir and are uploaded only when a leg fails.
+      - name: E2E — the Panel on a phone (390 × 844)
+        run: pnpm panel:e2e:phone --screenshots "$RUNNER_TEMP/panel-phone"
+
+      - name: Upload the phone screenshots
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: panel-phone-screenshots
+          path: ${{ runner.temp }}/panel-phone
+          if-no-files-found: ignore
+          retention-days: 7
+
   # The Panel's database tests, against a real Postgres (#567, ADR 0041 D19).
   # `Unit Tests` runs the same files on PGlite, Postgres compiled to
   # WebAssembly in the test's own process, which has one connection and one
@@ -792,6 +900,8 @@ jobs:
   # so a green run cannot mean "the real-Postgres tests were not selected".
   panel-postgres:
     name: Panel DB tests — real Postgres
+    needs: scope
+    if: ${{ !cancelled() && needs.scope.outputs.lint_only != 'true' && needs.scope.outputs.parked != 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     services:
@@ -865,6 +975,8 @@ jobs:
   # real SeaweedFS` to `docs/rulesets/*.json` and the live rulesets.
   core-shared-seaweedfs:
     name: Core Shared folder — real SeaweedFS
+    needs: scope
+    if: ${{ !cancelled() && needs.scope.outputs.lint_only != 'true' && needs.scope.outputs.parked != 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     env:
@@ -1025,6 +1137,8 @@ jobs:
   # would prove nothing about what operators download.
   core-tarball-smoke:
     name: Smoke — Core release tarball (${{ matrix.target }})
+    needs: scope
+    if: ${{ !cancelled() && needs.scope.outputs.lint_only != 'true' && needs.scope.outputs.parked != 'true' }}
     strategy:
       fail-fast: false
       matrix:
@@ -1207,7 +1321,13 @@ jobs:
     # read a draft flag from. It is resolved here rather than skipped so the
     # image jobs below get an explicit `build` + `push=false`, and never the
     # vacuous `pass` a draft gets.
-    if: github.event_name == 'pull_request' || (github.event_name == 'push' && startsWith(github.ref, 'refs/heads/feat/'))
+    #
+    # It reads `scope`'s `lint_only` (#842) and is never skipped for it: a Task
+    # pull request resolves to `pass`, so both image checks still report.
+    # `!cancelled()` keeps it running when `scope` failed, with an empty
+    # `lint_only` that changes nothing.
+    needs: scope
+    if: ${{ !cancelled() && (github.event_name == 'pull_request' || (github.event_name == 'push' && startsWith(github.ref, 'refs/heads/feat/'))) }}
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -1239,6 +1359,7 @@ jobs:
           REF_NAME: ${{ github.ref_name }}
           MERGE_SHA: ${{ github.sha }}
           CHANGED_FILES: ${{ github.event.pull_request.changed_files }}
+          LINT_ONLY: ${{ needs.scope.outputs.lint_only }}
           RESOLVED: ${{ runner.temp }}/pr-image-mode.env
         run: |
           set -euo pipefail
@@ -1264,7 +1385,10 @@ jobs:
           # A push has no pull request, so there is no file list to ask for:
           # `pulls//files` would fail and be swallowed, and the answer below
           # would then rest on a failed call instead of on a decision.
-          if [[ "$EVENT_NAME" != "push" ]]; then
+          #
+          # A lint-only Task pull request (#842) never reads the list either:
+          # it resolves to `pass` below whatever the diff holds.
+          if [[ "$EVENT_NAME" != "push" && "${LINT_ONLY:-}" != "true" ]]; then
             files="$(gh api --paginate "repos/$REPO/pulls/$PR/files" --jq '.[].filename' || true)"
             listed="$(grep -c . <<<"$files" || true)"
             if [[ -n "$files" && "$listed" -lt "${CHANGED_FILES:-0}" ]]; then
@@ -1309,6 +1433,13 @@ jobs:
           elif [[ "$DRAFT" == "true" ]]; then
             mode=pass
             why="the pull request is a draft"
+          elif [[ "${LINT_ONLY:-}" == "true" ]]; then
+            # The `lint` level (#842): a Task pull request into a Feature
+            # branch builds no image. `pass`, not a skipped job, so both image
+            # checks still report their names (D33); the Feature pull request
+            # that carries these commits builds them.
+            mode=pass
+            why="a Task pull request into the Feature branch $BASE: lint only (#842)"
           elif [[ "$BASE" == "main" && "$HEAD" == beta/* ]]; then
             # D19. The image this would build already exists — the train built
             # it — so the hour is spent proving it is the right one instead.
@@ -1461,11 +1592,15 @@ jobs:
   #
   # `push_required: false` (D37): the publish goes to `panel-dev`, and the gate
   # is the build and the smoke. A Docker Hub outage must not freeze merging.
+  #
+  # `!cancelled()` in both image jobs' `if:` because `pr-image-mode` needs
+  # `scope` (#842): a failed ancestor would otherwise skip them, and a skipped
+  # required check stays Pending forever (D33).
   panel-image:
     name: Panel image
     # Also the integration branch's push (#584): the same build and smoke,
     # `push=false` from `pr-image-mode`, so nothing is published.
-    if: github.event_name == 'pull_request' || (github.event_name == 'push' && startsWith(github.ref, 'refs/heads/feat/'))
+    if: ${{ !cancelled() && (github.event_name == 'pull_request' || (github.event_name == 'push' && startsWith(github.ref, 'refs/heads/feat/'))) }}
     needs: pr-image-mode
     uses: ./.github/workflows/container-image.yml
     permissions:
@@ -1507,7 +1642,7 @@ jobs:
     name: Core image
     # Also the integration branch's push (#584): the same build and smoke,
     # `push=false` from `pr-image-mode`, so nothing is published.
-    if: github.event_name == 'pull_request' || (github.event_name == 'push' && startsWith(github.ref, 'refs/heads/feat/'))
+    if: ${{ !cancelled() && (github.event_name == 'pull_request' || (github.event_name == 'push' && startsWith(github.ref, 'refs/heads/feat/'))) }}
     needs: pr-image-mode
     uses: ./.github/workflows/container-image.yml
     permissions:

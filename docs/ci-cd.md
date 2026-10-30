@@ -95,6 +95,12 @@ so a green check is self-describing (D38, *one check name, four behaviours*).
 One rule, three places it bites; see [The pull request
 image](#the-pull-request-image-and-what-it-is-not).
 
+**The pull request levels (#842) keep to it.** A Task pull request into a
+Feature branch skips its heavy jobs with a job-level `if:`, which is safe only
+because no ruleset requires a check on a Feature branch; the image checks there
+still go through `pass` rather than a skip, so their names report on every
+level. See [What each pull request level runs](#what-each-pull-request-level-runs).
+
 Both container images have **one** build implementation:
 [`container-image.yml`](../.github/workflows/container-image.yml), a reusable
 workflow called by the PR, train and release paths with `image: panel` or
@@ -187,10 +193,65 @@ before it goes to the train. The model is three moves:
 What the workflow enforces is the push trigger and what it runs. **It does not
 enforce the routing**: nothing in `ci.yml` requires ticket pull requests to
 target `feat/x.y.z`, or limits the train to one pull request from it. That part
-is convention. A pull request *based on* `feat/x.y.z` gets the same checks as
-any pull request, except that `Train rules` has nothing to say about it: its
-base is neither `main`, a train nor a release line, so it ends at the notice
-*"No train rules apply"* (the final `*)` arm of its `case "$BASE"`).
+is convention. A pull request *based on* `feat/x.y.z` — a Feature pull request
+— gets the same checks as any ready pull request, except that `Train rules` has
+nothing to say about it: its base is neither `main`, a train nor a release line,
+so it ends at the notice *"No train rules apply"* (the final `*)` arm of its
+`case "$BASE"`). A pull request based on a Feature branch `feat/x.y.z-<area>` —
+a Task pull request — runs lint only; see the next section.
+
+### What each pull request level runs
+
+Every pull request used to run the whole pipeline whatever its base. On 0.5.1
+that was ~40 job-minutes per Task pull request, paid again on the Feature pull
+request that carried the same commits (#842). Each level now runs what it is
+the gate for:
+
+| Level | Runs |
+| --- | --- |
+| Task PR `task/<n>-<slug>` → `feat/x.y.z-<area>` | **Lint only:** `Conventions`, `Lint`, `Train rules` and `Promotion gate` (both end early), and `Panel image` / `Core image` in `pass` mode. No typecheck, tests, audit, secret scan, e2e, tarballs, image builds or CodeQL. |
+| Feature PR `feat/x.y.z-<area>` → `feat/x.y.z` | Everything: `Typecheck`, `Unit Tests`, `Dependency Audit`, `Secret Scan`, `E2E — Panel service seam` (which also drives the Panel in headless Chrome at a 390 × 844 phone viewport, #836), the Postgres and SeaweedFS jobs, the tarball smokes and installer e2e, both images built and smoked, CodeQL. **This is the gate for the Feature**: what a Task pull request no longer checks surfaces here, so it must not be merged red. |
+| Release PR `feat/x.y.z` → `beta/x.y.z`, a push to `beta/**` or `feat/x.y.z` | Everything, as before; the train push also publishes the train's images. |
+| Promotion PR `beta/x.y.z` → `main` | Everything, with the images in `verify` mode (D19); `Promotion gate` red by design. |
+
+A Feature or release pull request is opened as a **draft** until it is ready.
+While a pull request into `feat/x.y.z` or `beta/*` is a draft it is *parked*:
+the heavy jobs are skipped and the image checks resolve to `pass`, and marking
+it ready fires `ready_for_review` (#137), which runs everything.
+
+The first job, `scope` (*Resolve CI scope*), decides this from the event payload
+alone and writes two outputs: `lint_only` (a pull request whose base matches
+`^feat/[0-9]+(\.[0-9]+){2}-`) and `parked` (a draft whose base is `feat/x.y.z` or
+`beta/*`). Every heavy job carries `needs: scope` and
+
+```yaml
+if: ${{ !cancelled() && needs.scope.outputs.lint_only != 'true' && needs.scope.outputs.parked != 'true' }}
+```
+
+which **fails open**: if `scope` dies, its outputs are empty, nothing equals
+`'true'`, and every heavy job runs as it did before. `E2E — installer` keeps
+`needs: core-tarball-smoke` and is skipped with it. `pr-image-mode` reads
+`lint_only` and resolves to `pass` (*"a Task pull request into the Feature
+branch … lint only"*) instead of being skipped, so `Panel image` and `Core
+image` still report their names (D33), and no `pr-<prid><YYYYMM>` image is
+published for a Task pull request. `codeql.yml` takes the same line through its
+`pull_request` branch filter: `main`, `beta/**`, `feat/[0-9]+.[0-9]+.[0-9]+` and
+`release/**`, so a pull request into a Feature branch is not scanned.
+`scripts/__tests__/ci-scope.test.mjs` runs the `scope` script against a table
+of bases and evaluates every job's `if:` against its answers.
+
+Skipping is safe on a Task pull request only because **no ruleset requires a
+check on a Feature branch** (`Feature branches — feat/<version>[-<slug>]`, one
+approval, no force push). Requiring one there must never name a check that a
+Task pull request skips; `Conventions` and `Lint` are the two it could require.
+A draft into `beta/*` skips checks the train ruleset requires, which GitHub
+counts as passed — harmless, because a draft cannot be merged and undrafting
+re-runs them.
+
+`task` is a branch type (`scripts/check-conventions.sh`, `Train rules`,
+[CONTRIBUTING.md § Branch naming](../CONTRIBUTING.md#branch-naming)), so a
+`task/<n>-<slug>` branch passes `Conventions`. It is not a commit type: the
+commits on it still say `feat`, `fix`, `ci` and so on.
 
 ### What a push to `feat/x.y.z` runs
 
@@ -205,9 +266,12 @@ holds the table of names.
 | Job | On a push to `feat/x.y.z` | The line it rests on |
 | --- | --- | --- |
 | `Conventions` | runs | `if: github.event_name == 'pull_request' \|\| (github.event_name == 'push' && startsWith(github.ref, 'refs/heads/feat/'))` |
-| `Resolve PR image mode` | runs, and decides `build` with `push=false` | the same `if:` |
+| `Resolve CI scope` | runs, and answers `lint_only=false parked=false` | no job-level `if:` |
+| `Resolve PR image mode` | runs, and decides `build` with `push=false` | the same `if:` behind `!cancelled()`, `needs: scope` |
 | `Panel image`, `Core image` | run: the real build and smoke, amd64 only, on the pushed commit | the same `if:`, `needs: pr-image-mode` |
-| `Promotion gate`, `Typecheck`, `Unit Tests`, `Lint`, `Dependency Audit`, `Secret Scan`, `E2E — Panel service seam`, `Panel DB tests — real Postgres` (not a required check), `Smoke — Core release tarball`, `E2E — installer` | run | no job-level `if:`, so they run on every event |
+| `Promotion gate`, `Lint` | run | no job-level `if:`, so they run on every event |
+| `Typecheck`, `Unit Tests`, `Dependency Audit`, `Secret Scan`, `E2E — Panel service seam`, `Panel DB tests — real Postgres` (not a required check), `Core Shared folder — real SeaweedFS` (not a required check), `Smoke — Core release tarball` | run | `needs: scope` and the heavy-job gate (#842), whose outputs are both `false` on a push |
+| `E2E — installer` | runs | `needs: core-tarball-smoke`, no job-level `if:` |
 | `Train rules` | does not run | `if: github.event_name == 'pull_request'` |
 | `Train versions`, `Resolve train tags`, `Panel image (train)`, `Core image (train)` | do not run | `if: startsWith(github.ref, 'refs/heads/beta/')` |
 
@@ -637,7 +701,8 @@ for a re-run of the train's image jobs and says so on screen.
 
 ## The pull request image, and what it is not
 
-Every push to a non-draft pull request publishes an image a reviewer can *run*
+Every push to a non-draft pull request that is not a lint-only Task pull
+request (#842) publishes an image a reviewer can *run*
 rather than read ([ADR 0023](adr/0023-release-trains-and-digest-promotion.md)
 D32). It is the half of the design that is useful on its own, and it comes with
 three limits worth knowing before you file one of them as a bug.
@@ -651,7 +716,7 @@ name, four behaviours*):
 | build + push | same-repo, non-draft, touches code | `pr-<prid><YYYYMM>` to `panel-dev` / `core-dev` |
 | build, no push | the head is a fork | built and smoked; nothing published (D34) |
 | verify | the promotion pull request | the digest assertion instead of an hour of rebuilding (D19) |
-| pass | draft, or a documentation-only diff | green immediately, having built nothing (D33) |
+| pass | draft, a documentation-only diff, or a Task pull request into a Feature branch (#842) | green immediately, having built nothing (D33) |
 
 They are four modes of one job rather than four jobs precisely because the
 ruleset pins these names — the same reason `landing.yml` is its own file.
@@ -908,8 +973,8 @@ mechanisms, because they catch different drift".
 
 | Input | Where | Moved by |
 | --- | --- | --- |
-| `ubuntu:24.04@sha256:…` | [`core.Dockerfile`](../deploy/core.Dockerfile) | Dependabot, `docker` ecosystem |
-| `gcr.io/distroless/nodejs24@sha256:…` | [`panel.Dockerfile`](../deploy/panel.Dockerfile) | Dependabot, `docker` ecosystem |
+| `ubuntu:24.04@sha256:…` | [`core.Dockerfile`](../deploy/core.Dockerfile) | a person, from the `base-pins` issue |
+| `gcr.io/distroless/nodejs24@sha256:…` | [`panel.Dockerfile`](../deploy/panel.Dockerfile) | a person, from the `base-pins` issue |
 | `ARG NODE_VERSION=…` | [`core.Dockerfile`](../deploy/core.Dockerfile) | [`housekeeping.yml`](../.github/workflows/housekeeping.yml)'s `base-pins` job |
 | everything `apt` installs | `core.Dockerfile`'s one `RUN` | the weekly rebuild, via D5's in-layer `apt-get upgrade` |
 
@@ -920,8 +985,9 @@ upgrade freezes the CVEs too, and the cadence becomes theatre (D5).
 
 ### The two digests are pinned in different shapes on purpose
 
-Dependabot updates a digest from a *tag*, and which tag depends on whether the
-pin carries one:
+A digest is re-resolved from a *tag*, and which tag depends on whether the pin
+carries one (until #825 Dependabot's `docker` ecosystem applied the same rule;
+now the checker does):
 
 - **`ubuntu:24.04@sha256:…` — tag and digest.** Within the LTS line the tag
   does not move, so a point release is a digest-only change; the jump to the
@@ -930,31 +996,34 @@ pin carries one:
   far it may roll.
 - **`gcr.io/distroless/nodejs24@sha256:…` — digest, no tag.** This is the only
   pin the registry supports: 7,040 tags, and not one of them carries a version
-  number — four mutable names plus per-arch build SHAs (D20). Dependabot's
-  tagless branch resolves the update from the **`latest` tag's digest**, which
-  is exactly what this pin means. Writing `:latest@sha256:…` instead would take
-  the other branch and hunt for a tag *newer than* `latest`, which cannot
-  exist.
+  number — four mutable names plus per-arch build SHAs (D20). The checker
+  resolves a tagless pin from the **`latest` tag's digest**, which is exactly
+  what this pin means. Writing `:latest@sha256:…` instead would make the tag
+  the boundary, and a tag *newer than* `latest` cannot exist.
 
-### Why there is a checker as well as a config
+### The checker, and what it does when a pin moves
 
 `pnpm bases:check` ([`check-base-pins.mjs`](../scripts/check-base-pins.mjs))
 resolves all three pins against their real upstreams — the registry HTTP API
-and `nodejs.org/dist/index.json` — using the same tag Dependabot would use for
-each, and prints what has moved. `housekeeping.yml`'s `base-pins` job runs it
-weekly.
+and `nodejs.org/dist/index.json` — using the tag rule above for each, and
+prints what has moved. `housekeeping.yml`'s `base-pins` job runs it weekly
+(Mondays, 07:00 UTC). Since #825 it is the only thing that watches the two
+digests; `.github/dependabot.yml` is gone and Dependabot version updates are
+off.
 
-It exists because two of the three have failure modes a config file cannot
-rule out:
+What it does with a drift depends on the pin:
 
-- The distroless pin follows the `latest` tag. If that tag ever leaves the
-  registry's tag list, Dependabot's `latest_digest` returns nothing and the
-  updater goes **quiet** — no error, no PR, and the Panel's runtime silently
-  stops being updated. The checker fails loudly on exactly that.
-- `ARG NODE_VERSION` is a nodejs.org tarball (D8), not an image reference.
-  Dependabot's `docker` ecosystem cannot see it at all, so without this nothing
-  bumps it and the Core's system Node drifts a patch release at a time.
-  the `base-pins` job opens that PR itself.
+- **A drifted image digest opens an issue, not a PR.** When one or both of the
+  `ubuntu` and distroless digests are behind upstream, the job opens one issue,
+  `Base image digests behind upstream`, labelled `needs-triage`, listing each
+  drifted digest (file:line, pinned → upstream) and the run link. While one is
+  open it does not open a second. **A person bumps the digest by hand**, in a
+  pull request from that issue; no bot opens digest pull requests.
+- **A distroless pin whose `latest` tag has left the registry fails loudly.**
+  The checker errors on exactly that, so the Panel's runtime cannot silently
+  stop being updated.
+- **`ARG NODE_VERSION` opens its own PR.** It is a nodejs.org tarball (D8), not
+  an image reference, and the `base-pins` job opens that PR itself.
 
   What the bump buys is Node's own security fixes, and **not** a greener CVE
   gate. D10 calls it "the only thing that clears the Node-attributed findings";
@@ -966,35 +1035,35 @@ rule out:
 
 To see it work rather than take its word for it, edit either digest in
 `deploy/` to something wrong and run `pnpm bases:check`: it reports the pin as
-drifted and names the digest that should replace it — which, for both
-registries, is the one Dependabot's own `digest_of(<tag>)` resolves. Put the
-digest back afterwards.
+drifted and names the digest that should replace it — which is the
+one a bump should use. Put the digest back afterwards.
 
-The checker deliberately does **not** open PRs for the digests. Dependabot
-already does, with its own cooldowns, grouping and dashboard, and two bots
-racing to open the same PR is worse than one; a drifted digest is a job summary
-pointing at `/network/updates` instead.
+The checker deliberately does **not** open PRs for the two image digests. A
+digest bump changes what every published image is built on, and the issue puts
+a person in front of it: they read the upstream change, bump `core.Dockerfile`
+and `panel.Dockerfile` as needed, and let the image checks run on that PR. Which
+Dockerfiles are covered is asserted in
+[`base-pins.test.mjs`](../scripts/__tests__/base-pins.test.mjs): every shipped
+base must be digest-pinned, and every tracked Dockerfile must be listed in
+`SHIPPED_DOCKERFILES`, so the checker watches its base; a new Dockerfile not
+added there fails that test.
 
-That the config *reaches* both Dockerfiles is asserted in
-[`base-pins.test.mjs`](../scripts/__tests__/base-pins.test.mjs), against the
-rules Dependabot actually applies rather than the ones its documentation
-implies. Three of them bite:
+The compose pins in `deploy/docker-compose.yml` (Postgres, SeaweedFS) are not
+the checker's: they were Dependabot's `docker-compose` entry's, and are now
+**bumped by hand** — an exact version and its index digest, the image at least
+a week old, as the comments beside each pin say.
 
-1. Its docker fetcher matches `/dockerfile|containerfile/i` against the **file
-   name**, which is why `core.Dockerfile` and `panel.Dockerfile` are seen at
-   all despite not being named `Dockerfile`.
-2. It lists a configured directory's own contents and **does not recurse**.
-   `deploy/dev/core.Dockerfile` is therefore outside the `/deploy` entry —
-   deliberately: it is a local fixture, published nowhere, and deleted entirely
-   by D40. A new Dockerfile that is neither shipped nor listed with a reason
-   fails that test.
-3. There has to be a digest to move, so every shipped base is digest-pinned.
+`ci.yml` and `scripts/check-conventions.sh` keep their branch-name exemption for
+`dependabot/` heads: a pull request Dependabot opened before 0.5.2 reaches
+`main`, or one from a re-enabled security update, must still pass `Conventions`.
+Until 0.5.2 is promoted Dependabot may still open pull requests (GitHub reads
+its config from `main`); close them by hand.
 
 The `node:24.15.0-trixie` build stage in `panel.Dockerfile` is a fourth image
 and is tag-pinned rather than digest-pinned. Nothing from it reaches the runtime
 (D20), so it is not a CVE surface; it is pinned to the exact patch CI tests
-against, and `panel-image.test.mjs` asserts the two agree. A Dependabot PR that
-bumps it and not CI's Node is *meant* to go red there.
+against, and `panel-image.test.mjs` asserts the two agree. A PR that bumps it
+and not CI's Node is *meant* to go red there.
 
 ## Registries
 
@@ -1072,8 +1141,8 @@ What that means in practice:
   that built the Panel image many times in parallel would not.
 - **There is no mirror configured, deliberately.** Copying the base into
   another registry and building `FROM` that would trade Google's availability
-  for a copy that can go stale and for a second thing Dependabot would have to
-  be taught to update. The pin is a digest, so a `gcr.io` outage delays a
+  for a copy that can go stale and for a second digest somebody would have to
+  remember to bump. The pin is a digest, so a `gcr.io` outage delays a
   build; it cannot change what a build produces.
 
 Two registries are therefore in play, doing two different jobs:

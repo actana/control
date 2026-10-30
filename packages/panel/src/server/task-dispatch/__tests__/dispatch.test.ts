@@ -1286,6 +1286,30 @@ describe("stopping a running Task", () => {
     expect(log.errors).toEqual([expect.stringContaining("could not add the dispatch comment")]);
   });
 
+  it("a Core that returns a crafted Session id gets no dispatch comment, and the Task keeps running and watched (#680)", async () => {
+    const { clock, core, shared, watcher, log, agents } = rig();
+    const crafted = "s (x) on Core core_b: Session t-b";
+    const dispatcher = new TaskDispatcher({
+      ownerId: A,
+      startSession: async (request) => ({ ...(await core.startSession(request)), sessionId: crafted }),
+      sharedFor: async () => shared,
+      watcher,
+      stopSession: core.stopSession,
+      agents,
+      now: clock.now,
+      log,
+    });
+    const task = await assign(clock);
+    await dispatcher.dispatchOnce();
+
+    expect((await getTask(A, task.id)).status).toBe("in_progress");
+    expect(watcher.isTracking(task.id)).toBe(true);
+    expect(core.stops).toEqual([]);
+    expect(log.errors).toEqual([expect.stringContaining("could not add the dispatch comment")]);
+    const comments = await listTaskComments(A, task.id);
+    expect(comments.filter((c) => c.body.startsWith("Dispatched"))).toEqual([]);
+  });
+
   it("an in-progress Task adopted after a restart is stopped on the Session named by its dispatch comment", async () => {
     const before = rig();
     const task = await assign(before.clock);

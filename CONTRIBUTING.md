@@ -265,8 +265,10 @@ docs/deploy-behind-traefik
 ```
 
 Allowed types: `feat` `feature` `fix` `bugfix` `hotfix` `release` `chore`
-`docs` `refactor` `perf` `test` `ci` `revert`. Lowercase only, hyphen-separated,
-no leading/trailing/doubled separators.
+`docs` `refactor` `perf` `test` `ci` `revert` `task`. Lowercase only, hyphen-separated,
+no leading/trailing/doubled separators. `task` is for the branch of one Task
+card, `task/<issue>-<slug>`, cut from its Feature branch `feat/x.y.z-<area>`
+(#842); it is a branch type only, so its commits still take a commit type.
 
 CI checks this (the `Conventions` job in `ci.yml`), and so does your machine:
 `pnpm install` points `core.hooksPath` at `.husky/`, so `commit-msg` refuses a

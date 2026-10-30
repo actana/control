@@ -3,6 +3,7 @@ import { Modal } from "~/components/ui/Modal";
 import { FormErrorBox } from "~/components/ui/FormErrorBox";
 import { Btn } from "~/components/ui/Btn";
 import { HotkeyTooltip, EscTooltip } from "~/components/ui/Tooltip";
+import { useIsPhone } from "~/lib/breakpoint";
 import { isEditableTarget, useHotkey } from "~/lib/use-hotkey";
 import { HARNESS_META } from "~/lib/design-meta";
 import { HarnessLogo } from "~/components/ui/HarnessLogo";
@@ -87,6 +88,7 @@ export function NewHarnessDialog({
     bareSession: boolean;
   }) => void;
 }) {
+  const isPhone = useIsPhone();
   const [agent, setHarness] = useState<Harness>("claude-code");
   const [prompt, setPrompt] = useState("");
   const [rememberSettings, setRememberSettings] = useState(false);
@@ -281,19 +283,26 @@ export function NewHarnessDialog({
       onClose={onClose}
       title="Start a new session"
       width={540}
+      primaryAction={{ label: "Start", onClick: submit, disabled: startDisabled }}
       footer={
-        <>
-          <EscTooltip label="Cancel">
-            <Btn variant="ghost" onClick={onClose}>
-              Cancel
-            </Btn>
-          </EscTooltip>
-          <HotkeyTooltip action="dialog.submit">
-            <Btn variant="primary" icon="play" onClick={submit} disabled={startDisabled}>
-              Start session
-            </Btn>
-          </HotkeyTooltip>
-        </>
+        isPhone ? (
+          <Btn variant="primary" icon="play" onClick={submit} disabled={startDisabled}>
+            Start session
+          </Btn>
+        ) : (
+          <>
+            <EscTooltip label="Cancel">
+              <Btn variant="ghost" onClick={onClose}>
+                Cancel
+              </Btn>
+            </EscTooltip>
+            <HotkeyTooltip action="dialog.submit">
+              <Btn variant="primary" icon="play" onClick={submit} disabled={startDisabled}>
+                Start session
+              </Btn>
+            </HotkeyTooltip>
+          </>
+        )
       }
     >
       <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
@@ -365,6 +374,7 @@ export function NewHarnessDialog({
                       gap: 12,
                       textAlign: "left",
                       padding: "12px 14px",
+                      ...(isPhone ? { minHeight: 44 } : null),
                       background: selected ? "var(--surface-2)" : "var(--surface-0)",
                       border: `1px solid ${selected ? "var(--accent)" : "var(--border)"}`,
                       borderRadius: 8,
@@ -482,11 +492,12 @@ export function NewHarnessDialog({
                           alignItems: "center",
                           gap: 12,
                           textAlign: "left",
-                          padding: "12px 108px 12px 14px",
+                          padding: isPhone ? "12px 124px 12px 14px" : "12px 108px 12px 14px",
                           background: "var(--surface-0)",
                           border: "1px solid var(--border)",
                           borderRadius: 8,
                           color: "var(--text)",
+                          ...(isPhone ? { minHeight: 44 } : null),
                         }}
                       >
                         <div
@@ -570,7 +581,8 @@ export function NewHarnessDialog({
               minHeight: 88,
               padding: "10px 12px",
               fontFamily: "var(--mono)",
-              fontSize: 12.5,
+              // >= 16px on phone so iOS does not zoom on focus.
+              fontSize: isPhone ? 16 : 12.5,
               lineHeight: 1.45,
               color: "var(--text)",
               background: "var(--surface-0)",
@@ -598,6 +610,7 @@ export function NewHarnessDialog({
             alignItems: "flex-start",
             gap: 10,
             padding: "10px 12px",
+            ...(isPhone ? { minHeight: 44 } : null),
             background: "var(--surface-0)",
             border: "1px solid var(--border)",
             borderRadius: 7,

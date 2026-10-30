@@ -1,6 +1,7 @@
 import { Icon } from "~/components/ui/Icon";
 import { formatRelativeTime } from "~/lib/format-relative-time";
 import { TASK_STATUS_LABEL } from "~/lib/task-board";
+import type { TaskCardDrag } from "~/lib/use-board-drag";
 import { FINISHED_TASK_STATUSES } from "~/shared/tasks";
 import type { TaskDto } from "~/shared/task-wire";
 
@@ -20,6 +21,9 @@ export function TaskCard({
   agentLabel,
   onOpen,
   onReply,
+  drag,
+  compact = false,
+  placeholder = false,
 }: {
   task: TaskDto;
   coreLabel: string | null;
@@ -27,6 +31,12 @@ export function TaskCard({
   onOpen: (id: string) => void;
   /** A finished Task offers Reply, which opens it on the composer. */
   onReply?: (id: string) => void;
+  /** On the board the card can be dragged to another column (#827); Space then picks it up. */
+  drag?: TaskCardDrag;
+  /** Phone and tablet (M40): the status dot sits before the time and the icon tile is tinted. */
+  compact?: boolean;
+  /** The card is being carried (M41): its slot shows as a dashed outline while the ghost follows the finger. */
+  placeholder?: boolean;
 }) {
   const finished = (FINISHED_TASK_STATUSES as readonly string[]).includes(task.status);
   const detail =
@@ -45,12 +55,23 @@ export function TaskCard({
       role="button"
       tabIndex={0}
       data-task-card={task.id}
+      data-placeholder={placeholder || undefined}
       aria-label={`Open task ${task.title}`}
-      onClick={() => onOpen(task.id)}
+      aria-roledescription={drag ? "draggable Task" : undefined}
+      aria-describedby={drag?.describedBy}
+      onClick={() => {
+        // The click a drag ends with is not a request to open the Task.
+        if (drag?.consumeClick()) return;
+        onOpen(task.id);
+      }}
+      onPointerDown={drag?.onPointerDown}
+      onBlur={drag?.onBlur}
       onKeyDown={(e) => {
         // A key on the Reply button inside is the button's, not the card's.
         if (e.target !== e.currentTarget) return;
-        if (e.key === "Enter" || e.key === " ") {
+        if (drag?.onKeyDown(e)) return;
+        // Enter opens it; so does Space, when Space is not the drag's.
+        if (e.key === "Enter" || (e.key === " " && !drag)) {
           e.preventDefault();
           onOpen(task.id);
         }
@@ -61,26 +82,51 @@ export function TaskCard({
         gap: 12,
         padding: 12,
         borderRadius: 10,
-        border: "1px solid var(--border)",
-        background: "var(--surface-card)",
-        cursor: "pointer",
+        border: placeholder ? "1.5px dashed var(--brand-accent)" : "1px solid var(--border)",
+        background: placeholder ? "transparent" : "var(--surface-card)",
+        cursor: drag?.lifted ? "grabbing" : "pointer",
         minWidth: 0,
+        // The carried card stays in its slot, faded, while its ghost follows the pointer.
+        opacity: drag?.lifted && !placeholder ? 0.4 : undefined,
+        // A long press lifts the card, so it must not select text or open the
+        // iOS callout. No touch-action: none, so a swipe across it still scrolls.
+        userSelect: drag ? "none" : undefined,
+        WebkitUserSelect: drag ? "none" : undefined,
+        WebkitTouchCallout: drag ? "none" : undefined,
       }}
     >
-      <span
-        aria-hidden
-        style={{ position: "absolute", top: 8, left: 8, width: 7, height: 7, borderRadius: "50%", background: STATUS_COLOR[task.status] }}
-      />
-      <div style={{ width: 40, height: 40, flexShrink: 0, display: "grid", placeItems: "center", borderRadius: 8, border: "1px solid var(--border)" }}>
+      {compact ? null : (
+        <span
+          aria-hidden
+          style={{ position: "absolute", top: 8, left: 8, width: 7, height: 7, borderRadius: "50%", background: STATUS_COLOR[task.status] }}
+        />
+      )}
+      <div
+        style={{
+          width: 40,
+          height: 40,
+          flexShrink: 0,
+          display: "grid",
+          placeItems: "center",
+          borderRadius: 8,
+          border: compact ? "none" : "1px solid var(--border)",
+          background: compact ? "var(--accent-subtle-bg)" : undefined,
+        }}
+      >
         <Icon name="terminal" size={16} />
       </div>
       <div style={{ minWidth: 0, flex: 1, display: "flex", flexDirection: "column", gap: 4 }}>
-        <div style={{ fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{task.title}</div>
+        <div style={compact ? { fontWeight: 600, overflowWrap: "anywhere" } : { fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          {task.title}
+        </div>
         <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--text-dim)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
           {detail}
         </div>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontFamily: "var(--mono)", fontSize: 12, color: "var(--text-dim)" }}>
-          <span>{formatRelativeTime(task.updatedAt)}</span>
+          <span style={compact ? { display: "inline-flex", alignItems: "center", gap: 8 } : undefined}>
+            {compact ? <span aria-hidden style={{ width: 7, height: 7, borderRadius: "50%", background: STATUS_COLOR[task.status] }} /> : null}
+            {formatRelativeTime(task.updatedAt)}
+          </span>
           {finished && onReply ? (
             <button
               type="button"

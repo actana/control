@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { useQueryClient } from "@tanstack/react-query";
 import { CardFrame } from "~/components/ui/CardFrame";
 import { ConfirmDialog } from "~/components/ui/ConfirmDialog";
@@ -14,12 +15,17 @@ import { sessionsCacheKey } from "~/queries";
 import { TerminalPane, type TerminalDescriptor } from "./TerminalPane";
 import type { Session } from "~/db/schema";
 import { coreScopeKey } from "~/lib/core-scope";
+import { useIsCompact } from "~/lib/breakpoint";
+import { useVisualViewport } from "~/lib/use-visual-viewport";
 
 export type OpenTerminal = TerminalDescriptor & {
   session: Session;
 };
 
 const MIN_WIDTH = 380;
+// Above the compact top bar and tab bar (z 20), below modals/sheets (9999) so
+// rename/confirm dialogs opened from the terminal still stack over it.
+const PHONE_SCREEN_Z = 9000;
 
 export function TerminalPanel({
   active,
@@ -28,6 +34,7 @@ export function TerminalPanel({
   onPtyReady,
   expanded = false,
   onToggleExpanded,
+  bell,
 }: {
   active: OpenTerminal | null;
   onClose: (sessionId: string) => Promise<void> | void;
@@ -35,7 +42,11 @@ export function TerminalPanel({
   onPtyReady: (sessionId: string, ptyId: string | null, scopeKey?: string) => void;
   expanded?: boolean;
   onToggleExpanded?: () => void;
+  /** Phone/tablet header: the notifications bell. */
+  bell?: ReactNode;
 }) {
+  const compact = useIsCompact();
+  const { height: viewportHeight, offsetTop: viewportTop } = useVisualViewport();
   const queryClient = useQueryClient();
   const userTerminals = useUserTerminals();
   const { gridFocusRequest, consumeGridFocusRequest } = useTerminals();
@@ -171,6 +182,84 @@ export function TerminalPanel({
   });
 
   if (!active) return null;
+  const dialogs = (
+    <>
+      <ConfirmDialog
+        open={confirmArchive}
+        onClose={() => setConfirmArchive(false)}
+        onConfirm={confirmArchiveActive}
+        title="Archive running session?"
+        confirmLabel="Archive"
+        cancelLabel="Keep running"
+        variant="danger"
+        icon="archive"
+        loading={archiving}
+      >
+        This session is still running. Archiving disconnects its terminal and
+        stops the in-progress agent. You can restore it later, but the current
+        run won&rsquo;t resume.
+      </ConfirmDialog>
+      <ConfirmDialog
+        open={confirmDelete}
+        onClose={() => setConfirmDelete(false)}
+        onConfirm={handleDelete}
+        title="Delete session?"
+        confirmLabel="Delete"
+        variant="danger"
+        icon="trash"
+        loading={deleting}
+      >
+        This will permanently delete the archived session and its terminal
+        history. This cannot be undone.
+      </ConfirmDialog>
+    </>
+  );
+  // Phone and tablet (#832, M21): the opened Session is a full-screen view over
+  // the workspace, sized to the visual viewport so the key row sits right above
+  // the on-screen keyboard. Portalled out of the shell so no ancestor can clip
+  // it; there is no resize handle and no expanded mode here. Back is `onHide`
+  // (deselect) — the Session itself stays open.
+  if (compact) {
+    const screen = (
+      <section
+        ref={rootRef}
+        data-session-terminal-panel
+        data-session-terminal-screen
+        data-session-id={active.sessionId}
+        className="mc-terminal-screen"
+        style={{
+          position: "fixed",
+          left: 0,
+          right: 0,
+          top: viewportTop,
+          height: viewportHeight === null ? "100dvh" : `${viewportHeight}px`,
+          zIndex: PHONE_SCREEN_Z,
+          display: "flex",
+          flexDirection: "column",
+          background: "var(--surface-1)",
+          overflow: "hidden",
+        }}
+      >
+        <TerminalPane
+          key={`${active.sessionId}:${activeScopeKey ?? ""}`}
+          session={active.session}
+          descriptor={active}
+          isLast
+          phone
+          bell={bell}
+          onHide={onHide}
+          onCloseSession={handleCloseIntent}
+          onPtyReady={(ptyId) => onPtyReady(active.sessionId, ptyId, activeScopeKey ?? undefined)}
+        />
+      </section>
+    );
+    return (
+      <>
+        {typeof document === "undefined" ? screen : createPortal(screen, document.body)}
+        {dialogs}
+      </>
+    );
+  }
   return (
     <CardFrame
       ref={rootRef}
@@ -218,34 +307,7 @@ export function TerminalPanel({
           onPtyReady={(ptyId) => onPtyReady(active.sessionId, ptyId, activeScopeKey ?? undefined)}
         />
       </div>
-      <ConfirmDialog
-        open={confirmArchive}
-        onClose={() => setConfirmArchive(false)}
-        onConfirm={confirmArchiveActive}
-        title="Archive running session?"
-        confirmLabel="Archive"
-        cancelLabel="Keep running"
-        variant="danger"
-        icon="archive"
-        loading={archiving}
-      >
-        This session is still running. Archiving disconnects its terminal and
-        stops the in-progress agent. You can restore it later, but the current
-        run won&rsquo;t resume.
-      </ConfirmDialog>
-      <ConfirmDialog
-        open={confirmDelete}
-        onClose={() => setConfirmDelete(false)}
-        onConfirm={handleDelete}
-        title="Delete session?"
-        confirmLabel="Delete"
-        variant="danger"
-        icon="trash"
-        loading={deleting}
-      >
-        This will permanently delete the archived session and its terminal
-        history. This cannot be undone.
-      </ConfirmDialog>
+      {dialogs}
     </CardFrame>
   );
 }

@@ -10,6 +10,9 @@ import { SafeMarkdown } from "~/components/views/SafeMarkdown";
 import { displayPath, formatBytes, pullRequestLabel, sessionIdOfPath, syncStateOf, taskIdOfPath } from "~/shared/shared-files";
 import type { CoreFileChange, SharedFileEntry } from "~/shared/shared-files";
 
+/** The phone's secondary actions are outlined, as in M25: a ghost button alone does not read as a button there. */
+const OUTLINED: React.CSSProperties = { border: "1px solid var(--border-strong)", color: "var(--text)" };
+
 /**
  * The selected file's details (#565): a preview, where it is, how big, when it changed, and the actions. Download asks
  * the Panel for a URL for this one file, good for five minutes, and follows it; nothing here holds a key.
@@ -20,6 +23,7 @@ export function FileDetails({
   isNew,
   coreChange,
   coreLive = false,
+  layout = "pane",
   onRename,
   onMove,
   onDelete,
@@ -31,6 +35,8 @@ export function FileDetails({
   coreChange?: CoreFileChange;
   /** Whether the Core is connected, so "in storage" can say why nothing more is known. */
   coreLive?: boolean;
+  /** "pane" beside the folder on desktop; "screen" is the phone's opened file (#833, M25): rows stacked, actions full width. */
+  layout?: "pane" | "screen";
   onRename: (entry: SharedFileEntry) => void;
   onMove: (entry: SharedFileEntry) => void;
   onDelete: (entry: SharedFileEntry) => void;
@@ -121,15 +127,26 @@ export function FileDetails({
       ]
     : [];
 
+  const screen = layout === "screen";
   return (
-    <aside aria-label="File details" style={{ display: "flex", flexDirection: "column", gap: 12, padding: 16, overflowY: "auto" }}>
-      <h2 style={{ margin: 0, fontFamily: "var(--mono)", fontSize: 18, wordBreak: "break-all" }}>
+    <aside aria-label="File details" style={{ display: "flex", flexDirection: "column", gap: 12, padding: 16, overflowY: screen ? undefined : "auto" }}>
+      <h2 style={{ margin: 0, fontFamily: "var(--mono)", fontSize: screen ? 16 : 18, wordBreak: "break-all" }}>
         {entry?.name ?? path.slice(path.lastIndexOf("/") + 1)}
-        {isNew ? <span style={{ marginLeft: 8, fontSize: 12, color: "var(--brand-accent)" }}>new</span> : null}
+        {isNew ? (
+          <span
+            style={
+              screen
+                ? { marginLeft: 8, padding: "2px 6px", borderRadius: 4, fontSize: 12, fontWeight: 400, verticalAlign: "middle", background: "var(--accent-subtle-bg)", border: "1px solid var(--accent-subtle-border)", color: "var(--accent-ink)" }
+                : { marginLeft: 8, fontSize: 12, color: "var(--brand-accent)" }
+            }
+          >
+            new
+          </span>
+        ) : null}
       </h2>
       {error ? <FormErrorBox error={error instanceof Error ? error.message : String(error)} /> : null}
       {preview ? (
-        <div style={{ background: "var(--surface-1)", border: "1px solid var(--border)", borderRadius: 8, padding: 12, maxHeight: 280, overflow: "auto" }}>
+        <div style={{ background: screen ? "var(--surface-card)" : "var(--surface-1)", border: "1px solid var(--border)", borderRadius: 8, padding: 12, maxHeight: screen ? "60dvh" : 280, overflow: "auto" }}>
           {preview.kind === "image" ? (
             <img src={sharedFileMediaUrl(coreId, path)} alt={entry?.name ?? ""} style={{ maxWidth: "100%", display: "block" }} />
           ) : preview.kind === "pdf" ? (
@@ -152,14 +169,38 @@ export function FileDetails({
           )}
         </div>
       ) : null}
-      <dl style={{ display: "grid", gridTemplateColumns: "auto 1fr", gap: "6px 14px", margin: 0, fontSize: 13 }}>
-        {rows.map(([k, v]) => (
-          <div key={k} style={{ display: "contents" }}>
-            <dt style={{ color: "var(--text-dim)", fontFamily: "var(--mono)" }}>{k}</dt>
-            <dd style={{ margin: 0, fontFamily: "var(--mono)", wordBreak: "break-all" }}>{v}</dd>
+      {screen ? (
+        rows.length > 0 ? (
+          <dl style={{ margin: 0, fontSize: 13, background: "var(--surface-1)", border: "1px solid var(--border)", borderRadius: 8 }}>
+            {rows.map(([k, v], i) => (
+              <div key={k} style={{ display: "flex", flexDirection: "column", gap: 6, padding: "12px 12px", borderTop: i > 0 ? "1px solid var(--border)" : undefined }}>
+                <dt style={{ color: "var(--text-dim)", fontFamily: "var(--mono)" }}>{k}</dt>
+                <dd style={{ margin: 0, fontFamily: "var(--mono)", wordBreak: "break-all" }}>{v}</dd>
+              </div>
+            ))}
+          </dl>
+        ) : null
+      ) : (
+        <dl style={{ display: "grid", gridTemplateColumns: "auto 1fr", gap: "6px 14px", margin: 0, fontSize: 13 }}>
+          {rows.map(([k, v]) => (
+            <div key={k} style={{ display: "contents" }}>
+              <dt style={{ color: "var(--text-dim)", fontFamily: "var(--mono)" }}>{k}</dt>
+              <dd style={{ margin: 0, fontFamily: "var(--mono)", wordBreak: "break-all" }}>{v}</dd>
+            </div>
+          ))}
+        </dl>
+      )}
+      {screen ? (
+        <div data-testid="file-actions" style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          <Btn variant="primary" icon="download" disabled={!entry} style={{ width: "100%", justifyContent: "center" }} onClick={() => void download()}>Download</Btn>
+          <Btn variant="ghost" icon="copy" style={{ ...OUTLINED, width: "100%", justifyContent: "center" }} onClick={() => void copyPath()}>Copy path</Btn>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 8 }}>
+            <Btn variant="ghost" icon="pencil" disabled={!entry} style={{ ...OUTLINED, justifyContent: "center" }} onClick={() => entry && onRename(entry)}>Rename</Btn>
+            <Btn variant="ghost" icon="arrow-up-right" disabled={!entry} style={{ ...OUTLINED, justifyContent: "center" }} onClick={() => entry && onMove(entry)}>Move</Btn>
+            <Btn variant="danger" icon="trash" disabled={!entry} style={{ justifyContent: "center" }} onClick={() => entry && onDelete(entry)}>Delete</Btn>
           </div>
-        ))}
-      </dl>
+        </div>
+      ) : (
       <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
         <Btn variant="primary" icon="download" disabled={!entry} onClick={() => void download()}>Download</Btn>
         <Btn variant="ghost" icon="copy" onClick={() => void copyPath()}>Copy path</Btn>
@@ -167,6 +208,7 @@ export function FileDetails({
         <Btn variant="ghost" icon="arrow-up-right" disabled={!entry} onClick={() => entry && onMove(entry)}>Move</Btn>
         <Btn variant="danger" icon="trash" disabled={!entry} onClick={() => entry && onDelete(entry)}>Delete</Btn>
       </div>
+      )}
     </aside>
   );
 }

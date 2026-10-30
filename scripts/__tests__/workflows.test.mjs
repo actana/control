@@ -546,6 +546,28 @@ describe("housekeeping.yml", () => {
     },
   );
 
+  // #825. Version updates are off; the base digests have a by-hand path.
+  it("has no Dependabot version-update config", () => {
+    expect(fs.existsSync(path.join(repoRoot, ".github/dependabot.yml"))).toBe(false);
+  });
+
+  it("opens one issue, labelled needs-triage, when a base digest drifts (base-pins)", () => {
+    const job = code(jobBlock(source, "base-pins"));
+    expect(job).toContain("issues: write");
+
+    const step = job.slice(job.indexOf("- name: Open an issue for a base digest behind upstream"));
+    expect(step).toContain("steps.check.outputs.digest-drift != ''");
+    expect(step).toContain('TITLE: "Base image digests behind upstream"');
+    expect(step).toContain("gh issue list --state open");
+    expect(step).toContain("exit 0");
+    expect(step).toMatch(/gh issue create --title "\$TITLE"[^\n]*\\\n\s+--label needs-triage\n/);
+    expect(step.indexOf("gh issue list")).toBeLessThan(step.indexOf("gh issue create"));
+  });
+
+  it("names no Dependabot in housekeeping.yml", () => {
+    expect(source.toLowerCase()).not.toContain("dependabot");
+  });
+
   it("audits the whole dev tree, which is the half ci.yml's --prod audit skips", () => {
     const job = jobBlock(source, "dev-audit");
     expect(job).toMatch(/pnpm audit --audit-level high/);
@@ -1566,8 +1588,15 @@ describe("sub-beta trains (ADR 0023 D46)", () => {
     // the workflows is enumerated and held to the same suffix.
     const trainPatterns = [];
     for (const file of ["ci.yml", "promote.yml", "beta-release.yml"]) {
-      for (const match of read(file).matchAll(/\[0-9\]\+\\\.\[0-9\]\+\\\.\[0-9\]\+([^\s"']*)/g)) {
-        trainPatterns.push([file, match[1]]);
+      for (const match of read(file).matchAll(/(\^feat\/)?\[0-9\]\+\\\.\[0-9\]\+\\\.\[0-9\]\+([^\s"']*)/g)) {
+        // `^feat/x.y.z-<area>` is a Feature branch (#842), not a train: `ci.yml`'s
+        // `scope` job reads it to decide a pull request is lint-only. It is held
+        // to its own one suffix rather than waved through.
+        if (match[1]) {
+          expect(["$", "-[a-z0-9]"], `${file} carries a feat/ suffix #842 does not define: ${match[2]}`).toContain(match[2]);
+          continue;
+        }
+        trainPatterns.push([file, match[2]]);
       }
     }
     expect(trainPatterns.length, "no train-name patterns found — the shape moved").toBeGreaterThan(
@@ -1904,7 +1933,8 @@ describe("the real-Postgres job (#567, ADR 0041 D19)", () => {
       expect(run, file).toContain(`src/db/__tests__/${file}.test.ts`);
     }
     expect(job).not.toMatch(/\b(?:build|typecheck|docker|pnpm test|pnpm -r)\b/);
-    expect(job).not.toContain("needs:");
+    // `scope` is the one job it waits for (#842), and that job runs no build.
+    expect(job.match(/^ {4}needs: (.+)$/m)?.[1]).toBe("scope");
   });
 
   it("fails when a real-server test was skipped, instead of passing without it", () => {
@@ -1915,8 +1945,12 @@ describe("the real-Postgres job (#567, ADR 0041 D19)", () => {
     expect(job).toContain("--reporter=json --outputFile=");
   });
 
-  it("has no job-level `if:`, so it runs on pull requests and on feat and beta pushes like the others", () => {
-    expect(job).not.toMatch(/^ {4}if:/m);
+  // #842: its only job-level `if:` is the shared heavy-job gate, so it still runs on feat and beta pushes and on
+  // every pull request but a lint-only Task pull request or a parked draft, like the other heavy jobs.
+  it("carries only the shared heavy-job gate as its job-level `if:`, like the others", () => {
+    expect(job.match(/^ {4}if: (.+)$/m)?.[1]).toBe(
+      "${{ !cancelled() && needs.scope.outputs.lint_only != 'true' && needs.scope.outputs.parked != 'true' }}",
+    );
   });
 
   // The change that makes this job required (adds its name to `docs/rulesets/*.json`) must remove or invert this
@@ -1928,5 +1962,49 @@ describe("the real-Postgres job (#567, ADR 0041 D19)", () => {
     for (const file of fs.readdirSync(dir).filter((f) => f.endsWith(".json"))) {
       expect(fs.readFileSync(path.join(dir, file), "utf8"), file).not.toContain(name);
     }
+  });
+});
+
+describe("the Panel on a phone, in the Panel e2e job (#836)", () => {
+  const ci = read("ci.yml");
+  const job = code(jobBlock(ci, "panel-e2e"));
+  const steps = job.slice(job.indexOf("\n    steps:"));
+  const phone = steps.slice(steps.indexOf("- name: E2E — the Panel on a phone (390 × 844)"));
+
+  it("runs the phone e2e as a step of panel-e2e, after the desktop one", () => {
+    expect(steps).toContain("- name: E2E — the Panel on a phone (390 × 844)");
+    expect(steps.indexOf("run: pnpm panel:e2e\n")).toBeGreaterThan(-1);
+    expect(steps.indexOf("run: pnpm panel:e2e\n")).toBeLessThan(steps.indexOf("pnpm panel:e2e:phone"));
+  });
+
+  it("writes screenshots to a runner temp dir and does not rebuild", () => {
+    expect(phone).toMatch(/run: pnpm panel:e2e:phone --screenshots "\$RUNNER_TEMP\/panel-phone"\n/);
+    expect(phone.split("\n- ")[0]).not.toMatch(/\bbuild\b/);
+  });
+
+  it("uploads the screenshots on failure only, with the upload-artifact pin used elsewhere", () => {
+    const upload = phone.slice(phone.indexOf("- name: Upload the phone screenshots"));
+    const pin = upload.match(/uses: (actions\/upload-artifact@[0-9a-f]{40})( #.*)?\n/)?.[1];
+    expect(pin, "the upload step").toBeTruthy();
+    // The same sha, with its version comment, is already used by the tarball upload.
+    expect(ci).toMatch(new RegExp(`uses: ${pin} # v\\d+\\.\\d+\\.\\d+\\n`));
+    expect(ci.split(pin).length - 1).toBeGreaterThan(1);
+    expect(phone).toMatch(/if: failure\(\)\n/);
+    expect(upload).toContain("${{ runner.temp }}/panel-phone");
+  });
+
+  // #842: the step sits in the job, so it runs where the job runs — every pull request but a lint-only Task pull
+  // request or a parked draft — and carries no `if:` of its own that would narrow that.
+  it("runs under the job's shared heavy-job gate, not its own", () => {
+    expect(job.match(/^ {4}if: (.+)$/m)?.[1]).toBe(
+      "${{ !cancelled() && needs.scope.outputs.lint_only != 'true' && needs.scope.outputs.parked != 'true' }}",
+    );
+    expect(job.match(/^ {4}needs: (.+)$/m)?.[1]).toBe("scope");
+    const runStep = phone.split("\n      - ")[0];
+    expect(runStep).not.toMatch(/\n\s+if:/);
+  });
+
+  it("leaves the job enough time for a Chrome launch and six UI legs", () => {
+    expect(Number(job.match(/^ {4}timeout-minutes: (\d+)$/m)[1])).toBeGreaterThanOrEqual(20);
   });
 });

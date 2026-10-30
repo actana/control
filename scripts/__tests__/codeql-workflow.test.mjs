@@ -42,6 +42,20 @@ describe("the CodeQL workflow (#599)", () => {
     expect(source).toContain(`- "${ciGlob[1]}"`);
   });
 
+  // #842: a Task pull request into a Feature branch `feat/x.y.z-<area>` runs lint
+  // only, so CodeQL scans every other level's pull requests and not that one.
+  it("scans pull requests into main, beta/**, feat/x.y.z and release/** only — not into a Feature branch", () => {
+    const source = codeql();
+    const pr = source.slice(source.indexOf("\n  pull_request:\n"), source.indexOf("\n  push:\n"));
+    const branches = [...pr.matchAll(/^ {6}- "?([^"\n]+)"?$/gm)].map((m) => m[1]);
+    expect(branches).toEqual(["main", "beta/**", "feat/[0-9]+.[0-9]+.[0-9]+", "release/**"]);
+    // The feat glob is ci.yml's: `+` repeats the digit class and `.` is literal,
+    // and the whole name must match, so `feat/0.5.2-ci-images` does not.
+    const glob = new RegExp(`^${branches[2].replaceAll(".", "\\.")}$`);
+    expect(glob.test("feat/0.5.2")).toBe(true);
+    expect(glob.test("feat/0.5.2-ci-images")).toBe(false);
+  });
+
   it("filters nothing out by path, so a required check cannot stay pending", () => {
     const source = codeql();
     expect(source).not.toMatch(/paths(-ignore)?:/);

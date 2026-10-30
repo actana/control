@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState, lazy, Suspense } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, lazy, Suspense, type ReactNode } from "react";
 import {
   ClientOnly,
   Outlet,
@@ -35,6 +35,11 @@ import {
 import { TerminalPanel } from "~/components/views/TerminalPanel";
 import { UserTerminalPanel } from "~/components/views/UserTerminalPanel";
 import { CoreRail } from "~/components/views/CoreRail";
+import { CoresDrawer, useCoresDrawerOpen } from "~/components/views/CoresDrawer";
+import { MobileTopBar } from "~/components/views/MobileTopBar";
+import { useIsCompact } from "~/lib/breakpoint";
+import { shellLayout, workspaceInsets } from "~/lib/shell-layout";
+import { shellPlace } from "~/lib/shell-place";
 import { routeCoreIdFromLocation, workspaceCoreIdFromPath } from "~/lib/workspace-core-id";
 import {
   HeaderActionsProvider,
@@ -90,7 +95,7 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
   head: () => ({
     meta: [
       { charSet: "utf-8" },
-      { name: "viewport", content: "width=device-width, initial-scale=1" },
+      { name: "viewport", content: "width=device-width, initial-scale=1, viewport-fit=cover" },
       { title: "Actana Control" },
     ],
   }),
@@ -182,6 +187,7 @@ const CoreTerminalPanel = memo(function CoreTerminalPanel({
   onPtyReady,
   expanded,
   onToggleExpanded,
+  bell,
 }: {
   coreId: string;
   onClose: (sessionId: string, opts?: { activateSessionId?: string | null }) => Promise<void>;
@@ -189,6 +195,8 @@ const CoreTerminalPanel = memo(function CoreTerminalPanel({
   onPtyReady: (sessionId: string, ptyId: string | null, scopeKey?: string) => void;
   expanded: boolean;
   onToggleExpanded: () => void;
+  /** Compact shell only: the notifications bell for the full-screen terminal header. */
+  bell?: ReactNode;
 }) {
   const { activeFor } = useTerminals();
   return (
@@ -199,6 +207,7 @@ const CoreTerminalPanel = memo(function CoreTerminalPanel({
       onPtyReady={onPtyReady}
       expanded={expanded}
       onToggleExpanded={onToggleExpanded}
+      bell={bell}
     />
   );
 });
@@ -215,6 +224,9 @@ function Shell() {
   const [settingsRequest, setSettingsRequest] = useState<{
     panel: SettingsPanelId | null;
   } | null>(null);
+  // Bumped when the Cores drawer re-targets an already-open Settings (phone),
+  // so SettingsPanel remounts on the requested page or the list.
+  const [settingsRequestSeq, setSettingsRequestSeq] = useState(0);
   const settingsOpen = settingsRequest !== null;
   const openSettings = (initial: SettingsPanelId | null = null) => {
     setSettingsRequest((current) => current ?? { panel: initial });
@@ -248,7 +260,9 @@ function Shell() {
   // rows last heard about before the gap. Mounted here, once, for the whole
   // shell — the stream is shared, and so is everything it feeds.
   useEventStreamReconcile();
-  const { cores } = useFleet();
+  const { cores, fleet } = useFleet();
+  const compact = useIsCompact();
+  const [coresDrawerOpen, setCoresDrawerOpen] = useCoresDrawerOpen(compact);
   // Pure actions (stable identity) + narrow flip-only subscriptions, so a
   // background session-status tick doesn't re-render the whole shell. The active
   // session itself lives in the CoreTerminalPanel leaf below.
@@ -332,7 +346,7 @@ function Shell() {
   // Grid view takes over the whole workspace: the Outlet (which renders the
   // grid below the Core header) spans full width and the single right-hand
   // terminal panel is hidden.
-  const gridActive = !!workspaceCoreId && gridView;
+  const gridActive = !!workspaceCoreId && gridView && !compact;
   const goHome = () => {
     setActivePanel(null);
     if (settingsOpen) requestCloseSettings();
@@ -355,6 +369,33 @@ function Shell() {
         : [];
 
   const closePanel = () => setActivePanel(null);
+  const layout = shellLayout(compact ? "compact" : "desktop", {
+    workspaceRoute: !!workspaceCoreId,
+    // On compact the Session terminal is a full-screen overlay, so "expanded"
+    // must never hide the workspace the Back button returns to.
+    sessionExpanded: sessionExpanded && !compact,
+    gridActive,
+  });
+  const notificationsBell = (
+    <SessionNotificationsButton
+      notifications={appNotifications}
+      onClearNotification={clearAppNotificationItem}
+      onClearNotifications={clearAllAppNotifications}
+    />
+  );
+
+  // Memoised so the CoreTerminalPanel leaf stays quiet between notifications.
+  const terminalBell = useMemo(
+    () =>
+      compact ? (
+        <SessionNotificationsButton
+          notifications={appNotifications}
+          onClearNotification={clearAppNotificationItem}
+          onClearNotifications={clearAllAppNotifications}
+        />
+      ) : null,
+    [compact, appNotifications, clearAppNotificationItem, clearAllAppNotifications],
+  );
 
   // Recompute + re-observe the workspace bounds whenever the workspace div is
   // (un)mounted.
@@ -362,18 +403,17 @@ function Shell() {
     const workspace = workspaceRef.current;
     if (!workspace) return;
 
+    const rootStyle = document.documentElement.style;
+    const names = ["top", "left", "right", "bottom"] as const;
     const updateWorkspaceBounds = () => {
-      const rect = workspace.getBoundingClientRect();
-      document.documentElement.style.setProperty("--mc-workspace-top", `${rect.top}px`);
-      document.documentElement.style.setProperty("--mc-workspace-left", `${rect.left}px`);
-      document.documentElement.style.setProperty(
-        "--mc-workspace-right",
-        `${window.innerWidth - rect.right}px`,
-      );
-      document.documentElement.style.setProperty(
-        "--mc-workspace-bottom",
-        `${window.innerHeight - rect.bottom}px`,
-      );
+      const insets = workspaceInsets(compact ? "compact" : "desktop", workspace.getBoundingClientRect(), {
+        width: window.innerWidth,
+        height: window.innerHeight,
+      });
+      for (const name of names) {
+        if (insets) rootStyle.setProperty(`--mc-workspace-${name}`, `${insets[name]}px`);
+        else rootStyle.removeProperty(`--mc-workspace-${name}`);
+      }
     };
 
     updateWorkspaceBounds();
@@ -389,7 +429,7 @@ function Shell() {
       document.documentElement.style.removeProperty("--mc-workspace-right");
       document.documentElement.style.removeProperty("--mc-workspace-bottom");
     };
-  }, []);
+  }, [compact]);
 
   useHotkey("terminal.toggle", () => togglePanel());
   // `terminal.newTab` (⌘T by default) opens the same thing the panel's one
@@ -481,74 +521,62 @@ function Shell() {
 
   return (
     <>
-      <div id="root">
+      <div id="root" data-shell={compact ? "compact" : undefined}>
         {/* Banner hidden for now — toggle also removed from Settings. */}
         {/* Above the top bar and across the full width: it is about the
          * deployment, not about whatever Core is open below it. Renders
          * nothing at all unless a newer release exists and this browser has
          * not dismissed that release. */}
         <UpdateBanner />
-        <TopBar
-          crumbs={crumbs}
-          onHome={goHome}
-          centerActions={
-            <>
-              {/* One grouped band of the Core's actions (grid), portalled in
-               * by the Core workspace route. */}
-              <HeaderActionsSlot />
-            </>
-          }
-          contentTopInset={topBarContentTopInset}
-          right={
-            <>
-              <ProviderUsageIndicator />
-              <SessionNotificationsButton
-                notifications={appNotifications}
-                onClearNotification={clearAppNotificationItem}
-                onClearNotifications={clearAllAppNotifications}
-              />
-              <Btn
-                variant="ghost"
-                icon="settings"
-                onClick={() =>
-                  settingsOpen ? requestCloseSettings() : openSettings()
-                }
-                aria-label={settingsOpen ? "Close settings" : "Open settings"}
-                title={settingsOpen ? "Close settings" : "Open settings"}
-              />
-            </>
-          }
-        />
+        {compact ? (
+          <MobileTopBar
+            place={shellPlace({
+              pathname: path,
+              routeCoreId,
+              cores,
+              settingsOpen,
+              usageOpen: activePanel === "usage",
+            })}
+            onMenu={() => setCoresDrawerOpen(true)}
+            bell={notificationsBell}
+          />
+        ) : (
+          <TopBar
+            crumbs={crumbs}
+            onHome={goHome}
+            centerActions={
+              <>
+                {/* One grouped band of the Core's actions (grid), portalled in
+                 * by the Core workspace route. */}
+                <HeaderActionsSlot />
+              </>
+            }
+            contentTopInset={topBarContentTopInset}
+            right={
+              <>
+                <ProviderUsageIndicator />
+                {notificationsBell}
+                <Btn
+                  variant="ghost"
+                  icon="settings"
+                  onClick={() =>
+                    settingsOpen ? requestCloseSettings() : openSettings()
+                  }
+                  aria-label={settingsOpen ? "Close settings" : "Open settings"}
+                  title={settingsOpen ? "Close settings" : "Open settings"}
+                />
+              </>
+            }
+          />
+        )}
         <div
           ref={workspaceRef}
-          style={{
-            flex: 1,
-            display: "flex",
-            flexDirection: "column",
-            overflow: "hidden",
-            minHeight: 0,
-          }}
+          className={compact ? "mc-shell-main" : undefined}
+          style={layout.workspace}
         >
-          <div style={{ flex: 1, display: "flex", overflow: "hidden", minHeight: 0 }}>
-            <CoreRail />
-            <div
-              style={{
-                position: "relative",
-                flex: 1,
-                // Grid view lives inside the Outlet, so the expanded-terminal
-                // flag must never hide it — both can be true at once (the
-                // expand flag persists per Core, the grid flag globally).
-                display: sessionExpanded && !gridActive ? "none" : "flex",
-                flexDirection: "column",
-                overflow: "hidden",
-                // On the Core workspace the terminal panel sits to the
-                // right; floor the left panel so dragging the terminal wider
-                // shrinks the terminal instead of wrapping the session columns.
-                // In grid view the panel is hidden, so let the Outlet go full width.
-                minWidth: workspaceCoreId && !gridActive ? 640 : 0,
-                minHeight: 0,
-              }}
-            >
+          <div style={layout.row}>
+            {compact ? null : <CoreRail />}
+            <div className={compact ? "mc-shell-outlet" : undefined} style={layout.outlet}>
               <Outlet />
             </div>
             {workspaceCoreId && !gridActive && (
@@ -559,6 +587,7 @@ function Shell() {
                 onPtyReady={setPtyId}
                 expanded={sessionExpanded}
                 onToggleExpanded={toggleTerminalExpanded}
+                bell={compact ? terminalBell : undefined}
               />
             )}
           </div>
@@ -568,16 +597,19 @@ function Shell() {
         {settingsOpen && (
           <Suspense fallback={null}>
             <SettingsPanel
+              key={settingsRequestSeq}
               initialPanel={settingsRequest?.panel ?? null}
               onBack={closeSettingsPanel}
+              bell={compact ? notificationsBell : undefined}
+              onMenu={() => setCoresDrawerOpen(true)}
             />
           </Suspense>
         )}
         <Toaster
-          position="bottom-right"
+          position={compact ? "bottom-center" : "bottom-right"}
           theme="dark"
           closeButton
-          offset={16}
+          offset={compact ? { bottom: "calc(80px + env(safe-area-inset-bottom))" } : 16}
           style={{ zIndex: Z_INDEX.toast }}
           icons={{ close: MC_TOAST_CLOSE_ICON }}
           toastOptions={{
@@ -588,6 +620,26 @@ function Shell() {
           }}
         />
       </div>
+      {compact ? (
+        <CoresDrawer
+          open={coresDrawerOpen}
+          onClose={() => setCoresDrawerOpen(false)}
+          cores={cores}
+          fleet={fleet}
+          activeCoreId={routeCoreId}
+          onOpenSettings={(panel) => {
+            if (settingsOpen) {
+              setSettingsRequest({ panel: panel ?? null });
+              setSettingsRequestSeq((n) => n + 1);
+            } else {
+              openSettings(panel ?? null);
+            }
+          }}
+          onNavigate={() => {
+            if (settingsOpen) requestCloseSettings();
+          }}
+        />
+      ) : null}
       <ConfirmDialog
         open={!!closeIntentTarget}
         onClose={() => setCloseIntentTargetId(null)}

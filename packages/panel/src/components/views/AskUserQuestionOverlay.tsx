@@ -43,6 +43,7 @@ export function AskUserQuestionOverlay({
   pending,
   desynced,
   narrow,
+  sheet = false,
   terminalOwnedFocus,
   onSubmitAnswers,
   onDismiss,
@@ -54,6 +55,12 @@ export function AskUserQuestionOverlay({
   desynced: boolean;
   /** Tiny grid cell: drop option descriptions to keep rows scannable. */
   narrow: boolean;
+  /**
+   * Phone/tablet (#832, M22): a bottom sheet over the terminal — the question,
+   * then each option as a full-width 44 px button. Tapping answers through the
+   * same path as the keyboard (`activate`). Desktop never sets it.
+   */
+  sheet?: boolean;
   /** Whether this pane's terminal held focus (safe to take it, never steal across panes). */
   terminalOwnedFocus: () => boolean;
   /**
@@ -334,6 +341,34 @@ export function AskUserQuestionOverlay({
     onClick: () => void;
   }) => {
     const highlighted = props.index === highlightIdx;
+    if (sheet) {
+      return (
+        <button
+          key={props.index}
+          type="button"
+          ref={(el) => {
+            rowRefs.current[props.index] = el;
+          }}
+          onClick={props.onClick}
+          disabled={submitting}
+          id={optionId(props.index)}
+          role="option"
+          aria-selected={multiSelect ? checked.has(props.index) : highlighted}
+          tabIndex={-1}
+          className="mc-aq-sheet-option"
+          data-highlighted={highlighted || undefined}
+          data-dim={props.dim || undefined}
+        >
+          <span>
+            {multiSelect ? (checked.has(props.index) ? "[x] " : "[ ] ") : `${props.index + 1}. `}
+            {props.label}
+          </span>
+          {props.description && (
+            <span className="mc-aq-sheet-option-desc">{props.description}</span>
+          )}
+        </button>
+      );
+    }
     return (
       <button
         key={props.index}
@@ -419,8 +454,25 @@ export function AskUserQuestionOverlay({
         hasFocusRef.current = !!next && !!containerRef.current?.contains(next);
       }}
       data-question-overlay
-      className="mc-aq-panel"
-      style={{
+      className={sheet ? "mc-aq-panel mc-aq-sheet" : "mc-aq-panel"}
+      style={
+        sheet
+          ? {
+              position: "absolute",
+              left: 0,
+              right: 0,
+              bottom: 0,
+              zIndex: 2,
+              display: "flex",
+              flexDirection: "column",
+              maxHeight: "70%",
+              background: "var(--surface-1)",
+              borderTop: "1px solid var(--border-strong)",
+              borderRadius: "16px 16px 0 0",
+              outline: "none",
+              overflow: "hidden",
+            }
+          : {
         position: "absolute",
         left: 8,
         right: 8,
@@ -437,7 +489,8 @@ export function AskUserQuestionOverlay({
         outline: "none",
         overflow: "hidden",
         animation: "fade-up 0.16s cubic-bezier(0.16, 1, 0.3, 1)",
-      }}
+          }
+      }
     >
       <div
         onClick={peeking ? () => setCollapsed(false) : undefined}
@@ -503,7 +556,7 @@ export function AskUserQuestionOverlay({
               terminal visible
             </span>
           )}
-          {!narrow && !peeking && <Kbd>esc</Kbd>}
+          {!narrow && !sheet && !peeking && <Kbd>esc</Kbd>}
           {!passive && (
             <Btn
               variant="ghost"
@@ -647,6 +700,7 @@ export function AskUserQuestionOverlay({
               )}
             </div>
           )}
+          {(!sheet || failed || textMode || multiSelect || questionIdx > 0) && (
           <div
             style={{
               display: "flex",
@@ -681,7 +735,9 @@ export function AskUserQuestionOverlay({
                     <Kbd>←</Kbd> previous
                   </button>
                 )}
-                {narrow
+                {sheet
+                  ? null
+                  : narrow
                   ? hint("select", ["↵"])
                   : (
                       <>
@@ -721,6 +777,7 @@ export function AskUserQuestionOverlay({
               )}
             </span>
           </div>
+          )}
         </>
       ))}
     </div>

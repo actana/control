@@ -317,7 +317,7 @@ jobs:
               echo "::notice title=${IMAGE} image — verify::Building nothing. Asserting the published ${TAGS} carries this commit as its revision label (ADR 0023 D19)."
               ;;
             pass)
-              echo "::notice title=${IMAGE} image — pass::Nothing to build for this pull request (draft, or a documentation-only diff). Reported green rather than skipped, because a skipped required check stays Pending forever (ADR 0023 D33)."
+              echo "::notice title=${IMAGE} image — pass::Nothing to build for this pull request (draft, a documentation-only diff, or a lint-only Task pull request into a Feature branch, #842). Reported green rather than skipped, because a skipped required check stays Pending forever (ADR 0023 D33)."
               ;;
           esac
 

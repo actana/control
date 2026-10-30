@@ -108,6 +108,7 @@ export function FilesMain({
   onOpenFolder,
   onSelect,
   onNewFolder,
+  compact = false,
 }: {
   coreId: string;
   view: FilesView;
@@ -117,6 +118,8 @@ export function FilesMain({
   onOpenFolder: (path: string) => void;
   onSelect: (path: string) => void;
   onNewFolder?: () => void;
+  /** Phone and small tablet (#833, M24): the list is two cards of tappable rows; the grid packs narrower cards. */
+  compact?: boolean;
 }) {
   const folders = entries.filter((e) => e.kind === "folder");
   const files = entries.filter((e) => e.kind === "file");
@@ -125,6 +128,10 @@ export function FilesMain({
   const label = (t: string) => (
     <h3 style={{ fontFamily: "var(--mono)", fontSize: 12, letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--text-dim)", margin: "4px 0 10px" }}>{t}</h3>
   );
+
+  if (view === "list" && compact) {
+    return <CompactList folders={folders} files={files} hasNew={hasNew} label={label} onOpenFolder={onOpenFolder} onSelect={onSelect} onNewFolder={onNewFolder} />;
+  }
 
   if (view === "list") {
     return (
@@ -155,7 +162,7 @@ export function FilesMain({
     <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
       <section aria-label="Folders">
         {label("Folders")}
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(190px, 1fr))", gap: 12 }}>
+        <div style={{ display: "grid", gridTemplateColumns: `repeat(auto-fill, minmax(${compact ? 150 : 190}px, 1fr))`, gap: 12 }}>
           {folders.map((f) => (
             <button
               key={f.path}
@@ -183,7 +190,7 @@ export function FilesMain({
       {files.length > 0 ? (
         <section aria-label="Files">
           {label("Files")}
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(190px, 1fr))", gap: 12 }}>
+          <div style={{ display: "grid", gridTemplateColumns: `repeat(auto-fill, minmax(${compact ? 150 : 190}px, 1fr))`, gap: 12 }}>
             {files.map((f) => (
               // The card is a box with a button in it, not a button around a box: a preview holds block elements and a
               // PDF viewer, which a button may not. The button is the one control (focus, name, pressed state); a click
@@ -216,9 +223,102 @@ export function FilesMain({
           </div>
         </section>
       ) : null}
-      <p style={{ color: "var(--text-dim)", fontFamily: "var(--mono)", fontSize: 12, margin: 0 }}>
-        Drop files or folders anywhere here — folders upload with everything inside them.
-      </p>
+      {compact ? null : (
+        <p style={{ color: "var(--text-dim)", fontFamily: "var(--mono)", fontSize: 12, margin: 0 }}>
+          Drop files or folders anywhere here — folders upload with everything inside them.
+        </p>
+      )}
+    </div>
+  );
+}
+
+const ROW: React.CSSProperties = {
+  display: "grid",
+  alignItems: "center",
+  gap: 12,
+  width: "100%",
+  minHeight: 52,
+  padding: "8px 12px",
+  border: 0,
+  background: "transparent",
+  color: "var(--text)",
+  textAlign: "left",
+  fontFamily: "var(--mono)",
+  fontSize: 14,
+  cursor: "pointer",
+};
+const CARD: React.CSSProperties = { display: "flex", flexDirection: "column", background: "var(--surface-1)", border: "1px solid var(--border)", borderRadius: 8, overflow: "hidden" };
+const divider = (i: number): React.CSSProperties => (i > 0 ? { borderTop: "1px solid var(--border)" } : {});
+
+/** M24's list: Folders and Files as two cards of full-width rows, each a tap target of at least 52 px ending in a chevron. */
+function CompactList({
+  folders,
+  files,
+  hasNew,
+  label,
+  onOpenFolder,
+  onSelect,
+  onNewFolder,
+}: {
+  folders: readonly SharedFileEntry[];
+  files: readonly SharedFileEntry[];
+  hasNew: (e: SharedFileEntry) => boolean;
+  label: (t: string) => React.ReactNode;
+  onOpenFolder: (path: string) => void;
+  onSelect: (path: string) => void;
+  onNewFolder?: () => void;
+}) {
+  const dim: React.CSSProperties = { color: "var(--text-dim)", fontSize: 13 };
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
+      {folders.length > 0 || onNewFolder ? (
+        <section aria-label="Folders">
+          {label("Folders")}
+          <div style={CARD}>
+            {folders.map((f, i) => (
+              <button key={f.path} type="button" onClick={() => onOpenFolder(f.path)} style={{ ...ROW, ...divider(i), gridTemplateColumns: "18px minmax(0, 1fr) auto 14px" }}>
+                <Icon name="folder" size={16} />
+                <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{f.name}</span>
+                <span style={dim}>
+                  {f.itemCount !== undefined ? `${f.itemCount} ${f.itemCount === 1 ? "item" : "items"}` : ""}
+                  {hasNew(f) ? <span style={NEW_BADGE}> · new</span> : null}
+                </span>
+                <Icon name="chevron-right" size={14} />
+              </button>
+            ))}
+            {onNewFolder ? (
+              <button type="button" onClick={onNewFolder} style={{ ...ROW, ...divider(folders.length), gridTemplateColumns: "18px minmax(0, 1fr)", color: "var(--accent-ink)" }}>
+                <Icon name="plus" size={16} />
+                <span>New folder</span>
+              </button>
+            ) : null}
+          </div>
+        </section>
+      ) : null}
+      {files.length > 0 ? (
+        <section aria-label="Files">
+          {label("Files")}
+          <div style={CARD}>
+            {files.map((f, i) => (
+              <button key={f.path} type="button" onClick={() => onSelect(f.path)} style={{ ...ROW, ...divider(i), gridTemplateColumns: "40px minmax(0, 1fr) 14px", minHeight: 64 }}>
+                <span aria-hidden style={{ width: 40, height: 40, display: "flex", alignItems: "center", justifyContent: "center", borderRadius: 6, background: "var(--surface-card)", border: "1px solid var(--border)" }}>
+                  <Icon name="file" size={16} />
+                </span>
+                <span style={{ display: "flex", flexDirection: "column", gap: 4, minWidth: 0 }}>
+                  <strong style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontWeight: 600 }}>{f.name}</strong>
+                  <span style={dim}>
+                    {formatBytes(f.size ?? 0)}
+                    {f.modifiedAt ? ` · ${formatRelativeTime(f.modifiedAt)}` : ""}
+                    {hasNew(f) ? <span style={NEW_BADGE}> · new</span> : null}
+                  </span>
+                </span>
+                <Icon name="chevron-right" size={14} />
+              </button>
+            ))}
+          </div>
+        </section>
+      ) : null}
+      {folders.length === 0 && files.length === 0 ? <div style={{ color: "var(--text-dim)", padding: 16 }}>This folder is empty.</div> : null}
     </div>
   );
 }

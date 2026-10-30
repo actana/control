@@ -1,4 +1,6 @@
 import { Fragment, useCallback, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
+import { useRouter } from "@tanstack/react-router";
 import { Btn } from "~/components/ui/Btn";
 import { CardFrame } from "~/components/ui/CardFrame";
 import { EmptyState } from "~/components/ui/EmptyState";
@@ -6,8 +8,20 @@ import { Icon } from "~/components/ui/Icon";
 import { HotkeyTooltip } from "~/components/ui/Tooltip";
 import { useResizablePanel } from "~/lib/use-resizable-panel";
 import { useUserTerminals } from "~/lib/user-terminal-store";
+import { ConfirmDialog } from "~/components/ui/ConfirmDialog";
+import { useIsCompact } from "~/lib/breakpoint";
+import { useFleet } from "~/lib/fleet-context";
+import { useVisualViewport } from "~/lib/use-visual-viewport";
+import { requestSessionOpen } from "~/lib/session-notification-store";
+import { terminalSurfaceCache, type PaneTerminalSurface } from "~/lib/terminal-surface-cache";
 import { UserTerminalPane } from "./UserTerminalPane";
+import { MobileTerminalHeader, phoneTerminalInput } from "./TerminalMobileChrome";
+import { TerminalKeyRow, useStickyCtrl } from "./TerminalKeyRow";
+import { TerminalSwitcherSheet } from "./TerminalSwitcherSheet";
 
+// Above the compact top bar and tab bar (z 20), below the switcher sheet (9500)
+// and modals (9999).
+const PHONE_SCREEN_Z = 9000;
 const MIN_HEIGHT = 160;
 const MIN_PANE_WIDTH = 200;
 const PANE_WEIGHTS_STORAGE_KEY = "mc:userTerminalPaneWeights";
@@ -70,6 +84,7 @@ export function UserTerminalPanel() {
     setPtyId,
   } = useUserTerminals();
 
+  const compact = useIsCompact();
   // The panel shows a Core's terminals; `active` is true whenever a Core is in scope.
   const active = !!coreId;
 
@@ -176,6 +191,11 @@ export function UserTerminalPanel() {
   );
 
   if (!active) return null;
+
+  // Phone and tablet (#832, M28/M29): the open panel is a full-screen view of
+  // one shell at a time; closed, it is not on screen at all (the Sessions
+  // toolbar and the Core header toggle it).
+  if (compact) return panelOpen ? <UserTerminalPhoneScreen /> : null;
 
   // The collapsible body is always mounted so the panel can slide open AND
   // closed; `panelOpen` just drives the grid-rows transition (see the
@@ -526,5 +546,224 @@ function PaneSplitter({
         }}
       />
     </div>
+  );
+}
+
+const PHONE_STATUS_COLOR: Record<string, string> = {
+  connected: "var(--status-running, #2db47d)",
+  connecting: "var(--warning, #f5a524)",
+};
+
+/**
+ * The phone user terminal screen (M28): Back · Core status + name, a scrolling
+ * tab strip (one tab per shell, "+", and the switcher button), the active shell
+ * filling the rest and the key row docked at the bottom. Portalled out of the
+ * shell and sized to the visual viewport, like the Session terminal.
+ */
+function UserTerminalPhoneScreen() {
+  const {
+    coreId,
+    setPanelOpen,
+    sessions,
+    focusedId,
+    focusTerminal,
+    createVmShellTerminal,
+    killTerminal,
+    renameTerminal,
+    setPtyId,
+  } = useUserTerminals();
+  const router = useRouter();
+  const { cores, fleet } = useFleet();
+  const { height: viewportHeight, offsetTop: viewportTop } = useVisualViewport();
+  const stickyCtrl = useStickyCtrl();
+  const [switcherOpen, setSwitcherOpen] = useState(false);
+  const [closing, setClosing] = useState<{ id: string; name: string } | null>(null);
+
+  const core = cores.find((c) => c.id === coreId);
+  const active = sessions.find((s) => s.terminal.id === focusedId) ?? sessions[0] ?? null;
+  const activeId = active?.terminal.id ?? null;
+  const coreRows = fleet.rows.filter((r) => r.coreId === coreId);
+
+  const stripRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    // Keep the active tab in view when the strip scrolls.
+    const tab = stripRef.current?.querySelector<HTMLElement>('[data-active="true"]');
+    tab?.scrollIntoView?.({ block: "nearest", inline: "nearest" });
+  }, [activeId]);
+
+  const newTerminal = () => {
+    if (coreId) void createVmShellTerminal(coreId);
+  };
+  const consumeCtrl = stickyCtrl.consume;
+  const transformInput = useCallback(
+    (data: string) => phoneTerminalInput(data, consumeCtrl),
+    [consumeCtrl],
+  );
+  const openSession = (sessionId: string) => {
+    if (!coreId) return;
+    setSwitcherOpen(false);
+    setPanelOpen(false);
+    requestSessionOpen(coreId, sessionId);
+    void router.navigate({ to: "/cores/$coreId/workspace", params: { coreId } });
+  };
+
+  const screen = (
+    <section
+      data-user-terminal-panel
+      data-user-terminal-screen
+      className="mc-terminal-screen mc-userterm-m-screen"
+      style={{
+        position: "fixed",
+        left: 0,
+        right: 0,
+        top: viewportTop,
+        height: viewportHeight === null ? "100dvh" : `${viewportHeight}px`,
+        zIndex: PHONE_SCREEN_Z,
+        display: "flex",
+        flexDirection: "column",
+        background: "var(--surface-1)",
+        overflow: "hidden",
+      }}
+    >
+      <MobileTerminalHeader
+        title={core?.label ?? "Terminals"}
+        statusColor={PHONE_STATUS_COLOR[core?.dial.state ?? ""] ?? "var(--text-faint)"}
+        onBack={() => setPanelOpen(false)}
+      />
+      <div className="mc-userterm-m-strip-row">
+        <div ref={stripRef} className="mc-userterm-m-strip" role="tablist" aria-label="Terminals">
+          {sessions.map((s) => {
+            const isActive = s.terminal.id === activeId;
+            return (
+              <div key={s.terminal.id} className="mc-userterm-m-tab" data-active={isActive}>
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={isActive}
+                  className="mc-userterm-m-tab-main"
+                  onClick={() => focusTerminal(s.terminal.id)}
+                >
+                  <Icon name="terminal" size={14} />
+                  <span className="mc-userterm-m-tab-name">{s.terminal.name}</span>
+                </button>
+                <button
+                  type="button"
+                  className="mc-userterm-m-tab-close"
+                  aria-label={`Close ${s.terminal.name}`}
+                  onClick={() => setClosing({ id: s.terminal.id, name: s.terminal.name })}
+                >
+                  <Icon name="x" size={14} />
+                </button>
+              </div>
+            );
+          })}
+          <button
+            type="button"
+            className="mc-userterm-m-new"
+            aria-label="New Terminal"
+            disabled={!coreId}
+            onClick={newTerminal}
+          >
+            <Icon name="plus" size={16} />
+          </button>
+        </div>
+        <button
+          type="button"
+          className="mc-userterm-m-switch"
+          aria-label="All terminals"
+          aria-haspopup="dialog"
+          onClick={() => setSwitcherOpen(true)}
+        >
+          <Icon name="grid" size={16} />
+        </button>
+      </div>
+      <div className="mc-userterm-m-body">
+        {active ? (
+          <UserTerminalPane
+            key={active.terminal.id}
+            terminal={active.terminal}
+            ptyId={active.ptyId}
+            coreId={active.coreId}
+            focused
+            phone
+            transformInput={transformInput}
+            onFocus={() => focusTerminal(active.terminal.id)}
+            onPtyReady={(ptyId) => setPtyId(active.terminal.id, ptyId, active.coreId)}
+            onPtyExit={() => setPtyId(active.terminal.id, null)}
+            onHide={() => setPanelOpen(false)}
+            onDelete={() => void killTerminal(active.terminal.id)}
+            onRename={(name) => void renameTerminal(active.terminal.id, name)}
+            isLast
+          />
+        ) : (
+          <EmptyState
+            icon="terminal"
+            title="No terminals yet"
+            subtitle="Open a shell on this Core's machine."
+          />
+        )}
+      </div>
+      {active && (
+        <div className="mc-term-m-keydock">
+          <TerminalKeyRow
+            ctrl={stickyCtrl}
+            onSend={(data) =>
+              (terminalSurfaceCache.get(active.terminal.id) as PaneTerminalSurface | null)?.controls?.writeToPty?.(data)
+            }
+            applicationCursor={() =>
+              (terminalSurfaceCache.get(active.terminal.id) as PaneTerminalSurface | null)?.controls
+                ?.applicationCursorKeys?.() ?? false
+            }
+            onPaste={(text) =>
+              (terminalSurfaceCache.get(active.terminal.id) as PaneTerminalSurface | null)?.controls?.paste?.(text)
+            }
+          />
+        </div>
+      )}
+      <ConfirmDialog
+        open={closing !== null}
+        onClose={() => setClosing(null)}
+        onConfirm={() => {
+          if (closing) void killTerminal(closing.id);
+          setClosing(null);
+        }}
+        title={`Close terminal "${closing?.name ?? ""}"?`}
+        confirmLabel="Close"
+        variant="danger"
+        icon="trash"
+      >
+        This will kill the running process and remove the terminal. This can&apos;t be undone.
+      </ConfirmDialog>
+    </section>
+  );
+  return (
+    <>
+      {typeof document === "undefined" ? screen : createPortal(screen, document.body)}
+      <TerminalSwitcherSheet
+        open={switcherOpen}
+        onClose={() => setSwitcherOpen(false)}
+        shells={sessions.map((s) => ({ id: s.terminal.id, name: s.terminal.name }))}
+        activeId={activeId}
+        onSelectShell={(id) => {
+          focusTerminal(id);
+          setSwitcherOpen(false);
+        }}
+        onCloseShell={(id) => {
+          const shell = sessions.find((s) => s.terminal.id === id);
+          if (!shell) return;
+          // The confirmation is a modal of its own; the sheet's focus trap
+          // must not fight it.
+          setSwitcherOpen(false);
+          setClosing({ id, name: shell.terminal.name });
+        }}
+        onNewShell={() => {
+          newTerminal();
+          setSwitcherOpen(false);
+        }}
+        newDisabled={!coreId}
+        sessions={coreRows}
+        onOpenSession={openSession}
+      />
+    </>
   );
 }
