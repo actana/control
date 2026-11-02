@@ -25,13 +25,13 @@
     "@actana/cli": "0.6.0-next.10",
     "@actana/sdk": "0.6.0-next.4",
     "selfsigned": "^5.5.0",
-    "undici": "8.10.2",
-    "ws": "8.21.0"
+    "undici": "8.12.3",
+    "ws": "8.22.0"
   },
   "devDependencies": {
     "@types/node": "25.8.0",
-    "@types/ws": "8.18.1",
-    "esbuild": "0.28.1",
+    "@types/ws": "8.18.2",
+    "esbuild": "0.28.2",
     "typescript": "6.0.3",
     "vitest": "4.1.6"
   }
