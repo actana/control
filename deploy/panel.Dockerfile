@@ -72,7 +72,7 @@ RUN mkdir -p /staged/data
 # it from a tag name.
 #
 # gcr.io/distroless/nodejs24:latest == this digest on 2026-10-09.
-FROM gcr.io/distroless/nodejs24@sha256:96df910f65fdd8a21d00d14d4cc046adcfcf3ced2d5e96be4b39ebde9f4866c6
+FROM gcr.io/distroless/nodejs24@sha256:03980f6fd2a3245fa06e371c36fd33528ebbc676a1d0f84e3e21d95cd291b807
 
 # `image.source` is what links the image back to its repository for
 # `docker image inspect` and any label-reading registry UI. An ARG rather than
