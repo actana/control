@@ -1,5 +1,5 @@
 {
-  "id": "8ca50324-6cb0-4dc3-bab4-23276593821f",
+  "id": "2cb6e751-5e78-41e5-8549-882063f33b6b",
   "prevId": "6f453bec-e74d-4c53-b35f-2390cf128146",
   "version": "7",
   "dialect": "postgresql",
@@ -1734,13 +1734,13 @@
               "expression": "updated_at",
               "isExpression": false,
               "asc": false,
-              "nulls": "last"
+              "nulls": "first"
             },
             {
               "expression": "id",
               "isExpression": false,
               "asc": false,
-              "nulls": "last"
+              "nulls": "first"
             }
           ],
           "isUnique": false,

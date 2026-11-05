@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, getTableColumns, inArray, lt, or, sql, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, getTableColumns, inArray, sql, type SQL } from "drizzle-orm";
 import { ownedBy } from "~/db/owner";
 import { panelDb } from "~/db/panel-db-handle";
 import { taskComments, taskStatusHistory, tasks } from "~/db/pg-schema";
@@ -48,13 +48,19 @@ function encodeTaskCursor(row: { updatedAt: number; id: string }): string {
   return Buffer.from(`${row.updatedAt}:${row.id}`, "utf8").toString("base64url");
 }
 
+/** What a Task id is made of (`newId`: prefix, base36 time, hex); anything else (a NUL, say) is not one Postgres should see. */
+const TASK_ID_PATTERN = /^[A-Za-z0-9_-]+$/;
+
 function decodeTaskCursor(cursor: string): { updatedAt: number; id: string } {
   const text = Buffer.from(cursor, "base64url").toString("utf8");
   const colon = text.indexOf(":");
   const updatedAt = Number(text.slice(0, colon));
   const id = text.slice(colon + 1);
-  if (colon < 1 || !Number.isSafeInteger(updatedAt) || id === "") throw new InvalidTaskCursorError();
-  return { updatedAt, id };
+  if (colon < 1 || !Number.isSafeInteger(updatedAt) || !TASK_ID_PATTERN.test(id)) throw new InvalidTaskCursorError();
+  const decoded = { updatedAt, id };
+  // Only a cursor this repository issued: it must encode back to the very same text.
+  if (encodeTaskCursor(decoded) !== cursor) throw new InvalidTaskCursorError();
+  return decoded;
 }
 
 /** A cursor this repository did not issue. */
@@ -85,9 +91,8 @@ export async function findTasksPage(ownerId: number, query: TasksPageQuery): Pro
   ];
   if (query.cursor !== undefined) {
     const after = decodeTaskCursor(query.cursor);
-    conditions.push(
-      or(lt(tasks.updatedAt, after.updatedAt), and(eq(tasks.updatedAt, after.updatedAt), lt(tasks.id, after.id))),
-    );
+    // A row comparison, so the paging index (updated_at DESC, id DESC) gives the order.
+    conditions.push(sql`(${tasks.updatedAt}, ${tasks.id}) < (${after.updatedAt}, ${after.id})`);
   }
   const rows = await panelDb()
     .select(listColumns)

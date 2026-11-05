@@ -136,6 +136,11 @@ describe("findTasksPage", () => {
   it("refuses a cursor it did not issue", async () => {
     await expect(findTasksPage(A, { limit: 2, cursor: "not-a-cursor" })).rejects.toThrow(/cursor/);
   });
+
+  it("refuses a crafted cursor whose id Postgres would reject (NUL) as an invalid cursor, not a database error", async () => {
+    const crafted = Buffer.from("5:\0").toString("base64url");
+    await expect(findTasksPage(A, { limit: 2, cursor: crafted })).rejects.toThrow(/cursor/);
+  });
 });
 
 describe("countTasks", () => {

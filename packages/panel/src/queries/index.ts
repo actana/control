@@ -1,5 +1,5 @@
-import { useEffect } from "react";
-import { hashKey, infiniteQueryOptions, queryOptions, useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useEffect, useRef } from "react";
+import { hashKey, useIsMutating, infiniteQueryOptions, keepPreviousData, queryOptions, useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "~/lib/api";
 import { retainCoreScope, watchCoreScope } from "~/lib/visible-core-scope";
 import { setHookToken } from "~/lib/hook-token";
@@ -9,7 +9,8 @@ import { readCachedSettings } from "~/lib/shell-query-cache";
 import type { CoreLinkSessionRow } from "@actana/shared/sdk-link-frames";
 import type { Session } from "~/db/schema";
 import type { Harness } from "@actana/shared/domain";
-import { TASKS_PAGE_DEFAULT_LIMIT, type TaskColumn } from "~/shared/tasks";
+import { statusesCount } from "~/lib/task-board";
+import { TASKS_PAGE_DEFAULT_LIMIT, TASK_COLUMN_STATUSES, type TaskColumn } from "~/shared/tasks";
 import type { TasksPageDto } from "~/shared/task-wire";
 
 export const queryKeys = {
@@ -380,6 +381,8 @@ export const tasksColumnQueryOptions = (column: TaskColumn, coreId: string | nul
     getNextPageParam: (last: TasksPageDto) => last.nextCursor,
     refetchInterval: (query) => ((query.state.data?.pages.length ?? 0) > 1 ? false : TASKS_POLL_MS),
     refetchOnMount: "always",
+    // Switching the Core filter changes the key: keep the old rows on screen until the new ones arrive.
+    placeholderData: keepPreviousData,
   });
 
 export function useTasksColumn(column: TaskColumn, coreId: string | null) {
@@ -388,11 +391,33 @@ export function useTasksColumn(column: TaskColumn, coreId: string | null) {
   const head = useQuery({
     queryKey: queryKeys.tasksHead(column, coreId),
     queryFn: () => firstTasksPage(column, coreId),
-    enabled: (loaded?.length ?? 0) > 1,
+    enabled: (loaded?.length ?? 0) > 1 && !result.isPlaceholderData,
     refetchInterval: TASKS_POLL_MS,
     refetchOnMount: "always",
   });
   const { refetch } = result;
+  // A Task leaving (or deleted from) a later page does not change the first page, so the head poll never sees it;
+  // the column's count does. One reload per change of the count, and only for a column with more than one page.
+  const counts = useTaskCounts().data;
+  const count = counts ? statusesCount(counts, TASK_COLUMN_STATUSES[column], coreId) : null;
+  const moving = useIsMutating() > 0;
+  const seen = useRef<{ coreId: string | null; count: number | null }>({ coreId, count });
+  const pagesLoaded = loaded?.length ?? 0;
+  const placeholder = result.isPlaceholderData;
+  useEffect(() => {
+    // Another Core is another query: its count is not a change to the one before, and its first fetch is already on its way.
+    if (seen.current.coreId !== coreId) {
+      seen.current = { coreId, count };
+      return;
+    }
+    // Old rows shown for a new key, or a move in flight (its optimistic count is not the server's): look again afterwards.
+    if (placeholder || moving) return;
+    const before = seen.current.count;
+    seen.current = { coreId, count };
+    if (before === null || count === null || before === count || pagesLoaded < 2) return;
+    // Join a reload already running (a move's own refresh) instead of restarting it.
+    void refetch({ cancelRefetch: false });
+  }, [count, coreId, placeholder, moving]);
   useEffect(() => {
     if (!head.data || !loaded || loaded.length < 2) return;
     if (JSON.stringify(head.data) !== JSON.stringify(loaded[0])) void refetch();

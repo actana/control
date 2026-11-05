@@ -110,7 +110,8 @@ describe("Tasks board", () => {
     fireEvent.click(within(chips).getByRole("button", { name: /build-box-01/ }));
     // The chip asks the server for that Core's Tasks, so the board follows its answer.
     await screen.findByText("Bump SeaweedFS");
-    expect(screen.queryByText("Rotate keys")).toBeNull();
+    // The old rows stay on screen until each column's new answer arrives.
+    await waitFor(() => expect(screen.queryByText("Rotate keys")).toBeNull());
     expect(screen.getByText("Review PR")).toBeTruthy();
     fireEvent.click(within(chips).getByRole("button", { name: /All Cores/ }));
     expect(await screen.findByText("Rotate keys")).toBeTruthy();

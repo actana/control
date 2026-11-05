@@ -160,6 +160,57 @@ describe("Tasks board pages", () => {
   });
 });
 
+describe("a Task leaving a column it was paged into", () => {
+  it("is not left on screen in two columns when it moves out of page 2", async () => {
+    tasks = Array.from({ length: 12 }, (_, i) => task(`s${String(i + 1).padStart(2, "0")}`, `Slot ${i + 1}`, "assigned", "c1", 100 - i));
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+    mount();
+    await screen.findByText("Slot 1");
+    fireEvent.click(within(column("assigned")).getByRole("button", { name: "Load more" }));
+    await screen.findByText("Slot 12");
+    expect(cardsIn("assigned")).toBe(12);
+    // The dispatcher claims the oldest, which sits on page 2.
+    tasks = tasks.map((t) => (t.id === "s12" ? { ...t, status: "in_progress", updatedAt: 500 } : t));
+    await vi.advanceTimersByTimeAsync(5_100);
+    await waitFor(() => expect(headerCount("assigned")).toContain("11"));
+    expect(document.querySelectorAll('[data-task-card="s12"]')).toHaveLength(1);
+    expect(columnOfCard("s12")).toBe("in_progress");
+    expect(cardsIn("assigned")).toBe(11);
+  });
+});
+
+describe("switching the Core chip", () => {
+  it("keeps the board mounted while the new Core's Tasks are on their way", async () => {
+    mount();
+    await screen.findByText("Finished 1");
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const impl = api.listTasksPage.getMockImplementation()!;
+    api.listTasksPage.mockImplementation(async (q: PageQuery) => {
+      if (q.coreId === "c2") await gate;
+      return impl(q);
+    });
+    fireEvent.click(within(screen.getByRole("group", { name: "Filter by Core" })).getByRole("button", { name: /build-box-01/ }));
+    await waitFor(() => expect(pageCalls().some((q) => q.coreId === "c2")).toBe(true));
+    expect(document.querySelectorAll("[data-board-column]")).toHaveLength(4);
+    release();
+    await waitFor(() => expect(cardsIn("finished")).toBe(6));
+    api.listTasksPage.mockImplementation(impl);
+  });
+
+  it("asks once for the new Core's column when the old Core had two pages loaded", async () => {
+    mount();
+    await screen.findByText("Finished 1");
+    fireEvent.click(within(column("finished")).getByRole("button", { name: "Load more" }));
+    await screen.findByText("Finished 12");
+    api.listTasksPage.mockClear();
+    fireEvent.click(within(screen.getByRole("group", { name: "Filter by Core" })).getByRole("button", { name: /build-box-01/ }));
+    await waitFor(() => expect(cardsIn("finished")).toBe(6));
+    await waitFor(() => expect(headerCount("finished")).toContain("6"));
+    expect(pageCalls().filter((q) => q.coreId === "c2" && q.column === "finished")).toHaveLength(1);
+  });
+});
+
 /** A mouse drag from a card to a column, ending in the click a browser sends after it. */
 function drag(id: string, to: Col) {
   const from = columnOfCard(id) as Col;
@@ -188,6 +239,31 @@ describe("dragging across pages", () => {
     expect(columnOfCard("f12")).toBe("assigned");
     expect(cardsIn("finished")).toBe(11);
     expect(card("f11")).not.toBeNull();
+  });
+
+  it("does not reload a two-page column for the count an optimistic move changed, before the server answers", async () => {
+    mount();
+    await screen.findByText("Finished 1");
+    fireEvent.click(within(column("finished")).getByRole("button", { name: "Load more" }));
+    await screen.findByText("Finished 12");
+    await waitFor(() => expect(headerCount("finished")).toContain("12"));
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    api.setTaskStatus.mockImplementationOnce(async (id: string, status: TaskDto["status"]) => {
+      await gate;
+      tasks = tasks.map((t) => (t.id === id ? { ...t, status } : t));
+      return {};
+    });
+    api.listTasksPage.mockClear();
+    drag("f12", "assigned");
+    await waitFor(() => expect(headerCount("finished")).toContain("11"));
+    await new Promise((r) => setTimeout(r, 50));
+    expect(pageCalls().filter((q) => q.column === "finished")).toHaveLength(0);
+    expect(columnOfCard("f12")).toBe("assigned");
+    release();
+    await waitFor(() => expect(api.setTaskStatus).toHaveBeenCalled());
+    await waitFor(() => expect(cardsIn("finished")).toBe(11));
+    expect(columnOfCard("f12")).toBe("assigned");
   });
 
   it("shows the card in the target column before the server answers, and puts it back if the server says no", async () => {

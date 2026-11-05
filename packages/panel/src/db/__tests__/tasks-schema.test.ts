@@ -155,6 +155,33 @@ describe("the Tasks board paging index (#896)", () => {
       "select indexdef from pg_indexes where tablename = 'tasks' and indexname = 'tasks_owner_status_updated_idx'",
     );
     expect(rows).toHaveLength(1);
-    expect(String(rows[0]!.indexdef)).toMatch(/\(owner_id, status, updated_at DESC NULLS LAST, id DESC NULLS LAST\)/);
+    expect(String(rows[0]!.indexdef)).toMatch(/\(owner_id, status, updated_at DESC, id DESC\)/);
+  });
+
+  it("serves the page order without a Sort node, first page and keyset page", async () => {
+    await db.pool.query(
+      "insert into tasks (id, owner_id, title, status, created_at, updated_at) select 'ix-' || g, 1, 't', 'assigned', 1, g from generate_series(1, 300) g",
+    );
+    await db.pool.query("analyze tasks");
+    const client = await db.pool.connect();
+    try {
+      await client.query("set enable_sort = off");
+      await client.query("set enable_bitmapscan = off");
+      await client.query("set enable_seqscan = off");
+      const plan = async (where: string) =>
+        JSON.stringify(
+          (
+            await client.query(
+              `explain (format json) select id from tasks where owner_id = 1 and status = 'assigned' ${where} order by updated_at desc, id desc limit 11`,
+            )
+          ).rows,
+        );
+      for (const p of [await plan(""), await plan("and (updated_at, id) < (150, 'ix-150')")]) {
+        expect(p).toContain("tasks_owner_status_updated_idx");
+        expect(p).not.toContain('"Node Type":"Sort"');
+      }
+    } finally {
+      client.release();
+    }
   });
 });

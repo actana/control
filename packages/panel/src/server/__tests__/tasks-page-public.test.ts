@@ -100,6 +100,7 @@ describe("GET /api/v1/tasks", () => {
     expect((await rest(fullKey, "?limit=101")).status).toBe(400);
     expect((await rest(fullKey, "?limit=0")).status).toBe(400);
     expect((await rest(fullKey, "?limit=2&cursor=zzz")).status).toBe(400);
+    expect((await rest(fullKey, "?limit=2&cursor=NToA")).status).toBe(400);
     expect((await rest(fullKey, "?cursor=abc")).status).toBe(400);
   });
 });
