@@ -232,21 +232,27 @@
       "get": {
         "operationId": "listTasks",
         "summary": "List Tasks",
-        "description": "The owner's Tasks. A restricted key lists only Tasks on Cores in its scope.",
+        "description": "The owner's Tasks. A restricted key lists only Tasks on Cores in its scope. Without `limit`, every Task is returned with its full row, as before. With `limit`, one page is returned, newest update first, and the rows leave out `description` (read it with GET /api/v1/tasks/{taskId}); `nextCursor` is the `cursor` for the next page and is null on the last.",
+        "parameters": [
+          { "name": "limit", "in": "query", "required": false, "schema": { "type": "integer", "minimum": 1, "maximum": 100 }, "description": "Page size, 1-100. Omit to list every Task with its description." },
+          { "name": "cursor", "in": "query", "required": false, "schema": { "type": "string" }, "description": "The `nextCursor` of the previous page. Opaque. Needs `limit`." }
+        ],
         "responses": {
           "200": {
-            "description": "Tasks",
+            "description": "Tasks. `nextCursor` is present only when `limit` was given.",
             "content": {
               "application/json": {
                 "schema": {
                   "type": "object",
                   "properties": {
-                    "tasks": { "type": "array", "items": { "$ref": "#/components/schemas/Task" } }
+                    "tasks": { "type": "array", "items": { "$ref": "#/components/schemas/Task" }, "description": "Full rows without `limit`; with `limit`, rows without `description`." },
+                    "nextCursor": { "type": ["string", "null"], "description": "Only with `limit`. Pass it as `cursor` for the next page; null when there is none." }
                   }
                 }
               }
             }
           },
+          "400": { "description": "`limit` is not a whole number from 1 to 100, `cursor` was not issued by this API, or `cursor` was given without `limit`" },
           "401": { "description": "Unauthorized" }
         }
       },

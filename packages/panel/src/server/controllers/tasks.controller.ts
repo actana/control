@@ -2,7 +2,8 @@ import { z } from "zod";
 import { json, jsonError, noContent, parseJsonBody, rethrowUnlessDomain } from "./_helpers";
 import { NotFoundError, ValidationError } from "../errors";
 import { HTTP_BAD_REQUEST, HTTP_CREATED, HTTP_PAYLOAD_TOO_LARGE } from "~/shared/http-status";
-import type { AgentDto, TaskCommentDto, TaskDto } from "~/shared/task-wire";
+import type { AgentDto, TaskCommentDto, TaskDto, TaskListDto, TasksPageDto } from "~/shared/task-wire";
+import { TASK_COLUMNS, TASK_COLUMN_STATUSES, TASKS_PAGE_DEFAULT_LIMIT, type TaskColumn } from "~/shared/tasks";
 import {
   addTaskComment,
   changeTaskStatus,
@@ -10,11 +11,14 @@ import {
   createTask,
   deleteTask,
   getTask,
+  getTaskCounts,
   listTaskComments,
   listTasks,
+  listTasksPage,
   updateTask,
   type Task,
   type TaskComment,
+  type TaskListRow,
 } from "../services/tasks";
 import { PayloadTooLargeError, sharedFiles } from "../services/shared-files";
 import {
@@ -102,8 +106,53 @@ async function authorName(): Promise<string> {
   return (await getOperator())?.name?.trim() || "operator";
 }
 
-export async function list(ownerId: number): Promise<Response> {
-  return json({ tasks: (await listTasks(ownerId)).map(taskDto) });
+/** A Task row without its description, as a paged list carries it (#896). */
+export function taskListDto(t: TaskListRow): TaskListDto {
+  const { description: _description, ...rest } = taskDto({ ...t, description: "" });
+  return rest;
+}
+
+/** `limit` and `cursor` from a query string, or the 400 for a limit that is not a whole number. */
+export function pageParams(params: URLSearchParams): { limit: number; cursor?: string } | Response {
+  const rawLimit = params.get("limit");
+  const limit = rawLimit === null || rawLimit === "" ? TASKS_PAGE_DEFAULT_LIMIT : Number(rawLimit);
+  if (!Number.isInteger(limit)) return jsonError(HTTP_BAD_REQUEST, "limit must be a whole number");
+  const cursor = params.get("cursor");
+  return { limit, ...(cursor ? { cursor } : {}) };
+}
+
+/**
+ * The Tasks. With no query parameters, all of them with full rows, as it always was. With `column`
+ * (draft, assigned, in_progress or finished), `coreId`, `limit` or `cursor` (#896), one page
+ * without descriptions: `{ tasks, nextCursor }`.
+ */
+export async function list(ownerId: number, params: URLSearchParams = new URLSearchParams()): Promise<Response> {
+  if (!["column", "coreId", "limit", "cursor"].some((k) => params.has(k))) {
+    return json({ tasks: (await listTasks(ownerId)).map(taskDto) });
+  }
+  const column = params.get("column");
+  if (column !== null && !(TASK_COLUMNS as readonly string[]).includes(column)) {
+    return jsonError(HTTP_BAD_REQUEST, `column must be one of ${TASK_COLUMNS.join(", ")}`);
+  }
+  const paging = pageParams(params);
+  if (paging instanceof Response) return paging;
+  const coreId = params.get("coreId");
+  try {
+    const page = await listTasksPage(ownerId, {
+      ...(column ? { statuses: TASK_COLUMN_STATUSES[column as TaskColumn] } : {}),
+      ...(coreId ? { coreId } : {}),
+      ...paging,
+    });
+    const body: TasksPageDto = { tasks: page.tasks.map(taskListDto), nextCursor: page.nextCursor };
+    return json(body);
+  } catch (e) {
+    return rethrowUnlessDomain(e);
+  }
+}
+
+/** Task counts by status and by Core, for the board's column headers and Core chips (#896). */
+export async function counts(ownerId: number, params: URLSearchParams = new URLSearchParams()): Promise<Response> {
+  return json(await getTaskCounts(ownerId, params.get("coreId") || undefined));
 }
 
 /** The multipart request's own framing (boundaries, field headers) on top of the files it carries. */
