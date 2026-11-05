@@ -23,6 +23,7 @@ import type { Harness } from "@actana/shared/domain";
 import type { Session } from "~/db/schema";
 import type { CoreLinkSessionRow } from "@actana/shared/sdk-link-frames";
 import { coreScopeKey } from "./core-scope";
+import { capGridTiles, gridTileCap, isSettledSessionStatus } from "./grid-layout-prefs";
 import { getDefaultModelForHarness } from "./default-model-store";
 import { peekPendingSessionModel } from "./session-model-overrides";
 
@@ -48,6 +49,10 @@ export type OpenTerminal = {
    *  against the server. Dead/archived sessions are dropped instead of respawning,
    *  and live ones get a fresh snapshot. */
   pendingValidation?: boolean;
+  /** Opened by "enter grid view" rather than by the operator picking it, so a
+   *  reload drops it again once it has finished instead of reopening a tile for
+   *  a Session nobody asked to see (#895). */
+  openedByGrid?: boolean;
   /** The Core that owns this session. Its PTY and its session row both live on
    *  that Core, so spawn/write/resize/kill/replay and revalidation all ride the
    *  panel link to it. A Session belongs to a Core and nothing narrower (ADR 0041 D1),
@@ -81,7 +86,7 @@ type Ctx = {
    *  the default view onto the session that was on screen while floating. */
   setActiveSession: (coreId: string, sessionId: string) => void;
   /** Materialize a session entry from a persisted sessionId after reload, if not already present. */
-  rehydrate: (coreId: string, session: Session) => void;
+  rehydrate: (coreId: string, session: Session, opts?: { openedByGrid?: boolean }) => void;
   /** Permanently close one session and kill its PTY. */
   close: (sessionId: string, opts?: { activateSessionId?: string | null }) => Promise<void>;
   /** Swap a provisional session id (optimistic create) for the persisted session. */
@@ -286,10 +291,19 @@ const OPEN_SESSIONS_KEY = "mc.terminalOpenSessions";
  *  updates while a grid boots), so open-session persistence is debounced. */
 const SESSION_PERSIST_DEBOUNCE_MS = 300;
 
-function loadGridView(): boolean {
+export function loadGridView(): boolean {
   if (typeof window === "undefined") return false;
   try {
-    return window.localStorage.getItem(GRID_VIEW_KEY) === "1";
+    if (window.localStorage.getItem(GRID_VIEW_KEY) !== "1") return false;
+    // A grid that would have to open more Sessions than its cap is not
+    // restored: reopening it would resume that many harnesses at once (#895).
+    // Stored off too, so the smaller set re-persisted below does not bring it
+    // back on the next reload.
+    if (readRestoredSessions().overCap) {
+      window.localStorage.setItem(GRID_VIEW_KEY, "0");
+      return false;
+    }
+    return true;
   } catch {
     return false;
   }
@@ -369,7 +383,7 @@ function loadActiveByCore(): Record<string, string | null> {
  *  renders every open session at once. */
 type PersistedSession = Pick<
   OpenTerminal,
-  "sessionId" | "startCommand" | "dangerouslySkipPermissions" | "session" | "coreId"
+  "sessionId" | "startCommand" | "dangerouslySkipPermissions" | "session" | "coreId" | "openedByGrid"
 >;
 
 function serializeSessions(sessions: OpenTerminal[]): PersistedSession[] {
@@ -383,10 +397,34 @@ function serializeSessions(sessions: OpenTerminal[]): PersistedSession[] {
       dangerouslySkipPermissions: s.dangerouslySkipPermissions,
       session: s.session,
       coreId: s.coreId,
+      ...(s.openedByGrid ? { openedByGrid: true } : {}),
     }));
 }
 
-function loadPersistedSessions(): OpenTerminal[] {
+/** The persisted open sessions as they come back after a reload: finished
+ *  Sessions the grid opened are dropped, and each Core keeps at most the grid's
+ *  tile cap (`overCap` says a Core had more than that to open). */
+function readRestoredSessions(): { sessions: OpenTerminal[]; overCap: boolean } {
+  const all = readPersistedSessions().filter(
+    (s) => !(s.openedByGrid && isSettledSessionStatus(s.session.status)),
+  );
+  const cap = gridTileCap();
+  const byCore = new Map<string, OpenTerminal[]>();
+  for (const s of all) byCore.set(s.coreId, [...(byCore.get(s.coreId) ?? []), s]);
+  let overCap = false;
+  const keep = new Set<OpenTerminal>();
+  for (const group of byCore.values()) {
+    if (group.length > cap) overCap = true;
+    for (const s of capGridTiles(group, cap, (t) => t.session)) keep.add(s);
+  }
+  return { sessions: all.filter((s) => keep.has(s)), overCap };
+}
+
+export function loadPersistedSessions(): OpenTerminal[] {
+  return readRestoredSessions().sessions;
+}
+
+function readPersistedSessions(): OpenTerminal[] {
   if (typeof window === "undefined") return [];
   try {
     const raw = window.localStorage.getItem(OPEN_SESSIONS_KEY);
@@ -418,6 +456,7 @@ function loadPersistedSessions(): OpenTerminal[] {
         dangerouslySkipPermissions: entry.dangerouslySkipPermissions,
         session: entry.session,
         coreId: entry.coreId,
+        ...(entry.openedByGrid ? { openedByGrid: true } : {}),
         // Gate the pane's PTY spawn until the snapshot is revalidated against
         // the server (see the validation effect in TerminalProvider).
         pendingValidation: true,
@@ -662,7 +701,7 @@ export function TerminalProvider({ children }: { children: ReactNode }) {
     [],
   );
 
-  const rehydrate = useCallback((coreId: string, session: Session) => {
+  const rehydrate = useCallback((coreId: string, session: Session, opts?: { openedByGrid?: boolean }) => {
     const scopeKey = coreScopeKey(coreId);
     setSessions((prev) => {
       if (prev.some((p) => p.sessionId === session.id && coreScopeKey(p.coreId) === scopeKey)) {
@@ -677,6 +716,7 @@ export function TerminalProvider({ children }: { children: ReactNode }) {
           dangerouslySkipPermissions: harnessLaunchesWithSkipPermissions(session.agent),
           session,
           coreId,
+          ...(opts?.openedByGrid ? { openedByGrid: true } : {}),
         },
       ];
     });

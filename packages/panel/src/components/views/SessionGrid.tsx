@@ -21,11 +21,17 @@ import { Tooltip } from "~/components/ui/Tooltip";
 import { archiveOpenSession } from "~/lib/archive-session";
 import { HARNESS_META, GRID_EXPAND_TOGGLE_EVENT, STATUS_META } from "~/lib/design-meta";
 import {
+  GRID_HIDDEN_EVENT,
   GRID_PREFS_EVENT,
+  GRID_SHOW_SESSION_EVENT,
   GRID_SORT_EVENT,
   announceGridQuickPickerOpen,
+  capGridTiles,
   loadGridColumnLimit,
+  pickedGridSessionIds,
+  useGridTileCap,
   type GridPrefsEventDetail,
+  type GridShowSessionEventDetail,
   type GridSortEventDetail,
 } from "~/lib/grid-layout-prefs";
 import { matchBinding } from "~/lib/keybindings/match";
@@ -146,7 +152,7 @@ function hiddenStorageKey(scopeKey: string): string {
   return `${GRID_HIDDEN_PREFIX}:${scopeKey}`;
 }
 
-function loadHiddenSessionIds(scopeKey: string): Set<string> {
+export function loadHiddenSessionIds(scopeKey: string): Set<string> {
   if (typeof window === "undefined") return new Set();
   try {
     const raw = window.localStorage.getItem(hiddenStorageKey(scopeKey));
@@ -170,6 +176,10 @@ function saveHiddenSessionIds(scopeKey: string, ids: ReadonlySet<string>): void 
   } catch {
     /* quota or disabled */
   }
+  // The header's Sessions picker mirrors this set; tell it to re-read.
+  window.dispatchEvent(
+    new CustomEvent<GridPrefsEventDetail>(GRID_HIDDEN_EVENT, { detail: { scopeKey } }),
+  );
 }
 
 // The expanded (spotlighted) cell is stored per scope alongside the layout, so
@@ -903,10 +913,25 @@ export function SessionGrid({
     [isFiltered, pinnedSessionIds],
   );
   // The sessions the grid actually lays out and renders under the current tab.
-  const renderSessions = useMemo(
+  const gridTileCap = useGridTileCap();
+  const [pickedVersion, setPickedVersion] = useState(0);
+  const filteredSessions = useMemo(
     () => (isFiltered ? scopedSessions.filter(matchesFilter) : scopedSessions),
     [isFiltered, scopedSessions, matchesFilter],
   );
+  // Every tile is a terminal, so the grid draws at most the tile cap (#895);
+  // the rest stay open in the store and are counted by the "+N more" chip.
+  const renderSessions = useMemo(() => {
+    const picked = pickedGridSessionIds(scopeKey);
+    return capGridTiles(
+      filteredSessions,
+      gridTileCap,
+      (s) => s.session,
+      (s) => picked.has(s.sessionId),
+    );
+    // pickedVersion: the picker changed the hand-picked set (module state).
+  }, [filteredSessions, gridTileCap, scopeKey, pickedVersion]);
+  const overflowCount = filteredSessions.length - renderSessions.length;
 
   // The route hands us a fresh pin-toggle fn each render; wrap it behind a ref so
   // each GridCell gets a stable callback and the per-cell memo still holds.
@@ -1094,6 +1119,23 @@ export function SessionGrid({
       return next;
     });
   };
+  // The header's Sessions picker shows or hides one tile (the Session stays
+  // open either way, like Cmd/Ctrl+L).
+  const onGridShowSessionRef = useRef<(detail: GridShowSessionEventDetail) => void>(() => {});
+  onGridShowSessionRef.current = ({ scopeKey: scope, sessionId, show }) => {
+    if (scope !== scopeKey) return;
+    setPickedVersion((v) => v + 1);
+    setHiddenSessionIds((prev) => {
+      if (show ? !prev.has(sessionId) : prev.has(sessionId)) return prev;
+      const next = new Set(prev);
+      if (show) next.delete(sessionId);
+      else next.add(sessionId);
+      return next;
+    });
+    if (!show) {
+      setExpandedSessionId((prev) => (prev === sessionId ? null : prev));
+    }
+  };
   const onGridSortRef = useRef<(scope: string, firstHarness: string) => void>(() => {});
   onGridSortRef.current = (scope: string, firstHarness: string) => {
     if (scope !== scopeKey) return;
@@ -1118,11 +1160,17 @@ export function SessionGrid({
       const detail = (e as CustomEvent<GridSortEventDetail>).detail;
       onGridSortRef.current(detail.scopeKey, detail.firstHarness);
     };
+    const onShowSession = (e: Event) => {
+      const detail = (e as CustomEvent<GridShowSessionEventDetail>).detail;
+      onGridShowSessionRef.current(detail);
+    };
     window.addEventListener(GRID_PREFS_EVENT, onPrefs);
     window.addEventListener(GRID_SORT_EVENT, onSort);
+    window.addEventListener(GRID_SHOW_SESSION_EVENT, onShowSession);
     return () => {
       window.removeEventListener(GRID_PREFS_EVENT, onPrefs);
       window.removeEventListener(GRID_SORT_EVENT, onSort);
+      window.removeEventListener(GRID_SHOW_SESSION_EVENT, onShowSession);
     };
   }, []);
 
@@ -2521,6 +2569,26 @@ export function SessionGrid({
           </>
         )}
       </div>
+      {overflowCount > 0 && (
+        <div
+          data-grid-overflow-chip
+          role="status"
+          title={`${overflowCount} more open session${overflowCount === 1 ? " is" : "s are"} not shown. Choose which ones to show from the grid layout menu.`}
+          style={{
+            flexShrink: 0,
+            alignSelf: "flex-start",
+            marginTop: 6,
+            padding: "2px 8px",
+            borderRadius: 999,
+            border: "1px solid var(--border)",
+            color: "var(--text-dim)",
+            fontFamily: "var(--mono)",
+            fontSize: 11,
+          }}
+        >
+          +{overflowCount} more
+        </div>
+      )}
       {hiddenBar}
       <GridLayoutQuickPicker
         open={quickPickerOpen}
