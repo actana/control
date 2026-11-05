@@ -31,6 +31,7 @@ import {
 import { readCoreRemember, writeCoreRemember } from "~/lib/core-remember";
 import { useCores } from "~/lib/use-fleet";
 import { useIsCompact } from "~/lib/breakpoint";
+import { gridTileCap, pickDefaultGridSessions } from "~/lib/grid-layout-prefs";
 import { useHideableMenu } from "~/lib/hideable-elements";
 import { DEFAULT_HEADER_BUTTON_VISIBILITY } from "~/shared/header-buttons";
 import { NewHarnessButton } from "~/components/views/NewHarnessButton";
@@ -322,9 +323,10 @@ function CoreWorkspacePage() {
   const syncSession = terminals.syncSession;
   const rehydrateTerminal = terminals.rehydrate;
   const toggleTerminalSession = terminals.toggle;
-  // "Grid view — show all sessions": entering the grid materializes every
-  // active session for the visible scope, not just the already-open
-  // ones. TerminalPane's spawn queue staggers the agent launches.
+  // "Grid view — show all sessions": entering the grid materializes the
+  // highest-ranked active sessions for the visible scope (at most the grid's
+  // tile cap), not just the already-open ones. TerminalPane's spawn queue
+  // staggers the agent launches.
   const sessionsRef = useRef(sessions);
   sessionsRef.current = sessions;
   const enterGridView = useCallback(() => {
@@ -332,9 +334,11 @@ function CoreWorkspacePage() {
     // it as a side panel rather than fighting for the slot, so switching views
     // shouldn't dismiss the review.
     terminals.setGridView(true);
-    for (const session of sessionsRef.current) {
-      if (session.archived) continue;
-      rehydrateTerminal(coreId, session);
+    // Open at most the cap, never the whole Core: running or needing-input
+    // Sessions first, then pinned, then the most recently updated. Finished
+    // ones are not picked here (the grid's picker can still show one).
+    for (const session of pickDefaultGridSessions(sessionsRef.current, gridTileCap())) {
+      rehydrateTerminal(coreId, session, { openedByGrid: true });
     }
     // Focus the session that was active in normal view so entering the grid keeps
     // the same session current instead of landing on an arbitrary cell.
@@ -868,8 +872,10 @@ function CoreWorkspacePage() {
   // this must flip in/out of the grid even while typing in a session.
   useHotkey(
     "session.gridView",
-    () => {
+    (e) => {
       if (anyBlockingDialogOpen) return;
+      // Typing in a terminal: the chord is not ours there (#895).
+      if (e.target instanceof Element && e.target.closest(".xterm")) return;
       toggleGridViewShowingAll();
     },
     { capture: true },
@@ -1482,7 +1488,7 @@ function CoreWorkspacePage() {
            * layout, so it hides in the read-through Pinned tab — mirrors how the
            * grid disables reorder/resize there. */}
           {showGrid && !showPinned && (
-            <GridLayoutButton scopeKey={selectedScopeKey} />
+            <GridLayoutButton scopeKey={selectedScopeKey} coreId={coreId} sessionRows={sessions} />
           )}
           <div
             style={{

@@ -101,6 +101,7 @@ function stubMatchMedia(width: number) {
 
 // Two spies: the key row must go through `sendKeys` (the pane's turn-tracked
 // write), the question sheet through the raw `writeToPty`.
+const fit = vi.fn();
 const writeToPty = vi.fn();
 const sendKeys = vi.fn();
 const paste = vi.fn();
@@ -112,20 +113,20 @@ function seedSurface() {
     ptyId: "pty1",
     destroyed: false,
     controls: { focus: noop, clear: noop, setFontSize: noop, writeToPty, sendKeys, paste },
-    fit: noop,
+    fit,
     teardown: noop,
   } as never);
 }
 
 const onHide = vi.fn();
 const onClose = vi.fn();
-function renderPanel() {
+function renderPanel(opts: { empty?: boolean } = {}) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={client}>
       <KeybindingsProvider>
       <TerminalPanel
-        active={{
+        active={opts.empty ? null : {
           sessionId: SESSION_ID,
           ptyId: "pty1",
           startCommand: "claude",
@@ -190,6 +191,37 @@ describe("phone: Session terminal", () => {
     fireEvent.click(screen.getByRole("button", { name: "Up" }));
     expect(sendKeys.mock.calls.map((c) => c[0])).toEqual(["\x1b", "\x1b[A"]);
     expect(writeToPty).not.toHaveBeenCalled();
+  });
+
+  // #897: the page must not scroll under the terminal screen.
+  it("locks the page scroll while the screen is mounted and restores it after", () => {
+    document.body.style.overflow = "auto";
+    const view = renderPanel();
+    expect(document.body.style.overflow).toBe("hidden");
+    view.unmount();
+    expect(document.body.style.overflow).toBe("auto");
+    document.body.style.overflow = "";
+  });
+
+  it("does not lock the page scroll when no terminal screen is shown", () => {
+    document.body.style.overflow = "auto";
+    renderPanel({ empty: true });
+    expect(document.body.style.overflow).toBe("auto");
+    document.body.style.overflow = "";
+  });
+
+  it("a visual-viewport change that leaves the size alone does not refit or resize the PTY", () => {
+    const vv = Object.assign(new EventTarget(), { height: 700, offsetTop: 0 });
+    vi.stubGlobal("visualViewport", vv);
+    Object.defineProperty(window, "visualViewport", { configurable: true, value: vv });
+    renderPanel();
+    const fitsAtMount = fit.mock.calls.length;
+    act(() => {
+      vv.dispatchEvent(new Event("resize"));
+      vv.dispatchEvent(new Event("scroll"));
+    });
+    expect(fit.mock.calls.length).toBe(fitsAtMount);
+    delete (window as { visualViewport?: unknown }).visualViewport;
   });
 
   it("the key row's Paste goes through the terminal's paste, not raw PTY bytes", async () => {

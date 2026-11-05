@@ -81,6 +81,7 @@ function inContainer(home: string = workspace.dir) {
 }
 
 beforeEach(() => {
+  vi.stubEnv("ACTANA_MAX_LIVE_HARNESS_PTYS", "1000");
   workspace.lookups = [];
   workspace.checks = {};
   workspace.binary = "/daemon/looked/up/claude";

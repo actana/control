@@ -12,6 +12,7 @@ import { ConfirmDialog } from "~/components/ui/ConfirmDialog";
 import { useIsCompact } from "~/lib/breakpoint";
 import { useFleet } from "~/lib/fleet-context";
 import { useVisualViewport } from "~/lib/use-visual-viewport";
+import { useBodyScrollLock } from "~/lib/use-body-scroll-lock";
 import { requestSessionOpen } from "~/lib/session-notification-store";
 import { terminalSurfaceCache, type PaneTerminalSurface } from "~/lib/terminal-surface-cache";
 import { UserTerminalPane } from "./UserTerminalPane";
@@ -575,6 +576,7 @@ function UserTerminalPhoneScreen() {
   const router = useRouter();
   const { cores, fleet } = useFleet();
   const { height: viewportHeight, offsetTop: viewportTop } = useVisualViewport();
+  useBodyScrollLock();
   const stickyCtrl = useStickyCtrl();
   const [switcherOpen, setSwitcherOpen] = useState(false);
   const [closing, setClosing] = useState<{ id: string; name: string } | null>(null);

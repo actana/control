@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, getTableColumns, inArray, sql, type SQL } from "drizzle-orm";
 import { ownedBy } from "~/db/owner";
 import { panelDb } from "~/db/panel-db-handle";
 import { taskComments, taskStatusHistory, tasks } from "~/db/pg-schema";
@@ -25,6 +25,106 @@ export async function findTasks(ownerId: number, statuses?: TaskStatus[]): Promi
     .from(tasks)
     .where(ownedBy(tasks, ownerId, statuses?.length ? inArray(tasks.status, statuses) : undefined))
     .orderBy(desc(tasks.createdAt), asc(tasks.id));
+}
+
+/** A Task as the board lists it: every column but `description`, which can be large. */
+export type TaskListRow = Omit<TaskRow, "description">;
+
+export type TasksPageQuery = {
+  /** Only these statuses; none given = every status. */
+  statuses?: readonly TaskStatus[];
+  coreId?: string;
+  /** A restricted API key's Cores: only Tasks on one of these (a Task with no Core is left out). */
+  scopeCoreIds?: readonly string[];
+  limit: number;
+  /** The `nextCursor` of the previous page. */
+  cursor?: string;
+};
+
+export type TasksPage = { tasks: TaskListRow[]; nextCursor: string | null };
+
+/** The opaque cursor: base64url of `updatedAt:id`, the sort key of the last row of a page. */
+function encodeTaskCursor(row: { updatedAt: number; id: string }): string {
+  return Buffer.from(`${row.updatedAt}:${row.id}`, "utf8").toString("base64url");
+}
+
+/** What a Task id is made of (`newId`: prefix, base36 time, hex); anything else (a NUL, say) is not one Postgres should see. */
+const TASK_ID_PATTERN = /^[A-Za-z0-9_-]+$/;
+
+function decodeTaskCursor(cursor: string): { updatedAt: number; id: string } {
+  const text = Buffer.from(cursor, "base64url").toString("utf8");
+  const colon = text.indexOf(":");
+  const updatedAt = Number(text.slice(0, colon));
+  const id = text.slice(colon + 1);
+  if (colon < 1 || !Number.isSafeInteger(updatedAt) || !TASK_ID_PATTERN.test(id)) throw new InvalidTaskCursorError();
+  const decoded = { updatedAt, id };
+  // Only a cursor this repository issued: it must encode back to the very same text.
+  if (encodeTaskCursor(decoded) !== cursor) throw new InvalidTaskCursorError();
+  return decoded;
+}
+
+/** A cursor this repository did not issue. */
+export class InvalidTaskCursorError extends Error {
+  constructor() {
+    super("invalid cursor");
+    this.name = "InvalidTaskCursorError";
+  }
+}
+
+/**
+ * One page of the owner's Tasks, newest update first (`updated_at DESC, id DESC`,
+ * so rows with an equal time still have one order), without `description`.
+ * Keyset paging: the cursor is the last row's sort key, so a Task changed
+ * between two pages never makes the next page skip or repeat a row. It reads
+ * `limit + 1` rows to know whether another page exists.
+ */
+export async function findTasksPage(ownerId: number, query: TasksPageQuery): Promise<TasksPage> {
+  const { description: _description, ...listColumns } = getTableColumns(tasks);
+  const conditions: (SQL | undefined)[] = [
+    query.statuses?.length ? inArray(tasks.status, [...query.statuses]) : undefined,
+    query.coreId === undefined ? undefined : eq(tasks.coreId, query.coreId),
+    query.scopeCoreIds === undefined
+      ? undefined
+      : query.scopeCoreIds.length
+        ? inArray(tasks.coreId, [...query.scopeCoreIds])
+        : sql`false`,
+  ];
+  if (query.cursor !== undefined) {
+    const after = decodeTaskCursor(query.cursor);
+    // A row comparison, so the paging index (updated_at DESC, id DESC) gives the order.
+    conditions.push(sql`(${tasks.updatedAt}, ${tasks.id}) < (${after.updatedAt}, ${after.id})`);
+  }
+  const rows = await panelDb()
+    .select(listColumns)
+    .from(tasks)
+    .where(ownedBy(tasks, ownerId, and(...conditions)))
+    .orderBy(desc(tasks.updatedAt), desc(tasks.id))
+    .limit(query.limit + 1);
+  const page = rows.slice(0, query.limit);
+  const last = page[page.length - 1];
+  return { tasks: page, nextCursor: rows.length > query.limit && last ? encodeTaskCursor(last) : null };
+}
+
+export type TaskCounts = {
+  byStatus: Partial<Record<TaskStatus, number>>;
+  /** Per Core id; Tasks with no Core are only in `byStatus`. */
+  byCore: Record<string, Partial<Record<TaskStatus, number>>>;
+};
+
+/** The owner's Task counts by status and by Core (a status with none is absent), optionally for one Core. */
+export async function countTasks(ownerId: number, coreId?: string): Promise<TaskCounts> {
+  const rows = await panelDb()
+    .select({ status: tasks.status, coreId: tasks.coreId, n: sql<number>`count(*)::int` })
+    .from(tasks)
+    .where(ownedBy(tasks, ownerId, coreId === undefined ? undefined : eq(tasks.coreId, coreId)))
+    .groupBy(tasks.status, tasks.coreId);
+  const counts: TaskCounts = { byStatus: {}, byCore: {} };
+  for (const { status, coreId: core, n } of rows) {
+    const s = status as TaskStatus;
+    counts.byStatus[s] = (counts.byStatus[s] ?? 0) + n;
+    if (core !== null) (counts.byCore[core] ??= {})[s] = n;
+  }
+  return counts;
 }
 
 export async function findTaskById(ownerId: number, id: string): Promise<TaskRow | null> {

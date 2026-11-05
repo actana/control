@@ -19,7 +19,7 @@ import type { SessionHeaderButtonVisibility } from "~/shared/session-header-butt
 import type { HeaderButtonVisibility } from "~/shared/header-buttons";
 import { pruneStoredSessionFinishNotifications } from "~/lib/session-notification-store";
 import { HTTP_NO_CONTENT } from "~/shared/http-status";
-import type { TaskStatus } from "~/shared/tasks";
+import type { TaskColumn, TaskStatus } from "~/shared/tasks";
 import { attachmentsForm, type TaskAttachment } from "~/lib/task-attachments";
 import type {
   SharedDownloadUrl,
@@ -37,6 +37,8 @@ import type {
   UpdateTaskRequest,
   StopTaskRequest,
   StopTaskResponse,
+  TaskCountsDto,
+  TasksPageDto,
 } from "~/shared/task-wire";
 import type { ApiKeyView, WebhookDeliveryView, WebhookView } from "~/shared/api-integrations-wire";
 import type { ApiKeyPermission } from "~/shared/api-key-permissions";
@@ -195,8 +197,16 @@ export const api = {
     req<{ path: string }>(sharedFilesUrl(coreId, "move"), post({ path, to })),
   deleteSharedFile: (coreId: string, path: string) =>
     req<{ ok: true }>(sharedFilesUrl(coreId, "delete"), post({ path })),
-  /** Every Task the owner has, across Cores. */
-  listTasks: () => req<{ tasks: TaskDto[] }>("/api/tasks"),
+  /** One page of a board column (#896), newest update first; `cursor` is the previous page's `nextCursor`, opaque. */
+  listTasksPage: ({ column, coreId, limit, cursor }: { column: TaskColumn; coreId?: string | null; limit?: number; cursor?: string | null }) => {
+    const params = new URLSearchParams({ column });
+    if (coreId) params.set("coreId", coreId);
+    if (limit !== undefined) params.set("limit", String(limit));
+    if (cursor) params.set("cursor", cursor);
+    return req<TasksPageDto>(`/api/tasks?${params}`);
+  },
+  /** How many Tasks there are per status, and per Core and status, whatever the board has loaded. */
+  getTaskCounts: () => req<TaskCountsDto>("/api/tasks/counts"),
   getTask: (id: string) =>
     req<{ task: TaskDto; comments: TaskCommentDto[] }>(`/api/tasks/${encodeURIComponent(id)}`),
   /** With `attachments` the request is multipart and the server writes the files before it assigns the Task. */

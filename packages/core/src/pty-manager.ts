@@ -245,6 +245,32 @@ function reportPromptDelivered(
 }
 
 const ptys = new Map<string, Pty>();
+
+/** Default ceiling on live harness PTYs per Core (issue 895). */
+const DEFAULT_MAX_LIVE_HARNESS_PTYS = 8;
+
+/** Harness spawns that passed the cap but have not yet registered a PTY. */
+let startingHarnessPtys = 0;
+
+/**
+ * The cap on live harness PTYs: `ACTANA_MAX_LIVE_HARNESS_PTYS` when it is a
+ * positive integer, else the default. Read per spawn.
+ */
+function maxLiveHarnessPtys(): number {
+  const raw = process.env.ACTANA_MAX_LIVE_HARNESS_PTYS?.trim();
+  if (raw && /^\d+$/.test(raw)) {
+    const n = Number(raw);
+    if (Number.isSafeInteger(n) && n > 0) return n;
+  }
+  return DEFAULT_MAX_LIVE_HARNESS_PTYS;
+}
+
+function liveHarnessPtyCount(): number {
+  let n = 0;
+  for (const p of ptys.values()) if (p.agent !== undefined && !p.shell && !p.shellSession) n++;
+  return n;
+}
+
 const RING_LIMIT_BYTES = 1_000_000;
 
 /**
@@ -708,6 +734,27 @@ export class PtyCore {
     // and is almost always an explicit gesture by one operator, while a grid of
     // agents arrives all at once and each one is a full Node process.
     const throttled = opts.agent !== undefined && !opts.shell && !opts.shellSession;
+    // Total cap on live harnesses (issue 895): a grid of ~200 Sessions resumed
+    // at once ran the machine out of memory. Checked before queueing, and
+    // spawns still starting count, so a burst cannot all pass at once. The
+    // error text reaches the Panel's "failed to start pty" message.
+    if (throttled) {
+      const cap = maxLiveHarnessPtys();
+      if (liveHarnessPtyCount() + startingHarnessPtys >= cap) {
+        log.warn("pty.spawn.refused", { code: "harness-cap", cap, sessionId: safeLogValue(opts.sessionId) });
+        throw new Error(
+          `pty:spawn refused: this Core already runs ${cap} live harness PTYs (the limit). ` +
+            `Close or finish a Session first, or raise ACTANA_MAX_LIVE_HARNESS_PTYS on the Core.`,
+        );
+      }
+      startingHarnessPtys++;
+    }
+    let startCounted = throttled;
+    const endStart = () => {
+      if (!startCounted) return;
+      startCounted = false;
+      startingHarnessPtys--;
+    };
     const releaseSlot = throttled ? await acquireSpawnSlot() : null;
     let holdReleased = false;
     const releaseSpawnHold = () => {
@@ -720,6 +767,8 @@ export class PtyCore {
     } catch (err) {
       releaseSpawnHold();
       throw err;
+    } finally {
+      endStart();
     }
   }
 

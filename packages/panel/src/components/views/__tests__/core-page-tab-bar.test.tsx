@@ -50,7 +50,7 @@ vi.mock("~/queries", async (importOriginal) => ({
   useSettings: () => ({ data: undefined }),
 }));
 vi.mock("~/lib/api", () => ({
-  api: { getKeybindings: async () => ({ bindings: {} }), listTasks: async () => ({ tasks: [] }) },
+  api: { getKeybindings: async () => ({ bindings: {} }), listTasksPage: async () => ({ tasks: [], nextCursor: null }), getTaskCounts: async () => ({ byStatus: {}, byCore: {} }) },
 }));
 
 const { RouterProvider, createRootRoute, createRoute, createRouter, createMemoryHistory } =

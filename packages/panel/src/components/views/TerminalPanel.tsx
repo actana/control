@@ -17,6 +17,7 @@ import type { Session } from "~/db/schema";
 import { coreScopeKey } from "~/lib/core-scope";
 import { useIsCompact } from "~/lib/breakpoint";
 import { useVisualViewport } from "~/lib/use-visual-viewport";
+import { useBodyScrollLock } from "~/lib/use-body-scroll-lock";
 
 export type OpenTerminal = TerminalDescriptor & {
   session: Session;
@@ -46,6 +47,7 @@ export function TerminalPanel({
   bell?: ReactNode;
 }) {
   const compact = useIsCompact();
+  useBodyScrollLock(compact && active !== null);
   const { height: viewportHeight, offsetTop: viewportTop } = useVisualViewport();
   const queryClient = useQueryClient();
   const userTerminals = useUserTerminals();

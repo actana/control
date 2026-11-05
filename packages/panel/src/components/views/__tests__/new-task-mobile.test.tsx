@@ -16,7 +16,8 @@ vi.mock("~/lib/fleet-context", () => ({
 }));
 const api = vi.hoisted(() => ({
   getKeybindings: vi.fn(async () => ({ bindings: {} })),
-  listTasks: vi.fn(async () => ({ tasks: [] })),
+  listTasksPage: vi.fn(async () => ({ tasks: [], nextCursor: null })),
+  getTaskCounts: vi.fn(async () => ({ byStatus: {}, byCore: {} })),
   listCoreAgents: vi.fn(async (coreId: string) => ({
     agents: [
       { id: `a1-${coreId}`, coreId, name: "claude-code", harness: "claude-code", model: null, isDefault: true },

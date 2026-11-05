@@ -139,6 +139,16 @@ describe("user terminals on a phone (#832, M28)", () => {
     expect(screen.queryByRole("button", { name: /maximise/i })).toBeNull();
   });
 
+  // #897: the page must not scroll under the terminal screen.
+  it("phone: locks the page scroll while the screen is mounted and restores it after", () => {
+    document.body.style.overflow = "auto";
+    const view = renderPanel();
+    expect(document.body.style.overflow).toBe("hidden");
+    view.unmount();
+    expect(document.body.style.overflow).toBe("auto");
+    document.body.style.overflow = "";
+  });
+
   it("phone: renders nothing while the panel is closed", () => {
     store.panelOpen = false;
     renderPanel();

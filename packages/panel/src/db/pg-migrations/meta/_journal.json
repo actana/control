@@ -92,6 +92,13 @@
       "when": 1791681609178,
       "tag": "0012_panel_task_timeout",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1793875321787,
+      "tag": "0013_panel_tasks_page_index",
+      "breakpoints": true
     }
   ]
 }

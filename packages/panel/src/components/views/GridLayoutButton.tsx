@@ -9,17 +9,26 @@ import { HotkeyTooltip } from "~/components/ui/Tooltip";
 import { HARNESS_META } from "~/lib/design-meta";
 import {
   GRID_COLUMN_OPTIONS,
+  GRID_HIDDEN_EVENT,
   GRID_PREFS_EVENT,
   GRID_QUICK_PICKER_EVENT,
+  GRID_SHOW_SESSION_EVENT,
+  capGridTiles,
+  isSettledSessionStatus,
   loadGridColumnLimit,
+  pickedGridSessionIds,
+  requestGridShowSession,
   requestGridSort,
   saveGridColumnLimit,
+  useGridTileCap,
   type GridPrefsEventDetail,
 } from "~/lib/grid-layout-prefs";
+import { STATUS_META } from "~/lib/design-meta";
+import type { Session } from "~/db/schema";
 import { useTerminals } from "~/lib/terminal-store";
 import { Z_INDEX } from "~/lib/z-index";
 import type { Harness } from "@actana/shared/domain";
-import { scopeKeyFor } from "./SessionGrid";
+import { loadHiddenSessionIds, scopeKeyFor } from "./SessionGrid";
 
 // Fixed menu width: the width chips lay out as one 7-column row (Auto + 1–6),
 // and the viewport clamp in updateMenuRect needs the real width to be exact.
@@ -35,8 +44,31 @@ const MENU_WIDTH = 288;
  * Talks to the mounted SessionGrid over the grid-layout-prefs window events —
  * the two components share a scope key, not React state.
  */
-export function GridLayoutButton({ scopeKey }: { scopeKey: string }) {
-  const { sessions } = useTerminals();
+export function GridLayoutButton({
+  scopeKey,
+  coreId,
+  sessionRows = [],
+}: {
+  scopeKey: string;
+  /** The Core whose Sessions the picker lists. */
+  coreId?: string;
+  /** Every Session row of that Core; the picker swaps which of them the grid shows. */
+  sessionRows?: readonly Session[];
+}) {
+  const { sessions, rehydrate } = useTerminals();
+  const tileCap = useGridTileCap();
+  // Re-render when the grid hides a Session (persisted set) or the picker
+  // itself changes the hand-picked set (module state).
+  const [pickTick, setPickTick] = useState(0);
+  useEffect(() => {
+    const bump = () => setPickTick((n) => n + 1);
+    window.addEventListener(GRID_HIDDEN_EVENT, bump);
+    window.addEventListener(GRID_SHOW_SESSION_EVENT, bump);
+    return () => {
+      window.removeEventListener(GRID_HIDDEN_EVENT, bump);
+      window.removeEventListener(GRID_SHOW_SESSION_EVENT, bump);
+    };
+  }, []);
   const [open, setOpen] = useState(false);
   const [menuRect, setMenuRect] = useState<{ top: number; left: number } | null>(null);
   const anchorRef = useRef<HTMLDivElement | null>(null);
@@ -119,6 +151,45 @@ export function GridLayoutButton({ scopeKey }: { scopeKey: string }) {
     );
     return (Object.keys(HARNESS_META) as Harness[]).filter((a) => present.has(a));
   }, [sessions, scopeKey]);
+
+  // The picker: every non-archived Session of the Core, best-ranked first, with
+  // the ones the grid draws right now checked. Mirrors the grid's own choice
+  // (open, not hidden, trimmed to the cap) so the checks match what is on screen.
+  const pickerRows = useMemo(() => {
+    const rows = sessionRows.filter((r) => !r.archived);
+    const picked = pickedGridSessionIds(scopeKey);
+    const hidden = loadHiddenSessionIds(scopeKey);
+    const open = sessions.filter(
+      (s) => scopeKeyFor(s) === scopeKey && !hidden.has(s.sessionId),
+    );
+    const shown = new Set(
+      capGridTiles(
+        open,
+        tileCap,
+        (s) => s.session,
+        (s) => picked.has(s.sessionId),
+      ).map((s) => s.sessionId),
+    );
+    const ranked = [...rows].sort((a, b) => {
+      const sa = shown.has(a.id) ? 0 : isSettledSessionStatus(a.status) ? 2 : 1;
+      const sb = shown.has(b.id) ? 0 : isSettledSessionStatus(b.status) ? 2 : 1;
+      const live = (r: Session) => (r.status === "running" || r.status === "needs-input" ? 0 : 1);
+      return sa - sb || live(a) - live(b) || Number(b.pinned) - Number(a.pinned) || b.updatedAt - a.updatedAt;
+    });
+    return { rows: ranked, shown };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- pickTick: module/localStorage state read above
+  }, [sessionRows, sessions, scopeKey, tileCap, pickTick]);
+
+  const toggleShown = (row: Session) => {
+    if (pickerRows.shown.has(row.id)) {
+      requestGridShowSession(scopeKey, row.id, false);
+      return;
+    }
+    if (coreId && !sessions.some((s) => s.sessionId === row.id && scopeKeyFor(s) === scopeKey)) {
+      rehydrate(coreId, row, { openedByGrid: true });
+    }
+    requestGridShowSession(scopeKey, row.id, true);
+  };
 
   const pickLimit = (limit: number | null) => {
     // Persisting fires GRID_PREFS_EVENT; the grid reflows and this button's
@@ -262,6 +333,44 @@ export function GridLayoutButton({ scopeKey }: { scopeKey: string }) {
                 ? "Rows grow freely; new sessions join the current row."
                 : `Full rows overflow into the next row with space, or a new one.`}
             </div>
+            {pickerRows.rows.length > 0 && (
+              <>
+                <DropdownMenuSeparator />
+                <MenuLabel>
+                  {`Sessions shown (${pickerRows.shown.size} of ${tileCap})`}
+                </MenuLabel>
+                <div style={{ maxHeight: 220, overflowY: "auto" }}>
+                  {pickerRows.rows.map((row) => {
+                    const checked = pickerRows.shown.has(row.id);
+                    return (
+                      <button
+                        key={row.id}
+                        type="button"
+                        role="menuitemcheckbox"
+                        aria-checked={checked}
+                        className="mc-dropdown-menu-item"
+                        onMouseDown={(e) => e.preventDefault()}
+                        onClick={() => toggleShown(row)}
+                        title={checked ? "Hide from the grid" : "Show in the grid"}
+                      >
+                        <span aria-hidden style={{ width: 14, flexShrink: 0 }}>
+                          {checked ? "✓" : ""}
+                        </span>
+                        <span
+                          className="mc-dropdown-menu-item-label"
+                          style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+                        >
+                          {row.title}
+                        </span>
+                        <span style={{ color: "var(--text-dim)", fontSize: 11, flexShrink: 0 }}>
+                          {STATUS_META[row.status].label}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </>
+            )}
             {harnessesPresent.length > 1 && (
               <>
                 <DropdownMenuSeparator />

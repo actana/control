@@ -2,7 +2,7 @@ import { z } from "zod";
 import pkg from "../../package.json";
 import { authenticateApiKeyOnly } from "./api-key-auth";
 import { jsonError } from "./http-responses";
-import { MCP_TOOLS } from "./mcp-tools";
+import { MCP_TOOLS, type ToolOutcome } from "./mcp-tools";
 import { hasPermission, missingPermissionMessage } from "./services/api-keys";
 import {
   HTTP_ACCEPTED,
@@ -166,7 +166,7 @@ async function callTool(
 
 function toolResult(
   id: string | number,
-  outcome: { ok: true; data: Record<string, unknown> } | { ok: false; message: string },
+  outcome: ToolOutcome,
 ): RpcResponse {
   if (!outcome.ok) {
     return { jsonrpc: "2.0", id, result: { isError: true, content: [{ type: "text", text: outcome.message }] } };
@@ -174,7 +174,10 @@ function toolResult(
   return {
     jsonrpc: "2.0",
     id,
-    result: { content: [{ type: "text", text: JSON.stringify(outcome.data) }], structuredContent: outcome.data },
+    result: {
+      content: [{ type: "text", text: JSON.stringify(outcome.data) }],
+      ...(outcome.textOnly ? {} : { structuredContent: outcome.data }),
+    },
   };
 }
 
