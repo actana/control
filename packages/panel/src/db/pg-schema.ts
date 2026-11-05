@@ -136,6 +136,8 @@ export const tasks = pgTable(
       sql`${t.status} in ('draft', 'assigned', 'in_progress', 'done', 'failed', 'partial')`,
     ),
     index("tasks_owner_status_idx").on(t.ownerId, t.status),
+    // The board's pages (#896): one status column, newest update first, keyset by (updated_at, id).
+    index("tasks_owner_status_updated_idx").on(t.ownerId, t.status, t.updatedAt.desc(), t.id.desc()),
   ],
 );
 

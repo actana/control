@@ -148,3 +148,13 @@ describe("tasks.timeout_minutes (#724)", () => {
     }
   });
 });
+
+describe("the Tasks board paging index (#896)", () => {
+  it("covers owner, status and the newest-first sort key", async () => {
+    const { rows } = await db.pool.query(
+      "select indexdef from pg_indexes where tablename = 'tasks' and indexname = 'tasks_owner_status_updated_idx'",
+    );
+    expect(rows).toHaveLength(1);
+    expect(String(rows[0]!.indexdef)).toMatch(/\(owner_id, status, updated_at DESC NULLS LAST, id DESC NULLS LAST\)/);
+  });
+});

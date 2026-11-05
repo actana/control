@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { KeybindingsProvider } from "~/lib/keybindings/store";
+import type { PageQuery } from "./task-board-fake";
 import type { CoreWithDial } from "~/shared/cores";
 import type { AgentDto, TaskCommentDto, TaskDto } from "~/shared/task-wire";
 
@@ -35,7 +36,8 @@ let tasks: TaskDto[] = [];
 let comments: TaskCommentDto[] = [];
 const api = vi.hoisted(() => ({
   getKeybindings: vi.fn(async () => ({ bindings: {} })),
-  listTasks: vi.fn(async () => ({ tasks })),
+  listTasksPage: vi.fn(async (q: PageQuery) => (await import("./task-board-fake")).fakeTasksPage(tasks, q)),
+  getTaskCounts: vi.fn(async () => (await import("./task-board-fake")).fakeTaskCounts(tasks)),
   getTask: vi.fn(async (id: string) => ({ task: tasks.find((t) => t.id === id)!, comments })),
   listCoreAgents: vi.fn(async (coreId: string, opts?: { runnableOnly?: boolean }) => ({
     agents: (agentsByCore[coreId] ?? []).filter((a) => !(opts?.runnableOnly && goneHarnesses.has(a.harness))),
@@ -102,14 +104,16 @@ describe("Tasks board", () => {
     mount(<TasksBoard />);
     await screen.findByText("Rotate keys");
     const chips = screen.getByRole("group", { name: "Filter by Core" });
-    expect(within(chips).getByRole("button", { name: /All Cores/ }).textContent).toContain("4");
+    // The counts come from the counts endpoint (#896), so they turn up after the Tasks.
+    await waitFor(() => expect(within(chips).getByRole("button", { name: /All Cores/ }).textContent).toContain("4"));
     expect(within(chips).getByRole("button", { name: /build-box-01/ }).textContent).toContain("2");
     fireEvent.click(within(chips).getByRole("button", { name: /build-box-01/ }));
+    // The chip asks the server for that Core's Tasks, so the board follows its answer.
+    await screen.findByText("Bump SeaweedFS");
     expect(screen.queryByText("Rotate keys")).toBeNull();
-    expect(screen.getByText("Bump SeaweedFS")).toBeTruthy();
     expect(screen.getByText("Review PR")).toBeTruthy();
     fireEvent.click(within(chips).getByRole("button", { name: /All Cores/ }));
-    expect(screen.getByText("Rotate keys")).toBeTruthy();
+    expect(await screen.findByText("Rotate keys")).toBeTruthy();
   });
 
   it("is already one Core's board, with no chips, when given a Core", async () => {

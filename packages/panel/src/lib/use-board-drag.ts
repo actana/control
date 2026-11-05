@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent } from "react";
 import { BOARD_COLUMNS } from "~/lib/task-board";
 import { boardColumnOf, dropDecision, type BoardColumnId } from "~/lib/task-board-drop";
-import type { TaskDto } from "~/shared/task-wire";
+import type { TaskListDto } from "~/shared/task-wire";
 
 /** Same threshold as the Session grid's header drag: below it a press is a click. */
 const DRAG_THRESHOLD_PX = 4;
@@ -12,7 +12,7 @@ export const LONG_PRESS_MS = 400;
 const LONG_PRESS_SLOP_PX = 8;
 
 /** The card being carried, and the column it would land in now (null: outside the board). */
-export type BoardDrag = { task: TaskDto; via: "pointer" | "keyboard"; over: BoardColumnId | null };
+export type BoardDrag = { task: TaskListDto; via: "pointer" | "keyboard"; over: BoardColumnId | null };
 
 /** Where the lifted card's ghost sits: the pointer, less where on the card it was grabbed. */
 export type GhostPosition = { x: number; y: number; grabX: number; grabY: number; width: number };
@@ -41,7 +41,7 @@ function columnAt(x: number, y: number): BoardColumnId | null {
 }
 
 /** What the live region says about a column while the card is carried from the keyboard. */
-function targetMessage(task: TaskDto, target: BoardColumnId): string {
+function targetMessage(task: TaskListDto, target: BoardColumnId): string {
   const d = dropDecision(task, target);
   if (d.kind === "noop") return `${columnLabel(target)}: where it is now.`;
   if (d.kind === "refuse") return `${columnLabel(target)}: not allowed. ${d.reason}`;
@@ -60,7 +60,7 @@ export function useBoardDrag({
   announce,
   describedBy,
 }: {
-  onDrop: (task: TaskDto, target: BoardColumnId) => void;
+  onDrop: (task: TaskListDto, target: BoardColumnId) => void;
   announce: (message: string) => void;
   describedBy: string;
 }) {
@@ -117,7 +117,7 @@ export function useBoardDrag({
     placeGhost();
   }, []);
 
-  const startPointer = (task: TaskDto, event: ReactPointerEvent<HTMLElement>) => {
+  const startPointer = (task: TaskListDto, event: ReactPointerEvent<HTMLElement>) => {
     if (event.button !== 0) return;
     // The Reply button inside a card is the button's to press.
     if ((event.target as HTMLElement | null)?.closest("button, a, input, textarea")) return;
@@ -234,7 +234,7 @@ export function useBoardDrag({
     cleanupRef.current = cleanup;
   };
 
-  const keyDown = (task: TaskDto, e: ReactKeyboardEvent<HTMLElement>): boolean => {
+  const keyDown = (task: TaskListDto, e: ReactKeyboardEvent<HTMLElement>): boolean => {
     const cur = dragRef.current;
     const carrying = cur?.via === "keyboard" && cur.task.id === task.id ? cur : null;
     const claim = () => {
@@ -278,7 +278,7 @@ export function useBoardDrag({
     }
   };
 
-  const blur = (task: TaskDto) => {
+  const blur = (task: TaskListDto) => {
     const cur = dragRef.current;
     if (cur?.via !== "keyboard" || cur.task.id !== task.id) return;
     setDrag(null);
@@ -292,7 +292,7 @@ export function useBoardDrag({
   }, [setDrag]);
 
   /** The drag handlers for one card; `disabled` (its move is still in flight) makes it stay put. */
-  const cardDrag = (task: TaskDto, disabled = false): TaskCardDrag => ({
+  const cardDrag = (task: TaskListDto, disabled = false): TaskCardDrag => ({
     onPointerDown: (e) => {
       // A new press: the click a past drag ended with has come, or never will.
       suppressClick.current = false;

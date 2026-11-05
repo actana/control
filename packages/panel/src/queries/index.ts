@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { hashKey, queryOptions, useQuery, useQueryClient } from "@tanstack/react-query";
+import { hashKey, infiniteQueryOptions, queryOptions, useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "~/lib/api";
 import { retainCoreScope, watchCoreScope } from "~/lib/visible-core-scope";
 import { setHookToken } from "~/lib/hook-token";
@@ -9,6 +9,8 @@ import { readCachedSettings } from "~/lib/shell-query-cache";
 import type { CoreLinkSessionRow } from "@actana/shared/sdk-link-frames";
 import type { Session } from "~/db/schema";
 import type { Harness } from "@actana/shared/domain";
+import { TASKS_PAGE_DEFAULT_LIMIT, type TaskColumn } from "~/shared/tasks";
+import type { TasksPageDto } from "~/shared/task-wire";
 
 export const queryKeys = {
   /** Prefix over everything cached per Core, for a blanket invalidation. */
@@ -23,9 +25,17 @@ export const queryKeys = {
   /** Prefix over every Core's archived bucket, for a blanket invalidation. */
   coreArchivedSessionsAll: ["core-archived-sessions"] as const,
   coreArchivedSessionCount: (coreId: string) => ["core-archived-session-count", coreId] as const,
-  /** The Tasks board: every Task the owner has, across Cores. */
+  /** Prefix over everything cached about Tasks (board columns, their first pages, counts, one Task): invalidate by it. */
   tasks: ["tasks"] as const,
   task: (id: string) => ["tasks", id] as const,
+  /** Prefix over every board column's pages (#896). */
+  tasksColumns: ["tasks", "column"] as const,
+  /** One board column's pages for a Core filter (null = All Cores): an infinite query. */
+  tasksColumn: (column: TaskColumn, coreId: string | null) => ["tasks", "column", column, coreId] as const,
+  /** Prefix over the polled first pages; they only exist while a column has more than one page loaded. */
+  tasksHeads: ["tasks", "head"] as const,
+  tasksHead: (column: TaskColumn, coreId: string | null) => ["tasks", "head", column, coreId] as const,
+  taskCounts: ["tasks", "counts"] as const,
   coreAgents: (coreId: string) => ["core-agents", coreId] as const,
   /** Under `coreAgents`, so invalidating a Core's Agents refreshes this too. */
   runnableCoreAgents: (coreId: string) => ["core-agents", coreId, "runnable"] as const,
@@ -352,10 +362,50 @@ function useScopedToVisibleCore(queryKey: readonly unknown[], coreId: string): v
 // nothing pushes that to the browser, so the board and an open Task poll.
 const TASKS_POLL_MS = 5_000;
 
-export const tasksQueryOptions = () =>
+const firstTasksPage = (column: TaskColumn, coreId: string | null) =>
+  api.listTasksPage({ column, coreId, limit: TASKS_PAGE_DEFAULT_LIMIT });
+
+/**
+ * One board column's pages (#896): 10 at a time, the next ones on `fetchNextPage`.
+ * Only the first page polls. While it is the only page loaded the query polls
+ * itself; once more are loaded, polling the query would re-request all of them,
+ * so a separate query polls the first page and the column reloads only when
+ * that first page has changed.
+ */
+export const tasksColumnQueryOptions = (column: TaskColumn, coreId: string | null) =>
+  infiniteQueryOptions({
+    queryKey: queryKeys.tasksColumn(column, coreId),
+    queryFn: ({ pageParam }) => api.listTasksPage({ column, coreId, limit: TASKS_PAGE_DEFAULT_LIMIT, cursor: pageParam }),
+    initialPageParam: null as string | null,
+    getNextPageParam: (last: TasksPageDto) => last.nextCursor,
+    refetchInterval: (query) => ((query.state.data?.pages.length ?? 0) > 1 ? false : TASKS_POLL_MS),
+    refetchOnMount: "always",
+  });
+
+export function useTasksColumn(column: TaskColumn, coreId: string | null) {
+  const result = useInfiniteQuery(tasksColumnQueryOptions(column, coreId));
+  const loaded = result.data?.pages;
+  const head = useQuery({
+    queryKey: queryKeys.tasksHead(column, coreId),
+    queryFn: () => firstTasksPage(column, coreId),
+    enabled: (loaded?.length ?? 0) > 1,
+    refetchInterval: TASKS_POLL_MS,
+    refetchOnMount: "always",
+  });
+  const { refetch } = result;
+  useEffect(() => {
+    if (!head.data || !loaded || loaded.length < 2) return;
+    if (JSON.stringify(head.data) !== JSON.stringify(loaded[0])) void refetch();
+    // Only a new answer from the poll asks for a reload, not a change to the loaded pages (an optimistic move).
+  }, [head.dataUpdatedAt]);
+  return result;
+}
+
+/** How many Tasks there are per status and per Core, whatever the board has loaded. */
+export const taskCountsQueryOptions = () =>
   queryOptions({
-    queryKey: queryKeys.tasks,
-    queryFn: async () => (await api.listTasks()).tasks,
+    queryKey: queryKeys.taskCounts,
+    queryFn: () => api.getTaskCounts(),
     refetchInterval: TASKS_POLL_MS,
     refetchOnMount: "always",
   });
@@ -432,7 +482,7 @@ export const useSharedFilesSearch = (coreId: string, query: string) =>
     retry: false,
   });
 
-export const useTasks = () => useQuery(tasksQueryOptions());
+export const useTaskCounts = () => useQuery(taskCountsQueryOptions());
 export const useTask = (id: string) => useQuery({ ...taskQueryOptions(id), enabled: !!id });
 export const useCoreAgents = (coreId: string) => useQuery(coreAgentsQueryOptions(coreId));
 export const useRunnableCoreAgents = (coreId: string) => useQuery(runnableCoreAgentsQueryOptions(coreId));

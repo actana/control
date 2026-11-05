@@ -10,6 +10,23 @@ export type TaskStatus = (typeof TASK_STATUSES)[number];
 export const FINISHED_TASK_STATUSES = ["done", "failed", "partial"] as const satisfies readonly TaskStatus[];
 
 /**
+ * The Tasks board's columns (#896). A column is one status, except `finished`,
+ * which holds every status a Task ends in.
+ */
+export const TASK_COLUMNS = ["draft", "assigned", "in_progress", "finished"] as const;
+export type TaskColumn = (typeof TASK_COLUMNS)[number];
+export const TASK_COLUMN_STATUSES: Record<TaskColumn, readonly TaskStatus[]> = {
+  draft: ["draft"],
+  assigned: ["assigned"],
+  in_progress: ["in_progress"],
+  finished: FINISHED_TASK_STATUSES,
+};
+
+/** A page of Tasks: the board asks for 10, a caller may ask for up to 100. */
+export const TASKS_PAGE_DEFAULT_LIMIT = 10;
+export const TASKS_PAGE_MAX_LIMIT = 100;
+
+/**
  * The statuses a Task's title and description can be edited in, and the ones it
  * can be deleted in (#722). Not `in_progress`: its Session already has the old
  * prompt, and deleting the Task would leave that Session running with nothing to
