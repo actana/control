@@ -18,7 +18,7 @@ import { getShared, listShared } from "./mcp-shared";
 import { OPERATOR_TASK_STATUSES } from "./controllers/tasks.controller";
 import { scopeReaches } from "./services/api-keys";
 import type { ApiKeyPermission } from "~/shared/api-key-permissions";
-import { TASK_STATUSES } from "~/shared/tasks";
+import { TASKS_PAGE_MAX_LIMIT, TASK_STATUSES } from "~/shared/tasks";
 
 /**
  * The MCP tools (#573). Each one is a thin call into the same handlers the
@@ -32,7 +32,14 @@ import { TASK_STATUSES } from "~/shared/tasks";
 export type ApiKeyPrincipal = Extract<ApiPrincipal, { kind: "api-key" }>;
 
 /** What a tool did: data for the model, or a message that tells it why not (an MCP tool error, not a protocol error). */
-export type ToolOutcome = { ok: true; data: Record<string, unknown> } | { ok: false; message: string };
+export type ToolOutcome =
+  | {
+      ok: true;
+      data: Record<string, unknown>;
+      /** Send `data` as the JSON text only, not again as `structuredContent` (a large list, #896). */
+      textOnly?: true;
+    }
+  | { ok: false; message: string };
 
 export type McpTool = {
   name: string;
@@ -106,20 +113,31 @@ export const MCP_TOOLS: readonly McpTool[] = [
   }),
   tool({
     name: "get_tasks",
-    description: "List Tasks on the Cores the key can reach, optionally only one status or one Core.",
+    description:
+      "List Tasks on the Cores the key can reach, optionally only one status or one Core. With no limit, every matching Task with its full description. " +
+      "With a limit (1-100) you get one page, newest update first, without descriptions (use get_task for those), plus nextCursor: pass it back as cursor for the next page; null on the last.",
     readOnly: true,
     permission: "read",
-    input: z.object({ status: z.enum(TASK_STATUSES).optional(), coreId: coreIdArg.optional() }),
-    run: async (principal, { status, coreId }) => {
+    input: z.object({
+      status: z.enum(TASK_STATUSES).optional(),
+      coreId: coreIdArg.optional(),
+      limit: z.number().int().min(1).max(TASKS_PAGE_MAX_LIMIT).optional().describe("Page size, 1-100. Omit to get every Task with its description."),
+      cursor: z.string().min(1).optional().describe("The nextCursor of the previous page. Needs limit."),
+    }),
+    run: async (principal, { status, coreId, limit, cursor }) => {
       if (coreId !== undefined && !scopeReaches(principal.scope, coreId)) {
         return outcomeOf(forbidden("this API key does not reach that Core"));
       }
-      const listed = await outcomeOf(await listTasksV1(principal));
-      if (!listed.ok) return listed;
-      const tasks = (listed.data.tasks as { status: string; coreId: string | null }[]).filter(
-        (t) => (status === undefined || t.status === status) && (coreId === undefined || t.coreId === coreId),
+      const listed = await outcomeOf(
+        await listTasksV1(principal, {
+          ...(status === undefined ? {} : { status }),
+          ...(coreId === undefined ? {} : { coreId }),
+          ...(limit === undefined ? {} : { limit }),
+          ...(cursor === undefined ? {} : { cursor }),
+        }),
       );
-      return { ok: true, data: { tasks } };
+      // The rows are in the JSON text only: a list can be megabytes, so it is not repeated as structuredContent.
+      return listed.ok ? { ...listed, textOnly: true } : listed;
     },
   }),
   tool({

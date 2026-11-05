@@ -46,7 +46,7 @@ vi.mock("~/queries", async (importOriginal) => ({
   useSettings: () => ({ data: undefined }),
 }));
 vi.mock("~/lib/api", () => ({
-  api: { getKeybindings: async () => ({ bindings: {} }), listTasks: async () => ({ tasks: [] }) },
+  api: { getKeybindings: async () => ({ bindings: {} }), listTasksPage: async () => ({ tasks: [], nextCursor: null }), getTaskCounts: async () => ({ byStatus: {}, byCore: {} }) },
 }));
 const mutateSessionForCore = vi.fn();
 vi.mock("~/lib/mutate-session-for-core", () => ({

@@ -20,6 +20,21 @@ export type TaskDto = {
   updatedAt: number;
 };
 
+/** A Task as a paged list carries it (#896): everything but `description`, which can be large. */
+export type TaskListDto = Omit<TaskDto, "description">;
+
+/** One page of Tasks, newest update first. `nextCursor` is opaque; null on the last page. */
+export type TasksPageDto = {
+  tasks: TaskListDto[];
+  nextCursor: string | null;
+};
+
+/** Task counts per status (a status with no Task is absent) and, for Tasks that have a Core, per Core id. */
+export type TaskCountsDto = {
+  byStatus: Partial<Record<TaskStatus, number>>;
+  byCore: Record<string, Partial<Record<TaskStatus, number>>>;
+};
+
 export type TaskCommentDto = {
   id: string;
   taskId: string;

@@ -27,6 +27,7 @@
  * `teardown`. Panes store their richer object (subscriptions, replay state, the
  * mutable host callbacks, …) on the same record.
  */
+import type { TouchScrollTarget } from "~/lib/use-terminal-touch-scroll";
 export interface TerminalSurface {
   readonly id: string;
   /** The element passed to `term.open()`. Moved between mount containers and the holder. */
@@ -53,6 +54,8 @@ export interface CachedTerminalControls {
   sendKeys?(data: string): void;
   /** `term.modes.applicationCursorKeysMode` now: DECCKM decides `ESC O A` vs `ESC [ A`. */
   applicationCursorKeys?(): boolean;
+  /** The terminal as a touch-scroll target (phone/tablet swipe, #897). */
+  touchScrollTarget?(): TouchScrollTarget;
   /**
    * Paste text the way the keyboard shortcut does (`term.paste`): bracketed
    * paste when the program asked for it, and through `onData` so the pane's

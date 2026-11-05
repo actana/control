@@ -289,7 +289,7 @@ async function dispatch(
     if (method === "DELETE") return v1Controller.deleteAgentV1(principal!, decode(m[1]));
   }
   if (pathname === "/api/v1/tasks") {
-    if (method === "GET") return v1Controller.listTasksV1(principal!);
+    if (method === "GET") return v1Controller.listTasksV1FromQuery(principal!, url.searchParams);
     if (method === "POST") return v1Controller.createTaskV1(principal!, request);
   }
   m = pathname.match(V1_TASK_STATUS_PATH);
@@ -347,9 +347,10 @@ async function dispatch(
   // A Panel session belongs to the one Operator today (ADR 0011), so that is the owner.
   const ownerId = OPERATOR_ID;
   if (pathname === "/api/tasks") {
-    if (method === "GET") return tasksController.list(ownerId);
+    if (method === "GET") return tasksController.list(ownerId, url.searchParams);
     if (method === "POST") return tasksController.create(ownerId, request);
   }
+  if (pathname === "/api/tasks/counts" && method === "GET") return tasksController.counts(ownerId, url.searchParams);
   m = pathname.match(TASK_PATH);
   if (m && method === "GET") return tasksController.read(ownerId, decode(m[1]));
   if (m && method === "PATCH") return tasksController.update(ownerId, decode(m[1]), request);

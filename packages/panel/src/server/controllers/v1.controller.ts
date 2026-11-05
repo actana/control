@@ -9,7 +9,8 @@ import { scopeReaches } from "../services/api-keys";
 import { getCore, listCores } from "../services/cores";
 import { coreLinkManager } from "../services/core-link-manager";
 import type { Core, CoreWithDial } from "~/shared/cores";
-import type { AgentDto, TaskCommentDto, TaskDto } from "~/shared/task-wire";
+import type { AgentDto, TaskCommentDto, TaskDto, TasksPageDto } from "~/shared/task-wire";
+import type { TaskStatus } from "~/shared/tasks";
 import {
   addTaskComment,
   changeTaskStatus,
@@ -19,6 +20,7 @@ import {
   getTask,
   listTaskComments,
   listTasks,
+  listTasksPage,
   updateTask,
   type Task,
   type TaskComment,
@@ -34,7 +36,7 @@ import {
 import { getOperator } from "../services/operator";
 import { findCoreById } from "../repositories/cores.repo";
 import { HARNESSES } from "~/shared/agents";
-import { OPERATOR_TASK_STATUSES, timeoutMinutesSchema, updateTaskBody } from "./tasks.controller";
+import { OPERATOR_TASK_STATUSES, taskListDto, timeoutMinutesSchema, updateTaskBody } from "./tasks.controller";
 
 /**
  * The public REST API under `/api/v1` (#572 PR 2). Every handler takes the
@@ -204,9 +206,53 @@ export async function deleteAgentV1(principal: ApiPrincipal, id: string): Promis
 
 // ── Tasks ──────────────────────────────────────────────────────────────────
 
-export async function listTasksV1(principal: ApiPrincipal): Promise<Response> {
-  const all = await listTasks(principal.ownerId);
-  return json({ tasks: all.filter((t) => inScope(principal, t.coreId)).map(taskDto) });
+export type ListTasksQuery = {
+  /** Only this status. */
+  status?: TaskStatus;
+  /** Only this Core; the caller has already checked the key reaches it. */
+  coreId?: string;
+  /** 1 to 100. Given: a page of rows without `description` and a `nextCursor`. Absent: every Task, full rows. */
+  limit?: number;
+  /** The `nextCursor` of the previous page; needs `limit`. */
+  cursor?: string;
+};
+
+/**
+ * The Tasks the principal reaches. Without `limit`, every one with full rows, as it always was (#572).
+ * With `limit` (#896), one page filtered in SQL, newest update first, without `description`, plus `nextCursor`.
+ */
+export async function listTasksV1(principal: ApiPrincipal, query: ListTasksQuery = {}): Promise<Response> {
+  try {
+    if (query.limit === undefined) {
+      if (query.cursor !== undefined) throw new ValidationError("cursor needs a limit");
+      const all = await listTasks(principal.ownerId, query.status ? [query.status] : undefined);
+      const visible = all.filter(
+        (t) => inScope(principal, t.coreId) && (query.coreId === undefined || t.coreId === query.coreId),
+      );
+      return json({ tasks: visible.map(taskDto) });
+    }
+    const page = await listTasksPage(principal.ownerId, {
+      limit: query.limit,
+      ...(query.status ? { statuses: [query.status] } : {}),
+      ...(query.coreId === undefined ? {} : { coreId: query.coreId }),
+      ...(query.cursor === undefined ? {} : { cursor: query.cursor }),
+      ...(principal.kind === "api-key" && !principal.scope.allCores ? { scopeCoreIds: [...principal.scope.coreIds] } : {}),
+    });
+    const body: TasksPageDto = { tasks: page.tasks.map(taskListDto), nextCursor: page.nextCursor };
+    return json(body);
+  } catch (e) {
+    return rethrowUnlessDomain(e);
+  }
+}
+
+/** `GET /api/v1/tasks?limit=&cursor=`: the query string as a {@link ListTasksQuery}. */
+export async function listTasksV1FromQuery(principal: ApiPrincipal, params: URLSearchParams): Promise<Response> {
+  const limit = params.get("limit");
+  const cursor = params.get("cursor");
+  return listTasksV1(principal, {
+    ...(limit === null ? {} : { limit: Number(limit) }),
+    ...(cursor === null ? {} : { cursor }),
+  });
 }
 
 export async function createTaskV1(principal: ApiPrincipal, request: Request): Promise<Response> {

@@ -2,17 +2,24 @@ import { ConflictError, NotFoundError, ValidationError } from "../errors";
 import { findCoreById } from "../repositories/cores.repo";
 import { findCommentsForTask, insertComment } from "../repositories/task-comments.repo";
 import {
+  InvalidTaskCursorError,
   claimAssignedTask,
+  countTasks,
   deleteTaskRow,
   findTaskById,
   findTaskHistory,
   findTasks,
+  findTasksPage,
   insertTaskWithHistory,
   transitionTask,
   updateTaskRow,
   type NewTaskCommentRow,
   type TaskCommentRow,
+  type TaskCounts,
+  type TaskListRow,
   type TaskRow,
+  type TasksPage,
+  type TasksPageQuery,
   type TaskStatusHistoryRow,
 } from "../repositories/tasks.repo";
 import type { NewOutboxRow } from "../repositories/webhooks.repo";
@@ -22,6 +29,7 @@ import {
   EDITABLE_TASK_STATUSES,
   FINISHED_TASK_STATUSES,
   TASK_STATUSES,
+  TASKS_PAGE_MAX_LIMIT,
   TASK_TIMEOUT_DEFAULT_MINUTES,
   canMoveTask,
   formatTaskStopComment,
@@ -235,6 +243,29 @@ export async function createTask(ownerId: number, input: NewTask, now = Date.now
 
 export async function listTasks(ownerId: number, statuses?: TaskStatus[]): Promise<Task[]> {
   return findTasks(ownerId, statuses);
+}
+
+export type { TaskCounts, TaskListRow, TasksPage, TasksPageQuery };
+
+/**
+ * One page of Tasks without their descriptions (#896), newest update first. The
+ * limit is 1 to 100 and the cursor is one this service handed out; anything else
+ * is a ValidationError, so a route answers 400.
+ */
+export async function listTasksPage(ownerId: number, query: TasksPageQuery): Promise<TasksPage> {
+  if (!Number.isInteger(query.limit) || query.limit < 1 || query.limit > TASKS_PAGE_MAX_LIMIT) {
+    throw new ValidationError(`limit must be a whole number from 1 to ${TASKS_PAGE_MAX_LIMIT}`);
+  }
+  try {
+    return await findTasksPage(ownerId, query);
+  } catch (e) {
+    if (e instanceof InvalidTaskCursorError) throw new ValidationError("invalid cursor");
+    throw e;
+  }
+}
+
+export async function getTaskCounts(ownerId: number, coreId?: string): Promise<TaskCounts> {
+  return countTasks(ownerId, coreId);
 }
 
 export async function getTask(ownerId: number, id: string): Promise<Task> {

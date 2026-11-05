@@ -3,9 +3,9 @@ import { formatRelativeTime } from "~/lib/format-relative-time";
 import { TASK_STATUS_LABEL } from "~/lib/task-board";
 import type { TaskCardDrag } from "~/lib/use-board-drag";
 import { FINISHED_TASK_STATUSES } from "~/shared/tasks";
-import type { TaskDto } from "~/shared/task-wire";
+import type { TaskListDto } from "~/shared/task-wire";
 
-const STATUS_COLOR: Record<TaskDto["status"], string> = {
+const STATUS_COLOR: Record<TaskListDto["status"], string> = {
   draft: "var(--text-dim)",
   assigned: "var(--brand-accent)",
   in_progress: "var(--warning)",
@@ -25,7 +25,7 @@ export function TaskCard({
   compact = false,
   placeholder = false,
 }: {
-  task: TaskDto;
+  task: TaskListDto;
   coreLabel: string | null;
   agentLabel: string | null;
   onOpen: (id: string) => void;

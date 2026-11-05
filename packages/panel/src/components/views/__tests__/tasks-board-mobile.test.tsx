@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { KeybindingsProvider } from "~/lib/keybindings/store";
+import type { PageQuery } from "./task-board-fake";
 import type { CoreWithDial } from "~/shared/cores";
 import type { AgentDto, TaskDto } from "~/shared/task-wire";
 
@@ -29,7 +30,8 @@ const agentsByCore: Record<string, AgentDto[]> = {
 let tasks: TaskDto[] = [];
 const api = vi.hoisted(() => ({
   getKeybindings: vi.fn(async () => ({ bindings: {} })),
-  listTasks: vi.fn(async () => ({ tasks })),
+  listTasksPage: vi.fn(async (q: PageQuery) => (await import("./task-board-fake")).fakeTasksPage(tasks, q)),
+  getTaskCounts: vi.fn(async () => (await import("./task-board-fake")).fakeTaskCounts(tasks)),
   getTask: vi.fn(async (id: string) => ({ task: tasks.find((t) => t.id === id)!, comments: [] })),
   listCoreAgents: vi.fn(async (coreId: string) => ({ agents: agentsByCore[coreId] ?? [] })),
   createTask: vi.fn(async () => ({})),
