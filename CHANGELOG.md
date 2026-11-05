@@ -2,6 +2,30 @@
 
 All notable changes to this project, newest first.
 
+## 0.5.2-f1 — unreleased
+
+Opening the grid view no longer starts every Session at once. The grid now shows
+at most 8 Sessions on a desktop screen (4 on a small tablet), picking the ones
+that are running or waiting for you first, then pinned and recently updated
+ones. A "+N more" chip says how many are left out, and a picker on the grid
+layout button lets you swap which Sessions are shown. A finished Session is
+never resumed just to draw its tile: it shows its past output and a Resume
+button, and it starts again only when you press it. A Core also refuses to run
+more than 8 harnesses at the same time and says so clearly, and the grid
+shortcut no longer fires while you are typing in a terminal.
+
+The Tasks board loads 10 Tasks per column instead of every Task ever run. Each
+column ends with a Load more button that brings in the next 10, on desktop and
+on a phone. Column headers, the phone's segment counts and the Core chips still
+show the true totals, and dragging a card between columns works as before.
+
+On a phone you can now scroll back through a Session's terminal by swiping, and
+the page no longer jitters while you do. Full-screen harnesses get the swipe
+too, and a tap still focuses the terminal. The terminal screen holds the page
+still while it is open, and it resizes only when its size really changes, so
+scrolling up no longer snaps you back to the bottom. Desktop terminal behaviour
+is unchanged.
+
 ## 0.5.2 — unreleased
 
 The Panel now works on a phone. Below 768 px wide the Panel drops the desktop
