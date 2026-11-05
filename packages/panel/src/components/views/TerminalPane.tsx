@@ -25,6 +25,7 @@ import {
   DUPLICATE_ACTIVE_SESSION_EVENT,
   STATUS_META,
 } from "~/lib/design-meta";
+import { isSettledSessionStatus } from "~/lib/grid-layout-prefs";
 import { mutateSessionForCore } from "~/lib/mutate-session-for-core";
 import { useHideableMenu } from "~/lib/hideable-elements";
 import { takePendingInitialInput } from "~/lib/pending-initial-input";
@@ -483,6 +484,11 @@ export function TerminalPane({
   const [liveStatus, setLiveStatus] = useState("");
   const [startError, setStartError] = useState<string | null>(null);
   const [retryNonce, setRetryNonce] = useState(0);
+  // A Session with no live PTY that is not running is attached read-only and
+  // waits here for an explicit Resume (#895); the click sets the ref the surface
+  // closure reads and rebuilds the pane through the same nonce as Retry.
+  const [awaitingResume, setAwaitingResume] = useState(false);
+  const resumeRequestedRef = useRef(false);
   const [renameOpen, setRenameOpen] = useState(false);
   const [titleDraft, setTitleDraft] = useState(session.title);
   const [savingTitle, setSavingTitle] = useState(false);
@@ -1475,6 +1481,7 @@ export function TerminalPane({
         // gate (session alive; effect re-runs via deps) or closes the session.
         if (descriptor.pendingValidation) return;
         setStartError(null);
+        setAwaitingResume(false);
         try {
           fitTerminalSurface(term, fit);
 
@@ -1510,6 +1517,19 @@ export function TerminalPane({
                 return;
               }
             }
+          }
+
+          // Nothing is alive to attach to. Starting a harness is a heavy,
+          // user-visible act, so a tile that merely mounts (grid view over many
+          // Sessions, a reload) never does it for a Session that is not running:
+          // it stays read-only until the operator presses Resume.
+          if (
+            !resumeRequestedRef.current &&
+            isSettledSessionStatus(liveSessionStatusRef.current)
+          ) {
+            setAwaitingResume(true);
+            setLiveStatus("Session is not running. Press Resume to start it.");
+            return;
           }
 
           const isResume = isHarnessResumeCommand(session.agent, descriptor.startCommand);
@@ -1581,6 +1601,36 @@ export function TerminalPane({
       >
         {liveStatus}
       </div>
+      {awaitingResume && !startError && (
+        <div
+          data-session-resume
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: 8,
+            padding: "8px 12px",
+            borderBottom: "1px solid var(--border)",
+            color: "var(--text-dim)",
+            background: "color-mix(in oklch, var(--text-dim) 10%, transparent)",
+            fontFamily: "var(--mono)",
+            fontSize: 11.5,
+          }}
+        >
+          <span>Not running. Showing the saved view only.</span>
+          <Btn
+            variant="ghost"
+            size="sm"
+            icon="refresh"
+            onClick={() => {
+              resumeRequestedRef.current = true;
+              setRetryNonce((value) => value + 1);
+            }}
+          >
+            Resume
+          </Btn>
+        </div>
+      )}
       {startError && (
         <div
           role="alert"
