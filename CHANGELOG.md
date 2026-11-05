@@ -9,10 +9,11 @@ at most 8 Sessions on a desktop screen (4 on a small tablet), picking the ones
 that are running or waiting for you first, then pinned and recently updated
 ones. A "+N more" chip says how many are left out, and a picker on the grid
 layout button lets you swap which Sessions are shown. A finished Session is
-never resumed just to draw its tile: it shows its past output and a Resume
-button, and it starts again only when you press it. A Core also refuses to run
-more than 8 harnesses at the same time and says so clearly, and the grid
-shortcut no longer fires while you are typing in a terminal.
+never resumed just to draw its tile: the tile says the Session is not running
+and shows a Resume button, and the Session starts again only when you press it.
+A Core also refuses to run more than 8 harnesses at the same time and says so
+clearly, and the grid shortcut no longer fires while you are typing in a
+terminal.
 
 The Tasks board loads 10 Tasks per column instead of every Task ever run. Each
 column ends with a Load more button that brings in the next 10, on desktop and
