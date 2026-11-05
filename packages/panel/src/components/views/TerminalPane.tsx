@@ -49,6 +49,7 @@ import {
   useTerminalPaneZoomShortcuts,
   useTerminalPaneWheelZoom,
 } from "~/lib/use-terminal-zoom";
+import { createTerminalTouchTarget, useTerminalTouchScroll } from "~/lib/use-terminal-touch-scroll";
 import { useHotkey } from "~/lib/use-hotkey";
 import { TerminalZoomControls } from "~/components/views/TerminalZoomControls";
 import { errMsg } from "~/shared/err-msg";
@@ -528,6 +529,13 @@ export function TerminalPane({
   } = useTerminalZoom(descriptor.sessionId);
   useTerminalPaneZoomShortcuts(paneRef, zoomIn, zoomOut, resetZoom);
   useTerminalPaneWheelZoom(paneRef, zoomBy);
+  // Phone/tablet only: xterm has no touch scrolling, so without this a swipe
+  // scrolls the page (#897).
+  const getTouchScrollTarget = useCallback(
+    () => termSurfaceRef.current?.touchScrollTarget?.() ?? null,
+    [],
+  );
+  useTerminalTouchScroll(containerRef, getTouchScrollTarget, phone);
 
   // Which discretionary header buttons the user has chosen to show. Zoom is
   // hidden by default; the keyboard shortcuts (Cmd/Ctrl +/-/0) still work. The
@@ -1273,6 +1281,7 @@ export function TerminalPane({
         // fallback (issue 386) and honours the write gate.
         sendKeys: (data) => void writeToPty(data),
         applicationCursorKeys: () => term.modes.applicationCursorKeysMode,
+        touchScrollTarget: () => createTerminalTouchTarget(term, (data) => void writeToPty(data)),
         setReadOnly: (readOnly) => setTerminalReadOnly(term, readOnly),
         paste: (text) => term.paste(text),
       };

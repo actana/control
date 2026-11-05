@@ -4,6 +4,9 @@
 @media (max-width: 1023px) {
   .mc-terminal-screen {
     color: var(--text);
+    /* #897: the terminal handles its own touch scrolling; the page never moves. */
+    touch-action: none;
+    overscroll-behavior: contain;
   }
 
   /* Header: Back · status dot · title · bell. */

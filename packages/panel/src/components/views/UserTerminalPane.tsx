@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { CardFrame } from "~/components/ui/CardFrame";
 import { Btn } from "~/components/ui/Btn";
 import { ConfirmDialog } from "~/components/ui/ConfirmDialog";
@@ -37,6 +37,8 @@ import {
 } from "~/lib/terminal-replay";
 import { getPtyStreamRouter } from "~/lib/pty-stream-router";
 import { errMsg } from "~/shared/err-msg";
+import { createTerminalTouchTarget, useTerminalTouchScroll } from "~/lib/use-terminal-touch-scroll";
+import type { TouchScrollTarget } from "~/lib/use-terminal-touch-scroll";
 import { useFocusWithin } from "~/lib/use-focus-within";
 import { CLEAR_USER_TERMINAL_EVENT } from "~/lib/design-meta";
 import type { UserTerminal } from "~/db/schema";
@@ -91,6 +93,7 @@ export function UserTerminalPane({
     setFontSize: (fontSize: number) => void;
     writeToPty?: (data: string) => void;
     applicationCursorKeys?: () => boolean;
+    touchScrollTarget?: () => TouchScrollTarget;
   } | null>(null);
   const {
     level: zoomLevel,
@@ -102,6 +105,10 @@ export function UserTerminalPane({
     canZoomOut,
   } = useTerminalZoom(terminal.id);
   useTerminalPaneZoomShortcuts(cardRef, zoomIn, zoomOut, resetZoom);
+  // Phone/tablet only: xterm has no touch scrolling, so without this a swipe
+  // scrolls the page (#897).
+  const getTouchScrollTarget = useCallback(() => termRef.current?.touchScrollTarget?.() ?? null, []);
+  useTerminalTouchScroll(containerRef, getTouchScrollTarget, phone);
   const [editing, setEditing] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [draftName, setDraftName] = useState(terminal.name);
@@ -302,6 +309,11 @@ export function UserTerminalPane({
           if (id && ptyApi) ptyApi.write(id, data).catch(() => {});
         },
         applicationCursorKeys: () => term.modes.applicationCursorKeysMode,
+        touchScrollTarget: () =>
+          createTerminalTouchTarget(term, (data) => {
+            const id = activePtyId;
+            if (id && ptyApi) ptyApi.write(id, data).catch(() => {});
+          }),
         paste: (text) => term.paste(text),
       };
       const wireTerminalInput = (id: string) => {
