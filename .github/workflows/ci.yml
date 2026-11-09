@@ -578,7 +578,7 @@ jobs:
         with:
           node-version: 24.15.0
           package-manager-cache: false
-      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         with:
           version: 11.1.2
           cache: true
@@ -594,7 +594,7 @@ jobs:
         with:
           node-version: 24.15.0
           package-manager-cache: false
-      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         with:
           version: 11.1.2
           cache: true
@@ -680,7 +680,7 @@ jobs:
         with:
           node-version: 24.15.0
           package-manager-cache: false
-      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         with:
           version: 11.1.2
           cache: true
@@ -703,7 +703,7 @@ jobs:
         with:
           node-version: 24.15.0
           package-manager-cache: false
-      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         with:
           version: 11.1.2
           cache: true
@@ -721,7 +721,7 @@ jobs:
         with:
           node-version: 24.15.0
           package-manager-cache: false
-      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         with:
           version: 11.1.2
           cache: true
@@ -755,7 +755,7 @@ jobs:
           node-version: 24.15.0
           package-manager-cache: false
 
-      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         with:
           version: 11.1.2
           cache: true
@@ -818,7 +818,7 @@ jobs:
         with:
           node-version: 24.15.0
           package-manager-cache: false
-      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         with:
           version: 11.1.2
           cache: true
@@ -882,7 +882,7 @@ jobs:
         with:
           node-version: 24.15.0
           package-manager-cache: false
-      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         with:
           version: 11.1.2
           cache: true
@@ -1043,7 +1043,7 @@ jobs:
           node-version: 24.15.0
           package-manager-cache: false
 
-      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         with:
           version: 11.1.2
           cache: true
@@ -1130,7 +1130,7 @@ jobs:
           node-version: 24.15.0
           package-manager-cache: false
 
-      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         with:
           version: 11.1.2
           cache: true
