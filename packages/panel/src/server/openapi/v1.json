@@ -66,6 +66,16 @@
             "description": "What the Session of the running attempt is doing; null when no attempt runs. working = busy; needs-input = waits for a person; interrupted = interrupted; idle-no-result = idle and no result file yet; exited = the Session ended. It never changes `status`: the result file is the only success signal. A change fires the webhook event `task.session_state_changed`."
           },
           "sessionStateAt": { "type": ["integer", "null"], "description": "When `sessionState` last changed (epoch ms); null with it." },
+          "prompt": {
+            "type": ["object", "null"],
+            "description": "Only on a single Task read (GET /api/v1/tasks/{taskId}) while `sessionState` is `needs-input`: what the Session asks, read live from the Core; null when the Core cannot be read. Answer it with POST /api/v1/tasks/{taskId}/answer.",
+            "properties": {
+              "text": { "type": "string", "description": "The visible prompt: the last lines of the Session's screen, at most 4 KB, secrets masked." },
+              "options": { "type": "array", "description": "The numbered or labelled choices, when the prompt is a choice dialog.", "items": { "type": "object", "properties": { "label": { "type": "string" }, "key": { "type": "string" }, "selected": { "type": "boolean" } } } },
+              "kind": { "type": "string", "enum": ["question", "choice", "confirm", "permission", "trust", "unknown"], "description": "From the hook that set needs-input (permission, AskUserQuestion), else from the harness dialog rules, else `unknown` (text only; answer with `keys` only)." },
+              "at": { "type": "integer", "description": "The prompt's id: the `sessionStateAt` it was read at. Pass it back as `expect` when answering." }
+            }
+          },
           "watch": {
             "type": "object",
             "description": "Only on an `assigned` or `in_progress` Task (so create with startNow, assign and comment & re-assign return it straight away, with no extra get), and only where a single Task is returned (create, status, update, comment & re-assign, stop, get), never on a list row. Wait by reading `url` (GET /api/watch/{token}, no API key) instead of polling the Task.",
@@ -330,10 +340,11 @@
       "get": {
         "operationId": "listTasks",
         "summary": "List Tasks",
-        "description": "The owner's Tasks. A restricted key lists only Tasks on Cores in its scope. Without `limit`, every Task is returned with its full row, as before. With `limit`, one page is returned, newest update first, and the rows leave out `description` (read it with GET /api/v1/tasks/{taskId}); `nextCursor` is the `cursor` for the next page and is null on the last.",
+        "description": "The owner's Tasks. A restricted key lists only Tasks on Cores in its scope. Without `limit`, every Task is returned with its full row, as before. With `limit`, one page is returned, newest update first, and the rows leave out `description` (read it with GET /api/v1/tasks/{taskId}); `nextCursor` is the `cursor` for the next page and is null on the last. `fields=lean` makes the list without `limit` lean too: every Task, rows without `description`, the same row shape as MCP get_tasks.",
         "parameters": [
           { "name": "limit", "in": "query", "required": false, "schema": { "type": "integer", "minimum": 1, "maximum": 100 }, "description": "Page size, 1-100. Omit to list every Task with its description." },
           { "name": "cursor", "in": "query", "required": false, "schema": { "type": "string" }, "description": "The `nextCursor` of the previous page. Opaque. Needs `limit`." },
+          { "name": "fields", "in": "query", "required": false, "schema": { "type": "string", "enum": ["lean"] }, "description": "`lean`: rows without `description`, with or without `limit`. Omit for the full rows (the default, unchanged)." },
           { "name": "sessionState", "in": "query", "required": false, "schema": { "type": "string" }, "description": "Only Tasks whose Session is in this state: one of working, needs-input, interrupted, idle-no-result, exited, or a comma list of them (for example `needs-input,idle-no-result`). Filtered in the database, so it works with `limit`." }
         ],
         "responses": {
@@ -344,14 +355,14 @@
                 "schema": {
                   "type": "object",
                   "properties": {
-                    "tasks": { "type": "array", "items": { "$ref": "#/components/schemas/Task" }, "description": "Full rows without `limit`; with `limit`, rows without `description`." },
+                    "tasks": { "type": "array", "items": { "$ref": "#/components/schemas/Task" }, "description": "Full rows without `limit`; with `limit` or `fields=lean`, rows without `description`." },
                     "nextCursor": { "type": ["string", "null"], "description": "Only with `limit`. Pass it as `cursor` for the next page; null when there is none." }
                   }
                 }
               }
             }
           },
-          "400": { "description": "`limit` is not a whole number from 1 to 100, `cursor` was not issued by this API, `cursor` was given without `limit`, or `sessionState` is empty or names an unknown state" },
+          "400": { "description": "`limit` is not a whole number from 1 to 100, `cursor` was not issued by this API, `cursor` was given without `limit`, `fields` is not `lean`, or `sessionState` is empty or names an unknown state" },
           "401": { "description": "Unauthorized" }
         }
       },
@@ -589,6 +600,43 @@
           "403": { "description": "Key does not reach the Task's Core, or lacks the permission the route needs" },
           "404": { "description": "No such Task" },
           "409": { "description": "The Task is in_progress (stop it first), has no Session, or someone is working in the Session" },
+          "401": { "description": "Unauthorized" }
+        }
+      }
+    },
+    "/api/v1/tasks/{taskId}/answer": {
+      "post": {
+        "operationId": "answerTask",
+        "summary": "Answer the prompt a Task's Session waits at",
+        "description": "Only while the Task's `sessionState` is `needs-input`, and only for the prompt the caller read: `expect` is the `prompt.at` it saw. The answer is `{ text }` (typed, then Enter), `{ option }` (a number from 1, or a label) or `{ keys }` from the allowlist (Enter, Esc, Up, Down, Left, Right, Tab, Space, y, Y, n, N, 1-9; at most 16). On an `unknown` prompt only `{ keys }` is accepted. Each answer adds a Task comment `Answered by <key name> (API key): <kind> \"<prompt first line>\" → <answer>`. Needs `tasks:write`.",
+        "parameters": [{ "name": "taskId", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["answer"],
+                "properties": {
+                  "answer": {
+                    "oneOf": [
+                      { "type": "object", "required": ["text"], "properties": { "text": { "type": "string", "maxLength": 1000 } } },
+                      { "type": "object", "required": ["option"], "properties": { "option": { "oneOf": [{ "type": "integer", "minimum": 1 }, { "type": "string" }] } } },
+                      { "type": "object", "required": ["keys"], "properties": { "keys": { "type": "array", "maxItems": 16, "items": { "type": "string", "enum": ["Enter", "Esc", "Up", "Down", "Left", "Right", "Tab", "Space", "y", "Y", "n", "N", "1", "2", "3", "4", "5", "6", "7", "8", "9"] } } } }
+                    ]
+                  },
+                  "expect": { "type": "integer", "description": "The `prompt.at` the caller read. A different one is refused with `stale_prompt`." }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "The answer was typed. `{ task, answered: { kind, at, answer } }`; the Session's state goes back to `working` (or to a new `needs-input`)." },
+          "400": { "description": "`invalid_answer`: not an answer this prompt takes (a key outside the allowlist, text on an unknown prompt, a missing option)." },
+          "403": { "description": "Key does not reach the Task's Core, or lacks `tasks:write`" },
+          "404": { "description": "No such Task" },
+          "409": { "description": "Nothing was typed. `code`: `not_waiting` (the Session is not `needs-input`), `stale_prompt` (a different or already answered prompt), `needs_human` (a trust, password, token or credential prompt, or a permission that widens access: ask a human), `prompt_unavailable` (the Core cannot be read), `write_failed`." },
           "401": { "description": "Unauthorized" }
         }
       }

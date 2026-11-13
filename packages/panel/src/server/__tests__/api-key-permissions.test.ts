@@ -108,6 +108,7 @@ function sampleFor(method: string, pattern: RegExp): { path: string; json?: unkn
   if (path.endsWith("/status")) return { path, json: { status: "draft" } };
   if (path.endsWith("/stop")) return { path, json: {} };
   if (path.endsWith("/close-session")) return { path };
+  if (path.endsWith("/answer")) return { path, json: { answer: { keys: ["Enter"] } } };
   if (method === "PATCH") return { path, json: { title: "renamed" } };
   if (path.endsWith("/comments")) return { path, json: { body: "hello" } };
   throw new Error(`no sample for ${method} ${path}`);
@@ -128,7 +129,7 @@ describe("a read-only key", () => {
         expect(await errorOf(res)).toBe(`this API key lacks the ${route.permission} permission`);
       }
     }
-    expect(seen.filter((s) => s.startsWith("POST ") || s.startsWith("PATCH ") || s.startsWith("DELETE ")).length).toBe(10);
+    expect(seen.filter((s) => s.startsWith("POST ") || s.startsWith("PATCH ") || s.startsWith("DELETE ")).length).toBe(11);
     expect(seen.filter((s) => s.startsWith("GET ")).length).toBe(11);
     // Nothing was written: the 403 came from the gate, before any handler ran.
     expect((await testDb.pool.query("select count(*)::int as n from agents")).rows[0]).toEqual({ n: 2 });
@@ -252,8 +253,8 @@ describe("the /mcp tools apply the same permissions", () => {
   const agentTools = MCP_TOOLS.filter((t) => t.permission === "agents:write").map((t) => t.name).sort();
 
   it("every tool names the permission its REST route needs: reads are read, the Task writes are tasks:write", () => {
-    expect(readTools).toEqual(["get_sessions", "get_shared", "get_task", "get_tasks", "list_agents", "list_cores", "list_shared"]);
-    expect(taskTools).toEqual(["assign_task", "close_session", "comment_task", "create_task", "delete_task", "stop_task", "update_task"]);
+    expect(readTools).toEqual(["get_guide", "get_sessions", "get_shared", "get_task", "get_tasks", "list_agents", "list_cores", "list_shared"]);
+    expect(taskTools).toEqual(["answer_task", "assign_task", "close_session", "comment_task", "create_task", "delete_task", "stop_task", "update_task"]);
     expect(agentTools).toEqual(["create_agent", "delete_agent", "update_agent"]);
     for (const t of MCP_TOOLS) expect(t.readOnly, t.name).toBe(t.permission === "read");
   });
