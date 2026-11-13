@@ -369,3 +369,148 @@ describe("a resume that cannot start waits like any start (#962)", () => {
     expect(await getTask(A, task.id)).toMatchObject({ status: "assigned", attemptCount: 1, lastError: "waiting: Core not connected" });
   });
 });
+
+describe("the new Session of a fallback knows its attempt and what was left out (#955, part p2)", () => {
+  const promptOf = (r: Rig, id: string, attempt: number) => r.shared.text(`tasks/${id}/prompt-attempt-${attempt}.md`)!;
+
+  it("starts a new Session with the attempt line at the top, the description and the comments, when there is no harness session id", async () => {
+    const r = rig();
+    r.core.capturesSessionId = false;
+    const task = await finishedTask(r);
+    await reassign(r, task.id, "Also handle Windows paths.");
+
+    const file = promptOf(r, task.id, 2);
+    expect(r.core.starts).toHaveLength(2);
+    expect(file.split("\n")[0]).toBe("This is attempt 2. Check the current state (branches, PRs, files, the comments below) before repeating any step.");
+    expect(file).toContain("Red on main.");
+    expect(file).toContain("Also handle Windows paths.");
+    expect(file).not.toContain("older comments not included");
+  });
+
+  it("the Agent now on another Core: a new Session there, with the attempt line", async () => {
+    const r = rig();
+    const task = await finishedTask(r);
+    r.where.coreId = "core_2";
+    await reassign(r, task.id);
+
+    expect(r.core.starts.map((s) => s.coreId)).toEqual(["core_1", "core_2"]);
+    expect(promptOf(r, task.id, 2)).toContain("This is attempt 2. Check the current state");
+  });
+
+  it("25 comments on the fallback: the last 20 are in and the prompt says 5 are not included", async () => {
+    const r = rig();
+    r.core.capturesSessionId = false;
+    const task = await finishedTask(r); // 1 comment: the agent's report
+    const { addTaskComment } = await import("../../services/tasks");
+    for (let i = 1; i <= 23; i += 1) await addTaskComment(A, task.id, { authorKind: "user", authorName: "Operator", body: `note ${i}` }, r.clock.now());
+    await reassign(r, task.id, "note 24"); // 1 + 23 + 1 = 25 comments
+
+    const file = promptOf(r, task.id, 2);
+    expect(file).toContain(`5 older comments not included; read them with get_task ${task.id}`);
+    expect(file).toContain("note 24");
+    expect(file).toContain("note 5\n");
+    expect(file).not.toContain("note 4\n");
+    expect(file).not.toContain("Fixed it."); // the agent's report was the oldest comment
+    expect(file.match(/^- Operator \(user\):/gm)).toHaveLength(20);
+  });
+
+  it("attempt 1 has no attempt line", async () => {
+    const r = rig();
+    const task = await createTask(A, { title: "Fix the build", description: "Red on main.", agent: AGENT.id, startNow: true, timeoutMinutes: null }, r.clock.now());
+    await r.dispatcher.dispatchOnce();
+
+    expect(promptOf(r, task.id, 1)).not.toContain("This is attempt");
+    expect(promptOf(r, task.id, 1)).not.toContain("older comments not included");
+  });
+});
+
+describe("the dispatch comment of the fallback says why the Session was not resumed (#955, part p2)", () => {
+  const newSession = async (id: string) => (await bodies(id)).filter((b) => b.startsWith("New Session"));
+
+  it("New Session <id> (attempt <n>; resume not possible: <reason>; <m> of <total> comments included)", async () => {
+    const r = rig();
+    r.core.capturesSessionId = false;
+    const task = await finishedTask(r);
+    await reassign(r, task.id);
+
+    // The agent's report and the operator's comment: 2 of 2.
+    expect(await newSession(task.id)).toEqual(["New Session session_2 (attempt 2; resume not possible: the Session has no harness session id; 2 of 2 comments included)"]);
+  });
+
+  it("counts the comments left out: 20 of 25", async () => {
+    const r = rig();
+    r.core.capturesSessionId = false;
+    const task = await finishedTask(r);
+    const { addTaskComment } = await import("../../services/tasks");
+    for (let i = 1; i <= 23; i += 1) await addTaskComment(A, task.id, { authorKind: "user", authorName: "Operator", body: `note ${i}` }, r.clock.now());
+    await reassign(r, task.id, "note 24");
+
+    expect(await newSession(task.id)).toEqual(["New Session session_2 (attempt 2; resume not possible: the Session has no harness session id; 20 of 25 comments included)"]);
+  });
+
+  it("names the reason the Core gave when it refused the resume", async () => {
+    const r = rig();
+    const { RESUME_REFUSALS } = await import("../types");
+    r.core.resumeRefusal = RESUME_REFUSALS.resumeRefused("session not found");
+    const task = await finishedTask(r);
+    await reassign(r, task.id);
+
+    expect(await newSession(task.id)).toEqual(["New Session session_2 (attempt 2; resume not possible: the Core refused the resume (session not found); 2 of 2 comments included)"]);
+  });
+
+  it("the Agent on another Core, and a harness that exits at once, each say their own reason", async () => {
+    const r = rig();
+    const task = await finishedTask(r);
+    r.where.coreId = "core_2";
+    await reassign(r, task.id);
+    expect(await newSession(task.id)).toEqual(["New Session session_2 (attempt 2; resume not possible: its Agent now runs on another Core; 2 of 2 comments included)"]);
+
+    const r2 = rig();
+    r2.core.resumeExitsAtOnce = true;
+    const task2 = await finishedTask(r2);
+    await reassign(r2, task2.id);
+    expect(await newSession(task2.id)).toEqual(["New Session session_2 (attempt 2; resume not possible: the harness exited at once; 2 of 2 comments included)"]);
+  });
+
+  it("keeps the dispatch comment that names the Core, Agent and Session, so the next re-assign and Open session still find it", async () => {
+    const r = rig();
+    r.core.capturesSessionId = false;
+    const task = await finishedTask(r);
+    await reassign(r, task.id);
+
+    expect(await bodies(task.id)).toContain("Dispatched (attempt 2) to Claude Code (claude-code) on Core core_1: Session session_2.");
+    expect(await findCurrentTaskSession(A, task.id)).toEqual({ coreId: "core_1", sessionId: "session_2", attempt: 2 });
+  });
+
+  it("a first dispatch has no earlier Session to resume: no New Session comment, and the usual one", async () => {
+    const r = rig();
+    const task = await finishedTask(r);
+    expect(await newSession(task.id)).toEqual([]);
+    expect(await bodies(task.id)).toContain("Dispatched (attempt 1) to Claude Code (claude-code) on Core core_1: Session session_1.");
+  });
+
+  it("an attempt after the first with no Session recorded for the Task says so", async () => {
+    const r = rig();
+    const task = await createTask(A, { title: "Fix the build", description: "Red.", agent: AGENT.id, startNow: true, timeoutMinutes: null }, r.clock.now());
+    await testDb.pool.query("update tasks set attempt_count = 1 where id = $1", [task.id]);
+    await r.dispatcher.dispatchOnce();
+
+    expect(await getTask(A, task.id)).toMatchObject({ attemptCount: 2 });
+    expect(await newSession(task.id)).toEqual(["New Session session_1 (attempt 2; resume not possible: no earlier Session is recorded for this Task; 0 of 0 comments included)"]);
+  });
+
+  it("without a resumer (none wired) there is no resume to report: the dispatch comment only", async () => {
+    const r = rig({ withResume: false });
+    const task = await finishedTask(r);
+    await reassign(r, task.id);
+    expect(await newSession(task.id)).toEqual([]);
+  });
+
+  it("a resumed attempt says Resumed, not New Session", async () => {
+    const r = rig();
+    const task = await finishedTask(r);
+    await reassign(r, task.id);
+    expect(await newSession(task.id)).toEqual([]);
+    expect(await bodies(task.id)).toContain("Resumed Session session_1 (attempt 2)");
+  });
+});

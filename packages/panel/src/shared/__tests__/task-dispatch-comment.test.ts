@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatTaskDispatchComment, formatTaskResumeComment, parseTaskDispatchComment, parseTaskResumeComment, resolveAttemptSessions } from "../tasks";
+import { formatTaskDispatchComment, formatTaskNewSessionComment, formatTaskResumeComment, parseTaskDispatchComment, parseTaskResumeComment, resolveAttemptSessions } from "../tasks";
 
 // Format and parse are a pair (#676 / #678): the dispatcher writes with format,
 // Task detail opens Sessions with parse. Existing Task comments must stay readable.
@@ -113,5 +113,28 @@ describe("resolveAttemptSessions", () => {
       [2, "t-2", "core_b"],
       [3, "t-2", "core_b"],
     ]);
+  });
+});
+
+describe("the New Session comment (#955)", () => {
+  const fields = { attempt: 2, sessionId: "s2", reason: "its Agent now runs on another Core", included: 20, total: 25 };
+
+  it("reads New Session <id> (attempt <n>; resume not possible: <reason>; <m> of <total> comments included)", () => {
+    expect(formatTaskNewSessionComment(fields)).toBe("New Session s2 (attempt 2; resume not possible: its Agent now runs on another Core; 20 of 25 comments included)");
+  });
+
+  it("is not a dispatch or a resume comment, so it names no Session of an attempt by itself", () => {
+    const body = formatTaskNewSessionComment(fields);
+    expect(parseTaskDispatchComment(body)).toBeNull();
+    expect(parseTaskResumeComment(body)).toBeNull();
+    expect(resolveAttemptSessions([{ authorKind: "system", body }])).toEqual([]);
+  });
+
+  it("puts a long or multi-line reason from a Core on one short line, and refuses a crafted Session id", () => {
+    const body = formatTaskNewSessionComment({ ...fields, reason: `line one\n\nline two ${"x".repeat(300)}` });
+    expect(body).not.toContain("\n");
+    expect(body).toContain("line one line two");
+    expect(body.length).toBeLessThan(330);
+    expect(() => formatTaskNewSessionComment({ ...fields, sessionId: "s2 (attempt 9" })).toThrow(/session id/i);
   });
 });

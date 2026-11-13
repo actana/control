@@ -208,6 +208,21 @@ export function parseTaskResumeComment(body: string): TaskResumeCommentFields | 
   return m ? { attempt: Number(m[2]), sessionId: m[1]! } : null;
 }
 
+/**
+ * The system comment for an attempt that could not go to the Task's own Session and got a new one (#955):
+ * `New Session <id> (attempt <n>; resume not possible: <reason>; <m> of <total> comments included)`. It comes with the
+ * dispatch comment that names the Core, Agent and harness of the new Session, not instead of it. Nothing reads it back,
+ * so the reason (a Core may put a long or multi-line text in it) is cut to one short line.
+ */
+export type TaskNewSessionCommentFields = { attempt: number; sessionId: string; reason: string; included: number; total: number };
+
+export function formatTaskNewSessionComment(fields: TaskNewSessionCommentFields): string {
+  if (!isTaskDispatchId(fields.sessionId)) throw new Error("the Session id is not a valid id (letters, digits, _ and - only)");
+  const flat = fields.reason.replace(/\s+/g, " ").trim();
+  const reason = flat.length > 200 ? `${flat.slice(0, 200)}...` : flat;
+  return `New Session ${fields.sessionId} (attempt ${fields.attempt}; resume not possible: ${reason}; ${fields.included} of ${fields.total} comments included)`;
+}
+
 /** The Session one attempt ran in, as the Panel's own system comments say. */
 export type TaskAttemptSession = {
   /** Where the comment sits in the list given. */

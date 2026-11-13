@@ -30,11 +30,12 @@ export type SessionStarter = (request: StartSessionRequest) => Promise<StartedSe
  * `code` is for tests and logs. It is the one seam between the resume path and the fallback.
  */
 export type ResumeRefusal = {
-  code: "other-core" | "other-harness" | "session-gone" | "no-session-id" | "no-resume" | "resume-refused" | "exited-at-once" | "send-refused" | "no-answer";
+  code: "no-earlier-session" | "other-core" | "other-harness" | "session-gone" | "no-session-id" | "no-resume" | "resume-refused" | "exited-at-once" | "send-refused" | "no-answer";
   reason: string;
 };
 
 export const RESUME_REFUSALS = {
+  noEarlierSession: { code: "no-earlier-session", reason: "no earlier Session is recorded for this Task" },
   otherCore: { code: "other-core", reason: "its Agent now runs on another Core" },
   otherHarness: { code: "other-harness", reason: "its Agent now runs another harness" },
   sessionGone: { code: "session-gone", reason: "the Core no longer has that Session" },

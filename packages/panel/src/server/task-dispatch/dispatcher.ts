@@ -23,10 +23,10 @@ import {
   type TaskComment,
 } from "../services/tasks";
 import { archivedTaskName, classifyTaskEntry, taskFolder } from "~/shared/task-report";
-import { formatTaskDispatchComment, formatTaskResumeComment, resolveAttemptSessions, sessionStateForCoreStatus, taskWaitingReason, type TaskAttemptSession } from "~/shared/tasks";
+import { formatTaskDispatchComment, formatTaskNewSessionComment, formatTaskResumeComment, resolveAttemptSessions, sessionStateForCoreStatus, taskWaitingReason, type TaskAttemptSession } from "~/shared/tasks";
 import { ResultWatcher } from "./result-watcher";
 import { lazyShared, type SharedFor } from "./shared-factory";
-import { buildResumePrompt, buildTaskPointer, buildTaskPrompt, taskPromptPath } from "./task-prompt";
+import { buildResumePrompt, buildTaskPointer, buildTaskPrompt, promptComments, taskPromptPath } from "./task-prompt";
 import { consoleDispatchLog, messageOf, RESUME_REFUSALS, type Clock, type DispatchLog, type ResumeRefusal, type SessionResumer, type SessionStarter, type SessionStopper, type StartedSession } from "./types";
 
 /**
@@ -47,7 +47,7 @@ import { consoleDispatchLog, messageOf, RESUME_REFUSALS, type Clock, type Dispat
  *     the Agent's Core, the harness resumes it), the harness is reopened on that same Session row, or, when it is still
  *     running (one live harness per Task), the message is typed into it. The prompt file then holds only what is new, and the
  *     comment says `Resumed Session <id> (attempt <n>)`. When it cannot be resumed, the new Session of step 4 is started as
- *     before, and the reason it could not (a `ResumeRefusal`) is logged and is the seam for the `New Session ...` comment (#955 p2).
+ *     before, and the reason it could not (a `ResumeRefusal`) is logged and goes into a `New Session ...` comment after the dispatch comment (#955).
  *  5. WATCH its result files.
  * Any failure before the Session runs moves the Task to `failed` with the reason
  * as its last error and a system comment (`failTaskDispatch`), so no Task is left
@@ -478,13 +478,17 @@ export class TaskDispatcher {
 
     let sessionId: string;
     let resumed = false;
+    // Why this Task's own Session was not resumed (null: a first dispatch, a resume, or no resumer wired), and how many of
+    // its comments the new Session was given: the `New Session ...` comment says both (#955).
+    let resumeRefusal: ResumeRefusal | null = null;
+    let included = 0;
+    let totalComments = 0;
     try {
       const comments = await listTaskComments(this.ownerId, claimed.id);
       let handle: StartedSession | null = null;
       const previous = this.resumeSession ? resolveAttemptSessions(comments).at(-1) : undefined;
+      if (this.resumeSession && !previous && attempt > 1) resumeRefusal = RESUME_REFUSALS.noEarlierSession;
       if (this.resumeSession && previous) {
-        // #955 p2: `resumeRefusal` is why this Task's own Session was not resumed; the `New Session ...` comment says it.
-        let resumeRefusal: ResumeRefusal | null = null;
         if (previous.coreId !== resolved.coreId) resumeRefusal = RESUME_REFUSALS.otherCore;
         else if (previous.harness !== resolved.harness) resumeRefusal = RESUME_REFUSALS.otherHarness;
         else {
@@ -514,6 +518,9 @@ export class TaskDispatcher {
         if (resumeRefusal) this.log.info(`task ${claimed.id}: Session ${previous.sessionId} not resumed (${resumeRefusal.reason}); starting a new Session`);
       }
       if (!handle) {
+        const given = promptComments(comments);
+        included = given.shown.length;
+        totalComments = given.total;
         if (attempt > 1) await this.stopPreviousSession(claimed.id, attempt - 1, comments);
         // The whole Task goes into a file the agent reads, not into the composer. The file is on the Core before
         // the pointer is typed, so the agent cannot be told to read a file that is not there.
@@ -574,24 +581,15 @@ export class TaskDispatcher {
     }
 
     try {
-      await addTaskComment(
-        this.ownerId,
-        claimed.id,
-        {
-          authorKind: "system",
-          authorName: "Panel",
-          body: resumed
-            ? formatTaskResumeComment({ attempt, sessionId })
-            : formatTaskDispatchComment({
-                attempt,
-                agentName: agent.name,
-                harness: resolved.harness,
-                coreId: resolved.coreId,
-                sessionId,
-              }),
-        },
-        this.now(),
-      );
+      // A new Session is always named by the dispatch comment (Core, Agent, harness: what the next re-assign and Open
+      // session read). When a resume was tried first, the `New Session ...` comment follows it and says why it was not.
+      const notes = resumed
+        ? [formatTaskResumeComment({ attempt, sessionId })]
+        : [
+            formatTaskDispatchComment({ attempt, agentName: agent.name, harness: resolved.harness, coreId: resolved.coreId, sessionId }),
+            ...(resumeRefusal ? [formatTaskNewSessionComment({ attempt, sessionId, reason: resumeRefusal.reason, included, total: totalComments })] : []),
+          ];
+      for (const body of notes) await addTaskComment(this.ownerId, claimed.id, { authorKind: "system", authorName: "Panel", body }, this.now());
     } catch (err) {
       // The Session is running and being watched; a missing note is not a reason to fail the Task.
       this.log.error(`task ${claimed.id}: could not add the dispatch comment: ${messageOf(err)}`);

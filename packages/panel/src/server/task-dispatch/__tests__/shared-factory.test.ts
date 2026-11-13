@@ -4,7 +4,7 @@ import { SharedChangeFeed, createSharedFactory } from "../shared-factory";
 import { SharedFilesUnavailableError } from "../../services/core-s3-shared";
 import { StorageNotConfiguredError } from "../../services/storage";
 import { launchCommand } from "../session-starter";
-import { MAX_POINTER_CHARS, buildTaskPointer, buildTaskPrompt, cutAtCodePoint, taskPromptPath } from "../task-prompt";
+import { MAX_POINTER_CHARS, buildTaskPointer, buildTaskPrompt, cutAtCodePoint, promptComments, taskPromptPath } from "../task-prompt";
 import { HARNESS_FILE_MENTION, fileReference } from "@actana/shared/harness-file-mention";
 import { HARNESSES } from "@actana/shared/domain";
 import { isTaskPointerPrompt, taskPromptFilePath } from "@actana/shared/task-prompt-file";
@@ -137,6 +137,33 @@ describe("the Task prompt", () => {
     expect(prompt).toContain(`${"x".repeat(4_000)} [cut]`);
     expect(prompt).not.toContain("x".repeat(4_001));
     expect(prompt).toContain("attempt 2");
+  });
+});
+
+describe("the Task prompt of a retry (#955)", () => {
+  const task = { id: "task_9", title: "Title", description: "Do it." };
+  const comment = (kind: string, name: string, body: string) =>
+    ({ id: name, seq: 1, taskId: "task_9", ownerId: 1, authorKind: kind, authorName: name, sourceFile: null, body, createdAt: 1 }) as never;
+
+  it("has no attempt line on attempt 1 and starts with it from attempt 2", () => {
+    expect(buildTaskPrompt(task, [], 1)).not.toContain("This is attempt");
+    const line = "This is attempt 3. Check the current state (branches, PRs, files, the comments below) before repeating any step.";
+    expect(buildTaskPrompt(task, [], 3).split("\n")[0]).toBe(line);
+  });
+
+  it("says how many older comments are not included, system comments not counted", () => {
+    const many = Array.from({ length: 25 }, (_, i) => comment("user", `u${i}`, `note ${i}`));
+    const prompt = buildTaskPrompt(task, [comment("system", "Panel", "Dispatched"), ...many], 2);
+    expect(prompt).toContain("5 older comments not included; read them with get_task task_9");
+    expect(prompt).not.toContain("note 4\n");
+    expect(prompt).toContain("note 5\n");
+    expect(buildTaskPrompt(task, many.slice(5), 2)).not.toContain("older comments not included");
+  });
+
+  it("promptComments reports the shown and the total", () => {
+    const many = Array.from({ length: 22 }, (_, i) => comment("agent", `a${i}`, `r${i}`));
+    const { shown, total } = promptComments([comment("system", "Panel", "x"), ...many]);
+    expect([shown.length, total]).toEqual([20, 22]);
   });
 });
 
