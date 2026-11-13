@@ -382,7 +382,7 @@ export async function pruneProcessedOutbox(
           and(
             isNotNull(webhookOutbox.processedAt),
             lte(webhookOutbox.processedAt, cutoff),
-            sql`not exists (select 1 from ${webhookDeliveries} where ${webhookDeliveries.outboxId} = ${webhookOutbox.id})`,
+            sql`not exists (select 1 from ${webhookDeliveries} where ${webhookDeliveries.outboxId} = ${webhookOutbox.id} and ${webhookDeliveries.ownerId} = ${ownerId})`,
           ),
         ),
       )

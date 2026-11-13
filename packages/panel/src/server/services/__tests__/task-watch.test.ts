@@ -78,13 +78,13 @@ async function finish(status: "done" | "failed" | "partial", at: number, over: O
 
 describe("watch token", () => {
   it("round-trips taskId, attempt and expiresAt", () => {
-    const token = mintWatchToken("task-1", 3, T0 + 5 * MIN);
+    const token = mintWatchToken("task-1", 1, 3, T0 + 5 * MIN);
     expect(token).toMatch(/^[A-Za-z0-9_.-]+$/);
-    expect(verifyWatchToken(token)).toEqual({ taskId: "task-1", attempt: 3, expiresAt: T0 + 5 * MIN });
+    expect(verifyWatchToken(token)).toEqual({ taskId: "task-1", ownerId: 1, attempt: 3, expiresAt: T0 + 5 * MIN });
   });
 
   it("rejects a tampered signature, a tampered payload, and garbage", () => {
-    const token = mintWatchToken("task-1", 1, T0 + MIN);
+    const token = mintWatchToken("task-1", 1, 1, T0 + MIN);
     const [payload, sig] = token.split(".");
     const flipped = `${payload}.${sig!.slice(0, -2)}${sig!.endsWith("AA") ? "BB" : "AA"}`;
     const other = Buffer.from("task-2.1." + (T0 + MIN)).toString("base64url");
@@ -96,7 +96,7 @@ describe("watch token", () => {
   });
 
   it("accepts only the canonical spelling of a token", () => {
-    const token = mintWatchToken("task-1", 1, T0 + MIN);
+    const token = mintWatchToken("task-1", 1, 1, T0 + MIN);
     const [payload, sig] = token.split(".") as [string, string];
     for (const variant of [`${token}=`, `${token}\n`, `${token}!`, `${payload}.${sig.slice(0, 5)}*${sig.slice(5)}`, ` ${token}`]) {
       expect(verifyWatchToken(variant)).toBeNull();
@@ -105,7 +105,7 @@ describe("watch token", () => {
   });
 
   it("is bound to the Panel's secrets key", () => {
-    const token = mintWatchToken("task-1", 1, T0 + MIN);
+    const token = mintWatchToken("task-1", 1, 1, T0 + MIN);
     process.env.AC_SECRETS_KEY = "22".repeat(32);
     resetSecretsKeyForTests();
     expect(verifyWatchToken(token)).toBeNull();
@@ -122,7 +122,7 @@ describe("watch token", () => {
     expect(a).toBe(T0 + 100 + NO_LIMIT_WATCH_TTL_MS);
     expect(NO_LIMIT_WATCH_TTL_MS).toBe(24 * 60 * MIN);
     expect(b).toBeGreaterThan(a);
-    expect(mintWatchToken("task-1", 1, a)).not.toBe(mintWatchToken("task-1", 1, b));
+    expect(mintWatchToken("task-1", 1, 1, a)).not.toBe(mintWatchToken("task-1", 1, 1, b));
   });
 });
 
@@ -171,6 +171,12 @@ describe("readWatch", () => {
     const token = taskWatchToken(row, T0);
     expect(await readWatch(`${token}x`, T0)).toEqual({ kind: "not-found" });
     expect(await readWatch("junk", T0)).toEqual({ kind: "not-found" });
+  });
+
+  it("a token minted for another owner reads nothing: the Task is looked up by owner too", async () => {
+    await seed();
+    const foreign = mintWatchToken("task-1", 2, 1, T0 + 60 * MIN);
+    expect(await readWatch(foreign, T0 + 1)).toEqual({ kind: "gone" });
   });
 
   it("a new attempt makes the old token gone", async () => {

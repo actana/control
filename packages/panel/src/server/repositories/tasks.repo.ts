@@ -286,7 +286,7 @@ export async function setTaskSessionState(
     if (from === state) return { kind: "unchanged", task: current };
     const fields = commentFor?.(from) ?? null;
     const comment = fields ? { ...fields, taskId: id, ownerId, createdAt: now } : null;
-    if (comment) await tx.insert(taskComments).values(comment);
+    if (comment) await tx.insert(taskComments).values({ ...comment, ownerId });
     const updated = await tx
       .update(tasks)
       .set({ sessionState: state, sessionStateAt: now })

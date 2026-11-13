@@ -46,12 +46,14 @@ function sign(payload: string): Buffer {
   return createHmac("sha256", deriveSubkey("task-watch")).update(payload).digest();
 }
 
-export function mintWatchToken(taskId: string, attempt: number, expiresAt: number): string {
-  const payload = b64u(Buffer.from(`${taskId}.${attempt}.${expiresAt}`, "utf8"));
+export function mintWatchToken(taskId: string, ownerId: number, attempt: number, expiresAt: number): string {
+  // The owner rides in the signed payload: the anonymous read has no session, and every query on an owner-scoped
+  // table carries the owner (ADR 0041 D15), so it takes it from the token it just verified.
+  const payload = b64u(Buffer.from(`${taskId}.${ownerId}.${attempt}.${expiresAt}`, "utf8"));
   return `${payload}.${b64u(sign(payload))}`;
 }
 
-export function verifyWatchToken(token: string): { taskId: string; attempt: number; expiresAt: number } | null {
+export function verifyWatchToken(token: string): { taskId: string; ownerId: number; attempt: number; expiresAt: number } | null {
   const parts = token.split(".");
   if (parts.length !== 2 || !parts[0] || !parts[1]) return null;
   // One spelling per token: Node's decoder ignores padding and stray characters, which would give one token
@@ -62,9 +64,9 @@ export function verifyWatchToken(token: string): { taskId: string; attempt: numb
   if (b64u(given) !== parts[1] || given.length !== expected.length || !timingSafeEqual(given, expected)) return null;
   const body = Buffer.from(parts[0], "base64url");
   if (b64u(body) !== parts[0]) return null;
-  const m = /^(.+)\.(\d+)\.(\d+)$/.exec(body.toString("utf8"));
+  const m = /^(.+)\.(\d+)\.(\d+)\.(\d+)$/.exec(body.toString("utf8"));
   if (!m) return null;
-  return { taskId: m[1]!, attempt: Number(m[2]), expiresAt: Number(m[3]) };
+  return { taskId: m[1]!, ownerId: Number(m[2]), attempt: Number(m[3]), expiresAt: Number(m[4]) };
 }
 
 /** A token's own expiry: the attempt's time limit plus 10 minutes, or 24 hours from `now` for No limit. */
@@ -75,10 +77,10 @@ export function watchExpiresAt(task: { timeoutMinutes: number | null; dispatched
 
 /** The token for a Task's current attempt. Computed, never stored. */
 export function taskWatchToken(
-  task: { id: string; attemptCount: number; timeoutMinutes: number | null; dispatchedAt: number | null },
+  task: { id: string; ownerId: number; attemptCount: number; timeoutMinutes: number | null; dispatchedAt: number | null },
   now: number = Date.now(),
 ): string {
-  return mintWatchToken(task.id, task.attemptCount, watchExpiresAt(task, now));
+  return mintWatchToken(task.id, task.ownerId, task.attemptCount, watchExpiresAt(task, now));
 }
 
 /**
@@ -91,10 +93,10 @@ export function nextAttemptWatchExpiresAt(task: { timeoutMinutes: number | null 
 }
 
 export function nextAttemptWatchToken(
-  task: { id: string; attemptCount: number; timeoutMinutes: number | null },
+  task: { id: string; ownerId: number; attemptCount: number; timeoutMinutes: number | null },
   now: number = Date.now(),
 ): string {
-  return mintWatchToken(task.id, task.attemptCount + 1, nextAttemptWatchExpiresAt(task, now));
+  return mintWatchToken(task.id, task.ownerId, task.attemptCount + 1, nextAttemptWatchExpiresAt(task, now));
 }
 
 /** The absolute URL: `AC_PANEL_PUBLIC_URL` when set, else the request's origin. */
@@ -136,7 +138,7 @@ export async function readWatch(token: string, now: number = Date.now()): Promis
   const claim = verifyWatchToken(token);
   if (!claim) return { kind: "not-found" };
   if (now >= claim.expiresAt) return { kind: "gone" };
-  const task = await findTaskWatchRow(claim.taskId);
+  const task = await findTaskWatchRow(claim.ownerId, claim.taskId);
   if (!task) return { kind: "gone" };
   const status = task.status;
   // A queued Task answers the token minted for its next attempt; once dispatch raises `attemptCount` the same
