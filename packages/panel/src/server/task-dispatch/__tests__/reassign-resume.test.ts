@@ -276,6 +276,22 @@ describe("one live harness per Task (#955)", () => {
     expect(r.core.starts).toHaveLength(2);
     expect([...(r.core.live ?? [])]).toEqual(["session_2"]);
   });
+
+  it("a Session still waiting on a dialog is not typed into: it is stopped and a new Session starts (#990)", async () => {
+    const r = rig();
+    const task = await finishedTaskStillRunning(r);
+    // The harness could not be ended and is parked on an approval dialog: the Core reports `needs-input` and refuses stamped writes.
+    r.core.emitStatus("session_1", "needs-input");
+    r.core.stopOutcome = { outcome: "stopped", detail: null };
+    await reassign(r, task.id);
+
+    expect(r.core.resumes).toHaveLength(1);
+    expect(r.core.typed.filter((t) => t.sessionId === "session_1")).toEqual([]);
+    expect(r.core.stops.at(-1)).toEqual({ coreId: "core_1", sessionId: "session_1" });
+    expect(r.core.starts).toHaveLength(2);
+    expect([...(r.core.live ?? [])]).toEqual(["session_2"]);
+    expect(await bodies(task.id)).toEqual(expect.arrayContaining([expect.stringMatching(/^New Session session_2 .*the running Session did not take the message/)]));
+  });
 });
 
 describe("what cannot be resumed starts a new Session, as before (#955)", () => {

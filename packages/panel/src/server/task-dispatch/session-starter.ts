@@ -161,7 +161,9 @@ async function sendIntoRunningSession(sdk: NonNullable<ReturnType<ReturnType<typ
   }
   try {
     // A message that starts a turn is the text and then the return, two writes (never glued): the SDK's rule for `send`.
-    if ((await session.send(request.prompt)) && (await session.send("\r"))) return { kind: "sent", session: startedSession(session) };
+    // Both are stamped writes (`deliver`), not `send`: the Core refuses a stamped write into a Session parked on a dialog
+    // (`blocked`), so the pointer cannot answer an approval by accident (#924). A refused pointer gets no return after it.
+    if ((await session.deliver(request.prompt)).ok && (await session.deliver("\r")).ok) return { kind: "sent", session: startedSession(session) };
   } catch {
     // Locked by another client, or the PTY went away: refused below.
   }
