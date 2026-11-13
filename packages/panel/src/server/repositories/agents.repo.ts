@@ -1,4 +1,4 @@
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, eq, ne } from "drizzle-orm";
 import { ownedBy } from "~/db/owner";
 import { panelDb } from "~/db/panel-db-handle";
 import { agents, cores } from "~/db/pg-schema";
@@ -63,4 +63,60 @@ export async function deleteAgent(ownerId: number, id: string): Promise<boolean>
     .where(ownedBy(agents, ownerId, eq(agents.id, id)))
     .returning({ id: agents.id });
   return deleted.length > 0;
+}
+
+export type UpdateAgentResult =
+  /** No such Agent for this owner (the service has already refused a default Agent). Nothing was written. */
+  | { kind: "not-found" }
+  /** Another Agent on the Core already has this name. Nothing was written. */
+  | { kind: "conflict" }
+  | { kind: "ok"; agent: AgentRow };
+
+/** Change the name, model and flags of one non-default Agent. The id, owner, Core and harness are never written. */
+export async function updateAgentRow(
+  ownerId: number,
+  id: string,
+  fields: Pick<AgentRow, "name" | "model" | "flags">,
+  now: number,
+): Promise<UpdateAgentResult> {
+  try {
+    return await updateInTransaction(ownerId, id, fields, now);
+  } catch (err) {
+    // A concurrent rename or create won the name between the check and the write.
+    if (isUniqueViolation(err)) return { kind: "conflict" };
+    throw err;
+  }
+}
+
+/** Postgres' unique violation (23505), straight from the driver or wrapped by drizzle. */
+export function isUniqueViolation(err: unknown): boolean {
+  const e = err as { code?: unknown; cause?: { code?: unknown } } | null;
+  return e?.code === "23505" || e?.cause?.code === "23505";
+}
+
+async function updateInTransaction(
+  ownerId: number,
+  id: string,
+  fields: Pick<AgentRow, "name" | "model" | "flags">,
+  now: number,
+): Promise<UpdateAgentResult> {
+  return panelDb().transaction(async (tx): Promise<UpdateAgentResult> => {
+    const current = await tx
+      .select()
+      .from(agents)
+      .where(ownedBy(agents, ownerId, and(eq(agents.id, id), eq(agents.isDefault, false))))
+      .for("update");
+    if (!current[0]) return { kind: "not-found" };
+    const taken = await tx
+      .select({ id: agents.id })
+      .from(agents)
+      .where(and(eq(agents.coreId, current[0].coreId), eq(agents.name, fields.name), ne(agents.id, id)));
+    if (taken[0]) return { kind: "conflict" };
+    const updated = await tx
+      .update(agents)
+      .set({ name: fields.name, model: fields.model, flags: fields.flags, updatedAt: now })
+      .where(ownedBy(agents, ownerId, eq(agents.id, id)))
+      .returning();
+    return { kind: "ok", agent: updated[0]! };
+  });
 }
