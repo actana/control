@@ -181,6 +181,58 @@ describe("a Task adopted at Panel boot reads its Session's status (#949)", () =>
   });
 });
 
+/** Fails fast with a message instead of hanging the test when `p` does not settle (a deadlocked tick). */
+async function within<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${what} did not settle within ${ms} ms`)), ms);
+  });
+  try {
+    return await Promise.race([p, timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+describe("the minute pass sees a finished Session (#949)", () => {
+  async function adopted() {
+    const before = await dispatched();
+    await before.dispatcher.stop();
+    const core = new FakeCore();
+    core.live!.add("session_1");
+    core.statuses!.set("session_1", "running");
+    const after = rig(before.clock, before.shared, core);
+    expect(await after.dispatcher.adoptInProgress()).toBe(1);
+    return { ...after, task: before.task };
+  }
+
+  it("records idle-no-result without hanging the watcher, which keeps running", async () => {
+    const { task, core, clock, shared, watcher } = await adopted();
+    core.statuses!.set("session_1", "finished"); // no result file yet
+    clock.advance(MINUTE_MS);
+
+    await within(watcher.tick(), 3_000, "the minute-pass tick");
+    expect(await getTask(A, task.id)).toMatchObject({ status: "in_progress", sessionState: "idle-no-result" });
+    expect(await stateComments(task.id)).toHaveLength(1);
+
+    shared.write(`tasks/${task.id}/success.md`, "Done.\n\nACT-REPORT-END\n", clock.now());
+    clock.advance(1_000);
+    await within(watcher.tick(), 3_000, "the next tick");
+    expect(await getTask(A, task.id)).toMatchObject({ status: "done", sessionState: null });
+  });
+
+  it("a complete result file already in place ends the Task with no idle-no-result state or comment", async () => {
+    const { task, core, clock, shared, watcher } = await adopted();
+    shared.write(`tasks/${task.id}/success.md`, "Done.\n\nACT-REPORT-END\n", clock.now());
+    core.statuses!.set("session_1", "finished");
+    clock.advance(MINUTE_MS);
+
+    await within(watcher.tick(), 3_000, "the minute-pass tick");
+    expect(await getTask(A, task.id)).toMatchObject({ status: "done", sessionState: null });
+    expect(await stateComments(task.id)).toEqual([]);
+  });
+});
+
 /** Let the handlers the Core's events started (a write to the database) finish. */
 async function settle(): Promise<void> {
   for (let i = 0; i < 20; i += 1) await new Promise((r) => setTimeout(r, 0));

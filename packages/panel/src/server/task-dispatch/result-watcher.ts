@@ -181,13 +181,21 @@ export class ResultWatcher {
    * this watcher is not watching (its attempt is over) is left alone. Never throws.
    */
   async markSessionState(taskId: string, state: TaskSessionState): Promise<void> {
+    await this.recordSessionState(taskId, state, false);
+  }
+
+  /**
+   * `inTick` is true for a call made from inside the running tick (the minute pass): it must not wait for that tick,
+   * which is itself. No `step` runs at the same time there, so looking for the result file first stays correct.
+   */
+  private async recordSessionState(taskId: string, state: TaskSessionState, inTick: boolean): Promise<void> {
     let t = this.tracked.get(taskId);
     if (!t) return;
     try {
       if (state === "idle-no-result") {
         // `finished` usually follows the result file by milliseconds, and the poll is seconds: look for the file
         // first, so a finished Task never shows a spurious "no result file" state, comment or webhook.
-        await this.running;
+        if (!inTick) await this.running;
         t = this.tracked.get(taskId);
         if (!t) return;
         if (await this.resultFileEndsDispatch(t)) return;
@@ -206,7 +214,7 @@ export class ResultWatcher {
    */
   async readSessionState(taskId: string): Promise<void> {
     const t = this.tracked.get(taskId);
-    if (t) await this.readSessionStates([t]);
+    if (t) await this.readSessionStates([t], false);
   }
 
   /** Poll on a timer until `stop`. A tick that is still running when the next is due is not started twice. */
@@ -259,11 +267,11 @@ export class ResultWatcher {
       this.log.error(`could not refresh the time limits: ${messageOf(err)}`);
     }
     await this.checkLiveness();
-    await this.readSessionStates([...this.tracked.values()]);
+    await this.readSessionStates([...this.tracked.values()], true);
   }
 
   /** One question per Core, as in `checkLiveness`; each answered Session's status is mapped and recorded. Never throws. */
-  private async readSessionStates(dispatches: readonly Tracked[]): Promise<void> {
+  private async readSessionStates(dispatches: readonly Tracked[], inTick: boolean): Promise<void> {
     const readStatuses = this.sessionStatuses;
     if (!readStatuses) return;
     const byCore = new Map<string, Tracked[]>();
@@ -284,7 +292,7 @@ export class ResultWatcher {
       for (const t of group) {
         if (this.tracked.get(t.taskId) !== t || t.exit) continue;
         const state = sessionStateForCoreStatus(statuses.get(t.sessionId!) ?? "");
-        if (state) await this.markSessionState(t.taskId, state);
+        if (state) await this.recordSessionState(t.taskId, state, inTick);
       }
     }
   }
