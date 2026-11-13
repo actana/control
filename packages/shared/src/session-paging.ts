@@ -21,6 +21,8 @@ export type SessionPageQuery = {
   archived: boolean;
   harness?: string;
   q?: string;
+  /** Only these Sessions (up to a page): how a client fetches the one row it needs beyond the loaded pages. */
+  ids?: string[];
 };
 
 export type SessionPage = {
@@ -71,6 +73,7 @@ export function readSessionPageRequest(frame: {
   archived?: unknown;
   harness?: unknown;
   q?: unknown;
+  ids?: unknown;
 }): SessionPageQuery | null {
   if (frame.limit === undefined) return null;
   const { limit } = frame;
@@ -90,6 +93,16 @@ export function readSessionPageRequest(frame: {
   }
   if (typeof frame.harness === "string" && frame.harness.trim()) query.harness = frame.harness.trim();
   if (typeof frame.q === "string" && frame.q.trim()) query.q = frame.q.trim();
+  if (frame.ids !== undefined) {
+    if (
+      !Array.isArray(frame.ids) ||
+      frame.ids.length > SESSION_PAGE_MAX ||
+      !frame.ids.every((id) => typeof id === "string" && id.length > 0)
+    ) {
+      throw new InvalidSessionPageError(`ids must be up to ${SESSION_PAGE_MAX} Session ids`);
+    }
+    query.ids = frame.ids as string[];
+  }
   return query;
 }
 
@@ -130,6 +143,10 @@ export function querySessionPage(sqlite: CoreQuerySqlite, query: SessionPageQuer
   if (query.q) {
     where.push(`title LIKE ? ESCAPE '\\'`);
     params.push(`%${escapeLike(query.q)}%`);
+  }
+  if (query.ids) {
+    where.push(`id IN (${query.ids.map(() => "?").join(", ")})`);
+    params.push(...query.ids);
   }
   const filters = where.join(" AND ");
 

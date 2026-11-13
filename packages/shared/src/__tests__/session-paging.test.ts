@@ -177,6 +177,19 @@ describe("querySessionPage", () => {
     expect(run({ harness: "codex", q: "login" })).toEqual(["a"]);
   });
 
+  it("fetches only the named Sessions, whichever page they would be on", () => {
+    for (let i = 1; i <= 5; i++) insert(db, `s${i}`, i * 10);
+    const page = querySessionPage(asReader(db), { limit: 10, archived: false, ids: ["s1", "s4", "nope"] });
+    expect(page.rows.map((r) => r.sessionId)).toEqual(["s4", "s1"]);
+    expect(page.total).toBe(2);
+  });
+
+  it("rejects ids that are not a list of ids", () => {
+    expect(() => readSessionPageRequest({ limit: 5, ids: "s1" })).toThrow(InvalidSessionPageError);
+    expect(() => readSessionPageRequest({ limit: 5, ids: [""] })).toThrow(InvalidSessionPageError);
+    expect(readSessionPageRequest({ limit: 5, ids: ["a"] })?.ids).toEqual(["a"]);
+  });
+
   it("answers an empty page when the table is absent", () => {
     const empty = new Database(":memory:");
     expect(querySessionPage(asReader(empty), { limit: 5, archived: false })).toEqual({ rows: [], nextCursor: null, total: 0 });
