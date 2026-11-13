@@ -388,6 +388,22 @@ describe("pruneProcessedOutbox (#965)", () => {
     expect(await ids()).toEqual(["o-new", "o-unprocessed"]);
   });
 
+  it("keeps a processed row older than the cutoff while a pending delivery hangs on it", async () => {
+    const { pruneProcessedOutbox } = await import("../../repositories/webhooks.repo");
+    const { webhook } = await createWebhook(A, { url: "https://hooks.example.test/held", events: ["task.created"] }, 1, {
+      lookup: publicLookup,
+    });
+    await insertOutbox("o-held", 1, 100);
+    await testDb.pool.query(
+      "insert into webhook_deliveries (id, owner_id, webhook_id, outbox_id, event_type, payload, status, next_attempt_at, created_at, updated_at) values ('d-held', 1, $1, 'o-held', 'task.created', '{}', 'pending', 200, 1, 1)",
+      [webhook.id],
+    );
+    // The row is processed well before the cutoff: only the delivery keeps it (the delivery cascades with it).
+    expect(await pruneProcessedOutbox(A, 500)).toBe(0);
+    expect(await ids()).toEqual(["o-held"]);
+    expect((await testDb.pool.query("select id from webhook_deliveries")).rows).toEqual([{ id: "d-held" }]);
+  });
+
   it("deletes at most `limit` rows per call", async () => {
     const { pruneProcessedOutbox } = await import("../../repositories/webhooks.repo");
     for (let i = 0; i < 5; i++) await insertOutbox(`o-${i}`, 1, 10);
