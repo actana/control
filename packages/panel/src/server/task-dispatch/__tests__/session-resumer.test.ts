@@ -22,7 +22,7 @@ const POINTER = "Read ~/shared/tasks/task_1/prompt-attempt-2.md and do what it s
 const request = (over: Record<string, unknown> = {}) =>
   ({ coreId: "core_1", sessionId: "row-1", harness: "claude-code", model: "claude-sonnet-5-5", flags: [], prompt: POINTER, ...over }) as never;
 const row = (over: Record<string, unknown> = {}) => ({ sessionId: "row-1", agent: "claude-code", status: "terminated", claudeSessionId: "uuid-1", ...over });
-const handle = () => ({ sessionId: "row-1", onExit: vi.fn(() => () => {}), onStatus: vi.fn(() => () => {}), dispose: vi.fn(), exitStatus: () => null, send: vi.fn(async (_text: string) => true) });
+const handle = () => ({ sessionId: "row-1", onExit: vi.fn(() => () => {}), onStatus: vi.fn(() => () => {}), dispose: vi.fn(), exitStatus: () => null, send: vi.fn(async (_text: string) => true), deliver: vi.fn(async (_text: string) => ({ ok: true, deliveryEventId: 1 })) });
 
 describe("resuming a Task's own Session on a Core (#955)", () => {
   beforeEach(() => {
@@ -113,23 +113,36 @@ describe("resuming a Task's own Session on a Core (#955)", () => {
 
     expect(out.kind).toBe("sent");
     expect(attach).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ sessionId: "row-1" }));
-    expect(h.send.mock.calls.map((c) => c[0])).toEqual([POINTER, "\r"]);
+    expect(h.deliver.mock.calls.map((c) => c[0])).toEqual([POINTER, "\r"]);
+    expect(h.send).not.toHaveBeenCalled();
     expect(start).not.toHaveBeenCalled();
   });
 
   it("a running Session that does not take the message is reported still live, and let go of", async () => {
     findBySession.mockResolvedValue({ ptyId: "pty-1" });
     const h = handle();
-    h.send.mockResolvedValue(false);
+    h.deliver.mockResolvedValue({ ok: false, deliveryEventId: 0 });
     attach.mockResolvedValue(h);
     expect(await resumeSessionOnCore(request(), 1)).toEqual({ kind: "cannot", refusal: RESUME_REFUSALS.sendRefused, stillLive: true });
+    expect(h.dispose).toHaveBeenCalled();
+    expect(h.send).not.toHaveBeenCalled();
+  });
+
+  it("a Session parked on a dialog (the Core refuses the stamped write as blocked): nothing more is written, still live, let go of (#924)", async () => {
+    findBySession.mockResolvedValue({ ptyId: "pty-1" });
+    const h = handle();
+    h.deliver.mockResolvedValue({ ok: false, blocked: true } as never);
+    attach.mockResolvedValue(h);
+    expect(await resumeSessionOnCore(request(), 1)).toEqual({ kind: "cannot", refusal: RESUME_REFUSALS.sendRefused, stillLive: true });
+    expect(h.deliver.mock.calls.map((c) => c[0])).toEqual([POINTER]);
+    expect(h.send).not.toHaveBeenCalled();
     expect(h.dispose).toHaveBeenCalled();
   });
 
   it("a running Session someone holds the lock on: the send is refused, still live", async () => {
     findBySession.mockResolvedValue({ ptyId: "pty-1" });
     const h = handle();
-    h.send.mockRejectedValue(new Error("session-locked"));
+    h.deliver.mockRejectedValue(new Error("session-locked"));
     attach.mockResolvedValue(h);
     expect(await resumeSessionOnCore(request(), 1)).toEqual({ kind: "cannot", refusal: RESUME_REFUSALS.sendRefused, stillLive: true });
     expect(h.dispose).toHaveBeenCalled();
