@@ -92,16 +92,22 @@ const SCHEDULERS = [
 /**
  * The files allowed to schedule, and the reason each is.
  *
- * Two rows, and each buys a wait on a Core's own answer rather than a nudge at
+ * Each row buys a wait on an answer that is not ours to hurry, rather than a nudge at
  * a harness. Anything that writes to a Session is barred from this table by the
  * test below it — that is the boundary the rule is actually about.
  */
 const SCHEDULING_ALLOWED: Record<string, string> = {
-  // Empty since #580. `harness-command.ts` (the install verdict's deadline, #161) and `events-command.ts`
+  // Empty from #580 until #953. `harness-command.ts` (the install verdict's deadline, #161) and `events-command.ts`
   // (the subscribe deadline, #402) moved behind the published `@actana/cli`, which carries those timers and
-  // their tests. No module left in this package may hold a timer, and a row can be added here only with a
-  // reason of the same three properties: re-sends nothing, cannot make the wait end sooner, and expires
-  // reported as this side giving up.
+  // their tests; `task-wait.ts` is the one row since. A row can be added here only with a reason of the same
+  // three properties: re-sends nothing, cannot make the wait end sooner, and expires reported as this side
+  // giving up.
+  "task-wait.ts":
+    "`actana task wait` (#953) polls a Task's status URL and sleeps between asks, for the " +
+    "`pollAfterSeconds` the Panel answers with, a `Retry-After` on 429, or a back-off after a network error. " +
+    "It never writes into a Session: it only reads a status and exits. It re-sends nothing, because a poll is a " +
+    "read; it cannot make the wait end sooner, because it stops only on the Panel's answer, `--timeout` or the " +
+    "10-minute give-up; and it expires reported as this side giving up (exit 31, or 1).",
 };
 
 /** Modules that put text or keystrokes into a Session. Never allowed a timer. */
@@ -163,11 +169,17 @@ describe("the CLI schedules nothing (#129 D3, ADR 0026)", () => {
     // tree as an injected `now()` that two lines of formatting call: the
     // bearer-expiry line and `session ls`'s age column. A second reader would
     // be the beginning of something measuring elapsed time, which is what a
-    // timing decision looks like before it grows a `setTimeout`.
+    // timing decision looks like before it grows a `setTimeout`. The one other reader is
+    // `task-wait.ts` (#953): its `--timeout` and its 10-minute give-up are measured against the clock, and a
+    // `Retry-After` HTTP date is turned into seconds from it. It reads the time of the wait, never prints it,
+    // and writes nothing to a Session.
     const readers = clientSources().filter((file) =>
       /\bDate\s*\.\s*now\s*\(/.test(withoutComments(readFileSync(file, "utf8"))),
     );
-    expect(readers.map((file) => path.relative(SRC, file))).toEqual(["actana-cli-entry.ts"]);
+    expect(readers.map((file) => path.relative(SRC, file))).toEqual([
+      "actana-cli-entry.ts",
+      "task-wait.ts",
+    ]);
   });
 
   it("never appends a carriage return to text on its way to a Session", () => {
