@@ -56,6 +56,60 @@ export function formatTaskStopComment(f: { stoppedBy: string; reason?: string | 
   return reason ? `Stopped by ${f.stoppedBy}: ${reason}` : `Stopped by ${f.stoppedBy}.`;
 }
 
+/**
+ * What a Task's Session is doing (#949). Set while an attempt runs, `null` when none does. It never moves a
+ * Task's `status`: the result file stays the only success signal. Shared contract with the Studio twin; keep
+ * the names word for word.
+ */
+export const TASK_SESSION_STATES = ["working", "needs-input", "interrupted", "idle-no-result", "exited"] as const;
+export type TaskSessionState = (typeof TASK_SESSION_STATES)[number];
+
+export function isTaskSessionState(v: unknown): v is TaskSessionState {
+  return typeof v === "string" && (TASK_SESSION_STATES as readonly string[]).includes(v);
+}
+
+/**
+ * The Session state for a Core Session status: `running` is `working`; `needs-input` and `interrupted` keep
+ * their names; `finished` is `idle-no-result` (a Session that finished with a complete result file ends its
+ * Task, which clears the state); `terminated` and `disconnected` are `exited`. Any other status is null.
+ */
+export function sessionStateForCoreStatus(status: string): TaskSessionState | null {
+  switch (status) {
+    case "running":
+      return "working";
+    case "needs-input":
+      return "needs-input";
+    case "interrupted":
+      return "interrupted";
+    case "finished":
+      return "idle-no-result";
+    case "terminated":
+    case "disconnected":
+      return "exited";
+    default:
+      return null;
+  }
+}
+
+const SESSION_STATE_COMMENTS: Partial<Record<TaskSessionState, string>> = {
+  "needs-input": "The agent's Session needs input (it is waiting at a prompt).",
+  interrupted: "The agent's Session was interrupted.",
+  "idle-no-result": "The agent's Session finished its turn without writing a result file.",
+};
+
+/**
+ * The system comment for a change of Session state, or null when the change gets none: one comment per change
+ * into `needs-input`, `interrupted` or `idle-no-result`, and one when the Session is `working` again after one
+ * of them. Everything else, `working` to `working` and `exited` included, is silent.
+ */
+export function formatTaskSessionStateComment(from: TaskSessionState | null, to: TaskSessionState): string | null {
+  if (from === to) return null;
+  const into = SESSION_STATE_COMMENTS[to];
+  if (into) return into;
+  if (to === "working" && from !== null && SESSION_STATE_COMMENTS[from]) return "The agent's Session is working again.";
+  return null;
+}
+
 /** Every legal move, by the status it leaves. Anything not listed here is rejected. */
 export const TASK_TRANSITIONS: Readonly<Record<TaskStatus, readonly TaskStatus[]>> = {
   draft: ["assigned"],

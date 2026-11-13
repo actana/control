@@ -20,7 +20,7 @@ import {
   type TaskComment,
 } from "../services/tasks";
 import { archivedTaskName, classifyTaskEntry, taskFolder } from "~/shared/task-report";
-import { formatTaskDispatchComment, parseTaskDispatchComment } from "~/shared/tasks";
+import { formatTaskDispatchComment, parseTaskDispatchComment, sessionStateForCoreStatus } from "~/shared/tasks";
 import { ResultWatcher } from "./result-watcher";
 import { lazyShared, type SharedFor } from "./shared-factory";
 import { buildTaskPointer, buildTaskPrompt, taskPromptPath } from "./task-prompt";
@@ -220,6 +220,7 @@ export class TaskDispatcher {
           authorName: agent?.name ?? "agent",
           timeoutMinutes: task.timeoutMinutes,
         });
+        await this.watcher.readSessionState(task.id); // no handle to hear the Session's status on: ask the Core once
         adopted += 1;
       } catch (err) {
         unfinished = err;
@@ -394,6 +395,12 @@ export class TaskDispatcher {
         () => session.dispose(),
       );
       session.onExit(({ exitCode }) => this.watcher.markExited(claimed.id, exitCode));
+      // The Core's status changes, one write at a time and in the order they came (#949). An unknown status is skipped.
+      let writes: Promise<void> = Promise.resolve();
+      session.onStatus((status) => {
+        const state = sessionStateForCoreStatus(status);
+        if (state) writes = writes.then(() => this.watcher.markSessionState(claimed.id, state));
+      });
     } catch (err) {
       this.watcher.untrack(claimed.id);
       await fail(`could not start a Session on Core ${resolved.coreId}: ${messageOf(err)}`);
