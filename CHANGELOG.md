@@ -37,7 +37,7 @@ and why.
 
 A full Core queues Tasks instead of failing them. A Task that finishes (done,
 partial or failed) now frees its terminal slot at once, and its transcript and
-Session stay, so a later comment still continues it. If a Core is full or not
+Session stay, so Comment & re-assign resumes it. If a Core is full or not
 connected, a Task waits as Assigned with the reason ("Core full (5/8)", "Core
 not connected") and starts by itself when a slot frees; a refused start no
 longer uses up one of its attempts. The Core rail shows how many terminals each
