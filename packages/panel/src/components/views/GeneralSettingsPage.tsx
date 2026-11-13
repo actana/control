@@ -23,6 +23,7 @@ export function GeneralSettingsPage() {
   const toastEnabled = settings?.sessionFinishToastEnabled ?? true;
   const osNotificationEnabled =
     settings?.sessionFinishOsNotificationEnabled ?? false;
+  const blockedEnabled = settings?.sessionBlockedNotificationEnabled ?? true;
   const notificationSoundEnabled = settings?.notificationSoundEnabled ?? true;
   const [permission, setPermission] = useState<OsNotificationPermission>("default");
   const [permissionHint, setPermissionHint] = useState<string | null>(null);
@@ -48,6 +49,7 @@ export function GeneralSettingsPage() {
         | "mouseGradientDisabled"
         | "sessionFinishToastEnabled"
         | "sessionFinishOsNotificationEnabled"
+        | "sessionBlockedNotificationEnabled"
         | "notificationSoundEnabled"
       >
     >,
@@ -56,6 +58,7 @@ export function GeneralSettingsPage() {
     mouseGradientDisabled: settings?.mouseGradientDisabled ?? false,
     sessionFinishToastEnabled: toastEnabled,
     sessionFinishOsNotificationEnabled: osNotificationEnabled,
+    sessionBlockedNotificationEnabled: blockedEnabled,
     notificationSoundEnabled,
     terminalZoomLevel: settings?.terminalZoomLevel ?? DEFAULT_TERMINAL_ZOOM_LEVEL,
     sessionHeaderButtons:
@@ -85,6 +88,7 @@ export function GeneralSettingsPage() {
         | "mouseGradientDisabled"
         | "sessionFinishToastEnabled"
         | "sessionFinishOsNotificationEnabled"
+        | "sessionBlockedNotificationEnabled"
         | "notificationSoundEnabled"
       >
     >,
@@ -111,6 +115,10 @@ export function GeneralSettingsPage() {
 
   const setToastEnabled = async (sessionFinishToastEnabled: boolean) => {
     await updateSettings({ sessionFinishToastEnabled });
+  };
+
+  const setBlockedEnabled = async (sessionBlockedNotificationEnabled: boolean) => {
+    await updateSettings({ sessionBlockedNotificationEnabled });
   };
 
   const setNotificationSoundEnabled = async (enabled: boolean) => {
@@ -202,6 +210,15 @@ export function GeneralSettingsPage() {
             checked={toastEnabled}
             onChange={(v) => void setToastEnabled(v).catch(ignoreRolledBack)}
             label="Show toast"
+          />
+        </Field>
+        <Field label="Blocked work">
+          <ToggleRow
+            title="Notify when work is blocked"
+            description="Notify when a session needs input, or a Task's session needs input or sits idle without a result. Uses the toast, sound and OS settings here."
+            checked={blockedEnabled}
+            onChange={(v) => void setBlockedEnabled(v).catch(ignoreRolledBack)}
+            label="Notify"
           />
         </Field>
         <Field label="OS notification">

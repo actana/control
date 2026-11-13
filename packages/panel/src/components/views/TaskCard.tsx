@@ -1,4 +1,5 @@
 import { Icon } from "~/components/ui/Icon";
+import { TaskSessionBadge } from "~/components/views/TaskSessionBadge";
 import { formatRelativeTime } from "~/lib/format-relative-time";
 import { TASK_STATUS_LABEL } from "~/lib/task-board";
 import type { TaskCardDrag } from "~/lib/use-board-drag";
@@ -121,6 +122,7 @@ export function TaskCard({
         </div>
         <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--text-dim)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
           {detail}
+          <TaskSessionBadge state={task.sessionState} />
         </div>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontFamily: "var(--mono)", fontSize: 12, color: "var(--text-dim)" }}>
           <span style={compact ? { display: "inline-flex", alignItems: "center", gap: 8 } : undefined}>

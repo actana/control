@@ -9,6 +9,7 @@ import { api } from "~/lib/api";
 import { useBreakpoint } from "~/lib/breakpoint";
 import { useFleet } from "~/lib/fleet-context";
 import { queryKeys, useCoreAgents, useTaskCounts, useTasksColumn } from "~/queries";
+import { needsAttention } from "~/lib/task-session-state";
 import { BOARD_COLUMNS, moveInCounts, moveInPages, statusesCount } from "~/lib/task-board";
 import { acceptsDrop, boardColumnOf, DROP_REASONS, dropDecision, type BoardColumnId } from "~/lib/task-board-drop";
 import { useBoardDrag, type TaskCardDrag } from "~/lib/use-board-drag";
@@ -118,6 +119,8 @@ type DropState = "origin" | "allowed" | "refused";
 export function TasksBoard({ coreId = null, openTaskId = null }: { coreId?: string | null; openTaskId?: string | null }) {
   const { cores } = useFleet();
   const [chip, setChip] = useState<string | null>(null);
+  // "Needs attention" (#954): a client-side filter over the loaded pages until the server filter (#951) lands.
+  const [attention, setAttention] = useState(false);
   const filter = coreId ?? chip;
   // One infinite query per column (#896): 10 Tasks a page, Load more for the next. Hooks, so all four are always asked.
   const columnQueries = {
@@ -297,7 +300,11 @@ export function TasksBoard({ coreId = null, openTaskId = null }: { coreId?: stri
     <div style={{ display: "flex", flexDirection: "column", gap: 16, minHeight: 0 }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
         {coreId ? (
-          <div />
+          <div role="group" aria-label="Filter by attention" className={compact ? "mc-tasks-chips" : undefined} style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <Chip active={attention} onClick={() => setAttention((v) => !v)}>
+              Needs attention
+            </Chip>
+          </div>
         ) : (
           <div role="group" aria-label="Filter by Core" className={compact ? "mc-tasks-chips" : undefined} style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
             <Chip active={chip === null} onClick={() => setChip(null)}>
@@ -308,6 +315,9 @@ export function TasksBoard({ coreId = null, openTaskId = null }: { coreId?: stri
                 {c.label} <small>{counts ? statusesCount(counts, TASK_STATUSES, c.id) : ""}</small>
               </Chip>
             ))}
+            <Chip active={attention} onClick={() => setAttention((v) => !v)}>
+              Needs attention
+            </Chip>
           </div>
         )}
         {compact ? null : (
@@ -389,7 +399,8 @@ export function TasksBoard({ coreId = null, openTaskId = null }: { coreId?: stri
         >
           {shown.map((col) => {
             const query = columnQueries[col.id];
-            const items = query.data?.pages.flatMap((p) => p.tasks) ?? [];
+            const loaded = query.data?.pages.flatMap((p) => p.tasks) ?? [];
+            const items = attention ? loaded.filter((t) => needsAttention(t.sessionState)) : loaded;
             // On a phone or tablet the drop targets are the segments (M41), not the list.
             const dropState = compact ? undefined : dropStateOf(col.id);
             const over = !compact && drag?.over === col.id;
