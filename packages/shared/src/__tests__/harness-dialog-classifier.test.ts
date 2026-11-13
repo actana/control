@@ -27,7 +27,7 @@ describe("rule registry", () => {
   });
 
   it("names the source and licence of rules adapted from herdr", () => {
-    for (const harness of ["claude-code", "codex"] as const) {
+    for (const harness of ["claude-code", "codex", "cursor-cli", "opencode"] as const) {
       expect(HARNESS_DIALOG_RULES[harness].attribution).toMatch(/ee5bfb5.*Apache-2\.0/);
     }
   });
@@ -157,5 +157,59 @@ describe("renderScreenText", () => {
 
   it("overwrites in place after a carriage return and erase", () => {
     expect(renderScreenText("working 1\r\u001b[Kworking 2")).toBe("working 2");
+  });
+});
+
+const CURSOR_APPROVAL = [
+  "⚠ Waiting for approval...",
+  "Run this command?",
+  "→ Run (once) (y) (enter)",
+  "  Skip (esc or n)",
+].join("\n");
+const OPENCODE_PERMISSION = ["┃  △ Permission required", "┃  ← Edit src/app.ts", "┃  ⇆ select  enter confirm  esc dismiss"].join("\n");
+const PI_SELECTOR = [
+  "────────────────",
+  " Select provider to login:",
+  " → Anthropic",
+  "   OpenAI",
+  " ↑↓ navigate  enter select  escape/ctrl+c cancel",
+  "────────────────",
+].join("\n");
+
+describe("cursor-cli, opencode and pi rules", () => {
+  it("reads the marked options of a Cursor approval and of a Pi selector", () => {
+    expect(classifyDialog("cursor-cli", CURSOR_APPROVAL)?.options).toEqual([
+      { label: "Run (once) (y) (enter)", selected: true },
+      { label: "Skip (esc or n)" },
+    ]);
+    expect(classifyDialog("pi", PI_SELECTOR)?.options).toEqual([
+      { label: "Anthropic", selected: true },
+      { label: "OpenAI" },
+    ]);
+  });
+
+  it("does not match a dialog printed 40 lines above the bottom, on any of the three", () => {
+    for (const [harness, dialog] of [
+      ["cursor-cli", CURSOR_APPROVAL],
+      ["opencode", OPENCODE_PERMISSION],
+      ["pi", PI_SELECTOR],
+    ] as const) {
+      expect(classifyDialog(harness, dialog)?.kind, `${harness} at the bottom`).toBeDefined();
+      expect(classifyDialog(harness, `${dialog}\n${filler(40)}`), `${harness} 40 lines up`).toBeNull();
+    }
+  });
+
+  it("never applies one of the three's dialog to the others", () => {
+    expect(classifyDialog("opencode", CURSOR_APPROVAL)).toBeNull();
+    expect(classifyDialog("pi", CURSOR_APPROVAL)).toBeNull();
+    expect(classifyDialog("cursor-cli", OPENCODE_PERMISSION)).toBeNull();
+    expect(classifyDialog("pi", OPENCODE_PERMISSION)).toBeNull();
+    expect(classifyDialog("claude-code", PI_SELECTOR)).toBeNull();
+    expect(classifyDialog("opencode", PI_SELECTOR)).toBeNull();
+  });
+
+  it("does not read Pi's idle composer footer as a selector", () => {
+    const composer = ["────", " ", "────", "/work", " escape interrupt · ctrl+c/ctrl+d clear/exit · / commands"].join("\n");
+    expect(classifyDialog("pi", composer)).toBeNull();
   });
 });
