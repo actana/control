@@ -237,7 +237,11 @@ describe("the workspace list past the first page (#960)", () => {
 
   it("shows the Core's true Active count and a Load more that reaches row 101", async () => {
     seedPage(150, "c1");
-    listSessionRows.mockResolvedValue({ sessions: [snap("row101")], archivedCount: 0, nextCursor: null, total: 150 });
+    listSessionRows.mockImplementation(async (_core: string, page: { cursor?: string }) =>
+      page.cursor
+        ? { sessions: [snap("row101")], archivedCount: 0, nextCursor: null, total: 150 }
+        : { sessions: [], archivedCount: 0, nextCursor: "c1", total: 150 },
+    );
     await mount();
 
     expect(scopeCount("Active")).toBe("150");
@@ -247,6 +251,27 @@ describe("the workspace list past the first page (#960)", () => {
     expect(listSessionRows).toHaveBeenCalledWith("a", { limit: 100, archived: false, cursor: "c1" });
     expect(await screen.findByText("Far row101")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Load more" })).toBeNull();
+  });
+
+  it("refreshes the rows Load more appended when the Core's list is invalidated, and drops them on a Core switch", async () => {
+    seedPage(150, "c1");
+    const answers = [
+      { sessions: [], archivedCount: 0, nextCursor: "c1", total: 150 }, // span read: page 1 (cursor only)
+      { sessions: [snap("row101")], archivedCount: 0, nextCursor: null, total: 150 },
+    ];
+    listSessionRows.mockImplementation(async (_core: string, page: { cursor?: string }) =>
+      page.cursor ? answers[1]! : answers[0]!,
+    );
+    await mount();
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Load more" })));
+    expect(await screen.findByText("Far row101")).toBeTruthy();
+
+    // The Core now says that Session was archived.
+    answers[1] = { sessions: [{ ...snap("row101"), archived: true }], archivedCount: 1, nextCursor: null, total: 149 };
+    await act(async () => {
+      await qc.invalidateQueries({ queryKey: queryKeys.sessions("a") });
+    });
+    await vi.waitFor(() => expect(screen.queryByText("Far row101")).toBeNull());
   });
 
   it("lists a pinned Session that sits past the first page, by asking the Core for the pinned rows", async () => {

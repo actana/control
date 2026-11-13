@@ -26,6 +26,8 @@ export const queryKeys = {
   sessionPage: (coreId: string) => ["session-page", coreId] as const,
   /** The Core's pinned Sessions, read apart from the first page. Under `sessions`, so a sessions invalidation refreshes it. */
   pinnedSessions: (coreId: string) => ["cores", coreId, "sessions", "pinned"] as const,
+  /** What Load more has appended past the first page; under `sessions`, so a sessions invalidation refreshes it. */
+  sessionsMore: (coreId: string, pages: number) => ["cores", coreId, "sessions", "more", pages] as const,
   /** One active Session row asked for by id, for a Session past the first page (#960). */
   sessionRow: (coreId: string, sessionId: string) => ["session-row", coreId, sessionId] as const,
   coreArchivedSessions: (coreId: string) => ["core-archived-sessions", coreId] as const,
@@ -652,32 +654,40 @@ export function useSessionPaging(coreId: string, firstPage: readonly Session[]) 
     initialData: null as SessionPageMeta | null,
   }).data;
   const total = meta?.total ?? firstPage.length;
-  // Appended pages remember the Core they came from and the cursor they ended on.
-  const [more, setMore] = useState<{ coreId: string; rows: Session[]; cursor: string | null } | null>(null);
-  const [loadingMore, setLoadingMore] = useState(false);
-  const held = more?.coreId === coreId ? more : null;
-  const nextCursor = held ? held.cursor : (meta?.nextCursor ?? null);
-
-  const loadMore = useCallback(async () => {
-    const bridge = getPanelBridge();
-    if (!bridge || nextCursor === null || loadingMore) return;
-    setLoadingMore(true);
-    try {
-      const answer = await bridge.listSessionRows(coreId, {
-        limit: WORKSPACE_SESSIONS_LIMIT,
-        archived: false,
-        cursor: nextCursor,
-      });
-      setMore((prev) => {
-        const rows = prev?.coreId === coreId ? prev.rows : [];
-        return { coreId, rows: [...rows, ...answer.sessions.map(remoteSessionFromSnapshot)], cursor: answer.nextCursor ?? null };
-      });
-    } catch {
-      // The rows shown stay; the button comes back to try again.
-    } finally {
-      setLoadingMore(false);
-    }
-  }, [coreId, nextCursor, loadingMore]);
+  // How many pages Load more has opened, for the Core they were opened on. The rows
+  // are a query, not state: it re-reads the span opened so far, under `sessions`, so
+  // a Core event that refreshes the list refreshes them too.
+  const [opened, setOpened] = useState<{ coreId: string; pages: number }>({ coreId, pages: 0 });
+  const pages = opened.coreId === coreId ? opened.pages : 0;
+  const moreQuery = useQuery({
+    queryKey: queryKeys.sessionsMore(coreId, pages),
+    queryFn: async (): Promise<{ rows: Session[]; nextCursor: string | null }> => {
+      const bridge = getPanelBridge();
+      if (!bridge) return { rows: [], nextCursor: null };
+      // Page 1 is the bucket's own; read it only for the cursor that leads past it.
+      let answer = await bridge.listSessionRows(coreId, { limit: WORKSPACE_SESSIONS_LIMIT, archived: false });
+      let rows: Session[] = [];
+      for (let i = 0; i < pages && (answer.nextCursor ?? null) !== null; i += 1) {
+        answer = await bridge.listSessionRows(coreId, {
+          limit: WORKSPACE_SESSIONS_LIMIT,
+          archived: false,
+          cursor: answer.nextCursor as string,
+        });
+        rows = rows.concat(answer.sessions.map(remoteSessionFromSnapshot));
+      }
+      return { rows, nextCursor: answer.nextCursor ?? null };
+    },
+    enabled: !!coreId && pages > 0,
+    placeholderData: keepPreviousData,
+    retry: false,
+  });
+  const held = pages > 0 ? moreQuery.data : undefined;
+  const nextCursor = held ? held.nextCursor : (meta?.nextCursor ?? null);
+  const loadingMore = pages > 0 && moreQuery.isFetching;
+  const loadMore = useCallback(() => {
+    if (nextCursor === null || loadingMore) return;
+    setOpened({ coreId, pages: pages + 1 });
+  }, [coreId, pages, nextCursor, loadingMore]);
 
   // A pinned Session can sit anywhere in the order; the Core filters, so the
   // Pinned views never depend on which pages were opened.
@@ -698,15 +708,19 @@ export function useSessionPaging(coreId: string, firstPage: readonly Session[]) 
   });
 
   const rows = useMemo(() => {
+    // The first page and the pinned read are the newest answers; an appended row
+    // read earlier yields to either.
+    const pinnedById = new Map((pinned.data ?? []).map((row) => [row.id, row]));
     const seen = new Set<string>();
     const out: Session[] = [];
-    for (const list of [firstPage, held?.rows ?? [], pinned.data ?? []]) {
-      for (const row of list) {
-        if (seen.has(row.id)) continue;
-        seen.add(row.id);
-        out.push(row);
-      }
-    }
+    const add = (row: Session) => {
+      if (seen.has(row.id)) return;
+      seen.add(row.id);
+      out.push(row);
+    };
+    firstPage.forEach(add);
+    (held?.rows ?? []).forEach((row) => add(pinnedById.get(row.id) ?? row));
+    (pinned.data ?? []).forEach(add);
     return out;
   }, [firstPage, held, pinned.data]);
 

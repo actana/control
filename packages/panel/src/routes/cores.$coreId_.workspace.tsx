@@ -1824,7 +1824,7 @@ function CoreWorkspacePage() {
                   <LoadMoreButton
                     hasMore={paging.hasMore}
                     loading={paging.loadingMore}
-                    onClick={() => void paging.loadMore()}
+                    onClick={paging.loadMore}
                     compact={compact}
                   />
                 </div>
