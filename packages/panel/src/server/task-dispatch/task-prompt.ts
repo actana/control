@@ -68,10 +68,25 @@ function resultLines(task: Pick<Task, "id">, attempt: number): string[] {
   ];
 }
 
+/**
+ * The comments a new Session is given, and how many the Task has: the last {@link MAX_PROMPT_COMMENTS} non-system ones
+ * (system comments are the Panel talking to the operator ("dispatched", "failed to start"); they say nothing about the work).
+ * The dispatch comment of a fallback (#955) reports `shown.length` of `total`.
+ */
+export function promptComments(comments: readonly TaskComment[]): { shown: TaskComment[]; total: number } {
+  const all = comments.filter((c) => c.authorKind !== "system");
+  return { shown: all.slice(-MAX_PROMPT_COMMENTS), total: all.length };
+}
+
+/**
+ * The prompt of a new Session. From attempt 2 on it starts with the attempt line: the Session is new, but the Task is
+ * not, so it must look at what is already there before it repeats a step (#955). Comments that did not fit are said
+ * to be left out, with where to read them.
+ */
 export function buildTaskPrompt(task: Pick<Task, "id" | "title" | "description">, comments: readonly TaskComment[], attempt: number): string {
-  // System comments are the Panel talking to the operator ("dispatched", "failed to start"); they say nothing about the work.
-  const thread = comments.filter((c) => c.authorKind !== "system").slice(-MAX_PROMPT_COMMENTS);
+  const { shown: thread, total } = promptComments(comments);
   const lines = [
+    ...(attempt >= 2 ? [`This is attempt ${attempt}. Check the current state (branches, PRs, files, the comments below) before repeating any step.`, ""] : []),
     "You have been given a Task by the operator's Panel. Do the work, then report the result as described at the end.",
     "",
     `Task: ${defuse(task.title.trim())}`,
@@ -81,6 +96,7 @@ export function buildTaskPrompt(task: Pick<Task, "id" | "title" | "description">
   ];
   if (thread.length > 0) {
     lines.push("", "Comments so far, oldest first:");
+    if (total > thread.length) lines.push(`${total - thread.length} older comments not included; read them with get_task ${task.id}`);
     for (const c of thread) lines.push(`- ${c.authorName} (${c.authorKind}): ${clip(c.body)}`);
   }
   lines.push(...resultLines(task, attempt));
