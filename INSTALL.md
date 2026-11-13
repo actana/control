@@ -706,6 +706,10 @@ title, description, comments or report text. The token is signed with a key deri
 rotating the secrets key invalidates every URL. An expired or replaced token answers `410`, a bad one `404`, a caller
 over the limit `429` with `Retry-After`. It is valid while the attempt runs and for 10 minutes after it ends (for a Task
 with No limit, 24 hours from the read that minted it), and a new attempt, a stop or a delete ends it at once.
+`create_task` (startNow), `assign_task` and `comment_task` (reassign) return the URL right away, while the Task is
+still `assigned`: the route answers `status: "assigned"` (no Session state, no result, `pollAfterSeconds` 5) and the
+same URL follows the attempt once it starts. Such a URL lasts the No-limit window plus the time limit, so it outlives
+a queue wait. A Task moved back to draft answers `410`.
 
 These are Panel environment variables, set next to `AC_SECRETS_KEY`:
 

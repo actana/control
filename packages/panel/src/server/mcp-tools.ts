@@ -186,7 +186,7 @@ export const MCP_TOOLS: readonly McpTool[] = [
       "List Tasks on the Cores the key can reach, optionally only one status or one Core. With no limit, every matching Task with its full description. " +
       "With a limit (1-100) you get one page, newest update first, without descriptions (use get_task for those), plus nextCursor: pass it back as cursor for the next page; null on the last. Each Task has waiting: { reason, coreId } while it is assigned but not started (Core full, Core not connected, Harness not ready), else null. " +
       "Each Task has sessionState (working, needs-input, interrupted, idle-no-result, exited; null when no attempt runs): pass sessionState (one value or a comma list) to list only those, e.g. every Task that needs-input. " +
-      "A row has no watch URL: read it with get_task, or wait on the watch.url that create_task and assign_task returned. Call get_guide for the full recipe.",
+      "A row has no watch URL: read it with get_task, or wait on the watch.url that create_task, assign_task and comment_task returned. Call get_guide for the full recipe.",
     readOnly: true,
     permission: "read",
     input: z.object({
@@ -241,7 +241,7 @@ export const MCP_TOOLS: readonly McpTool[] = [
     name: "get_task",
     description:
       "One Task with its comment thread (the agent's report arrives here as a comment). waiting is { reason, coreId } while the Task is assigned but not started (Core full, Core not connected, Harness not ready), else null. " +
-      "sessionState says what its Session is doing; while an attempt runs, watch is { url, expiresAt, pollAfterSeconds }: wait by reading watch.url (no API key), not by calling get_task in a loop. Call get_guide for the full recipe.",
+      "sessionState says what its Session is doing; while an attempt is assigned (queued) or runs, watch is { url, expiresAt, pollAfterSeconds }: wait by reading watch.url (no API key), not by calling get_task in a loop. Call get_guide for the full recipe.",
     readOnly: true,
     permission: "read",
     input: z.object({ taskId: taskIdArg }),
@@ -252,7 +252,7 @@ export const MCP_TOOLS: readonly McpTool[] = [
     description:
       "Create a Task. It is a draft unless startNow is true, which creates it assigned so its Agent starts on it (needs coreId and agent). If the Core is full or not connected the Task is queued: the answer says so (queued, waiting) and it starts by itself. " +
       "timeoutMinutes sets its time limit per attempt (default 60 minutes; null = No limit). " +
-      "The Task comes back with sessionState and, once an attempt runs, watch.url: read that URL to wait (it needs no API key); do not loop on get_task. A Task still waiting for a Core has no watch yet. Call get_guide for the full recipe.",
+      "The Task comes back with sessionState and, watch.url right away, even while it is queued for a Core: read that URL to wait (it needs no API key); do not loop on get_task or call it again. A draft has no watch. Call get_guide for the full recipe.",
     readOnly: false,
     permission: "tasks:write",
     input: z.object({
@@ -270,7 +270,7 @@ export const MCP_TOOLS: readonly McpTool[] = [
     description:
       "Move a Task to assigned (its Agent starts on it) or back to draft. These are the only moves an operator makes; " +
       "in_progress, done, failed and partial belong to the dispatcher and the Agent's report. A Task that is in_progress " +
-      "cannot be moved: stop_task it first. The Task comes back with sessionState and, once an attempt runs, watch.url to wait on (see get_task).",
+      "cannot be moved: stop_task it first. The Task comes back with sessionState and, watch.url straight away (no extra get_task) to wait on; a Task moved back to draft has none.",
     readOnly: false,
     permission: "tasks:write",
     input: z.object({ taskId: taskIdArg, status: z.enum(OPERATOR_TASK_STATUSES).default("assigned") }),
@@ -279,7 +279,7 @@ export const MCP_TOOLS: readonly McpTool[] = [
   }),
   tool({
     name: "comment_task",
-    description: "Add a comment to a Task's thread. With reassign true, also send a finished Task back to its Agent (Comment & re-assign) and get the Task back with sessionState and watch.url. " +
+    description: "Add a comment to a Task's thread. With reassign true, also send a finished Task back to its Agent (Comment & re-assign) and get the Task back with sessionState and watch.url straight away. " +
       "A Task that is in_progress is refused: stop_task it first, then comment again with reassign true.",
     readOnly: false,
     permission: "tasks:write",

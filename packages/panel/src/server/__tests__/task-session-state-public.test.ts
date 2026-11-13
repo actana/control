@@ -185,16 +185,59 @@ describe("MCP", () => {
     expect(done.task.sessionState).toBeNull();
   });
 
-  it("create_task, assign_task and comment_task (reassign) return the Task with the new fields", async () => {
+  const watchStatus = async (url: string) => {
+    const res = (await handleApiRequest(new Request(url)))!;
+    return { status: res.status, body: res.status === 200 ? ((await res.json()) as Record<string, unknown>) : null };
+  };
+  const moveToRunning = (id: string) =>
+    testDb.pool.query("update tasks set status = 'in_progress', attempt_count = 1, session_state = 'working', session_state_at = $2 where id = $1", [
+      id,
+      NOW,
+    ]);
+
+  it("create_task (startNow) returns a watch URL that answers assigned, then the running attempt", async () => {
     const c = await mcp();
     const created = dataOf(await c.call("create_task", { title: "new", coreId: "core-a", agent: "agent-a", startNow: true }));
     expect(created.task).toMatchObject({ status: "assigned", sessionState: null, sessionStateAt: null });
-    expect("watch" in created.task).toBe(false);
+    expect(created.task.watch.url.startsWith(`${ORIGIN}/api/watch/`)).toBe(true);
+    expect(created.task.watch.expiresAt).toBeGreaterThan(Date.now());
+    const queued = await watchStatus(created.task.watch.url);
+    expect(queued.status).toBe(200);
+    expect(queued.body).toMatchObject({ taskId: created.task.id, attempt: 1, status: "assigned", sessionState: null, result: null, pollAfterSeconds: 5 });
+    await moveToRunning(created.task.id);
+    expect((await watchStatus(created.task.watch.url)).body).toMatchObject({ attempt: 1, status: "in_progress", sessionState: "working" });
+    // keep the shared rows of the later list tests as they were seeded
+    await testDb.pool.query("update tasks set status = 'done', session_state = null, session_state_at = null where id = $1", [created.task.id]);
+  });
+
+  it("a draft Task carries no watch, and moved back to draft the URL answers 410", async () => {
+    const c = await mcp();
+    const draft = dataOf(await c.call("create_task", { title: "later" }));
+    expect(draft.task.status).toBe("draft");
+    expect("watch" in draft.task).toBe(false);
+    const created = dataOf(await c.call("create_task", { title: "go", coreId: "core-a", agent: "agent-a", startNow: true }));
+    expect((await watchStatus(created.task.watch.url)).status).toBe(200);
+    const back = dataOf(await c.call("assign_task", { taskId: created.task.id, status: "draft" }));
+    expect("watch" in back.task).toBe(false);
+    expect((await watchStatus(created.task.watch.url)).status).toBe(410);
+  });
+
+  it("assign_task returns a watch with the same behaviour", async () => {
+    const c = await mcp();
     const assigned = dataOf(await c.call("assign_task", { taskId: "t-draft", status: "assigned" }));
-    expect(assigned.task).toMatchObject({ id: "t-draft", sessionState: null });
+    expect(assigned.task).toMatchObject({ id: "t-draft", status: "assigned", sessionState: null });
+    expect((await watchStatus(assigned.task.watch.url)).body).toMatchObject({ taskId: "t-draft", attempt: 2, status: "assigned" });
+    await testDb.pool.query("update tasks set status = 'in_progress', attempt_count = 2, session_state = 'working' where id = 't-draft'");
+    expect((await watchStatus(assigned.task.watch.url)).body).toMatchObject({ attempt: 2, status: "in_progress" });
+    await testDb.pool.query("update tasks set status = 'draft', attempt_count = 1, session_state = null where id = 't-draft'");
+  });
+
+  it("comment_task with reassign returns a watch with the same behaviour", async () => {
+    const c = await mcp();
     const reassigned = dataOf(await c.call("comment_task", { taskId: "t-done", body: "again", reassign: true }));
-    expect(reassigned.task).toMatchObject({ id: "t-done", sessionState: null });
+    expect(reassigned.task).toMatchObject({ id: "t-done", status: "assigned", sessionState: null });
     expect("sessionStateAt" in reassigned.task).toBe(true);
+    expect((await watchStatus(reassigned.task.watch.url)).body).toMatchObject({ taskId: "t-done", attempt: 2, status: "assigned" });
   });
 
   it("get_tasks rows carry sessionState and no watch, and filter by sessionState", async () => {
@@ -222,6 +265,7 @@ describe("MCP", () => {
     expect(text).toContain("watch.url");
     expect(text).toContain("get_guide");
     expect(text).toMatch(/never.*loop.*get_task|loop.*get_task/i);
+    expect(text).not.toContain("call get_task once");
     for (const state of ["working", "needs-input", "interrupted", "idle-no-result", "exited"]) expect(text).toContain(state);
     expect(text).toContain("comment_task");
     const tools = await c.listTools();

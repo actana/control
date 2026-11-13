@@ -68,7 +68,7 @@
           "sessionStateAt": { "type": ["integer", "null"], "description": "When `sessionState` last changed (epoch ms); null with it." },
           "watch": {
             "type": "object",
-            "description": "Only on an `in_progress` Task, and only where a single Task is returned (create, status, update, comment & re-assign, stop, get), never on a list row. Wait by reading `url` (GET /api/watch/{token}, no API key) instead of polling the Task.",
+            "description": "Only on an `assigned` or `in_progress` Task (so create with startNow, assign and comment & re-assign return it straight away, with no extra get), and only where a single Task is returned (create, status, update, comment & re-assign, stop, get), never on a list row. Wait by reading `url` (GET /api/watch/{token}, no API key) instead of polling the Task.",
             "properties": {
               "url": { "type": "string", "description": "Absolute status URL: AC_PANEL_PUBLIC_URL when the Panel has it, else the origin of the request." },
               "expiresAt": { "type": "integer", "description": "When the URL stops working (epoch ms); every read of the Task returns a fresh one." },
@@ -595,7 +595,7 @@
       "get": {
         "operationId": "watchTask",
         "summary": "Read a Task attempt's status (no API key)",
-        "description": "Unauthenticated: the signed token in the path is the whole credential, so no `Authorization` header is needed. Take the URL from `watch.url` of a Task. It answers status only (no title, description, comments or report text); read the report with GET /api/v1/tasks/{taskId}. Wait by calling it again after `pollAfterSeconds`; `0` means the Task is finished. The URL expires after the attempt's time limit plus 10 minutes (24 hours from the read of a Task with No time limit), and stops working when a new attempt starts or the Task is stopped or deleted. It is rate limited per token and globally (429).",
+        "description": "Unauthenticated: the signed token in the path is the whole credential, so no `Authorization` header is needed. Take the URL from `watch.url` of a Task. It answers status only (no title, description, comments or report text); read the report with GET /api/v1/tasks/{taskId}. While the Task is `assigned` (queued for a Core, or starting) it answers `status: \"assigned\"` with `sessionState` and `result` null and `pollAfterSeconds` 5; the same URL then follows the attempt that starts. Wait by calling it again after `pollAfterSeconds`; `0` means the Task is finished. The URL expires after the attempt's time limit plus 10 minutes (24 hours from the read of a Task with No time limit; for an `assigned` Task, that window plus the time limit, so it outlives a queue wait), and stops working when a later attempt replaces it or the Task is stopped, moved back to draft or deleted (410). It is rate limited per token and globally (429).",
         "security": [],
         "parameters": [{ "name": "token", "in": "path", "required": true, "schema": { "type": "string" } }],
         "responses": {

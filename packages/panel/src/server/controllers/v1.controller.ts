@@ -21,7 +21,14 @@ import { coreLinkManager } from "../services/core-link-manager";
 import type { Core, CoreWithDial } from "~/shared/cores";
 import { toSessionState, type AgentDto, type TaskCommentDto, type TaskDto, type TasksPageDto } from "~/shared/task-wire";
 import { TASK_SESSION_STATES, isTaskSessionState, taskWaitingReason, type TaskSessionState, type TaskStatus } from "~/shared/tasks";
-import { pollAfterSeconds, taskWatchToken, taskWatchUrl, watchExpiresAt } from "../services/task-watch";
+import {
+  nextAttemptWatchExpiresAt,
+  nextAttemptWatchToken,
+  pollAfterSeconds,
+  taskWatchToken,
+  taskWatchUrl,
+  watchExpiresAt,
+} from "../services/task-watch";
 import {
   addTaskComment,
   changeTaskStatus,
@@ -107,11 +114,18 @@ function waitingOf(t: Task): TaskDto["waiting"] {
 }
 
 /**
- * The status URL of a running attempt (#951), built with #950's own token and URL helpers. `origin` is the
+ * The status URL of a queued (`assigned`) or running attempt (#951), built with #950's own token and URL helpers. `origin` is the
  * Panel's own (the request's); `AC_PANEL_PUBLIC_URL` wins when set.
  */
 function watchOf(t: Task, origin: string): NonNullable<V1TaskDto["watch"]> {
   const now = Date.now();
+  if (t.status === "assigned") {
+    return {
+      url: taskWatchUrl(nextAttemptWatchToken(t, now), origin),
+      expiresAt: nextAttemptWatchExpiresAt(t, now),
+      pollAfterSeconds: 5,
+    };
+  }
   return {
     url: taskWatchUrl(taskWatchToken(t, now), origin),
     expiresAt: watchExpiresAt(t, now),
@@ -119,7 +133,7 @@ function watchOf(t: Task, origin: string): NonNullable<V1TaskDto["watch"]> {
   };
 }
 
-/** A Task as the v1 API and MCP return it: the Panel's Task plus, for an `in_progress` attempt, its `watch`. */
+/** A Task as the v1 API and MCP return it: the Panel's Task plus, for an `assigned` or `in_progress` attempt, its `watch`. */
 export type V1TaskDto = TaskDto & { watch?: { url: string; expiresAt: number; pollAfterSeconds: number } };
 
 /** Without `origin` (a list row) there is no `watch`: a list carries `sessionState` only. */
@@ -140,7 +154,7 @@ function taskDto(t: Task, origin?: string): V1TaskDto {
     sessionStateAt: t.sessionStateAt,
     createdAt: t.createdAt,
     updatedAt: t.updatedAt,
-    ...(origin !== undefined && t.status === "in_progress" ? { watch: watchOf(t, origin) } : {}),
+    ...(origin !== undefined && (t.status === "assigned" || t.status === "in_progress") ? { watch: watchOf(t, origin) } : {}),
   };
 }
 
