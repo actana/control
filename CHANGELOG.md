@@ -2,6 +2,109 @@
 
 All notable changes to this project, newest first.
 
+## 0.5.2-f2 — unreleased
+
+A Task now carries what its Session is doing. Besides its status, a Task shows
+whether its Session is working, waiting for your input, interrupted, idle
+without having written a result, or has exited, and since when. A change is
+noted with one system comment, and a signed webhook event is sent for it. The
+state never decides whether a Task succeeded: only the result file does. The
+Tasks board shows a small badge for the states that need you (Needs input,
+Interrupted, Idle without result), the Task detail shows it with the time it
+began, and the board has a "Needs attention" chip that filters to those Tasks.
+A toast, an OS notification and a sound (each with its own switch, plus one
+new switch in General settings) tell you when a Session starts waiting for you,
+or when a Task's Session needs input or sits idle without a result. A Session
+waiting for you is not announced while you are looking at it.
+
+A Session that is waiting at a dialog is detected on all five harnesses. When a
+harness shows a dialog that none of its hooks announces (a trust prompt, a
+permission question, a selector), the Core now reads the screen once it has held
+still and marks the Session as needing input, with the dialog's options when it
+can read them. Claude Code, Codex, Cursor, OpenCode and Pi are covered. A Core
+also refuses to type a message from a send into a Session that is waiting for
+your answer, so a send can no longer land inside an approval dialog. Plain
+`actana session send` from a terminal is not covered yet.
+
+A Task that is assigned again picks up where it left off. The new attempt
+resumes its own Session on the same Core, with your comment typed in as the next
+message and the attempt counted, and a Session that is still running gets the
+message instead of a second harness. When the old Session cannot be resumed, the
+Task starts a new one that is told which attempt it is, to check the current
+state before repeating a step, and gets the last 20 comments, with a note when
+older ones were left out. The dispatch comment says which of the two happened
+and why.
+
+A full Core queues Tasks instead of failing them. A Task that finishes (done,
+partial or failed) now frees its terminal slot at once, and its transcript and
+Session stay, so Comment & re-assign resumes it. If a Core is full or not
+connected, a Task waits as Assigned with the reason ("Core full (5/8)", "Core
+not connected") and starts by itself when a slot frees; a refused start no
+longer uses up one of its attempts. The Core rail shows how many terminals each
+Core is running against its limit. Over MCP, `list_cores` reports the same
+numbers, `get_task` and `get_tasks` say why a Task is waiting, and a new
+`close_session` tool ends a finished Task's harness so a waiting Task can start.
+
+Agents can be created, changed and deleted from the Panel. Settings has a new
+Agents page that lists each Core's Agents, creates one from a harness the Core
+reports as ready (the others are listed with the reason), edits the model and
+the other flags, and deletes after a confirmation. The built-in Agents explain
+why they cannot be changed, and an offline Core says so. There is no field for a
+command, arguments or environment. Over MCP and the public API there are new
+`create_agent`, `update_agent` and `delete_agent` tools and a PATCH route, and
+the next Task uses the updated Agent.
+
+Orchestrators get a lot more to work with over MCP and the public API. A Task
+returns its Session state, and a running Task returns a short-lived status link
+that answers with only the Task's status, Session state, result and how long to
+wait before asking again, never its title, comments or report. The link is
+rate limited, works while the attempt runs and for ten minutes after, and then
+says it is gone; `get_tasks` can filter by Session state. `actana task wait
+<link>` follows that link from the command line and exits with a code that says
+how it ended (done, failed, partial, needs input, interrupted, idle without a
+result, gone, timed out), without printing the link. A new `get_guide` tool
+returns short guides on handing a Task off, waiting for it, the Session states,
+blocked Tasks and comments, so an orchestrator can read the recipe from the
+Panel itself. `get_tasks` is lean by default and leaves out Task descriptions,
+which `get_task` returns, with an optional `withDescriptions` for short lists.
+When a Task needs input, `get_task` shows the question the Session is asking,
+with its kind and options, and a new `answer_task` tool answers it with text, an
+option, or a short list of allowed keys. A stale answer is refused, and every
+answer is added to the Task as a comment naming the API key.
+
+A comment on a running Task can go into its Session. The Panel's comment box
+has a new "Also type it into the running Session" checkbox, on by default; the
+comment is always saved as a note on the Task, and when the Session is running
+and not waiting for input, it is also typed in as a message. If it cannot be
+typed in, a comment says why and the note stays. Over MCP and the API a comment
+stays a note unless you ask for delivery "now". Comments, time-limit changes and
+stops made with an API key are now named after the key, for example "ci (API
+key)".
+
+A Task can retry itself when its Session dies without a result, if you ask for
+it. Auto-retry is off unless a Task sets it (one to three attempts), and the
+instance has a ceiling and a kill switch in settings. It fires only when the
+Session exited or vanished without a result, never after a stop, a timeout or a
+failure the agent reported itself; it waits 1, 5 and 15 minutes between
+attempts, gives up when an attempt dies within two minutes or makes no
+progress, and pauses a Core that keeps failing. Each retry is a visible comment
+and a notification, and the Task detail shows it.
+
+The Session list loads in pages. The Fleet page and a Core's page show 25
+Sessions per Core and a Load more button, on desktop and on a phone, with the
+counts still showing the true totals; the workspace loads the first 100 and
+still opens any other Session you select. Over MCP there is a new
+`get_sessions` tool and a paged `GET /api/v1/sessions`. An older Core that
+cannot page still lists everything.
+
+Two reliability fixes. Keys typed while the Panel's link to a Core is down are
+no longer saved and replayed when it comes back: the terminal pauses input and
+says "Reconnecting… input is paused until the link is back", and the
+actions that change a Session are refused at once instead of waiting in a queue.
+The webhook outbox is also cleaned up: events are no longer stored when you have
+no webhook, and processed ones that nothing is waiting on are deleted
+after the 14-day retention.
+
 ## 0.5.2-f1 — unreleased
 
 Opening the grid view no longer starts every Session at once. The grid now shows
