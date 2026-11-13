@@ -1449,6 +1449,17 @@ export class PtyCoreLinkServer {
     });
   }
 
+  /**
+   * True when a send into this PTY's Session must be refused: the Session is
+   * `needs-input`, parked on a dialog (#924). Unknown PTY, Session or query
+   * port is not blocked — there is nothing to say it is parked.
+   */
+  private isSendBlocked(ptyId: string): boolean {
+    const sessionId = this.core.sessionIdForPty(ptyId);
+    if (!sessionId || !this.queryPort) return false;
+    return this.queryPort.getSession(sessionId)?.status === "needs-input";
+  }
+
   private async dispatch(conn: ActiveConnection, frame: CoreLinkRequestFrame): Promise<void> {
     const ws = conn.ws;
     switch (frame.type) {
@@ -1523,6 +1534,23 @@ export class PtyCoreLinkServer {
       }
       case "write": {
         if (this.refuseLockedPty(conn, frame.reqId, frame.ptyId)) return;
+        // A stamped write is a send (#289 A); an attached terminal's keystrokes
+        // are not stamped and are never refused here. A Session parked on a
+        // dialog (`needs-input`) must not have text typed into it by a send: it
+        // would answer an approval by accident (#924). Nothing is written and
+        // the answer says `blocked`. `answer_task` (#959) will be the one
+        // deliberate path in, and will not travel as a plain send.
+        if (frame.stamp === true && this.isSendBlocked(frame.ptyId)) {
+          // `blocked` is a new result value on `writeResult`; the SDK frame type
+          // does not name it yet, and `ok: false` is what an older client reads.
+          this.send(ws, {
+            type: "writeResult",
+            reqId: frame.reqId,
+            ok: false,
+            blocked: true,
+          } as CoreLinkServerFrame);
+          return;
+        }
         const ok = this.core.write(frame.ptyId, frame.data);
         // The stamp goes in **after** the PTY took the bytes and **before** the
         // answer goes out, so the id the caller waits from cannot be older than
