@@ -267,11 +267,20 @@ describe("MCP", () => {
     expect(text).toMatch(/never.*loop.*get_task|loop.*get_task/i);
     expect(text).not.toContain("call get_task once");
     for (const state of ["working", "needs-input", "interrupted", "idle-no-result", "exited"]) expect(text).toContain(state);
-    expect(text).toContain("comment_task");
+    const needsInput = text.match(/For needs-input[^.]*\./)?.[0] ?? "";
+    expect(needsInput).toContain("answer_task");
+    expect(needsInput).not.toContain("comment_task");
     const tools = await c.listTools();
     const by = (n: string) => tools.find((t) => t.name === n)!.description;
     for (const n of ["create_task", "get_task", "get_tasks"]) expect(by(n), n).toContain("watch");
     expect(by("get_tasks")).toContain("sessionState");
+  });
+
+  it("the get_task description lists the prompt fields the payload carries, source included (#991)", async () => {
+    const c = await mcp();
+    const tools = await c.listTools();
+    const desc = tools.find((t) => t.name === "get_task")!.description;
+    expect(desc).toContain("prompt: { text, options?, kind, source, at }");
   });
 
   it("the get_tasks description and the instructions say: list with get_tasks, read one brief with get_task (#957)", async () => {

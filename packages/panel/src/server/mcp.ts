@@ -63,7 +63,7 @@ const INSTRUCTIONS =
   "exited = the Session ended; " +
   "null = no attempt is running. " +
   "The result file alone makes a Task done, failed or partial: a state never changes its status. " +
-  "For needs-input, tell the Operator, or answer with comment_task if the Agent asked a question. " +
+  "For needs-input, read the Task with get_task (its prompt says what is asked) and answer it with answer_task; what answer_task refuses with needs_human goes to the Operator. " +
   "get_tasks takes sessionState (one value or a comma list) to list, say, every Task that needs-input. " +
   "List with get_tasks, read one Task's brief with get_task: get_tasks rows never carry the description (withDescriptions: true adds it, with a limit of 10 or less). " +
   "assign_task only asks for the operator moves (assigned, draft). update_task changes a Task's title, description, time limit (timeoutMinutes; null = No limit) or autoRetry (opt-in re-dispatch when its Session dies without a result; create_task and assign_task take it too) and " +
