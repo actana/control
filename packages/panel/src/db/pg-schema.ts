@@ -300,7 +300,7 @@ export const webhookOutbox = pgTable(
   (t) => [
     check(
       "webhook_outbox_event_type_check",
-      sql`${t.eventType} in ('task.created', 'task.updated', 'task.status_changed', 'task.deleted', 'comment.created', 'ping')`,
+      sql`${t.eventType} in ('task.created', 'task.updated', 'task.status_changed', 'task.session_state_changed', 'task.deleted', 'comment.created', 'ping')`,
     ),
     index("webhook_outbox_pending_idx").on(t.ownerId, t.processedAt, t.createdAt),
   ],

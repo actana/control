@@ -2712,7 +2712,7 @@
       "checkConstraints": {
         "webhook_outbox_event_type_check": {
           "name": "webhook_outbox_event_type_check",
-          "value": "\"webhook_outbox\".\"event_type\" in ('task.created', 'task.updated', 'task.status_changed', 'task.deleted', 'comment.created', 'ping')"
+          "value": "\"webhook_outbox\".\"event_type\" in ('task.created', 'task.updated', 'task.status_changed', 'task.session_state_changed', 'task.deleted', 'comment.created', 'ping')"
         }
       },
       "isRLSEnabled": false
