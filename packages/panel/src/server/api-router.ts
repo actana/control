@@ -10,6 +10,7 @@ import {
 import * as sessionsController from "./controllers/sessions.controller";
 import * as homeTerminalsController from "./controllers/home-terminals.controller";
 import * as settingsController from "./controllers/settings.controller";
+import * as autoRetrySettingsController from "./controllers/auto-retry-settings.controller";
 import * as keybindingsController from "./controllers/keybindings.controller";
 import * as hooksController from "./controllers/hooks.controller";
 import * as usageController from "./controllers/usage.controller";
@@ -43,6 +44,7 @@ const CORE_SHARED_FILES_PATH = /^\/api\/cores\/([^/]+)\/shared\/files(?:\/([a-z-
 const CORE_PAIRING_FINISH_PATH = /^\/api\/cores\/([^/]+)\/pairing\/finish$/;
 const CORE_DELETE_PATH = /^\/api\/cores\/([^/]+)\/delete$/;
 const API_KEY_REVOKE_PATH = /^\/api\/api-keys\/([^/]+)\/revoke$/;
+const AUTO_RETRY_RESUME_PATH = /^\/api\/settings\/auto-retry\/cores\/([^/]+)\/resume$/;
 const WEBHOOK_PATH = /^\/api\/webhooks\/([^/]+)$/;
 const WEBHOOK_PING_PATH = /^\/api\/webhooks\/([^/]+)\/ping$/;
 const WEBHOOK_DELIVERIES_PATH = /^\/api\/webhooks\/([^/]+)\/deliveries$/;
@@ -470,6 +472,12 @@ async function dispatch(
   }
 
   // Settings
+  if (pathname === "/api/settings/auto-retry") {
+    if (method === "GET") return autoRetrySettingsController.read(principal!);
+    if (method === "PATCH") return autoRetrySettingsController.update(principal!, request);
+  }
+  m = pathname.match(AUTO_RETRY_RESUME_PATH);
+  if (m && method === "POST") return autoRetrySettingsController.resumeCore(principal!, decode(m[1]));
   if (pathname === "/api/settings") {
     if (method === "GET") return settingsController.read();
     if (method === "POST") return settingsController.update(request);

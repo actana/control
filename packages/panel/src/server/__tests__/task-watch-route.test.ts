@@ -45,6 +45,7 @@ async function seed(id: string, over: Partial<typeof tasks.$inferInsert> = {}) {
     lastError: null,
     sessionState: "working",
     sessionStateAt: now - 60_000,
+    autoRetry: null,
     timeoutMinutes: 60,
     createdAt: now - 2000,
     updatedAt: now - 500,

@@ -12,7 +12,7 @@ export type BlockedEntry = { key: string; state: string | null; suppressed?: boo
 
 const CAP = 2000;
 
-export function createBlockedTracker(triggers: ReadonlySet<string>) {
+export function createBlockedTracker(triggers: { has(state: string): boolean }) {
   const last = new Map<string, string | null>();
   // Groups whose baseline is known: a Core that answers later than the others is not news either.
   const primed = new Set<string>();

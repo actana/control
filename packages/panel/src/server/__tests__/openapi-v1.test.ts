@@ -120,6 +120,19 @@ describe("OpenAPI v1", () => {
     expect(create).toMatchObject({ default: 60 });
   });
 
+  it("describes autoRetry on the Task, the create body and the update body (#958)", () => {
+    const d = doc as unknown as {
+      components: { schemas: { Task: { properties: Record<string, unknown> } } };
+      paths: Record<string, Record<string, { requestBody?: { content: { "application/json": { schema: { properties: Record<string, unknown> } } } } }>>;
+    };
+    expect(d.components.schemas.Task.properties.autoRetry).toBeDefined();
+    const create = d.paths["/api/v1/tasks"]!.post!.requestBody!.content["application/json"].schema.properties;
+    const patch = d.paths["/api/v1/tasks/{taskId}"]!.patch!.requestBody!.content["application/json"].schema.properties;
+    for (const props of [create, patch]) expect(JSON.stringify(props.autoRetry)).toContain("maxAttempts");
+    expect(create.fromTaskId).toBeDefined();
+    expect(JSON.stringify(d.paths["/api/v1/tasks/{taskId}/status"]!.post!.requestBody)).toContain("autoRetry");
+  });
+
   it("documents the Session state, the watch object and the sessionState filter on Tasks (#951)", () => {
     const d = doc as unknown as {
       components: { schemas: { Task: { properties: Record<string, any> } } };

@@ -1,6 +1,8 @@
 import { noteCoreCap } from "../services/core-capacity";
 import { CoreSharedError, type CoreShared } from "@actana/sdk/shared";
 import { NotFoundError } from "../errors";
+import { getAutoRetrySettings } from "../services/auto-retry-settings";
+import { exitCodeOfCause, formatAutoRetryWaiting } from "~/shared/auto-retry";
 import {
   CoreHarnessesUnavailableError,
   HarnessNotReadyError,
@@ -12,6 +14,8 @@ import {
 import {
   addTaskComment,
   claimTask,
+  clearAutoRetryPending,
+  setAutoRetryNotice,
   failTaskDispatch,
   findCurrentTaskSession,
   getTask,
@@ -409,6 +413,22 @@ export class TaskDispatcher {
         this.log.error(`task ${task.id}: could not record that it is waiting (${reason}): ${messageOf(err)}`);
       }
     };
+    // A pending auto-retry (#958): the back-off has to pass first, and the kill switch ends it. Waiting writes no comment.
+    const pending = task.autoRetry?.notBefore ?? null;
+    let switchedOff = false;
+    if (pending !== null) {
+      let enabled = true;
+      try {
+        enabled = (await getAutoRetrySettings(this.ownerId)).enabled;
+      } catch (err) {
+        this.log.error(`task ${task.id}: could not read the auto-retry settings: ${messageOf(err)}`);
+      }
+      if (enabled && this.now() < pending) {
+        await wait(formatAutoRetryWaiting(pending, this.now()));
+        return false;
+      }
+      switchedOff = !enabled;
+    }
     // Ask before claiming: a claimed Task counts an attempt, so the wait has to happen here.
     let early: { agentId: string; resolved?: ResolvedAgent; error?: unknown } | null = null;
     if (task.agent) {
@@ -460,6 +480,15 @@ export class TaskDispatcher {
       // No Session started: the attempt the claim counted is given back.
       await failTaskDispatch(this.ownerId, claimed.id, reason, this.now(), { refundAttempt: !started });
     };
+    if (switchedOff) {
+      // The kill switch (#958 guard 7): a pending retry is failed instead of started. `assigned` has no edge to `failed`, so it is claimed and failed with the attempt given back.
+      const reason = "Auto-retry is switched off";
+      await fail(reason);
+      await setAutoRetryNotice(this.ownerId, claimed.id, "gave-up", reason, this.now()).catch((e) => this.log.error(`task ${claimed.id}: could not record the notice: ${messageOf(e)}`));
+      return true;
+    }
+    // This attempt follows an auto-retry (#958): its prompt says so.
+    const autoRetried = claimed.autoRetry?.notBefore != null ? { exitCode: exitCodeOfCause(claimed.autoRetry.lastCause) } : undefined;
 
     if (!claimed.agent) {
       await fail("this Task has no Agent to run it");
@@ -510,7 +539,7 @@ export class TaskDispatcher {
         else if (previous.harness !== resolved.harness) resumeRefusal = RESUME_REFUSALS.otherHarness;
         else {
           try {
-            await this.writePromptFile(resolved.coreId, claimed.id, attempt, buildResumePrompt(claimed, comments, attempt, previous.index));
+            await this.writePromptFile(resolved.coreId, claimed.id, attempt, buildResumePrompt(claimed, comments, attempt, previous.index, autoRetried));
           } catch (err) {
             await fail(`could not put the Task's prompt file on Core ${resolved.coreId}: ${messageOf(err)}`);
             return true;
@@ -542,7 +571,7 @@ export class TaskDispatcher {
         // The whole Task goes into a file the agent reads, not into the composer. The file is on the Core before
         // the pointer is typed, so the agent cannot be told to read a file that is not there.
         try {
-          await this.writePromptFile(resolved.coreId, claimed.id, attempt, buildTaskPrompt(claimed, comments, attempt));
+          await this.writePromptFile(resolved.coreId, claimed.id, attempt, buildTaskPrompt(claimed, comments, attempt, autoRetried));
         } catch (err) {
           await fail(`could not put the Task's prompt file on Core ${resolved.coreId}: ${messageOf(err)}`);
           return true;
@@ -560,6 +589,8 @@ export class TaskDispatcher {
       sessionId = session.sessionId;
       started = true;
       this.fullCores.delete(resolved.coreId);
+      // The back-off is over once a Session runs (a start that was refused keeps the retry pending, and its prompt line).
+      if (autoRetried) await clearAutoRetryPending(this.ownerId, claimed.id, this.now()).catch((e) => this.log.error(`task ${claimed.id}: could not clear the pending retry: ${messageOf(e)}`));
       this.watcher.track(
         {
           taskId: claimed.id,

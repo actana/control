@@ -31,6 +31,7 @@ const task = (
   lastError: null,
   sessionState: null,
   sessionStateAt: null,
+  autoRetry: null,
   timeoutMinutes: 60,
   createdAt: 1,
   updatedAt,

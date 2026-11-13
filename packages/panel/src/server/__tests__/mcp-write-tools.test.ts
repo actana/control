@@ -99,7 +99,7 @@ describe("tools/list", () => {
     const byName = Object.fromEntries(tools.map((t) => [t.name, t]));
     expect(byName.update_task!.annotations.readOnlyHint).toBe(false);
     expect(byName.update_task!.inputSchema.required).toEqual(["taskId"]);
-    expect(Object.keys(byName.update_task!.inputSchema.properties).sort()).toEqual(["description", "taskId", "timeoutMinutes", "title"]);
+    expect(Object.keys(byName.update_task!.inputSchema.properties).sort()).toEqual(["autoRetry", "description", "taskId", "timeoutMinutes", "title"]);
     expect(byName.delete_task!.annotations).toEqual({ readOnlyHint: false, destructiveHint: true });
     expect(byName.delete_task!.inputSchema.required).toEqual(["taskId"]);
     expect(byName.create_task!.annotations.destructiveHint).toBeUndefined();

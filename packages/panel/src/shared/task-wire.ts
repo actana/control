@@ -1,6 +1,7 @@
 // Tasks, Agents and comments as the Panel's browser reads them (#571). The
 // server's rows minus the owner: a browser never learns an owner id.
 
+import type { TaskAutoRetryView } from "./auto-retry";
 import { isTaskSessionState, type CommentAuthorKind, type TaskSessionState, type TaskStatus } from "./tasks";
 
 export type TaskDto = {
@@ -18,6 +19,8 @@ export type TaskDto = {
   waiting?: { reason: string; coreId: string | null } | null;
   /** The time limit per attempt in minutes (#724); null = No limit. */
   timeoutMinutes: number | null;
+  /** Auto-retry (#958): null when the Task did not opt in. Optional on the wire so older payloads still parse. */
+  autoRetry?: TaskAutoRetryView | null;
   /** What the Session of the running attempt is doing (#949); null when no attempt runs. Never moves `status`. */
   sessionState: TaskSessionState | null;
   /** When `sessionState` last changed (epoch ms); null with it. */
@@ -77,6 +80,10 @@ export type NewTaskRequest = {
   startNow?: boolean;
   /** Minutes per attempt, 1 to 43200 (#724). Omitted: 60. null: No limit. */
   timeoutMinutes?: number | null;
+  /** Opt in to auto-retry (#958): 1 to 3 attempts. The instance ceiling can lower it; the answer's `autoRetryClamped` says so. */
+  autoRetry?: { maxAttempts: number } | null;
+  /** The id of the Task whose Session creates this one (a Resume / hand-over). */
+  fromTaskId?: string | null;
 };
 
 /**
@@ -88,7 +95,11 @@ export type UpdateTaskRequest = {
   title?: string;
   description?: string;
   timeoutMinutes?: number | null;
+  autoRetry?: { maxAttempts: number } | null;
 };
+
+/** Set when a requested `autoRetry.maxAttempts` was lowered to the instance ceiling. */
+export type AutoRetryClamped = { requested: number; ceiling: number };
 
 export type NewTaskCommentRequest = {
   body: string;

@@ -2,6 +2,7 @@ import { taskPointerLine, taskPromptFilePath, taskPromptHomePath } from "@actana
 import { fileReference } from "@actana/shared/harness-file-mention";
 import type { Task, TaskComment } from "../services/tasks";
 import type { Harness } from "~/shared/agents";
+import { formatAutoRetryPromptLine } from "~/shared/auto-retry";
 import { REPORT_END_MARKER, taskResultPath } from "~/shared/task-report";
 
 /**
@@ -83,10 +84,17 @@ export function promptComments(comments: readonly TaskComment[]): { shown: TaskC
  * not, so it must look at what is already there before it repeats a step (#955). Comments that did not fit are said
  * to be left out, with where to read them.
  */
-export function buildTaskPrompt(task: Pick<Task, "id" | "title" | "description">, comments: readonly TaskComment[], attempt: number): string {
+export function buildTaskPrompt(
+  task: Pick<Task, "id" | "title" | "description">,
+  comments: readonly TaskComment[],
+  attempt: number,
+  /** Set when this attempt follows an auto-retry (#958): the exit code of the Session that died (null = unknown). */
+  autoRetried?: { exitCode: number | null },
+): string {
   const { shown: thread, total } = promptComments(comments);
   const lines = [
     ...(attempt >= 2 ? [`This is attempt ${attempt}. Check the current state (branches, PRs, files, the comments below) before repeating any step.`, ""] : []),
+    ...(autoRetried ? [formatAutoRetryPromptLine(autoRetried.exitCode), ""] : []),
     "You have been given a Task by the operator's Panel. Do the work, then report the result as described at the end.",
     "",
     `Task: ${defuse(task.title.trim())}`,
@@ -109,12 +117,19 @@ export function buildTaskPrompt(task: Pick<Task, "id" | "title" | "description">
  * (`since`: that comment's index; the agent's own reports are not repeated to it), the last
  * {@link MAX_PROMPT_COMMENTS} of them, and where to report this attempt's result. It is the file the one typed line points at.
  */
-export function buildResumePrompt(task: Pick<Task, "id" | "title">, comments: readonly TaskComment[], attempt: number, since: number): string {
+export function buildResumePrompt(
+  task: Pick<Task, "id" | "title">,
+  comments: readonly TaskComment[],
+  attempt: number,
+  since: number,
+  autoRetried?: { exitCode: number | null },
+): string {
   const fresh = comments.slice(since + 1).filter((c) => c.authorKind === "user");
   const shown = fresh.slice(-MAX_PROMPT_COMMENTS);
   const lines = [
     "The operator's Panel has re-assigned this Task to you. This is a new message in the Session you already have: the Task and what you did stay as they were.",
     "",
+    ...(autoRetried ? [formatAutoRetryPromptLine(autoRetried.exitCode), ""] : []),
     `Task: ${defuse(task.title.trim())}`,
     "",
   ];

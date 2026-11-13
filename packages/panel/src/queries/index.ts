@@ -58,6 +58,7 @@ export const queryKeys = {
   hookToken: ["hook-token"] as const,
   apiKeys: ["api-keys"] as const,
   webhooks: ["webhooks"] as const,
+  autoRetrySettings: ["settings", "auto-retry"] as const,
   keybindings: ["keybindings"] as const,
   usage: (days: number) => ["usage", days] as const,
   claudeUsageLimits: ["claude-usage-limits"] as const,
@@ -639,6 +640,10 @@ export const webhooksQueryOptions = () =>
     queryFn: async () => (await api.listWebhooks()).webhooks,
   });
 export const useWebhooks = () => useQuery(webhooksQueryOptions());
+
+/** Settings › General: the instance settings of auto-retry (#958). */
+export const useAutoRetrySettings = () =>
+  useQuery({ queryKey: queryKeys.autoRetrySettings, queryFn: () => api.getAutoRetrySettings() });
 
 
 /**

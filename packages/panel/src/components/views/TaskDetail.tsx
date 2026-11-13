@@ -12,6 +12,7 @@ import { MarkdownField } from "~/components/views/MarkdownField";
 import { TaskMarkdown } from "~/components/views/TaskMarkdown";
 import { api } from "~/lib/api";
 import { useFleet } from "~/lib/fleet-context";
+import { formatAutoRetryLine } from "~/lib/task-auto-retry";
 import { formatRelativeTime } from "~/lib/format-relative-time";
 import { sessionStateBadge } from "~/lib/task-session-state";
 import { TaskSessionBadge } from "~/components/views/TaskSessionBadge";
@@ -390,6 +391,12 @@ export function TaskDetail({ taskId, onClose, focusComposer = false }: { taskId:
             <div data-session-state-line style={{ display: "flex", alignItems: "center", fontFamily: "var(--mono)", fontSize: 12, color: "var(--text-dim)" }}>
               <TaskSessionBadge state={task.sessionState} />
               {task.sessionStateAt !== null ? <span style={{ marginLeft: 8 }}>since {formatRelativeTime(task.sessionStateAt)}</span> : null}
+            </div>
+          ) : null}
+          {task.autoRetry ? (
+            <div data-auto-retry-line style={{ display: "flex", flexDirection: "column", gap: 2, fontFamily: "var(--mono)", fontSize: 12, color: "var(--text-dim)" }}>
+              <span>{formatAutoRetryLine(task.autoRetry)}</span>
+              {task.autoRetry.notice ? <span>{task.autoRetry.notice.text}</span> : null}
             </div>
           ) : null}
           <section aria-label="Time limit" style={{ display: "flex", flexDirection: "column", gap: 8, padding: 14, border: "1px solid var(--border)", borderRadius: isPhone ? 12 : 8 }}>

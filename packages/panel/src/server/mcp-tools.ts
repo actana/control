@@ -103,6 +103,11 @@ const timeoutMinutesArg = z
   .nullable()
   .optional()
   .describe("Time limit in minutes per attempt (1–43200). Omit for 60; null = No limit: the attempt runs until the agent reports or exits.");
+const autoRetryArg = z
+  .object({ maxAttempts: z.number().int().min(1).max(3).describe("Attempts the Task may have in all, 1 to 3.") })
+  .nullable()
+  .optional()
+  .describe("Opt in to auto-retry: if its Session dies without a result, the Task is assigned again after 1, 5, then 15 minutes, up to maxAttempts. Omit = off (null turns it off). The Panel's ceiling can lower it; the answer's autoRetryClamped says so.");
 const coreIdArg = z.string().min(1).describe("A Core's id, from list_cores.");
 const agentIdArg = z.string().min(1).describe("An Agent's id, from list_agents.");
 const agentNameArg = z.string().describe(`The Agent's name: one line of at most ${AGENT_NAME_MAX} characters, unique on its Core.`);
@@ -252,6 +257,7 @@ export const MCP_TOOLS: readonly McpTool[] = [
     description:
       "Create a Task. It is a draft unless startNow is true, which creates it assigned so its Agent starts on it (needs coreId and agent). If the Core is full or not connected the Task is queued: the answer says so (queued, waiting) and it starts by itself. " +
       "timeoutMinutes sets its time limit per attempt (default 60 minutes; null = No limit). " +
+      "autoRetry { maxAttempts: 1-3 } opts in to auto-retry when its Session dies without a result (default off); set fromTaskId to your own Task's id when your Session creates a Resume or hand-over Task. " +
       "The Task comes back with sessionState and, watch.url right away, even while it is queued for a Core: read that URL to wait (it needs no API key); do not loop on get_task or call it again. A draft has no watch. Call get_guide for the full recipe.",
     readOnly: false,
     permission: "tasks:write",
@@ -262,6 +268,8 @@ export const MCP_TOOLS: readonly McpTool[] = [
       agent: z.string().min(1).nullable().optional().describe("An Agent's id on that Core, from list_agents."),
       startNow: z.boolean().optional(),
       timeoutMinutes: timeoutMinutesArg,
+      autoRetry: autoRetryArg,
+      fromTaskId: z.string().min(1).optional().describe("The id of your own Task, set it when your Session creates a Resume / hand-over Task."),
     }),
     run: async (principal, args, { origin }) => outcomeOf(await createTaskV1(principal, asJsonRequest(args), origin)),
   }),
@@ -270,12 +278,12 @@ export const MCP_TOOLS: readonly McpTool[] = [
     description:
       "Move a Task to assigned (its Agent starts on it) or back to draft. These are the only moves an operator makes; " +
       "in_progress, done, failed and partial belong to the dispatcher and the Agent's report. A Task that is in_progress " +
-      "cannot be moved: stop_task it first. The Task comes back with sessionState and, watch.url straight away (no extra get_task) to wait on; a Task moved back to draft has none.",
+      "cannot be moved: stop_task it first. autoRetry { maxAttempts: 1-3 } (null = off) is applied with the move. The Task comes back with sessionState and, watch.url straight away (no extra get_task) to wait on; a Task moved back to draft has none.",
     readOnly: false,
     permission: "tasks:write",
-    input: z.object({ taskId: taskIdArg, status: z.enum(OPERATOR_TASK_STATUSES).default("assigned") }),
-    run: async (principal, { taskId, status }, { origin }) =>
-      outcomeOf(await setTaskStatusV1(principal, taskId, asJsonRequest({ status }), origin)),
+    input: z.object({ taskId: taskIdArg, status: z.enum(OPERATOR_TASK_STATUSES).default("assigned"), autoRetry: autoRetryArg }),
+    run: async (principal, { taskId, status, autoRetry }, { origin }) =>
+      outcomeOf(await setTaskStatusV1(principal, taskId, asJsonRequest({ status, ...(autoRetry === undefined ? {} : { autoRetry }) }), origin)),
   }),
   tool({
     name: "comment_task",
@@ -328,7 +336,7 @@ export const MCP_TOOLS: readonly McpTool[] = [
   tool({
     name: "update_task",
     description:
-      "Change a Task's title, description, time limit or any of them. The title and description are refused while the " +
+      "Change a Task's title, description, time limit, autoRetry ({ maxAttempts: 1-3 }; null = off) or any of them. The title and description are refused while the " +
       "Task is in_progress, because its Session already has the prompt; the time limit can be changed at any status, " +
       "including in_progress, and applies to the running attempt within a minute.",
     readOnly: false,
@@ -339,9 +347,10 @@ export const MCP_TOOLS: readonly McpTool[] = [
         title: z.string().min(1).optional().describe("The new title."),
         description: z.string().optional().describe("The new description, in Markdown. It replaces the old one."),
         timeoutMinutes: timeoutMinutesArg,
+        autoRetry: autoRetryArg,
       })
-      .refine((a) => a.title !== undefined || a.description !== undefined || a.timeoutMinutes !== undefined, {
-        message: "give a title, a description or a time limit",
+      .refine((a) => a.title !== undefined || a.description !== undefined || a.timeoutMinutes !== undefined || a.autoRetry !== undefined, {
+        message: "give a title, a description, a time limit or autoRetry",
       }),
     run: async (principal, { taskId, ...fields }, { origin }) =>
       outcomeOf(await updateTaskV1(principal, taskId, asJsonRequest(fields, "PATCH"), origin)),

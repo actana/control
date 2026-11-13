@@ -21,6 +21,23 @@ import type { TaskSessionState } from "~/shared/tasks";
 export type BlockedSession = { coreId: string; coreLabel: string | null; sessionId: string; title: string; status: string };
 export type BlockedTask = { id: string; title: string; sessionState: TaskSessionState | null };
 
+/** A Task's latest auto-retry event (#958): `notice.id` changes with every retry, give-up and breaker trip. `group` is the column it was read from. */
+export type BlockedRetryTask = {
+  id: string;
+  title: string;
+  group: string;
+  notice: { id: number; kind: "retry" | "gave-up" | "paused"; text: string } | null;
+};
+
+/** The columns whose Tasks carry an auto-retry notice: the ones a retry moves a Task through. */
+export const RETRY_NOTICE_COLUMNS = ["assigned", "in_progress", "finished"] as const;
+
+const RETRY_TITLE: Record<string, string> = {
+  retry: "Task is being retried",
+  "gave-up": "Task gave up retrying",
+  paused: "Auto-retry paused on a Core",
+};
+
 const SESSION_TRIGGERS: ReadonlySet<string> = new Set(["needs-input"]);
 const TASK_TRIGGERS: ReadonlySet<string> = new Set(["needs-input", "idle-no-result"]);
 
@@ -35,6 +52,7 @@ export function useBlockedNotifications({
   sessions,
   loadedCores,
   tasks,
+  retryTasks = null,
   viewed,
 }: {
   sessions: readonly BlockedSession[];
@@ -42,6 +60,8 @@ export function useBlockedNotifications({
   loadedCores?: readonly string[];
   /** `null` until the Task list has loaded: it is no baseline, and nothing is tracked. A loaded empty list is one. */
   tasks: readonly BlockedTask[] | null;
+  /** The Tasks of the columns a retry moves through, with their auto-retry notice (#958); `null` until all have loaded (no baseline). */
+  retryTasks?: readonly BlockedRetryTask[] | null;
   /** The Session the Operator is looking at now, if any: it does not notify. */
   viewed: { coreId: string; sessionId: string } | null;
 }) {
@@ -53,6 +73,8 @@ export function useBlockedNotifications({
   const soundEnabled = settings?.notificationSoundEnabled ?? true;
   const sessionTracker = useRef(createBlockedTracker(SESSION_TRIGGERS));
   const taskTracker = useRef(createBlockedTracker(TASK_TRIGGERS));
+  // Any notice id is a trigger: the state is the id, so a new id is a new event.
+  const retryTracker = useRef(createBlockedTracker({ has: () => true }));
   // Read at fire time, so a changed toggle or a new view never re-runs the tracking.
   const live = useRef({ enabled, toastEnabled, osEnabled, soundEnabled, viewed });
   live.current = { enabled, toastEnabled, osEnabled, soundEnabled, viewed };
@@ -153,4 +175,25 @@ export function useBlockedNotifications({
       });
     }
   }, [tasks]);
+
+  // Every auto-retry, give-up and breaker trip of a Task (#958): the notice id is the state, so each new one fires once.
+  // The first loaded list only learns; a Task moving between columns keeps its last id and does not fire again.
+  useEffect(() => {
+    if (retryTasks === null) return;
+    const fired = retryTracker.current.update(
+      retryTasks.map((t) => ({ key: t.id, group: t.group, state: t.notice ? String(t.notice.id) : null })),
+      { loadedGroups: RETRY_NOTICE_COLUMNS },
+    );
+    if (!live.current.enabled) return;
+    for (const id of fired) {
+      const t = retryTasks.find((x) => x.id === id);
+      if (!t?.notice) continue;
+      announce({
+        tag: `task-auto-retry-${id}-${t.notice.id}`,
+        title: RETRY_TITLE[t.notice.kind] ?? "Task auto-retry",
+        body: `${t.title}: ${t.notice.text}`,
+        open: () => void router.navigate({ to: "/tasks", search: { task: id } }),
+      });
+    }
+  }, [retryTasks]);
 }
