@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useSyncExternalStore,
   useId,
   useLayoutEffect,
   useRef,
@@ -502,8 +503,19 @@ export function TerminalPane({
   // (issue 147). Same ref shape and same reason as the status above: every
   // write path in the surface closure reads it, and the surface is built once.
   const writeState = useSessionWriteState(descriptor.coreId, descriptor.sessionId);
+  // The panel link, as this pane's Core reaches it (#964). While it is down a
+  // keystroke has nowhere to go and must not be kept for later: the pane takes
+  // no input and says so, and takes it again once the link is open and this
+  // tab's PTYs are re-subscribed. `getCorePtyBridge` is stable per link × Core,
+  // so the store functions below keep their identity across renders.
+  const linkBridge = getCorePtyBridge(descriptor.coreId);
+  const linkUp = useSyncExternalStore(
+    useCallback((onChange) => linkBridge?.onLinkChange(onChange) ?? (() => {}), [linkBridge]),
+    () => linkBridge?.isLinkUp() ?? true,
+    () => true,
+  );
   const mayWriteRef = useRef(true);
-  mayWriteRef.current = writeState.access.writable;
+  mayWriteRef.current = writeState.access.writable && linkUp;
   const readOnlyReason = writeState.access.writable ? null : writeState.access.reason;
   // The visible half of the bounded optimistic window (issue 393). The pane is
   // writable here — this is a notice, not a verdict — and it says so *before*
@@ -619,8 +631,10 @@ export function TerminalPane({
     !startError &&
     // Answering a question is a write — it walks the TUI menu with injected
     // keys. A Reader is offered no input affordance at all, and an overlay full
-    // of buttons that cannot land is the worst kind (issue 147).
-    writeState.access.writable;
+    // of buttons that cannot land is the worst kind (issue 147). The same holds
+    // while the panel link is down (#964).
+    writeState.access.writable &&
+    linkUp;
 
   // ─── Session write access (issue 147, ADR 0024 D3/D8) ──────────────────────
 
@@ -648,8 +662,8 @@ export function TerminalPane({
   // this is for the answer moving under an open pane, which is the case D8
   // exists for.
   useEffect(() => {
-    termSurfaceRef.current?.setReadOnly?.(!writeState.access.writable);
-  }, [writeState.access.writable]);
+    termSurfaceRef.current?.setReadOnly?.(!(writeState.access.writable && linkUp));
+  }, [writeState.access.writable, linkUp]);
 
   // The loser of an intra-Panel handover. Its own event, its own copy, and
   // nothing in common with the takeover below beyond both ending in a pane the
@@ -1677,6 +1691,23 @@ export function TerminalPane({
           it replaces (issue 393), are rendered whoever the Core is: a pane that
           may not type has to say so, and the reason it may not is never that a
           Core lacks a capability. */}
+      {!linkUp && (
+        <div
+          data-terminal-link="down"
+          role="status"
+          style={{
+            padding: "6px 12px",
+            borderBottom: "1px solid var(--border)",
+            background: "color-mix(in oklch, var(--text-dim) 10%, transparent)",
+            color: "var(--text-dim)",
+            fontFamily: "var(--mono)",
+            fontSize: 11,
+            flexShrink: 0,
+          }}
+        >
+          Reconnecting… input is paused until the link is back
+        </div>
+      )}
       {(readOnlyReason ||
         awaitingDriveOptimistic ||
         (writeState.lock.supported && writeState.lock.state === "held-by-you")) && (
