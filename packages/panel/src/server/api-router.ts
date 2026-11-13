@@ -288,6 +288,9 @@ async function dispatch(
     if (method === "GET") return v1Controller.getAgentV1(principal!, decode(m[1]));
     if (method === "DELETE") return v1Controller.deleteAgentV1(principal!, decode(m[1]));
   }
+  if (pathname === "/api/v1/sessions" && method === "GET") {
+    return v1Controller.listSessionsV1FromQuery(principal!, url.searchParams);
+  }
   if (pathname === "/api/v1/tasks") {
     if (method === "GET") return v1Controller.listTasksV1FromQuery(principal!, url.searchParams);
     if (method === "POST") return v1Controller.createTaskV1(principal!, request);

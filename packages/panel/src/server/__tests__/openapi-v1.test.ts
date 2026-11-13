@@ -64,6 +64,7 @@ describe("OpenAPI v1", () => {
       { method: "POST", path: "/api/v1/agents", template: "/api/v1/agents" },
       { method: "GET", path: "/api/v1/agents/x", template: "/api/v1/agents/{agentId}" },
       { method: "DELETE", path: "/api/v1/agents/x", template: "/api/v1/agents/{agentId}" },
+      { method: "GET", path: "/api/v1/sessions", template: "/api/v1/sessions" },
       { method: "GET", path: "/api/v1/tasks", template: "/api/v1/tasks" },
       { method: "POST", path: "/api/v1/tasks", template: "/api/v1/tasks" },
       { method: "GET", path: "/api/v1/tasks/x", template: "/api/v1/tasks/{taskId}" },

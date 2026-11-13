@@ -228,6 +228,60 @@
         }
       }
     },
+    "/api/v1/sessions": {
+      "get": {
+        "operationId": "listSessions",
+        "summary": "List a Core's Sessions",
+        "description": "One page of the Sessions on one Core, asked of the Core itself: running and waiting-for-input Sessions first, then newest activity. Lean rows: no prompt text and no transcript. `nextCursor` is the `cursor` for the next page and is null on the last; `total` counts every Session the filters match on that Core.",
+        "parameters": [
+          { "name": "coreId", "in": "query", "required": true, "schema": { "type": "string" }, "description": "The Core whose Sessions to list." },
+          { "name": "limit", "in": "query", "required": false, "schema": { "type": "integer", "minimum": 1, "maximum": 100, "default": 25 }, "description": "Page size, 1-100." },
+          { "name": "cursor", "in": "query", "required": false, "schema": { "type": "string" }, "description": "The `nextCursor` of the previous page. Opaque." },
+          { "name": "status", "in": "query", "required": false, "schema": { "type": "string", "enum": ["running", "waiting", "finished"] }, "description": "Only Sessions in this state." },
+          { "name": "archived", "in": "query", "required": false, "schema": { "type": "boolean", "default": false }, "description": "true lists archived Sessions instead of active ones." },
+          { "name": "harness", "in": "query", "required": false, "schema": { "type": "string" }, "description": "Only Sessions of this harness." },
+          { "name": "q", "in": "query", "required": false, "schema": { "type": "string" }, "description": "Only Sessions whose name contains this text." }
+        ],
+        "responses": {
+          "200": {
+            "description": "One page of Sessions.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "sessions": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": { "type": "string" },
+                          "title": { "type": "string" },
+                          "harness": { "type": "string" },
+                          "status": { "type": "string" },
+                          "pinned": { "type": "boolean" },
+                          "archived": { "type": "boolean" },
+                          "live": { "type": "boolean", "description": "True while the Core holds a live terminal for the Session." },
+                          "updatedAt": { "type": "integer", "description": "Last activity, epoch milliseconds." }
+                        }
+                      }
+                    },
+                    "nextCursor": { "type": ["string", "null"] },
+                    "total": { "type": "integer" }
+                  }
+                }
+              }
+            }
+          },
+          "400": { "description": "`coreId` is missing, `limit` is not a whole number from 1 to 100, `status` or `archived` is not valid, or `cursor` was not issued by this API" },
+          "401": { "description": "Unauthorized" },
+          "403": { "description": "The key does not reach the Core, or lacks the `read` permission" },
+          "404": { "description": "No such Core" },
+          "502": { "description": "The Core did not answer" },
+          "503": { "description": "The Core is not connected" }
+        }
+      }
+    },
     "/api/v1/tasks": {
       "get": {
         "operationId": "listTasks",

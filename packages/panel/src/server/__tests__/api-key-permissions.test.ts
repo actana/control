@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { ALL_API_KEY_PERMISSIONS, type ApiKeyPermission } from "~/shared/api-key-permissions";
 import { closePanelTestDb, openPanelTestDb, resetPanelState } from "./_panel-test-db";
 import { McpTestClient, textOf } from "./_mcp-client";
@@ -25,6 +25,7 @@ const { API_KEY_ROUTES } = await import("../api-key-auth");
 const { MCP_TOOLS } = await import("../mcp-tools");
 const { createApiKey } = await import("../services/api-keys");
 const tasksService = await import("../services/tasks");
+const { coreLinkManager } = await import("../services/core-link-manager");
 
 const ORIGIN = "http://panel.example.test";
 const A = 1;
@@ -76,6 +77,10 @@ beforeEach(async () => {
     "insert into agents (id, owner_id, core_id, name, harness, flags, is_default, created_at, updated_at) values ('agent-a', 1, 'core-a', 'A', 'claude-code', '{}', false, 1, 1), ('agent-b', 1, 'core-a', 'B', 'claude-code', '{}', false, 1, 1)",
   );
   taskId = (await tasksService.createTask(A, { title: "t", coreId: "core-a" })).id;
+  // `GET /api/v1/sessions` asks the Core: a Core that answers an empty page.
+  vi.spyOn(coreLinkManager(), "client").mockReturnValue({
+    request: async () => ({ type: "sessionsListResult", sessions: [], nextCursor: null, total: 0 }),
+  } as never);
 });
 afterAll(async () => {
   await closePanelTestDb(testDb);
@@ -95,6 +100,8 @@ function sampleFor(method: string, pattern: RegExp): { path: string; json?: unkn
       if (before.endsWith("/tasks/")) return taskId;
       return "core-a";
     });
+  // Sessions are listed per Core: the route needs the Core it reads.
+  if (path === "/api/v1/sessions") return { path: `${path}?coreId=core-a` };
   if (method === "GET" || method === "DELETE") return { path };
   if (path === "/api/v1/agents") return { path, json: { coreId: "core-a", name: "new", harness: "claude-code" } };
   if (path === "/api/v1/tasks") return { path, json: { title: "new task" } };
@@ -121,7 +128,7 @@ describe("a read-only key", () => {
       }
     }
     expect(seen.filter((s) => s.startsWith("POST ") || s.startsWith("PATCH ") || s.startsWith("DELETE ")).length).toBe(8);
-    expect(seen.filter((s) => s.startsWith("GET ")).length).toBe(10);
+    expect(seen.filter((s) => s.startsWith("GET ")).length).toBe(11);
     // Nothing was written: the 403 came from the gate, before any handler ran.
     expect((await testDb.pool.query("select count(*)::int as n from agents")).rows[0]).toEqual({ n: 2 });
     expect((await testDb.pool.query("select count(*)::int as n from tasks")).rows[0]).toEqual({ n: 1 });
@@ -231,7 +238,7 @@ describe("the /mcp tools apply the same permissions", () => {
   const taskTools = MCP_TOOLS.filter((t) => t.permission === "tasks:write").map((t) => t.name).sort();
 
   it("every tool names the permission its REST route needs: reads are read, the Task writes are tasks:write", () => {
-    expect(readTools).toEqual(["get_shared", "get_task", "get_tasks", "list_agents", "list_cores", "list_shared"]);
+    expect(readTools).toEqual(["get_sessions", "get_shared", "get_task", "get_tasks", "list_agents", "list_cores", "list_shared"]);
     expect(taskTools).toEqual(["assign_task", "comment_task", "create_task", "delete_task", "stop_task", "update_task"]);
     for (const t of MCP_TOOLS) expect(t.readOnly, t.name).toBe(t.permission === "read");
   });

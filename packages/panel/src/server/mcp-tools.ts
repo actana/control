@@ -9,6 +9,7 @@ import {
   listAgentsV1,
   listCoreAgentsV1,
   listCoresV1,
+  listSessionsV1,
   listTasksV1,
   setTaskStatusV1,
   stopTaskV1,
@@ -18,6 +19,7 @@ import { getShared, listShared } from "./mcp-shared";
 import { OPERATOR_TASK_STATUSES } from "./controllers/tasks.controller";
 import { scopeReaches } from "./services/api-keys";
 import type { ApiKeyPermission } from "~/shared/api-key-permissions";
+import { SESSION_PAGE_MAX, SESSION_STATUS_FILTERS } from "@actana/shared/session-paging";
 import { TASKS_PAGE_MAX_LIMIT, TASK_STATUSES } from "~/shared/tasks";
 
 /**
@@ -137,6 +139,27 @@ export const MCP_TOOLS: readonly McpTool[] = [
         }),
       );
       // The rows are in the JSON text only: a list can be megabytes, so it is not repeated as structuredContent.
+      return listed.ok ? { ...listed, textOnly: true } : listed;
+    },
+  }),
+  tool({
+    name: "get_sessions",
+    description:
+      "List one Core's Sessions, one page at a time: running and waiting-for-input first, then newest activity. Lean rows (id, title, harness, status, pinned, archived, live, updatedAt): no prompt text, no transcript. " +
+      "Pass the returned nextCursor back as cursor for the next page; it is null on the last. total counts every Session the filters match on that Core.",
+    readOnly: true,
+    permission: "read",
+    input: z.object({
+      coreId: coreIdArg,
+      limit: z.number().int().min(1).max(SESSION_PAGE_MAX).optional().describe("Page size, 1-100. Default 25."),
+      cursor: z.string().min(1).optional().describe("The nextCursor of the previous page."),
+      status: z.enum(SESSION_STATUS_FILTERS).optional().describe("Only Sessions in this state."),
+      archived: z.boolean().optional().describe("true lists archived Sessions instead of active ones."),
+      harness: z.string().min(1).optional().describe("Only Sessions of this harness, e.g. claude-code."),
+      q: z.string().min(1).optional().describe("Only Sessions whose name contains this text."),
+    }),
+    run: async (principal, args) => {
+      const listed = await outcomeOf(await listSessionsV1(principal, args));
       return listed.ok ? { ...listed, textOnly: true } : listed;
     },
   }),

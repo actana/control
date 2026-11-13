@@ -50,6 +50,7 @@ export const API_KEY_ROUTES: ReadonlyArray<{ method: string; pattern: RegExp; pe
   { method: "POST", pattern: /^\/api\/v1\/agents$/, permission: "agents:write" },
   { method: "GET", pattern: /^\/api\/v1\/agents\/[^/]+$/, permission: "read" },
   { method: "DELETE", pattern: /^\/api\/v1\/agents\/[^/]+$/, permission: "agents:write" },
+  { method: "GET", pattern: /^\/api\/v1\/sessions$/, permission: "read" },
   { method: "GET", pattern: /^\/api\/v1\/tasks$/, permission: "read" },
   { method: "POST", pattern: /^\/api\/v1\/tasks$/, permission: "tasks:write" },
   { method: "GET", pattern: /^\/api\/v1\/tasks\/[^/]+$/, permission: "read" },
