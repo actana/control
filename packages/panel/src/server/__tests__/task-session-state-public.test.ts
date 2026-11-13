@@ -267,7 +267,9 @@ describe("MCP", () => {
     expect(text).toMatch(/never.*loop.*get_task|loop.*get_task/i);
     expect(text).not.toContain("call get_task once");
     for (const state of ["working", "needs-input", "interrupted", "idle-no-result", "exited"]) expect(text).toContain(state);
-    expect(text).toContain("comment_task");
+    const needsInput = text.match(/For needs-input[^.]*\./)?.[0] ?? "";
+    expect(needsInput).toContain("answer_task");
+    expect(needsInput).not.toContain("comment_task");
     const tools = await c.listTools();
     const by = (n: string) => tools.find((t) => t.name === n)!.description;
     for (const n of ["create_task", "get_task", "get_tasks"]) expect(by(n), n).toContain("watch");
