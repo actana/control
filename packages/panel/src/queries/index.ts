@@ -123,6 +123,28 @@ export function remoteSessionFromSnapshot(snapshot: CoreLinkSessionRow): Session
   };
 }
 
+/**
+ * How many Sessions the workspace's list bucket holds: the first page only
+ * (#960). A Core with a long history must not ship all of it to open the board;
+ * the grid keeps its own cap and order on top of this (#895).
+ */
+export const WORKSPACE_SESSIONS_LIMIT = 100;
+
+/**
+ * Ask a Core for exactly one active Session row by id — for a Session that is
+ * not in the first page the bucket holds (a notification, a terminal already
+ * open). `null` when the Core does not have it as an active Session.
+ */
+export async function fetchSessionRowById(coreId: string, sessionId: string): Promise<Session | null> {
+  const bridge = getPanelBridge();
+  if (!bridge) return null;
+  const { sessions } = await bridge.listSessionRows(coreId, { limit: 1, ids: [sessionId], archived: false });
+  // An older Core ignores the paging fields and answers every row; match on id
+  // rather than trusting the first one.
+  const row = sessions.find((s) => s.sessionId === sessionId && !s.archived);
+  return row ? remoteSessionFromSnapshot(row) : null;
+}
+
 export const sessionsQueryOptions = (coreId: string) =>
   queryOptions({
     ...CORE_SCOPED_FRESHNESS,
@@ -145,7 +167,10 @@ export const sessionsQueryOptions = (coreId: string) =>
       // the panel already knows how to render that.
       const bridge = getPanelBridge();
       if (!bridge) return [];
-      const { sessions, archivedCount } = await bridge.listSessionRows(coreId);
+      const { sessions, archivedCount } = await bridge.listSessionRows(coreId, {
+        limit: WORKSPACE_SESSIONS_LIMIT,
+        archived: false,
+      });
       // The archived count rides this answer (ADR 0019) but belongs to a
       // different consumer — the Archived tab, which needs it while the active
       // view is showing. Park it in its own bucket rather than widening this

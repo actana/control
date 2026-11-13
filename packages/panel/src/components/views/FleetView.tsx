@@ -11,6 +11,7 @@ import { CoreNeedsUpdateNotice } from "~/components/views/CoreNeedsUpdate";
 import { formatRelativeTime } from "~/lib/format-relative-time";
 import { FleetSessionRow } from "~/components/views/FleetSessionRow";
 import { useFleet } from "~/lib/fleet-context";
+import { LoadMoreButton } from "~/components/views/LoadMoreButton";
 import { setSelectedCoreId as writeSelectedCoreId } from "~/lib/selected-core-store";
 import { OPEN_SETTINGS_EVENT } from "~/lib/design-meta";
 import { coreOrder, type CoreWithDial } from "~/shared/cores";
@@ -27,7 +28,7 @@ import { useBreakpoint } from "~/lib/breakpoint";
 
 export function FleetView() {
   const router = useRouter();
-  const { fleet, cores, loading, error, refresh } = useFleet();
+  const { fleet, cores, loading, error, refresh, loadMore, loadingMore } = useFleet();
 
   const openCore = useCallback(
     (coreId: string, tab?: "sessions") => {
@@ -52,7 +53,13 @@ export function FleetView() {
   const compact = breakpoint !== "desktop";
   const phone = breakpoint === "phone";
 
-  const summary = `${fleet.rows.length} active ${fleet.rows.length === 1 ? "session" : "sessions"} across ${cores.length} ${cores.length === 1 ? "Core" : "Cores"}`;
+  // The Cores' own totals, not the rows loaded so far; a Core read unpaged has
+  // no total and counts the rows it gave.
+  const activeCount = cores.reduce(
+    (sum, core) => sum + (fleet.pages?.[core.id]?.total ?? fleet.rows.filter((r) => r.coreId === core.id).length),
+    0,
+  );
+  const summary = `${activeCount} active ${activeCount === 1 ? "session" : "sessions"} across ${cores.length} ${cores.length === 1 ? "Core" : "Cores"}`;
   const picker = <CorePicker cores={cores} onPick={(core) => openCore(core.id)} compact={compact} />;
   // On compact each action is a full-size tap target.
   const actionStyle = compact ? { minHeight: 44 } : undefined;
@@ -92,6 +99,9 @@ export function FleetView() {
         loading={loading}
         cores={cores}
         fleetRows={fleet.rows}
+        pages={fleet.pages}
+        onLoadMore={loadMore}
+        loadingMore={loadingMore}
         onOpenCore={openCore}
         onOpenSession={openSession}
         compact={compact}
@@ -170,6 +180,9 @@ function FleetDashboard({
   loading,
   cores,
   fleetRows,
+  pages,
+  onLoadMore,
+  loadingMore,
   onOpenCore,
   onOpenSession,
   compact,
@@ -177,6 +190,9 @@ function FleetDashboard({
   loading: boolean;
   cores: CoreWithDial[];
   fleetRows: ReturnType<typeof useFleet>["fleet"]["rows"];
+  pages: ReturnType<typeof useFleet>["fleet"]["pages"];
+  onLoadMore: ((coreId: string) => void) | undefined;
+  loadingMore: ReadonlySet<string> | undefined;
   onOpenCore: (coreId: string) => void;
   onOpenSession: (coreId: string, sessionId: string) => void;
   compact: boolean;
@@ -206,7 +222,7 @@ function FleetDashboard({
           <Section
             key={core.id}
             label={core.label}
-            count={rows.length}
+            count={pages?.[core.id]?.total ?? rows.length}
             icon="globe"
             divider={false}
             marginBottom={32}
@@ -237,6 +253,12 @@ function FleetDashboard({
                     onOpen={() => onOpenSession(row.coreId, row.sessionId)}
                   />
                 ))}
+                <LoadMoreButton
+                  hasMore={pages?.[core.id]?.hasMore === true}
+                  loading={loadingMore?.has(core.id) ?? false}
+                  onClick={() => onLoadMore?.(core.id)}
+                  compact={compact}
+                />
               </div>
             ) : (
               <div style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-faint)" }}>

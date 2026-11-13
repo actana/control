@@ -233,7 +233,7 @@ describe("panel bridge — paged Session rows", () => {
         archivedCount: 2,
         nextCursor: "c2",
         total: 60,
-      },
+      } as never,
     });
     await expect(pending).resolves.toEqual({ sessions: [ROW], archivedCount: 2, nextCursor: "c2", total: 60 });
   });

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api";
 import { getPanelBridge } from "./panel-bridge";
+import type { CoreLinkSessionRow } from "@actana/shared/sdk-link-frames";
 import { mergeFleetSessions, type CoreFanOutResult, type FleetMergeResult } from "~/shared/fleet-merge";
 import {
   FLEET_POLL_MS,
@@ -29,6 +30,27 @@ import { coreOrder, type CoreWithDial } from "~/shared/cores";
  * to change it, and no comment claiming two constants agree.
  */
 export const CORES_POLL_MS = 15_000;
+
+/** Sessions a Core is asked for per page, on first load and on each Load more. */
+export const FLEET_PAGE_SIZE = 25;
+/** The most rows one `sessionRowsList` answers; a refresh of a longer span follows cursors. */
+const FLEET_MAX_PAGE = 100;
+
+/** What the hook holds per Core: the loaded rows and where the next page starts. */
+type HeldPage = {
+  rows: CoreLinkSessionRow[];
+  nextCursor: string | null;
+  total: number;
+  /** Rows were read unpaged (an older Core): the answer is the whole list. */
+  paged: boolean;
+};
+
+/** Append `incoming` to `held`, one copy per sessionId, the newest copy winning in place. */
+function appendDeduped(held: CoreLinkSessionRow[], incoming: CoreLinkSessionRow[]): CoreLinkSessionRow[] {
+  const byId = new Map(held.map((row) => [row.sessionId, row]));
+  for (const row of incoming) byId.set(row.sessionId, row);
+  return [...byId.values()];
+}
 
 function emptyFleet(): FleetMergeResult {
   return { rows: [], offlineCores: [], singleCore: false };
@@ -95,6 +117,44 @@ export function useCores(nonce = 0): {
  * it — the router already addresses frames by `coreId`, so asking N Cores is
  * N frames, not a new API.
  */
+type Bridge = NonNullable<ReturnType<typeof getPanelBridge>>;
+
+function resultFor(core: CoreWithDial, held: HeldPage): CoreFanOutResult {
+  return {
+    coreId: core.id,
+    coreLabel: core.label,
+    ok: true,
+    sessions: held.rows,
+    lastSeenAt: core.dial.lastSeenAt ?? Date.now(),
+    ...(held.paged ? { total: held.total, hasMore: held.nextCursor !== null } : null),
+  };
+}
+
+/**
+ * Read a Core's list again, covering what is already loaded in one request when
+ * it fits (`limit` up to 100) and following cursors when it does not, so a
+ * refresh keeps the pages the operator opened instead of snapping back to one.
+ */
+async function readLoadedSpan(bridge: Bridge, coreId: string, held: HeldPage | undefined): Promise<HeldPage> {
+  const want = held?.rows.length ?? 0;
+  const limit = Math.min(FLEET_MAX_PAGE, Math.max(FLEET_PAGE_SIZE, want));
+  let answer = await bridge.listSessionRows(coreId, { limit, archived: false });
+  let rows = answer.sessions;
+  let nextCursor = answer.nextCursor ?? null;
+  while (nextCursor !== null && rows.length < want) {
+    answer = await bridge.listSessionRows(coreId, { limit: FLEET_MAX_PAGE, archived: false, cursor: nextCursor });
+    rows = appendDeduped(rows, answer.sessions);
+    nextCursor = answer.nextCursor ?? null;
+  }
+  return {
+    rows: appendDeduped([], rows),
+    nextCursor,
+    total: answer.total ?? rows.length,
+    // An older Core answers unpaged: no total came back, so there is no paging to show.
+    paged: typeof answer.total === "number",
+  };
+}
+
 export function useFleetSessions(): {
   fleet: FleetMergeResult;
   /** The registry behind the fan-out, with each Core's live link state. */
@@ -108,6 +168,13 @@ export function useFleetSessions(): {
   refreshCores: () => void;
   error: string | null;
   refresh: () => void;
+  /**
+   * Ask a Core for the next page of its sessions and append it. Optional in the
+   * type so a surface can be tested against a bare fleet that does not page.
+   */
+  loadMore?: (coreId: string) => void;
+  /** Cores whose next page is in flight. */
+  loadingMore?: ReadonlySet<string>;
 } {
   const bridge = getPanelBridge();
   const { cores, loading: coresLoading, error: coresError, reload: refreshCores } = useCores();
@@ -116,6 +183,13 @@ export function useFleetSessions(): {
   const [error, setError] = useState<string | null>(null);
   const coresRef = useRef<CoreWithDial[]>(cores);
   coresRef.current = cores;
+  // The loaded pages per Core. A ref, not state: the merged `fleet` is what
+  // renders, and every change to this goes through a rebuild of it.
+  const heldRef = useRef(new Map<string, HeldPage>());
+  // Bumped by Load more, so a refresh that read before the append cannot
+  // replace the longer list with its shorter one.
+  const appendGenRef = useRef(new Map<string, number>());
+  const [loadingMore, setLoadingMore] = useState<ReadonlySet<string>>(() => new Set());
   // Which Cores exist, and whether each is reachable — the two things a change
   // in should re-run the fan-out. Every dial push replaces the `cores` array,
   // so depending on the array itself would refetch the whole fleet on a blink.
@@ -130,6 +204,8 @@ export function useFleetSessions(): {
     // safe answer either way — no link, nothing to re-read.
     if (!bridge) return false;
     try {
+      const startGens = new Map(appendGenRef.current);
+      let discarded = false;
       const results = await Promise.all(
         coresRef.current.map(async (core): Promise<CoreFanOutResult> => {
           const offline: CoreFanOutResult = {
@@ -140,21 +216,29 @@ export function useFleetSessions(): {
           };
           // A Core the service knows it cannot reach is not worth a query the
           // router would only answer with an error.
-          if (core.dial.state !== "connected") return offline;
+          if (core.dial.state !== "connected") {
+            heldRef.current.delete(core.id);
+            return offline;
+          }
           try {
-            const { sessions } = await bridge.listSessionRows(core.id);
-            return {
-              coreId: core.id,
-              coreLabel: core.label,
-              ok: true,
-              sessions,
-              lastSeenAt: core.dial.lastSeenAt ?? Date.now(),
-            };
+            const held = heldRef.current.get(core.id);
+            const fresh = await readLoadedSpan(bridge, core.id, held);
+            if ((appendGenRef.current.get(core.id) ?? 0) !== (startGens.get(core.id) ?? 0)) {
+              // A Load more landed while this read was out; its answer is the
+              // shorter list. Keep what is held and read again.
+              discarded = true;
+            } else {
+              heldRef.current.set(core.id, fresh);
+            }
+            return resultFor(core, heldRef.current.get(core.id) ?? fresh);
           } catch {
+            // Honestly blank: a Core that failed to answer shows no rows.
+            heldRef.current.delete(core.id);
             return offline;
           }
         }),
       );
+      if (discarded) void runnerRef.current?.();
       // Keep the previous object when the fan-out settled on the same answer.
       // `fleet.rows` is a dependency of memos and effects several layers up,
       // and a fresh array on every event would tear those down for nothing —
@@ -206,11 +290,54 @@ export function useFleetSessions(): {
     };
   }, [bridge, coreIds, run]);
 
+  const loadMore = useCallback(
+    (coreId: string) => {
+      const held = heldRef.current.get(coreId);
+      const core = coresRef.current.find((c) => c.id === coreId);
+      if (!bridge || !held || !core || held.nextCursor === null) return;
+      setLoadingMore((prev) => (prev.has(coreId) ? prev : new Set(prev).add(coreId)));
+      void (async () => {
+        try {
+          const answer = await bridge.listSessionRows(coreId, {
+            limit: FLEET_PAGE_SIZE,
+            archived: false,
+            cursor: held.nextCursor ?? undefined,
+          });
+          const current = heldRef.current.get(coreId) ?? held;
+          heldRef.current.set(coreId, {
+            ...current,
+            rows: appendDeduped(current.rows, answer.sessions),
+            nextCursor: answer.nextCursor ?? null,
+            total: answer.total ?? current.total,
+          });
+          appendGenRef.current.set(coreId, (appendGenRef.current.get(coreId) ?? 0) + 1);
+          const results = coresRef.current.map((c): CoreFanOutResult => {
+            const h = heldRef.current.get(c.id);
+            return h && c.dial.state === "connected"
+              ? resultFor(c, h)
+              : { coreId: c.id, coreLabel: c.label, ok: false, lastSeenAt: c.dial.lastSeenAt };
+          });
+          const merged = mergeFleetSessions(results);
+          setFleet((prev) => (sameSnapshot(prev, merged) ? prev : merged));
+        } catch {
+          // The rows already shown stay; the button comes back to try again.
+        } finally {
+          setLoadingMore((prev) => {
+            const next = new Set(prev);
+            next.delete(coreId);
+            return next;
+          });
+        }
+      })();
+    },
+    [bridge],
+  );
+
   useEffect(() => {
     void run();
     const id = setInterval(() => void run(), FLEET_POLL_MS);
     return () => clearInterval(id);
   }, [run, coreSignature]);
 
-  return { fleet, cores, loading, coresLoading, coresError, refreshCores, error: error ?? coresError, refresh: () => void run() };
+  return { fleet, cores, loading, coresLoading, coresError, refreshCores, error: error ?? coresError, refresh: () => void run(), loadMore, loadingMore };
 }
