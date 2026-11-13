@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { closePanelTestDb, openPanelTestDb } from "./_panel-test-db";
+import { closePanelTestDb, openPanelTestDb, seedWebhook } from "./_panel-test-db";
 
 /**
  * The dispatcher's claim (#570): one conditional update takes an `assigned` Task
@@ -27,7 +27,8 @@ beforeAll(async () => {
   }
 });
 beforeEach(async () => {
-  await testDb.pool.query("truncate webhook_outbox, tasks cascade");
+  await testDb.pool.query("truncate webhook_outbox, tasks, webhooks cascade");
+  await seedWebhook(testDb, 1);
 });
 afterAll(async () => {
   await closePanelTestDb(testDb);

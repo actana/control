@@ -3,7 +3,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { WEBHOOK_CHANGE_EVENT_TYPES, WEBHOOK_EVENT_TYPES, isWebhookEventType } from "~/shared/webhooks";
-import { closePanelTestDb, openPanelTestDb } from "../../__tests__/_panel-test-db";
+import { closePanelTestDb, openPanelTestDb, seedWebhook } from "../../__tests__/_panel-test-db";
 import { signWebhookBody, verifyWebhookSignature } from "../webhook-signing";
 
 const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ac-webhooks-session-state-test-"));
@@ -67,6 +67,7 @@ describe("task.session_state_changed", () => {
   });
 
   it("writes one event per change and none for a repeated state", async () => {
+    await seedWebhook(testDb, A);
     const task = await runningTask();
     await setTaskSessionState(A, task.id, "working", 3000);
     await setTaskSessionState(A, task.id, "working", 3100);
@@ -88,6 +89,7 @@ describe("task.session_state_changed", () => {
   });
 
   it("carries taskId, attempt, sessionState and sessionStateAt, and sends nothing for a Task that is not running", async () => {
+    await seedWebhook(testDb, A);
     const task = await createTask(A, { title: "queued", coreId: "core-a" }, 1000);
     await setTaskSessionState(A, task.id, "working", 2000);
     expect(await sessionStateEvents()).toEqual([]);

@@ -3,7 +3,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { ALL_API_KEY_PERMISSIONS } from "~/shared/api-key-permissions";
-import { closePanelTestDb, openPanelTestDb, resetPanelState } from "./_panel-test-db";
+import { closePanelTestDb, openPanelTestDb, resetPanelState, seedWebhook } from "./_panel-test-db";
 import { McpTestClient, dataOf, textOf } from "./_mcp-client";
 
 /**
@@ -75,6 +75,7 @@ beforeEach(async () => {
   await resetPanelState(testDb);
   resetOperatorSessionForTests();
   await seed();
+  await seedWebhook(testDb, 1);
 });
 afterAll(async () => {
   await closePanelTestDb(testDb);

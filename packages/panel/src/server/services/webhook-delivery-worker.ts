@@ -9,6 +9,7 @@ import {
   markDeliveryDelivered,
   markDeliveryRetryOrFailed,
   pruneOldDeliveries,
+  pruneProcessedOutbox,
   type WebhookDeliveryRow,
 } from "../repositories/webhooks.repo";
 import { OPERATOR_ID } from "./operator";
@@ -20,7 +21,7 @@ import { findWebhookById } from "../repositories/webhooks.repo";
  * Webhook delivery worker (#574): fan out pending outbox rows to matching
  * webhooks (one locked transaction each), claim one due delivery at a time with
  * a lease that covers that send, sign and POST, retry on the schedule, and
- * prune deliveries older than 14 days. Ticks do not overlap.
+ * prune deliveries older than 14 days and then the processed outbox rows no delivery needs. Ticks do not overlap.
  */
 
 export type WebhookClock = () => number;
@@ -101,13 +102,14 @@ export async function runWebhookDeliveryTick(
   ownerIds: readonly number[] = [OPERATOR_ID],
   now: number = Date.now(),
   opts: { batch?: number; send?: WebhookSender; clock?: WebhookClock } = {},
-): Promise<{ fannedOut: number; delivered: number; pruned: number }> {
+): Promise<{ fannedOut: number; delivered: number; pruned: number; outboxPruned: number }> {
   const batch = opts.batch ?? DEFAULT_BATCH;
   const send = opts.send ?? sendSignedWebhook;
   const clock = opts.clock ?? (() => now);
   let fannedOut = 0;
   let delivered = 0;
   let pruned = 0;
+  let outboxPruned = 0;
 
   for (const ownerId of ownerIds) {
     for (let i = 0; i < batch; i++) {
@@ -123,10 +125,13 @@ export async function runWebhookDeliveryTick(
       await deliverOne(row, leaseUntil, clock, send);
       delivered += 1;
     }
-    pruned += await pruneOldDeliveries(ownerId, clock() - WEBHOOK_DELIVERY_RETENTION_MS);
+    const cutoff = clock() - WEBHOOK_DELIVERY_RETENTION_MS;
+    pruned += await pruneOldDeliveries(ownerId, cutoff);
+    // After the deliveries: an outbox row goes once it is processed and no delivery hangs on it.
+    outboxPruned += await pruneProcessedOutbox(ownerId, cutoff);
   }
 
-  return { fannedOut, delivered, pruned };
+  return { fannedOut, delivered, pruned, outboxPruned };
 }
 
 let timer: ReturnType<typeof setInterval> | null = null;

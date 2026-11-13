@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { closePanelTestDb, openPanelTestDb } from "./_panel-test-db";
+import { closePanelTestDb, openPanelTestDb, seedWebhook } from "./_panel-test-db";
 
 /**
  * The Task routes (#571), driven the way the browser drives them, as owner 1,
@@ -61,6 +61,7 @@ beforeAll(async () => {
   await seedAgent("agent-a", A, "core-a", "claude-code", true);
   await seedAgent("agent-a2", A, "core-a2", "other-core-agent");
   await seedAgent("agent-b", B, "core-b", "owner-b-agent", true);
+  await seedWebhook(testDb, A);
 });
 
 afterAll(async () => {
