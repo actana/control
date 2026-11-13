@@ -3,6 +3,7 @@ import type { TaskSessionStopDto } from "~/shared/task-wire";
 import { OPERATOR_ID } from "../services/operator";
 import { TaskDispatcher } from "./dispatcher";
 import { ResultWatcher } from "./result-watcher";
+import { sessionPromptFeed } from "./task-answer";
 import { SharedChangeFeed, createS3Factory, createSharedFactory, createThroughCoreFactory, type SharedFactoryDeps } from "./shared-factory";
 import { resumeSessionOnCore, startSessionOnCore } from "./session-starter";
 import { liveSessionsOnCore } from "./session-liveness";
@@ -58,7 +59,13 @@ export type StartTaskDispatchOptions = {
 export function startTaskDispatch(opts: StartTaskDispatchOptions = {}): void {
   if (running) return;
   const feed = new SharedChangeFeed();
-  const detachFeed = feed.attach(coreLinkManager());
+  const detachShared = feed.attach(coreLinkManager());
+  // The hook-side kind and options of a waiting prompt (#959): the Core's `session:prompt` events.
+  const detachPrompts = sessionPromptFeed().attach(coreLinkManager());
+  const detachFeed = (): void => {
+    detachShared();
+    detachPrompts();
+  };
   const stopSession = opts.stopSession ?? sessionStopper;
   let dispatcher: TaskDispatcher | null = null;
   const watcher = new ResultWatcher({

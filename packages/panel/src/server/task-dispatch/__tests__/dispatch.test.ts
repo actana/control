@@ -526,6 +526,30 @@ describe("turning a result file into a comment and a status", () => {
     expect(core.sessions[0]!.disposed).toBe(true);
   });
 
+  it("a reply in the report follows the delivered comment in the thread (#935)", async () => {
+    const { clock, shared, dispatcher, watcher } = rig();
+    const { deliverCommentNow } = await import("../comment-delivery");
+    const task = await assign(clock);
+    await dispatcher.dispatchOnce();
+    clock.advance(1_000);
+    const typed: string[] = [];
+    const comment = await addTaskComment(A, task.id, { authorKind: "user", authorName: "Mehdi", body: "which file did you change?" }, clock.now());
+    const out = await deliverCommentNow(A, task.id, comment, {
+      attach: async () => ({ deliver: async (t: string) => (typed.push(t), { ok: true }), dispose: () => {} }),
+      now: clock.now,
+      log: collectingLog(),
+    });
+    expect(out).toEqual({ mode: "now", delivered: true });
+    expect(typed[0]).toContain(`~/shared/tasks/${task.id}/`);
+    clock.advance(1_000);
+    shared.write(result(task.id, "success.md"), report("I changed ci.yml."));
+
+    await watcher.tick();
+
+    const bodies = (await listTaskComments(A, task.id)).filter((c) => c.authorKind !== "system").map((c) => `${c.authorKind}:${c.body}`);
+    expect(bodies).toEqual(["user:which file did you change?", "agent:I changed ci.yml."]);
+  });
+
   it.each([
     ["fail.md", "failed"],
     ["partial-1.md", "partial"],

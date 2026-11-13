@@ -64,6 +64,7 @@ const V1_AGENT_PATH = /^\/api\/v1\/agents\/([^/]+)$/;
 const V1_TASK_PATH = /^\/api\/v1\/tasks\/([^/]+)$/;
 const V1_TASK_STATUS_PATH = /^\/api\/v1\/tasks\/([^/]+)\/status$/;
 const V1_TASK_CLOSE_SESSION_PATH = /^\/api\/v1\/tasks\/([^/]+)\/close-session$/;
+const V1_TASK_ANSWER_PATH = /^\/api\/v1\/tasks\/([^/]+)\/answer$/;
 const V1_TASK_STOP_PATH = /^\/api\/v1\/tasks\/([^/]+)\/stop$/;
 const V1_TASK_COMMENTS_PATH = /^\/api\/v1\/tasks\/([^/]+)\/comments$/;
 const SESSION_PATH = /^\/api\/sessions\/([^/]+)$/;
@@ -323,6 +324,8 @@ async function dispatch(
   if (m && method === "POST") return v1Controller.setTaskStatusV1(principal!, decode(m[1]), request);
   m = pathname.match(V1_TASK_CLOSE_SESSION_PATH);
   if (m && method === "POST") return v1Controller.closeTaskSessionV1(principal!, decode(m[1]), url.origin);
+  m = pathname.match(V1_TASK_ANSWER_PATH);
+  if (m && method === "POST") return v1Controller.answerTaskV1(principal!, decode(m[1]), request);
   m = pathname.match(V1_TASK_STOP_PATH);
   if (m && method === "POST") return v1Controller.stopTaskV1(principal!, decode(m[1]), request);
   m = pathname.match(V1_TASK_COMMENTS_PATH);

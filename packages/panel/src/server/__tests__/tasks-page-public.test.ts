@@ -7,9 +7,10 @@ import { closePanelTestDb, openPanelTestDb } from "./_panel-test-db";
 import { McpTestClient, dataOf, textOf } from "./_mcp-client";
 
 /**
- * `/api/v1/tasks` and MCP `get_tasks` with `limit` and `cursor` (#896). A caller that
- * sends neither gets the list it always got, with full rows. A caller that sends a limit
- * gets slim rows and a `nextCursor`.
+ * `/api/v1/tasks` and MCP `get_tasks` with `limit` and `cursor` (#896). REST without a limit
+ * gets the list it always got, with full rows; with a limit, slim rows and a `nextCursor`.
+ * MCP `get_tasks` is lean by default (#957): no `description` with or without a limit, and
+ * `withDescriptions` only together with a limit of at most 10. REST `?fields=lean` has the MCP row shape.
  */
 
 const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ac-tasks-page-public-"));
@@ -76,6 +77,32 @@ describe("GET /api/v1/tasks", () => {
     expect(body.tasks.every((t) => t.description === "the long text")).toBe(true);
   });
 
+  it("?fields=lean without a limit: every Task, rows without description, no nextCursor", async () => {
+    const body = (await (await rest(fullKey, "?fields=lean")).json()) as Listed;
+    expect(Object.keys(body)).toEqual(["tasks"]);
+    expect(body.tasks).toHaveLength(5);
+    expect(body.tasks.some((t) => "description" in t)).toBe(false);
+  });
+
+  it("?fields=lean rows have the MCP get_tasks row shape, and the default rows only add description", async () => {
+    const lean = (await (await rest(fullKey, "?fields=lean")).json()) as Listed;
+    const viaMcp = dataOf(await (await mcp()).call("get_tasks")) as Listed;
+    expect(lean.tasks).toEqual(viaMcp.tasks);
+    const full = (await (await rest(fullKey)).json()) as Listed;
+    expect(Object.keys(full.tasks[0]!).sort()).toEqual([...Object.keys(lean.tasks[0]!), "description"].sort());
+  });
+
+  it("?fields=lean keeps filtering by sessionState and the key's Cores", async () => {
+    const body = (await (await rest(coreAKey, "?fields=lean")).json()) as Listed;
+    expect(body.tasks.map((t) => t.id).sort()).toEqual(["t-1", "t-3", "t-4"]);
+    expect(body.tasks.some((t) => "description" in t)).toBe(false);
+  });
+
+  it("refuses a fields value other than lean", async () => {
+    expect((await rest(fullKey, "?fields=full")).status).toBe(400);
+    expect((await rest(fullKey, "?fields=")).status).toBe(400);
+  });
+
   it("with limit returns slim rows, newest update first, and a nextCursor to the rest", async () => {
     const first = (await (await rest(fullKey, "?limit=2")).json()) as Listed;
     expect(first.tasks.map((t) => t.id)).toEqual(["t-5", "t-4"]);
@@ -106,12 +133,12 @@ describe("GET /api/v1/tasks", () => {
 });
 
 describe("MCP get_tasks", () => {
-  it("without limit or cursor keeps the old shape: every Task with its description, no nextCursor", async () => {
+  it("without limit or cursor is lean: every Task, no description, no nextCursor", async () => {
     const result = await (await mcp()).call("get_tasks");
     const data = dataOf(result) as Listed;
     expect(Object.keys(data)).toEqual(["tasks"]);
     expect(data.tasks).toHaveLength(5);
-    expect(data.tasks.every((t) => t.description === "the long text")).toBe(true);
+    expect(data.tasks.some((t) => "description" in t)).toBe(false);
   });
 
   it("does not carry the rows twice: the JSON text is there, structuredContent is not", async () => {
@@ -139,10 +166,57 @@ describe("MCP get_tasks", () => {
     expect(onA.tasks.map((t) => t.id)).toEqual(["t-4", "t-3", "t-1"]);
   });
 
-  it("still filters by status without a limit, with full rows", async () => {
+  it("still filters by status without a limit, with lean rows", async () => {
     const data = dataOf(await (await mcp()).call("get_tasks", { status: "done" })) as Listed;
     expect(data.tasks.map((t) => t.id)).toEqual(["t-3"]);
-    expect(data.tasks[0]!.description).toBe("the long text");
+    expect("description" in data.tasks[0]!).toBe(false);
+  });
+
+  it("withDescriptions with a limit of 10 or less returns the descriptions, one page", async () => {
+    const c = await mcp();
+    const data = dataOf(await c.call("get_tasks", { withDescriptions: true, limit: 2 })) as Listed;
+    expect(data.tasks.map((t) => t.id)).toEqual(["t-5", "t-4"]);
+    expect(data.tasks.every((t) => t.description === "the long text")).toBe(true);
+    expect(data.nextCursor).toEqual(expect.any(String));
+    const edge = dataOf(await c.call("get_tasks", { withDescriptions: true, limit: 10 })) as Listed;
+    expect(edge.tasks).toHaveLength(5);
+    expect(edge.tasks.every((t) => t.description === "the long text")).toBe(true);
+  });
+
+  it("withDescriptions: false is the lean default", async () => {
+    const data = dataOf(await (await mcp()).call("get_tasks", { withDescriptions: false, limit: 2 })) as Listed;
+    expect(data.tasks.some((t) => "description" in t)).toBe(false);
+  });
+
+  it("refuses withDescriptions without a limit or with a limit over 10, saying why", async () => {
+    const c = await mcp();
+    for (const args of [{ withDescriptions: true }, { withDescriptions: true, limit: 11 }, { withDescriptions: true, limit: 100 }]) {
+      const r = await c.call("get_tasks", args);
+      expect(r.isError).toBe(true);
+      expect(textOf(r)).toMatch(/^400/);
+      expect(textOf(r)).toContain("withDescriptions needs a limit of 10 or less");
+    }
+  });
+
+  it("a row is under 1 KB for a Task with a 20 KB description, with and without a limit", async () => {
+    await testDb.pool.query(
+      "insert into tasks (id, owner_id, title, description, status, core_id, created_at, updated_at) values ('t-big', 1, 'big', $1, 'in_progress', 'core-a', 1, 5)",
+      ["x".repeat(20 * 1024)],
+    );
+    try {
+      const c = await mcp();
+      for (const args of [{}, { limit: 10 }, { status: "in_progress", coreId: "core-a" }]) {
+        const result = await c.call("get_tasks", args);
+        const data = dataOf(result) as Listed;
+        const big = data.tasks.find((t) => t.id === "t-big")!;
+        expect(big).toBeDefined();
+        expect("description" in big).toBe(false);
+        expect(JSON.stringify(big).length).toBeLessThan(1024);
+        expect(textOf(result)).not.toContain("xxxxxxxxxx");
+      }
+    } finally {
+      await testDb.pool.query("delete from tasks where id = 't-big'");
+    }
   });
 
   it("pages inside a restricted key's Cores and refuses a Core outside them", async () => {

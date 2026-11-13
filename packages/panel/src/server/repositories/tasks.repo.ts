@@ -55,9 +55,12 @@ export type TasksPageQuery = {
   limit: number;
   /** The `nextCursor` of the previous page. */
   cursor?: string;
+  /** Also select `description` (#957); the caller keeps the page small. */
+  withDescriptions?: boolean;
 };
 
-export type TasksPage = { tasks: TaskListRow[]; nextCursor: string | null };
+/** A row of a page: `description` is there only when the query asked for it. */
+export type TasksPage = { tasks: (TaskListRow & { description?: string })[]; nextCursor: string | null };
 
 /** The opaque cursor: base64url of `updatedAt:id`, the sort key of the last row of a page. */
 function encodeTaskCursor(row: { updatedAt: number; id: string }): string {
@@ -96,6 +99,7 @@ export class InvalidTaskCursorError extends Error {
  */
 export async function findTasksPage(ownerId: number, query: TasksPageQuery): Promise<TasksPage> {
   const { description: _description, ...listColumns } = getTableColumns(tasks);
+  const columns = query.withDescriptions ? getTableColumns(tasks) : listColumns;
   const conditions: (SQL | undefined)[] = [
     query.statuses?.length ? inArray(tasks.status, [...query.statuses]) : undefined,
     query.sessionStates?.length ? inArray(tasks.sessionState, [...query.sessionStates]) : undefined,
@@ -112,7 +116,7 @@ export async function findTasksPage(ownerId: number, query: TasksPageQuery): Pro
     conditions.push(sql`(${tasks.updatedAt}, ${tasks.id}) < (${after.updatedAt}, ${after.id})`);
   }
   const rows = await panelDb()
-    .select(listColumns)
+    .select(columns)
     .from(tasks)
     .where(ownedBy(tasks, ownerId, and(...conditions)))
     .orderBy(desc(tasks.updatedAt), desc(tasks.id))

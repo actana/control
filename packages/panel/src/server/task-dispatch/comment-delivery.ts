@@ -1,4 +1,3 @@
-import { CoreSession } from "@actana/sdk/core";
 import type { TaskCommentDelivery } from "~/shared/task-wire";
 import { coreLinkManager } from "../services/core-link-manager";
 import { addTaskComment, findCurrentTaskSession, getTask, type TaskComment } from "../services/tasks";
@@ -17,7 +16,11 @@ import { consoleDispatchLog, messageOf, type Clock, type DispatchLog } from "./t
  * A refusal is kept as a note: a system comment on the Task says why, and the answer carries the same reason.
  *
  * The Session's reply is not a new path: the Agent reports through its result file, which the result watcher turns into a Task
- * comment, as it does for every attempt.
+ * comment, as it does for every attempt. The typed line says so (`REPLY_HINT`): an answer in the terminal reaches nobody.
+ *
+ * The line is typed through the shared link client (`findBySession` + `deliver`), never by attaching: an attach would send a
+ * `ptySubscribe` the Core already has and, on dispose, a raw `ptyUnsubscribe` that drops the Panel's one subscription to the PTY
+ * (and with it every terminal pane's data and the exit the dispatcher waits for).
  */
 
 /** Longest comment text typed into a Session; a harness composer scrolls, collapses or swallows a longer one. */
@@ -28,12 +31,17 @@ function oneLine(text: string): string {
   return text.replace(/[\u0000-\u001f\u007f-\u009f\s]+/g, " ").trim();
 }
 
+/** Where the Agent's answer goes, appended to every typed line (the attempt's report is the only path back to the Task's thread). */
+function replyHint(taskId: string): string {
+  return ` (answer in your report: ~/shared/tasks/${taskId}/…, as your Task says)`;
+}
+
 /** The line typed into the Session: one line of plain text, the author named, cut when long. */
 export function commentTypedLine(taskId: string, comment: Pick<TaskComment, "authorName" | "body">): string {
   const flat = oneLine(comment.body);
   const cut = flat.length > MAX_DELIVERED_COMMENT_CHARS;
   const text = cut ? `${Array.from(flat).slice(0, MAX_DELIVERED_COMMENT_CHARS).join("")} ... (cut: read the whole comment on the Task)` : flat;
-  return `New comment on your Task ${taskId} from ${oneLine(comment.authorName)}: ${text}`;
+  return `New comment on your Task ${taskId} from ${oneLine(comment.authorName)}: ${text}${replyHint(taskId)}`;
 }
 
 /** A live Session a line can be typed into, as the delivery needs it. */
@@ -44,7 +52,7 @@ export type SessionTyper = {
 };
 
 export type CommentDeliveryDeps = {
-  /** Attach to a Session on a Core; throws when there is no live link. Default: the Panel's own link. */
+  /** Reach a Session on a Core; throws when there is no live link. Default: the Panel's own link, without attaching. */
   attach?: (coreId: string, sessionId: string) => Promise<SessionTyper>;
   now?: Clock;
   log?: DispatchLog;
@@ -60,7 +68,11 @@ export function setSessionTyperForTests(attach: typeof attachOverride): void {
 async function attachOnCore(coreId: string, sessionId: string): Promise<SessionTyper> {
   const sdk = coreLinkManager().client(coreId)?.sdk;
   if (!sdk) throw new Error("there is no live link to this Core");
-  return CoreSession.attach(sdk, { sessionId });
+  const { ptyId } = await sdk.findBySession(sessionId);
+  if (ptyId === null) throw new Error("the Session has no harness running");
+  // The same stamped writes `CoreSession.deliver` makes, so #924's `blocked` refusal still applies. No subscribe, no
+  // unsubscribe, no replay: the Panel's connection already holds the PTY's subscription, and must keep it.
+  return { deliver: async (text) => ({ ok: (await sdk.deliver(ptyId, text)).ok }), dispose: () => {} };
 }
 
 async function typeInto(typer: SessionTyper, line: string): Promise<string | null> {

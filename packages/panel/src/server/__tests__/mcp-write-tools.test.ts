@@ -404,7 +404,7 @@ describe("comment_task delivery and the key's name (#935)", () => {
     const task = await runningTask();
     const res = dataOf(await (await keyed("orchestrator")).call("comment_task", { taskId: task.id, body: "use the other branch", deliver: "now" }));
     expect(res.delivery).toEqual({ mode: "now", delivered: true });
-    expect(typed).toEqual([`New comment on your Task ${task.id} from orchestrator (API key): use the other branch`, "\r"]);
+    expect(typed).toEqual([`New comment on your Task ${task.id} from orchestrator (API key): use the other branch (answer in your report: ~/shared/tasks/${task.id}/…, as your Task says)`, "\r"]);
   });
 
   it("with deliver: now on a Session that needs input types nothing and says why", async () => {
