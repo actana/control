@@ -2,6 +2,7 @@ import { and, asc, desc, eq, getTableColumns, inArray, sql, type SQL } from "dri
 import { ownedBy } from "~/db/owner";
 import { panelDb } from "~/db/panel-db-handle";
 import { taskComments, taskStatusHistory, tasks } from "~/db/pg-schema";
+import type { TaskAutoRetry } from "~/shared/auto-retry";
 import type { TaskSessionState, TaskStatus } from "~/shared/tasks";
 import { insertOutboxInTx, type NewOutboxRow, type PanelTx } from "./webhooks.repo";
 
@@ -235,6 +236,8 @@ export async function transitionTask(
         updatedAt: now,
         sessionState: null,
         sessionStateAt: null,
+        // Any other move ends a pending auto-retry (#958): an operator's own move must not wait for its back-off.
+        autoRetry: sql`case when ${tasks.autoRetry} is null then null else jsonb_set(${tasks.autoRetry}, '{notBefore}', 'null'::jsonb) end`,
         ...fields,
         ...(refundAttempt ? { attemptCount: sql`greatest(${tasks.attemptCount} - 1, 0)` } : {}),
       })
@@ -308,7 +311,14 @@ export async function updateTaskRow(
   id: string,
   legalFrom: readonly TaskStatus[],
   /** Only the fields given are written. */
-  patch: { title?: string; description?: string; timeoutMinutes?: number | null; updatedAt: number },
+  patch: {
+    title?: string;
+    description?: string;
+    timeoutMinutes?: number | null;
+    /** The new `autoRetry`, decided from the locked row (#958). */
+    autoRetry?: (before: TaskRow) => TaskAutoRetry | null;
+    updatedAt: number;
+  },
   outboxFor?: (args: {
     before: TaskRow;
     task: TaskRow;
@@ -339,6 +349,7 @@ export async function updateTaskRow(
         ...(patch.title === undefined ? {} : { title: patch.title }),
         ...(patch.description === undefined ? {} : { description: patch.description }),
         ...(patch.timeoutMinutes === undefined ? {} : { timeoutMinutes: patch.timeoutMinutes }),
+        ...(patch.autoRetry === undefined ? {} : { autoRetry: patch.autoRetry(current) }),
         updatedAt: patch.updatedAt,
       })
       .where(ownedBy(tasks, ownerId, eq(tasks.id, id)))
@@ -494,5 +505,75 @@ export async function setAssignedWaitingReason(
     if (!row) return null;
     if (comment) await tx.insert(taskComments).values({ ...comment, taskId: id, ownerId, createdAt: now });
     return row;
+  });
+}
+
+/**
+ * An auto-retry (#958): a running attempt ended without a result and the Task goes back to `assigned` to be dispatched again
+ * after a back-off. Only if the Task is `in_progress` on that attempt once its row is locked and has `autoRetry`: this is the one
+ * `in_progress` to `assigned` move outside TASK_TRANSITIONS besides the claim give-back (#962), so the legal source is checked
+ * here, explicitly. The attempt count is NOT given back (the dead attempt counts). `next` gets the row as it was and returns the
+ * new `autoRetry`, the waiting reason and the system comment. History and outbox ride the same transaction. Null when it did not apply.
+ */
+export async function scheduleAutoRetryRow(
+  ownerId: number,
+  id: string,
+  attempt: number,
+  now: number,
+  historyId: string,
+  next: (before: TaskRow) => { autoRetry: TaskAutoRetry; waitingReason: string; comment: CommentInsert },
+  outboxFor?: (args: { task: TaskRow; comment: NewTaskCommentRow }) => NewOutboxRow[],
+): Promise<TaskRow | null> {
+  return panelDb().transaction(async (tx) => {
+    const locked = await tx
+      .select()
+      .from(tasks)
+      .where(ownedBy(tasks, ownerId, eq(tasks.id, id)))
+      .for("update");
+    const current = locked[0];
+    if (!current || current.status !== "in_progress" || current.attemptCount !== attempt || !current.autoRetry) return null;
+    const { autoRetry, waitingReason, comment: fields } = next(current);
+    await tx.insert(taskComments).values({ ...fields, taskId: id, ownerId, createdAt: now });
+    const comment = { ...fields, taskId: id, ownerId, createdAt: now };
+    const updated = await tx
+      .update(tasks)
+      .set({ status: "assigned", autoRetry, lastError: waitingReason, sessionState: null, sessionStateAt: null, updatedAt: now })
+      .where(ownedBy(tasks, ownerId, eq(tasks.id, id)))
+      .returning();
+    await tx
+      .insert(taskStatusHistory)
+      .values({ id: historyId, taskId: id, ownerId, fromStatus: "in_progress", toStatus: "assigned", changedAt: now });
+    const task = updated[0]!;
+    await writeOutbox(tx, outboxFor?.({ task, comment }));
+    return task;
+  });
+}
+
+/**
+ * Change a Task's `autoRetry` without moving its status (#958): `next` gets the locked row's value and returns the new one
+ * (null = leave the row alone). Bumps `updated_at` only when it wrote. Any status.
+ */
+export async function updateAutoRetryRow(
+  ownerId: number,
+  id: string,
+  now: number,
+  next: (current: TaskAutoRetry | null, task: TaskRow) => TaskAutoRetry | null,
+): Promise<TaskRow | null> {
+  return panelDb().transaction(async (tx) => {
+    const locked = await tx
+      .select()
+      .from(tasks)
+      .where(ownedBy(tasks, ownerId, eq(tasks.id, id)))
+      .for("update");
+    const current = locked[0];
+    if (!current) return null;
+    const value = next(current.autoRetry ?? null, current);
+    if (!value) return null;
+    const updated = await tx
+      .update(tasks)
+      .set({ autoRetry: value, updatedAt: now })
+      .where(ownedBy(tasks, ownerId, eq(tasks.id, id)))
+      .returning();
+    return updated[0]!;
   });
 }

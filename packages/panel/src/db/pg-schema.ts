@@ -6,12 +6,14 @@ import {
   customType,
   index,
   integer,
+  jsonb,
   pgTable,
   primaryKey,
   text,
   unique,
   uniqueIndex,
 } from "drizzle-orm/pg-core";
+import type { TaskAutoRetry } from "~/shared/auto-retry";
 
 /**
  * The Panel's Postgres schema (#567, ADR 0041 D14). Each pull request of #567
@@ -130,6 +132,8 @@ export const tasks = pgTable(
     sessionState: text("session_state"),
     /** When `session_state` last changed (epoch ms); NULL with it. */
     sessionStateAt: epochMs("session_state_at"),
+    /** Opt-in auto-retry (#958): the attempts asked for, those used and the pending retry; NULL = not opted in. */
+    autoRetry: jsonb("auto_retry").$type<TaskAutoRetry>(),
     createdAt: epochMs("created_at").notNull(),
     updatedAt: epochMs("updated_at").notNull(),
   },

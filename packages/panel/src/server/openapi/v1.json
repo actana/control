@@ -59,6 +59,7 @@
           "attemptCount": { "type": "integer" },
           "dispatchedAt": { "type": ["integer", "null"] },
           "lastError": { "type": ["string", "null"] },
+          "autoRetry": { "type": ["object", "null"], "description": "Auto-retry (opt-in): { maxAttempts, retries, pendingAt (epoch ms of a pending retry or null), notice ({ id, kind: retry|gave-up|paused, text } or null) }; null when the Task did not opt in." },
           "timeoutMinutes": { "type": ["integer", "null"], "minimum": 1, "maximum": 43200, "description": "The Task's time limit per attempt, in minutes (1-43200). null = No limit: the attempt runs until the agent reports or its Session ends." },
           "sessionState": {
             "type": ["string", "null"],
@@ -382,7 +383,9 @@
                   "coreId": { "type": ["string", "null"] },
                   "agent": { "type": ["string", "null"] },
                   "startNow": { "type": "boolean" },
-                  "timeoutMinutes": { "type": ["integer", "null"], "minimum": 1, "maximum": 43200, "default": 60, "description": "Time limit per attempt, in minutes (1-43200). Omit for 60; null = No limit." }
+                  "timeoutMinutes": { "type": ["integer", "null"], "minimum": 1, "maximum": 43200, "default": 60, "description": "Time limit per attempt, in minutes (1-43200). Omit for 60; null = No limit." },
+                  "autoRetry": { "type": ["object", "null"], "required": ["maxAttempts"], "properties": { "maxAttempts": { "type": "integer", "minimum": 1, "maximum": 3 } }, "description": "Opt in to auto-retry: when the Task's Session dies without a result, the Task is assigned again after 1, 5, then 15 minutes, up to maxAttempts attempts. null = off. A value above the Panel's ceiling is clamped and the answer carries `autoRetryClamped: { requested, ceiling }`." },
+                  "fromTaskId": { "type": ["string", "null"], "description": "The id of your own Task, set it when your Session creates a Resume / hand-over Task." }
                 }
               }
             }
@@ -424,7 +427,8 @@
                 "properties": {
                   "title": { "type": "string", "minLength": 1 },
                   "description": { "type": "string" },
-                  "timeoutMinutes": { "type": ["integer", "null"], "minimum": 1, "maximum": 43200, "description": "Time limit per attempt, in minutes (1-43200); null = No limit." }
+                  "timeoutMinutes": { "type": ["integer", "null"], "minimum": 1, "maximum": 43200, "description": "Time limit per attempt, in minutes (1-43200); null = No limit." },
+                  "autoRetry": { "type": ["object", "null"], "required": ["maxAttempts"], "properties": { "maxAttempts": { "type": "integer", "minimum": 1, "maximum": 3 } }, "description": "Opt in to auto-retry: when the Task's Session dies without a result, the Task is assigned again after 1, 5, then 15 minutes, up to maxAttempts attempts. null = off. A value above the Panel's ceiling is clamped and the answer carries `autoRetryClamped: { requested, ceiling }`." }
                 }
               }
             }
@@ -467,7 +471,8 @@
                 "type": "object",
                 "required": ["status"],
                 "properties": {
-                  "status": { "type": "string", "enum": ["assigned", "draft"] }
+                  "status": { "type": "string", "enum": ["assigned", "draft"] },
+                  "autoRetry": { "type": ["object", "null"], "required": ["maxAttempts"], "properties": { "maxAttempts": { "type": "integer", "minimum": 1, "maximum": 3 } }, "description": "Set or clear (null) the Task's auto-retry together with the move; see createTask." }
                 }
               }
             }

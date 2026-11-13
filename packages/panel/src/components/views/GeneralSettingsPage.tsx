@@ -1,6 +1,7 @@
 import { DEFAULT_AGENT_LAUNCHER_CONFIG } from "~/shared/harness-launcher-config";
 import { useEffect, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
+import { AutoRetrySettingsSection } from "~/components/views/AutoRetrySettingsSection";
 import { Btn } from "~/components/ui/Btn";
 import { Field, SettingsSection, ToggleRow } from "~/components/views/SettingsParts";
 import { api, type AppSettings } from "~/lib/api";
@@ -249,6 +250,7 @@ export function GeneralSettingsPage() {
           )}
         </Field>
       </SettingsSection>
+      <AutoRetrySettingsSection />
       <AboutSection />
       <ReloadSection />
     </>

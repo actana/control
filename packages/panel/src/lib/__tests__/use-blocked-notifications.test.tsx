@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { renderHook } from "@testing-library/react";
-import { useBlockedNotifications, type BlockedSession, type BlockedTask } from "../use-blocked-notifications";
+import { useBlockedNotifications, type BlockedRetryTask, type BlockedSession, type BlockedTask } from "../use-blocked-notifications";
 
 // #954 / #928: when blocked work raises a notification. The router, settings, toast, sound and OS notification are the edges.
 const h = vi.hoisted(() => ({
@@ -21,9 +21,9 @@ vi.mock("~/lib/session-notification-store", () => ({ requestSessionNotificationO
 const s = (status: string, over: Partial<BlockedSession> = {}): BlockedSession => ({ coreId: "c1", coreLabel: "berlin", sessionId: "s1", title: "Fix build", status, ...over });
 const t = (sessionState: BlockedTask["sessionState"], over: Partial<BlockedTask> = {}): BlockedTask => ({ id: "t1", title: "Rotate keys", sessionState, ...over });
 
-type Props = { sessions: BlockedSession[]; tasks: BlockedTask[] | null; loadedCores?: string[]; viewed: { coreId: string; sessionId: string } | null };
+type Props = { sessions: BlockedSession[]; tasks: BlockedTask[] | null; retryTasks?: BlockedRetryTask[] | null; loadedCores?: string[]; viewed: { coreId: string; sessionId: string } | null };
 function mount(initial: Partial<Props> = {}) {
-  const base: Props = { sessions: [], tasks: [], viewed: null, ...initial };
+  const base: Props = { sessions: [], tasks: [], retryTasks: [], viewed: null, ...initial };
   const view = renderHook((p: Props) => useBlockedNotifications(p), { initialProps: base });
   return { set: (next: Partial<Props>) => view.rerender({ ...base, ...next }) };
 }
@@ -149,6 +149,74 @@ describe("blocked-work notifications (#954)", () => {
     h.settings = { sessionFinishToastEnabled: false, sessionFinishOsNotificationEnabled: false };
     const m = mount({ sessions: [s("running")] });
     m.set({ sessions: [s("needs-input")] });
+    expect(h.toast).not.toHaveBeenCalled();
+    expect(h.os).not.toHaveBeenCalled();
+    expect(h.ding).toHaveBeenCalledTimes(1);
+  });
+});
+
+// #958 guard 6: every auto-retry, give-up and breaker trip of a Task is announced the same way (same toggle).
+const r = (noticeId: number | null, over: Partial<BlockedRetryTask> = {}): BlockedRetryTask => ({
+  id: "t1",
+  title: "Orchestrate",
+  group: "in_progress",
+  notice: noticeId === null ? null : { id: noticeId, kind: "retry", text: "Auto-retry 2/3: previous Session exited (code 143) without a result" },
+  ...over,
+});
+
+describe("auto-retry notifications (#958)", () => {
+  it("a Task whose autoRetry.notice.id changes raises one toast, OS notification and ding", () => {
+    const m = mount({ retryTasks: [r(null)] });
+    m.set({ retryTasks: [r(1)] });
+    expect(h.toast).toHaveBeenCalledTimes(1);
+    expect(h.os).toHaveBeenCalledTimes(1);
+    expect(h.ding).toHaveBeenCalledTimes(1);
+    expect(titles()).toEqual(["Task is being retried"]);
+    expect((h.os.mock.calls[0]![0] as { body: string }).body).toContain("Orchestrate");
+    expect((h.os.mock.calls[0]![0] as { body: string }).body).toContain("Auto-retry 2/3");
+  });
+
+  it("raises again for the next notice id, not while the same one stays", () => {
+    const m = mount({ retryTasks: [r(null)] });
+    m.set({ retryTasks: [r(1)] });
+    m.set({ retryTasks: [r(1)] });
+    m.set({ retryTasks: [r(2, { notice: { id: 2, kind: "gave-up", text: "Auto-retry stopped: no progress in attempt 2" } })] });
+    expect(titles()).toEqual(["Task is being retried", "Task gave up retrying"]);
+  });
+
+  it("a breaker trip is worded as paused", () => {
+    const m = mount({ retryTasks: [r(null)] });
+    m.set({ retryTasks: [r(4, { notice: { id: 4, kind: "paused", text: "Auto-retry paused on this Core" } })] });
+    expect(titles()).toEqual(["Auto-retry paused on a Core"]);
+  });
+
+  it("a notice already there when the Panel opens is the baseline, not news", () => {
+    const m = mount({ retryTasks: [r(3)] });
+    m.set({ retryTasks: [r(3)] });
+    expect(h.os).not.toHaveBeenCalled();
+  });
+
+  it("a list that has not loaded yet is no baseline", () => {
+    const m = mount({ retryTasks: null });
+    m.set({ retryTasks: [r(3)] });
+    expect(h.os).not.toHaveBeenCalled();
+  });
+
+  it("a Task moving between columns with the same notice does not raise again", () => {
+    const m = mount({ retryTasks: [r(1)] });
+    m.set({ retryTasks: [r(1, { group: "assigned" })] });
+    m.set({ retryTasks: [r(1, { group: "in_progress" })] });
+    expect(h.os).not.toHaveBeenCalled();
+  });
+
+  it("the blocked toggle off silences it, and toast and OS toggles are the existing ones", () => {
+    h.settings = { sessionBlockedNotificationEnabled: false, sessionFinishOsNotificationEnabled: true };
+    const m = mount({ retryTasks: [r(null)] });
+    m.set({ retryTasks: [r(1)] });
+    expect(h.os).not.toHaveBeenCalled();
+    expect(h.ding).not.toHaveBeenCalled();
+    h.settings = { sessionFinishToastEnabled: false, sessionFinishOsNotificationEnabled: false };
+    m.set({ retryTasks: [r(2)] });
     expect(h.toast).not.toHaveBeenCalled();
     expect(h.os).not.toHaveBeenCalled();
     expect(h.ding).toHaveBeenCalledTimes(1);

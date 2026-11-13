@@ -28,6 +28,7 @@ const task = (ownerId: number, id: string, status = "assigned") => ({
   lastError: null,
   sessionState: null,
   sessionStateAt: null,
+  autoRetry: null,
   timeoutMinutes: 60,
   createdAt: 10,
   updatedAt: 10,

@@ -56,6 +56,7 @@ async function seed(over: Over = {}) {
     lastError: null,
     sessionState: "working",
     sessionStateAt: T0 + 1000,
+    autoRetry: null,
     timeoutMinutes: 60,
     createdAt: T0 - 1000,
     updatedAt: T0 + 1000,

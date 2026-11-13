@@ -21,7 +21,7 @@ import { readCoreCapacity } from "../services/core-capacity";
 import { coreLinkManager } from "../services/core-link-manager";
 import type { Core, CoreWithDial } from "~/shared/cores";
 import { toSessionState, type AgentDto, type TaskCommentDto, type TaskDto, type TasksPageDto } from "~/shared/task-wire";
-import { TASKS_WITH_DESCRIPTIONS_MAX_LIMIT, TASK_SESSION_STATES, isTaskSessionState, taskWaitingReason, type TaskSessionState, type TaskStatus } from "~/shared/tasks";
+import { TASKS_WITH_DESCRIPTIONS_MAX_LIMIT, TASK_SESSION_STATES, canMoveTask, isTaskSessionState, taskWaitingReason, type TaskSessionState, type TaskStatus } from "~/shared/tasks";
 import {
   nextAttemptWatchExpiresAt,
   nextAttemptWatchToken,
@@ -57,11 +57,12 @@ import {
   type Agent,
 } from "../services/agents";
 import { getOperator } from "../services/operator";
+import { taskAutoRetryView } from "~/shared/auto-retry";
 import { TaskAnswerError, answerTask, readTaskPrompt } from "../task-dispatch/task-answer";
 import { ANSWER_KEYS_MAX, ANSWER_TEXT_MAX } from "../task-dispatch/task-input";
 import { findCoreById } from "../repositories/cores.repo";
 import { HARNESSES } from "~/shared/agents";
-import { OPERATOR_TASK_STATUSES, taskListDto, timeoutMinutesSchema, updateTaskBody } from "./tasks.controller";
+import { autoRetryClampedOf, autoRetrySchema, taskListDto, timeoutMinutesSchema, updateTaskBody, statusBody } from "./tasks.controller";
 
 /**
  * The public REST API under `/api/v1` (#572 PR 2). Every handler takes the
@@ -81,8 +82,9 @@ const newTaskBody = z.object({
   agent: z.string().nullable().optional(),
   startNow: z.boolean().optional(),
   timeoutMinutes: timeoutMinutesSchema.optional(),
+  autoRetry: autoRetrySchema.optional(),
+  fromTaskId: z.string().nullable().optional(),
 });
-const statusBody = z.object({ status: z.enum(OPERATOR_TASK_STATUSES) });
 const commentBody = z.object({ body: z.string(), reassign: z.boolean().optional(), deliver: z.literal("now").optional() });
 const newAgentBody = z.object({
   coreId: z.string(),
@@ -153,6 +155,7 @@ function taskDto(t: Task, origin?: string): V1TaskDto {
     lastError: t.lastError,
     waiting: waitingOf(t),
     timeoutMinutes: t.timeoutMinutes,
+    autoRetry: taskAutoRetryView(t.autoRetry),
     sessionState: toSessionState(t.sessionState),
     sessionStateAt: t.sessionStateAt,
     createdAt: t.createdAt,
@@ -538,7 +541,7 @@ export async function listTasksV1FromQuery(principal: ApiPrincipal, params: URLS
 export async function createTaskV1(principal: ApiPrincipal, request: Request, origin = originOf(request)): Promise<Response> {
   const body = await parseJsonBody(request, newTaskBody);
   if (!body.ok) return body.response;
-  const { title, description, coreId, agent, startNow, timeoutMinutes } = body.data;
+  const { title, description, coreId, agent, startNow, timeoutMinutes, autoRetry, fromTaskId } = body.data;
   const denied = refuseOutsideScope(principal, coreId ?? null);
   if (denied) return denied;
   try {
@@ -551,6 +554,16 @@ export async function createTaskV1(principal: ApiPrincipal, request: Request, or
     if (startNow && (!coreId || !agent)) {
       throw new ValidationError("starting a Task now needs a Core and an Agent");
     }
+    if (fromTaskId && principal.kind === "api-key" && !principal.scope.allCores) {
+      // The parent's lineage shapes the answer's autoRetry, so a scoped key may only name a parent it reaches. An unknown id is
+      // answered like one outside the scope (403), so the answer does not say whether the Task exists.
+      const parent = await getTask(principal.ownerId, fromTaskId).catch((e: unknown) => {
+        if (e instanceof NotFoundError) return null;
+        throw e;
+      });
+      const parentDenied = refuseOutsideScope(principal, parent ? parent.coreId : null);
+      if (parentDenied) return parentDenied;
+    }
     const task = await createTask(principal.ownerId, {
       title,
       ...(description === undefined ? {} : { description }),
@@ -558,8 +571,10 @@ export async function createTaskV1(principal: ApiPrincipal, request: Request, or
       agent: agent ?? null,
       startNow: startNow === true,
       ...(timeoutMinutes === undefined ? {} : { timeoutMinutes }),
+      ...(autoRetry === undefined ? {} : { autoRetry }),
+      ...(fromTaskId === undefined ? {} : { fromTaskId }),
     });
-    return json({ task: taskDto(task, origin), ...queuedAnswer(startNow, coreId) }, { status: HTTP_CREATED });
+    return json({ task: taskDto(task, origin), ...autoRetryClampedOf(autoRetry, task), ...queuedAnswer(startNow, coreId) }, { status: HTTP_CREATED });
   } catch (e) {
     return rethrowUnlessDomain(e);
   }
@@ -586,7 +601,11 @@ export async function setTaskStatusV1(principal: ApiPrincipal, id: string, reque
     const task = await getTask(principal.ownerId, id);
     const denied = refuseOutsideScope(principal, task.coreId);
     if (denied) return denied;
-    return json({ task: taskDto(await changeTaskStatus(principal.ownerId, id, body.data.status), origin) });
+    const { status, autoRetry } = body.data;
+    // A move that is not legal (a running Task, or the status it already has) is refused first, so autoRetry changes nothing then.
+    if (autoRetry !== undefined && canMoveTask(task.status as TaskStatus, status)) await updateTask(principal.ownerId, id, { autoRetry, changedBy: await actorName(principal) });
+    const moved = await changeTaskStatus(principal.ownerId, id, status);
+    return json({ task: taskDto(moved, origin), ...(autoRetry === undefined ? {} : autoRetryClampedOf(autoRetry, moved)) });
   } catch (e) {
     return rethrowUnlessDomain(e);
   }
@@ -600,7 +619,8 @@ export async function updateTaskV1(principal: ApiPrincipal, id: string, request:
     const task = await getTask(principal.ownerId, id);
     const denied = refuseOutsideScope(principal, task.coreId);
     if (denied) return denied;
-    return json({ task: taskDto(await updateTask(principal.ownerId, id, { ...body.data, changedBy: await actorName(principal) }), origin) });
+    const updated = await updateTask(principal.ownerId, id, { ...body.data, changedBy: await actorName(principal) });
+    return json({ task: taskDto(updated, origin), ...autoRetryClampedOf(body.data.autoRetry, updated) });
   } catch (e) {
     return rethrowUnlessDomain(e);
   }

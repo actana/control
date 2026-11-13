@@ -43,6 +43,12 @@ import type {
 import type { ApiKeyView, WebhookDeliveryView, WebhookView } from "~/shared/api-integrations-wire";
 import type { ApiKeyPermission } from "~/shared/api-key-permissions";
 
+export type AutoRetrySettingsView = {
+  enabled: boolean;
+  maxAttemptsCeiling: number;
+  pausedCores: { coreId: string; label: string }[];
+};
+
 export type AppSettings = {
   agentSystemBannerDisabled: boolean;
   mouseGradientDisabled: boolean;
@@ -479,6 +485,13 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body),
     }),
+
+  /** Settings › General: auto-retry of Tasks (#958): the kill switch, the attempts ceiling and the Cores whose breaker tripped. */
+  getAutoRetrySettings: () => req<AutoRetrySettingsView>("/api/settings/auto-retry"),
+  updateAutoRetrySettings: (patch: { enabled?: boolean; maxAttemptsCeiling?: number }) =>
+    req<AutoRetrySettingsView>("/api/settings/auto-retry", { method: "PATCH", body: JSON.stringify(patch) }),
+  resumeAutoRetryCore: (coreId: string) =>
+    req<AutoRetrySettingsView>(`/api/settings/auto-retry/cores/${encodeURIComponent(coreId)}/resume`, { method: "POST" }),
 
   /** Settings › API & integrations: the Operator's API keys (no plaintext). */
   listApiKeys: () => req<{ apiKeys: ApiKeyView[] }>("/api/api-keys"),

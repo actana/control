@@ -13,6 +13,7 @@ import {
   type TaskResult,
 } from "~/shared/task-report";
 import { formatTaskTimeoutReason, sessionStateForCoreStatus, type TaskSessionState } from "~/shared/tasks";
+import { decideExitRetry, noteGaveUp } from "./auto-retry";
 import { isFolderScoped } from "./shared-factory";
 import { consoleDispatchLog, messageOf, type Clock, type DispatchLog, type SessionLiveness, type SessionStatusReader, type SessionStopper } from "./types";
 
@@ -475,6 +476,8 @@ export class ResultWatcher {
         t.exit.code === null
           ? "The agent's Session is no longer running on its Core, and it wrote no result file."
           : `The agent exited (code ${t.exit.code}) without writing a result file.`,
+        false,
+        t.exit,
       );
     } else if (t.timeoutMinutes !== null && now - t.dispatchedAt >= t.timeoutMinutes * 60_000) {
       await this.synthesize(t, formatTaskTimeoutReason(t.timeoutMinutes), true);
@@ -559,7 +562,7 @@ export class ResultWatcher {
   }
 
   /** The Panel's own `fail.md`: written to the Shared folder, then recorded like any other result. */
-  private async synthesize(t: Tracked, reason: string, stopSession = false): Promise<void> {
+  private async synthesize(t: Tracked, reason: string, stopSession = false, exit?: { at: number; code: number | null }): Promise<void> {
     // One last look at the folder itself, not at the change feed: a result whose event was missed still counts.
     try {
       if (await this.consume(t, await this.folderChanges(t))) {
@@ -568,6 +571,34 @@ export class ResultWatcher {
       }
     } catch (err) {
       this.log.error(`task ${t.taskId}: last look before fail.md failed: ${messageOf(err)}`);
+    }
+    // A bare exit of a Task that opted in may be tried again instead (#958); a timeout never is.
+    let gaveUp: string | null = null;
+    if (exit && !stopSession) {
+      try {
+        const outcome = await decideExitRetry({
+          ownerId: this.ownerId,
+          taskId: t.taskId,
+          attempt: t.attempt,
+          dispatchedAt: t.dispatchedAt,
+          coreId: t.coreId,
+          shared: t.shared,
+          exit,
+          now: this.now(),
+        });
+        if (outcome.kind === "retried") {
+          this.log.info(`task ${t.taskId}: attempt ${t.attempt} exited without a result; auto-retry scheduled`);
+          this.drop(t);
+          return;
+        }
+        if (outcome.kind === "stop" && outcome.message) {
+          gaveUp = outcome.message;
+          reason = `${reason} ${outcome.message}`;
+        }
+      } catch (err) {
+        // The policy failing must not leave the Task running: it fails as it always did.
+        this.log.error(`task ${t.taskId}: auto-retry check failed: ${messageOf(err)}`);
+      }
     }
     const path = taskResultPath(t.taskId, { kind: "fail" });
     const body = `# Failed\n\n${reason} (attempt ${t.attempt}; written by the Panel.)\n\n${REPORT_END_MARKER}\n`;
@@ -580,6 +611,7 @@ export class ResultWatcher {
     // Recorded from what the Panel wrote, not read back: the store's clock is not the Panel's, and a `fail.md`
     // that looked older than the dispatch would leave the Task `in_progress` for ever.
     await this.apply(t, "fail.md", { kind: "fail" }, body);
+    if (gaveUp) await noteGaveUp(this.ownerId, t.taskId, gaveUp, this.now()).catch((err) => this.log.error(`task ${t.taskId}: could not record the give-up notice: ${messageOf(err)}`));
     // Only a timeout leaves the agent running: on an exit there is nothing to stop.
     if (stopSession) await this.whileEnding(t.taskId, () => this.stopTimedOutSession(t));
     this.drop(t);
