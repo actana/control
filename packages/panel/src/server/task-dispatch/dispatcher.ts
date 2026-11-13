@@ -2,7 +2,7 @@ import { noteCoreCap } from "../services/core-capacity";
 import { CoreSharedError, type CoreShared } from "@actana/sdk/shared";
 import { NotFoundError } from "../errors";
 import { getAutoRetrySettings } from "../services/auto-retry-settings";
-import { exitCodeOfCause, formatAutoRetryWaiting } from "~/shared/auto-retry";
+import { exitCodeOfCause, formatAutoRetryWaiting, isAutoRetryOptedIn } from "~/shared/auto-retry";
 import {
   CoreHarnessesUnavailableError,
   HarnessNotReadyError,
@@ -415,19 +415,22 @@ export class TaskDispatcher {
     };
     // A pending auto-retry (#958): the back-off has to pass first, and the kill switch ends it. Waiting writes no comment.
     const pending = task.autoRetry?.notBefore ?? null;
-    let switchedOff = false;
+    /** Why a pending retry is ended instead of started (null: it goes on). */
+    let endedBecause: string | null = null;
     if (pending !== null) {
+      // The Task's own off switch (#958): `autoRetry: null` or one attempt in all, set during the back-off, ends the pending retry the way the kill switch does.
+      if (!isAutoRetryOptedIn(task.autoRetry) || task.autoRetry.maxAttempts === 1) endedBecause = "Auto-retry switched off for this Task";
       let enabled = true;
       try {
         enabled = (await getAutoRetrySettings(this.ownerId)).enabled;
       } catch (err) {
         this.log.error(`task ${task.id}: could not read the auto-retry settings: ${messageOf(err)}`);
       }
-      if (enabled && this.now() < pending) {
+      if (endedBecause === null && !enabled) endedBecause = "Auto-retry is switched off";
+      if (endedBecause === null && this.now() < pending) {
         await wait(formatAutoRetryWaiting(pending, this.now()));
         return false;
       }
-      switchedOff = !enabled;
     }
     // Ask before claiming: a claimed Task counts an attempt, so the wait has to happen here.
     let early: { agentId: string; resolved?: ResolvedAgent; error?: unknown } | null = null;
@@ -480,9 +483,9 @@ export class TaskDispatcher {
       // No Session started: the attempt the claim counted is given back.
       await failTaskDispatch(this.ownerId, claimed.id, reason, this.now(), { refundAttempt: !started });
     };
-    if (switchedOff) {
-      // The kill switch (#958 guard 7): a pending retry is failed instead of started. `assigned` has no edge to `failed`, so it is claimed and failed with the attempt given back.
-      const reason = "Auto-retry is switched off";
+    if (endedBecause !== null) {
+      // The kill switch (#958 guard 7) or the Task's own off switch: a pending retry is failed instead of started. `assigned` has no edge to `failed`, so it is claimed and failed with the attempt given back.
+      const reason = endedBecause;
       await fail(reason);
       await setAutoRetryNotice(this.ownerId, claimed.id, "gave-up", reason, this.now()).catch((e) => this.log.error(`task ${claimed.id}: could not record the notice: ${messageOf(e)}`));
       return true;

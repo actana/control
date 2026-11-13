@@ -127,9 +127,15 @@ export function buildResumePrompt(
   const fresh = comments.slice(since + 1).filter((c) => c.authorKind === "user");
   const shown = fresh.slice(-MAX_PROMPT_COMMENTS);
   const lines = [
-    "The operator's Panel has re-assigned this Task to you. This is a new message in the Session you already have: the Task and what you did stay as they were.",
+    // An auto-retry (#958) was not a re-assign: nobody told this Session so. It opens with the attempt line and the retry line instead.
+    ...(autoRetried
+      ? [
+          `This is attempt ${attempt}. ${formatAutoRetryPromptLine(autoRetried.exitCode)}`,
+          "",
+          "This is a new message in the Session you already have: the Task and what you did stay as they were.",
+        ]
+      : ["The operator's Panel has re-assigned this Task to you. This is a new message in the Session you already have: the Task and what you did stay as they were."]),
     "",
-    ...(autoRetried ? [formatAutoRetryPromptLine(autoRetried.exitCode), ""] : []),
     `Task: ${defuse(task.title.trim())}`,
     "",
   ];

@@ -13,7 +13,7 @@ const { TaskDispatcher } = await import("../dispatcher");
 const { ResultWatcher } = await import("../result-watcher");
 const { stopTaskRun } = await import("../stop-task");
 const { NotFoundError } = await import("../../errors");
-const { createTask, getTask, listTaskComments, addTaskComment } = await import("../../services/tasks");
+const { createTask, getTask, listTaskComments, addTaskComment, updateTask } = await import("../../services/tasks");
 const { setAutoRetrySettings, listPausedCores, resumeAutoRetryOnCore } = await import("../../services/auto-retry-settings");
 
 const A = 1;
@@ -45,7 +45,7 @@ afterAll(async () => {
   await closePanelTestDb(testDb);
 });
 
-function rig() {
+function rig(opts: { withResume?: boolean } = {}) {
   const clock = new FakeClock();
   const shared = new FakeShared(clock);
   const core = new FakeCore();
@@ -61,7 +61,7 @@ function rig() {
     },
   };
   const watcher = new ResultWatcher({ ownerId: A, now: clock.now, exitGraceMs: GRACE_MS, log, stopSession: core.stopSession, liveSessions: core.liveSessions });
-  const dispatcher = new TaskDispatcher({ ownerId: A, startSession: core.startSession, sharedFor: async () => shared, watcher, stopSession: core.stopSession, agents, now: clock.now, log });
+  const dispatcher = new TaskDispatcher({ ownerId: A, startSession: core.startSession, ...(opts.withResume ? { resumeSession: core.resumeSession } : {}), sharedFor: async () => shared, watcher, stopSession: core.stopSession, agents, now: clock.now, log });
   const stop = (id: string) => stopTaskRun(A, id, { stoppedBy: "Operator" }, { watcher, stopSession: core.stopSession, now: clock.now, log });
   return { clock, shared, core, log, watcher, dispatcher, stop };
 }
@@ -366,6 +366,55 @@ describe("loop guards", () => {
     expect(t).toMatchObject({ status: "failed", attemptCount: 1, lastError: "Auto-retry is switched off" });
     expect(t.autoRetry?.notice).toMatchObject({ kind: "gave-up", text: "Auto-retry is switched off" });
     expect(r.core.starts).toHaveLength(1);
+  });
+
+  it("switching autoRetry off during a back-off ends the pending retry: no attempt starts, the notice says why", async () => {
+    const r = rig();
+    const task = await assign(r);
+    await r.dispatcher.dispatchOnce();
+    await die(r, task.id, { comment: "progress" });
+    expect((await getTask(A, task.id)).status).toBe("assigned");
+    await updateTask(A, task.id, { autoRetry: null });
+    r.clock.advance(MIN + 1);
+    await r.dispatcher.dispatchOnce();
+    const t = await getTask(A, task.id);
+    expect(r.core.starts).toHaveLength(1);
+    expect(t.status).not.toBe("in_progress");
+    expect(t).toMatchObject({ status: "failed", attemptCount: 1, lastError: "Auto-retry switched off for this Task" });
+    expect(t.autoRetry?.notice).toMatchObject({ kind: "gave-up", text: "Auto-retry switched off for this Task" });
+    expect(await r.dispatcher.dispatchOnce()).toBe(0);
+    expect(r.core.starts).toHaveLength(1);
+  });
+
+  it("switching autoRetry off during a back-off does not start the retry at once", async () => {
+    const r = rig();
+    const task = await assign(r);
+    await r.dispatcher.dispatchOnce();
+    await die(r, task.id, { comment: "progress" });
+    await updateTask(A, task.id, { autoRetry: null });
+    await r.dispatcher.dispatchOnce();
+    expect(r.core.starts).toHaveLength(1);
+    expect((await getTask(A, task.id)).status).not.toBe("in_progress");
+  });
+
+  it("the production retry path resumes the dead Session: its prompt opens with the attempt line and the retry line, never 're-assigned'", async () => {
+    const r = rig({ withResume: true });
+    const task = await assign(r);
+    await r.dispatcher.dispatchOnce();
+    await die(r, task.id, { comment: "progress" });
+    r.clock.advance(MIN);
+    expect(await r.dispatcher.dispatchOnce()).toBe(1);
+
+    expect(r.core.resumes).toHaveLength(1);
+    expect(r.core.resumes[0]).toMatchObject({ coreId: "core_1", sessionId: "session_1" });
+    expect(r.core.starts).toHaveLength(1);
+    const file = r.shared.text(prompt(task.id, 2))!;
+    expect(file).not.toContain("re-assigned");
+    expect(file).toContain("This is attempt 2.");
+    expect(file).toContain(RETRY_LINE(143));
+    expect(file.indexOf("This is attempt 2.")).toBeLessThan(file.indexOf(RETRY_LINE(143)));
+    expect(file).toContain("new message in the Session you already have");
+    expect(await getTask(A, task.id)).toMatchObject({ status: "in_progress", attemptCount: 2 });
   });
 
   it("the kill switch also covers a Task that already carries autoRetry: its death is a plain failure", async () => {

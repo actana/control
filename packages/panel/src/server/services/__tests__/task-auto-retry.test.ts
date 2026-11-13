@@ -142,7 +142,8 @@ describe("updateTask autoRetry", () => {
     const id = await running();
     await scheduleAutoRetry(A, id, schedule, 3000);
     const off = await updateTask(A, id, { autoRetry: null }, 4000);
-    expect(off.autoRetry).toMatchObject({ maxAttempts: 1, retries: 1, notBefore: null });
+    // The pending back-off stays: the dispatcher ends the retry (it does not start it) because one attempt is all that is allowed.
+    expect(off.autoRetry).toMatchObject({ maxAttempts: 1, retries: 1, notBefore: 3000 + schedule.delayMs });
     const on = await updateTask(A, id, { autoRetry: { maxAttempts: 3 } }, 4001);
     expect(on.autoRetry).toMatchObject({ maxAttempts: 3, retries: 1 });
   });

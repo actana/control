@@ -278,11 +278,12 @@ async function resolveNewAutoRetry(
 
 /**
  * The `autoRetry` after an update (#958). Null turns it off, but a Task that already used retries (its own or its lineage's)
- * keeps the count with one attempt allowed, which no retry fits: switching it off and on again never resets guard 4.
+ * keeps the count with one attempt allowed, which no retry fits: switching it off and on again never resets guard 4. A pending
+ * back-off (`notBefore`) is kept: the dispatcher sees the one attempt and ends the retry like the kill switch, it does not start it.
  */
 export function autoRetryAfterUpdate(before: TaskAutoRetry | null, request: AutoRetryRequest | null, ceiling: number): TaskAutoRetry | null {
   if (request === null) {
-    return before && before.inherited + before.retries > 0 ? { ...before, maxAttempts: 1, notBefore: null } : null;
+    return before && before.inherited + before.retries > 0 ? { ...before, maxAttempts: 1 } : null;
   }
   const { maxAttempts } = clampAutoRetryMaxAttempts(request.maxAttempts, ceiling);
   if (!before) return newTaskAutoRetry(maxAttempts);

@@ -532,6 +532,16 @@ export async function createTaskV1(principal: ApiPrincipal, request: Request, or
     if (startNow && (!coreId || !agent)) {
       throw new ValidationError("starting a Task now needs a Core and an Agent");
     }
+    if (fromTaskId && principal.kind === "api-key" && !principal.scope.allCores) {
+      // The parent's lineage shapes the answer's autoRetry, so a scoped key may only name a parent it reaches. An unknown id is
+      // answered like one outside the scope (403), so the answer does not say whether the Task exists.
+      const parent = await getTask(principal.ownerId, fromTaskId).catch((e: unknown) => {
+        if (e instanceof NotFoundError) return null;
+        throw e;
+      });
+      const parentDenied = refuseOutsideScope(principal, parent ? parent.coreId : null);
+      if (parentDenied) return parentDenied;
+    }
     const task = await createTask(principal.ownerId, {
       title,
       ...(description === undefined ? {} : { description }),

@@ -209,6 +209,22 @@ describe("v1 Task routes", () => {
     expect(child.task.autoRetry).toBeNull();
   });
 
+  it("fromTaskId is held to the key's Core scope: a parent on another Core, or an unknown one, is refused alike and nothing is created", async () => {
+    await testDb.pool.query("insert into cores (id, owner_id, label, endpoint, created_at, updated_at) values ('core-b', 1, 'Core B', 'https://b', 1, 1)");
+    const scoped = (await createApiKey(A, { name: "scoped", coreIds: ["core-a"], permissions: ALL_API_KEY_PERMISSIONS })).key;
+    const other = await tasksService.createTask(A, { title: "on b", coreId: "core-b", autoRetry: { maxAttempts: 3 } });
+    const mine = await tasksService.createTask(A, { title: "on a", coreId: "core-a" });
+    const before = (await tasksService.listTasks(A)).length;
+    for (const fromTaskId of [other.id, "task_does_not_exist"]) {
+      const res = await call("/api/v1/tasks", { method: "POST", bearer: scoped, json: { title: "c", coreId: "core-a", autoRetry: { maxAttempts: 2 }, fromTaskId } });
+      expect(res.status).toBe(403);
+    }
+    expect((await tasksService.listTasks(A)).length).toBe(before);
+    // A parent inside the scope is still taken.
+    const ok = await call("/api/v1/tasks", { method: "POST", bearer: scoped, json: { title: "c", coreId: "core-a", fromTaskId: mine.id } });
+    expect(ok.status).toBe(201);
+  });
+
   it("PATCH and the status move take autoRetry", async () => {
     const k = await key();
     const t = await tasksService.createTask(A, { title: "t", coreId: "core-a", agent: "agent-a" });
