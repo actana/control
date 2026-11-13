@@ -711,6 +711,9 @@ still `assigned`: the route answers `status: "assigned"` (no Session state, no r
 same URL follows the attempt once it starts. Such a URL lasts the No-limit window plus the time limit, so it outlives
 a queue wait. A Task moved back to draft answers `410`.
 
+On a Core, `actana task wait "<url>"` loops on this URL for you and exits with a code per ending (0 done, 10 failed,
+11 partial, 20 needs-input, 21 interrupted, 22 idle-no-result, 30 gone, 31 timeout); see `packages/cli/README.md`.
+
 These are Panel environment variables, set next to `AC_SECRETS_KEY`:
 
 | Variable | Default | What it does |

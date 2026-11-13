@@ -65,3 +65,35 @@ export const EXIT_UNIMPLEMENTED = 3;
  * `$?`. The sentence on stderr says which happened either way.
  */
 export const EXIT_LINK_LOST = 125;
+
+// ─── `actana task wait` (#953) ──────────────────────────────────────────────
+//
+// A worker that hands a Task off and then waits on its status URL branches on
+// `$?`, so every way the wait can end has its own number. `0` is the Task's
+// `done` (`EXIT_OK`) and `1` / `2` keep their usual meanings (`EXIT_FAILURE`
+// is "the loop itself could not finish": a bad URL, no good answer for ten
+// minutes). The rest are the Task's other endings and the Session states a
+// caller can act on. Grouped by tens so a script can test a family: 10s are
+// final results, 20s are "the Task is stuck on something", 30s are "this wait
+// is over without an answer".
+
+/** The Task finished `failed`. */
+export const EXIT_TASK_FAILED = 10;
+
+/** The Task finished `partial`. */
+export const EXIT_TASK_PARTIAL = 11;
+
+/** The Session is waiting for a person (`sessionState` `needs-input`). */
+export const EXIT_TASK_NEEDS_INPUT = 20;
+
+/** The Session was interrupted (`sessionState` `interrupted`). */
+export const EXIT_TASK_INTERRUPTED = 21;
+
+/** The Session went idle with no complete result file (`sessionState` `idle-no-result`). */
+export const EXIT_TASK_IDLE_NO_RESULT = 22;
+
+/** The status URL answered `410`: expired, replaced by a new attempt, stopped or deleted. */
+export const EXIT_TASK_GONE = 30;
+
+/** `--timeout` ran out while the Task was still running. */
+export const EXIT_TASK_TIMEOUT = 31;
