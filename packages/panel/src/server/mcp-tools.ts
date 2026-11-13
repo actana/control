@@ -19,6 +19,7 @@ import {
   updateAgentV1,
   updateTaskV1,
 } from "./controllers/v1.controller";
+import { GUIDE_TOPICS, guideMarkdown } from "./mcp-guides";
 import { getShared, listShared } from "./mcp-shared";
 import { OPERATOR_TASK_STATUSES } from "./controllers/tasks.controller";
 import { scopeReaches } from "./services/api-keys";
@@ -46,6 +47,8 @@ export type ToolOutcome =
       /** Send `data` as the JSON text only, not again as `structuredContent` (a large list, #896). */
       textOnly?: true;
     }
+  /** Markdown text for the model, sent as the content text itself (not JSON), with no `structuredContent`. */
+  | { ok: true; markdown: string }
   | { ok: false; message: string };
 
 export type McpTool = {
@@ -117,6 +120,16 @@ const agentFlagsArg = z
   .describe(`Flags from this closed set: ${AGENT_FLAGS.join(", ")}. Nothing else is accepted: an Agent has no command, arguments, script or environment.`);
 
 export const MCP_TOOLS: readonly McpTool[] = [
+  tool({
+    name: "get_guide",
+    description:
+      "How to use the Task tools: hand a Task to a named Agent, wait for it, read each sessionState, and comment or re-assign. Returns Markdown. " +
+      `Call it first. With no topic it returns the overview and the topic list; topic is one of ${GUIDE_TOPICS.join(", ")}.`,
+    readOnly: true,
+    permission: "read",
+    input: z.object({ topic: z.enum(GUIDE_TOPICS).optional().describe("One guide topic. Omit for the overview and the topic list.") }),
+    run: async (_principal, { topic }) => ({ ok: true, markdown: guideMarkdown(topic) }),
+  }),
   tool({
     name: "list_cores",
     description:

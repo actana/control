@@ -54,7 +54,7 @@ const INSTRUCTIONS =
   "Tasks on the Operator's Cores. Every call runs as the API key's owner, sees only the Cores the key reaches, " +
   "and may use only the tools the key's permissions allow (tools/list names those). " +
   "To hand work off, call create_task (startNow) or assign_task. The Task comes straight back with watch.url, with no extra get_task; a draft Task has none. " +
-  "Then wait by reading watch.url (a plain GET, no API key), never by looping get_task. Call get_guide for the full recipe. " +
+  "Then wait by reading watch.url (a plain GET, no API key), never by looping get_task. Call get_guide first for the full recipe. " +
   "A Task's sessionState says what its Session is doing: " +
   "working = the Agent is busy; " +
   "needs-input = the Agent waits for a person; " +
@@ -184,6 +184,9 @@ function toolResult(
 ): RpcResponse {
   if (!outcome.ok) {
     return { jsonrpc: "2.0", id, result: { isError: true, content: [{ type: "text", text: outcome.message }] } };
+  }
+  if ("markdown" in outcome) {
+    return { jsonrpc: "2.0", id, result: { content: [{ type: "text", text: outcome.markdown }] } };
   }
   return {
     jsonrpc: "2.0",
