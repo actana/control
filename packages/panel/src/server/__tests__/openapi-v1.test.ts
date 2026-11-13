@@ -25,17 +25,21 @@ function examplePath(template: string): string {
 
 const METHODS = ["get", "post", "put", "patch", "delete"] as const;
 
+/** The one documented route outside `/api/v1` and outside the key allowlist: a Task attempt's status URL (#950, #951). */
+const WATCH_PATH = "/api/watch/{token}";
+
 describe("OpenAPI v1", () => {
-  it("is OpenAPI 3 and lists only /api/v1 paths", () => {
+  it("is OpenAPI 3 and lists only /api/v1 paths, plus the watch route", () => {
     expect(doc.openapi.startsWith("3.")).toBe(true);
     for (const p of Object.keys(doc.paths)) {
-      expect(p.startsWith("/api/v1/")).toBe(true);
+      expect(p.startsWith("/api/v1/") || p === WATCH_PATH, p).toBe(true);
     }
   });
 
   it("every documented path+method is accepted as a key route", () => {
     const missing: string[] = [];
     for (const [template, ops] of Object.entries(doc.paths)) {
+      if (template === WATCH_PATH) continue; // no key is needed there: the token in the path is the credential
       for (const method of METHODS) {
         if (!(method in ops)) continue;
         const pathname = examplePath(template);
@@ -50,6 +54,7 @@ describe("OpenAPI v1", () => {
   it("every /api/v1 key route is in the OpenAPI document", () => {
     const documented = new Set<string>();
     for (const [template, ops] of Object.entries(doc.paths)) {
+      if (template === WATCH_PATH) continue;
       for (const method of METHODS) {
         if (method in ops) documented.add(`${method.toUpperCase()} ${template}`);
       }
@@ -73,6 +78,7 @@ describe("OpenAPI v1", () => {
       { method: "DELETE", path: "/api/v1/tasks/x", template: "/api/v1/tasks/{taskId}" },
       { method: "POST", path: "/api/v1/tasks/x/status", template: "/api/v1/tasks/{taskId}/status" },
       { method: "POST", path: "/api/v1/tasks/x/stop", template: "/api/v1/tasks/{taskId}/stop" },
+      { method: "POST", path: "/api/v1/tasks/x/close-session", template: "/api/v1/tasks/{taskId}/close-session" },
       { method: "GET", path: "/api/v1/tasks/x/comments", template: "/api/v1/tasks/{taskId}/comments" },
       { method: "POST", path: "/api/v1/tasks/x/comments", template: "/api/v1/tasks/{taskId}/comments" },
     ];
@@ -112,5 +118,32 @@ describe("OpenAPI v1", () => {
     const patch = d.paths["/api/v1/tasks/{taskId}"]!.patch!.requestBody!.content["application/json"].schema.properties.timeoutMinutes;
     for (const prop of [task, create, patch]) expect(prop).toMatchObject(expected);
     expect(create).toMatchObject({ default: 60 });
+  });
+
+  it("documents the Session state, the watch object and the sessionState filter on Tasks (#951)", () => {
+    const d = doc as unknown as {
+      components: { schemas: { Task: { properties: Record<string, any> } } };
+      paths: Record<string, Record<string, { parameters?: { name: string; in: string; schema: any }[] }>>;
+    };
+    const task = d.components.schemas.Task.properties;
+    expect(task.sessionState.enum).toEqual(["working", "needs-input", "interrupted", "idle-no-result", "exited", null]);
+    expect(task.sessionStateAt).toBeDefined();
+    expect(Object.keys(task.watch.properties)).toEqual(["url", "expiresAt", "pollAfterSeconds"]);
+    expect(JSON.stringify(task.sessionState)).toContain("task.session_state_changed");
+    const filter = d.paths["/api/v1/tasks"]!.get!.parameters!.find((p) => p.name === "sessionState");
+    expect(filter?.in).toBe("query");
+    expect(JSON.stringify(filter)).toContain("needs-input");
+    expect(JSON.stringify(d.paths["/api/v1/tasks"]!.get)).toContain("400");
+  });
+
+  it("documents the watch route as unauthenticated, with the payload word for word (#950, #951)", () => {
+    const op = (doc.paths[WATCH_PATH] as Record<string, any>).get;
+    expect(op.operationId).toBe("watchTask");
+    expect(op.security).toEqual([]);
+    expect(Object.keys(op.responses)).toEqual(expect.arrayContaining(["200", "404", "410"]));
+    const props = op.responses["200"].content["application/json"].schema.properties;
+    expect(Object.keys(props)).toEqual([
+      "taskId", "attempt", "status", "sessionState", "sessionStateAt", "result", "updatedAt", "pollAfterSeconds",
+    ]);
   });
 });

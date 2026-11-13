@@ -2,7 +2,7 @@ import { z } from "zod";
 import pkg from "../../package.json";
 import { authenticateApiKeyOnly } from "./api-key-auth";
 import { jsonError } from "./http-responses";
-import { MCP_TOOLS, type ToolOutcome } from "./mcp-tools";
+import { MCP_TOOLS, type McpContext, type ToolOutcome } from "./mcp-tools";
 import { hasPermission, missingPermissionMessage } from "./services/api-keys";
 import {
   HTTP_ACCEPTED,
@@ -53,6 +53,18 @@ const INTERNAL_ERROR = -32603;
 const INSTRUCTIONS =
   "Tasks on the Operator's Cores. Every call runs as the API key's owner, sees only the Cores the key reaches, " +
   "and may use only the tools the key's permissions allow (tools/list names those). " +
+  "To hand work off, call create_task (startNow) or assign_task. A Task has watch.url only while its attempt runs (a Task still waiting for a Core has none yet): call get_task once to get it. " +
+  "Then wait by reading watch.url (a plain GET, no API key), never by looping get_task. Call get_guide for the full recipe. " +
+  "A Task's sessionState says what its Session is doing: " +
+  "working = the Agent is busy; " +
+  "needs-input = the Agent waits for a person; " +
+  "interrupted = the Session was interrupted; " +
+  "idle-no-result = the Session is idle and has written no result yet; " +
+  "exited = the Session ended; " +
+  "null = no attempt is running. " +
+  "The result file alone makes a Task done, failed or partial: a state never changes its status. " +
+  "For needs-input, tell the Operator, or answer with comment_task if the Agent asked a question. " +
+  "get_tasks takes sessionState (one value or a comma list) to list, say, every Task that needs-input. " +
   "assign_task only asks for the operator moves (assigned, draft). update_task changes a Task's title, description or time limit (timeoutMinutes; null = No limit) and " +
   "delete_task removes it; delete_task and the title and description edits are refused while the Task is in_progress (the time limit can be changed at any status), and so is a re-assign: stop_task stops a running Task (its Session too) and fails it, after which it can be re-assigned. list_shared and get_shared read a Core's Shared folder.";
 
@@ -99,6 +111,7 @@ function describeTool(t: (typeof MCP_TOOLS)[number]) {
 async function handleMessage(
   raw: unknown,
   principal: Parameters<(typeof MCP_TOOLS)[number]["run"]>[0],
+  ctx: McpContext,
 ): Promise<RpcResponse | null> {
   const parsed = rpcMessage.safeParse(raw);
   if (!parsed.success) return rpcError(null, INVALID_REQUEST, "not a JSON-RPC 2.0 message");
@@ -131,7 +144,7 @@ async function handleMessage(
         result: { tools: MCP_TOOLS.filter((t) => hasPermission(principal, t.permission)).map(describeTool) },
       };
     case "tools/call":
-      return await callTool(id, params, principal);
+      return await callTool(id, params, principal, ctx);
     default:
       return rpcError(id, METHOD_NOT_FOUND, `method not found: ${method}`);
   }
@@ -141,6 +154,7 @@ async function callTool(
   id: string | number,
   params: unknown,
   principal: Parameters<(typeof MCP_TOOLS)[number]["run"]>[0],
+  ctx: McpContext,
 ): Promise<RpcResponse> {
   const call = z.object({ name: z.string(), arguments: z.record(z.string(), z.unknown()).optional() }).safeParse(params);
   if (!call.success) return rpcError(id, INVALID_PARAMS, "tools/call needs a tool name and object arguments");
@@ -156,7 +170,7 @@ async function callTool(
     return toolResult(id, { ok: false, message: `invalid arguments — ${why}` });
   }
   try {
-    return toolResult(id, await tool.run(principal, args.data as never));
+    return toolResult(id, await tool.run(principal, args.data as never, ctx));
   } catch (err) {
     // Never echo the thrown message: it can carry a path, a URL or a credential.
     console.error(`[mcp] tool ${tool.name} failed: ${err instanceof Error ? err.name : "error"}`);
@@ -204,6 +218,7 @@ async function serve(request: Request): Promise<Response> {
 
   const text = await readBounded(request);
   if (text === null) return jsonError(HTTP_PAYLOAD_TOO_LARGE, "request body is too large");
+  const ctx: McpContext = { origin: new URL(request.url).origin };
   let body: unknown;
   try {
     body = JSON.parse(text);
@@ -218,12 +233,12 @@ async function serve(request: Request): Promise<Response> {
     }
     const answers: RpcResponse[] = [];
     for (const message of body) {
-      const answer = await handleMessage(message, auth.principal);
+      const answer = await handleMessage(message, auth.principal, ctx);
       if (answer) answers.push(answer);
     }
     return answers.length === 0 ? new Response(null, { status: HTTP_ACCEPTED, headers: NO_STORE }) : rpcHttp(answers);
   }
-  const answer = await handleMessage(body, auth.principal);
+  const answer = await handleMessage(body, auth.principal, ctx);
   return answer ? rpcHttp(answer) : new Response(null, { status: HTTP_ACCEPTED, headers: NO_STORE });
 }
 

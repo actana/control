@@ -19,11 +19,24 @@ export type TaskStatusHistoryRow = typeof taskStatusHistory.$inferSelect;
  * webhooks (#574) are written in the same transaction as the change.
  */
 
-export async function findTasks(ownerId: number, statuses?: TaskStatus[]): Promise<TaskRow[]> {
+export async function findTasks(
+  ownerId: number,
+  statuses?: TaskStatus[],
+  sessionStates?: readonly TaskSessionState[],
+): Promise<TaskRow[]> {
   return panelDb()
     .select()
     .from(tasks)
-    .where(ownedBy(tasks, ownerId, statuses?.length ? inArray(tasks.status, statuses) : undefined))
+    .where(
+      ownedBy(
+        tasks,
+        ownerId,
+        and(
+          statuses?.length ? inArray(tasks.status, statuses) : undefined,
+          sessionStates?.length ? inArray(tasks.sessionState, [...sessionStates]) : undefined,
+        ),
+      ),
+    )
     .orderBy(desc(tasks.createdAt), asc(tasks.id));
 }
 
@@ -33,6 +46,8 @@ export type TaskListRow = Omit<TaskRow, "description">;
 export type TasksPageQuery = {
   /** Only these statuses; none given = every status. */
   statuses?: readonly TaskStatus[];
+  /** Only Tasks whose Session is in one of these states (#951); none given = any, including no Session. */
+  sessionStates?: readonly TaskSessionState[];
   coreId?: string;
   /** A restricted API key's Cores: only Tasks on one of these (a Task with no Core is left out). */
   scopeCoreIds?: readonly string[];
@@ -82,6 +97,7 @@ export async function findTasksPage(ownerId: number, query: TasksPageQuery): Pro
   const { description: _description, ...listColumns } = getTableColumns(tasks);
   const conditions: (SQL | undefined)[] = [
     query.statuses?.length ? inArray(tasks.status, [...query.statuses]) : undefined,
+    query.sessionStates?.length ? inArray(tasks.sessionState, [...query.sessionStates]) : undefined,
     query.coreId === undefined ? undefined : eq(tasks.coreId, query.coreId),
     query.scopeCoreIds === undefined
       ? undefined

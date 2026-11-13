@@ -20,7 +20,8 @@ import { readCoreCapacity } from "../services/core-capacity";
 import { coreLinkManager } from "../services/core-link-manager";
 import type { Core, CoreWithDial } from "~/shared/cores";
 import { toSessionState, type AgentDto, type TaskCommentDto, type TaskDto, type TasksPageDto } from "~/shared/task-wire";
-import { taskWaitingReason, type TaskStatus } from "~/shared/tasks";
+import { TASK_SESSION_STATES, isTaskSessionState, taskWaitingReason, type TaskSessionState, type TaskStatus } from "~/shared/tasks";
+import { pollAfterSeconds, taskWatchToken, taskWatchUrl, watchExpiresAt } from "../services/task-watch";
 import {
   addTaskComment,
   changeTaskStatus,
@@ -105,7 +106,24 @@ function waitingOf(t: Task): TaskDto["waiting"] {
   return reason === null ? null : { reason, coreId: t.coreId };
 }
 
-function taskDto(t: Task): TaskDto {
+/**
+ * The status URL of a running attempt (#951), built with #950's own token and URL helpers. `origin` is the
+ * Panel's own (the request's); `AC_PANEL_PUBLIC_URL` wins when set.
+ */
+function watchOf(t: Task, origin: string): NonNullable<V1TaskDto["watch"]> {
+  const now = Date.now();
+  return {
+    url: taskWatchUrl(taskWatchToken(t, now), origin),
+    expiresAt: watchExpiresAt(t, now),
+    pollAfterSeconds: pollAfterSeconds(t, now),
+  };
+}
+
+/** A Task as the v1 API and MCP return it: the Panel's Task plus, for an `in_progress` attempt, its `watch`. */
+export type V1TaskDto = TaskDto & { watch?: { url: string; expiresAt: number; pollAfterSeconds: number } };
+
+/** Without `origin` (a list row) there is no `watch`: a list carries `sessionState` only. */
+function taskDto(t: Task, origin?: string): V1TaskDto {
   return {
     id: t.id,
     title: t.title,
@@ -122,7 +140,13 @@ function taskDto(t: Task): TaskDto {
     sessionStateAt: t.sessionStateAt,
     createdAt: t.createdAt,
     updatedAt: t.updatedAt,
+    ...(origin !== undefined && t.status === "in_progress" ? { watch: watchOf(t, origin) } : {}),
   };
+}
+
+/** The Panel's own origin from a request; an MCP call's stand-in request has none (`mcp.invalid`), so the tool passes the real one. */
+function originOf(request: Request): string {
+  return new URL(request.url).origin;
 }
 
 function commentDto(c: TaskComment): TaskCommentDto {
@@ -408,7 +432,19 @@ export type ListTasksQuery = {
   limit?: number;
   /** The `nextCursor` of the previous page; needs `limit`. */
   cursor?: string;
+  /** Only Tasks whose Session is in one of these states: one value or a comma list (#951). */
+  sessionState?: string;
 };
+
+/** `sessionState=a,b` as states, or a 400 for an empty list or a value that is not one. */
+export function parseSessionStateFilter(raw: string): TaskSessionState[] {
+  const parts = raw.split(",").map((p) => p.trim());
+  const bad = parts.find((p) => !isTaskSessionState(p));
+  if (bad !== undefined) {
+    throw new ValidationError(`sessionState must be one or more of ${TASK_SESSION_STATES.join(", ")} (comma separated)`);
+  }
+  return [...new Set(parts as TaskSessionState[])];
+}
 
 /**
  * The Tasks the principal reaches. Without `limit`, every one with full rows, as it always was (#572).
@@ -416,17 +452,19 @@ export type ListTasksQuery = {
  */
 export async function listTasksV1(principal: ApiPrincipal, query: ListTasksQuery = {}): Promise<Response> {
   try {
+    const sessionStates = query.sessionState === undefined ? undefined : parseSessionStateFilter(query.sessionState);
     if (query.limit === undefined) {
       if (query.cursor !== undefined) throw new ValidationError("cursor needs a limit");
-      const all = await listTasks(principal.ownerId, query.status ? [query.status] : undefined);
+      const all = await listTasks(principal.ownerId, query.status ? [query.status] : undefined, sessionStates);
       const visible = all.filter(
         (t) => inScope(principal, t.coreId) && (query.coreId === undefined || t.coreId === query.coreId),
       );
-      return json({ tasks: visible.map(taskDto) });
+      return json({ tasks: visible.map((t) => taskDto(t)) });
     }
     const page = await listTasksPage(principal.ownerId, {
       limit: query.limit,
       ...(query.status ? { statuses: [query.status] } : {}),
+      ...(sessionStates === undefined ? {} : { sessionStates }),
       ...(query.coreId === undefined ? {} : { coreId: query.coreId }),
       ...(query.cursor === undefined ? {} : { cursor: query.cursor }),
       ...(principal.kind === "api-key" && !principal.scope.allCores ? { scopeCoreIds: [...principal.scope.coreIds] } : {}),
@@ -442,13 +480,15 @@ export async function listTasksV1(principal: ApiPrincipal, query: ListTasksQuery
 export async function listTasksV1FromQuery(principal: ApiPrincipal, params: URLSearchParams): Promise<Response> {
   const limit = params.get("limit");
   const cursor = params.get("cursor");
+  const sessionState = params.get("sessionState");
   return listTasksV1(principal, {
     ...(limit === null ? {} : { limit: Number(limit) }),
     ...(cursor === null ? {} : { cursor }),
+    ...(sessionState === null ? {} : { sessionState }),
   });
 }
 
-export async function createTaskV1(principal: ApiPrincipal, request: Request): Promise<Response> {
+export async function createTaskV1(principal: ApiPrincipal, request: Request, origin = originOf(request)): Promise<Response> {
   const body = await parseJsonBody(request, newTaskBody);
   if (!body.ok) return body.response;
   const { title, description, coreId, agent, startNow, timeoutMinutes } = body.data;
@@ -472,46 +512,46 @@ export async function createTaskV1(principal: ApiPrincipal, request: Request): P
       startNow: startNow === true,
       ...(timeoutMinutes === undefined ? {} : { timeoutMinutes }),
     });
-    return json({ task: taskDto(task), ...queuedAnswer(startNow, coreId) }, { status: HTTP_CREATED });
+    return json({ task: taskDto(task, origin), ...queuedAnswer(startNow, coreId) }, { status: HTTP_CREATED });
   } catch (e) {
     return rethrowUnlessDomain(e);
   }
 }
 
-export async function getTaskV1(principal: ApiPrincipal, id: string): Promise<Response> {
+export async function getTaskV1(principal: ApiPrincipal, id: string, origin = ""): Promise<Response> {
   try {
     const task = await getTask(principal.ownerId, id);
     const denied = refuseOutsideScope(principal, task.coreId);
     if (denied) return denied;
     const comments = await listTaskComments(principal.ownerId, id);
-    return json({ task: taskDto(task), comments: comments.map(commentDto) });
+    return json({ task: taskDto(task, origin), comments: comments.map(commentDto) });
   } catch (e) {
     return rethrowUnlessDomain(e);
   }
 }
 
-export async function setTaskStatusV1(principal: ApiPrincipal, id: string, request: Request): Promise<Response> {
+export async function setTaskStatusV1(principal: ApiPrincipal, id: string, request: Request, origin = originOf(request)): Promise<Response> {
   const body = await parseJsonBody(request, statusBody);
   if (!body.ok) return body.response;
   try {
     const task = await getTask(principal.ownerId, id);
     const denied = refuseOutsideScope(principal, task.coreId);
     if (denied) return denied;
-    return json({ task: taskDto(await changeTaskStatus(principal.ownerId, id, body.data.status)) });
+    return json({ task: taskDto(await changeTaskStatus(principal.ownerId, id, body.data.status), origin) });
   } catch (e) {
     return rethrowUnlessDomain(e);
   }
 }
 
 /** `PATCH /api/v1/tasks/:id` (#722): title, description (409 while `in_progress`) or time limit (#724, any status). */
-export async function updateTaskV1(principal: ApiPrincipal, id: string, request: Request): Promise<Response> {
+export async function updateTaskV1(principal: ApiPrincipal, id: string, request: Request, origin = originOf(request)): Promise<Response> {
   const body = await parseJsonBody(request, updateTaskBody);
   if (!body.ok) return body.response;
   try {
     const task = await getTask(principal.ownerId, id);
     const denied = refuseOutsideScope(principal, task.coreId);
     if (denied) return denied;
-    return json({ task: taskDto(await updateTask(principal.ownerId, id, { ...body.data, changedBy: await authorName() })) });
+    return json({ task: taskDto(await updateTask(principal.ownerId, id, { ...body.data, changedBy: await authorName() }), origin) });
   } catch (e) {
     return rethrowUnlessDomain(e);
   }
@@ -531,7 +571,7 @@ export async function deleteTaskV1(principal: ApiPrincipal, id: string): Promise
 }
 
 /** `POST /api/v1/tasks/:id/stop` (#723): stops the Task's Session and fails the Task; 409 unless it is `in_progress`. */
-export async function stopTaskV1(principal: ApiPrincipal, id: string, request: Request): Promise<Response> {
+export async function stopTaskV1(principal: ApiPrincipal, id: string, request: Request, origin = originOf(request)): Promise<Response> {
   const body = await parseJsonBody(request, stopTaskBody);
   if (!body.ok) return body.response;
   try {
@@ -539,20 +579,20 @@ export async function stopTaskV1(principal: ApiPrincipal, id: string, request: R
     const denied = refuseOutsideScope(principal, task.coreId);
     if (denied) return denied;
     const stopped = await stopTask(principal.ownerId, id, { stoppedBy: await authorName(), reason: body.data.reason });
-    return json({ task: taskDto(stopped.task), session: stopped.session });
+    return json({ task: taskDto(stopped.task, origin), session: stopped.session });
   } catch (e) {
     return rethrowUnlessDomain(e);
   }
 }
 
 /** `POST /api/v1/tasks/:id/close-session` (#962): end a finished Task's harness and free its PTY slot; 409 while someone is working in it. */
-export async function closeTaskSessionV1(principal: ApiPrincipal, id: string): Promise<Response> {
+export async function closeTaskSessionV1(principal: ApiPrincipal, id: string, origin = ""): Promise<Response> {
   try {
     const task = await getTask(principal.ownerId, id);
     const denied = refuseOutsideScope(principal, task.coreId);
     if (denied) return denied;
     const closed = await closeSession(principal.ownerId, id, { closedBy: await authorName() });
-    return json({ task: taskDto(closed.task), session: closed.session });
+    return json({ task: taskDto(closed.task, origin), session: closed.session });
   } catch (e) {
     return rethrowUnlessDomain(e);
   }
@@ -569,7 +609,7 @@ export async function listTaskCommentsV1(principal: ApiPrincipal, id: string): P
   }
 }
 
-export async function addTaskCommentV1(principal: ApiPrincipal, id: string, request: Request): Promise<Response> {
+export async function addTaskCommentV1(principal: ApiPrincipal, id: string, request: Request, origin = originOf(request)): Promise<Response> {
   const body = await parseJsonBody(request, commentBody);
   if (!body.ok) return body.response;
   try {
@@ -579,7 +619,7 @@ export async function addTaskCommentV1(principal: ApiPrincipal, id: string, requ
     const input = { authorKind: "user" as const, authorName: await authorName(), body: body.data.body };
     if (body.data.reassign) {
       const updated = await commentAndReassign(principal.ownerId, id, input);
-      return json({ task: taskDto(updated), comments: (await listTaskComments(principal.ownerId, id)).map(commentDto) });
+      return json({ task: taskDto(updated, origin), comments: (await listTaskComments(principal.ownerId, id)).map(commentDto) });
     }
     const stored = await addTaskComment(principal.ownerId, id, input);
     return json({ comment: commentDto(stored) }, { status: HTTP_CREATED });
