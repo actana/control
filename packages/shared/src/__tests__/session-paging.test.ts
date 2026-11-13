@@ -34,12 +34,12 @@ function insert(
   db: Database.Database,
   id: string,
   at: number,
-  extra: Partial<{ title: string; agent: string; status: string; archived: number }> = {},
+  extra: Partial<{ title: string; agent: string; status: string; archived: number; pinned: number }> = {},
 ): void {
   db.prepare(
-    `INSERT INTO sessions (id, title, agent, status, archived, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
-  ).run(id, extra.title ?? `title ${id}`, extra.agent ?? "claude-code", extra.status ?? "finished", extra.archived ?? 0, at, at);
+    `INSERT INTO sessions (id, title, agent, status, archived, pinned, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(id, extra.title ?? `title ${id}`, extra.agent ?? "claude-code", extra.status ?? "finished", extra.archived ?? 0, extra.pinned ?? 0, at, at);
 }
 
 const asReader = (db: Database.Database) => db as unknown as CoreQuerySqlite;
@@ -182,6 +182,17 @@ describe("querySessionPage", () => {
     const page = querySessionPage(asReader(db), { limit: 10, archived: false, ids: ["s1", "s4", "nope"] });
     expect(page.rows.map((r) => r.sessionId)).toEqual(["s4", "s1"]);
     expect(page.total).toBe(2);
+  });
+
+  it("filters to the pinned Sessions, wherever they sit in the order", () => {
+    for (let i = 1; i <= 5; i++) insert(db, `s${i}`, i * 10, { pinned: i === 1 || i === 2 ? 1 : 0 });
+    const page = querySessionPage(asReader(db), { limit: 1, archived: false, pinned: true });
+    expect(page.rows.map((r) => r.sessionId)).toEqual(["s2"]);
+    expect(page.total).toBe(2);
+    expect(page.nextCursor).not.toBeNull();
+    expect(readSessionPageRequest({ limit: 5, pinned: true })?.pinned).toBe(true);
+    expect(readSessionPageRequest({ limit: 5 })?.pinned).toBeUndefined();
+    expect(readSessionPageRequest({ limit: 5, pinned: "yes" })?.pinned).toBeUndefined();
   });
 
   it("rejects ids that are not a list of ids", () => {

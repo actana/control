@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { hashKey, useIsMutating, infiniteQueryOptions, keepPreviousData, queryOptions, useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "~/lib/api";
 import { retainCoreScope, watchCoreScope } from "~/lib/visible-core-scope";
@@ -22,6 +22,12 @@ export const queryKeys = {
   // belong to the Archived view, and folding them under the sessions key would
   // sweep them into every sessions invalidation — including the count, which
   // has no fetcher of its own to answer with (see `useCoreArchivedSessionCount`).
+  /** Where a Core's first page ended: its true count and the cursor of the next page (#960). */
+  sessionPage: (coreId: string) => ["session-page", coreId] as const,
+  /** The Core's pinned Sessions, read apart from the first page. Under `sessions`, so a sessions invalidation refreshes it. */
+  pinnedSessions: (coreId: string) => ["cores", coreId, "sessions", "pinned"] as const,
+  /** One active Session row asked for by id, for a Session past the first page (#960). */
+  sessionRow: (coreId: string, sessionId: string) => ["session-row", coreId, sessionId] as const,
   coreArchivedSessions: (coreId: string) => ["core-archived-sessions", coreId] as const,
   /** Prefix over every Core's archived bucket, for a blanket invalidation. */
   coreArchivedSessionsAll: ["core-archived-sessions"] as const,
@@ -145,6 +151,9 @@ export async function fetchSessionRowById(coreId: string, sessionId: string): Pr
   return row ? remoteSessionFromSnapshot(row) : null;
 }
 
+/** Where a Core's first page ended (#960). */
+export type SessionPageMeta = { total: number; nextCursor: string | null };
+
 export const sessionsQueryOptions = (coreId: string) =>
   queryOptions({
     ...CORE_SCOPED_FRESHNESS,
@@ -167,7 +176,7 @@ export const sessionsQueryOptions = (coreId: string) =>
       // the panel already knows how to render that.
       const bridge = getPanelBridge();
       if (!bridge) return [];
-      const { sessions, archivedCount } = await bridge.listSessionRows(coreId, {
+      const { sessions, archivedCount, total, nextCursor } = await bridge.listSessionRows(coreId, {
         limit: WORKSPACE_SESSIONS_LIMIT,
         archived: false,
       });
@@ -185,6 +194,12 @@ export const sessionsQueryOptions = (coreId: string) =>
       // the list no longer holds.
       if (!readIsStale()) {
         client.setQueryData(queryKeys.coreArchivedSessionCount(coreId), archivedCount);
+        // Same for where the first page ended: the Load more and the true count
+        // belong to the list, not to this list's shape.
+        client.setQueryData(queryKeys.sessionPage(coreId), {
+          total: total ?? sessions.length,
+          nextCursor: nextCursor ?? null,
+        } satisfies SessionPageMeta);
       }
       return sessions.map(remoteSessionFromSnapshot);
     },
@@ -542,6 +557,17 @@ export const useSessions = (coreId: string) => {
   useScopedToVisibleCore(options.queryKey, coreId);
   return useQuery(options);
 };
+/**
+ * One active Session row by id, read only while `enabled` — for a Session the
+ * first-page bucket does not hold. `null` when the Core does not have it.
+ */
+export const useSessionRowById = (coreId: string, sessionId: string, opts: { enabled: boolean }) =>
+  useQuery({
+    queryKey: queryKeys.sessionRow(coreId, sessionId),
+    queryFn: () => fetchSessionRowById(coreId, sessionId),
+    enabled: !!coreId && !!sessionId && opts.enabled,
+    retry: false,
+  });
 /** A Core's archived Sessions, read only while `enabled` (the Archived view is open). */
 export const useArchivedSessions = (coreId: string, opts: { enabled: boolean }) =>
   useQuery(archivedSessionsQueryOptions(coreId, { enabled: !!coreId && opts.enabled }));
@@ -611,3 +637,78 @@ export const webhooksQueryOptions = () =>
     queryFn: async () => (await api.listWebhooks()).webhooks,
   });
 export const useWebhooks = () => useQuery(webhooksQueryOptions());
+
+
+/**
+ * The workspace list past its first page (#960): the pages Load more appended
+ * and the Core's pinned Sessions, merged under the first page, with the Core's
+ * true count. The first page stays the bucket's own; nothing here writes to it.
+ */
+export function useSessionPaging(coreId: string, firstPage: readonly Session[]) {
+  const meta = useQuery({
+    queryKey: queryKeys.sessionPage(coreId),
+    queryFn: (): SessionPageMeta | null => null,
+    enabled: false,
+    initialData: null as SessionPageMeta | null,
+  }).data;
+  const total = meta?.total ?? firstPage.length;
+  // Appended pages remember the Core they came from and the cursor they ended on.
+  const [more, setMore] = useState<{ coreId: string; rows: Session[]; cursor: string | null } | null>(null);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const held = more?.coreId === coreId ? more : null;
+  const nextCursor = held ? held.cursor : (meta?.nextCursor ?? null);
+
+  const loadMore = useCallback(async () => {
+    const bridge = getPanelBridge();
+    if (!bridge || nextCursor === null || loadingMore) return;
+    setLoadingMore(true);
+    try {
+      const answer = await bridge.listSessionRows(coreId, {
+        limit: WORKSPACE_SESSIONS_LIMIT,
+        archived: false,
+        cursor: nextCursor,
+      });
+      setMore((prev) => {
+        const rows = prev?.coreId === coreId ? prev.rows : [];
+        return { coreId, rows: [...rows, ...answer.sessions.map(remoteSessionFromSnapshot)], cursor: answer.nextCursor ?? null };
+      });
+    } catch {
+      // The rows shown stay; the button comes back to try again.
+    } finally {
+      setLoadingMore(false);
+    }
+  }, [coreId, nextCursor, loadingMore]);
+
+  // A pinned Session can sit anywhere in the order; the Core filters, so the
+  // Pinned views never depend on which pages were opened.
+  const pinned = useQuery({
+    queryKey: queryKeys.pinnedSessions(coreId),
+    queryFn: async () => {
+      const bridge = getPanelBridge();
+      if (!bridge) return [];
+      const { sessions } = await bridge.listSessionRows(coreId, {
+        limit: WORKSPACE_SESSIONS_LIMIT,
+        archived: false,
+        pinned: true,
+      });
+      return sessions.filter((s) => s.pinned && !s.archived).map(remoteSessionFromSnapshot);
+    },
+    enabled: !!coreId && total > firstPage.length,
+    retry: false,
+  });
+
+  const rows = useMemo(() => {
+    const seen = new Set<string>();
+    const out: Session[] = [];
+    for (const list of [firstPage, held?.rows ?? [], pinned.data ?? []]) {
+      for (const row of list) {
+        if (seen.has(row.id)) continue;
+        seen.add(row.id);
+        out.push(row);
+      }
+    }
+    return out;
+  }, [firstPage, held, pinned.data]);
+
+  return { rows, total: Math.max(total, rows.length), hasMore: nextCursor !== null, loadingMore, loadMore };
+}

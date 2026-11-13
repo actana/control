@@ -55,6 +55,7 @@ export type CoreActivity = { running: number; needsInput: number; total: number 
 export function coreActivity(
   rows: readonly { coreId: string; status: SessionStatus | string }[],
   coreId: string,
+  pages?: Readonly<Record<string, { total: number }>>,
 ): CoreActivity {
   let running = 0;
   let needsInput = 0;
@@ -65,7 +66,8 @@ export function coreActivity(
     if (row.status === "running") running += 1;
     else if (row.status === "needs-input") needsInput += 1;
   }
-  return { running, needsInput, total };
+  // The Core's true count when it pages (#960); an older Core sends no total, so the rows held.
+  return { running, needsInput, total: pages?.[coreId]?.total ?? total };
 }
 
 /** A stable hue per Core, so a tile keeps its colour across reloads and devices. */

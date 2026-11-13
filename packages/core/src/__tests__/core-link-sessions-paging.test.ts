@@ -237,6 +237,14 @@ describe("paged Session list frames (#960)", () => {
     expect(await run({ q: "title f" })).toEqual(["f"]);
   });
 
+  it("sessionRowsList answers only the pinned rows when asked, with their true total", async () => {
+    for (const [id, at] of [["a", 1], ["b", 2], ["c", 3]] as const) add(db, id, at);
+    db.prepare(`UPDATE sessions SET pinned = 1 WHERE id IN ('a', 'c')`).run();
+    const answer = (await ask({ type: "sessionRowsList", limit: 10, archived: false, pinned: true })) as any;
+    expect(answer.sessions.map((s: any) => s.sessionId)).toEqual(["c", "a"]);
+    expect(answer.total).toBe(2);
+  });
+
   it.each([
     { limit: 0 },
     { limit: 101 },

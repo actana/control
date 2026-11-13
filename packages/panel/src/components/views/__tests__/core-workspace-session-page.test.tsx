@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, cleanup, render } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { KeybindingsProvider } from "~/lib/keybindings/store";
 import type { Session } from "~/db/schema";
@@ -226,5 +226,49 @@ describe("an open Session that fell out of the first page (#960)", () => {
     await act(async () => setActive(null));
 
     await vi.waitFor(() => expect(toggle).toHaveBeenCalledTimes(1));
+  });
+});
+
+describe("the workspace list past the first page (#960)", () => {
+  const seedPage = (total: number, nextCursor: string | null) =>
+    qc.setQueryData(queryKeys.sessionPage("a"), { total, nextCursor });
+  const scopeCount = (label: string) =>
+    screen.getByText(label, { selector: ".mc-ws-scope button" }).querySelector(".mc-ws-scope-count")?.textContent;
+
+  it("shows the Core's true Active count and a Load more that reaches row 101", async () => {
+    seedPage(150, "c1");
+    listSessionRows.mockResolvedValue({ sessions: [snap("row101")], archivedCount: 0, nextCursor: null, total: 150 });
+    await mount();
+
+    expect(scopeCount("Active")).toBe("150");
+    expect(screen.queryByText("Far row101")).toBeNull();
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Load more" })));
+
+    expect(listSessionRows).toHaveBeenCalledWith("a", { limit: 100, archived: false, cursor: "c1" });
+    expect(await screen.findByText("Far row101")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Load more" })).toBeNull();
+  });
+
+  it("lists a pinned Session that sits past the first page, by asking the Core for the pinned rows", async () => {
+    seedPage(150, "c1");
+    listSessionRows.mockImplementation(async (_core: string, page: { pinned?: boolean }) =>
+      page.pinned
+        ? { sessions: [{ ...snap("pinned-far"), pinned: true }], archivedCount: 0, nextCursor: null, total: 1 }
+        : { sessions: [], archivedCount: 0, nextCursor: null, total: 150 },
+    );
+    await mount();
+
+    expect(await screen.findByText("Far pinned-far")).toBeTruthy();
+    expect(listSessionRows).toHaveBeenCalledWith("a", { limit: 100, archived: false, pinned: true });
+    expect(scopeCount("Pinned")).toBe("1");
+  });
+
+  it("asks for nothing more when the first page holds every Session", async () => {
+    seedPage(2, null);
+    await mount();
+
+    expect(scopeCount("Active")).toBe("2");
+    expect(screen.queryByRole("button", { name: "Load more" })).toBeNull();
+    expect(listSessionRows).not.toHaveBeenCalled();
   });
 });
