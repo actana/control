@@ -14,6 +14,8 @@ export type TaskDto = {
   attemptCount: number;
   dispatchedAt: number | null;
   lastError: string | null;
+  /** Why an `assigned` Task is not running yet and on which Core (#962); null when it is not waiting (the Panel and the API always send it). */
+  waiting?: { reason: string; coreId: string | null } | null;
   /** The time limit per attempt in minutes (#724); null = No limit. */
   timeoutMinutes: number | null;
   /** What the Session of the running attempt is doing (#949); null when no attempt runs. Never moves `status`. */

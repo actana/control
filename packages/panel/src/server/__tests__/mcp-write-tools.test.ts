@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { ALL_API_KEY_PERMISSIONS } from "~/shared/api-key-permissions";
 import { closePanelTestDb, openPanelTestDb, resetPanelState } from "./_panel-test-db";
 import { McpTestClient, dataOf, textOf } from "./_mcp-client";
@@ -25,6 +25,7 @@ const tasksService = await import("../services/tasks");
 const { createApiKey } = await import("../services/api-keys");
 const { coreLinkManager } = await import("../services/core-link-manager");
 
+const { setSessionLockProbe } = await import("../panel-link/lock-probe");
 const { formatTaskDispatchComment } = await import("~/shared/tasks");
 
 const A = 1;
@@ -146,6 +147,16 @@ describe("create_task", () => {
     expect(started.status).toBe("assigned");
     expect((await tasksService.getTask(A, draft.id)).title).toBe("Fix it");
     await expect(tasksService.getTask(B, draft.id)).rejects.toThrow();
+  });
+
+  it("with startNow on a Core that is not connected, queues the Task and says so (#962)", async () => {
+    const c = await client(A);
+    const answer = dataOf(await c.call("create_task", { title: "Go", coreId: "core-a", agent: "agent-a", startNow: true }));
+    expect(answer.task).toMatchObject({ status: "assigned", attemptCount: 0 });
+    expect(answer).toMatchObject({ queued: true, waiting: "waiting: Core not connected" });
+    expect(answer.message).toContain("starts by itself");
+    // A draft is not queued: nothing was asked to start.
+    expect(dataOf(await c.call("create_task", { title: "d", coreId: "core-a", agent: "agent-a" })).queued).toBeUndefined();
   });
 
   it("refuses an Agent that is not on the chosen Core, and startNow without one", async () => {
@@ -518,5 +529,99 @@ describe("create_agent, update_agent, delete_agent (#893)", () => {
     expect(await agentRow("agent-a")).toBeUndefined();
     expect(await agentRow("agent-b")).toBeDefined();
     expect(await agentRow("agent-x")).toBeDefined();
+  });
+});
+
+describe("close_session (#962)", () => {
+  async function finished(coreId = "core-a", agent = "agent-a", owner = A) {
+    const task = await tasksService.createTask(owner, { title: "done", coreId, agent, startNow: true });
+    await tasksService.claimTask(owner, task.id);
+    await tasksService.addTaskComment(owner, task.id, {
+      authorKind: "system",
+      authorName: "Panel",
+      body: formatTaskDispatchComment({ attempt: 1, agentName: "Agent", harness: "claude-code", coreId, sessionId: "session_1" }),
+    });
+    await testDb.pool.query("update tasks set status = 'done' where id = $1", [task.id]);
+    return task;
+  }
+  const fakeSdk = (opts: { pty?: string | null; killError?: { code: string } } = {}) => {
+    const kill = vi.fn(async () => {
+      if (opts.killError) throw Object.assign(new Error("locked"), opts.killError);
+      return true;
+    });
+    const forceTakeover = vi.fn(async () => undefined);
+    vi.spyOn(coreLinkManager(), "client").mockImplementation(
+      () => ({ sdk: { findBySession: async () => ({ ptyId: opts.pty === undefined ? "pty_1" : opts.pty }), kill, forceTakeover } }) as never,
+    );
+    return { kill, forceTakeover };
+  };
+  afterEach(() => setSessionLockProbe(null));
+
+  it("is listed as a destructive write tool taking only a taskId", async () => {
+    const t = (await (await client(A)).listTools()).find((x) => x.name === "close_session")!;
+    expect(t.annotations).toEqual({ readOnlyHint: false, destructiveHint: true });
+    expect(t.inputSchema.required).toEqual(["taskId"]);
+    expect(Object.keys(t.inputSchema.properties)).toEqual(["taskId"]);
+  });
+
+  it("ends a finished Task's harness, keeps the Task as it was, and says so in the thread", async () => {
+    const task = await finished();
+    const sdk = fakeSdk();
+    const data = dataOf(await (await client(A)).call("close_session", { taskId: task.id }));
+    expect(sdk.kill).toHaveBeenCalledWith("pty_1");
+    expect(data.task).toMatchObject({ id: task.id, status: "done" });
+    expect(data.session).toMatchObject({ coreId: "core-a", sessionId: "session_1", outcome: "stopped" });
+    expect((await tasksService.listTaskComments(A, task.id)).some((c) => c.authorKind === "system" && c.body.includes("closed by"))).toBe(true);
+  });
+
+  it("answers not-running when the harness is already gone", async () => {
+    const task = await finished();
+    const sdk = fakeSdk({ pty: null });
+    expect(dataOf(await (await client(A)).call("close_session", { taskId: task.id })).session.outcome).toBe("not-running");
+    expect(sdk.kill).not.toHaveBeenCalled();
+  });
+
+  it("is refused 409 for a Session a terminal holds the lock on (the Panel knows it), and kills nothing", async () => {
+    const task = await finished();
+    const sdk = fakeSdk();
+    setSessionLockProbe(() => ({ supported: true, writable: false, state: "held-by-another" }));
+    const res = await (await client(A)).call("close_session", { taskId: task.id });
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toMatch(/^409 .*someone is working/);
+    expect(sdk.kill).not.toHaveBeenCalled();
+  });
+
+  it("is refused 409 when the Core refuses the kill as session-locked, and never takes the lock over", async () => {
+    const task = await finished();
+    const sdk = fakeSdk({ killError: { code: "session-locked" } });
+    const res = await (await client(A)).call("close_session", { taskId: task.id });
+    expect(textOf(res)).toMatch(/^409 .*someone is working/);
+    expect(sdk.forceTakeover).not.toHaveBeenCalled();
+  });
+
+  it("is refused 409 for an in_progress Task (stop_task) and for a Task with no Session", async () => {
+    const running = await tasksService.createTask(A, { title: "r", coreId: "core-a", agent: "agent-a", startNow: true });
+    await tasksService.claimTask(A, running.id);
+    expect(textOf(await (await client(A)).call("close_session", { taskId: running.id }))).toMatch(/^409 .*stop_task/);
+    const draft = await tasksService.createTask(A, { title: "d", coreId: "core-a", agent: "agent-a" });
+    expect(textOf(await (await client(A)).call("close_session", { taskId: draft.id }))).toMatch(/^409 .*no Session/);
+  });
+
+  it("is refused 403 on a Core outside the key and 404 on another owner's Task", async () => {
+    const onB = await finished("core-b", "agent-b");
+    const onX = await tasksService.createTask(B, { title: "x", coreId: "core-x", agent: "agent-x" });
+    const sdk = fakeSdk();
+    expect(textOf(await (await client(A, ["core-a"])).call("close_session", { taskId: onB.id }))).toMatch(/^403/);
+    expect(textOf(await (await client(A)).call("close_session", { taskId: onX.id }))).toMatch(/^404/);
+    expect(sdk.kill).not.toHaveBeenCalled();
+  });
+
+  it("needs the tasks:write permission", async () => {
+    const task = await finished();
+    const { key } = await createApiKey(A, { name: "ro", permissions: ["read"] });
+    const ro = new McpTestClient(key);
+    await ro.connect();
+    expect((await ro.listTools()).some((t) => t.name === "close_session")).toBe(false);
+    expect(textOf(await ro.call("close_session", { taskId: task.id }))).toMatch(/^403/);
   });
 });

@@ -293,7 +293,7 @@ describe("a Task that cannot be dispatched", () => {
     const after = await getTask(A, task.id);
     expect(after.status).toBe("failed");
     expect(after.lastError).toContain("harness missing");
-    expect(after.attemptCount).toBe(1);
+    expect(after.attemptCount).toBe(0); // no Session started: not an attempt (#962)
     expect(core.starts).toHaveLength(1);
     expect(watcher.isTracking(task.id)).toBe(false);
     const comments = await listTaskComments(A, task.id);
@@ -364,9 +364,9 @@ describe("a Task whose Harness is not ready yet (#706)", () => {
     throw err;
   };
 
-  for (const [label, error] of [
-    ["is checking", new HarnessNotReadyError("core_1", "claude-code", "checking")],
-    ["cannot be asked because the Core link is down", new CoreHarnessesUnavailableError("core_1")],
+  for (const [label, error, reason] of [
+    ["is checking", new HarnessNotReadyError("core_1", "claude-code", "checking"), "waiting: Harness not ready (checking)"],
+    ["cannot be asked because the Core link is down", new CoreHarnessesUnavailableError("core_1"), "waiting: Core not connected"],
   ] as const) {
     it(`leaves the Task assigned while the Harness ${label}, and dispatches it once it is available`, async () => {
       const { clock, core, dispatcher, behave } = switchable();
@@ -378,15 +378,16 @@ describe("a Task whose Harness is not ready yet (#706)", () => {
       expect(await dispatcher.dispatchOnce()).toBe(0);
 
       expect(core.starts).toHaveLength(0);
-      expect(await getTask(A, task.id)).toMatchObject({ status: "assigned", attemptCount: 0, lastError: null });
-      expect(await listTaskComments(A, task.id)).toHaveLength(0);
+      expect(await getTask(A, task.id)).toMatchObject({ status: "assigned", attemptCount: 0, lastError: reason });
+      // One comment when it starts waiting, none per poll (#962).
+      expect(await listTaskComments(A, task.id)).toHaveLength(1);
       const historyBefore = await listTaskHistory(A, task.id);
 
       behave.resolve = () => undefined;
       expect(await dispatcher.dispatchOnce()).toBe(1);
 
       expect(core.starts).toHaveLength(1);
-      expect(await getTask(A, task.id)).toMatchObject({ status: "in_progress", attemptCount: 1 });
+      expect(await getTask(A, task.id)).toMatchObject({ status: "in_progress", attemptCount: 1, lastError: null });
       expect((await listTaskHistory(A, task.id)).length).toBeGreaterThan(historyBefore.length);
     });
   }
@@ -436,6 +437,40 @@ describe("a Task whose Harness is not ready yet (#706)", () => {
     const after = await getTask(A, task.id);
     expect(after.status).toBe("failed");
     expect(after.lastError).toContain("not ready yet (checking)");
+    expect(after.attemptCount).toBe(0); // no Session started: not an attempt (#962)
+  });
+
+  it("waits for a Core that is not connected for longer than the Harness wait, then dispatches it", async () => {
+    const { clock, core, dispatcher, behave } = switchable();
+    const task = await assign(clock);
+    behave.resolve = throwing(new CoreHarnessesUnavailableError("core_1"));
+
+    await dispatcher.dispatchOnce();
+    clock.advance(DEFAULT_HARNESS_WAIT_MS * 3);
+    expect(await dispatcher.dispatchOnce()).toBe(0);
+    expect(await getTask(A, task.id)).toMatchObject({ status: "assigned", attemptCount: 0, lastError: "waiting: Core not connected" });
+
+    behave.resolve = () => undefined;
+    expect(await dispatcher.dispatchOnce()).toBe(1);
+    expect(core.starts).toHaveLength(1);
+    expect(await getTask(A, task.id)).toMatchObject({ status: "in_progress", attemptCount: 1 });
+  });
+
+  it("starts the Harness wait at the first 'not ready' answer, not when the Core was first seen not connected", async () => {
+    const { clock, dispatcher, behave } = switchable();
+    const task = await assign(clock);
+    behave.resolve = throwing(new CoreHarnessesUnavailableError("core_1"));
+    await dispatcher.dispatchOnce();
+    clock.advance(DEFAULT_HARNESS_WAIT_MS * 3);
+
+    // The Core is back and runs its setup check: the Harness window opens now.
+    behave.resolve = throwing(new HarnessNotReadyError("core_1", "claude-code", "checking"));
+    expect(await dispatcher.dispatchOnce()).toBe(0);
+    expect(await getTask(A, task.id)).toMatchObject({ status: "assigned", attemptCount: 0, lastError: "waiting: Harness not ready (checking)" });
+
+    clock.advance(DEFAULT_HARNESS_WAIT_MS);
+    await dispatcher.dispatchOnce();
+    expect(await getTask(A, task.id)).toMatchObject({ status: "failed", attemptCount: 0 });
   });
 
   it("does not hold back another Task whose Harness is ready", async () => {
@@ -1166,16 +1201,18 @@ describe("stopping a running Task", () => {
     expect(core.starts).toHaveLength(2);
   });
 
-  it("leaves the Session of an attempt that finished on its own alone when re-running", async () => {
+  it("does not stop the Session of an attempt that finished on its own a second time when re-running", async () => {
     const { clock, core, shared, dispatcher, watcher } = rig();
     const task = await assign(clock);
     await dispatcher.dispatchOnce();
     shared.write(result(task.id, "fail.md"), report("could not"), clock.now() + 1);
     await watcher.tick();
+    // Its harness was ended when it reported (#962): once, by the watcher.
+    expect(core.stops).toEqual([{ coreId: "core_1", sessionId: "session_1" }]);
     await commentAndReassign(A, task.id, { authorKind: "user", authorName: "Operator", body: "retry" }, clock.now());
     clock.advance(1);
     await dispatcher.dispatchOnce();
-    expect(core.stops).toEqual([]);
+    expect(core.stops).toEqual([{ coreId: "core_1", sessionId: "session_1" }]);
     expect(core.starts).toHaveLength(2);
   });
 
@@ -1185,12 +1222,14 @@ describe("stopping a running Task", () => {
     await dispatcher.dispatchOnce();
     shared.write(result(task.id, "fail.md"), report("could not"), clock.now() + 1);
     await watcher.tick();
+    // Its harness was ended when it reported (#962): once, by the watcher.
+    expect(core.stops).toEqual([{ coreId: "core_1", sessionId: "session_1" }]);
     await addTaskComment(A, task.id, { authorKind: "user", authorName: "Operator", body: "the agent wrote no result within an hour, I think" }, clock.now());
     await addTaskComment(A, task.id, { authorKind: "agent", authorName: "Claude Code", body: "The agent wrote no result within 30 minutes (said someone)", sourceFile: "attempt-1-note.md" }, clock.now());
     await commentAndReassign(A, task.id, { authorKind: "user", authorName: "Operator", body: "retry" }, clock.now());
     clock.advance(1);
     await dispatcher.dispatchOnce();
-    expect(core.stops).toEqual([]);
+    expect(core.stops).toEqual([{ coreId: "core_1", sessionId: "session_1" }]);
     expect(core.starts).toHaveLength(2);
   });
 
@@ -1372,7 +1411,7 @@ describe("a Task that times out has its Session stopped (#723)", () => {
     expect(core.stops).toEqual([]);
   });
 
-  it("does not stop a Session whose result turns up in the last look", async () => {
+  it("ends a Session whose result turns up in the last look as a finished Task's, not as a timeout's (#962)", async () => {
     const { clock, core, shared, dispatcher, watcher } = rig();
     const task = await assign(clock);
     await dispatcher.dispatchOnce();
@@ -1382,7 +1421,8 @@ describe("a Task that times out has its Session stopped (#723)", () => {
     await watcher.tick();
 
     expect((await getTask(A, task.id)).status).toBe("done");
-    expect(core.stops).toEqual([]);
+    expect(core.stops).toEqual([{ coreId: "core_1", sessionId: "session_1" }]);
+    expect((await systemBodies(task.id)).some((b) => b.includes("after the timeout"))).toBe(false);
   });
 });
 

@@ -12,14 +12,15 @@ import {
   type SessionStatusFilter,
 } from "@actana/shared/session-paging";
 import type { ApiPrincipal } from "../api-key-auth";
-import { stopTask } from "../task-dispatch";
+import { closeSession, queuedAnswer, stopTask } from "../task-dispatch";
 import { stopTaskBody } from "./tasks.controller";
 import { scopeReaches } from "../services/api-keys";
 import { getCore, listCores } from "../services/cores";
+import { readCoreCapacity } from "../services/core-capacity";
 import { coreLinkManager } from "../services/core-link-manager";
 import type { Core, CoreWithDial } from "~/shared/cores";
 import { toSessionState, type AgentDto, type TaskCommentDto, type TaskDto, type TasksPageDto } from "~/shared/task-wire";
-import type { TaskStatus } from "~/shared/tasks";
+import { taskWaitingReason, type TaskStatus } from "~/shared/tasks";
 import {
   addTaskComment,
   changeTaskStatus,
@@ -91,8 +92,17 @@ export const agentChangesBody = z.looseObject({
   flags: z.array(z.string()).optional(),
 });
 
+async function withCapacity(core: Core): Promise<CoreWithDial> {
+  return { ...withDial(core), ...(await readCoreCapacity(core.id)) };
+}
+
 function withDial(core: Core): CoreWithDial {
   return { ...core, dial: coreLinkManager().status(core.id) };
+}
+
+function waitingOf(t: Task): TaskDto["waiting"] {
+  const reason = taskWaitingReason(t);
+  return reason === null ? null : { reason, coreId: t.coreId };
 }
 
 function taskDto(t: Task): TaskDto {
@@ -106,6 +116,7 @@ function taskDto(t: Task): TaskDto {
     attemptCount: t.attemptCount,
     dispatchedAt: t.dispatchedAt,
     lastError: t.lastError,
+    waiting: waitingOf(t),
     timeoutMinutes: t.timeoutMinutes,
     sessionState: toSessionState(t.sessionState),
     sessionStateAt: t.sessionStateAt,
@@ -159,7 +170,7 @@ function inScope(principal: ApiPrincipal, coreId: string | null): boolean {
 export async function listCoresV1(principal: ApiPrincipal): Promise<Response> {
   const all = await listCores(principal.ownerId);
   const visible = principal.kind === "api-key" ? all.filter((c) => scopeReaches(principal.scope, c.id)) : all;
-  return json({ cores: visible.map(withDial) });
+  return json({ cores: await Promise.all(visible.map(withCapacity)) });
 }
 
 export async function getCoreV1(id: string, principal: ApiPrincipal): Promise<Response> {
@@ -167,7 +178,7 @@ export async function getCoreV1(id: string, principal: ApiPrincipal): Promise<Re
   if (denied) return denied;
   const core = await getCore(id, principal.ownerId);
   if (!core) return notFound("no such Core");
-  return json({ core: withDial(core) });
+  return json({ core: await withCapacity(core) });
 }
 
 // ── Agents ─────────────────────────────────────────────────────────────────
@@ -461,7 +472,7 @@ export async function createTaskV1(principal: ApiPrincipal, request: Request): P
       startNow: startNow === true,
       ...(timeoutMinutes === undefined ? {} : { timeoutMinutes }),
     });
-    return json({ task: taskDto(task) }, { status: HTTP_CREATED });
+    return json({ task: taskDto(task), ...queuedAnswer(startNow, coreId) }, { status: HTTP_CREATED });
   } catch (e) {
     return rethrowUnlessDomain(e);
   }
@@ -529,6 +540,19 @@ export async function stopTaskV1(principal: ApiPrincipal, id: string, request: R
     if (denied) return denied;
     const stopped = await stopTask(principal.ownerId, id, { stoppedBy: await authorName(), reason: body.data.reason });
     return json({ task: taskDto(stopped.task), session: stopped.session });
+  } catch (e) {
+    return rethrowUnlessDomain(e);
+  }
+}
+
+/** `POST /api/v1/tasks/:id/close-session` (#962): end a finished Task's harness and free its PTY slot; 409 while someone is working in it. */
+export async function closeTaskSessionV1(principal: ApiPrincipal, id: string): Promise<Response> {
+  try {
+    const task = await getTask(principal.ownerId, id);
+    const denied = refuseOutsideScope(principal, task.coreId);
+    if (denied) return denied;
+    const closed = await closeSession(principal.ownerId, id, { closedBy: await authorName() });
+    return json({ task: taskDto(closed.task), session: closed.session });
   } catch (e) {
     return rethrowUnlessDomain(e);
   }

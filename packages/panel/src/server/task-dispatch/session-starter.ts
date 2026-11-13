@@ -27,13 +27,29 @@ export function launchCommand(request: Pick<StartSessionRequest, "harness" | "mo
 export const startSessionOnCore: SessionStarter = async (request) => {
   const link = coreLinkManager().client(request.coreId);
   if (!link?.sdk) throw new Error("there is no live link to this Core");
-  const session = await CoreSession.start(link.sdk, {
-    harness: request.harness,
-    title: request.title,
-    prompt: request.prompt,
-    command: launchCommand(request),
-    ...(harnessLaunchesWithSkipPermissions(request.harness) ? { dangerouslySkipPermissions: true } : {}),
-  });
+  // The row first, here and not inside `CoreSession.start`: a refused spawn (a full Core) would otherwise leave a
+  // `ready` row with no PTY behind, which the Core never sweeps. Every probe of a full Core would add one.
+  const created = await link.sdk.sessionsMutate({ op: "create", title: request.title, agent: request.harness });
+  if (!created) throw new Error("the Core refused to create a Session row");
+  const { sessionId } = created;
+  let session: Awaited<ReturnType<typeof CoreSession.start>>;
+  try {
+    session = await CoreSession.start(link.sdk, {
+      sessionId,
+      harness: request.harness,
+      title: request.title,
+      prompt: request.prompt,
+      command: launchCommand(request),
+      ...(harnessLaunchesWithSkipPermissions(request.harness) ? { dangerouslySkipPermissions: true } : {}),
+    });
+  } catch (err) {
+    try {
+      await link.sdk.sessionsMutate({ op: "delete", sessionId });
+    } catch (deleteErr) {
+      console.error(`could not delete Session ${sessionId} after its start failed: ${deleteErr instanceof Error ? deleteErr.message : String(deleteErr)}`);
+    }
+    throw err;
+  }
   const unsubscribes: (() => void)[] = [];
   return {
     sessionId: session.sessionId,

@@ -1,3 +1,4 @@
+import { noteCoreCap } from "../services/core-capacity";
 import { CoreSharedError, type CoreShared } from "@actana/sdk/shared";
 import { NotFoundError } from "../errors";
 import {
@@ -16,11 +17,13 @@ import {
   getTask,
   listTaskComments,
   listTasks,
+  markTaskWaiting,
+  releaseTaskClaim,
   type Task,
   type TaskComment,
 } from "../services/tasks";
 import { archivedTaskName, classifyTaskEntry, taskFolder } from "~/shared/task-report";
-import { formatTaskDispatchComment, parseTaskDispatchComment, sessionStateForCoreStatus } from "~/shared/tasks";
+import { formatTaskDispatchComment, parseTaskDispatchComment, sessionStateForCoreStatus, taskWaitingReason } from "~/shared/tasks";
 import { ResultWatcher } from "./result-watcher";
 import { lazyShared, type SharedFor } from "./shared-factory";
 import { buildTaskPointer, buildTaskPrompt, taskPromptPath } from "./task-prompt";
@@ -52,6 +55,17 @@ import { consoleDispatchLog, messageOf, type Clock, type DispatchLog, type Sessi
  * reason as usual. A Harness that is missing, outdated or needs setup fails at once. The wait lives in memory:
  * a Panel restart starts it again. It is separate from the result watcher's run timeout, which only starts
  * at dispatch.
+ *
+ * An attempt is counted only when a Session started (#962). A dispatch that ends before that leaves `attemptCount` as it
+ * was, whether the Task is failed (the reasons above) or kept waiting:
+ *  - a Core that cannot be asked (not connected) or whose Session start is refused for a full Core
+ *    (`pty:spawn refused: ... live harness PTYs`) leaves the Task `assigned` with the reason in `lastError`,
+ *    `waiting: Core not connected` / `waiting: Core full (n/max)`, and it is dispatched again by itself. One system
+ *    comment when it starts waiting, none per retry. A refused start is found out by trying: the claim is given back
+ *    (`releaseTaskClaim`), the Core is marked full in memory, and the other Tasks of that Core wait without a claim
+ *    until a slot frees (`slotFreed`, called by the watcher) or a probe is due (15 s, doubling to 5 min).
+ *  - a Harness that is not ready (`waiting: Harness not ready (...)`) waits as before, up to `harnessWaitMs`, then fails
+ *    with the attempt given back.
  *
  * Every query is the owner's (`ownerId`).
  */
@@ -89,6 +103,19 @@ export type TaskDispatcherOptions = {
 export const DEFAULT_DISPATCH_POLL_MS = 2_000;
 /** Covers a setup check (about 75 s), the probe retries and a Core link that reconnects. */
 export const DEFAULT_HARNESS_WAIT_MS = 5 * 60_000;
+/** After a start refused for a full Core, how long until another Task may try it (doubles on each refusal, up to the maximum). */
+export const FULL_CORE_RETRY_MIN_MS = 15_000;
+export const FULL_CORE_RETRY_MAX_MS = 5 * 60_000;
+
+/** What the Core says when it has no room: `pty:spawn refused: this Core already runs 8 live harness PTYs (the limit)`. */
+const CORE_FULL = /already runs (\d+) live harness PTYs/;
+const NO_LINK = /no live link to this Core/;
+
+type FullCore = { max: number; retryAt: number; failures: number };
+
+/** `waiting: Core full (8/8)`; the refusal comes at the cap, so the count is the cap. */
+const fullReason = (max: number) => `waiting: Core full (${max}/${max})`;
+const NOT_CONNECTED = "waiting: Core not connected";
 
 const realAgents: AgentLookup = { get: getAgent, resolve: (ownerId, id) => resolveAgent(ownerId, id) };
 
@@ -105,6 +132,10 @@ export class TaskDispatcher {
   private readonly harnessWaitMs: number;
   /** Task id to the first time it was seen waiting for its Harness; dropped once it is claimed or leaves `assigned`. */
   private readonly waitingSince = new Map<string, number>();
+  /** Tasks already logged as waiting for a Core that is not connected (logged once; not a Harness window). */
+  private readonly notConnectedLogged = new Set<string>();
+  /** Core id to what the last refused start said; the Tasks of that Core wait without a claim until it clears. */
+  private readonly fullCores = new Map<string, FullCore>();
   private readonly log: DispatchLog;
   private timer: ReturnType<typeof setInterval> | null = null;
   private cycling: Promise<number> | null = null;
@@ -148,6 +179,7 @@ export class TaskDispatcher {
       }
       const ids = new Set(waiting.map((t) => t.id));
       for (const id of this.waitingSince.keys()) if (!ids.has(id)) this.waitingSince.delete(id);
+      for (const id of this.notConnectedLogged) if (!ids.has(id)) this.notConnectedLogged.delete(id);
       for (const task of waiting) {
         if (this.stopped) break;
         try {
@@ -162,6 +194,21 @@ export class TaskDispatcher {
     });
     this.cycling = run;
     return run;
+  }
+
+  /**
+   * A slot on this Core was freed (a harness ended) or the Core connected: forget that it was full and look at the
+   * waiting Tasks now instead of at the next probe.
+   */
+  slotFreed(coreId: string): void {
+    if (!this.fullCores.delete(coreId)) return;
+    if (this.timer && !this.stopped) void this.dispatchOnce();
+  }
+
+  /** `waiting: Core full (n/max)` while this Core's last start was refused and no slot has freed since; else null. */
+  coreWaitingReason(coreId: string): string | null {
+    const full = this.fullCores.get(coreId);
+    return full ? fullReason(full.max) : null;
   }
 
   /**
@@ -231,6 +278,24 @@ export class TaskDispatcher {
     return adopted;
   }
 
+  /**
+   * The waiting reason when a refused or impossible start is one that may pass: a full Core (also remembered, so the
+   * Core's other Tasks do not each try it) or a link that is not there. Null for any other error, which fails the Task.
+   */
+  private startRefusal(coreId: string, err: unknown): string | null {
+    const message = messageOf(err);
+    const cap = CORE_FULL.exec(message);
+    if (cap) {
+      const max = Number(cap[1]);
+      noteCoreCap(coreId, max);
+      const failures = (this.fullCores.get(coreId)?.failures ?? 0) + 1;
+      const retry = Math.min(FULL_CORE_RETRY_MIN_MS * 2 ** (failures - 1), FULL_CORE_RETRY_MAX_MS);
+      this.fullCores.set(coreId, { max, failures, retryAt: this.now() + retry });
+      return fullReason(max);
+    }
+    return NO_LINK.test(message) ? NOT_CONNECTED : null;
+  }
+
   /** Write the prompt file through the Core's own Files API and read it back, so a short or missing file is an error here. */
   private async writePromptFile(coreId: string, taskId: string, attempt: number, text: string): Promise<void> {
     const files = await this.coreFilesFor(coreId);
@@ -275,7 +340,7 @@ export class TaskDispatcher {
    * Before attempt n: if attempt n-1 ended by an operator's stop or by the timeout, its Session may still be
    * running (the stop could not reach the Core, or the kill failed) and could write a `success.md` the new
    * attempt would count. Try to stop it again. Best effort and logged: a Core still unreachable does not hold
-   * the new attempt back. An attempt that ended on its own result is left alone, so its Session stays open to read.
+   * the new attempt back. An attempt that ended on its own result is left alone: the watcher ended its harness when it reported (#962).
    */
   private async stopPreviousSession(taskId: string, previous: number, comments: readonly TaskComment[]): Promise<void> {
     if (!this.stopSession) return;
@@ -303,33 +368,67 @@ export class TaskDispatcher {
     }
   }
 
-  /** True when this dispatcher claimed the Task (whether or not its Session then started). False also when the Task keeps waiting for its Harness. */
+  /** True when this dispatcher claimed the Task and kept it (whether or not its Session then started). False when another dispatcher got it, or the Task keeps waiting (Harness, Core not connected or full), including a claim given back. */
   private async dispatch(task: Task): Promise<boolean> {
-    // Ask before claiming: nothing moves a claimed Task back to `assigned`, so the wait has to happen here.
+    const wasWaiting = taskWaitingReason(task) !== null;
+    /** Say why the Task is not started, once: a system comment only when it was not waiting already. */
+    const wait = async (reason: string) => {
+      try {
+        await markTaskWaiting(this.ownerId, task.id, reason, { comment: !wasWaiting }, this.now());
+      } catch (err) {
+        this.log.error(`task ${task.id}: could not record that it is waiting (${reason}): ${messageOf(err)}`);
+      }
+    };
+    // Ask before claiming: a claimed Task counts an attempt, so the wait has to happen here.
     let early: { agentId: string; resolved?: ResolvedAgent; error?: unknown } | null = null;
     if (task.agent) {
       try {
         early = { agentId: task.agent, resolved: await this.agents.resolve(this.ownerId, task.agent) };
       } catch (err) {
-        if (err instanceof HarnessNotReadyError || err instanceof CoreHarnessesUnavailableError) {
+        if (err instanceof CoreHarnessesUnavailableError) {
+          // The Core is not connected: wait for it, with no limit, and say so. This wait is not the Harness
+          // window: that starts at the first "not ready" answer after the Core is back.
+          this.waitingSince.delete(task.id);
+          if (!this.notConnectedLogged.has(task.id)) {
+            this.notConnectedLogged.add(task.id);
+            this.log.info(`task ${task.id}: waiting for its Agent's Core: ${messageOf(err)}`);
+          }
+          await wait(NOT_CONNECTED);
+          return false;
+        }
+        if (err instanceof HarnessNotReadyError) {
           const since = this.waitingSince.get(task.id) ?? this.now();
           if (!this.waitingSince.has(task.id)) {
             this.waitingSince.set(task.id, since);
             this.log.info(`task ${task.id}: waiting for its Agent's Harness: ${messageOf(err)}`);
           }
-          if (this.now() - since < this.harnessWaitMs) return false;
+          if (this.now() - since < this.harnessWaitMs) {
+            await wait(`waiting: Harness not ready (${err.state})`);
+            return false;
+          }
         }
         early = { agentId: task.agent, error: err };
       }
     }
     this.waitingSince.delete(task.id);
+    this.notConnectedLogged.delete(task.id);
+
+    // A Core whose last start was refused for want of a slot: no claim until a slot frees or a probe is due.
+    const coreId = early?.resolved?.coreId;
+    const full = coreId ? this.fullCores.get(coreId) : undefined;
+    if (coreId && full && this.now() < full.retryAt) {
+      await wait(fullReason(full.max));
+      return false;
+    }
 
     const claimed = await claimTask(this.ownerId, task.id, this.now());
     if (!claimed) return false; // another dispatcher got it, or it is no longer assigned
     const attempt = claimed.attemptCount;
+    let started = false;
     const fail = async (reason: string) => {
       this.log.error(`task ${claimed.id}: ${reason}`);
-      await failTaskDispatch(this.ownerId, claimed.id, reason, this.now());
+      // No Session started: the attempt the claim counted is given back.
+      await failTaskDispatch(this.ownerId, claimed.id, reason, this.now(), { refundAttempt: !started });
     };
 
     if (!claimed.agent) {
@@ -381,6 +480,8 @@ export class TaskDispatcher {
         prompt: buildTaskPointer(resolved.harness, claimed.id, attempt),
       });
       sessionId = session.sessionId;
+      started = true;
+      this.fullCores.delete(resolved.coreId);
       this.watcher.track(
         {
           taskId: claimed.id,
@@ -403,6 +504,17 @@ export class TaskDispatcher {
       });
     } catch (err) {
       this.watcher.untrack(claimed.id);
+      // Not an attempt, and not a failure: the Core has no room or no link right now. Wait for it.
+      const refusal = started ? null : this.startRefusal(resolved.coreId, err);
+      if (refusal) {
+        this.log.info(`task ${claimed.id}: ${refusal}; back to assigned until it clears (${messageOf(err)})`);
+        const released = await releaseTaskClaim(this.ownerId, claimed.id, attempt, refusal, { comment: !wasWaiting }, this.now()).catch((e) => {
+          this.log.error(`task ${claimed.id}: could not give the claim back: ${messageOf(e)}`);
+          return undefined;
+        });
+        if (released === undefined) await fail(`could not start a Session on Core ${resolved.coreId}: ${messageOf(err)}`);
+        return false;
+      }
       await fail(`could not start a Session on Core ${resolved.coreId}: ${messageOf(err)}`);
       return true;
     }
