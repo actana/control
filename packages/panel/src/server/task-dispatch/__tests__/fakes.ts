@@ -245,7 +245,9 @@ export class FakeCore {
     if (!record || !row) return { kind: "cannot", refusal: RESUME_REFUSALS.sessionGone };
     if (!row.claudeSessionId) return { kind: "cannot", refusal: RESUME_REFUSALS.noSessionId };
     if (this.live?.has(request.sessionId)) {
-      if (!this.acceptsSend) return { kind: "cannot", refusal: RESUME_REFUSALS.sendRefused, stillLive: true };
+      // A Session parked on a dialog reports `needs-input`; the Core refuses stamped writes into it (`blocked`, #924), and the
+      // real `sendIntoRunningSession` writes only stamped ones, so the resumer answers `sendRefused` and nothing is typed.
+      if (!this.acceptsSend || this.statuses?.get(request.sessionId) === "needs-input") return { kind: "cannot", refusal: RESUME_REFUSALS.sendRefused, stillLive: true };
       this.typed.push({ sessionId: request.sessionId, text: request.prompt, how: "send" });
       return { kind: "sent", session: this.handle(request.sessionId, record) };
     }
