@@ -61,9 +61,12 @@ const DEFAULT_RETRY_AFTER_S = 60;
 const MAX_RETRY_AFTER_S = 10 * 60;
 const REQUEST_TIMEOUT_MS = 30_000;
 
-/** The same loop for callers without `actana`: waits on `result`, stops on any non-2xx (410, 429 …). */
+/**
+ * The same loop for callers without `actana`: stops on a result or on a Session state that needs a person,
+ * and ends non-zero on any HTTP error (410, 404, 429 …), because the loop then leaves with no `ok`.
+ */
 export const TASK_WAIT_CURL =
-  `u='<watch-url>'; while b=$(curl -fsS "$u"); do case $b in *'"result":null'*) sleep 5;; *) break;; esac; done; echo "$b"`;
+  `u='<watch-url>'; ok=; while b=$(curl -fsS "$u"); do case $b in *'"result":"'*|*'"needs-input"'*|*'"interrupted"'*|*'"idle-no-result"'*) ok=1; break;; esac; sleep 5; done; echo "$b"; [ -n "$ok" ]`;
 
 export const TASK_WAIT_HELP = `actana task wait <watch-url> — wait for a Task by looping on its status URL.
 
@@ -91,8 +94,8 @@ Exit codes:
   20 needs-input    21 interrupted     22 idle-no-result
   30 gone (410)     31 timeout         1 error      2 usage
 
-Without \`actana\`, the same loop in a shell (waits for a result; stops on any
-HTTP error, including 410 and 429):
+Without \`actana\`, the same loop in a shell (stops on a result or on a Session
+state that needs a person; non-zero on any HTTP error):
   ${TASK_WAIT_CURL}
 `;
 
@@ -177,10 +180,11 @@ function retryAfterSeconds(header: string | null, now: number): number {
   return DEFAULT_RETRY_AFTER_S;
 }
 
-/** `pollAfterSeconds`, clamped to 2–60 s, then ±20 % jitter. */
+/** `pollAfterSeconds` clamped to 2–60 s, ±20 % jitter, then clamped again: the sleep never leaves 2–60 s. */
 function pollDelayMs(pollAfterSeconds: number, random: () => number): number {
   const base = Math.min(Math.max(pollAfterSeconds, MIN_POLL_S), MAX_POLL_S) * 1000;
-  return Math.round(base * (1 + (random() * 2 - 1) * JITTER));
+  const ms = base * (1 + (random() * 2 - 1) * JITTER);
+  return Math.round(Math.min(Math.max(ms, MIN_POLL_S * 1000), MAX_POLL_S * 1000));
 }
 
 /** 2, 4, 8 … 60 s after the nth failure in a row, jittered but never past 60 s. */

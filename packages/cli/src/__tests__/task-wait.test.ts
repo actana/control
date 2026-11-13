@@ -181,6 +181,33 @@ describe("actana task wait — pacing", () => {
     }
   });
 
+  it("never sleeps outside 2..60 s: the clamp comes after the jitter", async () => {
+    const low = harness([json(payload({ pollAfterSeconds: 2 })), json(payload({ status: "done", result: "done" }))], () => 0);
+    await low.run([URL_]);
+    expect(low.sleeps).toEqual([2_000]);
+    const high = harness([json(payload({ pollAfterSeconds: 60 })), json(payload({ status: "done", result: "done" }))], () => 0.9999999);
+    await high.run([URL_]);
+    expect(high.sleeps).toEqual([60_000]);
+    expect(high.sleeps[0]).toBeLessThanOrEqual(60_000);
+  });
+
+  it.each([2, 7, 60])("every sleep is in [2000, 60000] over many random draws at pollAfterSeconds %i", async (poll) => {
+    let n = 0;
+    const draws = Array.from({ length: 200 }, (_, k) => (((k * 37) % 101) / 100) * 0.999 + (k % 2 === 0 ? 0 : 0.001));
+    draws.push(0, 0.9999999);
+    const h = harness(
+      [...Array.from({ length: 202 }, () => json(payload({ pollAfterSeconds: poll }))), json(payload({ status: "done", result: "done" }))],
+      () => draws[n++ % draws.length]!,
+    );
+    await h.run([URL_, "--timeout", "10000"]);
+    expect(h.sleeps.length).toBeGreaterThan(100);
+    for (const ms of h.sleeps) {
+      expect(ms).toBeGreaterThanOrEqual(2_000);
+      expect(ms).toBeLessThanOrEqual(60_000);
+      expect(ms).toBeGreaterThanOrEqual(poll * 1000 * 0.8 - 1);
+    }
+  });
+
   it("429 waits Retry-After seconds, then asks again", async () => {
     const h = harness([
       json(payload()),
@@ -304,6 +331,13 @@ describe("actana task wait — usage", () => {
       expect(h.calls).toEqual([]);
     });
   }
+
+  it("the curl one-liner stops on a result or a Session state that needs a person, and fails on an HTTP error", () => {
+    for (const word of ["needs-input", "interrupted", "idle-no-result", '"result":"']) expect(TASK_WAIT_CURL).toContain(word);
+    // a curl failure leaves the loop with no `ok`, so the last command is a non-zero test
+    expect(TASK_WAIT_CURL.endsWith('[ -n "$ok" ]')).toBe(true);
+    expect(TASK_WAIT_CURL).toContain("curl -fsS");
+  });
 
   it("--help prints the help with the curl one-liner and exits 0", async () => {
     const h = harness([]);

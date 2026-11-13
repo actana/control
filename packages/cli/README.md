@@ -36,10 +36,10 @@ states, `--timeout <minutes>` bounds the wait. It never prints the URL.
 | 1 | error |
 | 2 | usage |
 
-For a caller without `actana`, the same loop as a `curl` one-liner (it waits for a result and stops on any HTTP error,
-including `410` and `429`; the usage text carries the same line, and #952's guide must reuse it, not reword it):
+For a caller without `actana`, the same loop as a `curl` one-liner (it stops on a result or on a Session state that needs a person;
+non-zero on any HTTP error, including `410` and `429`; the usage text carries the same line, and #952's guide must reuse it, not reword it):
 
 ```sh
-u='<watch-url>'; while b=$(curl -fsS "$u"); do case $b in *'"result":null'*) sleep 5;; *) break;; esac; done; echo "$b"
+u='<watch-url>'; ok=; while b=$(curl -fsS "$u"); do case $b in *'"result":"'*|*'"needs-input"'*|*'"interrupted"'*|*'"idle-no-result"'*) ok=1; break;; esac; sleep 5; done; echo "$b"; [ -n "$ok" ]
 ```
 
