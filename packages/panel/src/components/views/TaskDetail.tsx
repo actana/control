@@ -25,7 +25,7 @@ import {
   formatTaskTimeLimit,
   canEditTask,
   canStopTask,
-  parseTaskDispatchComment,
+  resolveAttemptSessions,
   parseTaskTimeLimitChangeComment,
 } from "~/shared/tasks";
 import { taskFolderPath } from "~/shared/shared-files";
@@ -292,8 +292,8 @@ export function TaskDetail({ taskId, onClose, focusComposer = false }: { taskId:
   const stopOutcome = stop.data?.session ?? null;
   // Without a dispatch comment for the current attempt (the Session is still starting, the Panel restarted mid-start, or the
   // comment failed to write) no per-attempt Stop exists, so the header offers the only one.
-  const hasCurrentDispatch =
-    !!task && comments.some((c) => c.authorKind === "system" && parseTaskDispatchComment(c.body)?.attempt === task.attemptCount);
+  const attemptSessions = resolveAttemptSessions(comments);
+  const hasCurrentDispatch = !!task && attemptSessions.some((s) => s.attempt === task.attemptCount);
   const stopNotice =
     stopOutcome && stopOutcome.outcome !== "stopped" && stopOutcome.outcome !== "not-running"
       ? `The Task was failed, but its Session could not be stopped (${stopOutcome.outcome})${stopOutcome.detail ? `: ${stopOutcome.detail}` : ""}. It may still be running.`
@@ -461,8 +461,9 @@ export function TaskDetail({ taskId, onClose, focusComposer = false }: { taskId:
           </section>
           <section aria-label="Comments" style={{ display: "flex", flexDirection: "column", gap: 10 }}>
             <h3 style={{ fontFamily: "var(--mono)", fontSize: 12, letterSpacing: "0.08em", textTransform: "uppercase" }}>Comments</h3>
-            {comments.map((c) => {
-              const dispatch = c.authorKind === "system" ? parseTaskDispatchComment(c.body) : null;
+            {comments.map((c, index) => {
+              // A `Resumed Session` comment opens the same Session as the dispatch comment that started it.
+              const dispatch = attemptSessions.find((s) => s.index === index) ?? null;
               return (
                 <article key={c.id} data-comment-kind={c.authorKind} style={{ padding: 12, borderRadius: 6, borderLeft: `3px solid ${KIND_COLOR[c.authorKind]}`, background: "var(--surface-1)" }}>
                   <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--text-dim)" }}>

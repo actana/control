@@ -40,7 +40,7 @@ import {
   formatTaskTimeLimitChangeComment,
   isTaskStatus,
   isValidTaskTimeoutMinutes,
-  parseTaskDispatchComment,
+  resolveAttemptSessions,
   statusesBefore,
   type CommentAuthorKind,
   type TaskSessionState,
@@ -587,15 +587,8 @@ export async function findCurrentTaskSession(
   attempt?: number,
 ): Promise<{ coreId: string; sessionId: string; attempt: number } | null> {
   const wanted = attempt ?? (await getTask(ownerId, id)).attemptCount;
-  const comments = await listTaskComments(ownerId, id);
-  for (const c of [...comments].reverse()) {
-    if (c.authorKind !== "system") continue;
-    const parsed = parseTaskDispatchComment(c.body);
-    if (parsed && parsed.attempt === wanted) {
-      return { coreId: parsed.coreId, sessionId: parsed.sessionId, attempt: parsed.attempt };
-    }
-  }
-  return null;
+  const found = resolveAttemptSessions(await listTaskComments(ownerId, id)).filter((s) => s.attempt === wanted).at(-1);
+  return found ? { coreId: found.coreId, sessionId: found.sessionId, attempt: found.attempt } : null;
 }
 
 /**

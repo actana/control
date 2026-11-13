@@ -4,7 +4,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { KeybindingsProvider } from "~/lib/keybindings/store";
 import type { CoreWithDial } from "~/shared/cores";
-import { formatTaskDispatchComment } from "~/shared/tasks";
+import { formatTaskDispatchComment, formatTaskResumeComment } from "~/shared/tasks";
 import type { TaskCommentDto, TaskDto } from "~/shared/task-wire";
 
 // Open session on a Task attempt (#676): pending-open + workspace navigate, same path as the Core page.
@@ -135,6 +135,21 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("Open session on a Task attempt", () => {
+  it("offers the same Session on the comment of an attempt that resumed it (#955)", async () => {
+    task = { ...task, attemptCount: 2 };
+    comments = [
+      dispatchComment(1, "t-alive"),
+      { id: "k-2", taskId: "T-0142", authorKind: "system", authorName: "Panel", sourceFile: null, body: formatTaskResumeComment({ attempt: 2, sessionId: "t-alive" }), createdAt: 2 },
+    ];
+    const onClose = mount();
+    const buttons = (await screen.findAllByRole("button", { name: /Open session/ })) as HTMLButtonElement[];
+    expect(buttons).toHaveLength(2);
+    await waitFor(() => expect(buttons[1]!.disabled).toBe(false));
+    fireEvent.click(buttons[1]!);
+    expect(requestSessionOpen).toHaveBeenCalledWith("core_a", "t-alive");
+    expect(onClose).toHaveBeenCalled();
+  });
+
   it("opens the Session with the Core page's pending-open path and closes the drawer", async () => {
     const onClose = mount();
     const button = (await screen.findByRole("button", { name: /Open session/ })) as HTMLButtonElement;

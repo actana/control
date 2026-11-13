@@ -24,8 +24,59 @@ export type StartSessionRequest = {
 /** How a Session is started on a Core. The default goes through the Core's client; a test hands in a fake. */
 export type SessionStarter = (request: StartSessionRequest) => Promise<StartedSession>;
 
+/**
+ * Why a re-assigned Task's own Session could not be resumed (#955), so a new Session was started instead. `reason` is a
+ * phrase that reads after "resume not possible: " (the `New Session ...` dispatch comment of #955 p2 puts it there);
+ * `code` is for tests and logs. It is the one seam between the resume path and the fallback.
+ */
+export type ResumeRefusal = {
+  code: "no-earlier-session" | "other-core" | "other-harness" | "session-gone" | "no-session-id" | "no-resume" | "resume-refused" | "exited-at-once" | "send-refused" | "no-answer";
+  reason: string;
+};
+
+export const RESUME_REFUSALS = {
+  noEarlierSession: { code: "no-earlier-session", reason: "no earlier Session is recorded for this Task" },
+  otherCore: { code: "other-core", reason: "its Agent now runs on another Core" },
+  otherHarness: { code: "other-harness", reason: "its Agent now runs another harness" },
+  sessionGone: { code: "session-gone", reason: "the Core no longer has that Session" },
+  noSessionId: { code: "no-session-id", reason: "the Session has no harness session id" },
+  noResume: { code: "no-resume", reason: "the harness cannot resume that Session" },
+  exitedAtOnce: { code: "exited-at-once", reason: "the harness exited at once" },
+  sendRefused: { code: "send-refused", reason: "the running Session did not take the message" },
+  noAnswer: { code: "no-answer", reason: "the Core did not answer" },
+  resumeRefused: (why: string): ResumeRefusal => ({ code: "resume-refused", reason: `the Core refused the resume (${why})` }),
+} as const satisfies Record<string, ResumeRefusal | ((why: string) => ResumeRefusal)>;
+
+export type ResumeSessionRequest = {
+  coreId: string;
+  /** The Session to go back to: its own row, harness session id and transcript. */
+  sessionId: string;
+  harness: Harness;
+  model: string | null;
+  flags: readonly string[];
+  /** The next message of the Session: the pointer line to the attempt's prompt file. */
+  prompt: string;
+};
+
+/**
+ * What came of an attempt to continue a Task's own Session (#955):
+ *  - `resumed`: the harness was reopened in resume mode on the same Session row and the message typed in;
+ *  - `sent`: the Session's harness was still live (one live harness per Task), so the message was typed into it;
+ *  - `cannot`: nothing was done to the Session (`stillLive`: its harness is running, and did not take the message).
+ * A full Core or a link that is gone is not an outcome: it throws, as `SessionStarter` does, and the Task waits.
+ */
+export type ResumeOutcome =
+  | { kind: "resumed" | "sent"; session: StartedSession }
+  | { kind: "cannot"; refusal: ResumeRefusal; stillLive?: boolean };
+
+/** How a Task's own Session is continued on its Core. The default goes through the Core's client; a test hands in a fake. */
+export type SessionResumer = (request: ResumeSessionRequest) => Promise<ResumeOutcome>;
+
 /** What happened when a Session was asked to stop (#723). */
 export type SessionStopResult = { outcome: TaskSessionStopOutcome; detail: string | null };
+
+/** The longest one stop of a Session may take on its Core, in ms; the dispatcher waits no longer than this for a stop in flight (#955). */
+export const STOP_TIMEOUT_MS = 10_000;
 
 /** How a Session is stopped on its Core. Never throws: every failure is an outcome. */
 export type SessionStopper = (

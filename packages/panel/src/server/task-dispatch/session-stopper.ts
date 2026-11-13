@@ -1,6 +1,6 @@
 import { coreLinkManager } from "../services/core-link-manager";
 import type { CoreClient } from "@actana/sdk/core";
-import { messageOf, type SessionStopper } from "./types";
+import { messageOf, STOP_TIMEOUT_MS, type SessionStopper } from "./types";
 
 /**
  * Stop a Task's Session on its Core (#723) through the Panel's own link: find the
@@ -16,7 +16,7 @@ import { messageOf, type SessionStopper } from "./types";
  * and the kill is tried a second time: an operator's explicit stop outranks a lock.
  */
 
-export const STOP_TIMEOUT_MS = 10_000;
+export { STOP_TIMEOUT_MS };
 const SESSION_LOCKED = "session-locked";
 
 type LinkFor = (coreId: string) => { readonly sdk?: Pick<CoreClient, "findBySession" | "kill" | "forceTakeover"> } | null;
