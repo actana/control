@@ -855,3 +855,157 @@ describe("panel link · a tab's panes on one Session", () => {
     link.close();
   });
 });
+
+/**
+ * #964: what the tab typed or asked while the link was down must not surface
+ * minutes later. The injected clock is vitest's fake timers (`Date.now` and the
+ * request timeouts move together).
+ */
+describe("panel link · requests made while the link is down (#964)", () => {
+  function longTimeoutClient(): PanelLinkClient {
+    return new PanelLinkClient({
+      url: "ws://panel.test/panel-link?v=2",
+      createSocket: (url) => new FakeSocket(url),
+      reconnectInitialMs: 10,
+      reconnectMaxMs: 10,
+      requestTimeoutMs: 30_000,
+    });
+  }
+
+  /** Settle a promise without throwing, so a rejection can be inspected. */
+  function settle<T>(p: Promise<T>) {
+    const out: { state: "pending" | "resolved" | "rejected"; error?: Error } = { state: "pending" };
+    p.then(
+      () => (out.state = "resolved"),
+      (error: Error) => {
+        out.state = "rejected";
+        out.error = error;
+      },
+    );
+    return out;
+  }
+
+  it("rejects three writes at once and sends none of them when the link comes back after 60 s", async () => {
+    const link = client();
+    const first = live();
+    first.drop();
+    // The next dial is made but the service has not accepted it yet.
+    vi.advanceTimersByTime(20);
+    const second = FakeSocket.last!;
+
+    const writes = ["a", "b", "\r"].map((data) =>
+      settle(link.request("core_a", { type: "write", ptyId: "pty_1", data })),
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    // Rejected at once, not after the request timeout, and for the link.
+    for (const w of writes) {
+      expect(w.state).toBe("rejected");
+      expect(w.error?.message).toMatch(/link is down/);
+    }
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    second.accept();
+
+    const sent = second.outgoing("core_a").filter((f) => f.type === "write");
+    expect(sent).toEqual([]);
+    link.close();
+  });
+
+  it.each([
+    { type: "resize", ptyId: "pty_1", cols: 80, rows: 24 },
+    { type: "kill", ptyId: "pty_1" },
+    { type: "claim", sessionId: "s1" },
+    { type: "release", sessionId: "s1" },
+    { type: "forceTakeover", sessionId: "s1" },
+    { type: "reclaim", sessionId: "s1" },
+    { type: "sessionsMutate", ops: [] },
+    { type: "harnessPrompt", sessionId: "s1", prompt: "go" },
+  ])("never queues a $type while the link is down", async (frame) => {
+    const link = client();
+    live().drop();
+    vi.advanceTimersByTime(20);
+    const next = FakeSocket.last!;
+
+    const result = settle(link.request("core_a", frame as never));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(result.state).toBe("rejected");
+
+    next.accept();
+    expect(next.outgoing("core_a").filter((f) => f.type === frame.type)).toEqual([]);
+    link.close();
+  });
+
+  it("still sends a spawn made before the first socket opened (first paint)", () => {
+    const link = client();
+    const first = FakeSocket.last!;
+
+    void link.request("core_a", { type: "spawn", opts: {} } as never).catch(() => {});
+    first.accept();
+
+    expect(first.outgoing("core_a").filter((f) => f.type === "spawn")).toHaveLength(1);
+    link.close();
+  });
+
+  it("does not queue the keyboard-take drive while the link is down", () => {
+    const link = client();
+    live().drop();
+    vi.advanceTimersByTime(20);
+    const next = FakeSocket.last!;
+
+    link.driveSession("core_a", "s1", { take: true });
+    next.accept();
+
+    expect(next.drives("core_a")).toEqual([]);
+    link.close();
+  });
+
+  it("does not send a read request that timed out before the link came back", async () => {
+    const link = longTimeoutClient();
+    live().drop();
+    vi.advanceTimersByTime(20);
+    const next = FakeSocket.last!;
+
+    const read = settle(link.request("core_a", { type: "findBySession", sessionId: "s1" }));
+    await vi.advanceTimersByTimeAsync(31_000);
+    expect(read.state).toBe("rejected");
+    expect(read.error?.message).toMatch(/timed out/);
+
+    next.accept();
+    expect(next.outgoing("core_a").filter((f) => f.type === "findBySession")).toEqual([]);
+    link.close();
+  });
+
+  it("sends a read request that was queued 1 s before the link came back", async () => {
+    const link = longTimeoutClient();
+    live().drop();
+    vi.advanceTimersByTime(20);
+    const next = FakeSocket.last!;
+
+    const read = settle(link.request("core_a", { type: "findBySession", sessionId: "s1" }));
+    await vi.advanceTimersByTimeAsync(1_000);
+    next.accept();
+
+    expect(next.outgoing("core_a").filter((f) => f.type === "findBySession")).toHaveLength(1);
+    expect(read.state).toBe("pending");
+    link.close();
+  });
+
+  it("drops a queued frame older than 5 s on reconnect and fails its request", async () => {
+    const link = longTimeoutClient();
+    live().drop();
+    vi.advanceTimersByTime(20);
+    const next = FakeSocket.last!;
+
+    const stale = settle(link.request("core_a", { type: "findBySession", sessionId: "old" }));
+    await vi.advanceTimersByTimeAsync(5_001);
+    const fresh = settle(link.request("core_a", { type: "findBySession", sessionId: "new" }));
+    next.accept();
+    await vi.advanceTimersByTimeAsync(0);
+
+    const asked = next.outgoing("core_a").filter((f) => f.type === "findBySession");
+    expect(asked).toEqual([expect.objectContaining({ sessionId: "new" })]);
+    expect(stale.state).toBe("rejected");
+    expect(fresh.state).toBe("pending");
+    link.close();
+  });
+});
