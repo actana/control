@@ -3,7 +3,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { ALL_API_KEY_PERMISSIONS } from "~/shared/api-key-permissions";
-import { closePanelTestDb, openPanelTestDb, resetPanelState } from "./_panel-test-db";
+import { closePanelTestDb, openPanelTestDb, resetPanelState, seedWebhook } from "./_panel-test-db";
 
 /**
  * Public `/api/v1` Tasks and comments (#572 PR 2): create, list, status moves
@@ -64,6 +64,7 @@ beforeEach(async () => {
   await testDb.pool.query(
     "insert into agents (id, owner_id, core_id, name, harness, flags, is_default, created_at, updated_at) values ('agent-a', 1, 'core-a', 'A', 'claude-code', '{}', true, 1, 1)",
   );
+  await seedWebhook(testDb, 1);
 });
 afterAll(async () => {
   await closePanelTestDb(testDb);

@@ -66,6 +66,10 @@ afterAll(async () => {
 
 describe("outbox in the same transaction", () => {
   it("writes an outbox row when a status changes, and nothing when the change rolls back", async () => {
+    // Outbox rows exist only while a webhook does (#965).
+    await createWebhook(A, { url: "https://hooks.example.test/tx", events: ["task.created"] }, 1, {
+      lookup: publicLookup,
+    });
     const task = await createTask(A, { title: "t", startNow: true }, 500);
     const before = await testDb.pool.query("select count(*)::int as n from webhook_outbox");
     expect(before.rows[0].n).toBe(1);
@@ -327,6 +331,113 @@ describe("retries and pruning", () => {
     });
     expect(pruned.pruned).toBe(1);
     expect((await testDb.pool.query("select count(*)::int as n from webhook_deliveries")).rows[0].n).toBe(0);
+  });
+});
+
+describe("outbox is written only when a webhook exists (#965)", () => {
+  const outboxCount = async () =>
+    (await testDb.pool.query("select count(*)::int as n from webhook_outbox")).rows[0].n as number;
+
+  it("writes no outbox row for a Task or comment write while the owner has no webhook", async () => {
+    const task = await createTask(A, { title: "t", description: "secret body" }, 10);
+    await addTaskComment(A, task.id, { authorKind: "user", authorName: "u", body: "a comment" }, 20);
+    await updateTask(A, task.id, { title: "t2" }, 30);
+    await deleteTask(A, task.id, 40);
+    expect(await outboxCount()).toBe(0);
+  });
+
+  it("writes outbox rows once a webhook exists, and the rows before it stay unwritten", async () => {
+    await createTask(A, { title: "before" }, 10);
+    await createWebhook(A, { url: "https://hooks.example.test/w", events: ["task.created"] }, 15, {
+      lookup: publicLookup,
+    });
+    await createTask(A, { title: "after" }, 20);
+    const rows = await testDb.pool.query("select event_type from webhook_outbox");
+    expect(rows.rows.map((r) => r.event_type)).toEqual(["task.created"]);
+  });
+
+  it("still enqueues a ping for an existing webhook", async () => {
+    const { webhook } = await createWebhook(
+      A,
+      { url: "https://hooks.example.test/ping", events: ["task.created"] },
+      1,
+      { lookup: publicLookup },
+    );
+    await pingWebhook(A, webhook.id, 5);
+    expect(await outboxCount()).toBe(1);
+  });
+});
+
+describe("pruneProcessedOutbox (#965)", () => {
+  const DAY = 24 * 60 * 60_000;
+  const insertOutbox = async (id: string, createdAt: number, processedAt: number | null) =>
+    testDb.pool.query(
+      "insert into webhook_outbox (id, owner_id, event_type, payload, core_id, created_at, processed_at) values ($1, 1, 'task.created', '{}', null, $2, $3)",
+      [id, createdAt, processedAt],
+    );
+  const ids = async () =>
+    (await testDb.pool.query("select id from webhook_outbox order by id")).rows.map((r) => r.id as string);
+
+  it("deletes processed rows older than the cutoff and keeps unprocessed and newer rows", async () => {
+    const { pruneProcessedOutbox } = await import("../../repositories/webhooks.repo");
+    await insertOutbox("o-old", 1, 100);
+    await insertOutbox("o-new", 1, 900);
+    await insertOutbox("o-unprocessed", 1, null);
+    const removed = await pruneProcessedOutbox(A, 500);
+    expect(removed).toBe(1);
+    expect(await ids()).toEqual(["o-new", "o-unprocessed"]);
+  });
+
+  it("deletes at most `limit` rows per call", async () => {
+    const { pruneProcessedOutbox } = await import("../../repositories/webhooks.repo");
+    for (let i = 0; i < 5; i++) await insertOutbox(`o-${i}`, 1, 10);
+    expect(await pruneProcessedOutbox(A, 500, 2)).toBe(2);
+    expect(await ids()).toHaveLength(3);
+    expect(await pruneProcessedOutbox(A, 500, 10)).toBe(3);
+    expect(await ids()).toHaveLength(0);
+  });
+
+  it("keeps an old processed row while a delivery still hangs on it, so a retry still delivers", async () => {
+    await createWebhook(A, { url: "https://hooks.example.test/retry", events: ["task.created"] }, 1, {
+      lookup: publicLookup,
+    });
+    await createTask(A, { title: "t" }, 0);
+    const failing = vi.fn(async () => ({ kind: "failed" as const, statusCode: 500, error: "HTTP 500" }));
+    await runWebhookDeliveryTick([A], 1000, { send: failing as never, clock: () => 1000 });
+    const retryAt = Number(
+      (await testDb.pool.query("select next_attempt_at from webhook_deliveries")).rows[0].next_attempt_at,
+    );
+    // Far past the 24 h mark but inside the 14-day delivery retention.
+    const later = retryAt + 2 * DAY;
+    const ok = vi.fn(async () => ({ kind: "sent" as const, statusCode: 200 }));
+    const tick = await runWebhookDeliveryTick([A], later, { send: ok as never, clock: () => later });
+    expect(tick.outboxPruned).toBe(0);
+    expect(ok).toHaveBeenCalledTimes(1);
+    const d = await testDb.pool.query("select status from webhook_deliveries");
+    expect(d.rows[0].status).toBe("delivered");
+  });
+
+  it("the worker prunes the outbox row together with its last delivery after the retention", async () => {
+    const { WEBHOOK_DELIVERY_RETENTION_MS } = await import("~/shared/webhooks");
+    await createWebhook(A, { url: "https://hooks.example.test/gone", events: ["task.created"] }, 1, {
+      lookup: publicLookup,
+    });
+    await createTask(A, { title: "t" }, 1);
+    const sent = async () => ({ kind: "sent" as const, statusCode: 200 });
+    await runWebhookDeliveryTick([A], 1, { send: sent as never, clock: () => 1 });
+    const end = 1 + WEBHOOK_DELIVERY_RETENTION_MS + 1;
+    const tick = await runWebhookDeliveryTick([A], end, { send: sent as never, clock: () => end });
+    expect(tick.pruned).toBe(1);
+    expect(tick.outboxPruned).toBe(1);
+    expect(await ids()).toEqual([]);
+  });
+
+  it("prunes a processed row that fanned out to no webhook after the retention", async () => {
+    const { WEBHOOK_DELIVERY_RETENTION_MS } = await import("~/shared/webhooks");
+    await insertOutbox("o-none", 1, 1);
+    const end = 1 + WEBHOOK_DELIVERY_RETENTION_MS + 1;
+    const tick = await runWebhookDeliveryTick([A], end, { clock: () => end });
+    expect(tick.outboxPruned).toBe(1);
   });
 });
 

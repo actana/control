@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { sessionStateForCoreStatus } from "~/shared/tasks";
-import { closePanelTestDb, openPanelTestDb } from "../../__tests__/_panel-test-db";
+import { closePanelTestDb, openPanelTestDb, seedWebhook } from "../../__tests__/_panel-test-db";
 import { FakeClock, FakeCore, FakeShared, collectingLog } from "./fakes";
 
 /**
@@ -37,7 +37,8 @@ beforeAll(async () => {
   );
 });
 beforeEach(async () => {
-  await testDb.pool.query("truncate tasks cascade");
+  await testDb.pool.query("truncate tasks, webhook_outbox, webhooks cascade");
+  await seedWebhook(testDb, A);
 });
 afterAll(async () => {
   await closePanelTestDb(testDb);
@@ -169,6 +170,12 @@ describe("the Session state of a Task (#949)", () => {
     await watcher.tick();
     expect(await getTask(A, task.id)).toMatchObject({ status: "in_progress", sessionState: "idle-no-result" });
     expect(await stateComments(task.id)).toHaveLength(1);
+    // The webhook seeded above makes the outbox write real, so the "no event" case below means something.
+    const emitted = await testDb.pool.query(
+      "select 1 from webhook_outbox where event_type = 'task.session_state_changed' and payload like $1",
+      [`%${task.id}%`],
+    );
+    expect(emitted.rows).toHaveLength(1);
 
     clock.advance(30_000);
     shared.write(resultPath(task.id, "success.md"), report("All good."), clock.now());

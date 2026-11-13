@@ -12,7 +12,7 @@ import {
   formatTaskDispatchComment,
   type TaskStatus,
 } from "~/shared/tasks";
-import { closePanelTestDb, openPanelTestDb } from "../../__tests__/_panel-test-db";
+import { closePanelTestDb, openPanelTestDb, seedWebhook } from "../../__tests__/_panel-test-db";
 
 const testDb = await openPanelTestDb();
 const tasksService = await import("../tasks");
@@ -50,7 +50,8 @@ beforeAll(async () => {
   }
 });
 beforeEach(async () => {
-  await testDb.pool.query("truncate tasks, webhook_outbox cascade");
+  await testDb.pool.query("truncate tasks, webhook_outbox, webhooks cascade");
+  await seedWebhook(testDb, A);
 });
 afterAll(async () => {
   await closePanelTestDb(testDb);
