@@ -191,9 +191,10 @@ export async function transitionTask(
   historyId: string,
   comment?: Omit<NewTaskCommentRow, "taskId" | "ownerId" | "createdAt">,
   /** Written with the move: the dispatcher records why a start failed (#570). */
-  patch: { lastError?: string | null } = {},
+  patch: { lastError?: string | null; /** Give back the attempt the claim counted: no Session started (#962). */ refundAttempt?: boolean } = {},
   outboxFor?: (args: { from: TaskStatus; task: TaskRow }) => NewOutboxRow[],
 ): Promise<TransitionResult> {
+  const { refundAttempt, ...fields } = patch;
   return panelDb().transaction(async (tx): Promise<TransitionResult> => {
     const locked = await tx
       .select()
@@ -209,7 +210,14 @@ export async function transitionTask(
     }
     const updated = await tx
       .update(tasks)
-      .set({ status: to, updatedAt: now, sessionState: null, sessionStateAt: null, ...patch })
+      .set({
+        status: to,
+        updatedAt: now,
+        sessionState: null,
+        sessionStateAt: null,
+        ...fields,
+        ...(refundAttempt ? { attemptCount: sql`greatest(${tasks.attemptCount} - 1, 0)` } : {}),
+      })
       .where(ownedBy(tasks, ownerId, and(eq(tasks.id, id), eq(tasks.status, from))))
       .returning();
     await tx
@@ -389,6 +397,82 @@ export async function claimAssignedTask(
       changedAt: now,
     });
     await writeOutbox(tx, outboxFor?.(row));
+    return row;
+  });
+}
+
+/**
+ * Give a claimed Task back (#962): the Session could not be started for a reason that may pass (a Core that is full or
+ * not connected). `in_progress` to `assigned` with the attempt the claim counted given back and `reason` as the waiting
+ * reason (`lastError`), only if the Task is still `in_progress` on that attempt once its row is locked: a Task stopped
+ * meanwhile is left alone. History and outbox ride the same transaction. Null when it did not apply.
+ */
+export async function releaseClaimedTask(
+  ownerId: number,
+  id: string,
+  attempt: number,
+  reason: string,
+  now: number,
+  historyId: string,
+  comment?: Omit<NewTaskCommentRow, "taskId" | "ownerId" | "createdAt">,
+  outboxFor?: (task: TaskRow) => NewOutboxRow[],
+): Promise<TaskRow | null> {
+  return panelDb().transaction(async (tx) => {
+    const released = await tx
+      .update(tasks)
+      .set({
+        status: "assigned",
+        attemptCount: Math.max(attempt - 1, 0),
+        dispatchedAt: null,
+        lastError: reason,
+        sessionState: null,
+        sessionStateAt: null,
+        updatedAt: now,
+      })
+      .where(ownedBy(tasks, ownerId, and(eq(tasks.id, id), eq(tasks.status, "in_progress"), eq(tasks.attemptCount, attempt))))
+      .returning();
+    const row = released[0];
+    if (!row) return null;
+    if (comment) await tx.insert(taskComments).values({ ...comment, taskId: id, ownerId, createdAt: now });
+    await tx.insert(taskStatusHistory).values({
+      id: historyId,
+      taskId: id,
+      ownerId,
+      fromStatus: "in_progress",
+      toStatus: "assigned",
+      changedAt: now,
+    });
+    await writeOutbox(tx, outboxFor?.(row));
+    return row;
+  });
+}
+
+/**
+ * Record why an `assigned` Task is not being started (#962), as its `lastError`, when it differs from what is there. With
+ * `comment`, that is added in the same transaction. Only while the Task is `assigned`. Null when nothing changed.
+ */
+export async function setAssignedWaitingReason(
+  ownerId: number,
+  id: string,
+  reason: string,
+  now: number,
+  comment?: Omit<NewTaskCommentRow, "taskId" | "ownerId" | "createdAt">,
+): Promise<TaskRow | null> {
+  return panelDb().transaction(async (tx) => {
+    const updated = await tx
+      .update(tasks)
+      .set({ lastError: reason, updatedAt: now })
+      .where(
+        ownedBy(
+          tasks,
+          ownerId,
+          and(eq(tasks.id, id), eq(tasks.status, "assigned"), sql`${tasks.lastError} is distinct from ${reason}`),
+        ),
+      )
+      .returning();
+    const row = updated[0];
+    if (!row) return null;
+    if (comment) await tx.insert(taskComments).values({ ...comment, taskId: id, ownerId, createdAt: now });
     return row;
   });
 }

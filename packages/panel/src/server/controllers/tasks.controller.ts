@@ -30,7 +30,7 @@ import {
 import { getAgent, listAgentsForCore, type Agent } from "../services/agents";
 import { getOperator } from "../services/operator";
 import { findCoreById } from "../repositories/cores.repo";
-import { stopTask } from "../task-dispatch";
+import { queuedAnswer, stopTask } from "../task-dispatch";
 
 /**
  * Tasks and their comments, for the operator's browser (#571). Every handler
@@ -250,7 +250,7 @@ export async function create(ownerId: number, request: Request): Promise<Respons
       parsed.files.length > 0
         ? await createTaskWithAttachments(ownerId, input, parsed.files, await authorName())
         : await createTask(ownerId, input);
-    return json({ task: taskDto(task) }, { status: HTTP_CREATED });
+    return json({ task: taskDto(task), ...queuedAnswer(startNow, coreId) }, { status: HTTP_CREATED });
   } catch (e) {
     return attachmentFailure(e);
   }

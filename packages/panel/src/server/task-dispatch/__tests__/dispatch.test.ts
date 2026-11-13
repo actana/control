@@ -293,7 +293,7 @@ describe("a Task that cannot be dispatched", () => {
     const after = await getTask(A, task.id);
     expect(after.status).toBe("failed");
     expect(after.lastError).toContain("harness missing");
-    expect(after.attemptCount).toBe(1);
+    expect(after.attemptCount).toBe(0); // no Session started: not an attempt (#962)
     expect(core.starts).toHaveLength(1);
     expect(watcher.isTracking(task.id)).toBe(false);
     const comments = await listTaskComments(A, task.id);
@@ -364,9 +364,9 @@ describe("a Task whose Harness is not ready yet (#706)", () => {
     throw err;
   };
 
-  for (const [label, error] of [
-    ["is checking", new HarnessNotReadyError("core_1", "claude-code", "checking")],
-    ["cannot be asked because the Core link is down", new CoreHarnessesUnavailableError("core_1")],
+  for (const [label, error, reason] of [
+    ["is checking", new HarnessNotReadyError("core_1", "claude-code", "checking"), "waiting: Harness not ready (checking)"],
+    ["cannot be asked because the Core link is down", new CoreHarnessesUnavailableError("core_1"), "waiting: Core not connected"],
   ] as const) {
     it(`leaves the Task assigned while the Harness ${label}, and dispatches it once it is available`, async () => {
       const { clock, core, dispatcher, behave } = switchable();
@@ -378,15 +378,16 @@ describe("a Task whose Harness is not ready yet (#706)", () => {
       expect(await dispatcher.dispatchOnce()).toBe(0);
 
       expect(core.starts).toHaveLength(0);
-      expect(await getTask(A, task.id)).toMatchObject({ status: "assigned", attemptCount: 0, lastError: null });
-      expect(await listTaskComments(A, task.id)).toHaveLength(0);
+      expect(await getTask(A, task.id)).toMatchObject({ status: "assigned", attemptCount: 0, lastError: reason });
+      // One comment when it starts waiting, none per poll (#962).
+      expect(await listTaskComments(A, task.id)).toHaveLength(1);
       const historyBefore = await listTaskHistory(A, task.id);
 
       behave.resolve = () => undefined;
       expect(await dispatcher.dispatchOnce()).toBe(1);
 
       expect(core.starts).toHaveLength(1);
-      expect(await getTask(A, task.id)).toMatchObject({ status: "in_progress", attemptCount: 1 });
+      expect(await getTask(A, task.id)).toMatchObject({ status: "in_progress", attemptCount: 1, lastError: null });
       expect((await listTaskHistory(A, task.id)).length).toBeGreaterThan(historyBefore.length);
     });
   }
@@ -436,6 +437,23 @@ describe("a Task whose Harness is not ready yet (#706)", () => {
     const after = await getTask(A, task.id);
     expect(after.status).toBe("failed");
     expect(after.lastError).toContain("not ready yet (checking)");
+    expect(after.attemptCount).toBe(0); // no Session started: not an attempt (#962)
+  });
+
+  it("waits for a Core that is not connected for longer than the Harness wait, then dispatches it", async () => {
+    const { clock, core, dispatcher, behave } = switchable();
+    const task = await assign(clock);
+    behave.resolve = throwing(new CoreHarnessesUnavailableError("core_1"));
+
+    await dispatcher.dispatchOnce();
+    clock.advance(DEFAULT_HARNESS_WAIT_MS * 3);
+    expect(await dispatcher.dispatchOnce()).toBe(0);
+    expect(await getTask(A, task.id)).toMatchObject({ status: "assigned", attemptCount: 0, lastError: "waiting: Core not connected" });
+
+    behave.resolve = () => undefined;
+    expect(await dispatcher.dispatchOnce()).toBe(1);
+    expect(core.starts).toHaveLength(1);
+    expect(await getTask(A, task.id)).toMatchObject({ status: "in_progress", attemptCount: 1 });
   });
 
   it("does not hold back another Task whose Harness is ready", async () => {

@@ -148,6 +148,16 @@ describe("create_task", () => {
     await expect(tasksService.getTask(B, draft.id)).rejects.toThrow();
   });
 
+  it("with startNow on a Core that is not connected, queues the Task and says so (#962)", async () => {
+    const c = await client(A);
+    const answer = dataOf(await c.call("create_task", { title: "Go", coreId: "core-a", agent: "agent-a", startNow: true }));
+    expect(answer.task).toMatchObject({ status: "assigned", attemptCount: 0 });
+    expect(answer).toMatchObject({ queued: true, waiting: "waiting: Core not connected" });
+    expect(answer.message).toContain("starts by itself");
+    // A draft is not queued: nothing was asked to start.
+    expect(dataOf(await c.call("create_task", { title: "d", coreId: "core-a", agent: "agent-a" })).queued).toBeUndefined();
+  });
+
   it("refuses an Agent that is not on the chosen Core, and startNow without one", async () => {
     const c = await client(A);
     expect(textOf(await c.call("create_task", { title: "x", coreId: "core-a", agent: "agent-b" }))).toMatch(/^400/);
