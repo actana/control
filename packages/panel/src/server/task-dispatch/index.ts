@@ -7,8 +7,9 @@ import { SharedChangeFeed, createS3Factory, createSharedFactory, createThroughCo
 import { startSessionOnCore } from "./session-starter";
 import { liveSessionsOnCore } from "./session-liveness";
 import { sessionStatusesOnCore } from "./session-status";
-import { stopSessionOnCore } from "./session-stopper";
+import { sessionStopper } from "./session-stopper";
 import { stopTaskRun } from "./stop-task";
+import { closeTaskSession } from "./close-session";
 import { coreLinkManager } from "../services/core-link-manager";
 import type { CoreS3Shared } from "../services/core-s3-shared";
 import { consoleDispatchLog, type Clock, type DispatchLog, type SessionLiveness, type SessionStarter, type SessionStatusReader, type SessionStopper } from "./types";
@@ -53,7 +54,7 @@ export function startTaskDispatch(opts: StartTaskDispatchOptions = {}): void {
   if (running) return;
   const feed = new SharedChangeFeed();
   const detachFeed = feed.attach(coreLinkManager());
-  const stopSession = opts.stopSession ?? stopSessionOnCore;
+  const stopSession = opts.stopSession ?? sessionStopper;
   let dispatcher: TaskDispatcher | null = null;
   const watcher = new ResultWatcher({
     stopSession,
@@ -110,13 +111,22 @@ export async function stopTask(
 ): Promise<{ task: Task; session: TaskSessionStopDto | null }> {
   const stopped = await stopTaskRun(ownerId, id, input, {
     watcher: running?.watcher ?? null,
-    stopSession: running?.stopSession ?? stopSessionOnCore,
+    stopSession: running?.stopSession ?? sessionStopper,
     ...(running?.now ? { now: running.now } : {}),
   });
   // The stopped Session's slot is free (#962): wake the Tasks waiting for one.
   const coreId = stopped.session?.coreId ?? stopped.task.coreId;
   if (coreId) running?.dispatcher.slotFreed(coreId);
   return stopped;
+}
+
+/** `close_session` (#962): end a finished Task's harness and free its slot; see {@link closeTaskSession}. */
+export async function closeSession(ownerId: number, id: string, input: { closedBy: string }): Promise<{ task: Task; session: TaskSessionStopDto }> {
+  return closeTaskSession(ownerId, id, input, {
+    stopSession: running?.stopSession ?? sessionStopper,
+    slotFreed: (coreId) => running?.dispatcher.slotFreed(coreId),
+    ...(running?.now ? { now: running.now } : {}),
+  });
 }
 
 /**

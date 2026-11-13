@@ -3,7 +3,7 @@ import { json, jsonError, noContent, parseJsonBody, rethrowUnlessDomain } from "
 import { NotFoundError, ValidationError } from "../errors";
 import { HTTP_BAD_REQUEST, HTTP_CREATED, HTTP_PAYLOAD_TOO_LARGE } from "~/shared/http-status";
 import { toSessionState, type AgentDto, type TaskCommentDto, type TaskDto, type TaskListDto, type TasksPageDto } from "~/shared/task-wire";
-import { TASK_COLUMNS, TASK_COLUMN_STATUSES, TASKS_PAGE_DEFAULT_LIMIT, type TaskColumn } from "~/shared/tasks";
+import { TASK_COLUMNS, TASK_COLUMN_STATUSES, TASKS_PAGE_DEFAULT_LIMIT, taskWaitingReason, type TaskColumn } from "~/shared/tasks";
 import {
   addTaskComment,
   changeTaskStatus,
@@ -69,6 +69,11 @@ export const updateTaskBody = z
     message: "give a title, a description or a time limit",
   });
 
+function waitingOf(t: Task): TaskDto["waiting"] {
+  const reason = taskWaitingReason(t);
+  return reason === null ? null : { reason, coreId: t.coreId };
+}
+
 function taskDto(t: Task): TaskDto {
   return {
     id: t.id,
@@ -80,6 +85,7 @@ function taskDto(t: Task): TaskDto {
     attemptCount: t.attemptCount,
     dispatchedAt: t.dispatchedAt,
     lastError: t.lastError,
+    waiting: waitingOf(t),
     timeoutMinutes: t.timeoutMinutes,
     sessionState: toSessionState(t.sessionState),
     sessionStateAt: t.sessionStateAt,

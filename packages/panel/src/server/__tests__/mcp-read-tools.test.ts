@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { ALL_API_KEY_PERMISSIONS } from "~/shared/api-key-permissions";
 import { closePanelTestDb, openPanelTestDb, resetPanelState } from "./_panel-test-db";
 import { McpTestClient, dataOf, textOf } from "./_mcp-client";
@@ -20,6 +20,9 @@ const testDb = await openPanelTestDb();
 const { operatorSessionCookie, resetOperatorSessionForTests } = await import("./_operator-session");
 const tasksService = await import("../services/tasks");
 const { createApiKey } = await import("../services/api-keys");
+const { coreLinkManager } = await import("../services/core-link-manager");
+const { resetCoreCapacityForTests, noteCoreCap } = await import("../services/core-capacity");
+const { vi } = await import("vitest");
 
 const A = 1;
 const B = 2;
@@ -166,5 +169,39 @@ describe("two owners", () => {
     expect(dataOf(await c.call("list_cores")).cores.map((x: { id: string }) => x.id)).toEqual(["core-x"]);
     expect(dataOf(await c.call("get_tasks")).tasks.map((t: { id: string }) => t.id)).toEqual([onX.id]);
     expect(textOf(await c.call("get_task", { taskId: onA.id }))).toMatch(/^404/);
+  });
+});
+
+describe("capacity and waiting (#962)", () => {
+  beforeEach(() => resetCoreCapacityForTests());
+  afterEach(() => {
+    vi.restoreAllMocks();
+    resetCoreCapacityForTests();
+  });
+
+  it("list_cores returns each Core's liveSessions and maxSessions", async () => {
+    noteCoreCap("core-b", 4);
+    vi.spyOn(coreLinkManager(), "client").mockImplementation(((id: string) =>
+      id === "core-a"
+        ? { request: async () => ({ type: "sessionsListResult", sessions: [1, 2, 3].map((n) => ({ sessionId: `s${n}`, ptyId: `p${n}`, agent: "claude-code" })), nextCursor: null, total: 3 }) }
+        : null) as never);
+    const cores = dataOf(await (await client(A)).call("list_cores")).cores as { id: string; liveSessions: number | null; maxSessions: number }[];
+    expect(cores.find((c) => c.id === "core-a")).toMatchObject({ liveSessions: 3, maxSessions: 8 });
+    // A Core that cannot be asked: the count is null, the limit is what the Core last refused at.
+    expect(cores.find((c) => c.id === "core-b")).toMatchObject({ liveSessions: null, maxSessions: 4 });
+  });
+
+  it("get_task and get_tasks say a Task waits, why, and on which Core; a Task that does not wait has null", async () => {
+    await testDb.pool.query("update tasks set status = 'assigned', last_error = 'waiting: Core full (8/8)' where id = $1", [onB.id]);
+    const c = await client(A);
+    expect(dataOf(await c.call("get_task", { taskId: onB.id })).task.waiting).toEqual({ reason: "waiting: Core full (8/8)", coreId: "core-b" });
+    const all = dataOf(await c.call("get_tasks")).tasks as { id: string; waiting: unknown }[];
+    expect(all.find((t) => t.id === onB.id)!.waiting).toEqual({ reason: "waiting: Core full (8/8)", coreId: "core-b" });
+    expect(all.find((t) => t.id === onA.id)!.waiting).toBeNull();
+  });
+
+  it("a failed Task whose last error starts with waiting: is not waiting", async () => {
+    await testDb.pool.query("update tasks set status = 'failed', last_error = 'waiting: Core not connected' where id = $1", [onB.id]);
+    expect(dataOf(await (await client(A)).call("get_task", { taskId: onB.id })).task.waiting).toBeNull();
   });
 });

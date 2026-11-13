@@ -1,3 +1,4 @@
+import { noteCoreCap } from "../services/core-capacity";
 import { CoreSharedError, type CoreShared } from "@actana/sdk/shared";
 import { NotFoundError } from "../errors";
 import {
@@ -283,6 +284,7 @@ export class TaskDispatcher {
     const cap = CORE_FULL.exec(message);
     if (cap) {
       const max = Number(cap[1]);
+      noteCoreCap(coreId, max);
       const failures = (this.fullCores.get(coreId)?.failures ?? 0) + 1;
       const retry = Math.min(FULL_CORE_RETRY_MIN_MS * 2 ** (failures - 1), FULL_CORE_RETRY_MAX_MS);
       this.fullCores.set(coreId, { max, failures, retryAt: this.now() + retry });

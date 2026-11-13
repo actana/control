@@ -27,6 +27,14 @@ describe("stopSessionOnCore", () => {
     expect(await stopSessionOnCore(TARGET, () => ({}))).toMatchObject({ outcome: "unreachable" });
   });
 
+  it("leaves a locked Session alone with takeOver false: failed with session-locked, no takeover (close_session, #962)", async () => {
+    const locked = Object.assign(new Error("locked"), { code: "session-locked" });
+    const sdk = fake({ kill: vi.fn(async () => { throw locked; }) });
+    expect(await stopSessionOnCore(TARGET, linkOf(sdk), STOP_TIMEOUT_MS, { takeOver: false })).toEqual({ outcome: "failed", detail: "session-locked" });
+    expect(sdk.forceTakeover).not.toHaveBeenCalled();
+    expect(sdk.kill).toHaveBeenCalledTimes(1);
+  });
+
   it("is not-running when the Core has no PTY for the Session", async () => {
     const sdk = fake({ findBySession: vi.fn(async () => ({ ptyId: null })) });
     expect(await stopSessionOnCore(TARGET, linkOf(sdk))).toEqual({ outcome: "not-running", detail: null });

@@ -201,7 +201,21 @@ export function isPairingFinished(core: { sharedFolder?: { state: string } }): b
 }
 
 /** A registry row plus its live link state — one row of the Cores list. */
-export type CoreWithDial = Core & { dial: CoreDialStatus; sharedFolder?: CoreSharedFolder };
+export type CoreWithDial = Core & { dial: CoreDialStatus; sharedFolder?: CoreSharedFolder } & Partial<CoreCapacity>;
+
+/**
+ * How many harness PTYs a Core runs against its limit (#962). `liveSessions` is null when the Core could not be asked
+ * (not connected, no answer). `maxSessions` is the limit the Core last refused a start at, else the Core's default.
+ */
+export type CoreCapacity = { liveSessions: number | null; maxSessions: number };
+
+/** The Core's own default for live harness PTYs (`DEFAULT_MAX_LIVE_HARNESS_PTYS`); `ACTANA_MAX_LIVE_HARNESS_PTYS` can change it on a Core. */
+export const DEFAULT_MAX_LIVE_SESSIONS = 8;
+
+/** `5/8`, or `?/8` when the count is unknown. */
+export function formatCoreCapacity(c: CoreCapacity): string {
+  return `${c.liveSessions ?? "?"}/${c.maxSessions}`;
+}
 
 export type CoreListResponse = { cores: CoreWithDial[] };
 
