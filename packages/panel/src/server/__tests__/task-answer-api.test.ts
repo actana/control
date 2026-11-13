@@ -255,13 +255,18 @@ describe("answer_task over REST", () => {
 describe("approvals are not answered, whatever kind the rules give them", () => {
   it("Codex's allow-command dialog is a choice: approving it (also for good) is needs_human, the No is answered", async () => {
     await seed("t1", "needs-input");
-    for (const answerBody of [{ option: 1 }, { option: 2 }, { keys: ["Enter"] }, { keys: ["y"] }]) {
+    for (const answerBody of [{ option: 1 }, { option: 2 }, { keys: ["Enter"] }, { keys: ["y"] }, { text: "y" }, { text: "1" }, { text: "yes" }]) {
       const res = await answer(key, "t1", { answer: answerBody });
       expect([res.status, (await res.json()).code], JSON.stringify(answerBody)).toEqual([409, "needs_human"]);
     }
     expect(writes).toEqual([]);
     expect((await answer(key, "t1", { answer: { option: 3 } })).status).toBe(200);
     expect(writes).toEqual(["3"]);
+    // The record names the prompt (the dialog's question), not whatever sits above the dialog on the screen.
+    const recorded = (await getTask(key, "t1")).comments.filter((c) => c.body.startsWith("Answered by"));
+    expect(recorded).toHaveLength(1);
+    expect(recorded[0]!.body).toContain("Would you like to run the following command?");
+    expect(recorded[0]!.body).not.toContain("Running tests");
   });
 
   it("a prompt that moves while the screen is read is stale_prompt, nothing typed", async () => {

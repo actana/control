@@ -51,6 +51,15 @@ describe("buildTaskPrompt: where kind and options come from", () => {
     expect(p.text).toContain("Would you like to run the following command?");
   });
 
+  it("title: the hook's text, else the first line with a letter of the matched region (box borders stripped)", () => {
+    expect(buildTaskPrompt({ harness: "claude-code", screen: "", hook: { kind: "choice", text: "Which database?" }, at: AT }).title).toBe("Which database?");
+    expect(buildTaskPrompt({ harness: "codex", screen: fixture("codex-synthetic-allow-command"), hook: null, at: AT }).title).toBe("Would you like to run the following command?");
+    const claude = buildTaskPrompt({ harness: "claude-code", screen: fixture("claude-code-synthetic-bash-permission"), hook: null, at: AT }).title;
+    expect(claude).toMatch(/[A-Za-z]/);
+    expect(claude).not.toMatch(/^[│┃]/);
+    expect(buildTaskPrompt({ harness: "claude-code", screen: "something nobody classifies\nreally\n", hook: null, at: AT }).title).toBeUndefined();
+  });
+
   it("source 2: a trust dialog is trust, even when a hook said permission", () => {
     const hooked = buildTaskPrompt({ harness: "claude-code", screen: fixture("claude-code-2.1.228-folder-trust"), hook: { kind: "permission" }, at: AT });
     expect(hooked.kind).toBe("trust");
@@ -68,8 +77,20 @@ describe("buildTaskPrompt: where kind and options come from", () => {
     const long = `${"x".repeat(6000)}\nPaste your key sk-abcdefghijklmnopqrstuvwxyz012345 here\n`;
     const p = buildTaskPrompt({ harness: "claude-code", screen: long, hook: null, at: AT });
     expect(p.text.length).toBeLessThanOrEqual(4096);
+    expect(Buffer.byteLength(p.text, "utf8")).toBeLessThanOrEqual(4096);
     expect(p.text).not.toContain("sk-abcdefghijklmnopqrstuvwxyz012345");
     expect(p.text).toContain("Paste your key");
+  });
+});
+
+describe("buildTaskPrompt: the text is capped by UTF-8 bytes", () => {
+  it("a screen of box-drawing lines (3 bytes each) is at most 4096 bytes, keeping the end, without splitting a character", () => {
+    const box = `${"─".repeat(100)}\n│${" ".repeat(98)}│\n`.repeat(30);
+    const p = buildTaskPrompt({ harness: "claude-code", screen: `${box}Which one?\n`, hook: null, at: AT });
+    expect(Buffer.byteLength(p.text, "utf8")).toBeLessThanOrEqual(4096);
+    expect(Buffer.byteLength(p.text, "utf8")).toBeGreaterThan(4000);
+    expect(p.text.endsWith("Which one?")).toBe(true);
+    expect(p.text).not.toContain("\uFFFD");
   });
 });
 
@@ -148,7 +169,7 @@ describe("planAnswer", () => {
 
   it("text is refused on a confirm or a permission prompt (use option or keys)", () => {
     expect(planAnswer(prompt({ kind: "confirm" }), { text: "y" })).toMatchObject({ ok: false, code: "invalid_answer" });
-    expect(planAnswer(prompt({ kind: "permission" }), { text: "y" })).toMatchObject({ ok: false, code: "invalid_answer" });
+    expect(planAnswer(prompt({ kind: "permission" }), { text: "y" })).toMatchObject({ ok: false, code: "needs_human" });
   });
 
   it("trust is needs_human for every answer", () => {
@@ -185,6 +206,54 @@ describe("planAnswer", () => {
     expect(planAnswer(perm, { option: 3 })).toMatchObject({ ok: true, bytes: "3" });
     expect(planAnswer(perm, { keys: ["Esc"] })).toMatchObject({ ok: true, bytes: "\u001b" });
     expect(planAnswer(perm, { keys: ["n"] })).toMatchObject({ ok: true, bytes: "n" });
+  });
+
+  it("{ text } on an approval is needs_human, whatever kind the prompt has: it is never a recognised decline", () => {
+    const options = [
+      { label: "Yes", key: "1", selected: true },
+      { label: "Yes, and don't ask again for: npm test:*", key: "2" },
+      { label: "No, and tell Claude what to do differently (esc)", key: "3" },
+    ];
+    for (const text of ["y", "1", "yes", "n", "no"]) {
+      for (const kind of ["permission", "choice", "question", "confirm"] as const) {
+        expect(planAnswer(prompt({ kind, text: "Permission needed for Bash", options }), { text }), `${kind} ${text}`).toMatchObject({ ok: false, code: "needs_human" });
+      }
+      // By the options alone, whatever the wording of the dialog.
+      expect(planAnswer(prompt({ kind: "choice", text: "Pick one", options }), { text }), `options ${text}`).toMatchObject({ ok: false, code: "needs_human" });
+    }
+  });
+
+  it("a hook's question/choice over a screen the rules read as permission is still an approval: { text } is needs_human", () => {
+    const p = buildTaskPrompt({ harness: "claude-code", screen: fixture("claude-code-synthetic-bash-permission"), hook: { kind: "choice" }, at: AT });
+    expect(p.kind).toBe("choice");
+    for (const text of ["1", "y", "yes"]) expect(planAnswer(p, { text })).toMatchObject({ ok: false, code: "needs_human" });
+    const q = buildTaskPrompt({ harness: "claude-code", screen: fixture("claude-code-synthetic-bash-permission"), hook: { kind: "question" }, at: AT });
+    expect(planAnswer(q, { text: "y" })).toMatchObject({ ok: false, code: "needs_human" });
+  });
+
+  it("a dialog that offers a don't-ask-again option is an approval whatever its wording (Codex apply-patch fixture)", () => {
+    const p = buildTaskPrompt({ harness: "codex", screen: fixture("codex-synthetic-apply-patch"), hook: null, at: AT });
+    expect(p.kind).toBe("choice");
+    expect(p.text).toContain("Would you like to make the following edits?");
+    const approve = [{ option: 1 }, { option: 2 }, { option: "Yes, proceed (y)" }, { keys: ["Enter"] }, { keys: ["y"] }, { keys: ["1"] }, { keys: ["2"] }, { text: "1" }, { text: "y" }];
+    for (const answer of approve) expect(planAnswer(p, answer), JSON.stringify(answer)).toMatchObject({ ok: false, code: "needs_human" });
+    expect(planAnswer(p, { option: 3 })).toMatchObject({ ok: true, bytes: "3" });
+    expect(planAnswer(p, { keys: ["Esc"] })).toMatchObject({ ok: true, bytes: "\u001b" });
+  });
+
+  it("a \"Don't ask again\" option is never a decline, even though it starts with Don't", () => {
+    const p = prompt({
+      kind: "choice",
+      text: "Pick one",
+      options: [
+        { label: "Allow once", key: "1", selected: true },
+        { label: "Don't ask again", key: "2" },
+        { label: "Don't do it", key: "3" },
+      ],
+    });
+    expect(planAnswer(p, { keys: ["2"] })).toMatchObject({ ok: false, code: "needs_human" });
+    expect(planAnswer(p, { option: 2 })).toMatchObject({ ok: false, code: "needs_human" });
+    expect(planAnswer(p, { keys: ["3"] })).toMatchObject({ ok: true, bytes: "3" });
   });
 
   it("a confirmation that follows from the brief is answered with keys", () => {

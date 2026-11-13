@@ -158,7 +158,7 @@ async function readWaiting(task: Task): Promise<{ prompt: TaskPrompt; ptyId: str
   return { prompt, ptyId: read.ptyId, sdk: read.sdk };
 }
 
-/** The first non-empty line of a prompt, for the record. */
+/** The first non-empty line of a prompt's title (or, without one, its text), for the record. */
 function firstLine(text: string): string {
   const line = text.split("\n").find((l) => l.trim() !== "") ?? "";
   const one = line.trim().replace(/"/g, "'");
@@ -201,7 +201,7 @@ export async function answerTask(task: Task, input: { answer: TaskAnswer; expect
     await addTaskComment(task.ownerId, task.id, {
       authorKind: "user",
       authorName: input.by,
-      body: `Answered by ${input.by}: ${prompt.kind} "${firstLine(prompt.text)}" → ${summary}`,
+      body: `Answered by ${input.by}: ${prompt.kind} "${firstLine(prompt.title ?? prompt.text)}" → ${summary}`,
     });
     return { prompt, summary };
   } finally {

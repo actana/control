@@ -18,6 +18,10 @@ export type TaskPrompt = {
   text: string;
   options?: TaskPromptOption[];
   kind: TaskPromptKind;
+  /** The prompt's own name for the record: the hook's text, else the first line with a letter of the region the rules matched. */
+  title?: string;
+  /** What the rules read the screen as (`classifyDialog`), whatever the hook said: a `permission` screen stays an approval. */
+  screenKind?: TaskPromptKind;
   /** When the Task's Session went to `needs-input` (ms): the id of this prompt, for `expect`. */
   at: number;
   source: TaskPromptSource;
@@ -63,8 +67,39 @@ function tailText(screen: string): string {
   return lines.join("\n");
 }
 
+/** The text's last {@link PROMPT_TEXT_MAX} UTF-8 bytes, not starting in the middle of a character. */
 function cap(text: string): string {
-  return text.length > PROMPT_TEXT_MAX ? text.slice(-PROMPT_TEXT_MAX) : text;
+  const bytes = Buffer.from(text, "utf8");
+  if (bytes.length <= PROMPT_TEXT_MAX) return text;
+  let start = bytes.length - PROMPT_TEXT_MAX;
+  while (start < bytes.length && (bytes[start]! & 0xc0) === 0x80) start++;
+  return bytes.subarray(start).toString("utf8");
+}
+
+const BOX_BORDERS = /[│┃]/g;
+/** A line that is an option of a dialog: a cursor marker, or a numbered choice. */
+const OPTION_LINE = /^\s*(?:[›❯→>]|\d+[.)]\s)/;
+
+const plainLine = (line: string): string => line.replace(BOX_BORDERS, " ").trim();
+
+/**
+ * What a dialog asks, for the record: the first line with a letter of the region the rules matched (box borders stripped).
+ * A region that starts at its first option (Codex's `after-last-prompt-marker`) has not got the question: that is the
+ * nearest line above it, in the screen's tail, that ends in `?` or `:`.
+ */
+function regionTitle(region: string, tailLines: readonly string[] = []): string | undefined {
+  const lines = region.split("\n");
+  const at = lines.findIndex((l) => /\p{L}/u.test(plainLine(l)));
+  if (at < 0) return undefined;
+  const first = plainLine(lines[at]!);
+  if (OPTION_LINE.test(first)) {
+    const start = tailLines.map(plainLine).lastIndexOf(first);
+    for (let i = start - 1; i >= 0; i--) {
+      const above = plainLine(tailLines[i]!);
+      if (/\p{L}/u.test(above) && /[?:]$/.test(above)) return maskSecrets(above);
+    }
+  }
+  return maskSecrets(first);
 }
 
 /**
@@ -78,13 +113,16 @@ export function buildTaskPrompt(input: { harness: string; screen: string; hook: 
   // The text is the screen's tail, not the matched rule's region: the question sits above the choices a rule reads.
   const tail = tailText(screen);
   const shown = (fallback = ""): string => cap(maskSecrets(tail || fallback));
-  if (hit?.kind === "trust") return { text: shown(hit.text), kind: "trust", at, source: hook ? "hook" : "screen", ...(hit.options ? { options: hit.options } : {}) };
+  const hookTitle = hook?.text ? regionTitle(hook.text) : undefined;
+  const title = hookTitle ?? (hit ? regionTitle(hit.text, tail.split("\n")) : undefined);
+  const named = { ...(title !== undefined ? { title } : {}), ...(hit ? { screenKind: hit.kind } : {}) };
+  if (hit?.kind === "trust") return { text: shown(hit.text), kind: "trust", at, source: hook ? "hook" : "screen", ...named, ...(hit.options ? { options: hit.options } : {}) };
   if (hook) {
     const hookOptions = hook.options?.length ? hook.options.map((o, i) => ({ label: o.label, key: String(i + 1) })) : undefined;
     const options = hookOptions ?? hit?.options;
-    return { text: shown(hook.text), kind: hook.kind, at, source: "hook", ...(options ? { options } : {}) };
+    return { text: shown(hook.text), kind: hook.kind, at, source: "hook", ...named, ...(options ? { options } : {}) };
   }
-  if (hit) return { text: shown(hit.text), kind: hit.kind, at, source: "screen", ...(hit.options ? { options: hit.options } : {}) };
+  if (hit) return { text: shown(hit.text), kind: hit.kind, at, source: "screen", ...named, ...(hit.options ? { options: hit.options } : {}) };
   return { text: shown(), kind: "unknown", at, source: "screen" };
 }
 
@@ -121,6 +159,8 @@ const PERMISSION_TEXT = /\b(?:allow|approve|approval|permission|grant)\b|run the
 const WIDENING_LABEL = /don'?t ask again|always allow|allow all|for (?:this|the rest of the) session|bypass|full access|dangerously/i;
 const TRUST_TEXT = /\btrust\b/i;
 const DECLINE_LABEL = /^\s*(?:no\b|deny\b|decline\b|reject\b|cancel\b|don'?t\b)/i;
+/** A label that declines: "No", "Don't do it", but never one that widens ("Don't ask again"). */
+const isDeclineLabel = (label: string): boolean => DECLINE_LABEL.test(label) && !WIDENING_LABEL.test(label);
 const DECLINE_KEYS = new Set(["Esc", "n", "N"]);
 
 const refuse = (code: "invalid_answer" | "needs_human", message: string): AnswerPlan => ({ ok: false, code, message });
@@ -150,14 +190,27 @@ function declines(prompt: TaskPrompt, answer: TaskAnswer): boolean {
     return answer.keys.every((k) => {
       if (DECLINE_KEYS.has(k)) return true;
       const picked = /^[1-9]$/.test(k) ? prompt.options?.find((o) => o.key === k) : undefined;
-      return picked !== undefined && DECLINE_LABEL.test(picked.label);
+      return picked !== undefined && isDeclineLabel(picked.label);
     });
   }
   if ("option" in answer && prompt.options) {
     const at = optionIndexOf(prompt.options, answer.option);
-    return at >= 0 && DECLINE_LABEL.test(prompt.options[at]!.label);
+    return at >= 0 && isDeclineLabel(prompt.options[at]!.label);
   }
   return false;
+}
+
+/**
+ * Is this prompt an approval? Decided from the prompt, never from the answer: the kind, what the rules read the screen as
+ * (a hook's `question`/`choice` does not hide it), its wording, or any option that widens access ("don't ask again").
+ */
+function isApproval(prompt: TaskPrompt): boolean {
+  return (
+    prompt.kind === "permission" ||
+    prompt.screenKind === "permission" ||
+    PERMISSION_TEXT.test(prompt.text) ||
+    (prompt.options?.some((o) => WIDENING_LABEL.test(o.label)) ?? false)
+  );
 }
 
 /** What an answer types into the prompt it was read for, or why it is refused. Nothing is typed by this function. */
@@ -165,18 +218,15 @@ export function planAnswer(prompt: TaskPrompt, answer: TaskAnswer): AnswerPlan {
   if (prompt.kind === "trust") return needsHuman("this prompt asks to trust a folder");
   if (SECRET_PROMPT.test(prompt.text)) return needsHuman("this prompt asks for a password, token or credential");
   if (prompt.kind === "unknown" && TRUST_TEXT.test(prompt.text)) return needsHuman("this prompt may ask to trust a folder");
-  // Approvals are not always `permission`: Codex and generic dialogs say `choice` or `confirm`. Judge by the text and the option too.
-  const approval = (answer: TaskAnswer): boolean =>
-    prompt.kind === "permission" ||
-    PERMISSION_TEXT.test(prompt.text) ||
-    ("option" in answer && prompt.options !== undefined && WIDENING_LABEL.test(prompt.options[optionIndexOf(prompt.options, answer.option)]?.label ?? ""));
+  // Approvals are not always `permission`: Codex and generic dialogs say `choice` or `confirm`. Judged from the prompt alone.
+  const approval = isApproval(prompt);
 
   if ("keys" in answer) {
     const { keys } = answer;
     if (keys.length === 0 || keys.length > ANSWER_KEYS_MAX) return refuse("invalid_answer", `keys takes 1 to ${ANSWER_KEYS_MAX} keys`);
     const bad = keys.find((k) => !Object.hasOwn(ANSWER_KEYS, k));
     if (bad !== undefined) return refuse("invalid_answer", `key ${JSON.stringify(bad)} is not allowed; the keys are ${ANSWER_KEY_NAMES.join(", ")}`);
-    if (approval(answer) && !declines(prompt, answer)) {
+    if (approval && !declines(prompt, answer)) {
       return needsHuman("approving this permission would widen the Agent's access; only a decline (Esc, n or a No option) is answered");
     }
     return { ok: true, bytes: keys.map((k) => ANSWER_KEYS[k]).join(""), summary: `keys [${keys.join(", ")}]` };
@@ -188,12 +238,14 @@ export function planAnswer(prompt: TaskPrompt, answer: TaskAnswer): AnswerPlan {
     if (!prompt.options?.length) return refuse("invalid_answer", "this prompt has no options: answer it with { text } or { keys }");
     const at = optionIndexOf(prompt.options, answer.option);
     if (at < 0) return refuse("invalid_answer", `there is no option ${JSON.stringify(answer.option)}; options are numbered 1 to ${prompt.options.length}`);
-    if (approval(answer) && !declines(prompt, answer)) {
+    if (approval && !declines(prompt, answer)) {
       return needsHuman("approving this permission would widen the Agent's access; only a decline (Esc, n or a No option) is answered");
     }
     return { ok: true, bytes: chooseBytes(prompt.options, at), summary: `option ${at + 1} ${JSON.stringify(prompt.options[at]!.label)}` };
   }
 
+  // A text answer is never a recognised decline: on an approval it is refused, whatever the prompt's kind.
+  if (approval) return needsHuman("approving this permission would widen the Agent's access; only a decline (Esc, n or a No option) is answered, with { keys } or { option }");
   if (prompt.kind !== "question" && prompt.kind !== "choice") {
     return refuse("invalid_answer", `a ${prompt.kind} prompt takes { option } or { keys }, not { text }`);
   }
