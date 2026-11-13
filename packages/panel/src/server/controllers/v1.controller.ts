@@ -1,16 +1,35 @@
 import { z } from "zod";
 import { forbidden, json, noContent, notFound, parseJsonBody, rethrowUnlessDomain } from "./_helpers";
 import { NotFoundError, ValidationError } from "../errors";
-import { HTTP_CREATED } from "~/shared/http-status";
+import { HTTP_BAD_GATEWAY, HTTP_BAD_REQUEST, HTTP_CONFLICT, HTTP_CREATED, HTTP_SERVICE_UNAVAILABLE } from "~/shared/http-status";
+import { jsonError } from "../http-responses";
+import type { SessionsPageDto } from "~/shared/session-wire";
+import {
+  InvalidSessionPageError,
+  SESSION_PAGE_MAX,
+  SESSION_STATUS_FILTERS,
+  decodeSessionCursor,
+  type SessionStatusFilter,
+} from "@actana/shared/session-paging";
 import type { ApiPrincipal } from "../api-key-auth";
-import { stopTask } from "../task-dispatch";
+import { closeSession, queuedAnswer, stopTask } from "../task-dispatch";
+import { deliverCommentNow } from "../task-dispatch/comment-delivery";
 import { stopTaskBody } from "./tasks.controller";
-import { scopeReaches } from "../services/api-keys";
+import { listApiKeys, scopeReaches } from "../services/api-keys";
 import { getCore, listCores } from "../services/cores";
+import { readCoreCapacity } from "../services/core-capacity";
 import { coreLinkManager } from "../services/core-link-manager";
 import type { Core, CoreWithDial } from "~/shared/cores";
-import type { AgentDto, TaskCommentDto, TaskDto, TasksPageDto } from "~/shared/task-wire";
-import type { TaskStatus } from "~/shared/tasks";
+import { toSessionState, type AgentDto, type TaskCommentDto, type TaskDto, type TasksPageDto } from "~/shared/task-wire";
+import { TASKS_WITH_DESCRIPTIONS_MAX_LIMIT, TASK_SESSION_STATES, canMoveTask, isTaskSessionState, taskWaitingReason, type TaskSessionState, type TaskStatus } from "~/shared/tasks";
+import {
+  nextAttemptWatchExpiresAt,
+  nextAttemptWatchToken,
+  pollAfterSeconds,
+  taskWatchToken,
+  taskWatchUrl,
+  watchExpiresAt,
+} from "../services/task-watch";
 import {
   addTaskComment,
   changeTaskStatus,
@@ -31,12 +50,19 @@ import {
   getAgent,
   listAgents,
   listAgentsForCore,
+  updateAgent,
+  CoreHarnessesUnavailableError,
+  HarnessMissingOnCoreError,
+  HarnessNotReadyError,
   type Agent,
 } from "../services/agents";
 import { getOperator } from "../services/operator";
+import { taskAutoRetryView } from "~/shared/auto-retry";
+import { TaskAnswerError, answerTask, readTaskPrompt } from "../task-dispatch/task-answer";
+import { ANSWER_KEYS_MAX, ANSWER_TEXT_MAX } from "../task-dispatch/task-input";
 import { findCoreById } from "../repositories/cores.repo";
 import { HARNESSES } from "~/shared/agents";
-import { OPERATOR_TASK_STATUSES, taskListDto, timeoutMinutesSchema, updateTaskBody } from "./tasks.controller";
+import { autoRetryClampedOf, autoRetrySchema, taskListDto, timeoutMinutesSchema, updateTaskBody, statusBody } from "./tasks.controller";
 
 /**
  * The public REST API under `/api/v1` (#572 PR 2). Every handler takes the
@@ -56,9 +82,10 @@ const newTaskBody = z.object({
   agent: z.string().nullable().optional(),
   startNow: z.boolean().optional(),
   timeoutMinutes: timeoutMinutesSchema.optional(),
+  autoRetry: autoRetrySchema.optional(),
+  fromTaskId: z.string().nullable().optional(),
 });
-const statusBody = z.object({ status: z.enum(OPERATOR_TASK_STATUSES) });
-const commentBody = z.object({ body: z.string(), reassign: z.boolean().optional() });
+const commentBody = z.object({ body: z.string(), reassign: z.boolean().optional(), deliver: z.literal("now").optional() });
 const newAgentBody = z.object({
   coreId: z.string(),
   name: z.string(),
@@ -67,11 +94,55 @@ const newAgentBody = z.object({
   flags: z.array(z.string()).optional(),
 });
 
+/**
+ * The change an Agent takes. Loose on purpose: a field that is not one of these
+ * (a harness, a Core, a command) reaches the service, which refuses it by name,
+ * rather than being dropped here and looking like it worked.
+ */
+export const agentChangesBody = z.looseObject({
+  name: z.string().optional(),
+  model: z.string().nullable().optional(),
+  flags: z.array(z.string()).optional(),
+});
+
+async function withCapacity(core: Core): Promise<CoreWithDial> {
+  return { ...withDial(core), ...(await readCoreCapacity(core.id)) };
+}
+
 function withDial(core: Core): CoreWithDial {
   return { ...core, dial: coreLinkManager().status(core.id) };
 }
 
-function taskDto(t: Task): TaskDto {
+function waitingOf(t: Task): TaskDto["waiting"] {
+  const reason = taskWaitingReason(t);
+  return reason === null ? null : { reason, coreId: t.coreId };
+}
+
+/**
+ * The status URL of a queued (`assigned`) or running attempt (#951), built with #950's own token and URL helpers. `origin` is the
+ * Panel's own (the request's); `AC_PANEL_PUBLIC_URL` wins when set.
+ */
+function watchOf(t: Task, origin: string): NonNullable<V1TaskDto["watch"]> {
+  const now = Date.now();
+  if (t.status === "assigned") {
+    return {
+      url: taskWatchUrl(nextAttemptWatchToken(t, now), origin),
+      expiresAt: nextAttemptWatchExpiresAt(t, now),
+      pollAfterSeconds: 5,
+    };
+  }
+  return {
+    url: taskWatchUrl(taskWatchToken(t, now), origin),
+    expiresAt: watchExpiresAt(t, now),
+    pollAfterSeconds: pollAfterSeconds(t, now),
+  };
+}
+
+/** A Task as the v1 API and MCP return it: the Panel's Task plus, for an `assigned` or `in_progress` attempt, its `watch`. */
+export type V1TaskDto = TaskDto & { watch?: { url: string; expiresAt: number; pollAfterSeconds: number } };
+
+/** Without `origin` (a list row) there is no `watch`: a list carries `sessionState` only. */
+function taskDto(t: Task, origin?: string): V1TaskDto {
   return {
     id: t.id,
     title: t.title,
@@ -82,10 +153,20 @@ function taskDto(t: Task): TaskDto {
     attemptCount: t.attemptCount,
     dispatchedAt: t.dispatchedAt,
     lastError: t.lastError,
+    waiting: waitingOf(t),
     timeoutMinutes: t.timeoutMinutes,
+    autoRetry: taskAutoRetryView(t.autoRetry),
+    sessionState: toSessionState(t.sessionState),
+    sessionStateAt: t.sessionStateAt,
     createdAt: t.createdAt,
     updatedAt: t.updatedAt,
+    ...(origin !== undefined && (t.status === "assigned" || t.status === "in_progress") ? { watch: watchOf(t, origin) } : {}),
   };
+}
+
+/** The Panel's own origin from a request; an MCP call's stand-in request has none (`mcp.invalid`), so the tool passes the real one. */
+function originOf(request: Request): string {
+  return new URL(request.url).origin;
 }
 
 function commentDto(c: TaskComment): TaskCommentDto {
@@ -106,6 +187,16 @@ function agentDto(a: Agent): AgentDto {
 
 async function authorName(): Promise<string> {
   return (await getOperator())?.name?.trim() || "operator";
+}
+
+/**
+ * Who a write is recorded as (#935): the Operator for a browser session, and for an API key the key itself, `<key name> (API key)`,
+ * so the thread tells the Operator from an orchestrator. Used for a comment's author and for `changedBy`, `stoppedBy`, `closedBy`.
+ */
+async function actorName(principal: ApiPrincipal): Promise<string> {
+  if (principal.kind !== "api-key") return authorName();
+  const key = (await listApiKeys(principal.ownerId)).find((k) => k.id === principal.keyId);
+  return `${key?.name ?? principal.keyId} (API key)`;
 }
 
 /**
@@ -133,7 +224,7 @@ function inScope(principal: ApiPrincipal, coreId: string | null): boolean {
 export async function listCoresV1(principal: ApiPrincipal): Promise<Response> {
   const all = await listCores(principal.ownerId);
   const visible = principal.kind === "api-key" ? all.filter((c) => scopeReaches(principal.scope, c.id)) : all;
-  return json({ cores: visible.map(withDial) });
+  return json({ cores: await Promise.all(visible.map(withCapacity)) });
 }
 
 export async function getCoreV1(id: string, principal: ApiPrincipal): Promise<Response> {
@@ -141,7 +232,7 @@ export async function getCoreV1(id: string, principal: ApiPrincipal): Promise<Re
   if (denied) return denied;
   const core = await getCore(id, principal.ownerId);
   if (!core) return notFound("no such Core");
-  return json({ core: withDial(core) });
+  return json({ core: await withCapacity(core) });
 }
 
 // ── Agents ─────────────────────────────────────────────────────────────────
@@ -173,6 +264,23 @@ export async function getAgentV1(principal: ApiPrincipal, id: string): Promise<R
   }
 }
 
+/**
+ * An Agent write's error as a response. When the Core cannot be asked, or does
+ * not have the harness, the 409 also carries a stable `code`
+ * (`core_harnesses_unavailable`, `harness_missing_on_core`, `harness_not_ready`)
+ * a client can branch on; the last is a harness still being checked: ask again.
+ */
+export function agentWriteError(e: unknown): Response {
+  if (
+    e instanceof CoreHarnessesUnavailableError ||
+    e instanceof HarnessMissingOnCoreError ||
+    e instanceof HarnessNotReadyError
+  ) {
+    return json({ error: e.message, code: e.code }, { status: HTTP_CONFLICT });
+  }
+  return rethrowUnlessDomain(e);
+}
+
 export async function createAgentV1(principal: ApiPrincipal, request: Request): Promise<Response> {
   const body = await parseJsonBody(request, newAgentBody);
   if (!body.ok) return body.response;
@@ -188,7 +296,20 @@ export async function createAgentV1(principal: ApiPrincipal, request: Request): 
     });
     return json({ agent: agentDto(agent) }, { status: HTTP_CREATED });
   } catch (e) {
-    return rethrowUnlessDomain(e);
+    return agentWriteError(e);
+  }
+}
+
+export async function updateAgentV1(principal: ApiPrincipal, id: string, request: Request): Promise<Response> {
+  const body = await parseJsonBody(request, agentChangesBody);
+  if (!body.ok) return body.response;
+  try {
+    const agent = await getAgent(principal.ownerId, id);
+    const denied = refuseOutsideScope(principal, agent.coreId);
+    if (denied) return denied;
+    return json({ agent: agentDto(await updateAgent(principal.ownerId, id, body.data)) });
+  } catch (e) {
+    return agentWriteError(e);
   }
 }
 
@@ -204,6 +325,132 @@ export async function deleteAgentV1(principal: ApiPrincipal, id: string): Promis
   }
 }
 
+// ── Sessions ───────────────────────────────────────────────────────────────
+
+export type ListSessionsQuery = {
+  /** The Core whose Sessions to list; the caller has not checked scope yet. */
+  coreId?: string;
+  /** 1 to 100, default 25. */
+  limit?: number;
+  /** The `nextCursor` of the previous page. */
+  cursor?: string;
+  status?: string;
+  archived?: boolean;
+  harness?: string;
+  q?: string;
+};
+
+const SESSIONS_DEFAULT_LIMIT = 25;
+
+type CoreSessionPage = {
+  type?: string;
+  sessions?: Array<{
+    sessionId: string;
+    ptyId: string | null;
+    status: string;
+    updatedAt: number;
+    title?: string;
+    agent?: string;
+    pinned?: boolean;
+    archived?: boolean;
+  }>;
+  nextCursor?: string | null;
+  total?: number;
+};
+
+/**
+ * One page of a Core's Sessions, asked of the Core itself (#960): the Core owns
+ * the rows, filters and orders them, and counts the total. Auth and ownership
+ * as the other v1 routes: a key outside the Core's scope gets 403, another
+ * owner's Core is a 404. Lean rows: no prompt, no transcript.
+ */
+export async function listSessionsV1(principal: ApiPrincipal, query: ListSessionsQuery): Promise<Response> {
+  try {
+    if (!query.coreId) throw new ValidationError("coreId is required");
+    const limit = query.limit ?? SESSIONS_DEFAULT_LIMIT;
+    if (!Number.isInteger(limit) || limit < 1 || limit > SESSION_PAGE_MAX) {
+      throw new ValidationError(`limit must be a whole number from 1 to ${SESSION_PAGE_MAX}`);
+    }
+    if (query.status !== undefined && !(SESSION_STATUS_FILTERS as readonly string[]).includes(query.status)) {
+      throw new ValidationError(`status must be one of ${SESSION_STATUS_FILTERS.join(", ")}`);
+    }
+    if (query.cursor !== undefined) {
+      try {
+        decodeSessionCursor(query.cursor);
+      } catch (e) {
+        if (e instanceof InvalidSessionPageError) throw new ValidationError(e.message);
+        throw e;
+      }
+    }
+    const denied = refuseOutsideScope(principal, query.coreId);
+    if (denied) return denied;
+    if (!(await getCore(query.coreId, principal.ownerId))) return notFound("no such Core");
+    const client = coreLinkManager().client(query.coreId);
+    if (!client) return jsonError(HTTP_SERVICE_UNAVAILABLE, "the Core is not connected");
+    const frame = {
+      type: "sessionsList",
+      limit,
+      ...(query.cursor === undefined ? {} : { cursor: query.cursor }),
+      ...(query.status === undefined ? {} : { status: query.status as SessionStatusFilter }),
+      archived: query.archived ?? false,
+      ...(query.harness ? { harness: query.harness } : {}),
+      ...(query.q ? { q: query.q } : {}),
+    };
+    let answer: CoreSessionPage;
+    try {
+      answer = (await client.request(frame as never)) as CoreSessionPage;
+    } catch {
+      return jsonError(HTTP_BAD_GATEWAY, "the Core did not answer");
+    }
+    // The link hands an error frame back as an answer, not a rejection.
+    if (answer.type !== "sessionsListResult") {
+      const message = String((answer as { message?: unknown }).message ?? "");
+      // The Core refuses what it cannot read: that is the caller's request, not an outage.
+      if (/^(invalid cursor|limit must|status must)/.test(message)) throw new ValidationError(message);
+      return jsonError(
+        HTTP_BAD_GATEWAY,
+        /does not take/.test(message) ? "this Core is too old to page Sessions; update it" : "the Core did not answer",
+      );
+    }
+    const body: SessionsPageDto = {
+      sessions: (answer.sessions ?? []).map((s) => ({
+        id: s.sessionId,
+        title: s.title ?? "",
+        harness: s.agent ?? "",
+        status: s.status,
+        pinned: s.pinned === true,
+        archived: s.archived === true,
+        live: s.ptyId !== null,
+        updatedAt: s.updatedAt,
+      })),
+      nextCursor: answer.nextCursor ?? null,
+      total: answer.total ?? answer.sessions?.length ?? 0,
+    };
+    return json(body);
+  } catch (e) {
+    return rethrowUnlessDomain(e);
+  }
+}
+
+/** `GET /api/v1/sessions?coreId=&limit=&cursor=&status=&archived=&harness=&q=`. */
+export async function listSessionsV1FromQuery(principal: ApiPrincipal, params: URLSearchParams): Promise<Response> {
+  const get = (name: string) => params.get(name) ?? undefined;
+  const limit = get("limit");
+  const archived = get("archived");
+  if (archived !== undefined && archived !== "true" && archived !== "false") {
+    return jsonError(400, "archived must be true or false");
+  }
+  return listSessionsV1(principal, {
+    ...(get("coreId") === undefined ? {} : { coreId: get("coreId")! }),
+    ...(limit === undefined ? {} : { limit: Number(limit) }),
+    ...(get("cursor") === undefined ? {} : { cursor: get("cursor")! }),
+    ...(get("status") === undefined ? {} : { status: get("status")! }),
+    ...(archived === undefined ? {} : { archived: archived === "true" }),
+    ...(get("harness") === undefined ? {} : { harness: get("harness")! }),
+    ...(get("q") === undefined ? {} : { q: get("q")! }),
+  });
+}
+
 // ── Tasks ──────────────────────────────────────────────────────────────────
 
 export type ListTasksQuery = {
@@ -215,30 +462,61 @@ export type ListTasksQuery = {
   limit?: number;
   /** The `nextCursor` of the previous page; needs `limit`. */
   cursor?: string;
+  /** Only Tasks whose Session is in one of these states: one value or a comma list (#951). */
+  sessionState?: string;
+  /** Rows without `description` even with no `limit` (REST `?fields=lean`, and always for MCP `get_tasks`, #957). */
+  lean?: boolean;
+  /** Rows with `description`; needs `limit` of at most {@link TASKS_WITH_DESCRIPTIONS_MAX_LIMIT} (MCP, #957). */
+  withDescriptions?: boolean;
 };
+
+/** `sessionState=a,b` as states, or a 400 for an empty list or a value that is not one. */
+export function parseSessionStateFilter(raw: string): TaskSessionState[] {
+  const parts = raw.split(",").map((p) => p.trim());
+  const bad = parts.find((p) => !isTaskSessionState(p));
+  if (bad !== undefined) {
+    throw new ValidationError(`sessionState must be one or more of ${TASK_SESSION_STATES.join(", ")} (comma separated)`);
+  }
+  return [...new Set(parts as TaskSessionState[])];
+}
 
 /**
  * The Tasks the principal reaches. Without `limit`, every one with full rows, as it always was (#572).
  * With `limit` (#896), one page filtered in SQL, newest update first, without `description`, plus `nextCursor`.
+ * With `lean` (#957) the rows of a list without `limit` also leave out `description`; `withDescriptions`
+ * puts it back on a page of at most 10.
  */
 export async function listTasksV1(principal: ApiPrincipal, query: ListTasksQuery = {}): Promise<Response> {
   try {
+    const sessionStates = query.sessionState === undefined ? undefined : parseSessionStateFilter(query.sessionState);
+    if (query.withDescriptions && (query.limit === undefined || query.limit > TASKS_WITH_DESCRIPTIONS_MAX_LIMIT)) {
+      throw new ValidationError(
+        `withDescriptions needs a limit of ${TASKS_WITH_DESCRIPTIONS_MAX_LIMIT} or less: list without it, then read one Task's brief with get_task`,
+      );
+    }
     if (query.limit === undefined) {
       if (query.cursor !== undefined) throw new ValidationError("cursor needs a limit");
-      const all = await listTasks(principal.ownerId, query.status ? [query.status] : undefined);
+      const all = await listTasks(principal.ownerId, query.status ? [query.status] : undefined, sessionStates);
       const visible = all.filter(
         (t) => inScope(principal, t.coreId) && (query.coreId === undefined || t.coreId === query.coreId),
       );
-      return json({ tasks: visible.map(taskDto) });
+      return json({ tasks: visible.map((t) => (query.lean ? taskListDto(t) : taskDto(t))) });
     }
     const page = await listTasksPage(principal.ownerId, {
       limit: query.limit,
       ...(query.status ? { statuses: [query.status] } : {}),
+      ...(sessionStates === undefined ? {} : { sessionStates }),
       ...(query.coreId === undefined ? {} : { coreId: query.coreId }),
       ...(query.cursor === undefined ? {} : { cursor: query.cursor }),
+      ...(query.withDescriptions ? { withDescriptions: true } : {}),
       ...(principal.kind === "api-key" && !principal.scope.allCores ? { scopeCoreIds: [...principal.scope.coreIds] } : {}),
     });
-    const body: TasksPageDto = { tasks: page.tasks.map(taskListDto), nextCursor: page.nextCursor };
+    const body: Omit<TasksPageDto, "tasks"> & { tasks: (TasksPageDto["tasks"][number] & { description?: string })[] } = {
+      tasks: page.tasks.map((t) =>
+        query.withDescriptions ? { ...taskListDto(t), description: t.description ?? "" } : taskListDto(t),
+      ),
+      nextCursor: page.nextCursor,
+    };
     return json(body);
   } catch (e) {
     return rethrowUnlessDomain(e);
@@ -249,16 +527,21 @@ export async function listTasksV1(principal: ApiPrincipal, query: ListTasksQuery
 export async function listTasksV1FromQuery(principal: ApiPrincipal, params: URLSearchParams): Promise<Response> {
   const limit = params.get("limit");
   const cursor = params.get("cursor");
+  const sessionState = params.get("sessionState");
+  const fields = params.get("fields");
+  if (fields !== null && fields !== "lean") return jsonError(HTTP_BAD_REQUEST, "fields must be lean");
   return listTasksV1(principal, {
+    ...(fields === null ? {} : { lean: true }),
     ...(limit === null ? {} : { limit: Number(limit) }),
     ...(cursor === null ? {} : { cursor }),
+    ...(sessionState === null ? {} : { sessionState }),
   });
 }
 
-export async function createTaskV1(principal: ApiPrincipal, request: Request): Promise<Response> {
+export async function createTaskV1(principal: ApiPrincipal, request: Request, origin = originOf(request)): Promise<Response> {
   const body = await parseJsonBody(request, newTaskBody);
   if (!body.ok) return body.response;
-  const { title, description, coreId, agent, startNow, timeoutMinutes } = body.data;
+  const { title, description, coreId, agent, startNow, timeoutMinutes, autoRetry, fromTaskId } = body.data;
   const denied = refuseOutsideScope(principal, coreId ?? null);
   if (denied) return denied;
   try {
@@ -271,6 +554,16 @@ export async function createTaskV1(principal: ApiPrincipal, request: Request): P
     if (startNow && (!coreId || !agent)) {
       throw new ValidationError("starting a Task now needs a Core and an Agent");
     }
+    if (fromTaskId && principal.kind === "api-key" && !principal.scope.allCores) {
+      // The parent's lineage shapes the answer's autoRetry, so a scoped key may only name a parent it reaches. An unknown id is
+      // answered like one outside the scope (403), so the answer does not say whether the Task exists.
+      const parent = await getTask(principal.ownerId, fromTaskId).catch((e: unknown) => {
+        if (e instanceof NotFoundError) return null;
+        throw e;
+      });
+      const parentDenied = refuseOutsideScope(principal, parent ? parent.coreId : null);
+      if (parentDenied) return parentDenied;
+    }
     const task = await createTask(principal.ownerId, {
       title,
       ...(description === undefined ? {} : { description }),
@@ -278,47 +571,56 @@ export async function createTaskV1(principal: ApiPrincipal, request: Request): P
       agent: agent ?? null,
       startNow: startNow === true,
       ...(timeoutMinutes === undefined ? {} : { timeoutMinutes }),
+      ...(autoRetry === undefined ? {} : { autoRetry }),
+      ...(fromTaskId === undefined ? {} : { fromTaskId }),
     });
-    return json({ task: taskDto(task) }, { status: HTTP_CREATED });
+    return json({ task: taskDto(task, origin), ...autoRetryClampedOf(autoRetry, task), ...queuedAnswer(startNow, coreId) }, { status: HTTP_CREATED });
   } catch (e) {
     return rethrowUnlessDomain(e);
   }
 }
 
-export async function getTaskV1(principal: ApiPrincipal, id: string): Promise<Response> {
+export async function getTaskV1(principal: ApiPrincipal, id: string, origin = ""): Promise<Response> {
   try {
     const task = await getTask(principal.ownerId, id);
     const denied = refuseOutsideScope(principal, task.coreId);
     if (denied) return denied;
     const comments = await listTaskComments(principal.ownerId, id);
-    return json({ task: taskDto(task), comments: comments.map(commentDto) });
+    // While its Session waits for input the Task carries what it asks (#959); null when the Core cannot be read.
+    const prompt = task.sessionState === "needs-input" ? { prompt: await readTaskPrompt(task) } : {};
+    return json({ task: { ...taskDto(task, origin), ...prompt }, comments: comments.map(commentDto) });
   } catch (e) {
     return rethrowUnlessDomain(e);
   }
 }
 
-export async function setTaskStatusV1(principal: ApiPrincipal, id: string, request: Request): Promise<Response> {
+export async function setTaskStatusV1(principal: ApiPrincipal, id: string, request: Request, origin = originOf(request)): Promise<Response> {
   const body = await parseJsonBody(request, statusBody);
   if (!body.ok) return body.response;
   try {
     const task = await getTask(principal.ownerId, id);
     const denied = refuseOutsideScope(principal, task.coreId);
     if (denied) return denied;
-    return json({ task: taskDto(await changeTaskStatus(principal.ownerId, id, body.data.status)) });
+    const { status, autoRetry } = body.data;
+    // A move that is not legal (a running Task, or the status it already has) is refused first, so autoRetry changes nothing then.
+    if (autoRetry !== undefined && canMoveTask(task.status as TaskStatus, status)) await updateTask(principal.ownerId, id, { autoRetry, changedBy: await actorName(principal) });
+    const moved = await changeTaskStatus(principal.ownerId, id, status);
+    return json({ task: taskDto(moved, origin), ...(autoRetry === undefined ? {} : autoRetryClampedOf(autoRetry, moved)) });
   } catch (e) {
     return rethrowUnlessDomain(e);
   }
 }
 
 /** `PATCH /api/v1/tasks/:id` (#722): title, description (409 while `in_progress`) or time limit (#724, any status). */
-export async function updateTaskV1(principal: ApiPrincipal, id: string, request: Request): Promise<Response> {
+export async function updateTaskV1(principal: ApiPrincipal, id: string, request: Request, origin = originOf(request)): Promise<Response> {
   const body = await parseJsonBody(request, updateTaskBody);
   if (!body.ok) return body.response;
   try {
     const task = await getTask(principal.ownerId, id);
     const denied = refuseOutsideScope(principal, task.coreId);
     if (denied) return denied;
-    return json({ task: taskDto(await updateTask(principal.ownerId, id, { ...body.data, changedBy: await authorName() })) });
+    const updated = await updateTask(principal.ownerId, id, { ...body.data, changedBy: await actorName(principal) });
+    return json({ task: taskDto(updated, origin), ...autoRetryClampedOf(body.data.autoRetry, updated) });
   } catch (e) {
     return rethrowUnlessDomain(e);
   }
@@ -338,15 +640,28 @@ export async function deleteTaskV1(principal: ApiPrincipal, id: string): Promise
 }
 
 /** `POST /api/v1/tasks/:id/stop` (#723): stops the Task's Session and fails the Task; 409 unless it is `in_progress`. */
-export async function stopTaskV1(principal: ApiPrincipal, id: string, request: Request): Promise<Response> {
+export async function stopTaskV1(principal: ApiPrincipal, id: string, request: Request, origin = originOf(request)): Promise<Response> {
   const body = await parseJsonBody(request, stopTaskBody);
   if (!body.ok) return body.response;
   try {
     const task = await getTask(principal.ownerId, id);
     const denied = refuseOutsideScope(principal, task.coreId);
     if (denied) return denied;
-    const stopped = await stopTask(principal.ownerId, id, { stoppedBy: await authorName(), reason: body.data.reason });
-    return json({ task: taskDto(stopped.task), session: stopped.session });
+    const stopped = await stopTask(principal.ownerId, id, { stoppedBy: await actorName(principal), reason: body.data.reason });
+    return json({ task: taskDto(stopped.task, origin), session: stopped.session });
+  } catch (e) {
+    return rethrowUnlessDomain(e);
+  }
+}
+
+/** `POST /api/v1/tasks/:id/close-session` (#962): end a finished Task's harness and free its PTY slot; 409 while someone is working in it. */
+export async function closeTaskSessionV1(principal: ApiPrincipal, id: string, origin = ""): Promise<Response> {
+  try {
+    const task = await getTask(principal.ownerId, id);
+    const denied = refuseOutsideScope(principal, task.coreId);
+    if (denied) return denied;
+    const closed = await closeSession(principal.ownerId, id, { closedBy: await actorName(principal) });
+    return json({ task: taskDto(closed.task, origin), session: closed.session });
   } catch (e) {
     return rethrowUnlessDomain(e);
   }
@@ -363,21 +678,65 @@ export async function listTaskCommentsV1(principal: ApiPrincipal, id: string): P
   }
 }
 
-export async function addTaskCommentV1(principal: ApiPrincipal, id: string, request: Request): Promise<Response> {
+export async function addTaskCommentV1(principal: ApiPrincipal, id: string, request: Request, origin = originOf(request)): Promise<Response> {
   const body = await parseJsonBody(request, commentBody);
   if (!body.ok) return body.response;
   try {
     const task = await getTask(principal.ownerId, id);
     const denied = refuseOutsideScope(principal, task.coreId);
     if (denied) return denied;
-    const input = { authorKind: "user" as const, authorName: await authorName(), body: body.data.body };
+    const input = { authorKind: "user" as const, authorName: await actorName(principal), body: body.data.body };
     if (body.data.reassign) {
       const updated = await commentAndReassign(principal.ownerId, id, input);
-      return json({ task: taskDto(updated), comments: (await listTaskComments(principal.ownerId, id)).map(commentDto) });
+      return json({ task: taskDto(updated, origin), comments: (await listTaskComments(principal.ownerId, id)).map(commentDto) });
     }
     const stored = await addTaskComment(principal.ownerId, id, input);
-    return json({ comment: commentDto(stored) }, { status: HTTP_CREATED });
+    // A comment is a note unless the caller asks for delivery (#935): an orchestrator's progress comments on its own Task must not be typed into its own Session.
+    const delivery = body.data.deliver === "now" ? await deliverCommentNow(principal.ownerId, id, stored) : undefined;
+    return json({ comment: commentDto(stored), ...(delivery ? { delivery } : {}) }, { status: HTTP_CREATED });
   } catch (e) {
+    return rethrowUnlessDomain(e);
+  }
+}
+
+/** What an answer says: typed text, an option by number or label, or keys from a fixed allowlist (#959). */
+export const answerTaskBody = z.object({
+  answer: z.union([
+    z.strictObject({ text: z.string().min(1).max(ANSWER_TEXT_MAX) }),
+    z.strictObject({ option: z.union([z.number().int().min(1), z.string().min(1).max(200)]) }),
+    z.strictObject({ keys: z.array(z.string().max(16)).min(1).max(ANSWER_KEYS_MAX) }),
+  ]),
+  expect: z.number().int().optional(),
+});
+
+/** Who answered: a key is named `<key name> (API key)` (the text lane A's #935 gives a key's comments), a session is the Operator. */
+async function answererName(principal: ApiPrincipal): Promise<string> {
+  if (principal.kind !== "api-key") return authorName();
+  const key = (await listApiKeys(principal.ownerId)).find((k) => k.id === principal.keyId);
+  return key ? `${key.name} (API key)` : "API key";
+}
+
+/**
+ * `POST /api/v1/tasks/:id/answer` (#959): answer the prompt a Task's Session waits at. 409 with a `code`: `not_waiting`,
+ * `stale_prompt`, `needs_human` (trust, credentials, a permission that widens access: ask a human), `prompt_unavailable`;
+ * 400 `invalid_answer`. Nothing is typed on a refusal. Needs `tasks:write`, like every Task write.
+ */
+export async function answerTaskV1(principal: ApiPrincipal, id: string, request: Request, origin = originOf(request)): Promise<Response> {
+  const body = await parseJsonBody(request, answerTaskBody);
+  if (!body.ok) return body.response;
+  try {
+    const task = await getTask(principal.ownerId, id);
+    const denied = refuseOutsideScope(principal, task.coreId);
+    if (denied) return denied;
+    const { prompt, summary } = await answerTask(task, {
+      answer: body.data.answer,
+      ...(body.data.expect === undefined ? {} : { expect: body.data.expect }),
+      by: await answererName(principal),
+    });
+    const fresh = await getTask(principal.ownerId, id);
+    return json({ task: taskDto(fresh, origin), answered: { kind: prompt.kind, at: prompt.at, answer: summary } });
+  } catch (e) {
+    if (e instanceof TaskAnswerError) return json({ error: e.message, code: e.code }, { status: e.status });
     return rethrowUnlessDomain(e);
   }
 }

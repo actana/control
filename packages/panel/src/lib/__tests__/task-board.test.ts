@@ -4,7 +4,7 @@ import type { InfiniteData } from "@tanstack/react-query";
 import type { TaskCountsDto, TaskDto, TaskListDto, TasksPageDto } from "~/shared/task-wire";
 
 const t = (id: string, status: TaskDto["status"], coreId: string | null, updatedAt = 1): TaskDto => ({
-  id, title: id, description: "", status, coreId, agent: null, attemptCount: 0, dispatchedAt: null, lastError: null, timeoutMinutes: 60, createdAt: 1, updatedAt,
+  id, title: id, description: "", status, coreId, agent: null, attemptCount: 0, dispatchedAt: null, lastError: null, timeoutMinutes: 60, sessionState: null, sessionStateAt: null, createdAt: 1, updatedAt,
 });
 
 describe("task board helpers", () => {

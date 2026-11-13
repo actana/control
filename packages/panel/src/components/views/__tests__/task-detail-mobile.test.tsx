@@ -52,7 +52,7 @@ function dispatchComment(attempt: number, sessionId: string): TaskCommentDto {
 }
 
 function mount(status: TaskStatus, opts: { attemptCount?: number; comments?: TaskCommentDto[] } = {}) {
-  const task: TaskDto = { id: "T-7", title: "Rotate keys", description: "", status, coreId: "core_a", agent: null, attemptCount: opts.attemptCount ?? 1, dispatchedAt: 1, lastError: null, timeoutMinutes: 60, createdAt: 1, updatedAt: 1 };
+  const task: TaskDto = { id: "T-7", title: "Rotate keys", description: "", status, coreId: "core_a", agent: null, attemptCount: opts.attemptCount ?? 1, dispatchedAt: 1, lastError: null, timeoutMinutes: 60, sessionState: null, sessionStateAt: null, createdAt: 1, updatedAt: 1 };
   api.getTask.mockResolvedValue({ task, comments: opts.comments ?? [dispatchComment(1, "s-1")] });
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(
@@ -141,6 +141,15 @@ describe("Task detail on a phone", () => {
 
   it("sends a Comment from the pinned composer", async () => {
     await open();
+    fireEvent.change(screen.getByLabelText("Comment"), { target: { value: "note" } });
+    fireEvent.click(screen.getByRole("button", { name: "Comment" }));
+    // #935: "Also type it into the running Session" is on by default, so a Comment on a running Task delivers now.
+    await waitFor(() => expect(api.commentOnTask).toHaveBeenCalledWith("T-7", { body: "note", reassign: false, deliver: "now" }));
+  });
+
+  it("sends a note only, with no deliver, when the Session box is unticked", async () => {
+    await open();
+    fireEvent.click(screen.getByLabelText(/Also type it into the running Session/));
     fireEvent.change(screen.getByLabelText("Comment"), { target: { value: "note" } });
     fireEvent.click(screen.getByRole("button", { name: "Comment" }));
     await waitFor(() => expect(api.commentOnTask).toHaveBeenCalledWith("T-7", { body: "note", reassign: false }));

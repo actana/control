@@ -1,0 +1,2 @@
+[2J[Hnpm will install 14 packages.
+[1mProceed with the install? [Y/n][22m 

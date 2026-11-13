@@ -2,7 +2,8 @@ import { and, asc, desc, eq, getTableColumns, inArray, sql, type SQL } from "dri
 import { ownedBy } from "~/db/owner";
 import { panelDb } from "~/db/panel-db-handle";
 import { taskComments, taskStatusHistory, tasks } from "~/db/pg-schema";
-import type { TaskStatus } from "~/shared/tasks";
+import type { TaskAutoRetry } from "~/shared/auto-retry";
+import type { TaskSessionState, TaskStatus } from "~/shared/tasks";
 import { insertOutboxInTx, type NewOutboxRow, type PanelTx } from "./webhooks.repo";
 
 export type TaskRow = typeof tasks.$inferSelect;
@@ -19,11 +20,24 @@ export type TaskStatusHistoryRow = typeof taskStatusHistory.$inferSelect;
  * webhooks (#574) are written in the same transaction as the change.
  */
 
-export async function findTasks(ownerId: number, statuses?: TaskStatus[]): Promise<TaskRow[]> {
+export async function findTasks(
+  ownerId: number,
+  statuses?: TaskStatus[],
+  sessionStates?: readonly TaskSessionState[],
+): Promise<TaskRow[]> {
   return panelDb()
     .select()
     .from(tasks)
-    .where(ownedBy(tasks, ownerId, statuses?.length ? inArray(tasks.status, statuses) : undefined))
+    .where(
+      ownedBy(
+        tasks,
+        ownerId,
+        and(
+          statuses?.length ? inArray(tasks.status, statuses) : undefined,
+          sessionStates?.length ? inArray(tasks.sessionState, [...sessionStates]) : undefined,
+        ),
+      ),
+    )
     .orderBy(desc(tasks.createdAt), asc(tasks.id));
 }
 
@@ -33,15 +47,20 @@ export type TaskListRow = Omit<TaskRow, "description">;
 export type TasksPageQuery = {
   /** Only these statuses; none given = every status. */
   statuses?: readonly TaskStatus[];
+  /** Only Tasks whose Session is in one of these states (#951); none given = any, including no Session. */
+  sessionStates?: readonly TaskSessionState[];
   coreId?: string;
   /** A restricted API key's Cores: only Tasks on one of these (a Task with no Core is left out). */
   scopeCoreIds?: readonly string[];
   limit: number;
   /** The `nextCursor` of the previous page. */
   cursor?: string;
+  /** Also select `description` (#957); the caller keeps the page small. */
+  withDescriptions?: boolean;
 };
 
-export type TasksPage = { tasks: TaskListRow[]; nextCursor: string | null };
+/** A row of a page: `description` is there only when the query asked for it. */
+export type TasksPage = { tasks: (TaskListRow & { description?: string })[]; nextCursor: string | null };
 
 /** The opaque cursor: base64url of `updatedAt:id`, the sort key of the last row of a page. */
 function encodeTaskCursor(row: { updatedAt: number; id: string }): string {
@@ -80,8 +99,10 @@ export class InvalidTaskCursorError extends Error {
  */
 export async function findTasksPage(ownerId: number, query: TasksPageQuery): Promise<TasksPage> {
   const { description: _description, ...listColumns } = getTableColumns(tasks);
+  const columns = query.withDescriptions ? getTableColumns(tasks) : listColumns;
   const conditions: (SQL | undefined)[] = [
     query.statuses?.length ? inArray(tasks.status, [...query.statuses]) : undefined,
+    query.sessionStates?.length ? inArray(tasks.sessionState, [...query.sessionStates]) : undefined,
     query.coreId === undefined ? undefined : eq(tasks.coreId, query.coreId),
     query.scopeCoreIds === undefined
       ? undefined
@@ -95,7 +116,7 @@ export async function findTasksPage(ownerId: number, query: TasksPageQuery): Pro
     conditions.push(sql`(${tasks.updatedAt}, ${tasks.id}) < (${after.updatedAt}, ${after.id})`);
   }
   const rows = await panelDb()
-    .select(listColumns)
+    .select(columns)
     .from(tasks)
     .where(ownedBy(tasks, ownerId, and(...conditions)))
     .orderBy(desc(tasks.updatedAt), desc(tasks.id))
@@ -191,9 +212,10 @@ export async function transitionTask(
   historyId: string,
   comment?: Omit<NewTaskCommentRow, "taskId" | "ownerId" | "createdAt">,
   /** Written with the move: the dispatcher records why a start failed (#570). */
-  patch: { lastError?: string | null } = {},
+  patch: { lastError?: string | null; /** Give back the attempt the claim counted: no Session started (#962). */ refundAttempt?: boolean } = {},
   outboxFor?: (args: { from: TaskStatus; task: TaskRow }) => NewOutboxRow[],
 ): Promise<TransitionResult> {
+  const { refundAttempt, ...fields } = patch;
   return panelDb().transaction(async (tx): Promise<TransitionResult> => {
     const locked = await tx
       .select()
@@ -209,7 +231,16 @@ export async function transitionTask(
     }
     const updated = await tx
       .update(tasks)
-      .set({ status: to, updatedAt: now, ...patch })
+      .set({
+        status: to,
+        updatedAt: now,
+        sessionState: null,
+        sessionStateAt: null,
+        // Any other move ends a pending auto-retry (#958): an operator's own move must not wait for its back-off.
+        autoRetry: sql`case when ${tasks.autoRetry} is null then null else jsonb_set(${tasks.autoRetry}, '{notBefore}', 'null'::jsonb) end`,
+        ...fields,
+        ...(refundAttempt ? { attemptCount: sql`greatest(${tasks.attemptCount} - 1, 0)` } : {}),
+      })
       .where(ownedBy(tasks, ownerId, and(eq(tasks.id, id), eq(tasks.status, from))))
       .returning();
     await tx
@@ -218,6 +249,52 @@ export async function transitionTask(
     const task = updated[0]!;
     await writeOutbox(tx, outboxFor?.({ from, task }));
     return { kind: "ok", task };
+  });
+}
+
+export type SessionStateResult =
+  | { kind: "missing" }
+  /** The Task is not `in_progress`: no attempt runs, so there is no state to record. */
+  | { kind: "not-running"; status: TaskStatus }
+  /** The Task already has this state. */
+  | { kind: "unchanged"; task: TaskRow }
+  | { kind: "changed"; task: TaskRow; from: TaskSessionState | null };
+
+/**
+ * Record what the Session of the running attempt is doing (#949), if the Task is `in_progress` once its row is
+ * locked and the state differs. `commentFor` gets the previous state and returns the system comment to add in the
+ * same transaction, or null; `outboxFor` adds outbox events to it. The status and `updated_at` do not move.
+ */
+export async function setTaskSessionState(
+  ownerId: number,
+  id: string,
+  state: TaskSessionState,
+  now: number,
+  commentFor?: (from: TaskSessionState | null) => Omit<NewTaskCommentRow, "taskId" | "ownerId" | "createdAt"> | null,
+  outboxFor?: (args: { from: TaskSessionState | null; task: TaskRow; comment: NewTaskCommentRow | null }) => NewOutboxRow[],
+): Promise<SessionStateResult> {
+  return panelDb().transaction(async (tx): Promise<SessionStateResult> => {
+    const locked = await tx
+      .select()
+      .from(tasks)
+      .where(ownedBy(tasks, ownerId, eq(tasks.id, id)))
+      .for("update");
+    const current = locked[0];
+    if (!current) return { kind: "missing" };
+    if (current.status !== "in_progress") return { kind: "not-running", status: current.status as TaskStatus };
+    const from = (current.sessionState as TaskSessionState | null) ?? null;
+    if (from === state) return { kind: "unchanged", task: current };
+    const fields = commentFor?.(from) ?? null;
+    const comment = fields ? { ...fields, taskId: id, ownerId, createdAt: now } : null;
+    if (comment) await tx.insert(taskComments).values({ ...comment, ownerId });
+    const updated = await tx
+      .update(tasks)
+      .set({ sessionState: state, sessionStateAt: now })
+      .where(ownedBy(tasks, ownerId, eq(tasks.id, id)))
+      .returning();
+    const task = updated[0]!;
+    await writeOutbox(tx, outboxFor?.({ from, task, comment }));
+    return { kind: "changed", task, from };
   });
 }
 
@@ -234,7 +311,14 @@ export async function updateTaskRow(
   id: string,
   legalFrom: readonly TaskStatus[],
   /** Only the fields given are written. */
-  patch: { title?: string; description?: string; timeoutMinutes?: number | null; updatedAt: number },
+  patch: {
+    title?: string;
+    description?: string;
+    timeoutMinutes?: number | null;
+    /** The new `autoRetry`, decided from the locked row (#958). */
+    autoRetry?: (before: TaskRow) => TaskAutoRetry | null;
+    updatedAt: number;
+  },
   outboxFor?: (args: {
     before: TaskRow;
     task: TaskRow;
@@ -265,6 +349,7 @@ export async function updateTaskRow(
         ...(patch.title === undefined ? {} : { title: patch.title }),
         ...(patch.description === undefined ? {} : { description: patch.description }),
         ...(patch.timeoutMinutes === undefined ? {} : { timeoutMinutes: patch.timeoutMinutes }),
+        ...(patch.autoRetry === undefined ? {} : { autoRetry: patch.autoRetry(current) }),
         updatedAt: patch.updatedAt,
       })
       .where(ownedBy(tasks, ownerId, eq(tasks.id, id)))
@@ -326,6 +411,8 @@ export async function claimAssignedTask(
         attemptCount: sql`${tasks.attemptCount} + 1`,
         dispatchedAt: now,
         lastError: null,
+        sessionState: null,
+        sessionStateAt: null,
         updatedAt: now,
       })
       .where(ownedBy(tasks, ownerId, and(eq(tasks.id, id), eq(tasks.status, "assigned"))))
@@ -342,5 +429,151 @@ export async function claimAssignedTask(
     });
     await writeOutbox(tx, outboxFor?.(row));
     return row;
+  });
+}
+
+/**
+ * Give a claimed Task back (#962): the Session could not be started for a reason that may pass (a Core that is full or
+ * not connected). `in_progress` to `assigned` with the attempt the claim counted given back and `reason` as the waiting
+ * reason (`lastError`), only if the Task is still `in_progress` on that attempt once its row is locked: a Task stopped
+ * meanwhile is left alone. History and outbox ride the same transaction. Null when it did not apply.
+ */
+export async function releaseClaimedTask(
+  ownerId: number,
+  id: string,
+  attempt: number,
+  reason: string,
+  now: number,
+  historyId: string,
+  comment?: Omit<NewTaskCommentRow, "taskId" | "ownerId" | "createdAt">,
+  outboxFor?: (task: TaskRow) => NewOutboxRow[],
+): Promise<TaskRow | null> {
+  return panelDb().transaction(async (tx) => {
+    const released = await tx
+      .update(tasks)
+      .set({
+        status: "assigned",
+        attemptCount: Math.max(attempt - 1, 0),
+        dispatchedAt: null,
+        lastError: reason,
+        sessionState: null,
+        sessionStateAt: null,
+        updatedAt: now,
+      })
+      .where(ownedBy(tasks, ownerId, and(eq(tasks.id, id), eq(tasks.status, "in_progress"), eq(tasks.attemptCount, attempt))))
+      .returning();
+    const row = released[0];
+    if (!row) return null;
+    if (comment) await tx.insert(taskComments).values({ ...comment, taskId: id, ownerId, createdAt: now });
+    await tx.insert(taskStatusHistory).values({
+      id: historyId,
+      taskId: id,
+      ownerId,
+      fromStatus: "in_progress",
+      toStatus: "assigned",
+      changedAt: now,
+    });
+    await writeOutbox(tx, outboxFor?.(row));
+    return row;
+  });
+}
+
+/**
+ * Record why an `assigned` Task is not being started (#962), as its `lastError`, when it differs from what is there. With
+ * `comment`, that is added in the same transaction. Only while the Task is `assigned`. Null when nothing changed.
+ */
+export async function setAssignedWaitingReason(
+  ownerId: number,
+  id: string,
+  reason: string,
+  now: number,
+  comment?: Omit<NewTaskCommentRow, "taskId" | "ownerId" | "createdAt">,
+): Promise<TaskRow | null> {
+  return panelDb().transaction(async (tx) => {
+    const updated = await tx
+      .update(tasks)
+      .set({ lastError: reason, updatedAt: now })
+      .where(
+        ownedBy(
+          tasks,
+          ownerId,
+          and(eq(tasks.id, id), eq(tasks.status, "assigned"), sql`${tasks.lastError} is distinct from ${reason}`),
+        ),
+      )
+      .returning();
+    const row = updated[0];
+    if (!row) return null;
+    if (comment) await tx.insert(taskComments).values({ ...comment, taskId: id, ownerId, createdAt: now });
+    return row;
+  });
+}
+
+/**
+ * An auto-retry (#958): a running attempt ended without a result and the Task goes back to `assigned` to be dispatched again
+ * after a back-off. Only if the Task is `in_progress` on that attempt once its row is locked and has `autoRetry`: this is the one
+ * `in_progress` to `assigned` move outside TASK_TRANSITIONS besides the claim give-back (#962), so the legal source is checked
+ * here, explicitly. The attempt count is NOT given back (the dead attempt counts). `next` gets the row as it was and returns the
+ * new `autoRetry`, the waiting reason and the system comment. History and outbox ride the same transaction. Null when it did not apply.
+ */
+export async function scheduleAutoRetryRow(
+  ownerId: number,
+  id: string,
+  attempt: number,
+  now: number,
+  historyId: string,
+  next: (before: TaskRow) => { autoRetry: TaskAutoRetry; waitingReason: string; comment: CommentInsert },
+  outboxFor?: (args: { task: TaskRow; comment: NewTaskCommentRow }) => NewOutboxRow[],
+): Promise<TaskRow | null> {
+  return panelDb().transaction(async (tx) => {
+    const locked = await tx
+      .select()
+      .from(tasks)
+      .where(ownedBy(tasks, ownerId, eq(tasks.id, id)))
+      .for("update");
+    const current = locked[0];
+    if (!current || current.status !== "in_progress" || current.attemptCount !== attempt || !current.autoRetry) return null;
+    const { autoRetry, waitingReason, comment: fields } = next(current);
+    await tx.insert(taskComments).values({ ...fields, taskId: id, ownerId, createdAt: now });
+    const comment = { ...fields, taskId: id, ownerId, createdAt: now };
+    const updated = await tx
+      .update(tasks)
+      .set({ status: "assigned", autoRetry, lastError: waitingReason, sessionState: null, sessionStateAt: null, updatedAt: now })
+      .where(ownedBy(tasks, ownerId, eq(tasks.id, id)))
+      .returning();
+    await tx
+      .insert(taskStatusHistory)
+      .values({ id: historyId, taskId: id, ownerId, fromStatus: "in_progress", toStatus: "assigned", changedAt: now });
+    const task = updated[0]!;
+    await writeOutbox(tx, outboxFor?.({ task, comment }));
+    return task;
+  });
+}
+
+/**
+ * Change a Task's `autoRetry` without moving its status (#958): `next` gets the locked row's value and returns the new one
+ * (null = leave the row alone). Bumps `updated_at` only when it wrote. Any status.
+ */
+export async function updateAutoRetryRow(
+  ownerId: number,
+  id: string,
+  now: number,
+  next: (current: TaskAutoRetry | null, task: TaskRow) => TaskAutoRetry | null,
+): Promise<TaskRow | null> {
+  return panelDb().transaction(async (tx) => {
+    const locked = await tx
+      .select()
+      .from(tasks)
+      .where(ownedBy(tasks, ownerId, eq(tasks.id, id)))
+      .for("update");
+    const current = locked[0];
+    if (!current) return null;
+    const value = next(current.autoRetry ?? null, current);
+    if (!value) return null;
+    const updated = await tx
+      .update(tasks)
+      .set({ autoRetry: value, updatedAt: now })
+      .where(ownedBy(tasks, ownerId, eq(tasks.id, id)))
+      .returning();
+    return updated[0]!;
   });
 }

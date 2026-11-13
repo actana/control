@@ -1,0 +1,11 @@
+────────────────────────────────────────────────────────────────────────────────
+
+ Select provider to login:
+
+ → Anthropic (Claude Pro/Max)
+   GitHub Copilot
+   OpenAI (ChatGPT Plus/Pro)
+
+ ↑↓ navigate  enter select  escape/ctrl+c cancel
+
+────────────────────────────────────────────────────────────────────────────────

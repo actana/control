@@ -290,6 +290,8 @@ const OPEN_SESSIONS_KEY = "mc.terminalOpenSessions";
 /** Sessions change on hot paths (session sync per server event, per-pane ptyId
  *  updates while a grid boots), so open-session persistence is debounced. */
 const SESSION_PERSIST_DEBOUNCE_MS = 300;
+// The most Session ids one `sessionRowsList` frame may name (its page cap).
+const PENDING_LOOKUP_CHUNK = 100;
 
 export function loadGridView(): boolean {
   if (typeof window === "undefined") return false;
@@ -843,8 +845,9 @@ export function TerminalProvider({ children }: { children: ReactNode }) {
   // (pendingValidation), so a dead session's agent never boots.
   //
   // A session's row lives on its Core, so this asks each Core touched by the
-  // pending set for its rows over the panel link (`listSessionRows(coreId)`) and
-  // matches on `sessionId`. Session metadata is refreshed from the returned
+  // pending set for exactly those rows over the panel link (`listSessionRows` with
+  // an `ids` filter, so a Core's whole history never crosses) and matches on
+  // `sessionId`. Session metadata is refreshed from the returned
   // {@link CoreLinkSessionRow}, but the persisted `startCommand` is kept —
   // the snapshot doesn't carry the fields (`claudeSessionId`, ...) that
   // `commandForSession` needs to rebuild it.
@@ -857,9 +860,9 @@ export function TerminalProvider({ children }: { children: ReactNode }) {
     void (async () => {
       const bridge = getPanelBridge();
       const coreIds = new Set(pending.map((s) => s.coreId));
-      // Fan out one `listSessionRows(coreId)` per Core touched by the pending set —
-      // fewer round-trips than one call per session, and the result is a full
-      // snapshot the closure below can look up by sessionId.
+      // Fan out per Core touched by the pending set, asking for the pending ids
+      // only (chunked to the frame's page cap) — the result is a snapshot the
+      // closure below can look up by sessionId.
       const byCore = new Map<string, Map<string, Session> | null>();
       await Promise.all(
         [...coreIds].map(async (coreId) => {
@@ -867,12 +870,23 @@ export function TerminalProvider({ children }: { children: ReactNode }) {
             byCore.set(coreId, null);
             return;
           }
-          const listed = await bridge.listSessionRows(coreId).catch(() => null);
-          const sessions = listed?.sessions;
-          if (!sessions) {
+          const ids = pending.filter((p) => p.coreId === coreId).map((p) => p.sessionId);
+          const chunks: string[][] = [];
+          for (let i = 0; i < ids.length; i += PENDING_LOOKUP_CHUNK) chunks.push(ids.slice(i, i + PENDING_LOOKUP_CHUNK));
+          const answers = await Promise.all(
+            chunks.map((chunk) =>
+              bridge
+                .listSessionRows(coreId, { limit: chunk.length, ids: chunk, archived: false })
+                .catch(() => null),
+            ),
+          );
+          // Any failed chunk reads as the Core being unreachable: keep the
+          // snapshot rather than closing sessions we could not check.
+          if (answers.some((a) => !a)) {
             byCore.set(coreId, null);
             return;
           }
+          const sessions = answers.flatMap((a) => a!.sessions);
           byCore.set(
             coreId,
             new Map(

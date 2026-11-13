@@ -1,6 +1,7 @@
 import { DEFAULT_AGENT_LAUNCHER_CONFIG } from "~/shared/harness-launcher-config";
 import { useEffect, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
+import { AutoRetrySettingsSection } from "~/components/views/AutoRetrySettingsSection";
 import { Btn } from "~/components/ui/Btn";
 import { Field, SettingsSection, ToggleRow } from "~/components/views/SettingsParts";
 import { api, type AppSettings } from "~/lib/api";
@@ -23,6 +24,7 @@ export function GeneralSettingsPage() {
   const toastEnabled = settings?.sessionFinishToastEnabled ?? true;
   const osNotificationEnabled =
     settings?.sessionFinishOsNotificationEnabled ?? false;
+  const blockedEnabled = settings?.sessionBlockedNotificationEnabled ?? true;
   const notificationSoundEnabled = settings?.notificationSoundEnabled ?? true;
   const [permission, setPermission] = useState<OsNotificationPermission>("default");
   const [permissionHint, setPermissionHint] = useState<string | null>(null);
@@ -48,6 +50,7 @@ export function GeneralSettingsPage() {
         | "mouseGradientDisabled"
         | "sessionFinishToastEnabled"
         | "sessionFinishOsNotificationEnabled"
+        | "sessionBlockedNotificationEnabled"
         | "notificationSoundEnabled"
       >
     >,
@@ -56,6 +59,7 @@ export function GeneralSettingsPage() {
     mouseGradientDisabled: settings?.mouseGradientDisabled ?? false,
     sessionFinishToastEnabled: toastEnabled,
     sessionFinishOsNotificationEnabled: osNotificationEnabled,
+    sessionBlockedNotificationEnabled: blockedEnabled,
     notificationSoundEnabled,
     terminalZoomLevel: settings?.terminalZoomLevel ?? DEFAULT_TERMINAL_ZOOM_LEVEL,
     sessionHeaderButtons:
@@ -85,6 +89,7 @@ export function GeneralSettingsPage() {
         | "mouseGradientDisabled"
         | "sessionFinishToastEnabled"
         | "sessionFinishOsNotificationEnabled"
+        | "sessionBlockedNotificationEnabled"
         | "notificationSoundEnabled"
       >
     >,
@@ -111,6 +116,10 @@ export function GeneralSettingsPage() {
 
   const setToastEnabled = async (sessionFinishToastEnabled: boolean) => {
     await updateSettings({ sessionFinishToastEnabled });
+  };
+
+  const setBlockedEnabled = async (sessionBlockedNotificationEnabled: boolean) => {
+    await updateSettings({ sessionBlockedNotificationEnabled });
   };
 
   const setNotificationSoundEnabled = async (enabled: boolean) => {
@@ -204,6 +213,15 @@ export function GeneralSettingsPage() {
             label="Show toast"
           />
         </Field>
+        <Field label="Blocked work">
+          <ToggleRow
+            title="Notify when work is blocked"
+            description="Notify when a session needs input, or a Task's session needs input or sits idle without a result. Uses the toast, sound and OS settings here."
+            checked={blockedEnabled}
+            onChange={(v) => void setBlockedEnabled(v).catch(ignoreRolledBack)}
+            label="Notify"
+          />
+        </Field>
         <Field label="OS notification">
           <ToggleRow
             title="OS notification"
@@ -232,6 +250,7 @@ export function GeneralSettingsPage() {
           )}
         </Field>
       </SettingsSection>
+      <AutoRetrySettingsSection />
       <AboutSection />
       <ReloadSection />
     </>

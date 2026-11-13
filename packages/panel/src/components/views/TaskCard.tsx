@@ -1,4 +1,5 @@
 import { Icon } from "~/components/ui/Icon";
+import { TaskSessionBadge } from "~/components/views/TaskSessionBadge";
 import { formatRelativeTime } from "~/lib/format-relative-time";
 import { TASK_STATUS_LABEL } from "~/lib/task-board";
 import type { TaskCardDrag } from "~/lib/use-board-drag";
@@ -39,17 +40,14 @@ export function TaskCard({
   placeholder?: boolean;
 }) {
   const finished = (FINISHED_TASK_STATUSES as readonly string[]).includes(task.status);
-  const detail =
+  // The status and attempt, which the badge follows; then the Core and Agent, the part that may be cut off.
+  const head =
     task.status === "draft" && !task.agent
       ? "draft · no Agent yet"
-      : [
-          TASK_STATUS_LABEL[task.status].toLowerCase(),
-          task.status === "in_progress" ? `attempt ${task.attemptCount}` : null,
-          coreLabel,
-          agentLabel,
-        ]
+      : [TASK_STATUS_LABEL[task.status].toLowerCase(), task.status === "in_progress" ? `attempt ${task.attemptCount}` : null]
           .filter(Boolean)
           .join(" · ");
+  const where = task.status === "draft" && !task.agent ? "" : [coreLabel, agentLabel].filter(Boolean).join(" · ");
   return (
     <div
       role="button"
@@ -119,8 +117,10 @@ export function TaskCard({
         <div style={compact ? { fontWeight: 600, overflowWrap: "anywhere" } : { fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
           {task.title}
         </div>
-        <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--text-dim)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-          {detail}
+        <div style={{ display: "flex", alignItems: "baseline", minWidth: 0, fontFamily: "var(--mono)", fontSize: 12, color: "var(--text-dim)" }}>
+          <span style={{ flexShrink: 0, whiteSpace: "nowrap" }}>{head}</span>
+          <TaskSessionBadge state={task.sessionState} />
+          {where ? <span style={{ minWidth: 0, marginLeft: 6, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{`· ${where}`}</span> : null}
         </div>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontFamily: "var(--mono)", fontSize: 12, color: "var(--text-dim)" }}>
           <span style={compact ? { display: "inline-flex", alignItems: "center", gap: 8 } : undefined}>

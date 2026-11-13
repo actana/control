@@ -40,12 +40,12 @@ export type CoreSessionWriterPorts = {
 export class CoreSessionWriter {
   constructor(private readonly ports: CoreSessionWriterPorts) {}
 
-  mutate(mutation: CoreSessionMutation): CoreSessionRow | null {
+  mutate(mutation: CoreSessionMutation, opts: { source?: string } = {}): CoreSessionRow | null {
     const { mutationPort } = this.ports;
     if (!mutationPort) return null;
     const previousStatus = this.priorSessionStatus(mutation);
     const session = mutationPort.mutateSession(mutation);
-    if (session) this.recordSessionMutation(mutation, session, previousStatus);
+    if (session) this.recordSessionMutation(mutation, session, previousStatus, opts.source);
     return session;
   }
 
@@ -96,6 +96,7 @@ export class CoreSessionWriter {
     mutation: CoreSessionMutation,
     session: CoreSessionRow,
     previousStatus: string | null,
+    source?: string,
   ): void {
     const { eventLog } = this.ports;
     if (!eventLog) return;
@@ -121,6 +122,10 @@ export class CoreSessionWriter {
     const payload = JSON.stringify({
       sessionId: session.sessionId,
       ...(status === undefined ? {} : { status }),
+      // What set the status when it was not a hook: `screen:<ruleId>` (issue
+      // 963). The payload is JSON the Core writes and no frame schema; a
+      // reader that does not know the field ignores it.
+      ...(source === undefined ? {} : { source }),
     });
     eventLog.appendEvent(kind, payload, { sessionId: session.sessionId });
     this.recordSessionFinish(mutation, session, previousStatus);

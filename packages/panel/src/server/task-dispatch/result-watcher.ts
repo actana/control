@@ -1,5 +1,5 @@
 import { CoreSharedError, type CoreShared, type SharedChange } from "@actana/sdk/shared";
-import { DuplicateTaskCommentSourceError, addTaskComment, applyTaskResult, listTasks } from "../services/tasks";
+import { DuplicateTaskCommentSourceError, addTaskComment, applyTaskResult, listTasks, setTaskSessionState } from "../services/tasks";
 import { NotFoundError } from "../errors";
 import {
   REPORT_END_MARKER,
@@ -12,9 +12,10 @@ import {
   taskResultPath,
   type TaskResult,
 } from "~/shared/task-report";
-import { formatTaskTimeoutReason } from "~/shared/tasks";
+import { formatTaskTimeoutReason, sessionStateForCoreStatus, type TaskSessionState } from "~/shared/tasks";
+import { decideExitRetry, noteGaveUp } from "./auto-retry";
 import { isFolderScoped } from "./shared-factory";
-import { consoleDispatchLog, messageOf, type Clock, type DispatchLog, type SessionLiveness, type SessionStopper } from "./types";
+import { consoleDispatchLog, messageOf, type Clock, type DispatchLog, type SessionLiveness, type SessionStatusReader, type SessionStopper } from "./types";
 
 /**
  * The result watcher (#570): turns `success.md`, `fail.md` and `partial-<n>.md`
@@ -70,14 +71,22 @@ export type ResultWatcherOptions = {
   exitGraceMs?: number;
   pollMs?: number;
   log?: DispatchLog;
-  /** Stops a Session whose dispatch timed out, so a hung agent does not run on after its Task failed (#723). */
+  /** Stops a Session whose dispatch timed out, so a hung agent does not run on after its Task failed (#723), and ends the harness of a Task that reported, to free its PTY slot (#962). */
   stopSession?: SessionStopper;
+  /** A harness on this Core ended, so a PTY slot may be free (#962): the dispatcher looks at the Tasks waiting for one. Never throws. */
+  onSlotFreed?: (coreId: string) => void;
   /**
    * Which Sessions are live on a Core. Asked once a minute per Core: a Session missing twice in a row counts as
    * exited (the safety net for a No-limit Task whose exit the Panel never heard). `null` = no answer, which
    * changes nothing: it neither adds a miss nor clears one (only a present answer clears).
    */
   liveSessions?: SessionLiveness;
+  /**
+   * The Core's status of each Session (#949). Asked once on adoption (`readSessionState`) and once a minute per Core,
+   * so a Task adopted at Panel boot, which has no handle to hear `onStatus` on, still shows what its Session is doing.
+   * `null` = no answer, which changes nothing.
+   */
+  sessionStatuses?: SessionStatusReader;
   /** How often the minute pass runs. */
   minutePassMs?: number;
 };
@@ -96,6 +105,8 @@ type Tracked = WatchedDispatch & {
   exit: { at: number; code: number | null } | null;
   /** Consecutive liveness checks that did not find the Session. */
   misses: number;
+  /** The Session state last written for this dispatch; the `exited` write after a process exit happens once. */
+  exitStateWritten: boolean;
   /** Result files this dispatch has finished with. */
   done: Set<string>;
   release: () => void;
@@ -109,13 +120,17 @@ export class ResultWatcher {
   private readonly ownerId: number;
   private readonly now: Clock;
   private readonly liveSessions: SessionLiveness | null;
+  private readonly sessionStatuses: SessionStatusReader | null;
   private readonly minutePassMs: number;
   private lastMinutePass = -Infinity;
   private readonly exitGraceMs: number;
   private readonly pollMs: number;
   private readonly log: DispatchLog;
   private readonly stopSession: SessionStopper | null;
+  private readonly onSlotFreed: ((coreId: string) => void) | null;
   private readonly tracked = new Map<string, Tracked>();
+  /** The harness stop in flight for a Task that reported or timed out: a re-assign must not resume into a Session that stop is about to kill (#955). */
+  private readonly ending = new Map<string, Promise<void>>();
   private timer: ReturnType<typeof setInterval> | null = null;
   private running: Promise<void> | null = null;
   private stopped = false;
@@ -124,11 +139,13 @@ export class ResultWatcher {
     this.ownerId = opts.ownerId;
     this.now = opts.now ?? Date.now;
     this.liveSessions = opts.liveSessions ?? null;
+    this.sessionStatuses = opts.sessionStatuses ?? null;
     this.minutePassMs = opts.minutePassMs ?? DEFAULT_MINUTE_PASS_MS;
     this.exitGraceMs = opts.exitGraceMs ?? DEFAULT_EXIT_GRACE_MS;
     this.pollMs = opts.pollMs ?? DEFAULT_WATCH_POLL_MS;
     this.log = opts.log ?? consoleDispatchLog;
     this.stopSession = opts.stopSession ?? null;
+    this.onSlotFreed = opts.onSlotFreed ?? null;
   }
 
   /** Start watching one dispatch. `release` runs when the dispatch is over, however it ended. */
@@ -138,6 +155,7 @@ export class ResultWatcher {
       cursor: null,
       exit: null,
       misses: 0,
+      exitStateWritten: false,
       done: new Set(),
       release,
     });
@@ -160,7 +178,61 @@ export class ResultWatcher {
   /** The agent's process exited. If it left no result, `fail.md` follows once the grace has passed. */
   markExited(taskId: string, exitCode: number | null): void {
     const t = this.tracked.get(taskId);
-    if (t && !t.exit) t.exit = { at: this.now(), code: exitCode };
+    if (t && !t.exit) {
+      t.exit = { at: this.now(), code: exitCode };
+      this.slotFreed(t.coreId);
+    }
+  }
+
+  private slotFreed(coreId: string): void {
+    try {
+      this.onSlotFreed?.(coreId);
+    } catch (err) {
+      this.log.error(`could not tell the dispatcher that a slot on Core ${coreId} is free: ${messageOf(err)}`);
+    }
+  }
+
+  /**
+   * The Session's state changed (#949). Written to the Task, with one system comment per change into
+   * `needs-input`, `interrupted` or `idle-no-result` and one back to `working` after one of them; a repeated
+   * state writes nothing. Never moves the Task's status: the result file stays the only success signal. A Task
+   * this watcher is not watching (its attempt is over) is left alone. Never throws.
+   */
+  async markSessionState(taskId: string, state: TaskSessionState): Promise<void> {
+    await this.recordSessionState(taskId, state, false);
+  }
+
+  /**
+   * `inTick` is true for a call made from inside the running tick (the minute pass): it must not wait for that tick,
+   * which is itself. No `step` runs at the same time there, so looking for the result file first stays correct.
+   */
+  private async recordSessionState(taskId: string, state: TaskSessionState, inTick: boolean): Promise<void> {
+    let t = this.tracked.get(taskId);
+    if (!t) return;
+    try {
+      if (state === "idle-no-result") {
+        // `finished` usually follows the result file by milliseconds, and the poll is seconds: look for the file
+        // first, so a finished Task never shows a spurious "no result file" state, comment or webhook.
+        if (!inTick) await this.running;
+        t = this.tracked.get(taskId);
+        if (!t) return;
+        if (await this.resultFileEndsDispatch(t)) return;
+      }
+      await setTaskSessionState(this.ownerId, taskId, state, this.now());
+    } catch (err) {
+      if (err instanceof NotFoundError) return;
+      this.log.error(`task ${taskId}: could not record the Session state ${state}: ${messageOf(err)}`);
+    }
+  }
+
+  /**
+   * Read the Core's status of one watched Task's Session once and record it (#949): for a Task adopted at Panel boot,
+   * which has no handle to hear status changes on. Nothing is written for a Task with no known Session, an exited
+   * one, or a Session the Core did not list or answer for. Never throws.
+   */
+  async readSessionState(taskId: string): Promise<void> {
+    const t = this.tracked.get(taskId);
+    if (t) await this.readSessionStates([t], false);
   }
 
   /** Poll on a timer until `stop`. A tick that is still running when the next is due is not started twice. */
@@ -213,6 +285,34 @@ export class ResultWatcher {
       this.log.error(`could not refresh the time limits: ${messageOf(err)}`);
     }
     await this.checkLiveness();
+    await this.readSessionStates([...this.tracked.values()], true);
+  }
+
+  /** One question per Core, as in `checkLiveness`; each answered Session's status is mapped and recorded. Never throws. */
+  private async readSessionStates(dispatches: readonly Tracked[], inTick: boolean): Promise<void> {
+    const readStatuses = this.sessionStatuses;
+    if (!readStatuses) return;
+    const byCore = new Map<string, Tracked[]>();
+    for (const t of dispatches) {
+      if (!t.sessionId || t.exit) continue;
+      byCore.set(t.coreId, [...(byCore.get(t.coreId) ?? []), t]);
+    }
+    for (const [coreId, group] of byCore) {
+      if (this.stopped) return;
+      let statuses: ReadonlyMap<string, string> | null;
+      try {
+        statuses = await readStatuses(coreId, group.map((t) => t.sessionId!));
+      } catch (err) {
+        this.log.error(`status of the Sessions on Core ${coreId}: ${messageOf(err)}`);
+        statuses = null;
+      }
+      if (!statuses) continue;
+      for (const t of group) {
+        if (this.tracked.get(t.taskId) !== t || t.exit) continue;
+        const state = sessionStateForCoreStatus(statuses.get(t.sessionId!) ?? "");
+        if (state) await this.recordSessionState(t.taskId, state, inTick);
+      }
+    }
   }
 
   /**
@@ -252,9 +352,91 @@ export class ResultWatcher {
     }
   }
 
+  /**
+   * A result file ended this dispatch (#962): let go of it, then end the Session's harness so its PTY slot is free. A
+   * Core runs at most 8 live harness PTYs, and a finished Task's harness used to keep its slot for ever.
+   */
+  private async finish(t: Tracked): Promise<void> {
+    this.drop(t);
+    await this.whileEnding(t.taskId, () => this.endHarness(t));
+    this.slotFreed(t.coreId);
+  }
+
+  /**
+   * Settles when the harness stop in flight for this Task has settled; at once when there is none. Never rejects. The
+   * dispatcher waits for it before it resumes the Task's Session, so the stop of the attempt that finished cannot land on
+   * the resumed one (#955). The caller bounds the wait: a stop takes at most its own timeout.
+   */
+  harnessEnding(taskId: string): Promise<void> {
+    return this.ending.get(taskId) ?? Promise.resolve();
+  }
+
+  /** Run a stop of this Task's harness and keep it where `harnessEnding` finds it until it has settled. */
+  private async whileEnding(taskId: string, run: () => Promise<void>): Promise<void> {
+    const pending = run().catch(() => undefined);
+    this.ending.set(taskId, pending);
+    try {
+      await pending;
+    } finally {
+      if (this.ending.get(taskId) === pending) this.ending.delete(taskId);
+    }
+  }
+
+  /**
+   * Ask the Core to stop the harness of a Task that has reported, with the same stop an operator's `stop_task` uses: a
+   * kill of the Session's PTY. That frees the slot and nothing else: the Session row, its transcript and its harness
+   * session id stay, so the Session can be resumed (#955) or continued by a comment on the finished Task (#904).
+   * Skipped when the harness already exited. Best effort, never throws: the Task is finished either way, and a Core that
+   * cannot be reached is noted on the Task, since its Session may still hold a slot.
+   */
+  private async endHarness(t: Tracked): Promise<void> {
+    if (!this.stopSession || !t.sessionId || t.exit) return;
+    const target = { coreId: t.coreId, sessionId: t.sessionId };
+    let problem: string | null = null;
+    try {
+      const { outcome, detail } = await this.stopSession(target);
+      this.log.info(`task ${t.taskId}: Session ${target.sessionId} after its result: ${outcome}${detail ? ` (${detail})` : ""}`);
+      if (outcome === "unreachable") problem = `the Core is unreachable${detail ? ` (${detail})` : ""}`;
+      else if (outcome === "failed") problem = detail ?? "the Core refused";
+    } catch (err) {
+      this.log.error(`task ${t.taskId}: ending the harness of Session ${target.sessionId} failed: ${messageOf(err)}`);
+      return;
+    }
+    if (!problem) return;
+    try {
+      await addTaskComment(
+        this.ownerId,
+        t.taskId,
+        { authorKind: "system", authorName: "Panel", body: `The harness of Session ${target.sessionId} on Core ${target.coreId} could not be ended after the Task reported: ${problem}. It may still hold a PTY slot.` },
+        this.now(),
+      );
+    } catch (err) {
+      this.log.error(`task ${t.taskId}: could not note that the harness was not ended: ${messageOf(err)}`);
+    }
+  }
+
   private drop(t: Tracked): void {
     if (this.tracked.get(t.taskId) === t) this.tracked.delete(t.taskId);
     t.release();
+  }
+
+  /** One read of this Task's result files, as `step` does it. True when one ended the dispatch (which is then dropped). A failed read is false. */
+  private async resultFileEndsDispatch(t: Tracked): Promise<boolean> {
+    try {
+      let finished: boolean;
+      if (isFolderScoped(t.shared)) {
+        finished = await this.consume(t, await this.folderChanges(t));
+      } else {
+        const watched = await t.shared.watch(t.cursor ?? undefined);
+        finished = await this.consume(t, watched.changes);
+        t.cursor = watched.cursor;
+      }
+      if (finished) await this.finish(t);
+      return finished;
+    } catch (err) {
+      this.log.error(`task ${t.taskId}: could not read its results before recording idle-no-result: ${messageOf(err)}`);
+      return false;
+    }
   }
 
   private async step(t: Tracked): Promise<void> {
@@ -275,9 +457,17 @@ export class ResultWatcher {
       // be recorded. Timeout and exit below do not depend on it, so a Task is never stuck behind it.
       this.log.error(`task ${t.taskId}: could not read or record its results: ${messageOf(err)}`);
     }
-    if (finished || this.tracked.get(t.taskId) !== t) {
+    if (finished) {
+      await this.finish(t);
+      return;
+    }
+    if (this.tracked.get(t.taskId) !== t) {
       this.drop(t);
       return;
+    }
+    if (t.exit && !t.exitStateWritten) {
+      t.exitStateWritten = true;
+      await this.markSessionState(t.taskId, "exited");
     }
     const now = this.now();
     if (t.exit && now - t.exit.at >= this.exitGraceMs) {
@@ -286,6 +476,8 @@ export class ResultWatcher {
         t.exit.code === null
           ? "The agent's Session is no longer running on its Core, and it wrote no result file."
           : `The agent exited (code ${t.exit.code}) without writing a result file.`,
+        false,
+        t.exit,
       );
     } else if (t.timeoutMinutes !== null && now - t.dispatchedAt >= t.timeoutMinutes * 60_000) {
       await this.synthesize(t, formatTaskTimeoutReason(t.timeoutMinutes), true);
@@ -370,15 +562,43 @@ export class ResultWatcher {
   }
 
   /** The Panel's own `fail.md`: written to the Shared folder, then recorded like any other result. */
-  private async synthesize(t: Tracked, reason: string, stopSession = false): Promise<void> {
+  private async synthesize(t: Tracked, reason: string, stopSession = false, exit?: { at: number; code: number | null }): Promise<void> {
     // One last look at the folder itself, not at the change feed: a result whose event was missed still counts.
     try {
       if (await this.consume(t, await this.folderChanges(t))) {
-        this.drop(t);
+        await this.finish(t);
         return;
       }
     } catch (err) {
       this.log.error(`task ${t.taskId}: last look before fail.md failed: ${messageOf(err)}`);
+    }
+    // A bare exit of a Task that opted in may be tried again instead (#958); a timeout never is.
+    let gaveUp: string | null = null;
+    if (exit && !stopSession) {
+      try {
+        const outcome = await decideExitRetry({
+          ownerId: this.ownerId,
+          taskId: t.taskId,
+          attempt: t.attempt,
+          dispatchedAt: t.dispatchedAt,
+          coreId: t.coreId,
+          shared: t.shared,
+          exit,
+          now: this.now(),
+        });
+        if (outcome.kind === "retried") {
+          this.log.info(`task ${t.taskId}: attempt ${t.attempt} exited without a result; auto-retry scheduled`);
+          this.drop(t);
+          return;
+        }
+        if (outcome.kind === "stop" && outcome.message) {
+          gaveUp = outcome.message;
+          reason = `${reason} ${outcome.message}`;
+        }
+      } catch (err) {
+        // The policy failing must not leave the Task running: it fails as it always did.
+        this.log.error(`task ${t.taskId}: auto-retry check failed: ${messageOf(err)}`);
+      }
     }
     const path = taskResultPath(t.taskId, { kind: "fail" });
     const body = `# Failed\n\n${reason} (attempt ${t.attempt}; written by the Panel.)\n\n${REPORT_END_MARKER}\n`;
@@ -391,8 +611,9 @@ export class ResultWatcher {
     // Recorded from what the Panel wrote, not read back: the store's clock is not the Panel's, and a `fail.md`
     // that looked older than the dispatch would leave the Task `in_progress` for ever.
     await this.apply(t, "fail.md", { kind: "fail" }, body);
+    if (gaveUp) await noteGaveUp(this.ownerId, t.taskId, gaveUp, this.now()).catch((err) => this.log.error(`task ${t.taskId}: could not record the give-up notice: ${messageOf(err)}`));
     // Only a timeout leaves the agent running: on an exit there is nothing to stop.
-    if (stopSession) await this.stopTimedOutSession(t);
+    if (stopSession) await this.whileEnding(t.taskId, () => this.stopTimedOutSession(t));
     this.drop(t);
   }
 
@@ -403,6 +624,7 @@ export class ResultWatcher {
     let note: string;
     try {
       const { outcome, detail } = await this.stopSession(target);
+      this.slotFreed(t.coreId);
       this.log.info(`task ${t.taskId}: Session ${target.sessionId} after the timeout: ${outcome}${detail ? ` (${detail})` : ""}`);
       note =
         outcome === "stopped"

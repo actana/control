@@ -1,6 +1,6 @@
 import { coreLinkManager } from "../services/core-link-manager";
 import type { CoreClient } from "@actana/sdk/core";
-import { messageOf, type SessionStopper } from "./types";
+import { messageOf, STOP_TIMEOUT_MS, type SessionStopper } from "./types";
 
 /**
  * Stop a Task's Session on its Core (#723) through the Panel's own link: find the
@@ -16,7 +16,7 @@ import { messageOf, type SessionStopper } from "./types";
  * and the kill is tried a second time: an operator's explicit stop outranks a lock.
  */
 
-export const STOP_TIMEOUT_MS = 10_000;
+export { STOP_TIMEOUT_MS };
 const SESSION_LOCKED = "session-locked";
 
 type LinkFor = (coreId: string) => { readonly sdk?: Pick<CoreClient, "findBySession" | "kill" | "forceTakeover"> } | null;
@@ -27,6 +27,7 @@ export async function stopSessionOnCore(
   target: { coreId: string; sessionId: string },
   linkFor: LinkFor = defaultLinkFor,
   timeoutMs: number = STOP_TIMEOUT_MS,
+  opts: { takeOver?: boolean } = {},
 ): ReturnType<SessionStopper> {
   const sdk = linkFor(target.coreId)?.sdk;
   if (!sdk) return { outcome: "unreachable", detail: "there is no live link to this Core" };
@@ -44,6 +45,7 @@ export async function stopSessionOnCore(
       return await killed(await sdk.kill(ptyId));
     } catch (err) {
       if ((err as { code?: unknown } | null)?.code !== SESSION_LOCKED) throw err;
+      if (opts.takeOver === false) return { outcome: "failed", detail: SESSION_LOCKED };
     }
     await sdk.forceTakeover(target.sessionId);
     return killed(await sdk.kill(ptyId));
@@ -58,3 +60,6 @@ export async function stopSessionOnCore(
 function killed(ok: boolean): { outcome: "stopped" | "failed"; detail: string | null } {
   return ok ? { outcome: "stopped", detail: null } : { outcome: "failed", detail: "the Core did not kill the Session's process" };
 }
+
+/** {@link stopSessionOnCore} as a {@link SessionStopper}: the options are its second argument there, not its fourth. */
+export const sessionStopper: SessionStopper = (target, opts) => stopSessionOnCore(target, defaultLinkFor, STOP_TIMEOUT_MS, opts);

@@ -2,8 +2,9 @@ import { z } from "zod";
 import { json, jsonError, noContent, parseJsonBody, rethrowUnlessDomain } from "./_helpers";
 import { NotFoundError, ValidationError } from "../errors";
 import { HTTP_BAD_REQUEST, HTTP_CREATED, HTTP_PAYLOAD_TOO_LARGE } from "~/shared/http-status";
-import type { AgentDto, TaskCommentDto, TaskDto, TaskListDto, TasksPageDto } from "~/shared/task-wire";
-import { TASK_COLUMNS, TASK_COLUMN_STATUSES, TASKS_PAGE_DEFAULT_LIMIT, type TaskColumn } from "~/shared/tasks";
+import { toSessionState, type AgentDto, type TaskCommentDto, type TaskDto, type TaskListDto, type TasksPageDto } from "~/shared/task-wire";
+import { taskAutoRetryView } from "~/shared/auto-retry";
+import { TASK_COLUMNS, TASK_COLUMN_STATUSES, TASKS_PAGE_DEFAULT_LIMIT, canMoveTask, taskWaitingReason, type TaskColumn, type TaskStatus } from "~/shared/tasks";
 import {
   addTaskComment,
   changeTaskStatus,
@@ -30,7 +31,8 @@ import {
 import { getAgent, listAgentsForCore, type Agent } from "../services/agents";
 import { getOperator } from "../services/operator";
 import { findCoreById } from "../repositories/cores.repo";
-import { stopTask } from "../task-dispatch";
+import { queuedAnswer, stopTask } from "../task-dispatch";
+import { deliverCommentNow } from "../task-dispatch/comment-delivery";
 
 /**
  * Tasks and their comments, for the operator's browser (#571). Every handler
@@ -43,6 +45,18 @@ import { stopTask } from "../task-dispatch";
 /** A time limit (#724): whole minutes 1 to 43200 (30 days), or null for No limit. */
 export const timeoutMinutesSchema = z.number().int().min(1).max(43200).nullable();
 
+/** Opt in to auto-retry (#958): 1 to 3 attempts, or null to turn it off. The instance ceiling can lower it. */
+export const autoRetrySchema = z.object({ maxAttempts: z.number().int().min(1).max(3) }).nullable();
+
+/** `{ requested, ceiling }` when a request for `autoRetry.maxAttempts` was lowered to the instance ceiling, else nothing to add. */
+export function autoRetryClampedOf(
+  requested: { maxAttempts: number } | null | undefined,
+  task: { autoRetry?: { maxAttempts: number } | null },
+): { autoRetryClamped?: { requested: number; ceiling: number } } {
+  if (!requested || !task.autoRetry || requested.maxAttempts <= task.autoRetry.maxAttempts) return {};
+  return { autoRetryClamped: { requested: requested.maxAttempts, ceiling: task.autoRetry.maxAttempts } };
+}
+
 const newTaskBody = z.object({
   title: z.string(),
   description: z.string().optional(),
@@ -50,13 +64,15 @@ const newTaskBody = z.object({
   agent: z.string().nullable().optional(),
   startNow: z.boolean().optional(),
   timeoutMinutes: timeoutMinutesSchema.optional(),
+  autoRetry: autoRetrySchema.optional(),
+  fromTaskId: z.string().nullable().optional(),
 });
 // Only the moves an operator makes by hand. `in_progress` is the dispatcher's claim and
 // done, failed and partial are the result watcher's: a client that made them would leave a
 // Task running with nothing behind it, or let a re-assign start a second attempt on top of one.
 export const OPERATOR_TASK_STATUSES = ["assigned", "draft"] as const;
-const statusBody = z.object({ status: z.enum(OPERATOR_TASK_STATUSES) });
-const commentBody = z.object({ body: z.string(), reassign: z.boolean().optional() });
+export const statusBody = z.object({ status: z.enum(OPERATOR_TASK_STATUSES), autoRetry: autoRetrySchema.optional() });
+const commentBody = z.object({ body: z.string(), reassign: z.boolean().optional(), deliver: z.literal("now").optional() });
 /** Stopping a running Task (#723): an optional reason, recorded in the system comment. */
 export const stopTaskBody = z.object({ reason: z.string().trim().max(2000).optional() });
 /**
@@ -64,10 +80,20 @@ export const stopTaskBody = z.object({ reason: z.string().trim().max(2000).optio
  * title and description not while `in_progress`, the time limit (#724) at any status.
  */
 export const updateTaskBody = z
-  .object({ title: z.string().optional(), description: z.string().optional(), timeoutMinutes: timeoutMinutesSchema.optional() })
-  .refine((b) => b.title !== undefined || b.description !== undefined || b.timeoutMinutes !== undefined, {
-    message: "give a title, a description or a time limit",
+  .object({
+    title: z.string().optional(),
+    description: z.string().optional(),
+    timeoutMinutes: timeoutMinutesSchema.optional(),
+    autoRetry: autoRetrySchema.optional(),
+  })
+  .refine((b) => b.title !== undefined || b.description !== undefined || b.timeoutMinutes !== undefined || b.autoRetry !== undefined, {
+    message: "give a title, a description, a time limit or autoRetry",
   });
+
+function waitingOf(t: Task): TaskDto["waiting"] {
+  const reason = taskWaitingReason(t);
+  return reason === null ? null : { reason, coreId: t.coreId };
+}
 
 function taskDto(t: Task): TaskDto {
   return {
@@ -80,7 +106,11 @@ function taskDto(t: Task): TaskDto {
     attemptCount: t.attemptCount,
     dispatchedAt: t.dispatchedAt,
     lastError: t.lastError,
+    waiting: waitingOf(t),
     timeoutMinutes: t.timeoutMinutes,
+    autoRetry: taskAutoRetryView(t.autoRetry),
+    sessionState: toSessionState(t.sessionState),
+    sessionStateAt: t.sessionStateAt,
     createdAt: t.createdAt,
     updatedAt: t.updatedAt,
   };
@@ -98,8 +128,8 @@ function commentDto(c: TaskComment): TaskCommentDto {
   };
 }
 
-function agentDto(a: Agent): AgentDto {
-  return { id: a.id, coreId: a.coreId, name: a.name, harness: a.harness, model: a.model, isDefault: a.isDefault };
+export function agentDto(a: Agent): AgentDto {
+  return { id: a.id, coreId: a.coreId, name: a.name, harness: a.harness, model: a.model, isDefault: a.isDefault, flags: [...a.flags] };
 }
 
 async function authorName(): Promise<string> {
@@ -225,7 +255,7 @@ export async function create(ownerId: number, request: Request): Promise<Respons
     ? await parseMultipart(ownerId, request, newTaskBody)
     : await parseJsonBody(request, newTaskBody).then((b) => (b.ok ? { ...b, files: [] as AttachmentFile[] } : b));
   if (!parsed.ok) return parsed.response;
-  const { title, description, coreId, agent, startNow, timeoutMinutes } = parsed.data;
+  const { title, description, coreId, agent, startNow, timeoutMinutes, autoRetry, fromTaskId } = parsed.data;
   try {
     // The Agent is the chosen Core's: the picker only offers those, and the
     // route holds the same line for a client that skips the picker.
@@ -243,12 +273,14 @@ export async function create(ownerId: number, request: Request): Promise<Respons
       agent: agent ?? null,
       startNow: startNow === true,
       ...(timeoutMinutes === undefined ? {} : { timeoutMinutes }),
+      ...(autoRetry === undefined ? {} : { autoRetry }),
+      ...(fromTaskId === undefined ? {} : { fromTaskId }),
     };
     const task =
       parsed.files.length > 0
         ? await createTaskWithAttachments(ownerId, input, parsed.files, await authorName())
         : await createTask(ownerId, input);
-    return json({ task: taskDto(task) }, { status: HTTP_CREATED });
+    return json({ task: taskDto(task), ...autoRetryClampedOf(autoRetry, task), ...queuedAnswer(startNow, coreId) }, { status: HTTP_CREATED });
   } catch (e) {
     return attachmentFailure(e);
   }
@@ -269,7 +301,13 @@ export async function setStatus(ownerId: number, id: string, request: Request): 
   const body = await parseJsonBody(request, statusBody);
   if (!body.ok) return body.response;
   try {
-    return json({ task: taskDto(await changeTaskStatus(ownerId, id, body.data.status)) });
+    const { status, autoRetry } = body.data;
+    // `autoRetry` rides along with the move (#958): applied first, so a Task assigned with it is already opted in when it is claimed.
+    // A move that is not legal (a running Task, or the status it already has) is refused first, so it changes nothing.
+    const legal = autoRetry !== undefined && canMoveTask((await getTask(ownerId, id)).status as TaskStatus, status);
+    const set = autoRetry === undefined || !legal ? null : await updateTask(ownerId, id, { autoRetry, changedBy: await authorName() });
+    const task = await changeTaskStatus(ownerId, id, status);
+    return json({ task: taskDto(task), ...(set ? autoRetryClampedOf(autoRetry, task) : {}) });
   } catch (e) {
     return rethrowUnlessDomain(e);
   }
@@ -280,7 +318,8 @@ export async function update(ownerId: number, id: string, request: Request): Pro
   const body = await parseJsonBody(request, updateTaskBody);
   if (!body.ok) return body.response;
   try {
-    return json({ task: taskDto(await updateTask(ownerId, id, { ...body.data, changedBy: await authorName() })) });
+    const task = await updateTask(ownerId, id, { ...body.data, changedBy: await authorName() });
+    return json({ task: taskDto(task), ...autoRetryClampedOf(body.data.autoRetry, task) });
   } catch (e) {
     return rethrowUnlessDomain(e);
   }
@@ -324,14 +363,18 @@ export async function comment(ownerId: number, id: string, request: Request): Pr
         parsed.files,
       );
       if (parsed.data.reassign) return json({ task: taskDto(done.task), comments: (await listTaskComments(ownerId, id)).map(commentDto) });
-      return json({ comment: commentDto(done.comment!) }, { status: HTTP_CREATED });
+      const stored = done.comment!;
+      const delivery = parsed.data.deliver === "now" ? await deliverCommentNow(ownerId, id, stored) : undefined;
+      return json({ comment: commentDto(stored), ...(delivery ? { delivery } : {}) }, { status: HTTP_CREATED });
     }
     if (parsed.data.reassign) {
       const task = await commentAndReassign(ownerId, id, input);
       return json({ task: taskDto(task), comments: (await listTaskComments(ownerId, id)).map(commentDto) });
     }
     const stored = await addTaskComment(ownerId, id, input);
-    return json({ comment: commentDto(stored) }, { status: HTTP_CREATED });
+    // The Operator's choice (#935): typed into the running Session (`deliver: "now"`), or a note only.
+    const delivery = parsed.data.deliver === "now" ? await deliverCommentNow(ownerId, id, stored) : undefined;
+    return json({ comment: commentDto(stored), ...(delivery ? { delivery } : {}) }, { status: HTTP_CREATED });
   } catch (e) {
     return attachmentFailure(e);
   }

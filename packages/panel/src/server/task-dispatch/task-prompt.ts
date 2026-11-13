@@ -2,6 +2,7 @@ import { taskPointerLine, taskPromptFilePath, taskPromptHomePath } from "@actana
 import { fileReference } from "@actana/shared/harness-file-mention";
 import type { Task, TaskComment } from "../services/tasks";
 import type { Harness } from "~/shared/agents";
+import { formatAutoRetryPromptLine } from "~/shared/auto-retry";
 import { REPORT_END_MARKER, taskResultPath } from "~/shared/task-report";
 
 /**
@@ -53,13 +54,47 @@ function clip(text: string): string {
   return defuse(clipTo(body, MAX_PROMPT_COMMENT_CHARS));
 }
 
-export function buildTaskPrompt(task: Pick<Task, "id" | "title" | "description">, comments: readonly TaskComment[], attempt: number): string {
-  // System comments are the Panel talking to the operator ("dispatched", "failed to start"); they say nothing about the work.
-  const thread = comments.filter((c) => c.authorKind !== "system").slice(-MAX_PROMPT_COMMENTS);
+/** Where and how to report the attempt's result: the same words for a new Session and for a resumed one. */
+function resultLines(task: Pick<Task, "id">, attempt: number): string[] {
   const success = `~/shared/${taskResultPath(task.id, { kind: "success" })}`;
   const fail = `~/shared/${taskResultPath(task.id, { kind: "fail" })}`;
   const partial = `~/shared/${taskResultPath(task.id, { kind: "partial", n: 1 })}`.replace("partial-1.md", "partial-<n>.md");
+  return [
+    "",
+    `Result (attempt ${attempt}): when you are done, write your report in Markdown to exactly one of these files and make its last line exactly ${REPORT_END_MARKER}:`,
+    `- ${success} if the Task is done;`,
+    `- ${fail} if you could not do it;`,
+    `- ${partial} (n = 1, 2, ...) if only part of it is done.`,
+    "Say what you did, what is left, and what the next person needs to know.",
+  ];
+}
+
+/**
+ * The comments a new Session is given, and how many the Task has: the last {@link MAX_PROMPT_COMMENTS} non-system ones
+ * (system comments are the Panel talking to the operator ("dispatched", "failed to start"); they say nothing about the work).
+ * The dispatch comment of a fallback (#955) reports `shown.length` of `total`.
+ */
+export function promptComments(comments: readonly TaskComment[]): { shown: TaskComment[]; total: number } {
+  const all = comments.filter((c) => c.authorKind !== "system");
+  return { shown: all.slice(-MAX_PROMPT_COMMENTS), total: all.length };
+}
+
+/**
+ * The prompt of a new Session. From attempt 2 on it starts with the attempt line: the Session is new, but the Task is
+ * not, so it must look at what is already there before it repeats a step (#955). Comments that did not fit are said
+ * to be left out, with where to read them.
+ */
+export function buildTaskPrompt(
+  task: Pick<Task, "id" | "title" | "description">,
+  comments: readonly TaskComment[],
+  attempt: number,
+  /** Set when this attempt follows an auto-retry (#958): the exit code of the Session that died (null = unknown). */
+  autoRetried?: { exitCode: number | null },
+): string {
+  const { shown: thread, total } = promptComments(comments);
   const lines = [
+    ...(attempt >= 2 ? [`This is attempt ${attempt}. Check the current state (branches, PRs, files, the comments below) before repeating any step.`, ""] : []),
+    ...(autoRetried ? [formatAutoRetryPromptLine(autoRetried.exitCode), ""] : []),
     "You have been given a Task by the operator's Panel. Do the work, then report the result as described at the end.",
     "",
     `Task: ${defuse(task.title.trim())}`,
@@ -69,16 +104,49 @@ export function buildTaskPrompt(task: Pick<Task, "id" | "title" | "description">
   ];
   if (thread.length > 0) {
     lines.push("", "Comments so far, oldest first:");
+    if (total > thread.length) lines.push(`${total - thread.length} older comments not included; read them with get_task ${task.id}`);
     for (const c of thread) lines.push(`- ${c.authorName} (${c.authorKind}): ${clip(c.body)}`);
   }
-  lines.push(
+  lines.push(...resultLines(task, attempt));
+  return lines.join("\n");
+}
+
+/**
+ * What a Task's own Session is told when it is resumed for a re-assign (#955): a new message in the conversation it
+ * already has, not the Task again. It holds the user comments written since the previous attempt's Session started
+ * (`since`: that comment's index; the agent's own reports are not repeated to it), the last
+ * {@link MAX_PROMPT_COMMENTS} of them, and where to report this attempt's result. It is the file the one typed line points at.
+ */
+export function buildResumePrompt(
+  task: Pick<Task, "id" | "title">,
+  comments: readonly TaskComment[],
+  attempt: number,
+  since: number,
+  autoRetried?: { exitCode: number | null },
+): string {
+  const fresh = comments.slice(since + 1).filter((c) => c.authorKind === "user");
+  const shown = fresh.slice(-MAX_PROMPT_COMMENTS);
+  const lines = [
+    // An auto-retry (#958) was not a re-assign: nobody told this Session so. It opens with the attempt line and the retry line instead.
+    ...(autoRetried
+      ? [
+          `This is attempt ${attempt}. ${formatAutoRetryPromptLine(autoRetried.exitCode)}`,
+          "",
+          "This is a new message in the Session you already have: the Task and what you did stay as they were.",
+        ]
+      : ["The operator's Panel has re-assigned this Task to you. This is a new message in the Session you already have: the Task and what you did stay as they were."]),
     "",
-    `Result (attempt ${attempt}): when you are done, write your report in Markdown to exactly one of these files and make its last line exactly ${REPORT_END_MARKER}:`,
-    `- ${success} if the Task is done;`,
-    `- ${fail} if you could not do it;`,
-    `- ${partial} (n = 1, 2, ...) if only part of it is done.`,
-    "Say what you did, what is left, and what the next person needs to know.",
-  );
+    `Task: ${defuse(task.title.trim())}`,
+    "",
+  ];
+  if (shown.length === 0) {
+    lines.push("There is no new comment. Check the current state (branches, PRs, files, the comments on the Task) before repeating any step.");
+  } else {
+    lines.push("New comments since you last worked on it, oldest first:");
+    for (const c of shown) lines.push(`- ${c.authorName} (${c.authorKind}): ${clip(c.body)}`);
+    if (fresh.length > shown.length) lines.push(`(${fresh.length - shown.length} older comments not included; read them with get_task ${task.id})`);
+  }
+  lines.push(...resultLines(task, attempt));
   return lines.join("\n");
 }
 

@@ -43,11 +43,19 @@ import type {
 import type { ApiKeyView, WebhookDeliveryView, WebhookView } from "~/shared/api-integrations-wire";
 import type { ApiKeyPermission } from "~/shared/api-key-permissions";
 
+export type AutoRetrySettingsView = {
+  enabled: boolean;
+  maxAttemptsCeiling: number;
+  pausedCores: { coreId: string; label: string }[];
+};
+
 export type AppSettings = {
   agentSystemBannerDisabled: boolean;
   mouseGradientDisabled: boolean;
   sessionFinishToastEnabled: boolean;
   sessionFinishOsNotificationEnabled: boolean;
+  /** Notify when a Session or Task waits for the Operator (#954); default on. */
+  sessionBlockedNotificationEnabled: boolean;
   /** Ding when a session-finish notification arrives. */
   notificationSoundEnabled: boolean;
   /** Legacy compatibility field; native Claude Code question popups are always enabled. */
@@ -235,6 +243,18 @@ export const api = {
   /** One Core's Agents, from the Agents service; `runnableOnly` is the New Task picker's list. */
   listCoreAgents: (coreId: string, opts: { runnableOnly?: boolean } = {}) =>
     req<{ agents: AgentDto[] }>(`/api/cores/${encodeURIComponent(coreId)}/agents${opts.runnableOnly ? "?runnable=1" : ""}`),
+  /** Create an Agent on a Core (#893). A refusal is an `ApiError`; its body carries the stable `code` (`core_harnesses_unavailable`, `harness_not_ready`, `harness_missing_on_core`). */
+  createCoreAgent: (coreId: string, body: { name: string; harness: string; model?: string | null; flags?: string[] }) =>
+    req<{ agent: AgentDto }>(`/api/cores/${encodeURIComponent(coreId)}/agents`, { method: "POST", body: JSON.stringify(body) }),
+  /** Change an Agent's name, model and flags in place; a field left out is kept, `model: null` clears it. */
+  updateCoreAgent: (coreId: string, agentId: string, body: { name?: string; model?: string | null; flags?: string[] }) =>
+    req<{ agent: AgentDto }>(`/api/cores/${encodeURIComponent(coreId)}/agents/${encodeURIComponent(agentId)}`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    }),
+  /** Delete an Agent; a default Agent is refused with 409. */
+  deleteCoreAgent: (coreId: string, agentId: string) =>
+    req<void>(`/api/cores/${encodeURIComponent(coreId)}/agents/${encodeURIComponent(agentId)}`, { method: "DELETE" }),
   /** The fleet: every registered Core with the service's live view of its link. */
   listCores: () => req<CoreListResponse>("/api/cores"),
   /**
@@ -393,6 +413,7 @@ export const api = {
         | "mouseGradientDisabled"
         | "sessionFinishToastEnabled"
         | "sessionFinishOsNotificationEnabled"
+        | "sessionBlockedNotificationEnabled"
         | "notificationSoundEnabled"
         | "questionOverlayEnabled"
         | "terminalZoomLevel"
@@ -464,6 +485,13 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body),
     }),
+
+  /** Settings › General: auto-retry of Tasks (#958): the kill switch, the attempts ceiling and the Cores whose breaker tripped. */
+  getAutoRetrySettings: () => req<AutoRetrySettingsView>("/api/settings/auto-retry"),
+  updateAutoRetrySettings: (patch: { enabled?: boolean; maxAttemptsCeiling?: number }) =>
+    req<AutoRetrySettingsView>("/api/settings/auto-retry", { method: "PATCH", body: JSON.stringify(patch) }),
+  resumeAutoRetryCore: (coreId: string) =>
+    req<AutoRetrySettingsView>(`/api/settings/auto-retry/cores/${encodeURIComponent(coreId)}/resume`, { method: "POST" }),
 
   /** Settings › API & integrations: the Operator's API keys (no plaintext). */
   listApiKeys: () => req<{ apiKeys: ApiKeyView[] }>("/api/api-keys"),

@@ -1,9 +1,9 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { ALL_API_KEY_PERMISSIONS } from "~/shared/api-key-permissions";
-import { closePanelTestDb, openPanelTestDb, resetPanelState } from "./_panel-test-db";
+import { closePanelTestDb, openPanelTestDb, resetPanelState, seedWebhook } from "./_panel-test-db";
 import { McpTestClient, dataOf, textOf } from "./_mcp-client";
 
 /**
@@ -23,7 +23,9 @@ const testDb = await openPanelTestDb();
 const { operatorSessionCookie, resetOperatorSessionForTests } = await import("./_operator-session");
 const tasksService = await import("../services/tasks");
 const { createApiKey } = await import("../services/api-keys");
+const { coreLinkManager } = await import("../services/core-link-manager");
 
+const { setSessionLockProbe } = await import("../panel-link/lock-probe");
 const { formatTaskDispatchComment } = await import("~/shared/tasks");
 
 const A = 1;
@@ -73,6 +75,7 @@ beforeEach(async () => {
   await resetPanelState(testDb);
   resetOperatorSessionForTests();
   await seed();
+  await seedWebhook(testDb, 1);
 });
 afterAll(async () => {
   await closePanelTestDb(testDb);
@@ -96,7 +99,7 @@ describe("tools/list", () => {
     const byName = Object.fromEntries(tools.map((t) => [t.name, t]));
     expect(byName.update_task!.annotations.readOnlyHint).toBe(false);
     expect(byName.update_task!.inputSchema.required).toEqual(["taskId"]);
-    expect(Object.keys(byName.update_task!.inputSchema.properties).sort()).toEqual(["description", "taskId", "timeoutMinutes", "title"]);
+    expect(Object.keys(byName.update_task!.inputSchema.properties).sort()).toEqual(["autoRetry", "description", "taskId", "timeoutMinutes", "title"]);
     expect(byName.delete_task!.annotations).toEqual({ readOnlyHint: false, destructiveHint: true });
     expect(byName.delete_task!.inputSchema.required).toEqual(["taskId"]);
     expect(byName.create_task!.annotations.destructiveHint).toBeUndefined();
@@ -130,7 +133,7 @@ describe("time limit tools (#724)", () => {
     const updated = dataOf(await c.call("update_task", { taskId: task.id, timeoutMinutes: 240 })).task;
     expect(updated).toMatchObject({ status: "in_progress", timeoutMinutes: 240 });
     const comments = await tasksService.listTaskComments(A, task.id);
-    expect(comments.map((x) => x.body)).toContain("Time limit changed from 1 hour to 4 hours by Test Operator.");
+    expect(comments.map((x) => x.body)).toContain("Time limit changed from 1 hour to 4 hours by k (API key).");
     // The title is still locked while it runs.
     expect(textOf(await c.call("update_task", { taskId: task.id, title: "late" }))).toMatch(/^409/);
   });
@@ -145,6 +148,16 @@ describe("create_task", () => {
     expect(started.status).toBe("assigned");
     expect((await tasksService.getTask(A, draft.id)).title).toBe("Fix it");
     await expect(tasksService.getTask(B, draft.id)).rejects.toThrow();
+  });
+
+  it("with startNow on a Core that is not connected, queues the Task and says so (#962)", async () => {
+    const c = await client(A);
+    const answer = dataOf(await c.call("create_task", { title: "Go", coreId: "core-a", agent: "agent-a", startNow: true }));
+    expect(answer.task).toMatchObject({ status: "assigned", attemptCount: 0 });
+    expect(answer).toMatchObject({ queued: true, waiting: "waiting: Core not connected" });
+    expect(answer.message).toContain("starts by itself");
+    // A draft is not queued: nothing was asked to start.
+    expect(dataOf(await c.call("create_task", { title: "d", coreId: "core-a", agent: "agent-a" })).queued).toBeUndefined();
   });
 
   it("refuses an Agent that is not on the chosen Core, and startNow without one", async () => {
@@ -340,6 +353,86 @@ describe("delete_task (#722)", () => {
   });
 });
 
+describe("comment_task delivery and the key's name (#935)", () => {
+  const typed: string[] = [];
+  const keyed = async (name: string) => {
+    const { key } = await createApiKey(A, { name, permissions: ALL_API_KEY_PERMISSIONS });
+    const c = new McpTestClient(key);
+    await c.connect();
+    return c;
+  };
+  async function runningTask() {
+    const task = await tasksService.createTask(A, { title: "run", coreId: "core-a", agent: "agent-a", startNow: true });
+    await tasksService.claimTask(A, task.id);
+    await tasksService.addTaskComment(A, task.id, {
+      authorKind: "system",
+      authorName: "Panel",
+      body: formatTaskDispatchComment({ attempt: 1, agentName: "Agent", harness: "claude-code", coreId: "core-a", sessionId: "session_1" }),
+    });
+    return task;
+  }
+  beforeEach(async () => {
+    typed.length = 0;
+    const { setSessionTyperForTests } = await import("../task-dispatch/comment-delivery");
+    setSessionTyperForTests(async () => ({
+      deliver: async (text: string) => {
+        typed.push(text);
+        return { ok: true };
+      },
+      dispose: () => {},
+    }));
+  });
+  afterEach(async () => {
+    (await import("../task-dispatch/comment-delivery")).setSessionTyperForTests(null);
+  });
+
+  it("offers deliver: now on comment_task", async () => {
+    const byName = Object.fromEntries((await (await client(A)).listTools()).map((t) => [t.name, t]));
+    expect(Object.keys(byName.comment_task!.inputSchema.properties).sort()).toEqual(["body", "deliver", "reassign", "taskId"]);
+    expect(byName.comment_task!.description).toMatch(/deliver/);
+  });
+
+  it("without deliver on a running Task records the comment and types nothing", async () => {
+    const task = await runningTask();
+    const res = dataOf(await (await keyed("orchestrator")).call("comment_task", { taskId: task.id, body: "milestone 1 reached" }));
+    expect(res.comment).toMatchObject({ body: "milestone 1 reached" });
+    expect(res.delivery).toBeUndefined();
+    expect(typed).toEqual([]);
+  });
+
+  it("with deliver: now on a running Task types it into the Session", async () => {
+    const task = await runningTask();
+    const res = dataOf(await (await keyed("orchestrator")).call("comment_task", { taskId: task.id, body: "use the other branch", deliver: "now" }));
+    expect(res.delivery).toEqual({ mode: "now", delivered: true });
+    expect(typed).toEqual([`New comment on your Task ${task.id} from orchestrator (API key): use the other branch (answer in your report: ~/shared/tasks/${task.id}/…, as your Task says)`, "\r"]);
+  });
+
+  it("with deliver: now on a Session that needs input types nothing and says why", async () => {
+    const task = await runningTask();
+    await tasksService.setTaskSessionState(A, task.id, "needs-input");
+    const res = dataOf(await (await keyed("orchestrator")).call("comment_task", { taskId: task.id, body: "yes", deliver: "now" }));
+    expect(res.delivery).toMatchObject({ mode: "now", delivered: false });
+    expect(res.delivery.reason).toMatch(/waiting for input/);
+    expect(typed).toEqual([]);
+  });
+
+  it("stores a comment written with a key under the key's name, still as a user comment", async () => {
+    const task = await tasksService.createTask(A, { title: "t", coreId: "core-a", agent: "agent-a" });
+    const added = dataOf(await (await keyed("D1 orchestrator")).call("comment_task", { taskId: task.id, body: "hello" })).comment;
+    expect(added).toMatchObject({ authorKind: "user", authorName: "D1 orchestrator (API key)" });
+  });
+
+  it("names the key in a stop's and a time-limit change's record too", async () => {
+    const task = await runningTask();
+    const c = await keyed("D1 orchestrator");
+    await c.call("update_task", { taskId: task.id, timeoutMinutes: 30 });
+    await c.call("stop_task", { taskId: task.id, reason: "hung" });
+    const bodies = (await tasksService.listTaskComments(A, task.id)).map((x) => x.body);
+    expect(bodies.some((b) => b.startsWith("Stopped by D1 orchestrator (API key)"))).toBe(true);
+    expect(bodies.some((b) => b.includes("D1 orchestrator (API key)") && !b.startsWith("Stopped"))).toBe(true);
+  });
+});
+
 describe("stop_task (#723)", () => {
   async function running(coreId = "core-a", agent = "agent-a", owner = A) {
     const task = await tasksService.createTask(owner, { title: "hung", coreId, agent, startNow: true });
@@ -404,5 +497,212 @@ describe("stop_task (#723)", () => {
     expect(dataOf(await c.call("stop_task", { taskId: task.id })).task.status).toBe("failed");
     const again = dataOf(await c.call("comment_task", { taskId: task.id, body: "again", reassign: true }));
     expect(again.task.status).toBe("assigned");
+  });
+});
+
+describe("create_agent, update_agent, delete_agent (#893)", () => {
+  const fakeCore = (availability: Record<string, unknown> | "offline") =>
+    vi.spyOn(coreLinkManager(), "client").mockImplementation(() =>
+      availability === "offline"
+        ? null
+        : ({ request: async () => ({ type: "agentsAvailabilityListResult", availability }) } as never),
+    );
+  const ready = { "claude-code": { status: "available" }, codex: { status: "available" } };
+  const agentRow = async (id: string) => (await testDb.pool.query("select * from agents where id = $1", [id])).rows[0];
+
+  it("describes the three tools: writes needing agents:write, delete_agent destructive, and no command, args or env input", async () => {
+    const tools = await (await client(A)).listTools();
+    const byName = Object.fromEntries(tools.map((t) => [t.name, t]));
+    expect(Object.keys(byName.create_agent!.inputSchema.properties).sort()).toEqual(["coreId", "flags", "harness", "model", "name"]);
+    expect(byName.create_agent!.inputSchema.required).toEqual(["coreId", "name", "harness"]);
+    expect(Object.keys(byName.update_agent!.inputSchema.properties).sort()).toEqual(["agentId", "flags", "model", "name"]);
+    expect(byName.update_agent!.inputSchema.required).toEqual(["agentId"]);
+    expect(byName.delete_agent!.inputSchema.required).toEqual(["agentId"]);
+    expect(byName.delete_agent!.annotations).toEqual({ readOnlyHint: false, destructiveHint: true });
+    expect(byName.create_agent!.annotations.readOnlyHint).toBe(false);
+    expect(byName.update_agent!.annotations.destructiveHint).toBeUndefined();
+  });
+
+  it("create_agent makes an Agent that list_agents then shows", async () => {
+    fakeCore(ready);
+    const c = await client(A);
+    const created = dataOf(await c.call("create_agent", { coreId: "core-a", name: " Codex High ", harness: "codex", model: "gpt-5", flags: ["skip-permissions"] })).agent as { id: string };
+    expect(created).toMatchObject({ coreId: "core-a", name: "Codex High", harness: "codex", model: "gpt-5", isDefault: false });
+    expect((await agentRow(created.id)).flags).toEqual(["skip-permissions"]);
+    const listed = dataOf(await c.call("list_agents", { coreId: "core-a" })).agents as { id: string }[];
+    expect(listed.map((a) => a.id)).toContain(created.id);
+  });
+
+  it("create_agent rejects a field outside the closed set at the schema, before anything is written", async () => {
+    fakeCore(ready);
+    const c = await client(A);
+    const before = (await testDb.pool.query("select count(*)::int as n from agents")).rows[0].n;
+    for (const extra of [{ command: "rm -rf /" }, { args: ["-x"] }, { env: { A: "b" } }]) {
+      const res = await c.call("create_agent", { coreId: "core-a", name: "x", harness: "claude-code", ...extra });
+      expect(res.isError, JSON.stringify(extra)).toBe(true);
+    }
+    expect(textOf(await c.call("create_agent", { coreId: "core-a", name: "x", harness: "bash" }))).toMatch(/harness|enum|invalid/i);
+    expect(textOf(await c.call("create_agent", { coreId: "core-a", name: "x", harness: "claude-code", flags: ["nope"] }))).toMatch(/^400 unknown flag: nope/);
+    expect((await testDb.pool.query("select count(*)::int as n from agents")).rows[0].n).toBe(before);
+  });
+
+  it("create_agent tells an offline Core (own code), a harness still being checked (retry hint) and a missing harness apart", async () => {
+    const c = await client(A);
+    const args = { coreId: "core-a", name: "New", harness: "codex" };
+    fakeCore("offline");
+    const offline = textOf(await c.call("create_agent", args));
+    expect(offline).toMatch(/^409 core_harnesses_unavailable: /);
+    fakeCore({ ...ready, codex: { status: "checking" } });
+    const notReady = textOf(await c.call("create_agent", args));
+    expect(notReady).toMatch(/^409 harness_not_ready: .*not ready yet \(checking\)/);
+    fakeCore({ ...ready, codex: { status: "missing", reason: "not-found" } });
+    const missing = textOf(await c.call("create_agent", args));
+    expect(missing).toMatch(/^409 harness_missing_on_core: .*does not have codex available/);
+    expect(new Set([offline, notReady, missing]).size).toBe(3);
+    expect((await testDb.pool.query("select count(*)::int as n from agents where name = 'New'")).rows[0].n).toBe(0);
+  });
+
+  it("create_agent is refused on a Core outside the key's scope (403) and on another owner's Core (404)", async () => {
+    fakeCore(ready);
+    const scoped = await client(A, ["core-a"]);
+    expect(textOf(await scoped.call("create_agent", { coreId: "core-b", name: "n", harness: "claude-code" }))).toMatch(/^403/);
+    expect(textOf(await (await client(A)).call("create_agent", { coreId: "core-x", name: "n", harness: "claude-code" }))).toMatch(/^404/);
+  });
+
+  it("update_agent changes the model under the same id and list_agents shows it", async () => {
+    const c = await client(A);
+    const changed = dataOf(await c.call("update_agent", { agentId: "agent-a", model: "opus", flags: ["skip-permissions"] })).agent;
+    expect(changed).toMatchObject({ id: "agent-a", coreId: "core-a", harness: "claude-code", name: "Agent A", model: "opus" });
+    const listed = dataOf(await c.call("list_agents", { coreId: "core-a" })).agents as { id: string; model: string | null }[];
+    expect(listed.find((a) => a.id === "agent-a")?.model).toBe("opus");
+    expect((await agentRow("agent-a")).flags).toEqual(["skip-permissions"]);
+  });
+
+  it("update_agent needs something to change, refuses a default Agent, a taken name and scope, and cannot move the harness or Core", async () => {
+    const c = await client(A);
+    expect((await c.call("update_agent", { agentId: "agent-a" })).isError).toBe(true);
+    expect((await c.call("update_agent", { agentId: "agent-a", harness: "codex" })).isError).toBe(true);
+    expect((await agentRow("agent-a")).harness).toBe("claude-code");
+    await testDb.pool.query(
+      "insert into agents (id, owner_id, core_id, name, harness, flags, is_default, created_at, updated_at) values ('agent-d', 1, 'core-a', 'Claude Code', 'claude-code', '{}', true, 1, 1), ('agent-a2', 1, 'core-a', 'Agent A2', 'claude-code', '{}', false, 1, 1)",
+    );
+    expect(textOf(await c.call("update_agent", { agentId: "agent-d", model: "opus" }))).toBe("409 a default Agent cannot be changed");
+    expect(textOf(await c.call("update_agent", { agentId: "agent-a2", name: "Agent A" }))).toMatch(/^409 /);
+    expect(textOf(await c.call("update_agent", { agentId: "agent-a", model: "bad model;x" }))).toMatch(/^400 /);
+    expect(textOf(await c.call("update_agent", { agentId: "missing", model: "opus" }))).toMatch(/^404/);
+    const scoped = await client(A, ["core-a"]);
+    expect(textOf(await scoped.call("update_agent", { agentId: "agent-b", model: "opus" }))).toMatch(/^403/);
+    expect(textOf(await c.call("update_agent", { agentId: "agent-x", model: "opus" }))).toMatch(/^404/);
+    expect((await agentRow("agent-b")).model).toBeNull();
+    expect((await agentRow("agent-x")).model).toBeNull();
+  });
+
+  it("delete_agent removes an Agent, refuses a default Agent, and respects scope and owner", async () => {
+    const c = await client(A);
+    await testDb.pool.query(
+      "insert into agents (id, owner_id, core_id, name, harness, flags, is_default, created_at, updated_at) values ('agent-d', 1, 'core-a', 'Claude Code', 'claude-code', '{}', true, 1, 1)",
+    );
+    expect(textOf(await c.call("delete_agent", { agentId: "agent-d" }))).toBe("409 a default Agent cannot be deleted");
+    const scoped = await client(A, ["core-a"]);
+    expect(textOf(await scoped.call("delete_agent", { agentId: "agent-b" }))).toMatch(/^403/);
+    expect(textOf(await c.call("delete_agent", { agentId: "agent-x" }))).toMatch(/^404/);
+    expect(dataOf(await c.call("delete_agent", { agentId: "agent-a" }))).toEqual({ deleted: "agent-a" });
+    expect(await agentRow("agent-a")).toBeUndefined();
+    expect(await agentRow("agent-b")).toBeDefined();
+    expect(await agentRow("agent-x")).toBeDefined();
+  });
+});
+
+describe("close_session (#962)", () => {
+  async function finished(coreId = "core-a", agent = "agent-a", owner = A) {
+    const task = await tasksService.createTask(owner, { title: "done", coreId, agent, startNow: true });
+    await tasksService.claimTask(owner, task.id);
+    await tasksService.addTaskComment(owner, task.id, {
+      authorKind: "system",
+      authorName: "Panel",
+      body: formatTaskDispatchComment({ attempt: 1, agentName: "Agent", harness: "claude-code", coreId, sessionId: "session_1" }),
+    });
+    await testDb.pool.query("update tasks set status = 'done' where id = $1", [task.id]);
+    return task;
+  }
+  const fakeSdk = (opts: { pty?: string | null; killError?: { code: string } } = {}) => {
+    const kill = vi.fn(async () => {
+      if (opts.killError) throw Object.assign(new Error("locked"), opts.killError);
+      return true;
+    });
+    const forceTakeover = vi.fn(async () => undefined);
+    vi.spyOn(coreLinkManager(), "client").mockImplementation(
+      () => ({ sdk: { findBySession: async () => ({ ptyId: opts.pty === undefined ? "pty_1" : opts.pty }), kill, forceTakeover } }) as never,
+    );
+    return { kill, forceTakeover };
+  };
+  afterEach(() => setSessionLockProbe(null));
+
+  it("is listed as a destructive write tool taking only a taskId", async () => {
+    const t = (await (await client(A)).listTools()).find((x) => x.name === "close_session")!;
+    expect(t.annotations).toEqual({ readOnlyHint: false, destructiveHint: true });
+    expect(t.inputSchema.required).toEqual(["taskId"]);
+    expect(Object.keys(t.inputSchema.properties)).toEqual(["taskId"]);
+  });
+
+  it("ends a finished Task's harness, keeps the Task as it was, and says so in the thread", async () => {
+    const task = await finished();
+    const sdk = fakeSdk();
+    const data = dataOf(await (await client(A)).call("close_session", { taskId: task.id }));
+    expect(sdk.kill).toHaveBeenCalledWith("pty_1");
+    expect(data.task).toMatchObject({ id: task.id, status: "done" });
+    expect(data.session).toMatchObject({ coreId: "core-a", sessionId: "session_1", outcome: "stopped" });
+    expect((await tasksService.listTaskComments(A, task.id)).some((c) => c.authorKind === "system" && c.body.includes("closed by"))).toBe(true);
+  });
+
+  it("answers not-running when the harness is already gone", async () => {
+    const task = await finished();
+    const sdk = fakeSdk({ pty: null });
+    expect(dataOf(await (await client(A)).call("close_session", { taskId: task.id })).session.outcome).toBe("not-running");
+    expect(sdk.kill).not.toHaveBeenCalled();
+  });
+
+  it("is refused 409 for a Session a terminal holds the lock on (the Panel knows it), and kills nothing", async () => {
+    const task = await finished();
+    const sdk = fakeSdk();
+    setSessionLockProbe(() => ({ supported: true, writable: false, state: "held-by-another" }));
+    const res = await (await client(A)).call("close_session", { taskId: task.id });
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toMatch(/^409 .*someone is working/);
+    expect(sdk.kill).not.toHaveBeenCalled();
+  });
+
+  it("is refused 409 when the Core refuses the kill as session-locked, and never takes the lock over", async () => {
+    const task = await finished();
+    const sdk = fakeSdk({ killError: { code: "session-locked" } });
+    const res = await (await client(A)).call("close_session", { taskId: task.id });
+    expect(textOf(res)).toMatch(/^409 .*someone is working/);
+    expect(sdk.forceTakeover).not.toHaveBeenCalled();
+  });
+
+  it("is refused 409 for an in_progress Task (stop_task) and for a Task with no Session", async () => {
+    const running = await tasksService.createTask(A, { title: "r", coreId: "core-a", agent: "agent-a", startNow: true });
+    await tasksService.claimTask(A, running.id);
+    expect(textOf(await (await client(A)).call("close_session", { taskId: running.id }))).toMatch(/^409 .*stop_task/);
+    const draft = await tasksService.createTask(A, { title: "d", coreId: "core-a", agent: "agent-a" });
+    expect(textOf(await (await client(A)).call("close_session", { taskId: draft.id }))).toMatch(/^409 .*no Session/);
+  });
+
+  it("is refused 403 on a Core outside the key and 404 on another owner's Task", async () => {
+    const onB = await finished("core-b", "agent-b");
+    const onX = await tasksService.createTask(B, { title: "x", coreId: "core-x", agent: "agent-x" });
+    const sdk = fakeSdk();
+    expect(textOf(await (await client(A, ["core-a"])).call("close_session", { taskId: onB.id }))).toMatch(/^403/);
+    expect(textOf(await (await client(A)).call("close_session", { taskId: onX.id }))).toMatch(/^404/);
+    expect(sdk.kill).not.toHaveBeenCalled();
+  });
+
+  it("needs the tasks:write permission", async () => {
+    const task = await finished();
+    const { key } = await createApiKey(A, { name: "ro", permissions: ["read"] });
+    const ro = new McpTestClient(key);
+    await ro.connect();
+    expect((await ro.listTools()).some((t) => t.name === "close_session")).toBe(false);
+    expect(textOf(await ro.call("close_session", { taskId: task.id }))).toMatch(/^403/);
   });
 });

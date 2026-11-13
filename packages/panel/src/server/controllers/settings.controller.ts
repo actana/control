@@ -80,6 +80,7 @@ const updateSettingsBody = z
     mouseGradientDisabled: z.boolean(),
     sessionFinishToastEnabled: z.boolean(),
     sessionFinishOsNotificationEnabled: z.boolean(),
+    sessionBlockedNotificationEnabled: z.boolean(),
     notificationSoundEnabled: z.boolean(),
     questionOverlayEnabled: z.boolean(),
     terminalZoomLevel: z.number().int().min(TERMINAL_ZOOM_MIN).max(TERMINAL_ZOOM_MAX),
@@ -164,6 +165,7 @@ async function settingsPayload() {
       "session_finish_os_notification_enabled",
       false,
     ),
+    sessionBlockedNotificationEnabled: await getBooleanSetting("session_blocked_notification_enabled", true),
     notificationSoundEnabled: await getBooleanSetting("notification_sound_enabled", true),
     // This feature graduated from experimental; retained in the payload for
     // compatibility with older renderers, but stored preferences no longer gate it.
@@ -231,6 +233,9 @@ export async function update(request: Request): Promise<Response> {
       "session_finish_os_notification_enabled",
       body.sessionFinishOsNotificationEnabled,
     );
+  }
+  if (body.sessionBlockedNotificationEnabled !== undefined) {
+    await setBooleanSetting("session_blocked_notification_enabled", body.sessionBlockedNotificationEnabled);
   }
   if (body.notificationSoundEnabled !== undefined) {
     await setBooleanSetting("notification_sound_enabled", body.notificationSoundEnabled);

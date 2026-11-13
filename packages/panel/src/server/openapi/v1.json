@@ -59,7 +59,33 @@
           "attemptCount": { "type": "integer" },
           "dispatchedAt": { "type": ["integer", "null"] },
           "lastError": { "type": ["string", "null"] },
+          "autoRetry": { "type": ["object", "null"], "description": "Auto-retry (opt-in): { maxAttempts, retries, pendingAt (epoch ms of a pending retry or null), notice ({ id, kind: retry|gave-up|paused, text } or null) }; null when the Task did not opt in." },
           "timeoutMinutes": { "type": ["integer", "null"], "minimum": 1, "maximum": 43200, "description": "The Task's time limit per attempt, in minutes (1-43200). null = No limit: the attempt runs until the agent reports or its Session ends." },
+          "sessionState": {
+            "type": ["string", "null"],
+            "enum": ["working", "needs-input", "interrupted", "idle-no-result", "exited", null],
+            "description": "What the Session of the running attempt is doing; null when no attempt runs. working = busy; needs-input = waits for a person; interrupted = interrupted; idle-no-result = idle and no result file yet; exited = the Session ended. It never changes `status`: the result file is the only success signal. A change fires the webhook event `task.session_state_changed`."
+          },
+          "sessionStateAt": { "type": ["integer", "null"], "description": "When `sessionState` last changed (epoch ms); null with it." },
+          "prompt": {
+            "type": ["object", "null"],
+            "description": "Only on a single Task read (GET /api/v1/tasks/{taskId}) while `sessionState` is `needs-input`: what the Session asks, read live from the Core; null when the Core cannot be read. Answer it with POST /api/v1/tasks/{taskId}/answer.",
+            "properties": {
+              "text": { "type": "string", "description": "The visible prompt: the last lines of the Session's screen, at most 4 KB, secrets masked." },
+              "options": { "type": "array", "description": "The numbered or labelled choices, when the prompt is a choice dialog.", "items": { "type": "object", "properties": { "label": { "type": "string" }, "key": { "type": "string" }, "selected": { "type": "boolean" } } } },
+              "kind": { "type": "string", "enum": ["question", "choice", "confirm", "permission", "trust", "unknown"], "description": "From the hook that set needs-input (permission, AskUserQuestion), else from the harness dialog rules, else `unknown` (text only; answer with `keys` only)." },
+              "at": { "type": "integer", "description": "The prompt's id: the `sessionStateAt` it was read at. Pass it back as `expect` when answering." }
+            }
+          },
+          "watch": {
+            "type": "object",
+            "description": "Only on an `assigned` or `in_progress` Task (so create with startNow, assign and comment & re-assign return it straight away, with no extra get), and only where a single Task is returned (create, status, update, comment & re-assign, stop, get), never on a list row. Wait by reading `url` (GET /api/watch/{token}, no API key) instead of polling the Task.",
+            "properties": {
+              "url": { "type": "string", "description": "Absolute status URL: AC_PANEL_PUBLIC_URL when the Panel has it, else the origin of the request." },
+              "expiresAt": { "type": "integer", "description": "When the URL stops working (epoch ms); every read of the Task returns a fresh one." },
+              "pollAfterSeconds": { "type": "integer", "description": "How soon to ask again." }
+            }
+          },
           "createdAt": { "type": "integer" },
           "updatedAt": { "type": "integer" }
         }
@@ -198,7 +224,7 @@
           "400": { "description": "Validation error" },
           "403": { "description": "Key does not reach the Core, or lacks the permission the route needs" },
           "404": { "description": "Core not found" },
-          "409": { "description": "Conflict" },
+          "409": { "description": "Conflict. When the Core's harness check refuses it, the body also carries `code`: `core_harnesses_unavailable` (the Core cannot be asked), `harness_not_ready` (the harness is still being checked: ask again) or `harness_missing_on_core` (not available there)" },
           "401": { "description": "Unauthorized" }
         }
       }
@@ -215,6 +241,35 @@
           "401": { "description": "Unauthorized" }
         }
       },
+      "patch": {
+        "operationId": "updateAgent",
+        "summary": "Change an Agent",
+        "description": "Change an Agent's `name`, `model` and/or `flags` in place; the id stays. A field that is left out is kept, `model: null` clears the model. The harness and the Core cannot be changed, and any other field is refused with 400. Needs `agents:write`.",
+        "parameters": [{ "name": "agentId", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "name": { "type": "string" },
+                  "model": { "type": ["string", "null"] },
+                  "flags": { "type": "array", "items": { "type": "string" } }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "The changed Agent" },
+          "400": { "description": "Validation error, or a field that cannot be changed" },
+          "403": { "description": "Key does not reach the Agent's Core, or lacks the permission the route needs" },
+          "404": { "description": "No such Agent" },
+          "409": { "description": "A default Agent cannot be changed, or another Agent on the Core has that name" },
+          "401": { "description": "Unauthorized" }
+        }
+      },
       "delete": {
         "operationId": "deleteAgent",
         "summary": "Delete an Agent",
@@ -228,31 +283,87 @@
         }
       }
     },
-    "/api/v1/tasks": {
+    "/api/v1/sessions": {
       "get": {
-        "operationId": "listTasks",
-        "summary": "List Tasks",
-        "description": "The owner's Tasks. A restricted key lists only Tasks on Cores in its scope. Without `limit`, every Task is returned with its full row, as before. With `limit`, one page is returned, newest update first, and the rows leave out `description` (read it with GET /api/v1/tasks/{taskId}); `nextCursor` is the `cursor` for the next page and is null on the last.",
+        "operationId": "listSessions",
+        "summary": "List a Core's Sessions",
+        "description": "One page of the Sessions on one Core, asked of the Core itself: running and waiting-for-input Sessions first, then newest activity. Lean rows: no prompt text and no transcript. `nextCursor` is the `cursor` for the next page and is null on the last; `total` counts every Session the filters match on that Core.",
         "parameters": [
-          { "name": "limit", "in": "query", "required": false, "schema": { "type": "integer", "minimum": 1, "maximum": 100 }, "description": "Page size, 1-100. Omit to list every Task with its description." },
-          { "name": "cursor", "in": "query", "required": false, "schema": { "type": "string" }, "description": "The `nextCursor` of the previous page. Opaque. Needs `limit`." }
+          { "name": "coreId", "in": "query", "required": true, "schema": { "type": "string" }, "description": "The Core whose Sessions to list." },
+          { "name": "limit", "in": "query", "required": false, "schema": { "type": "integer", "minimum": 1, "maximum": 100, "default": 25 }, "description": "Page size, 1-100." },
+          { "name": "cursor", "in": "query", "required": false, "schema": { "type": "string" }, "description": "The `nextCursor` of the previous page. Opaque." },
+          { "name": "status", "in": "query", "required": false, "schema": { "type": "string", "enum": ["running", "waiting", "finished"] }, "description": "Only Sessions in this state." },
+          { "name": "archived", "in": "query", "required": false, "schema": { "type": "boolean", "default": false }, "description": "true lists archived Sessions instead of active ones." },
+          { "name": "harness", "in": "query", "required": false, "schema": { "type": "string" }, "description": "Only Sessions of this harness." },
+          { "name": "q", "in": "query", "required": false, "schema": { "type": "string" }, "description": "Only Sessions whose name contains this text." }
         ],
         "responses": {
           "200": {
-            "description": "Tasks. `nextCursor` is present only when `limit` was given.",
+            "description": "One page of Sessions.",
             "content": {
               "application/json": {
                 "schema": {
                   "type": "object",
                   "properties": {
-                    "tasks": { "type": "array", "items": { "$ref": "#/components/schemas/Task" }, "description": "Full rows without `limit`; with `limit`, rows without `description`." },
+                    "sessions": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": { "type": "string" },
+                          "title": { "type": "string" },
+                          "harness": { "type": "string" },
+                          "status": { "type": "string" },
+                          "pinned": { "type": "boolean" },
+                          "archived": { "type": "boolean" },
+                          "live": { "type": "boolean", "description": "True while the Core holds a live terminal for the Session." },
+                          "updatedAt": { "type": "integer", "description": "Last activity, epoch milliseconds." }
+                        }
+                      }
+                    },
+                    "nextCursor": { "type": ["string", "null"] },
+                    "total": { "type": "integer" }
+                  }
+                }
+              }
+            }
+          },
+          "400": { "description": "`coreId` is missing, `limit` is not a whole number from 1 to 100, `status` or `archived` is not valid, or `cursor` was not issued by this API" },
+          "401": { "description": "Unauthorized" },
+          "403": { "description": "The key does not reach the Core, or lacks the `read` permission" },
+          "404": { "description": "No such Core" },
+          "502": { "description": "The Core did not answer" },
+          "503": { "description": "The Core is not connected" }
+        }
+      }
+    },
+    "/api/v1/tasks": {
+      "get": {
+        "operationId": "listTasks",
+        "summary": "List Tasks",
+        "description": "The owner's Tasks. A restricted key lists only Tasks on Cores in its scope. Without `limit`, every Task is returned with its full row, as before. With `limit`, one page is returned, newest update first, and the rows leave out `description` (read it with GET /api/v1/tasks/{taskId}); `nextCursor` is the `cursor` for the next page and is null on the last. `fields=lean` makes the list without `limit` lean too: every Task, rows without `description`, the same row shape as MCP get_tasks.",
+        "parameters": [
+          { "name": "limit", "in": "query", "required": false, "schema": { "type": "integer", "minimum": 1, "maximum": 100 }, "description": "Page size, 1-100. Omit to list every Task with its description." },
+          { "name": "cursor", "in": "query", "required": false, "schema": { "type": "string" }, "description": "The `nextCursor` of the previous page. Opaque. Needs `limit`." },
+          { "name": "fields", "in": "query", "required": false, "schema": { "type": "string", "enum": ["lean"] }, "description": "`lean`: rows without `description`, with or without `limit`. Omit for the full rows (the default, unchanged)." },
+          { "name": "sessionState", "in": "query", "required": false, "schema": { "type": "string" }, "description": "Only Tasks whose Session is in this state: one of working, needs-input, interrupted, idle-no-result, exited, or a comma list of them (for example `needs-input,idle-no-result`). Filtered in the database, so it works with `limit`." }
+        ],
+        "responses": {
+          "200": {
+            "description": "Tasks. Each row carries `sessionState` and `sessionStateAt`, never `watch`. `nextCursor` is present only when `limit` was given.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "tasks": { "type": "array", "items": { "$ref": "#/components/schemas/Task" }, "description": "Full rows without `limit`; with `limit` or `fields=lean`, rows without `description`." },
                     "nextCursor": { "type": ["string", "null"], "description": "Only with `limit`. Pass it as `cursor` for the next page; null when there is none." }
                   }
                 }
               }
             }
           },
-          "400": { "description": "`limit` is not a whole number from 1 to 100, `cursor` was not issued by this API, or `cursor` was given without `limit`" },
+          "400": { "description": "`limit` is not a whole number from 1 to 100, `cursor` was not issued by this API, `cursor` was given without `limit`, `fields` is not `lean`, or `sessionState` is empty or names an unknown state" },
           "401": { "description": "Unauthorized" }
         }
       },
@@ -272,7 +383,9 @@
                   "coreId": { "type": ["string", "null"] },
                   "agent": { "type": ["string", "null"] },
                   "startNow": { "type": "boolean" },
-                  "timeoutMinutes": { "type": ["integer", "null"], "minimum": 1, "maximum": 43200, "default": 60, "description": "Time limit per attempt, in minutes (1-43200). Omit for 60; null = No limit." }
+                  "timeoutMinutes": { "type": ["integer", "null"], "minimum": 1, "maximum": 43200, "default": 60, "description": "Time limit per attempt, in minutes (1-43200). Omit for 60; null = No limit." },
+                  "autoRetry": { "type": ["object", "null"], "required": ["maxAttempts"], "properties": { "maxAttempts": { "type": "integer", "minimum": 1, "maximum": 3 } }, "description": "Opt in to auto-retry: when the Task's Session dies without a result, the Task is assigned again after 1, 5, then 15 minutes, up to maxAttempts attempts. null = off. A value above the Panel's ceiling is clamped and the answer carries `autoRetryClamped: { requested, ceiling }`." },
+                  "fromTaskId": { "type": ["string", "null"], "description": "The id of your own Task, set it when your Session creates a Resume / hand-over Task." }
                 }
               }
             }
@@ -314,7 +427,8 @@
                 "properties": {
                   "title": { "type": "string", "minLength": 1 },
                   "description": { "type": "string" },
-                  "timeoutMinutes": { "type": ["integer", "null"], "minimum": 1, "maximum": 43200, "description": "Time limit per attempt, in minutes (1-43200); null = No limit." }
+                  "timeoutMinutes": { "type": ["integer", "null"], "minimum": 1, "maximum": 43200, "description": "Time limit per attempt, in minutes (1-43200); null = No limit." },
+                  "autoRetry": { "type": ["object", "null"], "required": ["maxAttempts"], "properties": { "maxAttempts": { "type": "integer", "minimum": 1, "maximum": 3 } }, "description": "Opt in to auto-retry: when the Task's Session dies without a result, the Task is assigned again after 1, 5, then 15 minutes, up to maxAttempts attempts. null = off. A value above the Panel's ceiling is clamped and the answer carries `autoRetryClamped: { requested, ceiling }`." }
                 }
               }
             }
@@ -357,7 +471,8 @@
                 "type": "object",
                 "required": ["status"],
                 "properties": {
-                  "status": { "type": "string", "enum": ["assigned", "draft"] }
+                  "status": { "type": "string", "enum": ["assigned", "draft"] },
+                  "autoRetry": { "type": ["object", "null"], "required": ["maxAttempts"], "properties": { "maxAttempts": { "type": "integer", "minimum": 1, "maximum": 3 } }, "description": "Set or clear (null) the Task's auto-retry together with the move; see createTask." }
                 }
               }
             }
@@ -450,6 +565,7 @@
       "post": {
         "operationId": "addTaskComment",
         "summary": "Add a comment, or Comment & re-assign",
+        "description": "A comment is a note: nothing is typed into the Task's Session unless `deliver` is `now`. The comment's author is `<key name> (API key)` with authorKind `user`. With `deliver: now` on a running Task the comment is also typed into its Session; the 201 body then carries `delivery` ({ mode: now, delivered, reason? }). A Session that is waiting for input is never typed into: the comment stays a note and `reason` says why.",
         "parameters": [{ "name": "taskId", "in": "path", "required": true, "schema": { "type": "string" } }],
         "requestBody": {
           "required": true,
@@ -460,7 +576,8 @@
                 "required": ["body"],
                 "properties": {
                   "body": { "type": "string" },
-                  "reassign": { "type": "boolean" }
+                  "reassign": { "type": "boolean" },
+                  "deliver": { "type": "string", "enum": ["now"], "description": "Also type the comment into the Task's running Session." }
                 }
               }
             }
@@ -474,6 +591,92 @@
           "404": { "description": "No such Task" },
           "409": { "description": "Re-assign refused. A Task that is in_progress must be stopped first with POST /api/v1/tasks/{taskId}/stop." },
           "401": { "description": "Unauthorized" }
+        }
+      }
+    },
+    "/api/v1/tasks/{taskId}/close-session": {
+      "post": {
+        "operationId": "closeTaskSession",
+        "summary": "End a finished Task's harness and free its Core slot",
+        "description": "The Session stays: its transcript is kept and a comment with `reassign` continues it.",
+        "parameters": [{ "name": "taskId", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "responses": {
+          "200": { "description": "The Task and what happened to its Session" },
+          "403": { "description": "Key does not reach the Task's Core, or lacks the permission the route needs" },
+          "404": { "description": "No such Task" },
+          "409": { "description": "The Task is in_progress (stop it first), has no Session, or someone is working in the Session" },
+          "401": { "description": "Unauthorized" }
+        }
+      }
+    },
+    "/api/v1/tasks/{taskId}/answer": {
+      "post": {
+        "operationId": "answerTask",
+        "summary": "Answer the prompt a Task's Session waits at",
+        "description": "Only while the Task's `sessionState` is `needs-input`, and only for the prompt the caller read: `expect` is the `prompt.at` it saw. The answer is `{ text }` (typed, then Enter), `{ option }` (a number from 1, or a label) or `{ keys }` from the allowlist (Enter, Esc, Up, Down, Left, Right, Tab, Space, y, Y, n, N, 1-9; at most 16). On an `unknown` prompt only `{ keys }` is accepted. Each answer adds a Task comment `Answered by <key name> (API key): <kind> \"<prompt first line>\" → <answer>`. Needs `tasks:write`.",
+        "parameters": [{ "name": "taskId", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["answer"],
+                "properties": {
+                  "answer": {
+                    "oneOf": [
+                      { "type": "object", "required": ["text"], "properties": { "text": { "type": "string", "maxLength": 1000 } } },
+                      { "type": "object", "required": ["option"], "properties": { "option": { "oneOf": [{ "type": "integer", "minimum": 1 }, { "type": "string" }] } } },
+                      { "type": "object", "required": ["keys"], "properties": { "keys": { "type": "array", "maxItems": 16, "items": { "type": "string", "enum": ["Enter", "Esc", "Up", "Down", "Left", "Right", "Tab", "Space", "y", "Y", "n", "N", "1", "2", "3", "4", "5", "6", "7", "8", "9"] } } } }
+                    ]
+                  },
+                  "expect": { "type": "integer", "description": "The `prompt.at` the caller read. A different one is refused with `stale_prompt`." }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "The answer was typed. `{ task, answered: { kind, at, answer } }`; the Session's state goes back to `working` (or to a new `needs-input`)." },
+          "400": { "description": "`invalid_answer`: not an answer this prompt takes (a key outside the allowlist, text on an unknown prompt, a missing option)." },
+          "403": { "description": "Key does not reach the Task's Core, or lacks `tasks:write`" },
+          "404": { "description": "No such Task" },
+          "409": { "description": "Nothing was typed. `code`: `not_waiting` (the Session is not `needs-input`), `stale_prompt` (a different or already answered prompt), `needs_human` (a trust, password, token or credential prompt, or a permission that widens access: ask a human), `prompt_unavailable` (the Core cannot be read), `write_failed`." },
+          "401": { "description": "Unauthorized" }
+        }
+      }
+    },
+    "/api/watch/{token}": {
+      "get": {
+        "operationId": "watchTask",
+        "summary": "Read a Task attempt's status (no API key)",
+        "description": "Unauthenticated: the signed token in the path is the whole credential, so no `Authorization` header is needed. Take the URL from `watch.url` of a Task. It answers status only (no title, description, comments or report text); read the report with GET /api/v1/tasks/{taskId}. While the Task is `assigned` (queued for a Core, or starting) it answers `status: \"assigned\"` with `sessionState` and `result` null and `pollAfterSeconds` 5; the same URL then follows the attempt that starts. Wait by calling it again after `pollAfterSeconds`; `0` means the Task is finished. The URL expires after the attempt's time limit plus 10 minutes (24 hours from the read of a Task with No time limit; for an `assigned` Task, that window plus the time limit, so it outlives a queue wait), and stops working when a later attempt replaces it or the Task is stopped, moved back to draft or deleted (410). It is rate limited per token and globally (429).",
+        "security": [],
+        "parameters": [{ "name": "token", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "responses": {
+          "200": {
+            "description": "The attempt's status. Not cached.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "taskId": { "type": "string" },
+                    "attempt": { "type": "integer" },
+                    "status": { "type": "string", "enum": ["draft", "assigned", "in_progress", "done", "failed", "partial"] },
+                    "sessionState": { "type": ["string", "null"], "enum": ["working", "needs-input", "interrupted", "idle-no-result", "exited", null] },
+                    "sessionStateAt": { "type": ["integer", "null"] },
+                    "result": { "type": ["string", "null"], "enum": ["done", "failed", "partial", null], "description": "The finished Task's status; null while it runs." },
+                    "updatedAt": { "type": "integer" },
+                    "pollAfterSeconds": { "type": "integer", "description": "0 finished; 2 within 30 s of a state change; 15 while waiting on a person or a result; else 5." }
+                  }
+                }
+              }
+            }
+          },
+          "404": { "description": "Not a token this Panel issued" },
+          "410": { "description": "The link has expired or been replaced (a new attempt, a stop, a delete)" },
+          "429": { "description": "Rate limited" }
         }
       }
     }

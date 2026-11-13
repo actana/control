@@ -10,6 +10,7 @@ import {
 import * as sessionsController from "./controllers/sessions.controller";
 import * as homeTerminalsController from "./controllers/home-terminals.controller";
 import * as settingsController from "./controllers/settings.controller";
+import * as autoRetrySettingsController from "./controllers/auto-retry-settings.controller";
 import * as keybindingsController from "./controllers/keybindings.controller";
 import * as hooksController from "./controllers/hooks.controller";
 import * as usageController from "./controllers/usage.controller";
@@ -19,6 +20,8 @@ import * as harnessLaunchersController from "./controllers/harness-launchers.con
 import * as eventsController from "./controllers/events.controller";
 import * as healthController from "./controllers/health.controller";
 import * as jwksController from "./controllers/jwks.controller";
+import * as taskWatchController from "./controllers/task-watch.controller";
+import { WATCH_PATH_PREFIX } from "./services/task-watch";
 import * as aiRuntimeModelsController from "./controllers/ai-runtime-models.controller";
 import * as authController from "./controllers/auth.controller";
 import * as apiKeysController from "./controllers/api-keys.controller";
@@ -27,6 +30,7 @@ import * as storageController from "./controllers/storage.controller";
 import * as sharedFilesController from "./controllers/shared-files.controller";
 import * as updateCheckController from "./controllers/update-check.controller";
 import * as tasksController from "./controllers/tasks.controller";
+import * as agentsController from "./controllers/agents.controller";
 import * as v1Controller from "./controllers/v1.controller";
 import { handleMcpRequest, MCP_PATH } from "./mcp";
 import { OPERATOR_ID } from "./services/operator";
@@ -40,6 +44,7 @@ const CORE_SHARED_FILES_PATH = /^\/api\/cores\/([^/]+)\/shared\/files(?:\/([a-z-
 const CORE_PAIRING_FINISH_PATH = /^\/api\/cores\/([^/]+)\/pairing\/finish$/;
 const CORE_DELETE_PATH = /^\/api\/cores\/([^/]+)\/delete$/;
 const API_KEY_REVOKE_PATH = /^\/api\/api-keys\/([^/]+)\/revoke$/;
+const AUTO_RETRY_RESUME_PATH = /^\/api\/settings\/auto-retry\/cores\/([^/]+)\/resume$/;
 const WEBHOOK_PATH = /^\/api\/webhooks\/([^/]+)$/;
 const WEBHOOK_PING_PATH = /^\/api\/webhooks\/([^/]+)\/ping$/;
 const WEBHOOK_DELIVERIES_PATH = /^\/api\/webhooks\/([^/]+)\/deliveries$/;
@@ -50,6 +55,7 @@ const TASK_STATUS_PATH = /^\/api\/tasks\/([^/]+)\/status$/;
 const TASK_STOP_PATH = /^\/api\/tasks\/([^/]+)\/stop$/;
 const TASK_COMMENTS_PATH = /^\/api\/tasks\/([^/]+)\/comments$/;
 const CORE_AGENTS_PATH = /^\/api\/cores\/([^/]+)\/agents$/;
+const CORE_AGENT_PATH = /^\/api\/cores\/([^/]+)\/agents\/([^/]+)$/;
 // Public REST API (#572 PR 2). Versioned under `/api/v1` so the session-cookie
 // routes above stay their own path; a key never reaches those.
 const V1_CORE_PATH = /^\/api\/v1\/cores\/([^/]+)$/;
@@ -57,6 +63,8 @@ const V1_CORE_AGENTS_PATH = /^\/api\/v1\/cores\/([^/]+)\/agents$/;
 const V1_AGENT_PATH = /^\/api\/v1\/agents\/([^/]+)$/;
 const V1_TASK_PATH = /^\/api\/v1\/tasks\/([^/]+)$/;
 const V1_TASK_STATUS_PATH = /^\/api\/v1\/tasks\/([^/]+)\/status$/;
+const V1_TASK_CLOSE_SESSION_PATH = /^\/api\/v1\/tasks\/([^/]+)\/close-session$/;
+const V1_TASK_ANSWER_PATH = /^\/api\/v1\/tasks\/([^/]+)\/answer$/;
 const V1_TASK_STOP_PATH = /^\/api\/v1\/tasks\/([^/]+)\/stop$/;
 const V1_TASK_COMMENTS_PATH = /^\/api\/v1\/tasks\/([^/]+)\/comments$/;
 const SESSION_PATH = /^\/api\/sessions\/([^/]+)$/;
@@ -130,15 +138,21 @@ function getSetCookieHeaders(headers: Headers): string[] {
 // it has a session. Everything else requires the Operator's session cookie.
 // Adding an entry here is the *only* way a route can be reached without a
 // session through `dispatch`, which makes auth-bypass regressions a one-grep
-// review surface. Two answers are given before the gate instead, in
-// `handleApiRequest`: `/api/healthz` and the token signer's public key set at
-// `/.well-known/jwks.json` (#566). Look for both when reviewing the anonymous surface.
+// review surface. Three answers are given before the gate instead, in
+// `handleApiRequest`: `/api/healthz`, the token signer's public key set at
+// `/.well-known/jwks.json` (#566), and a Task attempt's status URL at
+// `/api/watch/<token>` (#950; its HMAC token is the credential, and it is listed
+// below by its pattern so the snapshot shows it). Look for all three when reviewing the
+// anonymous surface.
 // Exported so __tests__/api-auth.test.ts can snapshot the list and fail CI on
 // any addition.
 export const ANONYMOUS_ROUTES: ReadonlyArray<{ method: string; pathname: string }> = [
   { method: "GET", pathname: "/api/auth/state" },
   { method: "POST", pathname: "/api/auth/setup" },
   { method: "POST", pathname: "/api/auth/login" },
+  // Documentation of a route that never reaches `dispatch`: `handleApiRequest` answers it before the gate. The
+  // pattern never equals a real path, so listing it here grants nothing.
+  { method: "GET", pathname: "/api/watch/:token" },
 ];
 
 /**
@@ -232,6 +246,16 @@ export async function handleApiRequest(request: Request): Promise<Response | nul
     return applyRequestHeaders(await healthController.read(), requestId, correlationId);
   }
 
+  // A Task attempt's status URL (#950): answered before the session gate, deliberately. The signed token in the
+  // path is the credential and the payload is status only; see task-watch.controller.ts.
+  if (pathname.startsWith(WATCH_PATH_PREFIX) && method === "GET") {
+    return applyRequestHeaders(
+      await taskWatchController.read(pathname.slice(WATCH_PATH_PREFIX.length)),
+      requestId,
+      correlationId,
+    );
+  }
+
   // The token signer's public key set (#566): SeaweedFS fetches it with no credentials, so it is answered before
   // the session gate. Public material only; see jwks.controller.ts.
   if (pathname === jwksController.JWKS_PATH && (method === "GET" || method === "HEAD")) {
@@ -286,7 +310,11 @@ async function dispatch(
   m = pathname.match(V1_AGENT_PATH);
   if (m) {
     if (method === "GET") return v1Controller.getAgentV1(principal!, decode(m[1]));
+    if (method === "PATCH") return v1Controller.updateAgentV1(principal!, decode(m[1]), request);
     if (method === "DELETE") return v1Controller.deleteAgentV1(principal!, decode(m[1]));
+  }
+  if (pathname === "/api/v1/sessions" && method === "GET") {
+    return v1Controller.listSessionsV1FromQuery(principal!, url.searchParams);
   }
   if (pathname === "/api/v1/tasks") {
     if (method === "GET") return v1Controller.listTasksV1FromQuery(principal!, url.searchParams);
@@ -294,13 +322,17 @@ async function dispatch(
   }
   m = pathname.match(V1_TASK_STATUS_PATH);
   if (m && method === "POST") return v1Controller.setTaskStatusV1(principal!, decode(m[1]), request);
+  m = pathname.match(V1_TASK_CLOSE_SESSION_PATH);
+  if (m && method === "POST") return v1Controller.closeTaskSessionV1(principal!, decode(m[1]), url.origin);
+  m = pathname.match(V1_TASK_ANSWER_PATH);
+  if (m && method === "POST") return v1Controller.answerTaskV1(principal!, decode(m[1]), request);
   m = pathname.match(V1_TASK_STOP_PATH);
   if (m && method === "POST") return v1Controller.stopTaskV1(principal!, decode(m[1]), request);
   m = pathname.match(V1_TASK_COMMENTS_PATH);
   if (m && method === "GET") return v1Controller.listTaskCommentsV1(principal!, decode(m[1]));
   if (m && method === "POST") return v1Controller.addTaskCommentV1(principal!, decode(m[1]), request);
   m = pathname.match(V1_TASK_PATH);
-  if (m && method === "GET") return v1Controller.getTaskV1(principal!, decode(m[1]));
+  if (m && method === "GET") return v1Controller.getTaskV1(principal!, decode(m[1]), url.origin);
   if (m && method === "PATCH") return v1Controller.updateTaskV1(principal!, decode(m[1]), request);
   if (m && method === "DELETE") return v1Controller.deleteTaskV1(principal!, decode(m[1]));
 
@@ -363,6 +395,10 @@ async function dispatch(
   if (m && method === "POST") return tasksController.comment(ownerId, decode(m[1]), request);
   m = pathname.match(CORE_AGENTS_PATH);
   if (m && method === "GET") return tasksController.listCoreAgents(ownerId, decode(m[1]), url.searchParams.get("runnable") === "1");
+  if (m && method === "POST") return agentsController.create(ownerId, decode(m[1]), request);
+  m = pathname.match(CORE_AGENT_PATH);
+  if (m && method === "PATCH") return agentsController.update(ownerId, decode(m[1]), decode(m[2]), request);
+  if (m && method === "DELETE") return agentsController.remove(ownerId, decode(m[1]), decode(m[2]));
 
   // The Files tab (#565): every call runs as the session's owner, on one of that owner's Cores. A key never reaches these.
   m = pathname.match(CORE_SHARED_FILES_PATH);
@@ -439,6 +475,12 @@ async function dispatch(
   }
 
   // Settings
+  if (pathname === "/api/settings/auto-retry") {
+    if (method === "GET") return autoRetrySettingsController.read(principal!);
+    if (method === "PATCH") return autoRetrySettingsController.update(principal!, request);
+  }
+  m = pathname.match(AUTO_RETRY_RESUME_PATH);
+  if (m && method === "POST") return autoRetrySettingsController.resumeCore(principal!, decode(m[1]));
   if (pathname === "/api/settings") {
     if (method === "GET") return settingsController.read();
     if (method === "POST") return settingsController.update(request);

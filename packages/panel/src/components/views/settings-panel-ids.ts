@@ -15,6 +15,7 @@ export const SETTINGS_PANEL_IDS = [
   "appearance",
   "keybindings",
   "cores",
+  "agents",
   "operator",
 ] as const;
 

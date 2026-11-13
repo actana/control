@@ -49,7 +49,9 @@ export const API_KEY_ROUTES: ReadonlyArray<{ method: string; pattern: RegExp; pe
   { method: "GET", pattern: /^\/api\/v1\/agents$/, permission: "read" },
   { method: "POST", pattern: /^\/api\/v1\/agents$/, permission: "agents:write" },
   { method: "GET", pattern: /^\/api\/v1\/agents\/[^/]+$/, permission: "read" },
+  { method: "PATCH", pattern: /^\/api\/v1\/agents\/[^/]+$/, permission: "agents:write" },
   { method: "DELETE", pattern: /^\/api\/v1\/agents\/[^/]+$/, permission: "agents:write" },
+  { method: "GET", pattern: /^\/api\/v1\/sessions$/, permission: "read" },
   { method: "GET", pattern: /^\/api\/v1\/tasks$/, permission: "read" },
   { method: "POST", pattern: /^\/api\/v1\/tasks$/, permission: "tasks:write" },
   { method: "GET", pattern: /^\/api\/v1\/tasks\/[^/]+$/, permission: "read" },
@@ -57,6 +59,8 @@ export const API_KEY_ROUTES: ReadonlyArray<{ method: string; pattern: RegExp; pe
   { method: "DELETE", pattern: /^\/api\/v1\/tasks\/[^/]+$/, permission: "tasks:write" },
   { method: "POST", pattern: /^\/api\/v1\/tasks\/[^/]+\/status$/, permission: "tasks:write" },
   { method: "POST", pattern: /^\/api\/v1\/tasks\/[^/]+\/stop$/, permission: "tasks:write" },
+  { method: "POST", pattern: /^\/api\/v1\/tasks\/[^/]+\/close-session$/, permission: "tasks:write" },
+  { method: "POST", pattern: /^\/api\/v1\/tasks\/[^/]+\/answer$/, permission: "tasks:write" },
   { method: "GET", pattern: /^\/api\/v1\/tasks\/[^/]+\/comments$/, permission: "read" },
   { method: "POST", pattern: /^\/api\/v1\/tasks\/[^/]+\/comments$/, permission: "tasks:write" },
 ];

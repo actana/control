@@ -1,0 +1,7 @@
+  ┃
+  ┃  △ Permission required
+  ┃  ← Edit src/app.ts
+  ┃
+  ┃  Allow once   Allow always   Reject
+  ┃
+  ┃  ⇆ select  enter confirm  esc dismiss

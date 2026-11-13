@@ -1,0 +1,11 @@
+[2J[H• Running tests
+
+  Would you like to make the following edits?
+
+    apply_patch src/lib.rs
+
+[36m› 1. Yes, proceed (y)[39m
+  2. Yes, and don't ask again for these files (a)
+  3. No, and tell Codex what to do differently (esc)
+
+  [2mPress enter to confirm or esc to cancel[22m

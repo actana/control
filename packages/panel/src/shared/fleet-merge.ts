@@ -30,6 +30,13 @@ export type CoreFanOutResult =
       ok: true;
       sessions: CoreLinkSessionRow[];
       lastSeenAt: number;
+      /**
+       * The paging half of the answer, when the caller read in pages: the
+       * Core's true count of active sessions and whether more follow the
+       * rows held. Absent when the caller read everything.
+       */
+      total?: number;
+      hasMore?: boolean;
     }
   | {
       coreId: string;
@@ -60,12 +67,21 @@ export type OfflineCore = {
   lastSeenAt: number | null;
 };
 
+/** One Core's paging state: its true session count and whether Load more applies. */
+export type FleetCorePage = { total: number; hasMore: boolean };
+
 /**
  * The merged Fleet view model returned by {@link mergeFleetSessions}.
  */
 export type FleetMergeResult = {
   rows: FleetSessionRow[];
   offlineCores: OfflineCore[];
+  /**
+   * Per online Core, how many active sessions it really holds and whether more
+   * than the loaded rows exist. Additive: absent for a Core read unpaged, and
+   * counts then fall back to the rows held.
+   */
+  pages?: Record<string, FleetCorePage>;
   /**
    * True when exactly one Core was fanned out to (online or offline). The
    * Fleet view degenerates to per-Core navigation in this case — the caller
@@ -82,7 +98,9 @@ export type FleetMergeResult = {
  *   should already omit them, but a stale Core never pollutes the active
  *   dashboard).
  * - Offline Cores contribute an {@link OfflineCore} entry with no rows.
- * - Rows are sorted by `updatedAt` descending (most recent first).
+ * - Rows are sorted the way a Core pages them: running / needs-input first,
+ *   then `updatedAt` descending, then `sessionId` descending. Keeping that
+ *   order is what lets a Core's loaded pages read as one continuous list.
  * - Offline Cores are sorted by label for stable display.
  *
  * Pure and synchronous; safe to call from the renderer.
@@ -95,9 +113,13 @@ export function mergeFleetSessions(results: CoreFanOutResult[]): FleetMergeResul
   // rendering it twice.
   const rowsByKey = new Map<string, FleetSessionRow>();
   const offlineCores: OfflineCore[] = [];
+  const pages: Record<string, FleetCorePage> = {};
 
   for (const result of results) {
     if (result.ok) {
+      if (typeof result.total === "number") {
+        pages[result.coreId] = { total: result.total, hasMore: result.hasMore === true };
+      }
       for (const session of result.sessions) {
         // The Fleet view is for active work; archived sessions stay on the
         // Core. Defensively drop any that slip through.
@@ -120,18 +142,28 @@ export function mergeFleetSessions(results: CoreFanOutResult[]): FleetMergeResul
   }
 
   const rows = [...rowsByKey.values()];
-  rows.sort(byUpdatedAtDesc);
+  rows.sort(byCoreOrder);
   offlineCores.sort(byLabelAsc);
 
   return {
     rows,
     offlineCores,
+    ...(Object.keys(pages).length > 0 ? { pages } : null),
     singleCore: results.length === 1,
   };
 }
 
-function byUpdatedAtDesc(a: { updatedAt: number }, b: { updatedAt: number }): number {
-  return b.updatedAt - a.updatedAt;
+// The Core's own paging order: sessions that want attention first.
+const rank = (row: { status: string }): number =>
+  row.status === "running" || row.status === "needs-input" ? 0 : 1;
+
+function byCoreOrder(
+  a: { status: string; updatedAt: number; sessionId: string },
+  b: { status: string; updatedAt: number; sessionId: string },
+): number {
+  if (rank(a) !== rank(b)) return rank(a) - rank(b);
+  if (a.updatedAt !== b.updatedAt) return b.updatedAt - a.updatedAt;
+  return a.sessionId < b.sessionId ? 1 : a.sessionId > b.sessionId ? -1 : 0;
 }
 
 function byLabelAsc(a: { coreLabel: string }, b: { coreLabel: string }): number {

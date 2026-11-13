@@ -54,6 +54,8 @@ const ptyBridge = {
   onData: () => noop,
   onExit: () => noop,
   onReconnect: () => noop,
+  isLinkUp: () => true,
+  onLinkChange: () => noop,
 };
 vi.mock("~/lib/panel-bridge", () => ({
   getPanelBridge: () => ({}),

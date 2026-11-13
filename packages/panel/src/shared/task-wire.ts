@@ -1,7 +1,8 @@
 // Tasks, Agents and comments as the Panel's browser reads them (#571). The
 // server's rows minus the owner: a browser never learns an owner id.
 
-import type { CommentAuthorKind, TaskStatus } from "./tasks";
+import type { TaskAutoRetryView } from "./auto-retry";
+import { isTaskSessionState, type CommentAuthorKind, type TaskSessionState, type TaskStatus } from "./tasks";
 
 export type TaskDto = {
   id: string;
@@ -14,11 +15,24 @@ export type TaskDto = {
   attemptCount: number;
   dispatchedAt: number | null;
   lastError: string | null;
+  /** Why an `assigned` Task is not running yet and on which Core (#962); null when it is not waiting (the Panel and the API always send it). */
+  waiting?: { reason: string; coreId: string | null } | null;
   /** The time limit per attempt in minutes (#724); null = No limit. */
   timeoutMinutes: number | null;
+  /** Auto-retry (#958): null when the Task did not opt in. Optional on the wire so older payloads still parse. */
+  autoRetry?: TaskAutoRetryView | null;
+  /** What the Session of the running attempt is doing (#949); null when no attempt runs. Never moves `status`. */
+  sessionState: TaskSessionState | null;
+  /** When `sessionState` last changed (epoch ms); null with it. */
+  sessionStateAt: number | null;
   createdAt: number;
   updatedAt: number;
 };
+
+/** A stored Session state as the wire carries it: a value this version does not know is null. */
+export function toSessionState(v: string | null): TaskSessionState | null {
+  return isTaskSessionState(v) ? v : null;
+}
 
 /** A Task as a paged list carries it (#896): everything but `description`, which can be large. */
 export type TaskListDto = Omit<TaskDto, "description">;
@@ -53,6 +67,8 @@ export type AgentDto = {
   harness: string;
   model: string | null;
   isDefault: boolean;
+  /** The Panel's own Agent routes carry the flags (the edit form starts from them); the public v1 shape does not. */
+  flags?: string[];
 };
 
 export type NewTaskRequest = {
@@ -64,6 +80,10 @@ export type NewTaskRequest = {
   startNow?: boolean;
   /** Minutes per attempt, 1 to 43200 (#724). Omitted: 60. null: No limit. */
   timeoutMinutes?: number | null;
+  /** Opt in to auto-retry (#958): 1 to 3 attempts. The instance ceiling can lower it; the answer's `autoRetryClamped` says so. */
+  autoRetry?: { maxAttempts: number } | null;
+  /** The id of the Task whose Session creates this one (a Resume / hand-over). */
+  fromTaskId?: string | null;
 };
 
 /**
@@ -75,13 +95,22 @@ export type UpdateTaskRequest = {
   title?: string;
   description?: string;
   timeoutMinutes?: number | null;
+  autoRetry?: { maxAttempts: number } | null;
 };
+
+/** Set when a requested `autoRetry.maxAttempts` was lowered to the instance ceiling. */
+export type AutoRetryClamped = { requested: number; ceiling: number };
 
 export type NewTaskCommentRequest = {
   body: string;
   /** Comment & re-assign: the comment and the move back to `assigned`, in one call. */
   reassign?: boolean;
+  /** `now`: also type the comment into the Task's running Session (#935). Without it the comment is a note. */
+  deliver?: "now";
 };
+
+/** What became of a comment's delivery into the Task's Session (#935): typed, or kept as a note with the reason. */
+export type TaskCommentDelivery = { mode: "now"; delivered: boolean; reason?: string };
 
 /** Stop a running Task (#723). */
 export type StopTaskRequest = { reason?: string };

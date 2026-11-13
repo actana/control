@@ -11,6 +11,7 @@ import { CURRENT_MC_VERSION } from "~/queries/mission-control-version";
 import { useHotkey } from "~/lib/use-hotkey";
 import { Z_INDEX } from "~/lib/z-index";
 import { CoresSettingsPage } from "./CoresSettingsPage";
+import { AgentsSettingsPage } from "./AgentsSettingsPage";
 import { OperatorSettingsPage } from "./OperatorSettingsPage";
 import { DefaultsSettingsPage } from "./DefaultsSettingsPage";
 import { GeneralSettingsPage } from "./GeneralSettingsPage";
@@ -64,6 +65,7 @@ const NAV_ITEMS: NavItem[] = [
   { id: "appearance", label: "Appearance", icon: "sun" },
   { id: "keybindings", label: "Keybindings", icon: "settings" },
   { id: "cores", label: "Cores", icon: "globe" },
+  { id: "agents", label: "Agents", icon: "terminal" },
   { id: "operator", label: "Operator", icon: "shield" },
 ];
 
@@ -90,6 +92,8 @@ function renderPage(id: SettingsPanelId) {
     <KeybindingsPage />
   ) : id === "cores" ? (
     <CoresSettingsPage />
+  ) : id === "agents" ? (
+    <AgentsSettingsPage />
   ) : (
     <OperatorSettingsPage />
   );
