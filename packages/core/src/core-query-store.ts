@@ -27,6 +27,7 @@ import {
   type CoreQuerySqlite,
 } from "@actana/shared/core-query";
 import type { CoreSessionRow } from "@actana/shared/core-query";
+import { querySessionPage } from "@actana/shared/session-paging";
 import type { CoreQueryPort } from "./pty-core-link-server";
 
 export type { CoreSessionRow, CoreQueryPort };
@@ -126,6 +127,11 @@ export const coreQueryStore: CoreQueryPort = {
       log.warn("core-query.count-archived-sessions-failed", { error: String(err) });
       return 0;
     }
+  },
+  listSessionRowsPage(query) {
+    const conn = ensureConnection();
+    if (!conn) return { rows: [], nextCursor: null, total: 0 };
+    return querySessionPage(conn as unknown as CoreQuerySqlite, query);
   },
   getSession(sessionId: string): CoreSessionRow | null {
     const conn = ensureConnection();
