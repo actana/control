@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { closePanelTestDb, openPanelTestDb, resetPanelState } from "./_panel-test-db";
 
 /**
@@ -7,6 +7,11 @@ import { closePanelTestDb, openPanelTestDb, resetPanelState } from "./_panel-tes
  */
 
 process.env.AC_SECRETS_KEY = "33".repeat(32);
+
+vi.mock("../repositories/task-watch.repo", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../repositories/task-watch.repo")>();
+  return { ...actual, findTaskWatchRow: vi.fn(actual.findTaskWatchRow) };
+});
 
 const testDb = await openPanelTestDb();
 const { handleApiRequest } = await import("../api-router");
@@ -17,6 +22,7 @@ const { resetRateLimitsForTests } = await import("../services/rate-limits");
 const { panelDb } = await import("~/db/panel-db-handle");
 const { tasks } = await import("~/db/pg-schema");
 const { eq } = await import("drizzle-orm");
+const { findTaskWatchRow } = await import("../repositories/task-watch.repo");
 
 const ORIGIN = "http://panel.example.test";
 
@@ -121,6 +127,24 @@ describe("GET /api/watch/<token>", () => {
     const row = await seed("t8");
     const res = await handleApiRequest(new Request(`${ORIGIN}/api/watch/${taskWatchToken(row)}/extra`));
     expect(res?.status).toBe(404);
+  });
+});
+
+describe("a failing read", () => {
+  it("is a 500 with no-store and writes no log line that holds the token", async () => {
+    const token = taskWatchToken(await seed("t9"));
+    vi.mocked(findTaskWatchRow).mockRejectedValueOnce(new Error("connection terminated"));
+    const spies = (["log", "info", "warn", "error", "debug"] as const).map((m) => vi.spyOn(console, m).mockImplementation(() => {}));
+    try {
+      const res = await handleApiRequest(get(token));
+      expect(res?.status).toBe(500);
+      expect(res?.headers.get("cache-control")).toBe("no-store");
+      expect(await res!.json()).toEqual({ error: "internal error" });
+      const logged = spies.flatMap((spy) => spy.mock.calls).map((args) => args.map((a) => (a instanceof Error ? `${a.message}\n${a.stack}` : String(a))).join(" "));
+      expect(logged.join("\n")).not.toContain(token);
+    } finally {
+      spies.forEach((spy) => spy.mockRestore());
+    }
   });
 });
 
