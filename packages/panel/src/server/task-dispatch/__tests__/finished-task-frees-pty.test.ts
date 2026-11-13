@@ -91,14 +91,15 @@ describe("a finished Task's harness ends and frees its PTY slot (#962)", () => {
     expect(r.log.errors).toEqual([]);
   });
 
-  it("is refused for capacity at the 9th Task without it: 8 Sessions that stay open fill the Core", async () => {
+  it("waits at the 9th Task without it: 8 Sessions that stay open fill the Core", async () => {
     const r = rig();
     for (let i = 0; i < CAP; i += 1) await assign(r);
     for (let i = 0; i < CAP; i += 1) await r.dispatcher.dispatchOnce();
     expect(r.core.live?.size).toBe(CAP);
     const ninth = await assign(r);
     await r.dispatcher.dispatchOnce();
-    expect((await getTask(A, ninth.id)).status).toBe("failed");
+    // Refused for capacity, which is not an attempt and not a failure (#962, p2): it waits.
+    expect(await getTask(A, ninth.id)).toMatchObject({ status: "assigned", attemptCount: 0, lastError: "waiting: Core full (8/8)" });
   });
 
   it.each([

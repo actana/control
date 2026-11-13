@@ -12,7 +12,7 @@ import {
   type SessionStatusFilter,
 } from "@actana/shared/session-paging";
 import type { ApiPrincipal } from "../api-key-auth";
-import { stopTask } from "../task-dispatch";
+import { queuedAnswer, stopTask } from "../task-dispatch";
 import { stopTaskBody } from "./tasks.controller";
 import { scopeReaches } from "../services/api-keys";
 import { getCore, listCores } from "../services/cores";
@@ -461,7 +461,7 @@ export async function createTaskV1(principal: ApiPrincipal, request: Request): P
       startNow: startNow === true,
       ...(timeoutMinutes === undefined ? {} : { timeoutMinutes }),
     });
-    return json({ task: taskDto(task) }, { status: HTTP_CREATED });
+    return json({ task: taskDto(task), ...queuedAnswer(startNow, coreId) }, { status: HTTP_CREATED });
   } catch (e) {
     return rethrowUnlessDomain(e);
   }

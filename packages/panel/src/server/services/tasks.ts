@@ -4,6 +4,8 @@ import { findCommentsForTask, insertComment } from "../repositories/task-comment
 import {
   InvalidTaskCursorError,
   claimAssignedTask,
+  releaseClaimedTask,
+  setAssignedWaitingReason,
   countTasks,
   deleteTaskRow,
   findTaskById,
@@ -43,6 +45,7 @@ import {
   type CommentAuthorKind,
   type TaskSessionState,
   type TaskStatus,
+  TASK_WAITING_PREFIX,
 } from "~/shared/tasks";
 import type { WebhookEventType } from "~/shared/webhooks";
 import { newId } from "./_ids";
@@ -420,7 +423,7 @@ async function move(
   comment?: CommentFields,
   /** Narrower than the rules when a call is only for some of the moves into `to`. */
   legalFrom: readonly TaskStatus[] = statusesBefore(to),
-  patch?: { lastError?: string | null },
+  patch?: { lastError?: string | null; refundAttempt?: boolean },
 ): Promise<Task> {
   if (!isTaskStatus(to)) throw new ValidationError(`unknown status: ${String(to)}`);
   const result = await writeComment(comment?.sourceFile ?? null, () =>
@@ -513,13 +516,41 @@ export async function claimTask(ownerId: number, id: string, now = Date.now()): 
  * transaction. The Task is not left `in_progress` with nothing running, and not
  * put back to `assigned` to be claimed again in a loop.
  */
-export async function failTaskDispatch(ownerId: number, id: string, reason: string, now = Date.now()): Promise<Task> {
+export async function failTaskDispatch(
+  ownerId: number,
+  id: string,
+  reason: string,
+  now = Date.now(),
+  /** No Session started: the attempt the claim counted is given back (#962). */
+  opts: { refundAttempt?: boolean } = {},
+): Promise<Task> {
   const comment = cleanComment({
     authorKind: "system",
     authorName: "Panel",
     body: `Dispatch failed: ${reason}`,
   });
-  return move(ownerId, id, "failed", now, comment, ["in_progress"], { lastError: reason });
+  return move(ownerId, id, "failed", now, comment, ["in_progress"], { lastError: reason, ...(opts.refundAttempt ? { refundAttempt: true } : {}) });
+}
+
+function waitingComment(reason: string) {
+  return cleanComment({ authorKind: "system", authorName: "Panel", body: `Waiting: ${reason.replace(TASK_WAITING_PREFIX, "")}. It starts by itself when that clears.` });
+}
+
+/**
+ * Dispatch could not start the Task's Session for a reason that may pass (#962): a Core that is full or not connected.
+ * The Task goes back to `assigned` with `reason` (`waiting: ...`) as its waiting reason and the attempt given back, to be
+ * dispatched again. With `comment` a system comment is written with it (the one a Task gets when it starts waiting).
+ * Null when the Task was no longer `in_progress` on that attempt (stopped meanwhile).
+ */
+export async function releaseTaskClaim(ownerId: number, id: string, attempt: number, reason: string, opts: { comment?: boolean } = {}, now = Date.now()): Promise<Task | null> {
+  return releaseClaimedTask(ownerId, id, attempt, reason, now, newId("tsh"), opts.comment ? waitingComment(reason) : undefined, (task) => [
+    outboxEvent(ownerId, "task.status_changed", { task: taskPayload(task), from: "in_progress", to: "assigned" }, task.coreId, now),
+  ]);
+}
+
+/** An `assigned` Task that is not started yet says why (#962). Writes only when the reason changed; a comment only when asked. */
+export async function markTaskWaiting(ownerId: number, id: string, reason: string, opts: { comment?: boolean } = {}, now = Date.now()): Promise<Task | null> {
+  return setAssignedWaitingReason(ownerId, id, reason, now, opts.comment ? waitingComment(reason) : undefined);
 }
 
 /**

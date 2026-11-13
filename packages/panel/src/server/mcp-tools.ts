@@ -236,7 +236,7 @@ export const MCP_TOOLS: readonly McpTool[] = [
   tool({
     name: "create_task",
     description:
-      "Create a Task. It is a draft unless startNow is true, which creates it assigned so its Agent starts on it (needs coreId and agent). " +
+      "Create a Task. It is a draft unless startNow is true, which creates it assigned so its Agent starts on it (needs coreId and agent). If the Core is full or not connected the Task is queued: the answer says so (queued, waiting) and it starts by itself. " +
       "timeoutMinutes sets its time limit per attempt (default 60 minutes; null = No limit).",
     readOnly: false,
     permission: "tasks:write",

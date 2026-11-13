@@ -72,6 +72,8 @@ export type ResultWatcherOptions = {
   log?: DispatchLog;
   /** Stops a Session whose dispatch timed out, so a hung agent does not run on after its Task failed (#723), and ends the harness of a Task that reported, to free its PTY slot (#962). */
   stopSession?: SessionStopper;
+  /** A harness on this Core ended, so a PTY slot may be free (#962): the dispatcher looks at the Tasks waiting for one. Never throws. */
+  onSlotFreed?: (coreId: string) => void;
   /**
    * Which Sessions are live on a Core. Asked once a minute per Core: a Session missing twice in a row counts as
    * exited (the safety net for a No-limit Task whose exit the Panel never heard). `null` = no answer, which
@@ -124,6 +126,7 @@ export class ResultWatcher {
   private readonly pollMs: number;
   private readonly log: DispatchLog;
   private readonly stopSession: SessionStopper | null;
+  private readonly onSlotFreed: ((coreId: string) => void) | null;
   private readonly tracked = new Map<string, Tracked>();
   private timer: ReturnType<typeof setInterval> | null = null;
   private running: Promise<void> | null = null;
@@ -139,6 +142,7 @@ export class ResultWatcher {
     this.pollMs = opts.pollMs ?? DEFAULT_WATCH_POLL_MS;
     this.log = opts.log ?? consoleDispatchLog;
     this.stopSession = opts.stopSession ?? null;
+    this.onSlotFreed = opts.onSlotFreed ?? null;
   }
 
   /** Start watching one dispatch. `release` runs when the dispatch is over, however it ended. */
@@ -171,7 +175,18 @@ export class ResultWatcher {
   /** The agent's process exited. If it left no result, `fail.md` follows once the grace has passed. */
   markExited(taskId: string, exitCode: number | null): void {
     const t = this.tracked.get(taskId);
-    if (t && !t.exit) t.exit = { at: this.now(), code: exitCode };
+    if (t && !t.exit) {
+      t.exit = { at: this.now(), code: exitCode };
+      this.slotFreed(t.coreId);
+    }
+  }
+
+  private slotFreed(coreId: string): void {
+    try {
+      this.onSlotFreed?.(coreId);
+    } catch (err) {
+      this.log.error(`could not tell the dispatcher that a slot on Core ${coreId} is free: ${messageOf(err)}`);
+    }
   }
 
   /**
@@ -341,6 +356,7 @@ export class ResultWatcher {
   private async finish(t: Tracked): Promise<void> {
     this.drop(t);
     await this.endHarness(t);
+    this.slotFreed(t.coreId);
   }
 
   /**
@@ -554,6 +570,7 @@ export class ResultWatcher {
     let note: string;
     try {
       const { outcome, detail } = await this.stopSession(target);
+      this.slotFreed(t.coreId);
       this.log.info(`task ${t.taskId}: Session ${target.sessionId} after the timeout: ${outcome}${detail ? ` (${detail})` : ""}`);
       note =
         outcome === "stopped"

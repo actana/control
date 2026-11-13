@@ -259,3 +259,14 @@ export function formatTaskTimeLeft(minutes: number): string {
   const rest = minutes % 60;
   return rest === 0 ? `${Math.floor(minutes / 60)} h` : `${Math.floor(minutes / 60)} h ${rest} min`;
 }
+
+/**
+ * An `assigned` Task that is not being started says why in its `lastError`, always starting with this (#962):
+ * `waiting: Core full (8/8)`, `waiting: Core not connected`, `waiting: Harness not ready (...)`. No other error starts so.
+ */
+export const TASK_WAITING_PREFIX = "waiting: ";
+
+/** The reason an `assigned` Task is waiting, or null (not assigned, or its `lastError` is an earlier failure). */
+export function taskWaitingReason(task: { status: string; lastError: string | null }): string | null {
+  return task.status === "assigned" && task.lastError?.startsWith(TASK_WAITING_PREFIX) ? task.lastError : null;
+}
