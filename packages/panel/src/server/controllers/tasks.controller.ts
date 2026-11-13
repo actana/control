@@ -98,8 +98,8 @@ function commentDto(c: TaskComment): TaskCommentDto {
   };
 }
 
-function agentDto(a: Agent): AgentDto {
-  return { id: a.id, coreId: a.coreId, name: a.name, harness: a.harness, model: a.model, isDefault: a.isDefault };
+export function agentDto(a: Agent): AgentDto {
+  return { id: a.id, coreId: a.coreId, name: a.name, harness: a.harness, model: a.model, isDefault: a.isDefault, flags: [...a.flags] };
 }
 
 async function authorName(): Promise<string> {

@@ -84,7 +84,7 @@ const newAgentBody = z.object({
  * (a harness, a Core, a command) reaches the service, which refuses it by name,
  * rather than being dropped here and looking like it worked.
  */
-const agentChangesBody = z.looseObject({
+export const agentChangesBody = z.looseObject({
   name: z.string().optional(),
   model: z.string().nullable().optional(),
   flags: z.array(z.string()).optional(),
@@ -202,7 +202,7 @@ export async function getAgentV1(principal: ApiPrincipal, id: string): Promise<R
  * (`core_harnesses_unavailable`, `harness_missing_on_core`) a client can branch
  * on; the words of the second say when the harness is only still being checked.
  */
-function agentWriteError(e: unknown): Response {
+export function agentWriteError(e: unknown): Response {
   if (
     e instanceof CoreHarnessesUnavailableError ||
     e instanceof HarnessMissingOnCoreError
