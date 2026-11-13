@@ -14,6 +14,7 @@ const pages = {
   AppearanceSettingsPage: "appearance",
   KeybindingsPage: "keybindings",
   CoresSettingsPage: "cores",
+  AgentsSettingsPage: "agents",
   OperatorSettingsPage: "operator",
 } as const;
 
@@ -28,6 +29,7 @@ vi.mock("../InterfaceSettingsPage", () => ({ InterfaceSettingsPage: () => <div>i
 vi.mock("../AppearanceSettingsPage", () => ({ AppearanceSettingsPage: () => <div>appearance page</div> }));
 vi.mock("../KeybindingsPage", () => ({ KeybindingsPage: () => <div>keybindings page</div> }));
 vi.mock("../CoresSettingsPage", () => ({ CoresSettingsPage: () => <div>cores page</div> }));
+vi.mock("../AgentsSettingsPage", () => ({ AgentsSettingsPage: () => <div>agents page</div> }));
 vi.mock("../OperatorSettingsPage", () => ({ OperatorSettingsPage: () => <div>operator page</div> }));
 
 const { SettingsPanel: RawSettingsPanel } = await import("../SettingsPanel");
@@ -60,6 +62,7 @@ const ORDER = [
   ["appearance", "Appearance"],
   ["keybindings", "Keybindings"],
   ["cores", "Cores"],
+  ["agents", "Agents"],
   ["operator", "Operator"],
 ] as const;
 
@@ -98,7 +101,7 @@ afterEach(() => {
 describe("SettingsPanel on phone (390)", () => {
   beforeEach(() => stubWidth(390));
 
-  it("phone: a generic open shows the Settings list: 12 rows in order General…Operator, no Legal or Terms", () => {
+  it("phone: a generic open shows the Settings list: 13 rows in order General…Operator, no Legal or Terms", () => {
     render(<SettingsPanel onBack={() => {}} />);
     expect(overlay().getAttribute("data-view")).toBe("list");
     const rows = Array.from(document.querySelectorAll(".mc-settings-list .mc-settings-row")).map((r) =>
@@ -203,7 +206,7 @@ describe("SettingsPanel on phone (390)", () => {
 describe.each([1280, 900])("SettingsPanel at %ipx keeps the desktop markup", (width) => {
   beforeEach(() => stubWidth(width));
 
-  it("renders the 240px aside with Back, the SETTINGS label and 12 nav buttons; no .mc-settings-phone; onBack only after animationend", () => {
+  it("renders the 240px aside with Back, the SETTINGS label and 13 nav buttons; no .mc-settings-phone; onBack only after animationend", () => {
     const onBack = vi.fn();
     render(<SettingsPanel onBack={onBack} />);
     expect(document.querySelector(".mc-settings-phone")).toBeNull();
@@ -211,7 +214,7 @@ describe.each([1280, 900])("SettingsPanel at %ipx keeps the desktop markup", (wi
     expect((aside.parentElement as HTMLElement).style.width).toBe("240px");
     expect(within(aside).getByRole("button", { name: "Back" })).toBeTruthy();
     expect(within(aside).getByText("Settings")).toBeTruthy();
-    expect(aside.querySelectorAll("nav button")).toHaveLength(12);
+    expect(aside.querySelectorAll("nav button")).toHaveLength(13);
     expect(overlay().getAttribute("data-view")).toBeNull();
 
     fireEvent.click(within(aside).getByRole("button", { name: "Back" }));

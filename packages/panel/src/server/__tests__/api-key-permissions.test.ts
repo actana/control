@@ -127,7 +127,7 @@ describe("a read-only key", () => {
         expect(await errorOf(res)).toBe(`this API key lacks the ${route.permission} permission`);
       }
     }
-    expect(seen.filter((s) => s.startsWith("POST ") || s.startsWith("PATCH ") || s.startsWith("DELETE ")).length).toBe(8);
+    expect(seen.filter((s) => s.startsWith("POST ") || s.startsWith("PATCH ") || s.startsWith("DELETE ")).length).toBe(9);
     expect(seen.filter((s) => s.startsWith("GET ")).length).toBe(11);
     // Nothing was written: the 403 came from the gate, before any handler ran.
     expect((await testDb.pool.query("select count(*)::int as n from agents")).rows[0]).toEqual({ n: 2 });
@@ -159,13 +159,25 @@ describe("a key without agents:write", () => {
     const deleted = await call("/api/v1/agents/agent-b", { method: "DELETE", bearer: key });
     expect(deleted.status).toBe(403);
     expect(await errorOf(deleted)).toBe("this API key lacks the agents:write permission");
+    const changed = await call("/api/v1/agents/agent-b", { method: "PATCH", json: { model: "opus" }, bearer: key });
+    expect(changed.status).toBe(403);
+    expect(await errorOf(changed)).toBe("this API key lacks the agents:write permission");
     expect((await testDb.pool.query("select count(*)::int as n from agents")).rows[0]).toEqual({ n: 2 });
+    expect((await testDb.pool.query("select model from agents where id = 'agent-b'")).rows[0]).toEqual({ model: null });
 
     expect((await call("/api/v1/agents/agent-b", { bearer: key })).status).toBe(200);
     const task = await call("/api/v1/tasks", { method: "POST", json: { title: "mine" }, bearer: key });
     expect(task.status).toBe(201);
     const comment = await call(`/api/v1/tasks/${taskId}/comments`, { method: "POST", json: { body: "hi" }, bearer: key });
     expect(comment.status).toBe(201);
+  });
+
+  it("a key with agents:write only changes an Agent in place but cannot read it back", async () => {
+    const { key } = await keyWith(["agents:write"]);
+    const changed = await call("/api/v1/agents/agent-b", { method: "PATCH", json: { model: "opus" }, bearer: key });
+    expect(changed.status).toBe(200);
+    expect(((await changed.json()) as { agent: { id: string; model: string } }).agent).toMatchObject({ id: "agent-b", model: "opus" });
+    expect((await call("/api/v1/agents/agent-b", { bearer: key })).status).toBe(403);
   });
 
   it("regression guard: a key with agents:write still deletes an Agent", async () => {
@@ -236,10 +248,12 @@ describe("the /mcp tools apply the same permissions", () => {
   const names = (tools: { name: string }[]) => tools.map((t) => t.name).sort();
   const readTools = MCP_TOOLS.filter((t) => t.permission === "read").map((t) => t.name).sort();
   const taskTools = MCP_TOOLS.filter((t) => t.permission === "tasks:write").map((t) => t.name).sort();
+  const agentTools = MCP_TOOLS.filter((t) => t.permission === "agents:write").map((t) => t.name).sort();
 
   it("every tool names the permission its REST route needs: reads are read, the Task writes are tasks:write", () => {
     expect(readTools).toEqual(["get_sessions", "get_shared", "get_task", "get_tasks", "list_agents", "list_cores", "list_shared"]);
     expect(taskTools).toEqual(["assign_task", "comment_task", "create_task", "delete_task", "stop_task", "update_task"]);
+    expect(agentTools).toEqual(["create_agent", "delete_agent", "update_agent"]);
     for (const t of MCP_TOOLS) expect(t.readOnly, t.name).toBe(t.permission === "read");
   });
 
@@ -266,6 +280,40 @@ describe("the /mcp tools apply the same permissions", () => {
     }
     expect((await testDb.pool.query("select count(*)::int as n from tasks")).rows[0]).toEqual({ n: 1 });
     expect((await testDb.pool.query("select count(*)::int as n from task_comments")).rows[0]).toEqual({ n: 0 });
+  });
+
+  it("lists a read-only key no Agent write tool, and refuses create_agent, update_agent and delete_agent with a 403 that names agents:write", async () => {
+    const { key } = await keyWith(["read", "tasks:write"]);
+    const client = new McpTestClient(key);
+    await client.connect();
+    for (const name of agentTools) expect(names(await client.listTools())).not.toContain(name);
+    for (const [name, args] of [
+      ["create_agent", { coreId: "core-a", name: "new", harness: "claude-code" }],
+      ["update_agent", { agentId: "agent-b", model: "opus" }],
+      ["delete_agent", { agentId: "agent-b" }],
+    ] as const) {
+      const result = await client.call(name, args);
+      expect(result.isError, name).toBe(true);
+      expect(textOf(result)).toBe("403 this API key lacks the agents:write permission");
+    }
+    expect((await testDb.pool.query("select count(*)::int as n from agents")).rows[0]).toEqual({ n: 2 });
+    expect((await testDb.pool.query("select model from agents where id = 'agent-b'")).rows[0]).toEqual({ model: null });
+  });
+
+  it("lists an agents:write-only key the Agent write tools only, which create but cannot read Agents", async () => {
+    const { key } = await keyWith(["agents:write"]);
+    const client = new McpTestClient(key);
+    await client.connect();
+    expect(names(await client.listTools())).toEqual(agentTools);
+    vi.spyOn(coreLinkManager(), "client").mockReturnValue({
+      request: async () => ({ type: "agentsAvailabilityListResult", availability: { "claude-code": { status: "available" } } }),
+    } as never);
+    const created = await client.call("create_agent", { coreId: "core-a", name: "from mcp", harness: "claude-code" });
+    expect(created.isError).toBeUndefined();
+    const list = await client.call("list_agents");
+    expect(list.isError).toBe(true);
+    expect(textOf(list)).toBe("403 this API key lacks the read permission");
+    expect((await testDb.pool.query("select count(*)::int as n from agents")).rows[0]).toEqual({ n: 3 });
   });
 
   it("lists a tasks:write-only key the write tools only, and refuses the reads", async () => {

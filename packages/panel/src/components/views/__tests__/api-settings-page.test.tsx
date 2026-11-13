@@ -241,7 +241,7 @@ describe("Settings › API & integrations", () => {
     expect(box("read").checked).toBe(true);
     expect(box("tasks:write").checked).toBe(false);
     expect(box("agents:write").checked).toBe(false);
-    expect(within(dialog).getByText(/Create and delete Agents/)).toBeTruthy();
+    expect(within(dialog).getByText(/Create, change and delete Agents/)).toBeTruthy();
     expect((within(dialog).getByLabelText(/^All Cores$/i) as HTMLInputElement).checked).toBe(false);
     expect((within(dialog).getByLabelText(/Only these Cores/i) as HTMLInputElement).checked).toBe(false);
 

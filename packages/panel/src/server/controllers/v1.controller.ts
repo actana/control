@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { forbidden, json, noContent, notFound, parseJsonBody, rethrowUnlessDomain } from "./_helpers";
 import { NotFoundError, ValidationError } from "../errors";
-import { HTTP_BAD_GATEWAY, HTTP_CREATED, HTTP_SERVICE_UNAVAILABLE } from "~/shared/http-status";
+import { HTTP_BAD_GATEWAY, HTTP_CONFLICT, HTTP_CREATED, HTTP_SERVICE_UNAVAILABLE } from "~/shared/http-status";
 import { jsonError } from "../http-responses";
 import type { SessionsPageDto } from "~/shared/session-wire";
 import {
@@ -40,6 +40,10 @@ import {
   getAgent,
   listAgents,
   listAgentsForCore,
+  updateAgent,
+  CoreHarnessesUnavailableError,
+  HarnessMissingOnCoreError,
+  HarnessNotReadyError,
   type Agent,
 } from "../services/agents";
 import { getOperator } from "../services/operator";
@@ -72,6 +76,17 @@ const newAgentBody = z.object({
   coreId: z.string(),
   name: z.string(),
   harness: z.enum(HARNESSES),
+  model: z.string().nullable().optional(),
+  flags: z.array(z.string()).optional(),
+});
+
+/**
+ * The change an Agent takes. Loose on purpose: a field that is not one of these
+ * (a harness, a Core, a command) reaches the service, which refuses it by name,
+ * rather than being dropped here and looking like it worked.
+ */
+export const agentChangesBody = z.looseObject({
+  name: z.string().optional(),
   model: z.string().nullable().optional(),
   flags: z.array(z.string()).optional(),
 });
@@ -184,6 +199,23 @@ export async function getAgentV1(principal: ApiPrincipal, id: string): Promise<R
   }
 }
 
+/**
+ * An Agent write's error as a response. When the Core cannot be asked, or does
+ * not have the harness, the 409 also carries a stable `code`
+ * (`core_harnesses_unavailable`, `harness_missing_on_core`, `harness_not_ready`)
+ * a client can branch on; the last is a harness still being checked: ask again.
+ */
+export function agentWriteError(e: unknown): Response {
+  if (
+    e instanceof CoreHarnessesUnavailableError ||
+    e instanceof HarnessMissingOnCoreError ||
+    e instanceof HarnessNotReadyError
+  ) {
+    return json({ error: e.message, code: e.code }, { status: HTTP_CONFLICT });
+  }
+  return rethrowUnlessDomain(e);
+}
+
 export async function createAgentV1(principal: ApiPrincipal, request: Request): Promise<Response> {
   const body = await parseJsonBody(request, newAgentBody);
   if (!body.ok) return body.response;
@@ -199,7 +231,20 @@ export async function createAgentV1(principal: ApiPrincipal, request: Request): 
     });
     return json({ agent: agentDto(agent) }, { status: HTTP_CREATED });
   } catch (e) {
-    return rethrowUnlessDomain(e);
+    return agentWriteError(e);
+  }
+}
+
+export async function updateAgentV1(principal: ApiPrincipal, id: string, request: Request): Promise<Response> {
+  const body = await parseJsonBody(request, agentChangesBody);
+  if (!body.ok) return body.response;
+  try {
+    const agent = await getAgent(principal.ownerId, id);
+    const denied = refuseOutsideScope(principal, agent.coreId);
+    if (denied) return denied;
+    return json({ agent: agentDto(await updateAgent(principal.ownerId, id, body.data)) });
+  } catch (e) {
+    return agentWriteError(e);
   }
 }
 

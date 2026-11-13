@@ -3,7 +3,9 @@ import type { ApiPrincipal } from "./api-key-auth";
 import { forbidden } from "./controllers/_helpers";
 import {
   addTaskCommentV1,
+  createAgentV1,
   createTaskV1,
+  deleteAgentV1,
   deleteTaskV1,
   getTaskV1,
   listAgentsV1,
@@ -13,6 +15,7 @@ import {
   listTasksV1,
   setTaskStatusV1,
   stopTaskV1,
+  updateAgentV1,
   updateTaskV1,
 } from "./controllers/v1.controller";
 import { getShared, listShared } from "./mcp-shared";
@@ -20,6 +23,7 @@ import { OPERATOR_TASK_STATUSES } from "./controllers/tasks.controller";
 import { scopeReaches } from "./services/api-keys";
 import type { ApiKeyPermission } from "~/shared/api-key-permissions";
 import { SESSION_PAGE_MAX, SESSION_STATUS_FILTERS } from "@actana/shared/session-paging";
+import { AGENT_FLAGS, AGENT_NAME_MAX, HARNESSES } from "~/shared/agents";
 import { TASKS_PAGE_MAX_LIMIT, TASK_STATUSES } from "~/shared/tasks";
 
 /**
@@ -60,7 +64,9 @@ async function outcomeOf(response: Response): Promise<ToolOutcome> {
   const body = (await response.json().catch(() => ({}))) as Record<string, unknown>;
   if (response.ok) return { ok: true, data: body };
   const reason = typeof body.error === "string" ? body.error : "failed";
-  return { ok: false, message: `${response.status} ${reason}` };
+  // A refusal with a stable `code` (an Agent's harness check) leads with it: the model can tell "wait" from "missing".
+  const code = typeof body.code === "string" ? `${body.code}: ` : "";
+  return { ok: false, message: `${response.status} ${code}${reason}` };
 }
 
 /** The JSON body a v1 write handler reads, as the `Request` it takes: the tool's arguments are its body, validated by the same schema. */
@@ -94,6 +100,17 @@ const timeoutMinutesArg = z
   .optional()
   .describe("Time limit in minutes per attempt (1–43200). Omit for 60; null = No limit: the attempt runs until the agent reports or exits.");
 const coreIdArg = z.string().min(1).describe("A Core's id, from list_cores.");
+const agentIdArg = z.string().min(1).describe("An Agent's id, from list_agents.");
+const agentNameArg = z.string().describe(`The Agent's name: one line of at most ${AGENT_NAME_MAX} characters, unique on its Core.`);
+const agentModelArg = z
+  .string()
+  .nullable()
+  .optional()
+  .describe("A model id for the harness (letters, digits and . _ : / @ + -), e.g. opus. null or omitted = the harness's own default.");
+const agentFlagsArg = z
+  .array(z.string())
+  .optional()
+  .describe(`Flags from this closed set: ${AGENT_FLAGS.join(", ")}. Nothing else is accepted: an Agent has no command, arguments, script or environment.`);
 
 export const MCP_TOOLS: readonly McpTool[] = [
   tool({
@@ -112,6 +129,51 @@ export const MCP_TOOLS: readonly McpTool[] = [
     input: z.object({ coreId: coreIdArg.optional() }),
     run: async (principal, { coreId }) =>
       outcomeOf(coreId === undefined ? await listAgentsV1(principal) : await listCoreAgentsV1(principal, coreId)),
+  }),
+  tool({
+    name: "create_agent",
+    description:
+      "Create an Agent: a named harness with a model and flags on one Core. The Core must be online and report the harness ready. " +
+      "Refusals are 409 and start with a code: core_harnesses_unavailable (the Core cannot be asked right now: it is offline, try again later), " +
+      "harness_not_ready (the Core is still checking the harness: ask again shortly), " +
+      "harness_missing_on_core (not available there: it is not installed, outdated or needs setup).",
+    readOnly: false,
+    permission: "agents:write",
+    input: z.strictObject({
+      coreId: coreIdArg,
+      name: agentNameArg,
+      harness: z.enum(HARNESSES).describe("The harness this Agent runs, e.g. claude-code."),
+      model: agentModelArg,
+      flags: agentFlagsArg,
+    }),
+    run: async (principal, args) => outcomeOf(await createAgentV1(principal, asJsonRequest(args))),
+  }),
+  tool({
+    name: "update_agent",
+    description:
+      "Change an Agent's name, model and/or flags in place: its id stays, so briefs and Tasks that name it keep working, and the next Task sent to it runs with the new settings. " +
+      "A field you leave out is kept; model null clears the model. The harness and the Core cannot be changed, and a default Agent (one a Core made for itself) is refused with 409.",
+    readOnly: false,
+    permission: "agents:write",
+    input: z
+      .strictObject({ agentId: agentIdArg, name: agentNameArg.optional(), model: agentModelArg, flags: agentFlagsArg })
+      .refine((a) => a.name !== undefined || a.model !== undefined || a.flags !== undefined, {
+        message: "give a name, a model or flags",
+      }),
+    run: async (principal, { agentId, ...fields }) => outcomeOf(await updateAgentV1(principal, agentId, asJsonRequest(fields, "PATCH"))),
+  }),
+  tool({
+    name: "delete_agent",
+    description:
+      "Delete an Agent. A default Agent (one a Core made for itself) is refused with 409. Tasks that named the Agent keep their text; they cannot be sent to it again.",
+    readOnly: false,
+    permission: "agents:write",
+    destructive: true,
+    input: z.strictObject({ agentId: agentIdArg }),
+    run: async (principal, { agentId }) => {
+      const deleted = await outcomeOf(await deleteAgentV1(principal, agentId));
+      return deleted.ok ? { ok: true, data: { deleted: agentId } } : deleted;
+    },
   }),
   tool({
     name: "get_tasks",

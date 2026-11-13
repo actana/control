@@ -9,6 +9,7 @@ import {
   findAgents,
   findDefaultAgent,
   insertAgent,
+  updateAgentRow,
   type AgentRow,
 } from "../repositories/agents.repo";
 import {
@@ -223,11 +224,54 @@ export async function createAgent(ownerId: number, input: NewAgent, deps: AgentD
   const fields = cleanNewAgent(input);
   const coreId = String(input.coreId ?? "");
   if (!(await findCoreById(ownerId, coreId))) throw new NotFoundError("core not found");
-  if (!hasHarness(await reportedHarnesses(coreId, deps), fields.harness)) {
-    throw new HarnessMissingOnCoreError(coreId, fields.harness);
-  }
+  const readiness = harnessReadiness((await reportedHarnesses(coreId, deps))[fields.harness]);
+  // Still being checked is not gone: say so with its own error and code, so a caller can wait and ask again.
+  if (readiness.kind === "wait") throw new HarnessNotReadyError(coreId, fields.harness, readiness.state);
+  if (readiness.kind === "unavailable") throw new HarnessMissingOnCoreError(coreId, fields.harness, readiness.detail);
   const result = await insertAgent(row(ownerId, coreId, fields, false, now));
   if (result.kind === "no-core") throw new NotFoundError("core not found");
+  if (result.kind === "conflict") throw new ConflictError(`this Core already has an Agent named ${fields.name}`);
+  return result.agent;
+}
+
+/** What `updateAgent` may change. The harness and the Core are fixed at creation; there is no other field. */
+export type AgentChanges = {
+  name?: string;
+  model?: string | null;
+  flags?: readonly string[];
+};
+
+const CHANGEABLE_FIELDS = ["name", "model", "flags"];
+
+/**
+ * Change the name, model and flags of one Agent in place: the id stays, so a
+ * brief that names it keeps working. Same validation as `createAgent`, on the
+ * Agent as it would be after the change. A field that is not given is kept;
+ * `model: null` clears the model. The harness and the Core cannot change, so the
+ * Core is not asked what it has. A default Agent is the Core's own and cannot be
+ * changed (409, like delete).
+ */
+export async function updateAgent(ownerId: number, id: string, changes: AgentChanges, now = Date.now()): Promise<Agent> {
+  const extra = Object.keys(changes).filter((k) => !CHANGEABLE_FIELDS.includes(k));
+  if (extra.length) {
+    throw new ValidationError(
+      `an Agent's ${extra.join(", ")} cannot be changed: only its name, model and flags can`,
+    );
+  }
+  if (CHANGEABLE_FIELDS.every((k) => (changes as Record<string, unknown>)[k] === undefined)) {
+    throw new ValidationError("give a name, a model or flags to change");
+  }
+  const agent = await getAgent(ownerId, id);
+  if (agent.isDefault) throw new ConflictError("a default Agent cannot be changed");
+  const fields = cleanNewAgent({
+    coreId: agent.coreId,
+    harness: agent.harness as Harness,
+    name: changes.name ?? agent.name,
+    model: changes.model === undefined ? agent.model : changes.model,
+    flags: changes.flags ?? agent.flags,
+  });
+  const result = await updateAgentRow(ownerId, id, fields, now);
+  if (result.kind === "not-found") throw new NotFoundError("agent not found");
   if (result.kind === "conflict") throw new ConflictError(`this Core already has an Agent named ${fields.name}`);
   return result.agent;
 }

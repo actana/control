@@ -235,6 +235,18 @@ export const api = {
   /** One Core's Agents, from the Agents service; `runnableOnly` is the New Task picker's list. */
   listCoreAgents: (coreId: string, opts: { runnableOnly?: boolean } = {}) =>
     req<{ agents: AgentDto[] }>(`/api/cores/${encodeURIComponent(coreId)}/agents${opts.runnableOnly ? "?runnable=1" : ""}`),
+  /** Create an Agent on a Core (#893). A refusal is an `ApiError`; its body carries the stable `code` (`core_harnesses_unavailable`, `harness_not_ready`, `harness_missing_on_core`). */
+  createCoreAgent: (coreId: string, body: { name: string; harness: string; model?: string | null; flags?: string[] }) =>
+    req<{ agent: AgentDto }>(`/api/cores/${encodeURIComponent(coreId)}/agents`, { method: "POST", body: JSON.stringify(body) }),
+  /** Change an Agent's name, model and flags in place; a field left out is kept, `model: null` clears it. */
+  updateCoreAgent: (coreId: string, agentId: string, body: { name?: string; model?: string | null; flags?: string[] }) =>
+    req<{ agent: AgentDto }>(`/api/cores/${encodeURIComponent(coreId)}/agents/${encodeURIComponent(agentId)}`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    }),
+  /** Delete an Agent; a default Agent is refused with 409. */
+  deleteCoreAgent: (coreId: string, agentId: string) =>
+    req<void>(`/api/cores/${encodeURIComponent(coreId)}/agents/${encodeURIComponent(agentId)}`, { method: "DELETE" }),
   /** The fleet: every registered Core with the service's live view of its link. */
   listCores: () => req<CoreListResponse>("/api/cores"),
   /**

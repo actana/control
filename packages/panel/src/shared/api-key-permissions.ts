@@ -7,7 +7,7 @@
  *   comments, a Core's Shared folder).
  * - `tasks:write`: create, update and delete a Task, move it (assigned / draft),
  *   stop it, comment on it.
- * - `agents:write`: create and delete Agents.
+ * - `agents:write`: create, update and delete Agents.
  *
  * The permissions are independent: a key with `tasks:write` alone can write
  * Tasks but read nothing, which is what it says. Keys that existed before this
@@ -35,5 +35,5 @@ export function normalizeApiKeyPermissions(permissions: Iterable<ApiKeyPermissio
 export const API_KEY_PERMISSION_LABELS: Record<ApiKeyPermission, { title: string; detail: string }> = {
   read: { title: "Read", detail: "List and read Cores, Agents, Tasks, comments and Shared folders." },
   "tasks:write": { title: "Write Tasks", detail: "Create, update, delete, assign and stop Tasks, comment on them." },
-  "agents:write": { title: "Write Agents", detail: "Create and delete Agents." },
+  "agents:write": { title: "Write Agents", detail: "Create, change and delete Agents." },
 };

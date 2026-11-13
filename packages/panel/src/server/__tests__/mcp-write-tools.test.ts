@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { ALL_API_KEY_PERMISSIONS } from "~/shared/api-key-permissions";
 import { closePanelTestDb, openPanelTestDb, resetPanelState } from "./_panel-test-db";
 import { McpTestClient, dataOf, textOf } from "./_mcp-client";
@@ -23,6 +23,7 @@ const testDb = await openPanelTestDb();
 const { operatorSessionCookie, resetOperatorSessionForTests } = await import("./_operator-session");
 const tasksService = await import("../services/tasks");
 const { createApiKey } = await import("../services/api-keys");
+const { coreLinkManager } = await import("../services/core-link-manager");
 
 const { formatTaskDispatchComment } = await import("~/shared/tasks");
 
@@ -404,5 +405,118 @@ describe("stop_task (#723)", () => {
     expect(dataOf(await c.call("stop_task", { taskId: task.id })).task.status).toBe("failed");
     const again = dataOf(await c.call("comment_task", { taskId: task.id, body: "again", reassign: true }));
     expect(again.task.status).toBe("assigned");
+  });
+});
+
+describe("create_agent, update_agent, delete_agent (#893)", () => {
+  const fakeCore = (availability: Record<string, unknown> | "offline") =>
+    vi.spyOn(coreLinkManager(), "client").mockImplementation(() =>
+      availability === "offline"
+        ? null
+        : ({ request: async () => ({ type: "agentsAvailabilityListResult", availability }) } as never),
+    );
+  const ready = { "claude-code": { status: "available" }, codex: { status: "available" } };
+  const agentRow = async (id: string) => (await testDb.pool.query("select * from agents where id = $1", [id])).rows[0];
+
+  it("describes the three tools: writes needing agents:write, delete_agent destructive, and no command, args or env input", async () => {
+    const tools = await (await client(A)).listTools();
+    const byName = Object.fromEntries(tools.map((t) => [t.name, t]));
+    expect(Object.keys(byName.create_agent!.inputSchema.properties).sort()).toEqual(["coreId", "flags", "harness", "model", "name"]);
+    expect(byName.create_agent!.inputSchema.required).toEqual(["coreId", "name", "harness"]);
+    expect(Object.keys(byName.update_agent!.inputSchema.properties).sort()).toEqual(["agentId", "flags", "model", "name"]);
+    expect(byName.update_agent!.inputSchema.required).toEqual(["agentId"]);
+    expect(byName.delete_agent!.inputSchema.required).toEqual(["agentId"]);
+    expect(byName.delete_agent!.annotations).toEqual({ readOnlyHint: false, destructiveHint: true });
+    expect(byName.create_agent!.annotations.readOnlyHint).toBe(false);
+    expect(byName.update_agent!.annotations.destructiveHint).toBeUndefined();
+  });
+
+  it("create_agent makes an Agent that list_agents then shows", async () => {
+    fakeCore(ready);
+    const c = await client(A);
+    const created = dataOf(await c.call("create_agent", { coreId: "core-a", name: " Codex High ", harness: "codex", model: "gpt-5", flags: ["skip-permissions"] })).agent as { id: string };
+    expect(created).toMatchObject({ coreId: "core-a", name: "Codex High", harness: "codex", model: "gpt-5", isDefault: false });
+    expect((await agentRow(created.id)).flags).toEqual(["skip-permissions"]);
+    const listed = dataOf(await c.call("list_agents", { coreId: "core-a" })).agents as { id: string }[];
+    expect(listed.map((a) => a.id)).toContain(created.id);
+  });
+
+  it("create_agent rejects a field outside the closed set at the schema, before anything is written", async () => {
+    fakeCore(ready);
+    const c = await client(A);
+    const before = (await testDb.pool.query("select count(*)::int as n from agents")).rows[0].n;
+    for (const extra of [{ command: "rm -rf /" }, { args: ["-x"] }, { env: { A: "b" } }]) {
+      const res = await c.call("create_agent", { coreId: "core-a", name: "x", harness: "claude-code", ...extra });
+      expect(res.isError, JSON.stringify(extra)).toBe(true);
+    }
+    expect(textOf(await c.call("create_agent", { coreId: "core-a", name: "x", harness: "bash" }))).toMatch(/harness|enum|invalid/i);
+    expect(textOf(await c.call("create_agent", { coreId: "core-a", name: "x", harness: "claude-code", flags: ["nope"] }))).toMatch(/^400 unknown flag: nope/);
+    expect((await testDb.pool.query("select count(*)::int as n from agents")).rows[0].n).toBe(before);
+  });
+
+  it("create_agent tells an offline Core (own code), a harness still being checked (retry hint) and a missing harness apart", async () => {
+    const c = await client(A);
+    const args = { coreId: "core-a", name: "New", harness: "codex" };
+    fakeCore("offline");
+    const offline = textOf(await c.call("create_agent", args));
+    expect(offline).toMatch(/^409 core_harnesses_unavailable: /);
+    fakeCore({ ...ready, codex: { status: "checking" } });
+    const notReady = textOf(await c.call("create_agent", args));
+    expect(notReady).toMatch(/^409 harness_not_ready: .*not ready yet \(checking\)/);
+    fakeCore({ ...ready, codex: { status: "missing", reason: "not-found" } });
+    const missing = textOf(await c.call("create_agent", args));
+    expect(missing).toMatch(/^409 harness_missing_on_core: .*does not have codex available/);
+    expect(new Set([offline, notReady, missing]).size).toBe(3);
+    expect((await testDb.pool.query("select count(*)::int as n from agents where name = 'New'")).rows[0].n).toBe(0);
+  });
+
+  it("create_agent is refused on a Core outside the key's scope (403) and on another owner's Core (404)", async () => {
+    fakeCore(ready);
+    const scoped = await client(A, ["core-a"]);
+    expect(textOf(await scoped.call("create_agent", { coreId: "core-b", name: "n", harness: "claude-code" }))).toMatch(/^403/);
+    expect(textOf(await (await client(A)).call("create_agent", { coreId: "core-x", name: "n", harness: "claude-code" }))).toMatch(/^404/);
+  });
+
+  it("update_agent changes the model under the same id and list_agents shows it", async () => {
+    const c = await client(A);
+    const changed = dataOf(await c.call("update_agent", { agentId: "agent-a", model: "opus", flags: ["skip-permissions"] })).agent;
+    expect(changed).toMatchObject({ id: "agent-a", coreId: "core-a", harness: "claude-code", name: "Agent A", model: "opus" });
+    const listed = dataOf(await c.call("list_agents", { coreId: "core-a" })).agents as { id: string; model: string | null }[];
+    expect(listed.find((a) => a.id === "agent-a")?.model).toBe("opus");
+    expect((await agentRow("agent-a")).flags).toEqual(["skip-permissions"]);
+  });
+
+  it("update_agent needs something to change, refuses a default Agent, a taken name and scope, and cannot move the harness or Core", async () => {
+    const c = await client(A);
+    expect((await c.call("update_agent", { agentId: "agent-a" })).isError).toBe(true);
+    expect((await c.call("update_agent", { agentId: "agent-a", harness: "codex" })).isError).toBe(true);
+    expect((await agentRow("agent-a")).harness).toBe("claude-code");
+    await testDb.pool.query(
+      "insert into agents (id, owner_id, core_id, name, harness, flags, is_default, created_at, updated_at) values ('agent-d', 1, 'core-a', 'Claude Code', 'claude-code', '{}', true, 1, 1), ('agent-a2', 1, 'core-a', 'Agent A2', 'claude-code', '{}', false, 1, 1)",
+    );
+    expect(textOf(await c.call("update_agent", { agentId: "agent-d", model: "opus" }))).toBe("409 a default Agent cannot be changed");
+    expect(textOf(await c.call("update_agent", { agentId: "agent-a2", name: "Agent A" }))).toMatch(/^409 /);
+    expect(textOf(await c.call("update_agent", { agentId: "agent-a", model: "bad model;x" }))).toMatch(/^400 /);
+    expect(textOf(await c.call("update_agent", { agentId: "missing", model: "opus" }))).toMatch(/^404/);
+    const scoped = await client(A, ["core-a"]);
+    expect(textOf(await scoped.call("update_agent", { agentId: "agent-b", model: "opus" }))).toMatch(/^403/);
+    expect(textOf(await c.call("update_agent", { agentId: "agent-x", model: "opus" }))).toMatch(/^404/);
+    expect((await agentRow("agent-b")).model).toBeNull();
+    expect((await agentRow("agent-x")).model).toBeNull();
+  });
+
+  it("delete_agent removes an Agent, refuses a default Agent, and respects scope and owner", async () => {
+    const c = await client(A);
+    await testDb.pool.query(
+      "insert into agents (id, owner_id, core_id, name, harness, flags, is_default, created_at, updated_at) values ('agent-d', 1, 'core-a', 'Claude Code', 'claude-code', '{}', true, 1, 1)",
+    );
+    expect(textOf(await c.call("delete_agent", { agentId: "agent-d" }))).toBe("409 a default Agent cannot be deleted");
+    const scoped = await client(A, ["core-a"]);
+    expect(textOf(await scoped.call("delete_agent", { agentId: "agent-b" }))).toMatch(/^403/);
+    expect(textOf(await c.call("delete_agent", { agentId: "agent-x" }))).toMatch(/^404/);
+    expect(dataOf(await c.call("delete_agent", { agentId: "agent-a" }))).toEqual({ deleted: "agent-a" });
+    expect(await agentRow("agent-a")).toBeUndefined();
+    expect(await agentRow("agent-b")).toBeDefined();
+    expect(await agentRow("agent-x")).toBeDefined();
   });
 });

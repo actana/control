@@ -198,7 +198,7 @@
           "400": { "description": "Validation error" },
           "403": { "description": "Key does not reach the Core, or lacks the permission the route needs" },
           "404": { "description": "Core not found" },
-          "409": { "description": "Conflict" },
+          "409": { "description": "Conflict. When the Core's harness check refuses it, the body also carries `code`: `core_harnesses_unavailable` (the Core cannot be asked), `harness_not_ready` (the harness is still being checked: ask again) or `harness_missing_on_core` (not available there)" },
           "401": { "description": "Unauthorized" }
         }
       }
@@ -212,6 +212,35 @@
           "200": { "description": "Agent" },
           "403": { "description": "Key does not reach the Agent's Core, or lacks the permission the route needs" },
           "404": { "description": "No such Agent" },
+          "401": { "description": "Unauthorized" }
+        }
+      },
+      "patch": {
+        "operationId": "updateAgent",
+        "summary": "Change an Agent",
+        "description": "Change an Agent's `name`, `model` and/or `flags` in place; the id stays. A field that is left out is kept, `model: null` clears the model. The harness and the Core cannot be changed, and any other field is refused with 400. Needs `agents:write`.",
+        "parameters": [{ "name": "agentId", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "name": { "type": "string" },
+                  "model": { "type": ["string", "null"] },
+                  "flags": { "type": "array", "items": { "type": "string" } }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "The changed Agent" },
+          "400": { "description": "Validation error, or a field that cannot be changed" },
+          "403": { "description": "Key does not reach the Agent's Core, or lacks the permission the route needs" },
+          "404": { "description": "No such Agent" },
+          "409": { "description": "A default Agent cannot be changed, or another Agent on the Core has that name" },
           "401": { "description": "Unauthorized" }
         }
       },

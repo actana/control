@@ -313,14 +313,14 @@ separate from the browser's session-cookie routes.
 | Auth | `Authorization: Bearer ak_…` — an API key the Operator creates in Settings › API & integrations |
 | Who it runs as | the key's owner, every time; a presented key never falls back to the Operator's session cookie |
 | Scope | all of the owner's Cores, or chosen ones, picked when the key is created; outside the scope is `403`, a revoked key is `401` |
-| Permissions | picked when the key is created ([#688](https://github.com/actana/control/issues/688)): `read` (every GET), `tasks:write` (create, update, delete, assign, stop, comment), `agents:write` (create, delete). A route a key lacks the permission for is `403`. Keys from before #688 hold all three |
+| Permissions | picked when the key is created ([#688](https://github.com/actana/control/issues/688)): `read` (every GET), `tasks:write` (create, update, delete, assign, stop, comment), `agents:write` (create, update, delete). A route a key lacks the permission for is `403`. Keys from before #688 hold all three |
 | Expiry | optional, set when the key is created (7, 30 or 90 days, a date, or never); an expired key is `401`, the same as a revoked one. Keys created before 0.5.1 never expire |
 | Description | OpenAPI 3 at [`packages/panel/src/server/openapi/v1.json`](../packages/panel/src/server/openapi/v1.json) |
 
 | Area | Routes |
 | --- | --- |
 | Cores | `GET /api/v1/cores`, `GET /api/v1/cores/:id` |
-| Agents | `GET/POST /api/v1/agents`, `GET/DELETE /api/v1/agents/:id`, `GET /api/v1/cores/:id/agents` |
+| Agents | `GET/POST /api/v1/agents`, `GET/PATCH/DELETE /api/v1/agents/:id`, `GET /api/v1/cores/:id/agents` |
 | Sessions | `GET /api/v1/sessions?coreId=&limit=&cursor=&status=&archived=&harness=&q=`: one page of a Core's Sessions (running and waiting first, then newest activity), lean rows, `nextCursor` and `total`; `400` for a bad `limit` or `cursor` |
 | Tasks | `GET/POST /api/v1/tasks`, `GET/PATCH/DELETE /api/v1/tasks/:id`, `POST /api/v1/tasks/:id/status`, `POST /api/v1/tasks/:id/stop` |
 | Comments | `GET/POST /api/v1/tasks/:id/comments` |
@@ -370,7 +370,7 @@ the tools below are available to the model.
 | Auth | `Authorization: Bearer ak_…` and nothing else: no key, an unknown, a revoked or an expired key is `401` with `WWW-Authenticate: Bearer`; the Operator's session cookie is never read on this path |
 | Who it runs as | the key's owner, every call; every tool runs the same handler the `/api/v1` route runs, so the owner and Core-scope rules are one implementation |
 | Scope | a key limited to some Cores sees only those; a tool aimed at another Core answers a tool error starting `403`, another owner's data `404` |
-| Permissions | `tools/list` names only the tools the key's permissions allow (`read` for the reads and the Shared folder, `tasks:write` for `create_task`, `assign_task`, `comment_task`, `stop_task`, `update_task`, `delete_task`); a call to any other is a tool error starting `403` that names the missing permission |
+| Permissions | `tools/list` names only the tools the key's permissions allow (`read` for the reads and the Shared folder, `tasks:write` for `create_task`, `assign_task`, `comment_task`, `stop_task`, `update_task`, `delete_task`, `agents:write` for `create_agent`, `update_agent`, `delete_agent`); a call to any other is a tool error starting `403` that names the missing permission |
 | Transport | JSON-RPC over `POST /mcp`; a request gets one `application/json` answer, a notification gets `202`; no `Mcp-Session-Id`, nothing kept between requests |
 | `GET` / `DELETE /mcp` | `405` with `Allow: POST` (no server-to-client stream, no session to end) |
 
@@ -378,6 +378,9 @@ the tools below are available to the model.
 | --- | --- |
 | `list_cores` | the Cores the key reaches, with their connection state |
 | `list_agents` | Agents, optionally on one Core |
+| `create_agent` | an Agent on a Core: `coreId`, `name`, `harness`, optional `model` and `flags` from the closed set (`skip-permissions`); no command, arguments, script or environment. A `409` starts with a code: `core_harnesses_unavailable` (the Core cannot be asked), `harness_not_ready` (the harness is still being checked, so ask again) or `harness_missing_on_core` (not available there) |
+| `update_agent` | an Agent's `name`, `model` and/or `flags` in place, the id stays; the harness and the Core cannot change; `409` for a default Agent |
+| `delete_agent` | removes an Agent (marked `destructiveHint`); `409` for a default Agent |
 | `get_tasks` | Tasks, optionally one `status` or one `coreId` |
 | `get_sessions` | one Core's Sessions, a page at a time (`coreId`, `limit`, `cursor`, `status`, `archived`, `harness`, `q`); lean rows, no prompt text or transcript |
 | `get_task` | one Task with its comment thread |

@@ -119,8 +119,8 @@ describe("a harness the Core has", () => {
     expect(await listAgents(A)).toEqual([]);
   });
 
-  it("refuses a harness the Core reports as missing, outdated or still checking", async () => {
-    for (const status of ["missing", "outdated", "checking"] as const) {
+  it("refuses a harness the Core reports as missing or outdated", async () => {
+    for (const status of ["missing", "outdated"] as const) {
       reported["core-1"] = { codex: { status } };
       await expect(createAgent(A, { coreId: "core-1", name: "n", harness: "codex" }, deps)).rejects.toBeInstanceOf(HarnessMissingOnCoreError);
     }
@@ -198,9 +198,14 @@ describe("why a harness cannot run an Agent yet (#706)", () => {
     expect(new HarnessMissingOnCoreError("c", "codex").message).toBe("this Core does not have codex available");
   });
 
-  it("still refuses to create an Agent on a harness that is checking", async () => {
+  it("refuses to create an Agent on a harness that is checking with HarnessNotReadyError, not 'missing'", async () => {
     reported["core-1"] = { codex: { status: "checking" } };
-    await expect(createAgent(A, { coreId: "core-1", name: "n", harness: "codex" }, deps)).rejects.toBeInstanceOf(HarnessMissingOnCoreError);
+    const err = await createAgent(A, { coreId: "core-1", name: "n", harness: "codex" }, deps).catch((e) => e);
+    expect(err).toBeInstanceOf(HarnessNotReadyError);
+    expect(err).toBeInstanceOf(ConflictError);
+    expect(err).not.toBeInstanceOf(HarnessMissingOnCoreError);
+    expect(err).toMatchObject({ code: "harness_not_ready", coreId: "core-1", harness: "codex", state: "checking" });
+    expect(await listAgents(A)).toEqual([]);
   });
 });
 

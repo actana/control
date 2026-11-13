@@ -27,6 +27,7 @@ import * as storageController from "./controllers/storage.controller";
 import * as sharedFilesController from "./controllers/shared-files.controller";
 import * as updateCheckController from "./controllers/update-check.controller";
 import * as tasksController from "./controllers/tasks.controller";
+import * as agentsController from "./controllers/agents.controller";
 import * as v1Controller from "./controllers/v1.controller";
 import { handleMcpRequest, MCP_PATH } from "./mcp";
 import { OPERATOR_ID } from "./services/operator";
@@ -50,6 +51,7 @@ const TASK_STATUS_PATH = /^\/api\/tasks\/([^/]+)\/status$/;
 const TASK_STOP_PATH = /^\/api\/tasks\/([^/]+)\/stop$/;
 const TASK_COMMENTS_PATH = /^\/api\/tasks\/([^/]+)\/comments$/;
 const CORE_AGENTS_PATH = /^\/api\/cores\/([^/]+)\/agents$/;
+const CORE_AGENT_PATH = /^\/api\/cores\/([^/]+)\/agents\/([^/]+)$/;
 // Public REST API (#572 PR 2). Versioned under `/api/v1` so the session-cookie
 // routes above stay their own path; a key never reaches those.
 const V1_CORE_PATH = /^\/api\/v1\/cores\/([^/]+)$/;
@@ -286,6 +288,7 @@ async function dispatch(
   m = pathname.match(V1_AGENT_PATH);
   if (m) {
     if (method === "GET") return v1Controller.getAgentV1(principal!, decode(m[1]));
+    if (method === "PATCH") return v1Controller.updateAgentV1(principal!, decode(m[1]), request);
     if (method === "DELETE") return v1Controller.deleteAgentV1(principal!, decode(m[1]));
   }
   if (pathname === "/api/v1/sessions" && method === "GET") {
@@ -366,6 +369,10 @@ async function dispatch(
   if (m && method === "POST") return tasksController.comment(ownerId, decode(m[1]), request);
   m = pathname.match(CORE_AGENTS_PATH);
   if (m && method === "GET") return tasksController.listCoreAgents(ownerId, decode(m[1]), url.searchParams.get("runnable") === "1");
+  if (m && method === "POST") return agentsController.create(ownerId, decode(m[1]), request);
+  m = pathname.match(CORE_AGENT_PATH);
+  if (m && method === "PATCH") return agentsController.update(ownerId, decode(m[1]), decode(m[2]), request);
+  if (m && method === "DELETE") return agentsController.remove(ownerId, decode(m[1]), decode(m[2]));
 
   // The Files tab (#565): every call runs as the session's owner, on one of that owner's Cores. A key never reaches these.
   m = pathname.match(CORE_SHARED_FILES_PATH);

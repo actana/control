@@ -293,7 +293,7 @@ export function ApiSettingsPage() {
 
       <SettingsSection
         title="MCP server"
-        subtitle="Tasks as tools: list_cores, list_agents, get_sessions, get_tasks, get_task, create_task, assign_task, comment_task, stop_task, update_task, delete_task."
+        subtitle="Tasks and Agents as tools: list_cores, list_agents, create_agent, update_agent, delete_agent, get_sessions, get_tasks, get_task, create_task, assign_task, comment_task, stop_task, update_task, delete_task."
       >
         <CodeBlock
           value={mcpLine}
