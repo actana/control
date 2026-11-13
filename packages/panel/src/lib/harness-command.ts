@@ -22,7 +22,10 @@ export function harnessUsesPersistedSession(agent: Harness): boolean {
   );
 }
 
-export function harnessLaunchMode(session: Session): HarnessLaunchMode {
+/** What a launch decision reads of a Session: the Panel's row, or a Core's row of one (#955). */
+export type HarnessLaunchSession = Pick<Session, "agent" | "claudeSessionId" | "status">;
+
+export function harnessLaunchMode(session: HarnessLaunchSession): HarnessLaunchMode {
   if (session.agent === "claude-code") {
     // Both halves are load-bearing, the way they are for codex below.
     //
@@ -126,7 +129,7 @@ export function buildPiCommand(opts: {
 }
 
 export function buildHarnessLaunchCommand(
-  session: Session,
+  session: Pick<Session, "agent" | "claudeBareSession">,
   sessionId: string,
   mode: HarnessLaunchMode,
   opts: { model?: AiModelId | null } = {},

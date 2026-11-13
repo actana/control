@@ -53,12 +53,24 @@ function clip(text: string): string {
   return defuse(clipTo(body, MAX_PROMPT_COMMENT_CHARS));
 }
 
-export function buildTaskPrompt(task: Pick<Task, "id" | "title" | "description">, comments: readonly TaskComment[], attempt: number): string {
-  // System comments are the Panel talking to the operator ("dispatched", "failed to start"); they say nothing about the work.
-  const thread = comments.filter((c) => c.authorKind !== "system").slice(-MAX_PROMPT_COMMENTS);
+/** Where and how to report the attempt's result: the same words for a new Session and for a resumed one. */
+function resultLines(task: Pick<Task, "id">, attempt: number): string[] {
   const success = `~/shared/${taskResultPath(task.id, { kind: "success" })}`;
   const fail = `~/shared/${taskResultPath(task.id, { kind: "fail" })}`;
   const partial = `~/shared/${taskResultPath(task.id, { kind: "partial", n: 1 })}`.replace("partial-1.md", "partial-<n>.md");
+  return [
+    "",
+    `Result (attempt ${attempt}): when you are done, write your report in Markdown to exactly one of these files and make its last line exactly ${REPORT_END_MARKER}:`,
+    `- ${success} if the Task is done;`,
+    `- ${fail} if you could not do it;`,
+    `- ${partial} (n = 1, 2, ...) if only part of it is done.`,
+    "Say what you did, what is left, and what the next person needs to know.",
+  ];
+}
+
+export function buildTaskPrompt(task: Pick<Task, "id" | "title" | "description">, comments: readonly TaskComment[], attempt: number): string {
+  // System comments are the Panel talking to the operator ("dispatched", "failed to start"); they say nothing about the work.
+  const thread = comments.filter((c) => c.authorKind !== "system").slice(-MAX_PROMPT_COMMENTS);
   const lines = [
     "You have been given a Task by the operator's Panel. Do the work, then report the result as described at the end.",
     "",
@@ -71,14 +83,33 @@ export function buildTaskPrompt(task: Pick<Task, "id" | "title" | "description">
     lines.push("", "Comments so far, oldest first:");
     for (const c of thread) lines.push(`- ${c.authorName} (${c.authorKind}): ${clip(c.body)}`);
   }
-  lines.push(
+  lines.push(...resultLines(task, attempt));
+  return lines.join("\n");
+}
+
+/**
+ * What a Task's own Session is told when it is resumed for a re-assign (#955): a new message in the conversation it
+ * already has, not the Task again. It holds the user comments written since the previous attempt's Session started
+ * (`since`: that comment's index; the agent's own reports are not repeated to it), the last
+ * {@link MAX_PROMPT_COMMENTS} of them, and where to report this attempt's result. It is the file the one typed line points at.
+ */
+export function buildResumePrompt(task: Pick<Task, "id" | "title">, comments: readonly TaskComment[], attempt: number, since: number): string {
+  const fresh = comments.slice(since + 1).filter((c) => c.authorKind === "user");
+  const shown = fresh.slice(-MAX_PROMPT_COMMENTS);
+  const lines = [
+    "The operator's Panel has re-assigned this Task to you. This is a new message in the Session you already have: the Task and what you did stay as they were.",
     "",
-    `Result (attempt ${attempt}): when you are done, write your report in Markdown to exactly one of these files and make its last line exactly ${REPORT_END_MARKER}:`,
-    `- ${success} if the Task is done;`,
-    `- ${fail} if you could not do it;`,
-    `- ${partial} (n = 1, 2, ...) if only part of it is done.`,
-    "Say what you did, what is left, and what the next person needs to know.",
-  );
+    `Task: ${defuse(task.title.trim())}`,
+    "",
+  ];
+  if (shown.length === 0) {
+    lines.push("There is no new comment. Check the current state (branches, PRs, files, the comments on the Task) before repeating any step.");
+  } else {
+    lines.push("New comments since you last worked on it, oldest first:");
+    for (const c of shown) lines.push(`- ${c.authorName} (${c.authorKind}): ${clip(c.body)}`);
+    if (fresh.length > shown.length) lines.push(`(${fresh.length - shown.length} older comments not included; read them with get_task ${task.id})`);
+  }
+  lines.push(...resultLines(task, attempt));
   return lines.join("\n");
 }
 

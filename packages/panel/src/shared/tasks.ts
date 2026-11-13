@@ -191,6 +191,58 @@ export function parseTaskDispatchComment(body: string): TaskDispatchCommentField
   };
 }
 
+/**
+ * The system comment for an attempt that went to the Task's own Session again (#955): `Resumed Session <id> (attempt <n>)`.
+ * It names no Core, Agent or harness: those are the ones of the dispatch comment that started that Session
+ * ({@link resolveAttemptSessions} reads them from there).
+ */
+export type TaskResumeCommentFields = { attempt: number; sessionId: string };
+
+export function formatTaskResumeComment(fields: TaskResumeCommentFields): string {
+  if (!isTaskDispatchId(fields.sessionId)) throw new Error("the Session id is not a valid id (letters, digits, _ and - only)");
+  return `Resumed Session ${fields.sessionId} (attempt ${fields.attempt})`;
+}
+
+export function parseTaskResumeComment(body: string): TaskResumeCommentFields | null {
+  const m = /^Resumed Session ([\w-]+) \(attempt (\d+)\)$/.exec(body);
+  return m ? { attempt: Number(m[2]), sessionId: m[1]! } : null;
+}
+
+/** The Session one attempt ran in, as the Panel's own system comments say. */
+export type TaskAttemptSession = {
+  /** Where the comment sits in the list given. */
+  index: number;
+  attempt: number;
+  sessionId: string;
+  coreId: string;
+  agentName: string | null;
+  harness: string | null;
+  /** The attempt resumed an earlier Session instead of starting one. */
+  resumed: boolean;
+};
+
+/**
+ * Every attempt's Session, oldest first, from a Task's comments (system ones only: a user or agent comment that
+ * looks like a dispatch comment is not one). A `Resumed Session` comment has no Core, so it takes the Core, Agent
+ * and harness of the latest earlier comment that named the same Session; with none it is skipped.
+ */
+export function resolveAttemptSessions(comments: readonly { authorKind: string; body: string }[]): TaskAttemptSession[] {
+  const out: TaskAttemptSession[] = [];
+  comments.forEach((c, index) => {
+    if (c.authorKind !== "system") return;
+    const dispatched = parseTaskDispatchComment(c.body);
+    if (dispatched) {
+      out.push({ index, attempt: dispatched.attempt, sessionId: dispatched.sessionId, coreId: dispatched.coreId, agentName: dispatched.agentName, harness: dispatched.harness, resumed: false });
+      return;
+    }
+    const resumed = parseTaskResumeComment(c.body);
+    if (!resumed) return;
+    const origin = [...out].reverse().find((s) => s.sessionId === resumed.sessionId);
+    if (origin) out.push({ ...origin, index, attempt: resumed.attempt, resumed: true });
+  });
+  return out;
+}
+
 export const TASK_TIMEOUT_DEFAULT_MINUTES = 60;
 export const TASK_TIMEOUT_MIN_MINUTES = 1;
 export const TASK_TIMEOUT_MAX_MINUTES = 43_200; // 30 days
