@@ -104,6 +104,23 @@ beforeEach(() => {
   registered = ["core-a"];
 });
 
+describe("useFleetSessions answeredCoreIds", () => {
+  it("names a Core only after its Session list answered, an empty one included, and never an unqueried Core", async () => {
+    registered = ["core-a", "core-b"];
+    h.lists = { "core-a": [], "core-b": many(2) };
+    const seen: { answered: readonly string[]; asked: string[] }[] = [];
+    const { result } = renderHook(() => {
+      const fleet = useFleetSessions();
+      seen.push({ answered: fleet.answeredCoreIds, asked: h.calls.map((c) => c.coreId) });
+      return fleet;
+    });
+    await waitFor(() => expect(result.current.answeredCoreIds).toEqual(["core-a", "core-b"]));
+    // The first render has the Core list still empty: nothing is answered, and the loading flag alone proves nothing.
+    expect(seen[0]!.answered).toEqual([]);
+    for (const s of seen) for (const id of s.answered) expect(s.asked).toContain(id);
+  });
+});
+
 describe("useFleetSessions paging", () => {
   it("asks each Core for the first page only", async () => {
     registered = ["core-a", "core-b"];

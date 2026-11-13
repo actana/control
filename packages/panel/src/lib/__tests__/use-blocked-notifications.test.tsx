@@ -21,7 +21,7 @@ vi.mock("~/lib/session-notification-store", () => ({ requestSessionNotificationO
 const s = (status: string, over: Partial<BlockedSession> = {}): BlockedSession => ({ coreId: "c1", coreLabel: "berlin", sessionId: "s1", title: "Fix build", status, ...over });
 const t = (sessionState: BlockedTask["sessionState"], over: Partial<BlockedTask> = {}): BlockedTask => ({ id: "t1", title: "Rotate keys", sessionState, ...over });
 
-type Props = { sessions: BlockedSession[]; tasks: BlockedTask[]; viewed: { coreId: string; sessionId: string } | null };
+type Props = { sessions: BlockedSession[]; tasks: BlockedTask[] | null; loadedCores?: string[]; viewed: { coreId: string; sessionId: string } | null };
 function mount(initial: Partial<Props> = {}) {
   const base: Props = { sessions: [], tasks: [], viewed: null, ...initial };
   const view = renderHook((p: Props) => useBlockedNotifications(p), { initialProps: base });
@@ -91,6 +91,32 @@ describe("blocked-work notifications (#954)", () => {
   it("a Session already waiting on a Core that loads later is not news", () => {
     const m = mount({ sessions: [s("needs-input")] });
     m.set({ sessions: [s("needs-input"), s("needs-input", { coreId: "c2", sessionId: "s9" })] });
+    expect(h.os).not.toHaveBeenCalled();
+  });
+
+  it("a Task needing input on a Panel opened with no running Task raises (the empty list was loaded)", () => {
+    const m = mount({ tasks: [] });
+    m.set({ tasks: [t("needs-input")] });
+    expect(titles()).toEqual(["Task needs input"]);
+  });
+
+  it("a Task list that has not loaded yet is no baseline: nothing raises, and the first loaded list only learns", () => {
+    const m = mount({ tasks: null });
+    m.set({ tasks: null });
+    expect(h.os).not.toHaveBeenCalled();
+    m.set({ tasks: [t("needs-input")] });
+    expect(h.os).not.toHaveBeenCalled();
+  });
+
+  it("a Session needing input on a Core that answered with no Sessions raises", () => {
+    const m = mount({ sessions: [], loadedCores: ["c1"] });
+    m.set({ sessions: [s("needs-input")], loadedCores: ["c1"] });
+    expect(titles()).toEqual(["Session needs input on berlin"]);
+  });
+
+  it("a Core that has not answered yet is no baseline", () => {
+    const m = mount({ sessions: [], loadedCores: [] });
+    m.set({ sessions: [s("needs-input")], loadedCores: [] });
     expect(h.os).not.toHaveBeenCalled();
   });
 

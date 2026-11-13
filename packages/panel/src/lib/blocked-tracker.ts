@@ -3,7 +3,8 @@
  * blocked state and not on every poll that still finds it there (#954). One tracker per kind of thing.
  *
  * The first `update` that carries a group only learns that group's baseline: a Panel opened on a Session that already waits is
- * not news. An entry that is `suppressed` (the Operator is looking at it) is still recorded, so it does not
+ * not news. A group is primed by an entry, or by being named in `loadedGroups`: a snapshot that is loaded and empty
+ * is a baseline too, so the first thing to wait after it is news. A snapshot that has not loaded must not be passed at all. An entry that is `suppressed` (the Operator is looking at it) is still recorded, so it does not
  * fire the moment they look away. A key missing from a later snapshot keeps its last state: a page boundary
  * must not make it look new again.
  */
@@ -17,7 +18,7 @@ export function createBlockedTracker(triggers: ReadonlySet<string>) {
   const primed = new Set<string>();
   return {
     /** The keys that entered a trigger state since the last call and should be announced. */
-    update(entries: readonly BlockedEntry[]): string[] {
+    update(entries: readonly BlockedEntry[], opts: { loadedGroups?: readonly string[] } = {}): string[] {
       const fire: string[] = [];
       const seen = new Set<string>();
       for (const { key, state, suppressed, group = "" } of entries) {
@@ -33,6 +34,7 @@ export function createBlockedTracker(triggers: ReadonlySet<string>) {
         last.delete(oldest);
       }
       for (const g of seen) primed.add(g);
+      for (const g of opts.loadedGroups ?? []) primed.add(g);
       return fire;
     },
   };

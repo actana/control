@@ -14,6 +14,7 @@ export function TaskSessionBadge({ state, title }: { state: TaskSessionState | n
       title={title}
       style={{
         display: "inline-block",
+        flexShrink: 0,
         marginLeft: 8,
         padding: "1px 6px",
         borderRadius: 4,

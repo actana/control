@@ -26,6 +26,22 @@ describe("TaskCard Session state badge (#954)", () => {
     expect(badge()?.getAttribute("data-session-state")).toBe(sessionState);
   });
 
+  it.each([false, true])("is not inside an ellipsized box and follows the attempt (compact=%s)", (compact) => {
+    mount(task({ sessionState: "needs-input" }), compact);
+    const el = badge() as HTMLElement;
+    for (let n: HTMLElement | null = el.parentElement; n && n !== document.body; n = n.parentElement) {
+      expect(n.style.textOverflow).not.toBe("ellipsis");
+    }
+    expect(el.style.flexShrink).toBe("0");
+    const before = el.previousElementSibling as HTMLElement;
+    expect(before.textContent?.trimEnd().endsWith("attempt 2")).toBe(true);
+    // The Core and Agent stay behind the badge, in the one ellipsized span.
+    const after = el.nextElementSibling as HTMLElement;
+    expect(after.textContent).toContain("berlin");
+    expect(after.textContent).toContain("claude-code");
+    expect(after.style.textOverflow).toBe("ellipsis");
+  });
+
   it.each(["working", "exited", null] as const)("shows nothing for %s", (sessionState) => {
     mount(task({ sessionState }));
     expect(badge()).toBeNull();

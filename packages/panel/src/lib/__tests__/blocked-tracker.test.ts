@@ -60,10 +60,21 @@ describe("createBlockedTracker (#954)", () => {
     expect(t.update([{ key: "b", state: "needs-input", group: "c2" }])).toEqual([]);
     expect(t.update([{ key: "c", state: "needs-input", group: "c2" }])).toEqual(["c"]);
   });
-  it("an empty first snapshot does not count as the baseline", () => {
+  it("a loaded empty snapshot primes its group: the first entry after it fires", () => {
+    const t = make();
+    t.update([], { loadedGroups: [""] });
+    expect(t.update([{ key: "a", state: "needs-input" }])).toEqual(["a"]);
+  });
+  it("an empty snapshot that is not marked loaded does not prime", () => {
     const t = make();
     t.update([]);
     expect(t.update([{ key: "a", state: "needs-input" }])).toEqual([]);
+  });
+  it("loadedGroups primes only the groups it names", () => {
+    const t = make();
+    t.update([], { loadedGroups: ["c1"] });
+    expect(t.update([{ key: "a", state: "needs-input", group: "c2" }])).toEqual([]);
+    expect(t.update([{ key: "b", state: "needs-input", group: "c1" }])).toEqual(["b"]);
   });
   it("a state change between two trigger states fires", () => {
     const t = createBlockedTracker(new Set(["needs-input", "idle-no-result"]));

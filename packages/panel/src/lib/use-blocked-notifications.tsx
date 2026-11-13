@@ -33,11 +33,15 @@ const sessionKey = (s: { coreId: string; sessionId: string }) => `${s.coreId}::$
 
 export function useBlockedNotifications({
   sessions,
+  loadedCores,
   tasks,
   viewed,
 }: {
   sessions: readonly BlockedSession[];
-  tasks: readonly BlockedTask[];
+  /** The Cores whose Session list has answered, empty ones included: each is a baseline. A Core not named learns its baseline from its first Session. */
+  loadedCores?: readonly string[];
+  /** `null` until the Task list has loaded: it is no baseline, and nothing is tracked. A loaded empty list is one. */
+  tasks: readonly BlockedTask[] | null;
   /** The Session the Operator is looking at now, if any: it does not notify. */
   viewed: { coreId: string; sessionId: string } | null;
 }) {
@@ -111,6 +115,7 @@ export function useBlockedNotifications({
         state: s.status,
         suppressed: v !== null && v.coreId === s.coreId && v.sessionId === s.sessionId,
       })),
+      { loadedGroups: loadedCores },
     );
     if (!cur.enabled) return;
     for (const key of fired) {
@@ -127,11 +132,15 @@ export function useBlockedNotifications({
       });
     }
     // Only the polled data re-runs the tracking; toggles and the view are read through `live`.
-  }, [sessions]);
+  }, [sessions, loadedCores]);
 
   // A Task in view is not suppressed: the list DTO carries no Session id to match against the one on screen.
   useEffect(() => {
-    const fired = taskTracker.current.update(tasks.map((t) => ({ key: t.id, state: t.sessionState })));
+    if (tasks === null) return;
+    const fired = taskTracker.current.update(
+      tasks.map((t) => ({ key: t.id, state: t.sessionState })),
+      { loadedGroups: [""] },
+    );
     if (!live.current.enabled) return;
     for (const id of fired) {
       const t = tasks.find((x) => x.id === id);
