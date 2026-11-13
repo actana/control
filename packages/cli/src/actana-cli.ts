@@ -219,8 +219,6 @@ This machine's own Core
   logs       Show the daemon's log output
   harnesses  Manage the Harnesses this Core runs — \`harnesses install <id>\`
   uninstall  Stop the daemon and remove the service and the install
-
-Tasks
   task       \`task wait <url>\` — loop on a Task's status URL until it finishes
              or its Session needs a person. No pairing, no key: the URL is the
              credential. Exit codes: 0 done, 10 failed, 11 partial, 20 needs-input,
