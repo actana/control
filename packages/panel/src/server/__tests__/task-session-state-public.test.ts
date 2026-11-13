@@ -273,4 +273,18 @@ describe("MCP", () => {
     for (const n of ["create_task", "get_task", "get_tasks"]) expect(by(n), n).toContain("watch");
     expect(by("get_tasks")).toContain("sessionState");
   });
+
+  it("the get_tasks description and the instructions say: list with get_tasks, read one brief with get_task (#957)", async () => {
+    const c = await mcp();
+    const init = await c.rpc("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "t", version: "1" } });
+    const text = init.result.instructions as string;
+    expect(text).toMatch(/list with get_tasks, read one Task's brief with get_task/i);
+    expect(text).toContain("withDescriptions");
+    const tools = await c.listTools();
+    const desc = tools.find((t) => t.name === "get_tasks")!.description;
+    expect(desc).toMatch(/list with get_tasks, read one Task's brief with get_task/i);
+    expect(desc).toContain("withDescriptions");
+    expect(desc).not.toMatch(/with its full description/);
+    expect(desc).toContain("else null. Each Task has sessionState");
+  });
 });

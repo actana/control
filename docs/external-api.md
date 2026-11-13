@@ -381,7 +381,7 @@ the tools below are available to the model.
 | `create_agent` | an Agent on a Core: `coreId`, `name`, `harness`, optional `model` and `flags` from the closed set (`skip-permissions`); no command, arguments, script or environment. A `409` starts with a code: `core_harnesses_unavailable` (the Core cannot be asked), `harness_not_ready` (the harness is still being checked, so ask again) or `harness_missing_on_core` (not available there) |
 | `update_agent` | an Agent's `name`, `model` and/or `flags` in place, the id stays; the harness and the Core cannot change; `409` for a default Agent |
 | `delete_agent` | removes an Agent (marked `destructiveHint`); `409` for a default Agent |
-| `get_tasks` | Tasks, optionally one `status` or one `coreId` |
+| `get_tasks` | Tasks, optionally one `status` or one `coreId`; lean rows, never the description (read one brief with `get_task`); `withDescriptions: true` adds it, only with a `limit` of 10 or less |
 | `get_sessions` | one Core's Sessions, a page at a time (`coreId`, `limit`, `cursor`, `status`, `archived`, `harness`, `q`); lean rows, no prompt text or transcript |
 | `get_task` | one Task with its comment thread; `waiting: { reason, coreId }` while it is `assigned` but not started (Core full, Core not connected, Harness not ready), else `null` (also on `get_tasks`) |
 | `create_task` | a draft, or an assigned Task with `startNow` (needs `coreId` and `agent`); optional `timeoutMinutes` (default 60, `null` = No limit) |

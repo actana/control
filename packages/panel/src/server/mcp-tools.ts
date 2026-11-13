@@ -26,7 +26,7 @@ import { scopeReaches } from "./services/api-keys";
 import type { ApiKeyPermission } from "~/shared/api-key-permissions";
 import { SESSION_PAGE_MAX, SESSION_STATUS_FILTERS } from "@actana/shared/session-paging";
 import { AGENT_FLAGS, AGENT_NAME_MAX, HARNESSES } from "~/shared/agents";
-import { TASKS_PAGE_MAX_LIMIT, TASK_SESSION_STATES, TASK_STATUSES } from "~/shared/tasks";
+import { TASKS_PAGE_MAX_LIMIT, TASKS_WITH_DESCRIPTIONS_MAX_LIMIT, TASK_SESSION_STATES, TASK_STATUSES } from "~/shared/tasks";
 
 /**
  * The MCP tools (#573). Each one is a thin call into the same handlers the
@@ -196,8 +196,9 @@ export const MCP_TOOLS: readonly McpTool[] = [
   tool({
     name: "get_tasks",
     description:
-      "List Tasks on the Cores the key can reach, optionally only one status or one Core. With no limit, every matching Task with its full description. " +
-      "With a limit (1-100) you get one page, newest update first, without descriptions (use get_task for those), plus nextCursor: pass it back as cursor for the next page; null on the last. Each Task has waiting: { reason, coreId } while it is assigned but not started (Core full, Core not connected, Harness not ready), else null. " +
+      "List Tasks on the Cores the key can reach, optionally only one status or one Core. List with get_tasks, read one Task's brief with get_task: rows are lean (id, title, status, coreId, agent, attemptCount, timeoutMinutes, createdAt, updatedAt, sessionState and the rest) and never carry the description. " +
+      "With no limit, every matching Task. With a limit (1-100) you get one page, newest update first, plus nextCursor: pass it back as cursor for the next page; null on the last. " +
+      `withDescriptions: true adds each description, only together with a limit of ${TASKS_WITH_DESCRIPTIONS_MAX_LIMIT} or less. Each Task has waiting: { reason, coreId } while it is assigned but not started (Core full, Core not connected, Harness not ready), else null. ` +
       "Each Task has sessionState (working, needs-input, interrupted, idle-no-result, exited; null when no attempt runs): pass sessionState (one value or a comma list) to list only those, e.g. every Task that needs-input. " +
       "A row has no watch URL: read it with get_task, or wait on the watch.url that create_task, assign_task and comment_task returned. Call get_guide for the full recipe.",
     readOnly: true,
@@ -205,14 +206,18 @@ export const MCP_TOOLS: readonly McpTool[] = [
     input: z.object({
       status: z.enum(TASK_STATUSES).optional(),
       coreId: coreIdArg.optional(),
-      limit: z.number().int().min(1).max(TASKS_PAGE_MAX_LIMIT).optional().describe("Page size, 1-100. Omit to get every Task with its description."),
+      limit: z.number().int().min(1).max(TASKS_PAGE_MAX_LIMIT).optional().describe("Page size, 1-100. Omit to get every matching Task (lean rows)."),
       cursor: z.string().min(1).optional().describe("The nextCursor of the previous page. Needs limit."),
+      withDescriptions: z
+        .boolean()
+        .optional()
+        .describe(`true adds each Task's description. Refused unless limit is ${TASKS_WITH_DESCRIPTIONS_MAX_LIMIT} or less. Default false: a list never carries briefs, read one with get_task.`),
       sessionState: z
         .string()
         .optional()
         .describe(`Only Tasks whose Session is in this state: one of ${TASK_SESSION_STATES.join(", ")}, or a comma list of them.`),
     }),
-    run: async (principal, { status, coreId, limit, cursor, sessionState }) => {
+    run: async (principal, { status, coreId, limit, cursor, sessionState, withDescriptions }) => {
       if (coreId !== undefined && !scopeReaches(principal.scope, coreId)) {
         return outcomeOf(forbidden("this API key does not reach that Core"));
       }
@@ -223,6 +228,8 @@ export const MCP_TOOLS: readonly McpTool[] = [
           ...(limit === undefined ? {} : { limit }),
           ...(cursor === undefined ? {} : { cursor }),
           ...(sessionState === undefined ? {} : { sessionState }),
+          ...(withDescriptions ? { withDescriptions: true } : {}),
+          lean: true,
         }),
       );
       // The rows are in the JSON text only: a list can be megabytes, so it is not repeated as structuredContent.
