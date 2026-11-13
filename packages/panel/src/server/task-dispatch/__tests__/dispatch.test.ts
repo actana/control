@@ -456,6 +456,23 @@ describe("a Task whose Harness is not ready yet (#706)", () => {
     expect(await getTask(A, task.id)).toMatchObject({ status: "in_progress", attemptCount: 1 });
   });
 
+  it("starts the Harness wait at the first 'not ready' answer, not when the Core was first seen not connected", async () => {
+    const { clock, dispatcher, behave } = switchable();
+    const task = await assign(clock);
+    behave.resolve = throwing(new CoreHarnessesUnavailableError("core_1"));
+    await dispatcher.dispatchOnce();
+    clock.advance(DEFAULT_HARNESS_WAIT_MS * 3);
+
+    // The Core is back and runs its setup check: the Harness window opens now.
+    behave.resolve = throwing(new HarnessNotReadyError("core_1", "claude-code", "checking"));
+    expect(await dispatcher.dispatchOnce()).toBe(0);
+    expect(await getTask(A, task.id)).toMatchObject({ status: "assigned", attemptCount: 0, lastError: "waiting: Harness not ready (checking)" });
+
+    clock.advance(DEFAULT_HARNESS_WAIT_MS);
+    await dispatcher.dispatchOnce();
+    expect(await getTask(A, task.id)).toMatchObject({ status: "failed", attemptCount: 0 });
+  });
+
   it("does not hold back another Task whose Harness is ready", async () => {
     const { clock, core, dispatcher, behave } = switchable();
     const waiting = await assign(clock, { title: "waits" });

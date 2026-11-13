@@ -132,6 +132,8 @@ export class TaskDispatcher {
   private readonly harnessWaitMs: number;
   /** Task id to the first time it was seen waiting for its Harness; dropped once it is claimed or leaves `assigned`. */
   private readonly waitingSince = new Map<string, number>();
+  /** Tasks already logged as waiting for a Core that is not connected (logged once; not a Harness window). */
+  private readonly notConnectedLogged = new Set<string>();
   /** Core id to what the last refused start said; the Tasks of that Core wait without a claim until it clears. */
   private readonly fullCores = new Map<string, FullCore>();
   private readonly log: DispatchLog;
@@ -177,6 +179,7 @@ export class TaskDispatcher {
       }
       const ids = new Set(waiting.map((t) => t.id));
       for (const id of this.waitingSince.keys()) if (!ids.has(id)) this.waitingSince.delete(id);
+      for (const id of this.notConnectedLogged) if (!ids.has(id)) this.notConnectedLogged.delete(id);
       for (const task of waiting) {
         if (this.stopped) break;
         try {
@@ -383,9 +386,11 @@ export class TaskDispatcher {
         early = { agentId: task.agent, resolved: await this.agents.resolve(this.ownerId, task.agent) };
       } catch (err) {
         if (err instanceof CoreHarnessesUnavailableError) {
-          // The Core is not connected: wait for it, with no limit, and say so.
-          if (!this.waitingSince.has(task.id)) {
-            this.waitingSince.set(task.id, this.now());
+          // The Core is not connected: wait for it, with no limit, and say so. This wait is not the Harness
+          // window: that starts at the first "not ready" answer after the Core is back.
+          this.waitingSince.delete(task.id);
+          if (!this.notConnectedLogged.has(task.id)) {
+            this.notConnectedLogged.add(task.id);
             this.log.info(`task ${task.id}: waiting for its Agent's Core: ${messageOf(err)}`);
           }
           await wait(NOT_CONNECTED);
@@ -406,6 +411,7 @@ export class TaskDispatcher {
       }
     }
     this.waitingSince.delete(task.id);
+    this.notConnectedLogged.delete(task.id);
 
     // A Core whose last start was refused for want of a slot: no claim until a slot frees or a probe is due.
     const coreId = early?.resolved?.coreId;
