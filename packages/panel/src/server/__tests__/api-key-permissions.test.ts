@@ -252,7 +252,7 @@ describe("the /mcp tools apply the same permissions", () => {
   const agentTools = MCP_TOOLS.filter((t) => t.permission === "agents:write").map((t) => t.name).sort();
 
   it("every tool names the permission its REST route needs: reads are read, the Task writes are tasks:write", () => {
-    expect(readTools).toEqual(["get_sessions", "get_shared", "get_task", "get_tasks", "list_agents", "list_cores", "list_shared"]);
+    expect(readTools).toEqual(["get_guide", "get_sessions", "get_shared", "get_task", "get_tasks", "list_agents", "list_cores", "list_shared"]);
     expect(taskTools).toEqual(["assign_task", "close_session", "comment_task", "create_task", "delete_task", "stop_task", "update_task"]);
     expect(agentTools).toEqual(["create_agent", "delete_agent", "update_agent"]);
     for (const t of MCP_TOOLS) expect(t.readOnly, t.name).toBe(t.permission === "read");
