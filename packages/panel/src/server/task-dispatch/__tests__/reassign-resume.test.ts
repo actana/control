@@ -1,5 +1,6 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { closePanelTestDb, openPanelTestDb } from "../../__tests__/_panel-test-db";
+import type { SessionStopper } from "../types";
 import { FakeClock, FakeCore, FakeShared, collectingLog } from "./fakes";
 
 /**
@@ -42,7 +43,7 @@ afterAll(async () => {
   await closePanelTestDb(testDb);
 });
 
-function rig(opts: { withResume?: boolean } = {}) {
+function rig(opts: { withResume?: boolean; watcherStop?: SessionStopper } = {}) {
   const clock = new FakeClock();
   const shared = new FakeShared(clock);
   const core = new FakeCore();
@@ -55,7 +56,7 @@ function rig(opts: { withResume?: boolean } = {}) {
       return { agentId: AGENT.id, coreId: where.coreId, harness: AGENT.harness, model: AGENT.model, flags: [...AGENT.flags] };
     },
   };
-  const watcher = new ResultWatcher({ ownerId: A, now: clock.now, exitGraceMs: 10_000, log, stopSession: core.stopSession, liveSessions: core.liveSessions });
+  const watcher = new ResultWatcher({ ownerId: A, now: clock.now, exitGraceMs: 10_000, log, stopSession: opts.watcherStop ?? core.stopSession, liveSessions: core.liveSessions });
   const dispatcher = new TaskDispatcher({
     ownerId: A,
     startSession: core.startSession,
@@ -512,5 +513,45 @@ describe("the dispatch comment of the fallback says why the Session was not resu
     await reassign(r, task.id);
     expect(await newSession(task.id)).toEqual([]);
     expect(await bodies(task.id)).toContain("Resumed Session session_1 (attempt 2)");
+  });
+});
+
+describe("a re-assign does not race the stop of the finished attempt's harness (#955, #962)", () => {
+  it("a re-assign while the finished attempt's harness is still being stopped waits for that stop, then resumes", async () => {
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let stopCore: SessionStopper | null = null;
+    let calls = 0;
+    // The watcher's first stop is held on a promise: the Task is done, its harness is still being ended.
+    const r = rig({
+      watcherStop: async (target) => {
+        calls += 1;
+        await held;
+        return stopCore!(target);
+      },
+    });
+    stopCore = r.core.stopSession;
+    const task = await createTask(A, { title: "Fix the build", description: "Red on main.", agent: AGENT.id, startNow: true, timeoutMinutes: null }, r.clock.now());
+    await r.dispatcher.dispatchOnce();
+    r.clock.advance(1_000);
+    r.shared.write(resultPath(task.id, "success.md"), report("Fixed it."), r.clock.now());
+    const ticking = r.watcher.tick();
+    await vi.waitFor(() => expect(calls).toBe(1));
+    expect((await getTask(A, task.id)).status).toBe("done");
+
+    r.clock.advance(1_000);
+    await commentAndReassign(A, task.id, { authorKind: "user", authorName: "Operator", body: "Also handle Windows paths." }, r.clock.now());
+    const dispatching = r.dispatcher.dispatchOnce();
+    await new Promise((resolve) => setTimeout(resolve, 50)); // the dispatch waits for the stop: nothing is typed yet
+    expect(r.core.typed).toEqual([]);
+
+    release();
+    await Promise.all([ticking, dispatching]);
+
+    expect(r.core.typed.at(-1)?.how).toBe("resume"); // not `send` into the Session the stop was about to kill
+    expect(r.core.live?.has("session_1")).toBe(true);
+    expect(await getTask(A, task.id)).toMatchObject({ status: "in_progress", attemptCount: 2 });
   });
 });

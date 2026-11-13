@@ -27,7 +27,7 @@ import { formatTaskDispatchComment, formatTaskNewSessionComment, formatTaskResum
 import { ResultWatcher } from "./result-watcher";
 import { lazyShared, type SharedFor } from "./shared-factory";
 import { buildResumePrompt, buildTaskPointer, buildTaskPrompt, promptComments, taskPromptPath } from "./task-prompt";
-import { consoleDispatchLog, messageOf, RESUME_REFUSALS, type Clock, type DispatchLog, type ResumeRefusal, type SessionResumer, type SessionStarter, type SessionStopper, type StartedSession } from "./types";
+import { consoleDispatchLog, messageOf, RESUME_REFUSALS, STOP_TIMEOUT_MS, type Clock, type DispatchLog, type ResumeRefusal, type SessionResumer, type SessionStarter, type SessionStopper, type StartedSession } from "./types";
 
 /**
  * The dispatcher (#570): claims `assigned` Tasks, starts a Session on the Agent's
@@ -374,6 +374,19 @@ export class TaskDispatcher {
     }
   }
 
+  /** Wait for the watcher's stop of this Task's finished harness, if one is in flight, for at most `STOP_TIMEOUT_MS`. */
+  private async waitForHarnessStop(taskId: string): Promise<void> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const limit = new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, STOP_TIMEOUT_MS);
+    });
+    try {
+      await Promise.race([this.watcher.harnessEnding(taskId), limit]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   /** A Session that is running, did not take the message typed into it, and must not run beside the new one (one live harness per Task). Best effort. */
   private async stopRunningSession(taskId: string, session: TaskAttemptSession): Promise<void> {
     if (!this.stopSession) return;
@@ -475,6 +488,10 @@ export class TaskDispatcher {
       await fail(`the Shared folder of Core ${resolved.coreId} is not reachable: ${messageOf(err)}`);
       return true;
     }
+
+    // The finished attempt's harness may still be being stopped (#962): resuming into it now would send the message to a
+    // Session that stop then kills. Wait for the stop, no longer than the stop itself can take.
+    await this.waitForHarnessStop(claimed.id);
 
     let sessionId: string;
     let resumed = false;

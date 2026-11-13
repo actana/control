@@ -75,6 +75,9 @@ export type SessionResumer = (request: ResumeSessionRequest) => Promise<ResumeOu
 /** What happened when a Session was asked to stop (#723). */
 export type SessionStopResult = { outcome: TaskSessionStopOutcome; detail: string | null };
 
+/** The longest one stop of a Session may take on its Core, in ms; the dispatcher waits no longer than this for a stop in flight (#955). */
+export const STOP_TIMEOUT_MS = 10_000;
+
 /** How a Session is stopped on its Core. Never throws: every failure is an outcome. */
 export type SessionStopper = (
   target: { coreId: string; sessionId: string },

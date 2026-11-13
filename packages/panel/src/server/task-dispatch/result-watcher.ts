@@ -128,6 +128,8 @@ export class ResultWatcher {
   private readonly stopSession: SessionStopper | null;
   private readonly onSlotFreed: ((coreId: string) => void) | null;
   private readonly tracked = new Map<string, Tracked>();
+  /** The harness stop in flight for a Task that reported or timed out: a re-assign must not resume into a Session that stop is about to kill (#955). */
+  private readonly ending = new Map<string, Promise<void>>();
   private timer: ReturnType<typeof setInterval> | null = null;
   private running: Promise<void> | null = null;
   private stopped = false;
@@ -355,8 +357,28 @@ export class ResultWatcher {
    */
   private async finish(t: Tracked): Promise<void> {
     this.drop(t);
-    await this.endHarness(t);
+    await this.whileEnding(t.taskId, () => this.endHarness(t));
     this.slotFreed(t.coreId);
+  }
+
+  /**
+   * Settles when the harness stop in flight for this Task has settled; at once when there is none. Never rejects. The
+   * dispatcher waits for it before it resumes the Task's Session, so the stop of the attempt that finished cannot land on
+   * the resumed one (#955). The caller bounds the wait: a stop takes at most its own timeout.
+   */
+  harnessEnding(taskId: string): Promise<void> {
+    return this.ending.get(taskId) ?? Promise.resolve();
+  }
+
+  /** Run a stop of this Task's harness and keep it where `harnessEnding` finds it until it has settled. */
+  private async whileEnding(taskId: string, run: () => Promise<void>): Promise<void> {
+    const pending = run().catch(() => undefined);
+    this.ending.set(taskId, pending);
+    try {
+      await pending;
+    } finally {
+      if (this.ending.get(taskId) === pending) this.ending.delete(taskId);
+    }
   }
 
   /**
@@ -559,7 +581,7 @@ export class ResultWatcher {
     // that looked older than the dispatch would leave the Task `in_progress` for ever.
     await this.apply(t, "fail.md", { kind: "fail" }, body);
     // Only a timeout leaves the agent running: on an exit there is nothing to stop.
-    if (stopSession) await this.stopTimedOutSession(t);
+    if (stopSession) await this.whileEnding(t.taskId, () => this.stopTimedOutSession(t));
     this.drop(t);
   }
 
