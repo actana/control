@@ -181,9 +181,17 @@ export class ResultWatcher {
    * this watcher is not watching (its attempt is over) is left alone. Never throws.
    */
   async markSessionState(taskId: string, state: TaskSessionState): Promise<void> {
-    const t = this.tracked.get(taskId);
+    let t = this.tracked.get(taskId);
     if (!t) return;
     try {
+      if (state === "idle-no-result") {
+        // `finished` usually follows the result file by milliseconds, and the poll is seconds: look for the file
+        // first, so a finished Task never shows a spurious "no result file" state, comment or webhook.
+        await this.running;
+        t = this.tracked.get(taskId);
+        if (!t) return;
+        if (await this.resultFileEndsDispatch(t)) return;
+      }
       await setTaskSessionState(this.ownerId, taskId, state, this.now());
     } catch (err) {
       if (err instanceof NotFoundError) return;
@@ -321,6 +329,25 @@ export class ResultWatcher {
   private drop(t: Tracked): void {
     if (this.tracked.get(t.taskId) === t) this.tracked.delete(t.taskId);
     t.release();
+  }
+
+  /** One read of this Task's result files, as `step` does it. True when one ended the dispatch (which is then dropped). A failed read is false. */
+  private async resultFileEndsDispatch(t: Tracked): Promise<boolean> {
+    try {
+      let finished: boolean;
+      if (isFolderScoped(t.shared)) {
+        finished = await this.consume(t, await this.folderChanges(t));
+      } else {
+        const watched = await t.shared.watch(t.cursor ?? undefined);
+        finished = await this.consume(t, watched.changes);
+        t.cursor = watched.cursor;
+      }
+      if (finished) this.drop(t);
+      return finished;
+    } catch (err) {
+      this.log.error(`task ${t.taskId}: could not read its results before recording idle-no-result: ${messageOf(err)}`);
+      return false;
+    }
   }
 
   private async step(t: Tracked): Promise<void> {

@@ -177,6 +177,20 @@ describe("the Session state of a Task (#949)", () => {
     expect(await getTask(A, task.id)).toMatchObject({ status: "done", sessionState: null, sessionStateAt: null });
   });
 
+  it("finished with a complete result file already there finishes the Task: no idle-no-result state, comment or webhook", async () => {
+    const { shared, watcher, task, clock } = await running();
+    shared.write(resultPath(task.id, "success.md"), report("Done."), clock.now());
+    await watcher.markSessionState(task.id, sessionStateForCoreStatus("finished")!);
+
+    expect(await getTask(A, task.id)).toMatchObject({ status: "done", sessionState: null, sessionStateAt: null });
+    expect(await stateComments(task.id)).toHaveLength(0);
+    const rows = await testDb.pool.query(
+      "select 1 from webhook_outbox where event_type = 'task.session_state_changed' and payload like $1",
+      [`%${task.id}%`],
+    );
+    expect(rows.rows).toHaveLength(0);
+  });
+
   it("ignores a state for a Task the watcher is not watching", async () => {
     const { watcher, task } = await running();
     watcher.untrack(task.id);
