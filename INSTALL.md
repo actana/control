@@ -697,6 +697,26 @@ provisioning script.
 
 ---
 
+## The Task status URL (Panel settings)
+
+Each Task attempt has a short-lived status URL, `GET /api/watch/<token>`, that a small looping command on a Core can
+read with no cookie, no API key and no MCP. It answers
+`{ taskId, attempt, status, sessionState, sessionStateAt, result, updatedAt, pollAfterSeconds }` and nothing else: no
+title, description, comments or report text. The token is signed with a key derived from the Panel's secrets key, so
+rotating the secrets key invalidates every URL. An expired or replaced token answers `410`, a bad one `404`, a caller
+over the limit `429` with `Retry-After`. It is valid while the attempt runs and for 10 minutes after it ends (for a Task
+with No limit, 24 hours from the read that minted it), and a new attempt, a stop or a delete ends it at once.
+
+These are Panel environment variables, set next to `AC_SECRETS_KEY`:
+
+| Variable | Default | What it does |
+|---|---|---|
+| `AC_PANEL_PUBLIC_URL` | unset | The address a Core can reach the Panel at, for example `https://actana.example.com`. The status URL is built from it. Unset, it is built from the origin of the request that asked for it, which behind a reverse proxy is usually the internal address and not one a Core can use. |
+| `AC_TASK_WATCH_RATE_LIMIT_PER_MINUTE` | `30` | Calls per minute per status URL. The next one answers `429`. |
+| `AC_TASK_WATCH_GLOBAL_PER_MINUTE` | `600` | Calls per minute to all status URLs together, bad tokens included. |
+
+---
+
 ## Troubleshooting
 
 ### `actana` is not found in a new shell

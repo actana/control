@@ -108,6 +108,8 @@ describe("api auth gate", () => {
       { method: "GET", pathname: "/api/auth/state" },
       { method: "POST", pathname: "/api/auth/setup" },
       { method: "POST", pathname: "/api/auth/login" },
+      // #950: the status URL of a Task attempt. Answered before the gate; the HMAC token is the credential.
+      { method: "GET", pathname: "/api/watch/:token" },
     ]);
   });
 

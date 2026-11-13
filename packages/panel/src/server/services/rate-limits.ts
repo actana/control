@@ -63,6 +63,27 @@ export function hookCallRateLimit(request: Request, sessionId: string): RateLimi
   });
 }
 
+/**
+ * The status URL (#950). Per token, so one looping caller cannot starve another, and one global ceiling for the
+ * whole route, counted before the token is even checked so a flood of made-up tokens is capped too. The per-token
+ * bucket is only charged for a token that verified, so made-up tokens cannot grow the bucket map.
+ */
+export function taskWatchGlobalLimit(): RateLimitResult {
+  return rateLimit("task-watch:global", {
+    limit: envNumber("AC_TASK_WATCH_GLOBAL_PER_MINUTE", 600),
+    windowMs: RATE_LIMIT_WINDOW_MS,
+    message: "too many status requests",
+  });
+}
+
+export function taskWatchTokenLimit(tokenHash: string): RateLimitResult {
+  return rateLimit(`task-watch:${tokenHash}`, {
+    limit: envNumber("AC_TASK_WATCH_RATE_LIMIT_PER_MINUTE", 30),
+    windowMs: RATE_LIMIT_WINDOW_MS,
+    message: "too many status requests for this Task",
+  });
+}
+
 // Failed sign-ins are counted in one global bucket, deliberately *not* keyed by
 // client IP: the only IP a Panel behind a reverse proxy can see is the one the
 // caller puts in X-Forwarded-For, so a per-IP key is a per-request key and

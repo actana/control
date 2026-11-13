@@ -1,4 +1,4 @@
-import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
+import { createCipheriv, createDecipheriv, hkdfSync, randomBytes } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { resolvePanelDataDir } from "../panel-data-dir";
@@ -95,6 +95,15 @@ function secretsKey(): Buffer {
   const key = envKey ? decodeEnvKey(envKey) : readOrCreateKeyFile(dataDir);
   cached = { key, from };
   return key;
+}
+
+/**
+ * A key for one purpose, derived from the secrets key with HKDF-SHA256 under `info` (for example `task-watch`).
+ * The secrets key itself never leaves this module for signing, and two purposes never share a key. A different
+ * secrets key gives a different subkey, so rotating it also invalidates what was signed under the old one.
+ */
+export function deriveSubkey(info: string): Buffer {
+  return Buffer.from(hkdfSync("sha256", secretsKey(), Buffer.alloc(0), info, KEY_BYTES));
 }
 
 /** Encrypt a secret for storage. Throws only on a misconfigured key. */

@@ -19,6 +19,8 @@ import * as harnessLaunchersController from "./controllers/harness-launchers.con
 import * as eventsController from "./controllers/events.controller";
 import * as healthController from "./controllers/health.controller";
 import * as jwksController from "./controllers/jwks.controller";
+import * as taskWatchController from "./controllers/task-watch.controller";
+import { WATCH_PATH_PREFIX } from "./services/task-watch";
 import * as aiRuntimeModelsController from "./controllers/ai-runtime-models.controller";
 import * as authController from "./controllers/auth.controller";
 import * as apiKeysController from "./controllers/api-keys.controller";
@@ -132,15 +134,21 @@ function getSetCookieHeaders(headers: Headers): string[] {
 // it has a session. Everything else requires the Operator's session cookie.
 // Adding an entry here is the *only* way a route can be reached without a
 // session through `dispatch`, which makes auth-bypass regressions a one-grep
-// review surface. Two answers are given before the gate instead, in
-// `handleApiRequest`: `/api/healthz` and the token signer's public key set at
-// `/.well-known/jwks.json` (#566). Look for both when reviewing the anonymous surface.
+// review surface. Three answers are given before the gate instead, in
+// `handleApiRequest`: `/api/healthz`, the token signer's public key set at
+// `/.well-known/jwks.json` (#566), and a Task attempt's status URL at
+// `/api/watch/<token>` (#950; its HMAC token is the credential, and it is listed
+// below by its pattern so the snapshot shows it). Look for all three when reviewing the
+// anonymous surface.
 // Exported so __tests__/api-auth.test.ts can snapshot the list and fail CI on
 // any addition.
 export const ANONYMOUS_ROUTES: ReadonlyArray<{ method: string; pathname: string }> = [
   { method: "GET", pathname: "/api/auth/state" },
   { method: "POST", pathname: "/api/auth/setup" },
   { method: "POST", pathname: "/api/auth/login" },
+  // Documentation of a route that never reaches `dispatch`: `handleApiRequest` answers it before the gate. The
+  // pattern never equals a real path, so listing it here grants nothing.
+  { method: "GET", pathname: "/api/watch/:token" },
 ];
 
 /**
@@ -232,6 +240,16 @@ export async function handleApiRequest(request: Request): Promise<Response | nul
 
   if (pathname === "/api/healthz" && method === "GET") {
     return applyRequestHeaders(await healthController.read(), requestId, correlationId);
+  }
+
+  // A Task attempt's status URL (#950): answered before the session gate, deliberately. The signed token in the
+  // path is the credential and the payload is status only; see task-watch.controller.ts.
+  if (pathname.startsWith(WATCH_PATH_PREFIX) && method === "GET") {
+    return applyRequestHeaders(
+      await taskWatchController.read(pathname.slice(WATCH_PATH_PREFIX.length)),
+      requestId,
+      correlationId,
+    );
   }
 
   // The token signer's public key set (#566): SeaweedFS fetches it with no credentials, so it is answered before

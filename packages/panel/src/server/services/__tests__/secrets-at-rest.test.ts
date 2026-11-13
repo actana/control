@@ -5,7 +5,7 @@ import * as path from "node:path";
 
 const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ac-secrets-at-rest-test-"));
 
-const { SECRETS_KEY_FILENAME, openSecret, resetSecretsKeyForTests, sealSecret } = await import(
+const { SECRETS_KEY_FILENAME, deriveSubkey, openSecret, resetSecretsKeyForTests, sealSecret } = await import(
   "../secrets-at-rest"
 );
 
@@ -102,5 +102,23 @@ describe("secrets at rest", () => {
       resetSecretsKeyForTests();
       expect(() => sealSecret(SECRET)).toThrow(/AC_SECRETS_KEY/);
     });
+  });
+
+  it("derives a stable 32-byte subkey per purpose, distinct from each other and from the secrets key", () => {
+    const a = deriveSubkey("task-watch");
+    expect(a).toHaveLength(32);
+    expect(deriveSubkey("task-watch").equals(a)).toBe(true);
+    expect(deriveSubkey("other").equals(a)).toBe(false);
+    sealSecret(SECRET);
+    expect(fs.readFileSync(keyFile(), "utf8").trim()).not.toBe(a.toString("base64"));
+  });
+
+  it("derives a different subkey from a different secrets key", () => {
+    process.env.AC_SECRETS_KEY = "aa".repeat(32);
+    resetSecretsKeyForTests();
+    const a = deriveSubkey("task-watch");
+    process.env.AC_SECRETS_KEY = "bb".repeat(32);
+    resetSecretsKeyForTests();
+    expect(deriveSubkey("task-watch").equals(a)).toBe(false);
   });
 });
