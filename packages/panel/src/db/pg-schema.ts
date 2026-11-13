@@ -123,6 +123,13 @@ export const tasks = pgTable(
     lastError: text("last_error"),
     /** The time limit per attempt, in minutes (#724). NULL = No limit. */
     timeoutMinutes: integer("timeout_minutes").default(60),
+    /**
+     * What the Session of the running attempt is doing (#949): `working`, `needs-input`, `interrupted`,
+     * `idle-no-result` or `exited`; NULL when no attempt runs. Never moves `status`.
+     */
+    sessionState: text("session_state"),
+    /** When `session_state` last changed (epoch ms); NULL with it. */
+    sessionStateAt: epochMs("session_state_at"),
     createdAt: epochMs("created_at").notNull(),
     updatedAt: epochMs("updated_at").notNull(),
   },

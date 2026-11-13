@@ -2,7 +2,7 @@ import { and, asc, desc, eq, getTableColumns, inArray, sql, type SQL } from "dri
 import { ownedBy } from "~/db/owner";
 import { panelDb } from "~/db/panel-db-handle";
 import { taskComments, taskStatusHistory, tasks } from "~/db/pg-schema";
-import type { TaskStatus } from "~/shared/tasks";
+import type { TaskSessionState, TaskStatus } from "~/shared/tasks";
 import { insertOutboxInTx, type NewOutboxRow, type PanelTx } from "./webhooks.repo";
 
 export type TaskRow = typeof tasks.$inferSelect;
@@ -209,7 +209,7 @@ export async function transitionTask(
     }
     const updated = await tx
       .update(tasks)
-      .set({ status: to, updatedAt: now, ...patch })
+      .set({ status: to, updatedAt: now, sessionState: null, sessionStateAt: null, ...patch })
       .where(ownedBy(tasks, ownerId, and(eq(tasks.id, id), eq(tasks.status, from))))
       .returning();
     await tx
@@ -218,6 +218,52 @@ export async function transitionTask(
     const task = updated[0]!;
     await writeOutbox(tx, outboxFor?.({ from, task }));
     return { kind: "ok", task };
+  });
+}
+
+export type SessionStateResult =
+  | { kind: "missing" }
+  /** The Task is not `in_progress`: no attempt runs, so there is no state to record. */
+  | { kind: "not-running"; status: TaskStatus }
+  /** The Task already has this state. */
+  | { kind: "unchanged"; task: TaskRow }
+  | { kind: "changed"; task: TaskRow; from: TaskSessionState | null };
+
+/**
+ * Record what the Session of the running attempt is doing (#949), if the Task is `in_progress` once its row is
+ * locked and the state differs. `commentFor` gets the previous state and returns the system comment to add in the
+ * same transaction, or null; `outboxFor` adds outbox events to it. The status and `updated_at` do not move.
+ */
+export async function setTaskSessionState(
+  ownerId: number,
+  id: string,
+  state: TaskSessionState,
+  now: number,
+  commentFor?: (from: TaskSessionState | null) => Omit<NewTaskCommentRow, "taskId" | "ownerId" | "createdAt"> | null,
+  outboxFor?: (args: { from: TaskSessionState | null; task: TaskRow; comment: NewTaskCommentRow | null }) => NewOutboxRow[],
+): Promise<SessionStateResult> {
+  return panelDb().transaction(async (tx): Promise<SessionStateResult> => {
+    const locked = await tx
+      .select()
+      .from(tasks)
+      .where(ownedBy(tasks, ownerId, eq(tasks.id, id)))
+      .for("update");
+    const current = locked[0];
+    if (!current) return { kind: "missing" };
+    if (current.status !== "in_progress") return { kind: "not-running", status: current.status as TaskStatus };
+    const from = (current.sessionState as TaskSessionState | null) ?? null;
+    if (from === state) return { kind: "unchanged", task: current };
+    const fields = commentFor?.(from) ?? null;
+    const comment = fields ? { ...fields, taskId: id, ownerId, createdAt: now } : null;
+    if (comment) await tx.insert(taskComments).values(comment);
+    const updated = await tx
+      .update(tasks)
+      .set({ sessionState: state, sessionStateAt: now })
+      .where(ownedBy(tasks, ownerId, eq(tasks.id, id)))
+      .returning();
+    const task = updated[0]!;
+    await writeOutbox(tx, outboxFor?.({ from, task, comment }));
+    return { kind: "changed", task, from };
   });
 }
 
@@ -326,6 +372,8 @@ export async function claimAssignedTask(
         attemptCount: sql`${tasks.attemptCount} + 1`,
         dispatchedAt: now,
         lastError: null,
+        sessionState: null,
+        sessionStateAt: null,
         updatedAt: now,
       })
       .where(ownedBy(tasks, ownerId, and(eq(tasks.id, id), eq(tasks.status, "assigned"))))

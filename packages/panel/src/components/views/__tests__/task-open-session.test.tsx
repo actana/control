@@ -117,6 +117,8 @@ beforeEach(() => {
     dispatchedAt: 1,
     lastError: null,
     timeoutMinutes: 60,
+    sessionState: null,
+    sessionStateAt: null,
     createdAt: 1,
     updatedAt: 1,
   };

@@ -29,6 +29,8 @@ const task = (
   attemptCount: 0,
   dispatchedAt: null,
   lastError: null,
+  sessionState: null,
+  sessionStateAt: null,
   timeoutMinutes: 60,
   createdAt: 1,
   updatedAt,

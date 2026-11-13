@@ -2,7 +2,7 @@ import { z } from "zod";
 import { json, jsonError, noContent, parseJsonBody, rethrowUnlessDomain } from "./_helpers";
 import { NotFoundError, ValidationError } from "../errors";
 import { HTTP_BAD_REQUEST, HTTP_CREATED, HTTP_PAYLOAD_TOO_LARGE } from "~/shared/http-status";
-import type { AgentDto, TaskCommentDto, TaskDto, TaskListDto, TasksPageDto } from "~/shared/task-wire";
+import { toSessionState, type AgentDto, type TaskCommentDto, type TaskDto, type TaskListDto, type TasksPageDto } from "~/shared/task-wire";
 import { TASK_COLUMNS, TASK_COLUMN_STATUSES, TASKS_PAGE_DEFAULT_LIMIT, type TaskColumn } from "~/shared/tasks";
 import {
   addTaskComment,
@@ -81,6 +81,8 @@ function taskDto(t: Task): TaskDto {
     dispatchedAt: t.dispatchedAt,
     lastError: t.lastError,
     timeoutMinutes: t.timeoutMinutes,
+    sessionState: toSessionState(t.sessionState),
+    sessionStateAt: t.sessionStateAt,
     createdAt: t.createdAt,
     updatedAt: t.updatedAt,
   };
