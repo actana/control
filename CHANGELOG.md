@@ -29,7 +29,8 @@ your answer, so a send can no longer land inside an approval dialog. Plain
 A Task that is assigned again picks up where it left off. The new attempt
 resumes its own Session on the same Core, with your comment typed in as the next
 message and the attempt counted, and a Session that is still running gets the
-message instead of a second harness. When the old Session cannot be resumed, the
+message instead of a second harness. If that Session is waiting at a dialog,
+nothing is typed into it: it is stopped and a new Session starts. When the old Session cannot be resumed, the
 Task starts a new one that is told which attempt it is, to check the current
 state before repeating a step, and gets the last 20 comments, with a note when
 older ones were left out. The dispatch comment says which of the two happened

@@ -4,7 +4,7 @@ The Task's thread is its conversation with the Agent. The Agent's report arrives
 
 ## Comment
 
-`comment_task({ taskId: "task-id", body: "Use the staging database, not production." })` adds a comment. On a finished Task it changes nothing by itself.
+`comment_task({ taskId: "task-id", body: "Use the staging database, not production." })` adds a comment. On a finished Task it changes nothing by itself. A comment is a note the Session does not see unless you send it with `deliver: "now"` into a running Session; that is refused while the Session is `needs-input` (answer those with `answer_task`).
 
 ## Comment and re-assign
 

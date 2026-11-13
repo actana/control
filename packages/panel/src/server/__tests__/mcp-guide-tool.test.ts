@@ -220,5 +220,7 @@ describe("what the guide teaches", () => {
     expect(text).toContain("comment_task");
     expect(text).toContain("reassign: true");
     expect(text).toMatch(/time limit.*any status/);
+    expect(text).toContain('deliver: "now"');
+    expect(text).toMatch(/needs-input[^\n]*answer_task/);
   });
 });

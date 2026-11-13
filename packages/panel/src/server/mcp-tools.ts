@@ -269,7 +269,7 @@ export const MCP_TOOLS: readonly McpTool[] = [
     description:
       "One Task with its comment thread (the agent's report arrives here as a comment). waiting is { reason, coreId } while the Task is assigned but not started (Core full, Core not connected, Harness not ready), else null. " +
       "sessionState says what its Session is doing; while an attempt is assigned (queued) or runs, watch is { url, expiresAt, pollAfterSeconds }: wait by reading watch.url (no API key), not by calling get_task in a loop. " +
-      "While sessionState is needs-input the Task has prompt: { text, options?, kind, at }, what the Session asks (null when its Core cannot be read): answer it with answer_task. Call get_guide for the full recipe.",
+      "While sessionState is needs-input the Task has prompt: { text, options?, kind, source, at }, what the Session asks (null when its Core cannot be read): answer it with answer_task. Call get_guide for the full recipe.",
     readOnly: true,
     permission: "read",
     input: z.object({ taskId: taskIdArg }),
