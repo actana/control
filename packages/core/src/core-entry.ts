@@ -389,7 +389,16 @@ async function startCore(): Promise<void> {
     // spinner that is all that is left, with nothing new on screen behind it,
     // is what it reads as an idle TUI nobody will ever hear a `Stop` from
     // (issue 391). The PTY core says which of the two arrived.
-    onSessionOutputActivity: ({ sessionId, kind }) => sessionBackstop?.noteActivity(sessionId, kind),
+    onSessionOutputActivity: ({ sessionId, kind }) => {
+      sessionBackstop?.noteActivity(sessionId, kind);
+      // New output ends a screen-set `needs-input`: the dialog was answered (issue 963).
+      harnessStatus.screenActivity(sessionId, kind);
+    },
+    // A dialog no hook announced, read off the screen once it held still (issue 963).
+    onSessionDialog: ({ sessionId, ruleId, kind }) => {
+      const verdict = harnessStatus.dialogOnScreen(sessionId, { ruleId, kind });
+      return verdict === "hook-recent" || verdict === "not-running" ? "retry" : undefined;
+    },
   };
 
   // Eagerly install Claude Code's Shift+Enter keybinding flag for terminals

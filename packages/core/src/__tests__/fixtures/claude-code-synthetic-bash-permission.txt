@@ -1,0 +1,12 @@
+[2J[H● Bash(npm test)
+
+[38;5;246m────────────────────────────────────────────────────────────[39m
+ [1mBash command[22m
+
+   npm test
+   Run the unit tests
+
+ Do you want to proceed?
+ [38;5;153m❯ 1. Yes[39m
+   2. Yes, and don't ask again for: npm test:*
+   3. No, and tell Claude what to do differently [2m(esc)[22m

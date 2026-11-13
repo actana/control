@@ -1,0 +1,8 @@
+[2J[H• Explored
+  └ Read main.rs
+
+[2K[G[2m◦[22m Working (8s • esc to interrupt)
+
+› Ask Codex to do anything
+
+  gpt-5.6-sol default · ~/projects/api

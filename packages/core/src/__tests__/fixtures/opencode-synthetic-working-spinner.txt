@@ -1,0 +1,7 @@
+  ┃  Refactor the retry loop
+  ┃
+  ┃  ⠋ Reading src/app.ts
+  ┃
+  ┃  Build · Big Pickle  OpenCode Zen
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+   esc interrupt                                   ctrl+p commands

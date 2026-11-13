@@ -1,0 +1,7 @@
+ ⠋ Working... (escape to interrupt)
+
+────────────────────────────────────────────────────────────────────────────────
+ Refactor the retry loop
+────────────────────────────────────────────────────────────────────────────────
+/home/operator/projects/api
+12.4%/1.0M (auto)                                      claude-sonnet-4-5 • medium
