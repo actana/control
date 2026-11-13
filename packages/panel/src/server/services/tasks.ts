@@ -588,8 +588,22 @@ export async function setTaskSessionState(
       const body = formatTaskSessionStateComment(from as TaskSessionState | null, state);
       return body ? cleanComment({ authorKind: "system", authorName: "Panel", body }) : null;
     },
-    ({ task, comment }) =>
-      comment
+    ({ from, task, comment }) => [
+      outboxEvent(
+        ownerId,
+        "task.session_state_changed",
+        {
+          task: taskPayload(task),
+          taskId: task.id,
+          attempt: task.attemptCount,
+          sessionState: state,
+          sessionStateAt: now,
+          from,
+        },
+        task.coreId,
+        now,
+      ),
+      ...(comment
         ? [
             outboxEvent(
               ownerId,
@@ -610,7 +624,8 @@ export async function setTaskSessionState(
               now,
             ),
           ]
-        : [],
+        : []),
+    ],
   );
   if (result.kind === "missing") throw new NotFoundError("task not found");
   return result.kind === "changed";
