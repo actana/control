@@ -20,7 +20,7 @@ If the Core is full or not connected, the answer says so (`queued`, `waiting`). 
 
 ## When a call times out or fails
 
-A timeout does not prove non-delivery: read the Task before you resend. The Panel may have created and started the Task before your client gave up. Look for it with `get_tasks` (filter by `status` or `coreId`) or `get_task`. Only create a second Task when the first one is not there.
+A timeout does not prove non-delivery: read the Task before you resend. The Panel may have created and started the Task before your client gave up. List with `get_tasks` (filter by `status` or `coreId`; its rows have no description), read one Task's brief with `get_task`. Ask `get_tasks` for `withDescriptions` only with a small `limit`. Only create a second Task when the first one is not there.
 
 ## After the Task settles
 

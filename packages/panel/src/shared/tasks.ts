@@ -25,6 +25,8 @@ export const TASK_COLUMN_STATUSES: Record<TaskColumn, readonly TaskStatus[]> = {
 /** A page of Tasks: the board asks for 10, a caller may ask for up to 100. */
 export const TASKS_PAGE_DEFAULT_LIMIT = 10;
 export const TASKS_PAGE_MAX_LIMIT = 100;
+/** MCP `get_tasks` with `withDescriptions` (#957): descriptions come only on a small page. */
+export const TASKS_WITH_DESCRIPTIONS_MAX_LIMIT = 10;
 
 /**
  * The statuses a Task's title and description can be edited in, and the ones it

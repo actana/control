@@ -173,6 +173,12 @@ describe("what the guide teaches", () => {
     expect(text).toContain("read the Task before you resend");
   });
 
+  it("hand-off: list with get_tasks (lean rows, no brief), read one brief with get_task (#957)", () => {
+    const text = read("hand-off");
+    expect(text).toMatch(/list with `get_tasks`.*read one Task's brief with `get_task`/i);
+    expect(text).toContain("no description");
+  });
+
   it("waiting: watch.url with actana task wait, or a curl loop that honours pollAfterSeconds and Retry-After", () => {
     const text = read("waiting");
     expect(text).toContain("watch.url");
