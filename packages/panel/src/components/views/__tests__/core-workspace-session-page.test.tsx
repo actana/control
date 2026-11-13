@@ -30,6 +30,10 @@ const openSession = vi.fn();
 const focusGridSession = vi.fn();
 const setGridView = vi.fn();
 const toggle = vi.fn();
+const syncSession = vi.fn();
+const rehydrate = vi.fn();
+let gridProps: { pinnedSessionIds?: ReadonlySet<string> } = {};
+let gridButtonRows: readonly Session[] = [];
 let gridView = false;
 
 vi.mock("~/queries", async (importOriginal) => ({
@@ -61,7 +65,16 @@ vi.mock("~/components/views/NewHarnessDialog", () => ({
 }));
 vi.mock("~/components/views/SessionGrid", async (importOriginal) => ({
   ...(await importOriginal<typeof import("~/components/views/SessionGrid")>()),
-  SessionGrid: () => <div data-testid="session-grid" />,
+  SessionGrid: (props: { pinnedSessionIds?: ReadonlySet<string> }) => {
+    gridProps = props;
+    return <div data-testid="session-grid" />;
+  },
+}));
+vi.mock("~/components/views/GridLayoutButton", () => ({
+  GridLayoutButton: ({ sessionRows }: { sessionRows?: readonly Session[] }) => {
+    gridButtonRows = sessionRows ?? [];
+    return null;
+  },
 }));
 let setActive: (id: string | null) => void = () => undefined;
 let openEntries: Session[] = [];
@@ -78,8 +91,8 @@ vi.mock("~/lib/terminal-store", async () => {
     activeSessionIdFor: () => activeId,
     openSession,
     focusGridSession,
-    syncSession: vi.fn(),
-    rehydrate: vi.fn(),
+    syncSession,
+    rehydrate,
     toggle,
     close: vi.fn(),
     requestNewRow: vi.fn(),
@@ -143,6 +156,10 @@ beforeEach(() => {
   openSession.mockClear();
   focusGridSession.mockClear();
   toggle.mockClear();
+  syncSession.mockClear();
+  rehydrate.mockClear();
+  gridProps = {};
+  gridButtonRows = [];
   listSessionRows.mockReset();
   qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   openEntries = [];
@@ -251,6 +268,12 @@ describe("the workspace list past the first page (#960)", () => {
     expect(listSessionRows).toHaveBeenCalledWith("a", { limit: 100, archived: false, cursor: "c1" });
     expect(await screen.findByText("Far row101")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Load more" })).toBeNull();
+
+    // r3: the row Load more added opens like any other.
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Open Far row101" })));
+    expect(openSession).toHaveBeenCalledWith("a", expect.objectContaining({ id: "row101" }));
+    // ...and its open terminal keeps following the Core's row.
+    expect(syncSession).toHaveBeenCalledWith(expect.objectContaining({ id: "row101" }));
   });
 
   it("refreshes the rows Load more appended when the Core's list is invalidated, and drops them on a Core switch", async () => {
@@ -286,6 +309,67 @@ describe("the workspace list past the first page (#960)", () => {
     expect(await screen.findByText("Far pinned-far")).toBeTruthy();
     expect(listSessionRows).toHaveBeenCalledWith("a", { limit: 100, archived: false, pinned: true });
     expect(scopeCount("Pinned")).toBe("1");
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Open Far pinned-far" })));
+    expect(openSession).toHaveBeenCalledWith("a", expect.objectContaining({ id: "pinned-far" }));
+  });
+
+  it("hands the grid the pinned Session past the first page, for its Pinned filter and picker", async () => {
+    stubWidth(1400);
+    gridView = true;
+    openEntries = [session("s1", "running", "Implement #558")];
+    seedPage(150, "c1");
+    listSessionRows.mockImplementation(async (_core: string, page: { pinned?: boolean }) =>
+      page.pinned
+        ? { sessions: [{ ...snap("pinned-far"), pinned: true }], archivedCount: 0, nextCursor: null, total: 1 }
+        : { sessions: [], archivedCount: 0, nextCursor: null, total: 150 },
+    );
+    await mount();
+
+    await vi.waitFor(() => expect(gridProps.pinnedSessionIds?.has("pinned-far")).toBe(true));
+    expect(gridButtonRows.map((r) => r.id)).toContain("pinned-far");
+  });
+
+  it("reopens a persisted active Session that is past the first page, by asking the Core for it", async () => {
+    listSessionRows.mockResolvedValue({ sessions: [snap("far")], archivedCount: 0, nextCursor: null, total: 1 });
+    await mount();
+    await act(async () => setActive("far"));
+
+    await vi.waitFor(() => expect(rehydrate).toHaveBeenCalledWith("a", expect.objectContaining({ id: "far" })));
+  });
+
+  it("keeps an open Session that is in no loaded page in step with the Core's row", async () => {
+    openEntries = [session("far", "running", "Far one")];
+    listSessionRows.mockResolvedValue({
+      sessions: [{ ...snap("far"), status: "needs-input" }],
+      archivedCount: 0,
+      nextCursor: null,
+      total: 1,
+    });
+    await mount();
+
+    await vi.waitFor(() =>
+      expect(syncSession).toHaveBeenCalledWith(expect.objectContaining({ id: "far", status: "needs-input" })),
+    );
+  });
+
+  it("cycles from an active Session past the first page", async () => {
+    stubWidth(1400);
+    seedPage(150, "c1");
+    listSessionRows.mockImplementation(async (_core: string, page: { cursor?: string }) =>
+      page.cursor
+        ? { sessions: [snap("row101")], archivedCount: 0, nextCursor: null, total: 150 }
+        : { sessions: [], archivedCount: 0, nextCursor: "c1", total: 150 },
+    );
+    await mount();
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Load more" })));
+    await screen.findByText("Far row101");
+    await act(async () => setActive("row101"));
+    toggle.mockClear();
+
+    await act(async () => {
+      fireEvent.keyDown(document.body, { key: "]", code: "BracketRight", ctrlKey: true, metaKey: true, shiftKey: true });
+    });
+    expect(toggle).toHaveBeenCalledTimes(1);
   });
 
   it("asks for nothing more when the first page holds every Session", async () => {
