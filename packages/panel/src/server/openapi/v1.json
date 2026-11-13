@@ -560,6 +560,7 @@
       "post": {
         "operationId": "addTaskComment",
         "summary": "Add a comment, or Comment & re-assign",
+        "description": "A comment is a note: nothing is typed into the Task's Session unless `deliver` is `now`. The comment's author is `<key name> (API key)` with authorKind `user`. With `deliver: now` on a running Task the comment is also typed into its Session; the 201 body then carries `delivery` ({ mode: now, delivered, reason? }). A Session that is waiting for input is never typed into: the comment stays a note and `reason` says why.",
         "parameters": [{ "name": "taskId", "in": "path", "required": true, "schema": { "type": "string" } }],
         "requestBody": {
           "required": true,
@@ -570,7 +571,8 @@
                 "required": ["body"],
                 "properties": {
                   "body": { "type": "string" },
-                  "reassign": { "type": "boolean" }
+                  "reassign": { "type": "boolean" },
+                  "deliver": { "type": "string", "enum": ["now"], "description": "Also type the comment into the Task's running Session." }
                 }
               }
             }

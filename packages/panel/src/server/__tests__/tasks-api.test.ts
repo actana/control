@@ -350,3 +350,72 @@ describe("a board move is the button's move (#827)", () => {
     expect((await tasksService.getTask(A, t.id)).status).toBe("in_progress");
   });
 });
+
+describe("a comment from the Panel UI goes into the running Session (#935, now mode)", () => {
+  const typed: string[] = [];
+  let refuse = false;
+
+  beforeAll(async () => {
+    const { setSessionTyperForTests } = await import("../task-dispatch/comment-delivery");
+    setSessionTyperForTests(async () => ({
+      deliver: async (text: string) => {
+        if (refuse) return { ok: false };
+        typed.push(text);
+        return { ok: true };
+      },
+      dispose: () => {},
+    }));
+  });
+  afterAll(async () => {
+    (await import("../task-dispatch/comment-delivery")).setSessionTyperForTests(null);
+  });
+
+  async function runningTask() {
+    const t = await tasksService.createTask(A, { title: "run", coreId: "core-a", agent: "agent-a", startNow: true });
+    await tasksService.claimTask(A, t.id);
+    await tasksService.addTaskComment(A, t.id, {
+      authorKind: "system",
+      authorName: "Panel",
+      body: formatTaskDispatchComment({ attempt: 1, agentName: "Agent", harness: "claude-code", coreId: "core-a", sessionId: "session_1" }),
+    });
+    typed.length = 0;
+    refuse = false;
+    return t;
+  }
+
+  it("is typed into the Session when the operator asks (deliver: now)", async () => {
+    const t = await runningTask();
+    const res = await post(`/api/tasks/${t.id}/comments`, { body: "look at the failing test", deliver: "now" });
+    expect(res.status).toBe(201);
+    const data = (await res.json()) as any;
+    expect(data.comment).toMatchObject({ authorKind: "user", body: "look at the failing test" });
+    expect(data.delivery).toEqual({ mode: "now", delivered: true });
+    expect(typed).toEqual([expect.stringContaining("look at the failing test"), "\r"]);
+  });
+
+  it("is a note only without deliver", async () => {
+    const t = await runningTask();
+    const data = (await (await post(`/api/tasks/${t.id}/comments`, { body: "just a note" })).json()) as any;
+    expect(data.delivery).toBeUndefined();
+    expect(typed).toEqual([]);
+  });
+
+  it("types nothing into a Session that needs input, and keeps the comment with the reason", async () => {
+    const t = await runningTask();
+    await tasksService.setTaskSessionState(A, t.id, "needs-input");
+    const res = await post(`/api/tasks/${t.id}/comments`, { body: "go on", deliver: "now" });
+    expect(res.status).toBe(201);
+    const data = (await res.json()) as any;
+    expect(data.delivery).toMatchObject({ mode: "now", delivered: false });
+    expect(data.delivery.reason).toMatch(/waiting for input/);
+    expect(typed).toEqual([]);
+    const thread = await tasksService.listTaskComments(A, t.id);
+    expect(thread.some((c) => c.authorKind === "user" && c.body === "go on")).toBe(true);
+    expect(thread.at(-1)!.body).toMatch(/^Not typed into the Session: the Session is waiting for input/);
+  });
+
+  it("rejects a deliver mode that is not now", async () => {
+    const t = await runningTask();
+    expect((await post(`/api/tasks/${t.id}/comments`, { body: "x", deliver: "idle" })).status).toBe(400);
+  });
+});

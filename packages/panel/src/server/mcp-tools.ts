@@ -302,14 +302,26 @@ export const MCP_TOOLS: readonly McpTool[] = [
   }),
   tool({
     name: "comment_task",
-    description: "Add a comment to a Task's thread. With reassign true, also send a finished Task back to its Agent (Comment & re-assign) and get the Task back with sessionState and watch.url straight away. " +
-      "A Task that is in_progress is refused: stop_task it first, then comment again with reassign true.",
+    description: "Add a comment to a Task's thread. It is a note: nothing is typed into the Task's Session unless you pass deliver \"now\", which also types it into the running Session mid-turn " +
+      "(refused, and kept as a note with the reason in the answer's delivery, when the Session is waiting for input). Do not use deliver on your own Task. " +
+      "With reassign true, also send a finished Task back to its Agent (Comment & re-assign) and get the Task back with sessionState and watch.url straight away. " +
+      "reassign is refused for a Task that is in_progress: stop_task it first, then comment again with reassign true.",
     readOnly: false,
     permission: "tasks:write",
-    input: z.object({ taskId: taskIdArg, body: z.string().min(1), reassign: z.boolean().optional() }),
-    run: async (principal, { taskId, body, reassign }, { origin }) =>
+    input: z.object({
+      taskId: taskIdArg,
+      body: z.string().min(1),
+      reassign: z.boolean().optional(),
+      deliver: z.literal("now").optional().describe("now: also type the comment into the Task's running Session. Without it the comment is a note."),
+    }),
+    run: async (principal, { taskId, body, reassign, deliver }, { origin }) =>
       outcomeOf(
-        await addTaskCommentV1(principal, taskId, asJsonRequest({ body, ...(reassign === undefined ? {} : { reassign }) }), origin),
+        await addTaskCommentV1(
+          principal,
+          taskId,
+          asJsonRequest({ body, ...(reassign === undefined ? {} : { reassign }), ...(deliver === undefined ? {} : { deliver }) }),
+          origin,
+        ),
       ),
   }),
   tool({
