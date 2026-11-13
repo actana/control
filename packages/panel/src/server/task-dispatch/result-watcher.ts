@@ -12,9 +12,9 @@ import {
   taskResultPath,
   type TaskResult,
 } from "~/shared/task-report";
-import { formatTaskTimeoutReason, type TaskSessionState } from "~/shared/tasks";
+import { formatTaskTimeoutReason, sessionStateForCoreStatus, type TaskSessionState } from "~/shared/tasks";
 import { isFolderScoped } from "./shared-factory";
-import { consoleDispatchLog, messageOf, type Clock, type DispatchLog, type SessionLiveness, type SessionStopper } from "./types";
+import { consoleDispatchLog, messageOf, type Clock, type DispatchLog, type SessionLiveness, type SessionStatusReader, type SessionStopper } from "./types";
 
 /**
  * The result watcher (#570): turns `success.md`, `fail.md` and `partial-<n>.md`
@@ -78,6 +78,12 @@ export type ResultWatcherOptions = {
    * changes nothing: it neither adds a miss nor clears one (only a present answer clears).
    */
   liveSessions?: SessionLiveness;
+  /**
+   * The Core's status of each Session (#949). Asked once on adoption (`readSessionState`) and once a minute per Core,
+   * so a Task adopted at Panel boot, which has no handle to hear `onStatus` on, still shows what its Session is doing.
+   * `null` = no answer, which changes nothing.
+   */
+  sessionStatuses?: SessionStatusReader;
   /** How often the minute pass runs. */
   minutePassMs?: number;
 };
@@ -111,6 +117,7 @@ export class ResultWatcher {
   private readonly ownerId: number;
   private readonly now: Clock;
   private readonly liveSessions: SessionLiveness | null;
+  private readonly sessionStatuses: SessionStatusReader | null;
   private readonly minutePassMs: number;
   private lastMinutePass = -Infinity;
   private readonly exitGraceMs: number;
@@ -126,6 +133,7 @@ export class ResultWatcher {
     this.ownerId = opts.ownerId;
     this.now = opts.now ?? Date.now;
     this.liveSessions = opts.liveSessions ?? null;
+    this.sessionStatuses = opts.sessionStatuses ?? null;
     this.minutePassMs = opts.minutePassMs ?? DEFAULT_MINUTE_PASS_MS;
     this.exitGraceMs = opts.exitGraceMs ?? DEFAULT_EXIT_GRACE_MS;
     this.pollMs = opts.pollMs ?? DEFAULT_WATCH_POLL_MS;
@@ -183,6 +191,16 @@ export class ResultWatcher {
     }
   }
 
+  /**
+   * Read the Core's status of one watched Task's Session once and record it (#949): for a Task adopted at Panel boot,
+   * which has no handle to hear status changes on. Nothing is written for a Task with no known Session, an exited
+   * one, or a Session the Core did not list or answer for. Never throws.
+   */
+  async readSessionState(taskId: string): Promise<void> {
+    const t = this.tracked.get(taskId);
+    if (t) await this.readSessionStates([t]);
+  }
+
   /** Poll on a timer until `stop`. A tick that is still running when the next is due is not started twice. */
   start(): void {
     if (this.timer || this.stopped) return;
@@ -233,6 +251,34 @@ export class ResultWatcher {
       this.log.error(`could not refresh the time limits: ${messageOf(err)}`);
     }
     await this.checkLiveness();
+    await this.readSessionStates([...this.tracked.values()]);
+  }
+
+  /** One question per Core, as in `checkLiveness`; each answered Session's status is mapped and recorded. Never throws. */
+  private async readSessionStates(dispatches: readonly Tracked[]): Promise<void> {
+    const readStatuses = this.sessionStatuses;
+    if (!readStatuses) return;
+    const byCore = new Map<string, Tracked[]>();
+    for (const t of dispatches) {
+      if (!t.sessionId || t.exit) continue;
+      byCore.set(t.coreId, [...(byCore.get(t.coreId) ?? []), t]);
+    }
+    for (const [coreId, group] of byCore) {
+      if (this.stopped) return;
+      let statuses: ReadonlyMap<string, string> | null;
+      try {
+        statuses = await readStatuses(coreId, group.map((t) => t.sessionId!));
+      } catch (err) {
+        this.log.error(`status of the Sessions on Core ${coreId}: ${messageOf(err)}`);
+        statuses = null;
+      }
+      if (!statuses) continue;
+      for (const t of group) {
+        if (this.tracked.get(t.taskId) !== t || t.exit) continue;
+        const state = sessionStateForCoreStatus(statuses.get(t.sessionId!) ?? "");
+        if (state) await this.markSessionState(t.taskId, state);
+      }
+    }
   }
 
   /**

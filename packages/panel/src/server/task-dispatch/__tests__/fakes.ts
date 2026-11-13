@@ -6,7 +6,7 @@ import {
   type SharedFile,
   type SharedWatchResult,
 } from "@actana/sdk/shared";
-import type { DispatchLog, SessionLiveness, SessionStarter, SessionStopResult, SessionStopper, StartSessionRequest, StartedSession } from "../types";
+import type { DispatchLog, SessionLiveness, SessionStarter, SessionStatusReader, SessionStopResult, SessionStopper, StartSessionRequest, StartedSession } from "../types";
 
 /** A clock a test moves by hand. */
 export class FakeClock {
@@ -147,6 +147,27 @@ export class FakeCore {
   /** Every Core the Panel asked about, in order. */
   readonly liveCalls: string[] = [];
 
+  /** What the Core reports as each Session's status; null is a Core that gives no answer. */
+  statuses: Map<string, string> | null = new Map();
+  /** Every `[coreId, sessionIds]` the Panel asked the status of, in order. */
+  readonly statusCalls: [string, string[]][] = [];
+  /** The status listeners a Session holds right now (released by `dispose`). */
+  listeners(id: string): number {
+    return this.statusListeners.get(id)?.size ?? 0;
+  }
+  private readonly statusListeners = new Map<string, Set<(status: string) => void>>();
+  /** The Core reports a new status for a Session: the subscribed listeners hear it and the polled map follows. */
+  emitStatus(id: string, status: string): void {
+    this.statuses?.set(id, status);
+    for (const cb of [...(this.statusListeners.get(id) ?? [])]) cb(status);
+  }
+
+  readonly sessionStatuses: SessionStatusReader = async (coreId, sessionIds) => {
+    this.statusCalls.push([coreId, [...sessionIds]]);
+    if (!this.statuses) return null;
+    return new Map(sessionIds.flatMap((id) => (this.statuses!.has(id) ? [[id, this.statuses!.get(id)!] as [string, string]] : [])));
+  };
+
   readonly liveSessions: SessionLiveness = async (coreId, sessionIds) => {
     this.liveCalls.push(coreId);
     return this.live ? new Set(sessionIds.filter((id) => this.live!.has(id))) : null;
@@ -176,8 +197,12 @@ export class FakeCore {
       onExit: (cb) => {
         onExit = cb;
       },
+      onStatus: (cb) => {
+        this.statusListeners.set(id, (this.statusListeners.get(id) ?? new Set()).add(cb));
+      },
       dispose: () => {
         record.disposed = true;
+        this.statusListeners.delete(id);
       },
     };
     return started;
