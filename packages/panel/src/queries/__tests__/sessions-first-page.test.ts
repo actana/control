@@ -48,6 +48,8 @@ describe("the workspace Session bucket", () => {
     expect(listSessionRows).toHaveBeenCalledWith("core_a", { limit: 100, archived: false });
     expect(sessions.map((s) => s.id)).toEqual(["a", "b"]);
     expect(qc.getQueryData(queryKeys.coreArchivedSessionCount("core_a"))).toBe(7);
+    // Where the page ended rides along: the true count and the cursor Load more starts from.
+    expect(qc.getQueryData(queryKeys.sessionPage("core_a"))).toEqual({ total: 1200, nextCursor: "c2" });
   });
 
   it("still works against an older Core that answers every row with no cursor", async () => {
@@ -57,6 +59,7 @@ describe("the workspace Session bucket", () => {
     const sessions = await qc.fetchQuery(sessionsQueryOptions("core_a"));
 
     expect(sessions).toHaveLength(150);
+    expect(qc.getQueryData(queryKeys.sessionPage("core_a"))).toEqual({ total: 150, nextCursor: null });
   });
 });
 

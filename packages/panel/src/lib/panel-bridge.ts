@@ -37,6 +37,8 @@ export type SessionRowsPage = {
   harness?: string;
   q?: string;
   ids?: string[];
+  /** Only the pinned Sessions. */
+  pinned?: boolean;
 };
 
 export type PanelBridge = {

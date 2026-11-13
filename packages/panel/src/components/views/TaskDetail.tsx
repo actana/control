@@ -15,7 +15,7 @@ import { useFleet } from "~/lib/fleet-context";
 import { formatRelativeTime } from "~/lib/format-relative-time";
 import { requestSessionOpen } from "~/lib/session-notification-store";
 import { TASK_STATUS_LABEL } from "~/lib/task-board";
-import { queryKeys, useArchivedSessions, useCoreAgents, useSessions, useTask } from "~/queries";
+import { queryKeys, useArchivedSessions, useCoreAgents, useSessionRowById, useSessions, useTask } from "~/queries";
 import {
   FINISHED_TASK_STATUSES,
   canDeleteTask,
@@ -126,10 +126,15 @@ function OpenAttemptSession({
   const core = cores.find((c) => c.id === coreId);
   const coreReachable = core?.dial.state === "connected";
   const sessions = useSessions(coreId);
-  const active = sessions.data?.find((s) => s.id === sessionId);
+  const inFirstPage = sessions.data?.find((s) => s.id === sessionId);
+  // The bucket holds one page of rows (#960): a Session past it is still live.
+  // Ask the Core for that one row before calling it gone or archived.
+  const needByIdCheck = !!core && !!coreReachable && sessions.isFetched && !sessions.isError && !inFirstPage;
+  const byId = useSessionRowById(coreId, sessionId, { enabled: needByIdCheck });
+  const active = inFirstPage ?? byId.data ?? undefined;
   // Archived rows live in their own bucket (ADR 0019); ask only when the active
-  // list has answered and this Session was not in it.
-  const needArchivedCheck = !!core && !!coreReachable && sessions.isFetched && !sessions.isError && !active;
+  // list and the by-id read have both answered and this Session was in neither.
+  const needArchivedCheck = needByIdCheck && byId.isFetched && !byId.isError && !active;
   const archived = useArchivedSessions(coreId, { enabled: needArchivedCheck });
   const inArchived = !!archived.data?.some((s) => s.id === sessionId);
 

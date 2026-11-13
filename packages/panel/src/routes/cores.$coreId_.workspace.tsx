@@ -11,6 +11,7 @@ import { Icon } from "~/components/ui/Icon";
 import { GridViewToggleIcon } from "~/components/ui/GridViewToggleIcon";
 import { Z_INDEX } from "~/lib/z-index";
 import { EmptyState } from "~/components/ui/EmptyState";
+import { LoadMoreButton } from "~/components/views/LoadMoreButton";
 import { SessionColumn } from "~/components/views/SessionColumn";
 import { NewHarnessDialog } from "~/components/views/NewHarnessDialog";
 import {
@@ -89,6 +90,7 @@ import {
   useCoreArchivedSessionCount,
   useHookToken,
   useSettings,
+  useSessionPaging,
   useSessions,
 } from "~/queries";
 import { useCoreLiveQueries } from "~/lib/use-core-live-queries";
@@ -160,6 +162,9 @@ function CoreWorkspacePage() {
   // them. Core events over the panel link do.
   useCoreLiveQueries(coreId);
   const sessions = sessionsQuery.data ?? [];
+  // The list past the first page: Load more, the Core's pinned rows, its true count (#960).
+  const paging = useSessionPaging(coreId, sessions);
+  const listSessions = paging.rows;
   // Live pinned-session ids for the grid's "Pinned" filter — derived from the
   // session query (not the store's open-time snapshot) so a pin toggle reflects
   // immediately. Memoized so SessionGrid's filter doesn't churn every render.
@@ -179,9 +184,9 @@ function CoreWorkspacePage() {
   // even when it is beyond the page (or dropped out of it on a refetch).
   const findKnownSession = useCallback(
     (sessionId: string): Session | undefined =>
-      sessions.find((t) => t.id === sessionId) ??
+      listSessions.find((t) => t.id === sessionId) ??
       terminals.sessions.find((s) => s.sessionId === sessionId && s.coreId === coreId)?.session,
-    [sessions, terminals.sessions, coreId],
+    [listSessions, terminals.sessions, coreId],
   );
 
   // Phone and tablet get one stacked list; the grid is a desktop layout, so a
@@ -1040,7 +1045,7 @@ function CoreWorkspacePage() {
     return () => cancelAnimationFrame(raf);
   }, [coreId, anyBlockingDialogOpen]);
 
-  const activeSessions = sessions.filter((t) => !t.archived);
+  const activeSessions = listSessions.filter((t) => !t.archived);
   const pinnedSessions = activeSessions.filter((t) => t.pinned);
   const visibleSessions = showArchived ? archivedSessions : showPinned ? pinnedSessions : activeSessions;
   // Active list peels pinned into a top "Pinned" section; Pinned tab keeps
@@ -1446,7 +1451,7 @@ function CoreWorkspacePage() {
           <div className="mc-ws-toolbar">
             <WorkspaceScopeControl
               view={sessionView}
-              activeCount={activeSessions.length}
+              activeCount={paging.total}
               pinnedCount={pinnedSessions.length}
               archivedCount={archivedCount}
               showArchivedTab={hasArchivedSessions || showArchived}
@@ -1562,7 +1567,7 @@ function CoreWorkspacePage() {
           {showSessionScopeToggle && (
             <SessionScopeToggle
               view={sessionView}
-              activeCount={activeSessions.length}
+              activeCount={paging.total}
               pinnedCount={pinnedSessions.length}
               archivedCount={archivedCount}
               showArchivedTab={hasArchivedSessions || showArchived}
@@ -1814,6 +1819,16 @@ function CoreWorkspacePage() {
                 />
                 );
               })}
+              {!showArchived && !showPinned && (
+                <div style={{ display: "flex", justifyContent: "center", paddingBottom: 8 }}>
+                  <LoadMoreButton
+                    hasMore={paging.hasMore}
+                    loading={paging.loadingMore}
+                    onClick={paging.loadMore}
+                    compact={compact}
+                  />
+                </div>
+              )}
               {!showArchived && hasArchivedSessions && (
                 <div
                   style={{

@@ -21,6 +21,8 @@ export type SessionPageQuery = {
   archived: boolean;
   harness?: string;
   q?: string;
+  /** Only the pinned Sessions: how a client finds them beyond the rows it holds. */
+  pinned?: boolean;
   /** Only these Sessions (up to a page): how a client fetches the one row it needs beyond the loaded pages. */
   ids?: string[];
 };
@@ -74,6 +76,7 @@ export function readSessionPageRequest(frame: {
   harness?: unknown;
   q?: unknown;
   ids?: unknown;
+  pinned?: unknown;
 }): SessionPageQuery | null {
   if (frame.limit === undefined) return null;
   const { limit } = frame;
@@ -93,6 +96,7 @@ export function readSessionPageRequest(frame: {
   }
   if (typeof frame.harness === "string" && frame.harness.trim()) query.harness = frame.harness.trim();
   if (typeof frame.q === "string" && frame.q.trim()) query.q = frame.q.trim();
+  if (frame.pinned === true) query.pinned = true;
   if (frame.ids !== undefined) {
     if (
       !Array.isArray(frame.ids) ||
@@ -144,6 +148,7 @@ export function querySessionPage(sqlite: CoreQuerySqlite, query: SessionPageQuer
     where.push(`title LIKE ? ESCAPE '\\'`);
     params.push(`%${escapeLike(query.q)}%`);
   }
+  if (query.pinned) where.push(`pinned = 1`);
   if (query.ids) {
     where.push(`id IN (${query.ids.map(() => "?").join(", ")})`);
     params.push(...query.ids);
