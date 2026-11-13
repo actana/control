@@ -4,7 +4,7 @@ import { OPERATOR_ID } from "../services/operator";
 import { TaskDispatcher } from "./dispatcher";
 import { ResultWatcher } from "./result-watcher";
 import { SharedChangeFeed, createS3Factory, createSharedFactory, createThroughCoreFactory, type SharedFactoryDeps } from "./shared-factory";
-import { startSessionOnCore } from "./session-starter";
+import { resumeSessionOnCore, startSessionOnCore } from "./session-starter";
 import { liveSessionsOnCore } from "./session-liveness";
 import { sessionStatusesOnCore } from "./session-status";
 import { sessionStopper } from "./session-stopper";
@@ -12,7 +12,7 @@ import { stopTaskRun } from "./stop-task";
 import { closeTaskSession } from "./close-session";
 import { coreLinkManager } from "../services/core-link-manager";
 import type { CoreS3Shared } from "../services/core-s3-shared";
-import { consoleDispatchLog, type Clock, type DispatchLog, type SessionLiveness, type SessionStarter, type SessionStatusReader, type SessionStopper } from "./types";
+import { consoleDispatchLog, type Clock, type DispatchLog, type SessionLiveness, type SessionResumer, type SessionStarter, type SessionStatusReader, type SessionStopper } from "./types";
 import type { AgentLookup } from "./dispatcher";
 
 /**
@@ -35,6 +35,11 @@ export type StartTaskDispatchOptions = {
   modes?: CoreS3Shared;
   throughCore?: SharedFactoryDeps["throughCore"];
   startSession?: SessionStarter;
+  /**
+   * How a re-assigned Task's own Session is continued (#955). The Panel's own link to the Core by default; when a test
+   * hands in `startSession` and no resumer, there is none (its fake Sessions are not on any Core's link).
+   */
+  resumeSession?: SessionResumer;
   /** How a Session is stopped (#723). The Panel's own link to the Core by default. */
   stopSession?: SessionStopper;
   /** Which Sessions are live on a Core, for the watcher's once-a-minute check. The Panel's own link by default. */
@@ -68,10 +73,12 @@ export function startTaskDispatch(opts: StartTaskDispatchOptions = {}): void {
     ...(opts.exitGraceMs !== undefined ? { exitGraceMs: opts.exitGraceMs } : {}),
     ...(opts.log ? { log: opts.log } : {}),
   });
+  const resumeSession = opts.resumeSession ?? (opts.startSession ? undefined : resumeSessionOnCore);
   const throughCore = opts.throughCore ?? createThroughCoreFactory(feed, OPERATOR_ID);
   dispatcher = new TaskDispatcher({
     ownerId: OPERATOR_ID,
     startSession: opts.startSession ?? startSessionOnCore,
+    ...(resumeSession ? { resumeSession } : {}),
     sharedFor: createSharedFactory({
       s3: opts.s3 ?? createS3Factory(OPERATOR_ID, opts.modes),
       throughCore,

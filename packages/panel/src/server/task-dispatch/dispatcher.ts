@@ -23,11 +23,11 @@ import {
   type TaskComment,
 } from "../services/tasks";
 import { archivedTaskName, classifyTaskEntry, taskFolder } from "~/shared/task-report";
-import { formatTaskDispatchComment, parseTaskDispatchComment, sessionStateForCoreStatus, taskWaitingReason } from "~/shared/tasks";
+import { formatTaskDispatchComment, formatTaskResumeComment, resolveAttemptSessions, sessionStateForCoreStatus, taskWaitingReason, type TaskAttemptSession } from "~/shared/tasks";
 import { ResultWatcher } from "./result-watcher";
 import { lazyShared, type SharedFor } from "./shared-factory";
-import { buildTaskPointer, buildTaskPrompt, taskPromptPath } from "./task-prompt";
-import { consoleDispatchLog, messageOf, type Clock, type DispatchLog, type SessionStarter, type SessionStopper } from "./types";
+import { buildResumePrompt, buildTaskPointer, buildTaskPrompt, taskPromptPath } from "./task-prompt";
+import { consoleDispatchLog, messageOf, RESUME_REFUSALS, type Clock, type DispatchLog, type ResumeRefusal, type SessionResumer, type SessionStarter, type SessionStopper, type StartedSession } from "./types";
 
 /**
  * The dispatcher (#570): claims `assigned` Tasks, starts a Session on the Agent's
@@ -43,6 +43,11 @@ import { consoleDispatchLog, messageOf, type Clock, type DispatchLog, type Sessi
  *  2. RESOLVE the Task's Agent to the harness and Core it has right now.
  *  3. On a re-run, rename the older results to `attempt-<n>-<name>` (client PR 41).
  *  4. WRITE the prompt file through the Core's Files API and read it back, then START the Session through the Core's client, then add a system comment.
+ *     On a re-run (#955) the Task's own last Session is tried first: if it can be resumed (it has a harness session id, it is on
+ *     the Agent's Core, the harness resumes it), the harness is reopened on that same Session row, or, when it is still
+ *     running (one live harness per Task), the message is typed into it. The prompt file then holds only what is new, and the
+ *     comment says `Resumed Session <id> (attempt <n>)`. When it cannot be resumed, the new Session of step 4 is started as
+ *     before, and the reason it could not (a `ResumeRefusal`) is logged and is the seam for the `New Session ...` comment (#955 p2).
  *  5. WATCH its result files.
  * Any failure before the Session runs moves the Task to `failed` with the reason
  * as its last error and a system comment (`failTaskDispatch`), so no Task is left
@@ -78,6 +83,8 @@ export type AgentLookup = {
 export type TaskDispatcherOptions = {
   ownerId: number;
   startSession: SessionStarter;
+  /** Continues a re-assigned Task's own Session (#955). Without it a re-run always starts a new Session. */
+  resumeSession?: SessionResumer;
   sharedFor: SharedFor;
   /**
    * The Core's own Files API (the through-the-Core mode), where the Task's prompt file is written. A write there
@@ -122,6 +129,7 @@ const realAgents: AgentLookup = { get: getAgent, resolve: (ownerId, id) => resol
 export class TaskDispatcher {
   private readonly ownerId: number;
   private readonly startSession: SessionStarter;
+  private readonly resumeSession: SessionResumer | null;
   private readonly sharedFor: SharedFor;
   private readonly coreFilesFor: SharedFor;
   private readonly watcher: ResultWatcher;
@@ -145,6 +153,7 @@ export class TaskDispatcher {
   constructor(opts: TaskDispatcherOptions) {
     this.ownerId = opts.ownerId;
     this.startSession = opts.startSession;
+    this.resumeSession = opts.resumeSession ?? null;
     this.sharedFor = opts.sharedFor;
     this.coreFilesFor = opts.coreFilesFor ?? opts.sharedFor;
     this.watcher = opts.watcher;
@@ -345,12 +354,9 @@ export class TaskDispatcher {
   private async stopPreviousSession(taskId: string, previous: number, comments: readonly TaskComment[]): Promise<void> {
     if (!this.stopSession) return;
     try {
-      let at = -1;
-      comments.forEach((c, i) => {
-        if (c.authorKind === "system" && parseTaskDispatchComment(c.body)?.attempt === previous) at = i;
-      });
-      if (at < 0) return;
-      const target = parseTaskDispatchComment(comments[at]!.body)!;
+      const target = resolveAttemptSessions(comments).filter((a) => a.attempt === previous).at(-1);
+      if (!target) return;
+      const at = target.index;
       // Only the Panel's own words count: "Stopped by" is a system comment, and the timeout is the Panel's
       // `fail.md` of that attempt (recorded as the agent's comment, but with that attempt's fail.md as its
       // source and the Panel's signature in the body). A user or agent comment with the same phrase is not it.
@@ -365,6 +371,17 @@ export class TaskDispatcher {
       this.log.info(`task ${taskId}: previous Session ${target.sessionId} before attempt ${previous + 1}: ${result.outcome}${result.detail ? ` (${result.detail})` : ""}`);
     } catch (err) {
       this.log.error(`task ${taskId}: could not stop the previous attempt's Session: ${messageOf(err)}`);
+    }
+  }
+
+  /** A Session that is running, did not take the message typed into it, and must not run beside the new one (one live harness per Task). Best effort. */
+  private async stopRunningSession(taskId: string, session: TaskAttemptSession): Promise<void> {
+    if (!this.stopSession) return;
+    try {
+      const result = await this.stopSession({ coreId: session.coreId, sessionId: session.sessionId });
+      this.log.info(`task ${taskId}: running Session ${session.sessionId} stopped before a new one starts: ${result.outcome}${result.detail ? ` (${result.detail})` : ""}`);
+    } catch (err) {
+      this.log.error(`task ${taskId}: could not stop running Session ${session.sessionId}: ${messageOf(err)}`);
     }
   }
 
@@ -460,25 +477,62 @@ export class TaskDispatcher {
     }
 
     let sessionId: string;
+    let resumed = false;
     try {
       const comments = await listTaskComments(this.ownerId, claimed.id);
-      if (attempt > 1) await this.stopPreviousSession(claimed.id, attempt - 1, comments);
-      // The whole Task goes into a file the agent reads, not into the composer. The file is on the Core before
-      // the pointer is typed, so the agent cannot be told to read a file that is not there.
-      try {
-        await this.writePromptFile(resolved.coreId, claimed.id, attempt, buildTaskPrompt(claimed, comments, attempt));
-      } catch (err) {
-        await fail(`could not put the Task's prompt file on Core ${resolved.coreId}: ${messageOf(err)}`);
-        return true;
+      let handle: StartedSession | null = null;
+      const previous = this.resumeSession ? resolveAttemptSessions(comments).at(-1) : undefined;
+      if (this.resumeSession && previous) {
+        // #955 p2: `resumeRefusal` is why this Task's own Session was not resumed; the `New Session ...` comment says it.
+        let resumeRefusal: ResumeRefusal | null = null;
+        if (previous.coreId !== resolved.coreId) resumeRefusal = RESUME_REFUSALS.otherCore;
+        else if (previous.harness !== resolved.harness) resumeRefusal = RESUME_REFUSALS.otherHarness;
+        else {
+          try {
+            await this.writePromptFile(resolved.coreId, claimed.id, attempt, buildResumePrompt(claimed, comments, attempt, previous.index));
+          } catch (err) {
+            await fail(`could not put the Task's prompt file on Core ${resolved.coreId}: ${messageOf(err)}`);
+            return true;
+          }
+          const outcome = await this.resumeSession({
+            coreId: resolved.coreId,
+            sessionId: previous.sessionId,
+            harness: resolved.harness,
+            model: resolved.model,
+            flags: resolved.flags,
+            prompt: buildTaskPointer(resolved.harness, claimed.id, attempt),
+          });
+          if (outcome.kind === "cannot") {
+            resumeRefusal = outcome.refusal;
+            // One live harness per Task: a Session that is running and did not take the message is stopped before another starts.
+            if (outcome.stillLive) await this.stopRunningSession(claimed.id, previous);
+          } else {
+            handle = outcome.session;
+            resumed = true;
+          }
+        }
+        if (resumeRefusal) this.log.info(`task ${claimed.id}: Session ${previous.sessionId} not resumed (${resumeRefusal.reason}); starting a new Session`);
       }
-      const session = await this.startSession({
-        coreId: resolved.coreId,
-        harness: resolved.harness,
-        model: resolved.model,
-        flags: resolved.flags,
-        title: `Task: ${claimed.title.trim().slice(0, 80)}`,
-        prompt: buildTaskPointer(resolved.harness, claimed.id, attempt),
-      });
+      if (!handle) {
+        if (attempt > 1) await this.stopPreviousSession(claimed.id, attempt - 1, comments);
+        // The whole Task goes into a file the agent reads, not into the composer. The file is on the Core before
+        // the pointer is typed, so the agent cannot be told to read a file that is not there.
+        try {
+          await this.writePromptFile(resolved.coreId, claimed.id, attempt, buildTaskPrompt(claimed, comments, attempt));
+        } catch (err) {
+          await fail(`could not put the Task's prompt file on Core ${resolved.coreId}: ${messageOf(err)}`);
+          return true;
+        }
+        handle = await this.startSession({
+          coreId: resolved.coreId,
+          harness: resolved.harness,
+          model: resolved.model,
+          flags: resolved.flags,
+          title: `Task: ${claimed.title.trim().slice(0, 80)}`,
+          prompt: buildTaskPointer(resolved.harness, claimed.id, attempt),
+        });
+      }
+      const session = handle;
       sessionId = session.sessionId;
       started = true;
       this.fullCores.delete(resolved.coreId);
@@ -526,13 +580,15 @@ export class TaskDispatcher {
         {
           authorKind: "system",
           authorName: "Panel",
-          body: formatTaskDispatchComment({
-            attempt,
-            agentName: agent.name,
-            harness: resolved.harness,
-            coreId: resolved.coreId,
-            sessionId,
-          }),
+          body: resumed
+            ? formatTaskResumeComment({ attempt, sessionId })
+            : formatTaskDispatchComment({
+                attempt,
+                agentName: agent.name,
+                harness: resolved.harness,
+                coreId: resolved.coreId,
+                sessionId,
+              }),
         },
         this.now(),
       );
@@ -541,7 +597,7 @@ export class TaskDispatcher {
       this.log.error(`task ${claimed.id}: could not add the dispatch comment: ${messageOf(err)}`);
     }
     await this.stopIfStoppedWhileStarting(claimed.id, attempt, { coreId: resolved.coreId, sessionId });
-    this.log.info(`task ${claimed.id}: attempt ${attempt} running as Session ${sessionId} on Core ${resolved.coreId}`);
+    this.log.info(`task ${claimed.id}: attempt ${attempt} running as ${resumed ? "resumed " : ""}Session ${sessionId} on Core ${resolved.coreId}`);
     return true;
   }
 }

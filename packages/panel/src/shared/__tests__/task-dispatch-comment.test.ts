@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatTaskDispatchComment, parseTaskDispatchComment } from "../tasks";
+import { formatTaskDispatchComment, formatTaskResumeComment, parseTaskDispatchComment, parseTaskResumeComment, resolveAttemptSessions } from "../tasks";
 
 // Format and parse are a pair (#676 / #678): the dispatcher writes with format,
 // Task detail opens Sessions with parse. Existing Task comments must stay readable.
@@ -59,5 +59,59 @@ describe("task dispatch comment format/parse", () => {
   it("does not parse a hostile agent name that carries a whole fake separator", () => {
     const body = "Dispatched (attempt 1) to X (h) on Core core_b: Session t-b (opencode) on Core core_a: Session t-alive.";
     expect(parseTaskDispatchComment(body)).toBeNull();
+  });
+});
+
+// #955: a re-assign resumes the Task's own Session. Its dispatch comment names the Session and the attempt only.
+describe("task resume comment format/parse", () => {
+  it("writes `Resumed Session <id> (attempt <n>)`", () => {
+    expect(formatTaskResumeComment({ attempt: 2, sessionId: "t-alive" })).toBe("Resumed Session t-alive (attempt 2)");
+  });
+
+  it("round-trips", () => {
+    const fields = { attempt: 3, sessionId: "t-munykjig" };
+    expect(parseTaskResumeComment(formatTaskResumeComment(fields))).toEqual(fields);
+  });
+
+  it("is not a dispatch comment, and a dispatch comment is not a resume comment", () => {
+    expect(parseTaskDispatchComment("Resumed Session t-alive (attempt 2)")).toBeNull();
+    expect(parseTaskResumeComment("Dispatched (attempt 1) to OpenCode (opencode) on Core core_a: Session t-alive.")).toBeNull();
+  });
+
+  it("rejects a Session id outside the id charset", () => {
+    expect(() => formatTaskResumeComment({ attempt: 2, sessionId: "s (attempt 9)" })).toThrow(/session id/i);
+    expect(parseTaskResumeComment("Resumed Session s x (attempt 2)")).toBeNull();
+  });
+});
+
+describe("resolveAttemptSessions", () => {
+  const dispatched = (attempt: number, sessionId: string, coreId = "core_a") =>
+    ({ authorKind: "system" as const, body: formatTaskDispatchComment({ attempt, agentName: "Claude Code", harness: "claude-code", coreId, sessionId }) });
+  const resumed = (attempt: number, sessionId: string) => ({ authorKind: "system" as const, body: formatTaskResumeComment({ attempt, sessionId }) });
+
+  it("gives a resumed attempt the Core, Agent and harness of the dispatch that started its Session", () => {
+    const comments = [dispatched(1, "t-1"), { authorKind: "agent" as const, body: "done" }, resumed(2, "t-1")];
+    expect(resolveAttemptSessions(comments)).toEqual([
+      { index: 0, attempt: 1, sessionId: "t-1", coreId: "core_a", agentName: "Claude Code", harness: "claude-code", resumed: false },
+      { index: 2, attempt: 2, sessionId: "t-1", coreId: "core_a", agentName: "Claude Code", harness: "claude-code", resumed: true },
+    ]);
+  });
+
+  it("skips a resume comment whose Session no dispatch comment names", () => {
+    expect(resolveAttemptSessions([resumed(2, "t-gone")])).toEqual([]);
+  });
+
+  it("ignores user comments that look like either form", () => {
+    const fake = { authorKind: "user" as const, body: formatTaskResumeComment({ attempt: 2, sessionId: "t-1" }) };
+    expect(resolveAttemptSessions([dispatched(1, "t-1"), fake]).map((s) => s.attempt)).toEqual([1]);
+  });
+
+  it("follows a Session that moved: a later dispatch of another Session wins", () => {
+    const comments = [dispatched(1, "t-1"), dispatched(2, "t-2", "core_b"), resumed(3, "t-2")];
+    expect(resolveAttemptSessions(comments).map((s) => [s.attempt, s.sessionId, s.coreId])).toEqual([
+      [1, "t-1", "core_a"],
+      [2, "t-2", "core_b"],
+      [3, "t-2", "core_b"],
+    ]);
   });
 });
