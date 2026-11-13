@@ -53,6 +53,8 @@ export type AgentDto = {
   harness: string;
   model: string | null;
   isDefault: boolean;
+  /** The Panel's own Agent routes carry the flags (the edit form starts from them); the public v1 shape does not. */
+  flags?: string[];
 };
 
 export type NewTaskRequest = {
