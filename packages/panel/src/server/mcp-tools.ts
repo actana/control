@@ -3,6 +3,8 @@ import type { ApiPrincipal } from "./api-key-auth";
 import { forbidden } from "./controllers/_helpers";
 import {
   addTaskCommentV1,
+  answerTaskBody,
+  answerTaskV1,
   createAgentV1,
   createTaskV1,
   deleteAgentV1,
@@ -261,7 +263,8 @@ export const MCP_TOOLS: readonly McpTool[] = [
     name: "get_task",
     description:
       "One Task with its comment thread (the agent's report arrives here as a comment). waiting is { reason, coreId } while the Task is assigned but not started (Core full, Core not connected, Harness not ready), else null. " +
-      "sessionState says what its Session is doing; while an attempt is assigned (queued) or runs, watch is { url, expiresAt, pollAfterSeconds }: wait by reading watch.url (no API key), not by calling get_task in a loop. Call get_guide for the full recipe.",
+      "sessionState says what its Session is doing; while an attempt is assigned (queued) or runs, watch is { url, expiresAt, pollAfterSeconds }: wait by reading watch.url (no API key), not by calling get_task in a loop. " +
+      "While sessionState is needs-input the Task has prompt: { text, options?, kind, at }, what the Session asks (null when its Core cannot be read): answer it with answer_task. Call get_guide for the full recipe.",
     readOnly: true,
     permission: "read",
     input: z.object({ taskId: taskIdArg }),
@@ -308,6 +311,24 @@ export const MCP_TOOLS: readonly McpTool[] = [
       outcomeOf(
         await addTaskCommentV1(principal, taskId, asJsonRequest({ body, ...(reassign === undefined ? {} : { reassign }) }), origin),
       ),
+  }),
+  tool({
+    name: "answer_task",
+    description:
+      "Answer the prompt a Task's Session waits at (sessionState needs-input; read it with get_task: prompt { text, options?, kind, at }). " +
+      "answer is { text } (typed, then Enter), { option } (a number from 1, or a label) or { keys } from a fixed list (Enter, Esc, Up, Down, Left, Right, Tab, Space, y, n, 1-9). " +
+      "Pass expect = the prompt.at you read: a different or already answered prompt is refused with stale_prompt. On an unknown prompt only keys is accepted. " +
+      "Refusals type nothing and start with the HTTP status and a code: not_waiting, stale_prompt, invalid_answer, prompt_unavailable, and needs_human for a trust, password, token or credential prompt or a permission that would widen the Agent's access: ask a human, never find another way to type it. " +
+      "Each answer adds a Task comment. Call get_guide with topic states for the recipe.",
+    readOnly: false,
+    permission: "tasks:write",
+    input: z.object({
+      taskId: taskIdArg,
+      answer: answerTaskBody.shape.answer,
+      expect: z.number().int().optional().describe("The prompt.at you read with get_task."),
+    }),
+    run: async (principal, { taskId, answer, expect }, { origin }) =>
+      outcomeOf(await answerTaskV1(principal, taskId, asJsonRequest({ answer, ...(expect === undefined ? {} : { expect }) }), origin)),
   }),
   tool({
     name: "stop_task",
