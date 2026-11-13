@@ -975,6 +975,43 @@ describe("panel link · requests made while the link is down (#964)", () => {
     link.close();
   });
 
+  it("a read that timed out at 1.5 s while the link was down is not sent when the link comes back at once", async () => {
+    // The request timeout is 1 s here, well inside the 5 s expiry: only the request dying with its frame keeps it off the wire.
+    const link = client();
+    live().drop();
+    vi.advanceTimersByTime(20);
+    const next = FakeSocket.last!;
+
+    const read = settle(link.request("core_a", { type: "findBySession", sessionId: "s1" }));
+    await vi.advanceTimersByTimeAsync(1_500);
+    expect(read.state).toBe("rejected");
+    expect(read.error?.message).toMatch(/timed out/);
+
+    next.accept();
+    expect(next.outgoing("core_a").filter((f) => f.type === "findBySession")).toEqual([]);
+    link.close();
+  });
+
+  it("a read queued while the link was down is rejected when the dial closes, and the next socket does not send it", async () => {
+    const link = longTimeoutClient();
+    live().drop();
+    vi.advanceTimersByTime(20);
+    const dial = FakeSocket.last!;
+
+    const read = settle(link.request("core_a", { type: "findBySession", sessionId: "s1" }));
+    dial.drop();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(read.state).toBe("rejected");
+    expect(read.error?.message).toMatch(/connection lost/);
+
+    vi.advanceTimersByTime(20);
+    const after = FakeSocket.last!;
+    expect(after).not.toBe(dial);
+    after.accept();
+    expect(after.outgoing("core_a").filter((f) => f.type === "findBySession")).toEqual([]);
+    link.close();
+  });
+
   it("sends a read request that was queued 1 s before the link came back", async () => {
     const link = longTimeoutClient();
     live().drop();
