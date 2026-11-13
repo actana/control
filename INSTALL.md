@@ -707,6 +707,9 @@ rotating the secrets key invalidates every URL. An expired or replaced token ans
 over the limit `429` with `Retry-After`. It is valid while the attempt runs and for 10 minutes after it ends (for a Task
 with No limit, 24 hours from the read that minted it), and a new attempt, a stop or a delete ends it at once.
 
+On a Core, `actana task wait "<url>"` loops on this URL for you and exits with a code per ending (0 done, 10 failed,
+11 partial, 20 needs-input, 21 interrupted, 22 idle-no-result, 30 gone, 31 timeout); see `packages/cli/README.md`.
+
 These are Panel environment variables, set next to `AC_SECRETS_KEY`:
 
 | Variable | Default | What it does |

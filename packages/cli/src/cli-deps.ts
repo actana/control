@@ -17,6 +17,7 @@ import type { ClientDeps } from "@actana/cli";
 import type { ActanaSystem } from "./actana-system.ts";
 import type { ReleaseFetcher } from "./actana-release.ts";
 import type { CoreLinkHarnessAvailabilityMap } from "@actana/sdk/core";
+import type { TaskWaitPorts } from "./task-wait.ts";
 
 /**
  * The client half is the published `@actana/cli`'s own `ClientDeps` (#580):
@@ -26,6 +27,13 @@ import type { CoreLinkHarnessAvailabilityMap } from "@actana/sdk/core";
  */
 export type ActanaCliDeps = ClientDeps & {
   // ─── the machine half: this machine's own Core ────────────────────────────
+
+  /**
+   * The ports `actana task wait` loops on (#953): fetch, sleep, clock and
+   * randomness. Unset in production — the loop binds the real ones — and
+   * supplied by tests so the wait runs with no real sleeps and no network.
+   */
+  taskWait?: Partial<TaskWaitPorts>;
 
   hostname: string;
   networkInterfaces: NodeJS.Dict<{ address: string; family: string; internal: boolean }[]>;
