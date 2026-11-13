@@ -24,6 +24,21 @@ import type { PanelSessionLock } from "~/shared/session-write-access";
  * database, and two tabs looking at the same Core see the same answer because
  * they asked the same machine.
  */
+/**
+ * One page of a Core's Sessions (#960). `limit` pages the answer, `cursor` is the
+ * previous page's `nextCursor`, the rest filter on the Core, and `ids` fetches
+ * exactly those rows wherever they would sit.
+ */
+export type SessionRowsPage = {
+  limit: number;
+  cursor?: string;
+  status?: "running" | "waiting" | "finished";
+  archived?: boolean;
+  harness?: string;
+  q?: string;
+  ids?: string[];
+};
+
 export type PanelBridge = {
   /** True while the tab's link is up. False during a reconnect. */
   isConnected(): boolean;
@@ -38,7 +53,8 @@ export type PanelBridge = {
    */
   listSessionRows(
     coreId: string,
-  ): Promise<{ sessions: CoreLinkSessionRow[]; archivedCount: number }>;
+    page?: SessionRowsPage,
+  ): Promise<{ sessions: CoreLinkSessionRow[]; archivedCount: number; nextCursor?: string | null; total?: number }>;
   /**
    * List a Core's archived sessions — the Archived view's own read path
    * (ADR 0019). Called when that view opens, not on Core open.
@@ -152,11 +168,30 @@ export type PanelBridge = {
 function makeBridge(link: PanelLinkClient): PanelBridge {
   return {
     isConnected: () => link.isConnected(),
-    listSessionRows: async (coreId) => {
-      const result = await link.request<Answer<"sessionRowsListResult">>(coreId, {
-        type: "sessionRowsList",
-      });
-      return { sessions: result.sessions, archivedCount: result.archivedCount };
+    listSessionRows: async (coreId, page) => {
+      if (!page) {
+        const result = await link.request<Answer<"sessionRowsListResult">>(coreId, {
+          type: "sessionRowsList",
+        });
+        return { sessions: result.sessions, archivedCount: result.archivedCount };
+      }
+      // `limit` and the filters are not in the published SDK's frame type.
+      const paged = { type: "sessionRowsList", ...page } as unknown as { type: "sessionRowsList" };
+      let result: Answer<"sessionRowsListResult"> & { nextCursor?: string | null; total?: number };
+      try {
+        result = await link.request(coreId, paged);
+      } catch (err) {
+        // A Core older than paging refuses a frame carrying fields it does not
+        // know. Ask it the way it has always been asked: it lists everything.
+        if (!(err instanceof Error) || !/does not take/.test(err.message)) throw err;
+        result = await link.request(coreId, { type: "sessionRowsList" });
+      }
+      // No `total` means the Core did not page: this is all of it.
+      const paging =
+        typeof result.total === "number"
+          ? { nextCursor: result.nextCursor ?? null, total: result.total }
+          : { nextCursor: null, total: result.sessions.length };
+      return { sessions: result.sessions, archivedCount: result.archivedCount, ...paging };
     },
     listArchivedSessions: async (coreId) =>
       (
