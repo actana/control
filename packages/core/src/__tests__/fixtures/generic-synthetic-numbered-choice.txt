@@ -1,0 +1,6 @@
+[2J[H Choose a deployment target
+
+ [36m❯ 1. staging[39m
+   2. production
+
+ [2mEnter to select · Esc to cancel[22m

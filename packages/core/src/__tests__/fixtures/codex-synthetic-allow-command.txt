@@ -1,0 +1,11 @@
+[2J[H• Running tests
+
+  Would you like to run the following command?
+
+    $ cargo test
+
+[36m› 1. Yes, proceed (y)[39m
+  2. Yes, and don't ask again for this command (a)
+  3. No, and tell Codex what to do differently (esc)
+
+  [2mPress enter to confirm or esc to cancel[22m

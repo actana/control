@@ -1,0 +1,9 @@
+[2J[H[38;5;246m────────────────────────────────────────────────────────────[39m
+ MCP server "docs" requests your input
+
+   Which environment should I use?
+
+ [38;5;153m❯ Accept[39m
+   Decline
+
+ [2mEsc to cancel[22m
