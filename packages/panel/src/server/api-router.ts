@@ -286,6 +286,7 @@ async function dispatch(
   m = pathname.match(V1_AGENT_PATH);
   if (m) {
     if (method === "GET") return v1Controller.getAgentV1(principal!, decode(m[1]));
+    if (method === "PATCH") return v1Controller.updateAgentV1(principal!, decode(m[1]), request);
     if (method === "DELETE") return v1Controller.deleteAgentV1(principal!, decode(m[1]));
   }
   if (pathname === "/api/v1/sessions" && method === "GET") {
