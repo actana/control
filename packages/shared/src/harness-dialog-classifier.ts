@@ -83,9 +83,15 @@ function matches(match: DialogMatch, region: Region): boolean {
 }
 
 const NUMBERED = /^\s*([❯›>→])?\s*(\d+)[.)]\s+(\S.*?)\s*$/;
-const MARKED = /^\s*([❯›])\s+(\S.*?)\s*$/;
+const MARKED = /^\s*([❯›▶→])\s+(\S.*?)\s*$/;
 
-function readNumbered(lines: string[]): DialogOption[] {
+// A dialog drawn inside a box (`│  ▶ [a] Trust  │`, `┃  1. Postgres`): read the row without its border.
+function unbox(line: string): string {
+  return line.replace(/^\s*[│┃|]\s?/, "").replace(/\s*[│┃]\s*$/, "");
+}
+
+function readNumbered(rawLines: string[]): DialogOption[] {
+  const lines = rawLines.map(unbox);
   const options: DialogOption[] = [];
   for (const line of lines) {
     const m = NUMBERED.exec(line);
@@ -95,7 +101,8 @@ function readNumbered(lines: string[]): DialogOption[] {
   return options;
 }
 
-function readMarked(lines: string[]): DialogOption[] {
+function readMarked(rawLines: string[]): DialogOption[] {
+  const lines = rawLines.map(unbox);
   const at = lines.findIndex((l) => MARKED.test(l));
   if (at < 0) return [];
   const indented = (line: string): boolean => /^\s{2,}\S/.test(line);

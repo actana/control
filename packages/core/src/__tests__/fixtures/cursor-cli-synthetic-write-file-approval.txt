@@ -1,0 +1,9 @@
+ ✎ src/app.ts
+
+   12 - const retries = 1;
+   12 + const retries = 3;
+
+ Write to this file?
+ → Proceed (y)
+   Reject & propose changes (esc or n or p)
+   Add Write(src/app.ts) to allowlist? (tab)
