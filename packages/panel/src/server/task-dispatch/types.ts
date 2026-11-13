@@ -6,6 +6,8 @@ export type StartedSession = {
   sessionId: string;
   /** The harness's process exited. Fires once. */
   onExit(cb: (exit: { exitCode: number }) => void): void;
+  /** The Core reported a new status for the Session (`running`, `needs-input`, `finished`, ...). Fires on every change. */
+  onStatus(cb: (status: string) => void): void;
   /** Let go of the listeners this Panel holds on the Session. The Session itself keeps running. */
   dispose(): void;
 };
@@ -30,6 +32,12 @@ export type SessionStopper = (target: { coreId: string; sessionId: string }) => 
 
 /** Which of the given Sessions have a live PTY on a Core; `null` means the Core gave no answer (no link, an error, too slow). */
 export type SessionLiveness = (coreId: string, sessionIds: readonly string[]) => Promise<ReadonlySet<string> | null>;
+
+/**
+ * The Core's reported status of each of the given Sessions (#949). A Session the Core did not list is absent from the
+ * map; `null` means the Core gave no answer (no link, an error, too slow), which changes nothing.
+ */
+export type SessionStatusReader = (coreId: string, sessionIds: readonly string[]) => Promise<ReadonlyMap<string, string> | null>;
 
 export type Clock = () => number;
 
