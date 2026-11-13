@@ -6,6 +6,7 @@ import {
   createAgentV1,
   createTaskV1,
   deleteAgentV1,
+  closeTaskSessionV1,
   deleteTaskV1,
   getTaskV1,
   listAgentsV1,
@@ -115,7 +116,8 @@ const agentFlagsArg = z
 export const MCP_TOOLS: readonly McpTool[] = [
   tool({
     name: "list_cores",
-    description: "List the Cores this API key can reach, with their connection state.",
+    description:
+      "List the Cores this API key can reach, with their connection state and capacity: liveSessions (harness PTYs running now, null when the Core cannot be asked) against maxSessions (the limit; a Core refuses new Sessions at it).",
     readOnly: true,
     permission: "read",
     input: z.object({}),
@@ -179,7 +181,7 @@ export const MCP_TOOLS: readonly McpTool[] = [
     name: "get_tasks",
     description:
       "List Tasks on the Cores the key can reach, optionally only one status or one Core. With no limit, every matching Task with its full description. " +
-      "With a limit (1-100) you get one page, newest update first, without descriptions (use get_task for those), plus nextCursor: pass it back as cursor for the next page; null on the last.",
+      "With a limit (1-100) you get one page, newest update first, without descriptions (use get_task for those), plus nextCursor: pass it back as cursor for the next page; null on the last. Each Task has waiting: { reason, coreId } while it is assigned but not started (Core full, Core not connected, Harness not ready), else null.",
     readOnly: true,
     permission: "read",
     input: z.object({
@@ -227,7 +229,7 @@ export const MCP_TOOLS: readonly McpTool[] = [
   }),
   tool({
     name: "get_task",
-    description: "One Task with its comment thread (the agent's report arrives here as a comment).",
+    description: "One Task with its comment thread (the agent's report arrives here as a comment). waiting is { reason, coreId } while the Task is assigned but not started (Core full, Core not connected, Harness not ready), else null.",
     readOnly: true,
     permission: "read",
     input: z.object({ taskId: taskIdArg }),
@@ -283,6 +285,18 @@ export const MCP_TOOLS: readonly McpTool[] = [
     input: z.object({ taskId: taskIdArg, reason: z.string().max(2000).optional().describe("Why it is stopped; recorded in the Task's comment.") }),
     run: async (principal, { taskId, reason }) =>
       outcomeOf(await stopTaskV1(principal, taskId, asJsonRequest({ ...(reason === undefined ? {} : { reason }) }))),
+  }),
+  tool({
+    name: "close_session",
+    description:
+      "End the harness of a Task that is no longer in_progress (done, partial, failed) and free its Core's PTY slot, so a Task waiting for capacity starts. " +
+      "The Session stays: its transcript is kept and a comment_task with reassign continues it. Refused with 409 for a Task that is in_progress (use stop_task), " +
+      "for a Task with no Session, and for a Session someone is working in (a terminal is attached).",
+    readOnly: false,
+    permission: "tasks:write",
+    destructive: true,
+    input: z.object({ taskId: taskIdArg }),
+    run: async (principal, { taskId }) => outcomeOf(await closeTaskSessionV1(principal, taskId)),
   }),
   tool({
     name: "update_task",

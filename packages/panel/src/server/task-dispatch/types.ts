@@ -28,7 +28,11 @@ export type SessionStarter = (request: StartSessionRequest) => Promise<StartedSe
 export type SessionStopResult = { outcome: TaskSessionStopOutcome; detail: string | null };
 
 /** How a Session is stopped on its Core. Never throws: every failure is an outcome. */
-export type SessionStopper = (target: { coreId: string; sessionId: string }) => Promise<SessionStopResult>;
+export type SessionStopper = (
+  target: { coreId: string; sessionId: string },
+  /** `takeOver: false` (#962 close_session): a Session someone holds the lock on is left alone and the outcome is `failed` with detail `session-locked`. Default true. */
+  opts?: { takeOver?: boolean },
+) => Promise<SessionStopResult>;
 
 /** Which of the given Sessions have a live PTY on a Core; `null` means the Core gave no answer (no link, an error, too slow). */
 export type SessionLiveness = (coreId: string, sessionIds: readonly string[]) => Promise<ReadonlySet<string> | null>;

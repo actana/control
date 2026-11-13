@@ -1,3 +1,4 @@
+import { setSessionLockProbe } from "./lock-probe";
 import { WebSocketServer } from "ws";
 import type { IncomingMessage, Server } from "node:http";
 import type { Duplex } from "node:stream";
@@ -30,6 +31,7 @@ export function attachPanelLink(server: Server): PanelLinkRouter {
   if (attached?.server === server) return attached.router;
 
   const router = new PanelLinkRouter(coreLinkManager());
+  setSessionLockProbe((coreId, sessionId) => router.lockFor(coreId, sessionId));
   // `noServer` because the Panel already has an HTTP server and the upgrade has
   // to be authenticated before `ws` touches it.
   const wss = new WebSocketServer({ noServer: true });

@@ -370,23 +370,24 @@ the tools below are available to the model.
 | Auth | `Authorization: Bearer ak_…` and nothing else: no key, an unknown, a revoked or an expired key is `401` with `WWW-Authenticate: Bearer`; the Operator's session cookie is never read on this path |
 | Who it runs as | the key's owner, every call; every tool runs the same handler the `/api/v1` route runs, so the owner and Core-scope rules are one implementation |
 | Scope | a key limited to some Cores sees only those; a tool aimed at another Core answers a tool error starting `403`, another owner's data `404` |
-| Permissions | `tools/list` names only the tools the key's permissions allow (`read` for the reads and the Shared folder, `tasks:write` for `create_task`, `assign_task`, `comment_task`, `stop_task`, `update_task`, `delete_task`, `agents:write` for `create_agent`, `update_agent`, `delete_agent`); a call to any other is a tool error starting `403` that names the missing permission |
+| Permissions | `tools/list` names only the tools the key's permissions allow (`read` for the reads and the Shared folder, `tasks:write` for `create_task`, `assign_task`, `comment_task`, `stop_task`, `close_session`, `update_task`, `delete_task`, `agents:write` for `create_agent`, `update_agent`, `delete_agent`); a call to any other is a tool error starting `403` that names the missing permission |
 | Transport | JSON-RPC over `POST /mcp`; a request gets one `application/json` answer, a notification gets `202`; no `Mcp-Session-Id`, nothing kept between requests |
 | `GET` / `DELETE /mcp` | `405` with `Allow: POST` (no server-to-client stream, no session to end) |
 
 | Tool | Does |
 | --- | --- |
-| `list_cores` | the Cores the key reaches, with their connection state |
+| `list_cores` | the Cores the key reaches, with their connection state and capacity: `liveSessions` (harness PTYs running now, `null` when the Core cannot be asked) against `maxSessions` (the limit; the one the Core last refused at, else its default 8) |
 | `list_agents` | Agents, optionally on one Core |
 | `create_agent` | an Agent on a Core: `coreId`, `name`, `harness`, optional `model` and `flags` from the closed set (`skip-permissions`); no command, arguments, script or environment. A `409` starts with a code: `core_harnesses_unavailable` (the Core cannot be asked), `harness_not_ready` (the harness is still being checked, so ask again) or `harness_missing_on_core` (not available there) |
 | `update_agent` | an Agent's `name`, `model` and/or `flags` in place, the id stays; the harness and the Core cannot change; `409` for a default Agent |
 | `delete_agent` | removes an Agent (marked `destructiveHint`); `409` for a default Agent |
 | `get_tasks` | Tasks, optionally one `status` or one `coreId` |
 | `get_sessions` | one Core's Sessions, a page at a time (`coreId`, `limit`, `cursor`, `status`, `archived`, `harness`, `q`); lean rows, no prompt text or transcript |
-| `get_task` | one Task with its comment thread |
+| `get_task` | one Task with its comment thread; `waiting: { reason, coreId }` while it is `assigned` but not started (Core full, Core not connected, Harness not ready), else `null` (also on `get_tasks`) |
 | `create_task` | a draft, or an assigned Task with `startNow` (needs `coreId` and `agent`); optional `timeoutMinutes` (default 60, `null` = No limit) |
 | `assign_task` | `assigned` (default) or `draft`, the operator moves only; every other status is refused |
 | `comment_task` | a comment; `reassign: true` also sends a finished Task back (Comment & re-assign) |
+| `close_session` | ends the harness of a Task that is no longer `in_progress` and frees its Core's PTY slot, so a Task waiting for capacity starts; the Session stays (transcript kept, `comment_task` with `reassign` continues it); `409` for an `in_progress` Task, a Task with no Session, or a Session someone is working in (marked `destructiveHint`). REST: `POST /api/v1/tasks/{id}/close-session` |
 | `stop_task` | stops an `in_progress` Task: its Session is stopped and the Task fails with a system comment, after which `comment_task` with `reassign` works (marked `destructiveHint`); `409` for any other status |
 | `update_task` | a Task's `title`, `description` and/or `timeoutMinutes`; the title and description are refused (`409`) while it is `in_progress`, the time limit is allowed at any status |
 | `delete_task` | removes a Task with its comments and history (marked `destructiveHint`); refused (`409`) while it is `in_progress` |
