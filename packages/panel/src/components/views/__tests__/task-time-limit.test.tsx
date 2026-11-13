@@ -40,7 +40,7 @@ function mount(ui: React.ReactElement) {
   );
 }
 
-const baseTask: TaskDto = { id: "T-7", title: "Rotate keys", description: "", status: "draft", coreId: "c1", agent: "ag-c1", attemptCount: 0, dispatchedAt: null, lastError: null, timeoutMinutes: 60, createdAt: 1, updatedAt: 1 };
+const baseTask: TaskDto = { id: "T-7", title: "Rotate keys", description: "", status: "draft", coreId: "c1", agent: "ag-c1", attemptCount: 0, dispatchedAt: null, lastError: null, timeoutMinutes: 60, sessionState: null, sessionStateAt: null, createdAt: 1, updatedAt: 1 };
 
 beforeEach(() => {
   for (const fn of Object.values(api)) fn.mockClear();

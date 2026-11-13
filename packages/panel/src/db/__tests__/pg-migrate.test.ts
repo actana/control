@@ -64,6 +64,7 @@ describe("the bundled Postgres migrations", () => {
       "0011_panel_api_key_expiry",
       "0012_panel_task_timeout",
       "0013_panel_tasks_page_index",
+      "0014_panel_task_session_state",
     ]);
   });
 });
@@ -87,6 +88,7 @@ describe("runMigrations on PGlite", { timeout: 30_000 }, () => {
       "0011_panel_api_key_expiry",
       "0012_panel_task_timeout",
       "0013_panel_tasks_page_index",
+      "0014_panel_task_session_state",
     ]);
     expect(await runMigrations(db.pool, migrations)).toEqual([]);
     const { rows } = await db.pool.query('select hash, created_at from "drizzle"."__drizzle_migrations"');

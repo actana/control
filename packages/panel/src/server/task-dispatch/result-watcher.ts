@@ -1,5 +1,5 @@
 import { CoreSharedError, type CoreShared, type SharedChange } from "@actana/sdk/shared";
-import { DuplicateTaskCommentSourceError, addTaskComment, applyTaskResult, listTasks } from "../services/tasks";
+import { DuplicateTaskCommentSourceError, addTaskComment, applyTaskResult, listTasks, setTaskSessionState } from "../services/tasks";
 import { NotFoundError } from "../errors";
 import {
   REPORT_END_MARKER,
@@ -12,7 +12,7 @@ import {
   taskResultPath,
   type TaskResult,
 } from "~/shared/task-report";
-import { formatTaskTimeoutReason } from "~/shared/tasks";
+import { formatTaskTimeoutReason, type TaskSessionState } from "~/shared/tasks";
 import { isFolderScoped } from "./shared-factory";
 import { consoleDispatchLog, messageOf, type Clock, type DispatchLog, type SessionLiveness, type SessionStopper } from "./types";
 
@@ -96,6 +96,8 @@ type Tracked = WatchedDispatch & {
   exit: { at: number; code: number | null } | null;
   /** Consecutive liveness checks that did not find the Session. */
   misses: number;
+  /** The Session state last written for this dispatch; the `exited` write after a process exit happens once. */
+  exitStateWritten: boolean;
   /** Result files this dispatch has finished with. */
   done: Set<string>;
   release: () => void;
@@ -138,6 +140,7 @@ export class ResultWatcher {
       cursor: null,
       exit: null,
       misses: 0,
+      exitStateWritten: false,
       done: new Set(),
       release,
     });
@@ -161,6 +164,23 @@ export class ResultWatcher {
   markExited(taskId: string, exitCode: number | null): void {
     const t = this.tracked.get(taskId);
     if (t && !t.exit) t.exit = { at: this.now(), code: exitCode };
+  }
+
+  /**
+   * The Session's state changed (#949). Written to the Task, with one system comment per change into
+   * `needs-input`, `interrupted` or `idle-no-result` and one back to `working` after one of them; a repeated
+   * state writes nothing. Never moves the Task's status: the result file stays the only success signal. A Task
+   * this watcher is not watching (its attempt is over) is left alone. Never throws.
+   */
+  async markSessionState(taskId: string, state: TaskSessionState): Promise<void> {
+    const t = this.tracked.get(taskId);
+    if (!t) return;
+    try {
+      await setTaskSessionState(this.ownerId, taskId, state, this.now());
+    } catch (err) {
+      if (err instanceof NotFoundError) return;
+      this.log.error(`task ${taskId}: could not record the Session state ${state}: ${messageOf(err)}`);
+    }
   }
 
   /** Poll on a timer until `stop`. A tick that is still running when the next is due is not started twice. */
@@ -278,6 +298,10 @@ export class ResultWatcher {
     if (finished || this.tracked.get(t.taskId) !== t) {
       this.drop(t);
       return;
+    }
+    if (t.exit && !t.exitStateWritten) {
+      t.exitStateWritten = true;
+      await this.markSessionState(t.taskId, "exited");
     }
     const now = this.now();
     if (t.exit && now - t.exit.at >= this.exitGraceMs) {

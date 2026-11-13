@@ -11,6 +11,7 @@ import {
   findTasks,
   findTasksPage,
   insertTaskWithHistory,
+  setTaskSessionState as setTaskSessionStateRow,
   transitionTask,
   updateTaskRow,
   type NewTaskCommentRow,
@@ -32,6 +33,7 @@ import {
   TASKS_PAGE_MAX_LIMIT,
   TASK_TIMEOUT_DEFAULT_MINUTES,
   canMoveTask,
+  formatTaskSessionStateComment,
   formatTaskStopComment,
   formatTaskTimeLimitChangeComment,
   isTaskStatus,
@@ -39,6 +41,7 @@ import {
   parseTaskDispatchComment,
   statusesBefore,
   type CommentAuthorKind,
+  type TaskSessionState,
   type TaskStatus,
 } from "~/shared/tasks";
 import type { WebhookEventType } from "~/shared/webhooks";
@@ -231,6 +234,8 @@ export async function createTask(ownerId: number, input: NewTask, now = Date.now
     attemptCount: 0,
     dispatchedAt: null,
     lastError: null,
+    sessionState: null,
+    sessionStateAt: null,
     timeoutMinutes,
     createdAt: now,
     updatedAt: now,
@@ -560,6 +565,55 @@ export async function findCurrentTaskSession(
     }
   }
   return null;
+}
+
+/**
+ * Record the Session state of a Task's running attempt (#949): the two columns and, for a change into
+ * `needs-input`, `interrupted` or `idle-no-result` (or back to `working` from one), one system comment, in one
+ * transaction. A repeated state, or a Task that is not `in_progress`, writes nothing. Never moves the status.
+ * Returns whether anything was written.
+ */
+export async function setTaskSessionState(
+  ownerId: number,
+  id: string,
+  state: TaskSessionState,
+  now = Date.now(),
+): Promise<boolean> {
+  const result = await setTaskSessionStateRow(
+    ownerId,
+    id,
+    state,
+    now,
+    (from) => {
+      const body = formatTaskSessionStateComment(from as TaskSessionState | null, state);
+      return body ? cleanComment({ authorKind: "system", authorName: "Panel", body }) : null;
+    },
+    ({ task, comment }) =>
+      comment
+        ? [
+            outboxEvent(
+              ownerId,
+              "comment.created",
+              {
+                comment: {
+                  id: comment.id,
+                  taskId: id,
+                  authorKind: comment.authorKind,
+                  authorName: comment.authorName,
+                  sourceFile: comment.sourceFile ?? null,
+                  body: comment.body,
+                  createdAt: now,
+                },
+                task: taskPayload(task),
+              },
+              task.coreId,
+              now,
+            ),
+          ]
+        : [],
+  );
+  if (result.kind === "missing") throw new NotFoundError("task not found");
+  return result.kind === "changed";
 }
 
 export type TaskResultInput = {

@@ -1,7 +1,7 @@
 // Tasks, Agents and comments as the Panel's browser reads them (#571). The
 // server's rows minus the owner: a browser never learns an owner id.
 
-import type { CommentAuthorKind, TaskStatus } from "./tasks";
+import { isTaskSessionState, type CommentAuthorKind, type TaskSessionState, type TaskStatus } from "./tasks";
 
 export type TaskDto = {
   id: string;
@@ -16,9 +16,18 @@ export type TaskDto = {
   lastError: string | null;
   /** The time limit per attempt in minutes (#724); null = No limit. */
   timeoutMinutes: number | null;
+  /** What the Session of the running attempt is doing (#949); null when no attempt runs. Never moves `status`. */
+  sessionState: TaskSessionState | null;
+  /** When `sessionState` last changed (epoch ms); null with it. */
+  sessionStateAt: number | null;
   createdAt: number;
   updatedAt: number;
 };
+
+/** A stored Session state as the wire carries it: a value this version does not know is null. */
+export function toSessionState(v: string | null): TaskSessionState | null {
+  return isTaskSessionState(v) ? v : null;
+}
 
 /** A Task as a paged list carries it (#896): everything but `description`, which can be large. */
 export type TaskListDto = Omit<TaskDto, "description">;
