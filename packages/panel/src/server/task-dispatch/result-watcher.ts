@@ -1,5 +1,5 @@
 import { CoreSharedError, type CoreShared, type SharedChange } from "@actana/sdk/shared";
-import { DuplicateTaskCommentSourceError, addTaskComment, applyTaskResult, listTasks } from "../services/tasks";
+import { DuplicateTaskCommentSourceError, addTaskComment, applyTaskResult, listTasks, setTaskSessionState } from "../services/tasks";
 import { NotFoundError } from "../errors";
 import {
   REPORT_END_MARKER,
@@ -12,9 +12,9 @@ import {
   taskResultPath,
   type TaskResult,
 } from "~/shared/task-report";
-import { formatTaskTimeoutReason } from "~/shared/tasks";
+import { formatTaskTimeoutReason, sessionStateForCoreStatus, type TaskSessionState } from "~/shared/tasks";
 import { isFolderScoped } from "./shared-factory";
-import { consoleDispatchLog, messageOf, type Clock, type DispatchLog, type SessionLiveness, type SessionStopper } from "./types";
+import { consoleDispatchLog, messageOf, type Clock, type DispatchLog, type SessionLiveness, type SessionStatusReader, type SessionStopper } from "./types";
 
 /**
  * The result watcher (#570): turns `success.md`, `fail.md` and `partial-<n>.md`
@@ -78,6 +78,12 @@ export type ResultWatcherOptions = {
    * changes nothing: it neither adds a miss nor clears one (only a present answer clears).
    */
   liveSessions?: SessionLiveness;
+  /**
+   * The Core's status of each Session (#949). Asked once on adoption (`readSessionState`) and once a minute per Core,
+   * so a Task adopted at Panel boot, which has no handle to hear `onStatus` on, still shows what its Session is doing.
+   * `null` = no answer, which changes nothing.
+   */
+  sessionStatuses?: SessionStatusReader;
   /** How often the minute pass runs. */
   minutePassMs?: number;
 };
@@ -96,6 +102,8 @@ type Tracked = WatchedDispatch & {
   exit: { at: number; code: number | null } | null;
   /** Consecutive liveness checks that did not find the Session. */
   misses: number;
+  /** The Session state last written for this dispatch; the `exited` write after a process exit happens once. */
+  exitStateWritten: boolean;
   /** Result files this dispatch has finished with. */
   done: Set<string>;
   release: () => void;
@@ -109,6 +117,7 @@ export class ResultWatcher {
   private readonly ownerId: number;
   private readonly now: Clock;
   private readonly liveSessions: SessionLiveness | null;
+  private readonly sessionStatuses: SessionStatusReader | null;
   private readonly minutePassMs: number;
   private lastMinutePass = -Infinity;
   private readonly exitGraceMs: number;
@@ -124,6 +133,7 @@ export class ResultWatcher {
     this.ownerId = opts.ownerId;
     this.now = opts.now ?? Date.now;
     this.liveSessions = opts.liveSessions ?? null;
+    this.sessionStatuses = opts.sessionStatuses ?? null;
     this.minutePassMs = opts.minutePassMs ?? DEFAULT_MINUTE_PASS_MS;
     this.exitGraceMs = opts.exitGraceMs ?? DEFAULT_EXIT_GRACE_MS;
     this.pollMs = opts.pollMs ?? DEFAULT_WATCH_POLL_MS;
@@ -138,6 +148,7 @@ export class ResultWatcher {
       cursor: null,
       exit: null,
       misses: 0,
+      exitStateWritten: false,
       done: new Set(),
       release,
     });
@@ -161,6 +172,49 @@ export class ResultWatcher {
   markExited(taskId: string, exitCode: number | null): void {
     const t = this.tracked.get(taskId);
     if (t && !t.exit) t.exit = { at: this.now(), code: exitCode };
+  }
+
+  /**
+   * The Session's state changed (#949). Written to the Task, with one system comment per change into
+   * `needs-input`, `interrupted` or `idle-no-result` and one back to `working` after one of them; a repeated
+   * state writes nothing. Never moves the Task's status: the result file stays the only success signal. A Task
+   * this watcher is not watching (its attempt is over) is left alone. Never throws.
+   */
+  async markSessionState(taskId: string, state: TaskSessionState): Promise<void> {
+    await this.recordSessionState(taskId, state, false);
+  }
+
+  /**
+   * `inTick` is true for a call made from inside the running tick (the minute pass): it must not wait for that tick,
+   * which is itself. No `step` runs at the same time there, so looking for the result file first stays correct.
+   */
+  private async recordSessionState(taskId: string, state: TaskSessionState, inTick: boolean): Promise<void> {
+    let t = this.tracked.get(taskId);
+    if (!t) return;
+    try {
+      if (state === "idle-no-result") {
+        // `finished` usually follows the result file by milliseconds, and the poll is seconds: look for the file
+        // first, so a finished Task never shows a spurious "no result file" state, comment or webhook.
+        if (!inTick) await this.running;
+        t = this.tracked.get(taskId);
+        if (!t) return;
+        if (await this.resultFileEndsDispatch(t)) return;
+      }
+      await setTaskSessionState(this.ownerId, taskId, state, this.now());
+    } catch (err) {
+      if (err instanceof NotFoundError) return;
+      this.log.error(`task ${taskId}: could not record the Session state ${state}: ${messageOf(err)}`);
+    }
+  }
+
+  /**
+   * Read the Core's status of one watched Task's Session once and record it (#949): for a Task adopted at Panel boot,
+   * which has no handle to hear status changes on. Nothing is written for a Task with no known Session, an exited
+   * one, or a Session the Core did not list or answer for. Never throws.
+   */
+  async readSessionState(taskId: string): Promise<void> {
+    const t = this.tracked.get(taskId);
+    if (t) await this.readSessionStates([t], false);
   }
 
   /** Poll on a timer until `stop`. A tick that is still running when the next is due is not started twice. */
@@ -213,6 +267,34 @@ export class ResultWatcher {
       this.log.error(`could not refresh the time limits: ${messageOf(err)}`);
     }
     await this.checkLiveness();
+    await this.readSessionStates([...this.tracked.values()], true);
+  }
+
+  /** One question per Core, as in `checkLiveness`; each answered Session's status is mapped and recorded. Never throws. */
+  private async readSessionStates(dispatches: readonly Tracked[], inTick: boolean): Promise<void> {
+    const readStatuses = this.sessionStatuses;
+    if (!readStatuses) return;
+    const byCore = new Map<string, Tracked[]>();
+    for (const t of dispatches) {
+      if (!t.sessionId || t.exit) continue;
+      byCore.set(t.coreId, [...(byCore.get(t.coreId) ?? []), t]);
+    }
+    for (const [coreId, group] of byCore) {
+      if (this.stopped) return;
+      let statuses: ReadonlyMap<string, string> | null;
+      try {
+        statuses = await readStatuses(coreId, group.map((t) => t.sessionId!));
+      } catch (err) {
+        this.log.error(`status of the Sessions on Core ${coreId}: ${messageOf(err)}`);
+        statuses = null;
+      }
+      if (!statuses) continue;
+      for (const t of group) {
+        if (this.tracked.get(t.taskId) !== t || t.exit) continue;
+        const state = sessionStateForCoreStatus(statuses.get(t.sessionId!) ?? "");
+        if (state) await this.recordSessionState(t.taskId, state, inTick);
+      }
+    }
   }
 
   /**
@@ -257,6 +339,25 @@ export class ResultWatcher {
     t.release();
   }
 
+  /** One read of this Task's result files, as `step` does it. True when one ended the dispatch (which is then dropped). A failed read is false. */
+  private async resultFileEndsDispatch(t: Tracked): Promise<boolean> {
+    try {
+      let finished: boolean;
+      if (isFolderScoped(t.shared)) {
+        finished = await this.consume(t, await this.folderChanges(t));
+      } else {
+        const watched = await t.shared.watch(t.cursor ?? undefined);
+        finished = await this.consume(t, watched.changes);
+        t.cursor = watched.cursor;
+      }
+      if (finished) this.drop(t);
+      return finished;
+    } catch (err) {
+      this.log.error(`task ${t.taskId}: could not read its results before recording idle-no-result: ${messageOf(err)}`);
+      return false;
+    }
+  }
+
   private async step(t: Tracked): Promise<void> {
     let finished = false;
     try {
@@ -278,6 +379,10 @@ export class ResultWatcher {
     if (finished || this.tracked.get(t.taskId) !== t) {
       this.drop(t);
       return;
+    }
+    if (t.exit && !t.exitStateWritten) {
+      t.exitStateWritten = true;
+      await this.markSessionState(t.taskId, "exited");
     }
     const now = this.now();
     if (t.exit && now - t.exit.at >= this.exitGraceMs) {

@@ -34,11 +34,18 @@ export const startSessionOnCore: SessionStarter = async (request) => {
     command: launchCommand(request),
     ...(harnessLaunchesWithSkipPermissions(request.harness) ? { dangerouslySkipPermissions: true } : {}),
   });
+  const unsubscribes: (() => void)[] = [];
   return {
     sessionId: session.sessionId,
     onExit: (cb) => {
       session.onExit(({ exitCode }) => cb({ exitCode }));
     },
-    dispose: () => session.dispose(),
+    onStatus: (cb) => {
+      unsubscribes.push(session.onStatus(cb));
+    },
+    dispose: () => {
+      for (const unsubscribe of unsubscribes.splice(0)) unsubscribe();
+      session.dispose();
+    },
   };
 };

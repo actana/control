@@ -18,7 +18,7 @@ import { scopeReaches } from "../services/api-keys";
 import { getCore, listCores } from "../services/cores";
 import { coreLinkManager } from "../services/core-link-manager";
 import type { Core, CoreWithDial } from "~/shared/cores";
-import type { AgentDto, TaskCommentDto, TaskDto, TasksPageDto } from "~/shared/task-wire";
+import { toSessionState, type AgentDto, type TaskCommentDto, type TaskDto, type TasksPageDto } from "~/shared/task-wire";
 import type { TaskStatus } from "~/shared/tasks";
 import {
   addTaskComment,
@@ -92,6 +92,8 @@ function taskDto(t: Task): TaskDto {
     dispatchedAt: t.dispatchedAt,
     lastError: t.lastError,
     timeoutMinutes: t.timeoutMinutes,
+    sessionState: toSessionState(t.sessionState),
+    sessionStateAt: t.sessionStateAt,
     createdAt: t.createdAt,
     updatedAt: t.updatedAt,
   };

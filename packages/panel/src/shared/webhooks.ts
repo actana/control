@@ -6,6 +6,7 @@ export const WEBHOOK_EVENT_TYPES = [
   "task.created",
   "task.updated",
   "task.status_changed",
+  "task.session_state_changed",
   "task.deleted",
   "comment.created",
   "ping",
@@ -17,6 +18,7 @@ export const WEBHOOK_CHANGE_EVENT_TYPES = [
   "task.created",
   "task.updated",
   "task.status_changed",
+  "task.session_state_changed",
   "task.deleted",
   "comment.created",
 ] as const satisfies readonly WebhookEventType[];
