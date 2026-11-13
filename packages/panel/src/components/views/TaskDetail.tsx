@@ -13,6 +13,8 @@ import { TaskMarkdown } from "~/components/views/TaskMarkdown";
 import { api } from "~/lib/api";
 import { useFleet } from "~/lib/fleet-context";
 import { formatRelativeTime } from "~/lib/format-relative-time";
+import { sessionStateBadge } from "~/lib/task-session-state";
+import { TaskSessionBadge } from "~/components/views/TaskSessionBadge";
 import { requestSessionOpen } from "~/lib/session-notification-store";
 import { TASK_STATUS_LABEL } from "~/lib/task-board";
 import { queryKeys, useArchivedSessions, useCoreAgents, useSessionRowById, useSessions, useTask } from "~/queries";
@@ -381,6 +383,12 @@ export function TaskDetail({ taskId, onClose, focusComposer = false }: { taskId:
             {core ? <Badge>{core.label}</Badge> : null}
             {agent ? <Badge>Agent: {agent.name}</Badge> : null}
           </div>
+          {sessionStateBadge(task.sessionState) ? (
+            <div data-session-state-line style={{ display: "flex", alignItems: "center", fontFamily: "var(--mono)", fontSize: 12, color: "var(--text-dim)" }}>
+              <TaskSessionBadge state={task.sessionState} />
+              {task.sessionStateAt !== null ? <span style={{ marginLeft: 8 }}>since {formatRelativeTime(task.sessionStateAt)}</span> : null}
+            </div>
+          ) : null}
           <section aria-label="Time limit" style={{ display: "flex", flexDirection: "column", gap: 8, padding: 14, border: "1px solid var(--border)", borderRadius: isPhone ? 12 : 8 }}>
             <div style={{ display: "flex", gap: 12, alignItems: "baseline", flexWrap: "wrap" }}>
               <span style={{ fontFamily: "var(--mono)", fontSize: 11, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--text-dim)" }}>Time limit</span>

@@ -162,6 +162,8 @@ export function useFleetSessions(): {
   loading: boolean;
   /** True until the first Core-list answer (or failure) has settled. */
   coresLoading: boolean;
+  /** The Cores whose Session list a fan-out has actually answered (an empty answer counts). Stable while unchanged. */
+  answeredCoreIds: readonly string[];
   /** The Core-list query's own error, apart from the session fan-out's. */
   coresError: string | null;
   /** Ask for the Core list again now. */
@@ -180,6 +182,7 @@ export function useFleetSessions(): {
   const { cores, loading: coresLoading, error: coresError, reload: refreshCores } = useCores();
   const [fleet, setFleet] = useState<FleetMergeResult>(emptyFleet);
   const [loading, setLoading] = useState(true);
+  const [answeredCoreIds, setAnsweredCoreIds] = useState<readonly string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const coresRef = useRef<CoreWithDial[]>(cores);
   coresRef.current = cores;
@@ -245,6 +248,8 @@ export function useFleetSessions(): {
       // the merge is already O(rows), so comparing it costs the same order.
       const merged = mergeFleetSessions(results);
       setFleet((prev) => (sameSnapshot(prev, merged) ? prev : merged));
+      const answered = results.filter((r) => r.ok).map((r) => r.coreId);
+      setAnsweredCoreIds((prev) => (prev.length === answered.length && prev.every((id, i) => id === answered[i]) ? prev : answered));
       setError(null);
       return true;
     } catch (err) {
@@ -339,5 +344,5 @@ export function useFleetSessions(): {
     return () => clearInterval(id);
   }, [run, coreSignature]);
 
-  return { fleet, cores, loading, coresLoading, coresError, refreshCores, error: error ?? coresError, refresh: () => void run(), loadMore, loadingMore };
+  return { fleet, cores, loading, coresLoading, answeredCoreIds, coresError, refreshCores, error: error ?? coresError, refresh: () => void run(), loadMore, loadingMore };
 }

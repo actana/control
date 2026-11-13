@@ -48,6 +48,8 @@ export type AppSettings = {
   mouseGradientDisabled: boolean;
   sessionFinishToastEnabled: boolean;
   sessionFinishOsNotificationEnabled: boolean;
+  /** Notify when a Session or Task waits for the Operator (#954); default on. */
+  sessionBlockedNotificationEnabled: boolean;
   /** Ding when a session-finish notification arrives. */
   notificationSoundEnabled: boolean;
   /** Legacy compatibility field; native Claude Code question popups are always enabled. */
@@ -405,6 +407,7 @@ export const api = {
         | "mouseGradientDisabled"
         | "sessionFinishToastEnabled"
         | "sessionFinishOsNotificationEnabled"
+        | "sessionBlockedNotificationEnabled"
         | "notificationSoundEnabled"
         | "questionOverlayEnabled"
         | "terminalZoomLevel"
