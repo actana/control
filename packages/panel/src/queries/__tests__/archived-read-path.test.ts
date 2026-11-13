@@ -60,7 +60,8 @@ describe("the archived read path", () => {
 
     await qc.fetchQuery(sessionsQueryOptions("core_a"));
 
-    expect(listSessionRows).toHaveBeenCalledWith("core_a");
+    // #960: the bucket asks for the first page only, no longer the whole list.
+    expect(listSessionRows).toHaveBeenCalledWith("core_a", { limit: 100, archived: false });
   });
 
   it("keeps each Core's count in its own bucket", async () => {

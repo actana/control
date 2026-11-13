@@ -37,6 +37,9 @@ const rows = [
   { coreId: "c2", status: "ready" },
 ];
 
+// The per-Core paging state the fleet hook carries (#960); empty = nothing paged.
+let pages: Record<string, { total: number; hasMore: boolean }> = {};
+
 const onOpenSettings = vi.fn();
 const onClose = vi.fn();
 const onNavigate = vi.fn();
@@ -53,7 +56,7 @@ function Harness({ activeCoreId }: { activeCoreId: string | null }) {
           setOpen(false);
         }}
         cores={cores}
-        fleet={{ rows }}
+        fleet={{ rows, pages }}
         activeCoreId={activeCoreId}
         onOpenSettings={onOpenSettings}
         onNavigate={onNavigate}
@@ -139,9 +142,18 @@ afterEach(() => {
   onOpenSettings.mockClear();
   onClose.mockClear();
   onNavigate.mockClear();
+  pages = {};
 });
 
 describe("CoresDrawer", () => {
+  it("counts a paged Core's true total, not the rows loaded so far", async () => {
+    pages = { c1: { total: 60, hasMore: true } };
+    await mount();
+    const links = within(screen.getByRole("dialog", { name: "Cores" })).getAllByRole("link").map((a) => a.textContent ?? "");
+    expect(links[3]).toContain("online · 60 sessions");
+    expect(links[1]).toContain("online · 2 sessions");
+  });
+
   it("lists Fleet with active count, every Core with status and session count, Settings and Operator", async () => {
     await mount();
     const drawer = screen.getByRole("dialog", { name: "Cores" });

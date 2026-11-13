@@ -321,6 +321,7 @@ separate from the browser's session-cookie routes.
 | --- | --- |
 | Cores | `GET /api/v1/cores`, `GET /api/v1/cores/:id` |
 | Agents | `GET/POST /api/v1/agents`, `GET/DELETE /api/v1/agents/:id`, `GET /api/v1/cores/:id/agents` |
+| Sessions | `GET /api/v1/sessions?coreId=&limit=&cursor=&status=&archived=&harness=&q=`: one page of a Core's Sessions (running and waiting first, then newest activity), lean rows, `nextCursor` and `total`; `400` for a bad `limit` or `cursor` |
 | Tasks | `GET/POST /api/v1/tasks`, `GET/PATCH/DELETE /api/v1/tasks/:id`, `POST /api/v1/tasks/:id/status`, `POST /api/v1/tasks/:id/stop` |
 | Comments | `GET/POST /api/v1/tasks/:id/comments` |
 
@@ -378,6 +379,7 @@ the tools below are available to the model.
 | `list_cores` | the Cores the key reaches, with their connection state |
 | `list_agents` | Agents, optionally on one Core |
 | `get_tasks` | Tasks, optionally one `status` or one `coreId` |
+| `get_sessions` | one Core's Sessions, a page at a time (`coreId`, `limit`, `cursor`, `status`, `archived`, `harness`, `q`); lean rows, no prompt text or transcript |
 | `get_task` | one Task with its comment thread |
 | `create_task` | a draft, or an assigned Task with `startNow` (needs `coreId` and `agent`); optional `timeoutMinutes` (default 60, `null` = No limit) |
 | `assign_task` | `assigned` (default) or `draft`, the operator moves only; every other status is refused |

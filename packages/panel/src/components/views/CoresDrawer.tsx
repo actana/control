@@ -50,7 +50,10 @@ export function CoresDrawer({
   open: boolean;
   onClose: () => void;
   cores: readonly CoreWithDial[];
-  fleet: { rows: readonly { coreId: string; status: string }[] };
+  fleet: {
+    rows: readonly { coreId: string; status: string }[];
+    pages?: Readonly<Record<string, { total: number }>>;
+  };
   activeCoreId: string | null;
   onOpenSettings: (panel?: SettingsPanelId | null) => void;
   // Fleet / Core row chosen (the Settings screen closes behind the drawer).
@@ -213,7 +216,7 @@ export function CoresDrawer({
 
         <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
           {ordered.map((core) => {
-            const activity = coreActivity(fleet.rows, core.id);
+            const activity = coreActivity(fleet.rows, core.id, fleet.pages);
             const online = core.dial.state === "connected";
             const active = activeCoreId === core.id;
             const hue = coreHue(core.id);

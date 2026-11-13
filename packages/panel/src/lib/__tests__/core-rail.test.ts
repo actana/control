@@ -57,6 +57,16 @@ describe("the Cores rail", () => {
     expect(coreActivity(rows, "a")).toEqual({ running: 2, needsInput: 1, total: 4 });
     expect(coreActivity(rows, "zzz")).toEqual({ running: 0, needsInput: 0, total: 0 });
   });
+
+  it("takes total from the Core's paging state and falls back to the rows for an old Core", () => {
+    const rows = [
+      { coreId: "a", status: "running" },
+      { coreId: "b", status: "running" },
+    ];
+    const pages = { a: { total: 60, hasMore: true } };
+    expect(coreActivity(rows, "a", pages)).toEqual({ running: 1, needsInput: 0, total: 60 });
+    expect(coreActivity(rows, "b", pages).total).toBe(1);
+  });
 });
 
 describe("the status pill", () => {

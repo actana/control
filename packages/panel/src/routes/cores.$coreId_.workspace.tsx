@@ -11,6 +11,7 @@ import { Icon } from "~/components/ui/Icon";
 import { GridViewToggleIcon } from "~/components/ui/GridViewToggleIcon";
 import { Z_INDEX } from "~/lib/z-index";
 import { EmptyState } from "~/components/ui/EmptyState";
+import { LoadMoreButton } from "~/components/views/LoadMoreButton";
 import { SessionColumn } from "~/components/views/SessionColumn";
 import { NewHarnessDialog } from "~/components/views/NewHarnessDialog";
 import {
@@ -81,6 +82,7 @@ import {
 } from "@actana/shared/domain";
 import { harnessLaunchesWithSkipPermissions } from "@actana/shared/harnesses";
 import {
+  fetchSessionRowById,
   queryKeys,
   remoteSessionFromSnapshot,
   sessionsCacheKey,
@@ -88,6 +90,7 @@ import {
   useCoreArchivedSessionCount,
   useHookToken,
   useSettings,
+  useSessionPaging,
   useSessions,
 } from "~/queries";
 import { useCoreLiveQueries } from "~/lib/use-core-live-queries";
@@ -159,12 +162,15 @@ function CoreWorkspacePage() {
   // them. Core events over the panel link do.
   useCoreLiveQueries(coreId);
   const sessions = sessionsQuery.data ?? [];
+  // The list past the first page: Load more, the Core's pinned rows, its true count (#960).
+  const paging = useSessionPaging(coreId, sessions);
+  const listSessions = paging.rows;
   // Live pinned-session ids for the grid's "Pinned" filter — derived from the
   // session query (not the store's open-time snapshot) so a pin toggle reflects
   // immediately. Memoized so SessionGrid's filter doesn't churn every render.
   const pinnedSessionIds = useMemo(
-    () => new Set(sessions.filter((t) => !t.archived && t.pinned).map((t) => t.id)),
-    [sessions],
+    () => new Set(listSessions.filter((t) => !t.archived && t.pinned).map((t) => t.id)),
+    [listSessions],
   );
   useHookToken();
   const [showNewHarness, setShowNewHarness] = useState(false);
@@ -173,6 +179,16 @@ function CoreWorkspacePage() {
   // row; "default" (the New session button / hotkey) uses the current row.
   const [newHarnessTarget, setNewHarnessTarget] = useState<"default" | "newRow">("default");
   const terminals = useTerminals();
+  // The list is the Core's first page (#960), so "not in `sessions`" no longer
+  // means "gone". A Session this Panel has open is known by its terminal entry
+  // even when it is beyond the page (or dropped out of it on a refetch).
+  const findKnownSession = useCallback(
+    (sessionId: string): Session | undefined =>
+      listSessions.find((t) => t.id === sessionId) ??
+      terminals.sessions.find((s) => s.sessionId === sessionId && s.coreId === coreId)?.session,
+    [listSessions, terminals.sessions, coreId],
+  );
+
   // Phone and tablet get one stacked list; the grid is a desktop layout, so a
   // stored grid flag never takes over a compact screen (#832, M27).
   const compact = useIsCompact();
@@ -355,7 +371,11 @@ function CoreWorkspacePage() {
       // focus off the grid).
       const focused = readFocusedGridSessionId() ?? terminals.getGridFocusedSessionId();
       terminals.setGridView(false);
-      if (focused && sessions.some((t) => t.id === focused)) {
+      if (
+        focused &&
+        (sessions.some((t) => t.id === focused) ||
+          terminals.sessions.some((s) => s.sessionId === focused && s.coreId === coreId))
+      ) {
         terminals.setActiveSession(coreId, focused);
         // setActiveSession only picks which session docks in normal view; the
         // cached terminal surface reattaches blurred, so without this the pane
@@ -374,8 +394,31 @@ function CoreWorkspacePage() {
   }, [terminals, enterGridView, coreId, sessions]);
 
   useEffect(() => {
-    for (const session of sessions) syncSession(session);
-  }, [sessions, syncSession]);
+    // The paged rows too (#960): an open Session past the first page follows the Core's row.
+    for (const session of listSessions) syncSession(session);
+  }, [listSessions, syncSession]);
+  // An open Session that is in no loaded page (reopened after a reload, or dropped
+  // out of the first page) has no row in the list to follow; read its row by id so
+  // its terminal still tracks the Core (#960). Bounded by the open terminals.
+  const openElsewhereIds = terminals.sessions
+    .filter((s) => s.coreId === coreId && !listSessions.some((t) => t.id === s.sessionId))
+    .map((s) => s.sessionId)
+    .join("\n");
+  useEffect(() => {
+    if (!openElsewhereIds) return;
+    let cancelled = false;
+    for (const id of openElsewhereIds.split("\n")) {
+      void fetchSessionRowById(coreId, id).then(
+        (row) => {
+          if (!cancelled && row) syncSession(row);
+        },
+        () => undefined,
+      );
+    }
+    return () => {
+      cancelled = true;
+    };
+  }, [coreId, openElsewhereIds, listSessions, syncSession]);
 
   // When the active session is deleted/archived, jump to the next
   // highest-priority card. Plain deselect (Cmd+L, X) leaves the panel closed.
@@ -421,19 +464,59 @@ function CoreWorkspacePage() {
       if (prev.archived) lastActiveRef.current = null;
       return;
     }
-    lastActiveRef.current = null;
-    const next = pickByPriority(visible);
-    if (next) toggleTerminalSession(coreId, next);
-  }, [activeSessionId, sessions, archivedSessions, toggleTerminalSession, coreId]);
+    const openReplacement = () => {
+      lastActiveRef.current = null;
+      const next = pickByPriority(visible);
+      if (next) toggleTerminalSession(coreId, next);
+    };
+    // `visible` is only the Core's first page (#960): a Session this Panel still
+    // has open can be missing from it without being gone. Ask the Core before
+    // yanking the operator into another Session.
+    const stillOpen = terminals.sessions.some((s) => s.sessionId === prev.sessionId && s.coreId === coreId);
+    if (!stillOpen) {
+      openReplacement();
+      return;
+    }
+    let cancelled = false;
+    void fetchSessionRowById(coreId, prev.sessionId).then(
+      (row) => {
+        if (cancelled) return;
+        if (row) lastActiveRef.current = null;
+        else openReplacement();
+      },
+      // Cannot tell: a deselect is the safe reading.
+      () => undefined,
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [activeSessionId, sessions, archivedSessions, toggleTerminalSession, coreId, terminals.sessions]);
 
   // Rehydrate after reload: if a persisted activeSessionId resolves to an
   // existing session for this Core, materialize a session entry so the panel
   // reopens without requiring a click.
   useEffect(() => {
     if (!activeSessionId) return;
-    const session = sessions.find((t) => t.id === activeSessionId);
-    if (session) rehydrateTerminal(coreId, session);
-  }, [activeSessionId, coreId, sessions, rehydrateTerminal]);
+    const session = listSessions.find((t) => t.id === activeSessionId);
+    if (session) {
+      rehydrateTerminal(coreId, session);
+      return;
+    }
+    // A persisted active Session can sit past the first page (#960): ask the Core
+    // for that one row, unless the list is still loading or the Panel has it open.
+    if (sessionsQuery.isLoading) return;
+    if (terminals.sessions.some((s) => s.sessionId === activeSessionId && s.coreId === coreId)) return;
+    let cancelled = false;
+    void fetchSessionRowById(coreId, activeSessionId).then(
+      (row) => {
+        if (!cancelled && row) rehydrateTerminal(coreId, row);
+      },
+      () => undefined,
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [activeSessionId, coreId, listSessions, sessionsQuery.isLoading, terminals.sessions, rehydrateTerminal]);
 
   // The rehydrate above re-shows the active session on a Core switch,
   // but its cached terminal surface reattaches blurred (it doesn't self-focus),
@@ -451,6 +534,11 @@ function CoreWorkspacePage() {
     terminals.focusGridSession(activeSessionId);
   }, [selectedScopeKey, activeSessionId, terminals]);
 
+  // By-id lookups for pending opens still in flight, so a re-run of the effect
+  // below (the list moved) does not ask the Core twice for the same request.
+  const requestLookupsRef = useRef(new Set<string>());
+  const coreIdRef = useRef(coreId);
+  coreIdRef.current = coreId;
   const openRequestedSession = useCallback(
     (request: PendingSessionOpen) => {
       // A pending open is Core-scoped. Leave requests for another Core untouched —
@@ -467,25 +555,59 @@ function CoreWorkspacePage() {
         return;
       }
 
-      // A Core's sessions only travel as core-link snapshots (already in
-      // `sessions`). Absent from the snapshot list ⇒ stale.
-      const session = sessions.find((entry) => entry.id === request.sessionId && !entry.archived);
-      if (!session) {
-        if (sessionsQuery.isLoading) return;
+      const openFound = (session: Session) => {
+        showRequestedSession({
+          terminals,
+          session,
+          coreId,
+        });
+        // Now that the session is materialized in the grid, spotlight its cell.
+        if (gridViewActive) terminals.focusGridSession(session.id);
         clearPendingSessionOpen(request);
+      };
+
+      // A Core's sessions only travel as core-link snapshots (already in
+      // `sessions`).
+      const session = sessions.find((entry) => entry.id === request.sessionId && !entry.archived);
+      if (session) {
+        openFound(session);
         return;
       }
+      if (sessionsQuery.isLoading) return;
 
-      showRequestedSession({
-        terminals,
-        session,
-        coreId,
-      });
-      // Now that the session is materialized in the grid, spotlight its cell.
-      if (gridViewActive) terminals.focusGridSession(session.id);
-      clearPendingSessionOpen(request);
+      // `sessions` is only the Core's first page (#960), so absent from it is
+      // not yet stale: ask the Core for exactly that row. Only a Core that does
+      // not have it makes the request stale.
+      const inFlight = requestLookupsRef.current;
+      const lookupKey = `${request.coreId}:${request.sessionId}`;
+      if (inFlight.has(lookupKey)) return;
+      inFlight.add(lookupKey);
+      void (async () => {
+        let found: Session | null = null;
+        try {
+          found = await fetchSessionRowById(coreId, request.sessionId);
+        } catch {
+          // An unreachable Core cannot confirm the Session; same as stale.
+        } finally {
+          inFlight.delete(lookupKey);
+        }
+        // The route moved to another Core while the row was in flight; that
+        // Core's route consumes the request (it is left pending).
+        if (coreIdRef.current !== coreId) return;
+        if (!found) {
+          clearPendingSessionOpen(request);
+          return;
+        }
+        // Into the bucket, so the list and the grid see the row like any other.
+        // A refetch may drop it again (the bucket is one page); the open
+        // terminal does not depend on that.
+        if (!queryClient.getQueryData<Session[]>(sessionsCacheKey(coreId))?.some((t) => t.id === found.id)) {
+          appendOptimisticSession(queryClient, coreId, found);
+        }
+        openFound(found);
+      })();
     },
-    [coreId, sessions, sessionsQuery.isLoading, terminals, gridViewActive],
+    [coreId, sessions, sessionsQuery.isLoading, terminals, gridViewActive, queryClient],
   );
 
   useEffect(() => {
@@ -643,7 +765,13 @@ function CoreWorkspacePage() {
     // last-focused cell reported to the store (a header-button click moved DOM
     // focus to the button); finally the scope's active session.
     for (const candidate of [readFocusedGridSessionId(), terminals.getGridFocusedSessionId()]) {
-      if (candidate && sessions.some((t) => t.id === candidate)) return candidate;
+      if (
+        candidate &&
+        (sessions.some((t) => t.id === candidate) ||
+          terminals.sessions.some((s) => s.sessionId === candidate && s.coreId === coreId))
+      ) {
+        return candidate;
+      }
     }
     return terminals.activeFor(coreId)?.sessionId ?? undefined;
   }, [sessions, terminals, coreId]);
@@ -756,7 +884,8 @@ function CoreWorkspacePage() {
       // through to the normal cycle here. The grid stays mounted alongside the
       // docked diff panel, so cycling stays grid-owned while reviewing changes.
       if (showGrid) return;
-      const visible = sessions.filter((t) => !t.archived);
+      // The listed rows, so a Session past the first page cycles too (#960).
+      const visible = listSessions.filter((t) => !t.archived);
       if (visible.length === 0) return;
       const ordered: Session[] = [];
       for (const status of STATUS_DISPLAY_ORDER) {
@@ -784,7 +913,7 @@ function CoreWorkspacePage() {
       // presses keep cycling and the caret is ready to type (see selectTerminal).
       terminals.focusGridSession(nextSession.id);
     },
-    [coreId, sessions, terminals, anyBlockingDialogOpen, showGrid],
+    [coreId, listSessions, terminals, anyBlockingDialogOpen, showGrid],
   );
 
   const duplicateActiveSession = useCallback(
@@ -801,11 +930,11 @@ function CoreWorkspacePage() {
       //  3. The scope's active session (non-grid view / no cell focused).
       const focusedGridSessionId = readFocusedGridSessionId();
       const sourceSession =
-        (sourceSessionId && sessions.find((t) => t.id === sourceSessionId)) ||
-        (focusedGridSessionId && sessions.find((t) => t.id === focusedGridSessionId)) ||
+        (sourceSessionId && findKnownSession(sourceSessionId)) ||
+        (focusedGridSessionId && findKnownSession(focusedGridSessionId)) ||
         (() => {
           const active = terminals.activeFor(coreId);
-          return active ? sessions.find((t) => t.id === active.sessionId) : undefined;
+          return active ? findKnownSession(active.sessionId) : undefined;
         })();
       if (!sourceSession) return;
       // In grid view, drop the clone directly beside the session it came from
@@ -886,7 +1015,9 @@ function CoreWorkspacePage() {
     !!hiddenSession &&
     hiddenSession.coreId === coreId &&
     terminals.sessions.some((s) => s.sessionId === hiddenSession.sessionId && s.coreId === coreId) &&
-    sessions.some((t) => t.id === hiddenSession.sessionId && !t.archived);
+    // Open here, and not known to be archived (an absent row may just be
+    // beyond the first page).
+    !sessions.some((t) => t.id === hiddenSession.sessionId && t.archived);
   const closePanelEnabled = !anyBlockingDialogOpen
     ? terminals.activeFor(coreId) !== null || canRestoreHiddenSession
     : false;
@@ -913,8 +1044,8 @@ function CoreWorkspacePage() {
         (s) => s.sessionId === hidden.sessionId && s.coreId === coreId,
       );
       if (!sessionStillOpen) return;
-      const session = sessions.find((t) => t.id === hidden.sessionId && !t.archived);
-      if (!session) return;
+      const session = findKnownSession(hidden.sessionId);
+      if (!session || session.archived) return;
       terminals.toggle(coreId, session);
     },
     {
@@ -955,7 +1086,7 @@ function CoreWorkspacePage() {
     return () => cancelAnimationFrame(raf);
   }, [coreId, anyBlockingDialogOpen]);
 
-  const activeSessions = sessions.filter((t) => !t.archived);
+  const activeSessions = listSessions.filter((t) => !t.archived);
   const pinnedSessions = activeSessions.filter((t) => t.pinned);
   const visibleSessions = showArchived ? archivedSessions : showPinned ? pinnedSessions : activeSessions;
   // Active list peels pinned into a top "Pinned" section; Pinned tab keeps
@@ -987,7 +1118,7 @@ function CoreWorkspacePage() {
   // hotkey) deselects.
   const selectTerminal = (sessionId: string) => {
     openClickedSession(sessionId, {
-      sessions,
+      sessions: listSessions,
       archivedSessions,
       coreId,
       terminals,
@@ -995,7 +1126,7 @@ function CoreWorkspacePage() {
   };
 
   const toggleSessionPinned = async (sessionId: string) => {
-    const session = sessions.find((t) => t.id === sessionId);
+    const session = findKnownSession(sessionId);
     if (!session || session.archived) return;
     const nextPinned = !session.pinned;
     const previousPinned = session.pinned;
@@ -1049,7 +1180,7 @@ function CoreWorkspacePage() {
   };
 
   const deleteSession = (sessionId: string) => {
-    const session = sessions.find((t) => t.id === sessionId);
+    const session = findKnownSession(sessionId);
     if (!session) return;
 
     const sessionsKey = sessionsCacheKey(coreId);
@@ -1157,7 +1288,7 @@ function CoreWorkspacePage() {
   };
 
   const archiveSession = (sessionId: string) => {
-    const session = sessions.find((t) => t.id === sessionId);
+    const session = findKnownSession(sessionId);
     if (session) archiveSessions([session]);
   };
   archiveSessionRef.current = archiveSession;
@@ -1361,7 +1492,7 @@ function CoreWorkspacePage() {
           <div className="mc-ws-toolbar">
             <WorkspaceScopeControl
               view={sessionView}
-              activeCount={activeSessions.length}
+              activeCount={paging.total}
               pinnedCount={pinnedSessions.length}
               archivedCount={archivedCount}
               showArchivedTab={hasArchivedSessions || showArchived}
@@ -1477,7 +1608,7 @@ function CoreWorkspacePage() {
           {showSessionScopeToggle && (
             <SessionScopeToggle
               view={sessionView}
-              activeCount={activeSessions.length}
+              activeCount={paging.total}
               pinnedCount={pinnedSessions.length}
               archivedCount={archivedCount}
               showArchivedTab={hasArchivedSessions || showArchived}
@@ -1488,7 +1619,7 @@ function CoreWorkspacePage() {
            * layout, so it hides in the read-through Pinned tab — mirrors how the
            * grid disables reorder/resize there. */}
           {showGrid && !showPinned && (
-            <GridLayoutButton scopeKey={selectedScopeKey} coreId={coreId} sessionRows={sessions} />
+            <GridLayoutButton scopeKey={selectedScopeKey} coreId={coreId} sessionRows={listSessions} />
           )}
           <div
             style={{
@@ -1729,6 +1860,16 @@ function CoreWorkspacePage() {
                 />
                 );
               })}
+              {!showArchived && !showPinned && (
+                <div style={{ display: "flex", justifyContent: "center", paddingBottom: 8 }}>
+                  <LoadMoreButton
+                    hasMore={paging.hasMore}
+                    loading={paging.loadingMore}
+                    onClick={paging.loadMore}
+                    compact={compact}
+                  />
+                </div>
+              )}
               {!showArchived && hasArchivedSessions && (
                 <div
                   style={{

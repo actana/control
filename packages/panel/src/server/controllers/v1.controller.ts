@@ -1,7 +1,16 @@
 import { z } from "zod";
 import { forbidden, json, noContent, notFound, parseJsonBody, rethrowUnlessDomain } from "./_helpers";
 import { NotFoundError, ValidationError } from "../errors";
-import { HTTP_CREATED } from "~/shared/http-status";
+import { HTTP_BAD_GATEWAY, HTTP_CREATED, HTTP_SERVICE_UNAVAILABLE } from "~/shared/http-status";
+import { jsonError } from "../http-responses";
+import type { SessionsPageDto } from "~/shared/session-wire";
+import {
+  InvalidSessionPageError,
+  SESSION_PAGE_MAX,
+  SESSION_STATUS_FILTERS,
+  decodeSessionCursor,
+  type SessionStatusFilter,
+} from "@actana/shared/session-paging";
 import type { ApiPrincipal } from "../api-key-auth";
 import { stopTask } from "../task-dispatch";
 import { stopTaskBody } from "./tasks.controller";
@@ -204,6 +213,132 @@ export async function deleteAgentV1(principal: ApiPrincipal, id: string): Promis
   } catch (e) {
     return rethrowUnlessDomain(e);
   }
+}
+
+// ── Sessions ───────────────────────────────────────────────────────────────
+
+export type ListSessionsQuery = {
+  /** The Core whose Sessions to list; the caller has not checked scope yet. */
+  coreId?: string;
+  /** 1 to 100, default 25. */
+  limit?: number;
+  /** The `nextCursor` of the previous page. */
+  cursor?: string;
+  status?: string;
+  archived?: boolean;
+  harness?: string;
+  q?: string;
+};
+
+const SESSIONS_DEFAULT_LIMIT = 25;
+
+type CoreSessionPage = {
+  type?: string;
+  sessions?: Array<{
+    sessionId: string;
+    ptyId: string | null;
+    status: string;
+    updatedAt: number;
+    title?: string;
+    agent?: string;
+    pinned?: boolean;
+    archived?: boolean;
+  }>;
+  nextCursor?: string | null;
+  total?: number;
+};
+
+/**
+ * One page of a Core's Sessions, asked of the Core itself (#960): the Core owns
+ * the rows, filters and orders them, and counts the total. Auth and ownership
+ * as the other v1 routes: a key outside the Core's scope gets 403, another
+ * owner's Core is a 404. Lean rows: no prompt, no transcript.
+ */
+export async function listSessionsV1(principal: ApiPrincipal, query: ListSessionsQuery): Promise<Response> {
+  try {
+    if (!query.coreId) throw new ValidationError("coreId is required");
+    const limit = query.limit ?? SESSIONS_DEFAULT_LIMIT;
+    if (!Number.isInteger(limit) || limit < 1 || limit > SESSION_PAGE_MAX) {
+      throw new ValidationError(`limit must be a whole number from 1 to ${SESSION_PAGE_MAX}`);
+    }
+    if (query.status !== undefined && !(SESSION_STATUS_FILTERS as readonly string[]).includes(query.status)) {
+      throw new ValidationError(`status must be one of ${SESSION_STATUS_FILTERS.join(", ")}`);
+    }
+    if (query.cursor !== undefined) {
+      try {
+        decodeSessionCursor(query.cursor);
+      } catch (e) {
+        if (e instanceof InvalidSessionPageError) throw new ValidationError(e.message);
+        throw e;
+      }
+    }
+    const denied = refuseOutsideScope(principal, query.coreId);
+    if (denied) return denied;
+    if (!(await getCore(query.coreId, principal.ownerId))) return notFound("no such Core");
+    const client = coreLinkManager().client(query.coreId);
+    if (!client) return jsonError(HTTP_SERVICE_UNAVAILABLE, "the Core is not connected");
+    const frame = {
+      type: "sessionsList",
+      limit,
+      ...(query.cursor === undefined ? {} : { cursor: query.cursor }),
+      ...(query.status === undefined ? {} : { status: query.status as SessionStatusFilter }),
+      archived: query.archived ?? false,
+      ...(query.harness ? { harness: query.harness } : {}),
+      ...(query.q ? { q: query.q } : {}),
+    };
+    let answer: CoreSessionPage;
+    try {
+      answer = (await client.request(frame as never)) as CoreSessionPage;
+    } catch {
+      return jsonError(HTTP_BAD_GATEWAY, "the Core did not answer");
+    }
+    // The link hands an error frame back as an answer, not a rejection.
+    if (answer.type !== "sessionsListResult") {
+      const message = String((answer as { message?: unknown }).message ?? "");
+      // The Core refuses what it cannot read: that is the caller's request, not an outage.
+      if (/^(invalid cursor|limit must|status must)/.test(message)) throw new ValidationError(message);
+      return jsonError(
+        HTTP_BAD_GATEWAY,
+        /does not take/.test(message) ? "this Core is too old to page Sessions; update it" : "the Core did not answer",
+      );
+    }
+    const body: SessionsPageDto = {
+      sessions: (answer.sessions ?? []).map((s) => ({
+        id: s.sessionId,
+        title: s.title ?? "",
+        harness: s.agent ?? "",
+        status: s.status,
+        pinned: s.pinned === true,
+        archived: s.archived === true,
+        live: s.ptyId !== null,
+        updatedAt: s.updatedAt,
+      })),
+      nextCursor: answer.nextCursor ?? null,
+      total: answer.total ?? answer.sessions?.length ?? 0,
+    };
+    return json(body);
+  } catch (e) {
+    return rethrowUnlessDomain(e);
+  }
+}
+
+/** `GET /api/v1/sessions?coreId=&limit=&cursor=&status=&archived=&harness=&q=`. */
+export async function listSessionsV1FromQuery(principal: ApiPrincipal, params: URLSearchParams): Promise<Response> {
+  const get = (name: string) => params.get(name) ?? undefined;
+  const limit = get("limit");
+  const archived = get("archived");
+  if (archived !== undefined && archived !== "true" && archived !== "false") {
+    return jsonError(400, "archived must be true or false");
+  }
+  return listSessionsV1(principal, {
+    ...(get("coreId") === undefined ? {} : { coreId: get("coreId")! }),
+    ...(limit === undefined ? {} : { limit: Number(limit) }),
+    ...(get("cursor") === undefined ? {} : { cursor: get("cursor")! }),
+    ...(get("status") === undefined ? {} : { status: get("status")! }),
+    ...(archived === undefined ? {} : { archived: archived === "true" }),
+    ...(get("harness") === undefined ? {} : { harness: get("harness")! }),
+    ...(get("q") === undefined ? {} : { q: get("q")! }),
+  });
 }
 
 // ── Tasks ──────────────────────────────────────────────────────────────────

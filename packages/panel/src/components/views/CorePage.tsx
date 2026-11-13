@@ -17,6 +17,7 @@ import { FilesDrive } from "~/components/views/FilesDrive";
 import { TasksBoard } from "~/components/views/TasksBoard";
 import { NewHarnessDialog } from "~/components/views/NewHarnessDialog";
 import { useFleet } from "~/lib/fleet-context";
+import { LoadMoreButton } from "~/components/views/LoadMoreButton";
 import { getPanelBridge } from "~/lib/panel-bridge";
 import { useUserTerminals } from "~/lib/user-terminal-store";
 import { readCoreRemember, writeCoreRemember } from "~/lib/core-remember";
@@ -51,7 +52,7 @@ export function CorePage({ coreId, tab, path = "" }: { coreId: string; tab: Core
   const breakpoint = useBreakpoint();
   const queryClient = useQueryClient();
   const cliAvailability = useCliAvailability(coreId);
-  const { cores, fleet, loading, coresLoading, coresError, refreshCores } = useFleet();
+  const { cores, fleet, loading, coresLoading, coresError, refreshCores, loadMore, loadingMore } = useFleet();
   const { togglePanel, panelOpen } = useUserTerminals();
   const [showNew, setShowNew] = useState(false);
   const [rememberTick, setRememberTick] = useState(0);
@@ -67,6 +68,17 @@ export function CorePage({ coreId, tab, path = "" }: { coreId: string; tab: Core
   }, [coreId]);
   const core = cores.find((c) => c.id === coreId);
   const rows = useMemo(() => fleet.rows.filter((r) => r.coreId === coreId), [fleet.rows, coreId]);
+  // The Core's true count, not the rows loaded so far.
+  const sessionTotal = fleet.pages?.[coreId]?.total ?? rows.length;
+  const hasMoreSessions = fleet.pages?.[coreId]?.hasMore === true;
+  const loadMoreSessions = (
+    <LoadMoreButton
+      hasMore={hasMoreSessions}
+      loading={loadingMore?.has(coreId) ?? false}
+      onClick={() => loadMore?.(coreId)}
+      compact={compact}
+    />
+  );
   const remembered = useMemo(() => {
     void rememberTick;
     return readCoreRemember(coreId);
@@ -190,7 +202,7 @@ export function CorePage({ coreId, tab, path = "" }: { coreId: string; tab: Core
     tab === "sessions" && core.dial.state !== "needs-update" && compact ? (
       <div data-sessions-toolbar className="mc-sessions-toolbar">
         <span className="mc-sessions-count">
-          {rows.length} {rows.length === 1 ? "session" : "sessions"}
+          {sessionTotal} {sessionTotal === 1 ? "session" : "sessions"}
         </span>
         <Btn
           variant="ghost"
@@ -372,6 +384,8 @@ export function CorePage({ coreId, tab, path = "" }: { coreId: string; tab: Core
                   ))}
                 </div>
               )}
+              {/* Outside the grid/list so it spans the width in every layout. */}
+              {loadMoreSessions}
             </div>
           ) : (
             <>

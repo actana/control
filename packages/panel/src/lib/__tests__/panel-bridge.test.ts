@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createPanelBridge } from "../panel-bridge";
 import { PanelLinkClient, type PanelLinkSocketLike } from "../panel-link-client";
 import type { PanelLinkClientFrame, PanelLinkServerFrame } from "~/shared/panel-link";
@@ -196,5 +196,90 @@ describe("panel bridge — the archived read path", () => {
     });
 
     await expect(pending).rejects.toThrow("core_gone is unreachable");
+  });
+});
+
+/**
+ * The paged Session list (#960): one page of rows with the cursor for the next
+ * and the true total, and an older Core — one that refuses or ignores `limit`
+ * — still lists, everything in one answer.
+ */
+describe("panel bridge — paged Session rows", () => {
+  const ROW = {
+    sessionId: "session_1",
+    title: "t",
+    titleManuallySet: false,
+    claudeSessionId: null,
+    agent: "claude-code",
+    status: "running",
+    pinned: false,
+    archived: false,
+    icon: null,
+    updatedAt: 1,
+  };
+
+  it("asks for one page with the filters and hands back nextCursor and total", async () => {
+    const { bridge, socket } = bridged();
+    const pending = bridge.listSessionRows("core_a", { limit: 25, cursor: "c1", status: "running", q: "fix" });
+    const sent = lastRequest(socket);
+    expect(sent.frame).toMatchObject({ type: "sessionRowsList", limit: 25, cursor: "c1", status: "running", q: "fix" });
+    socket.push({
+      t: "core",
+      coreId: "core_a",
+      frame: {
+        type: "sessionRowsListResult",
+        reqId: sent.frame.reqId as string,
+        sessions: [ROW],
+        archivedCount: 2,
+        nextCursor: "c2",
+        total: 60,
+      } as never,
+    });
+    await expect(pending).resolves.toEqual({ sessions: [ROW], archivedCount: 2, nextCursor: "c2", total: 60 });
+  });
+
+  it("treats a Core that answers without a total as complete: every row, no next page", async () => {
+    const { bridge, socket } = bridged();
+    const pending = bridge.listSessionRows("core_a", { limit: 25 });
+    const sent = lastRequest(socket);
+    socket.push({
+      t: "core",
+      coreId: "core_a",
+      frame: { type: "sessionRowsListResult", reqId: sent.frame.reqId as string, sessions: [ROW, { ...ROW, sessionId: "session_2" }], archivedCount: 0 },
+    });
+    await expect(pending).resolves.toEqual({
+      sessions: [ROW, { ...ROW, sessionId: "session_2" }],
+      archivedCount: 0,
+      nextCursor: null,
+      total: 2,
+    });
+  });
+
+  it("falls back to the plain frame when an older Core refuses the paging fields", async () => {
+    const { bridge, socket } = bridged();
+    const pending = bridge.listSessionRows("core_a", { limit: 25 });
+    const first = lastRequest(socket);
+    socket.push({
+      t: "core",
+      coreId: "core_a",
+      frame: { type: "error", reqId: first.frame.reqId as string, message: 'sessionRowsList does not take "limit": a Session belongs to the Core' },
+    });
+    await vi.waitFor(() => expect(lastRequest(socket).frame.reqId).not.toBe(first.frame.reqId));
+    const second = lastRequest(socket);
+    expect(second.frame).toEqual({ type: "sessionRowsList", reqId: second.frame.reqId });
+    socket.push({
+      t: "core",
+      coreId: "core_a",
+      frame: { type: "sessionRowsListResult", reqId: second.frame.reqId as string, sessions: [ROW], archivedCount: 0 },
+    });
+    await expect(pending).resolves.toEqual({ sessions: [ROW], archivedCount: 0, nextCursor: null, total: 1 });
+  });
+
+  it("does not hide a real failure behind that fallback", async () => {
+    const { bridge, socket } = bridged();
+    const pending = bridge.listSessionRows("core_a", { limit: 25, cursor: "bad" });
+    const sent = lastRequest(socket);
+    socket.push({ t: "core", coreId: "core_a", frame: { type: "error", reqId: sent.frame.reqId as string, message: "invalid cursor" } });
+    await expect(pending).rejects.toThrow("invalid cursor");
   });
 });

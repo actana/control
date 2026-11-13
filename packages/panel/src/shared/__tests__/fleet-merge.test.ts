@@ -115,6 +115,29 @@ describe("mergeFleetSessions", () => {
     expect(result.rows.map((r) => r.sessionId)).toEqual(["new", "mid", "old"]);
   });
 
+  it("lists running and needs-input rows first, then newest activity, then id descending", () => {
+    // The Core pages in this order; the merge must agree or a Core's loaded
+    // pages would reshuffle when merged.
+    const result = mergeFleetSessions([
+      online("c1", "C1", [
+        session({ sessionId: "fin-new", status: "finished", updatedAt: 900 }),
+        session({ sessionId: "run-old", status: "running", updatedAt: 100 }),
+        session({ sessionId: "tie-a", status: "finished", updatedAt: 500 }),
+        session({ sessionId: "tie-b", status: "finished", updatedAt: 500 }),
+      ]),
+      online("c2", "C2", [session({ sessionId: "needs", status: "needs-input", updatedAt: 200 })]),
+    ]);
+    expect(result.rows.map((r) => r.sessionId)).toEqual(["needs", "run-old", "fin-new", "tie-b", "tie-a"]);
+  });
+
+  it("carries each paged Core's total and hasMore, and leaves unpaged Cores out", () => {
+    const result = mergeFleetSessions([
+      { ...online("c1", "C1", [session({ sessionId: "a" })]), total: 60, hasMore: true } as CoreFanOutResult,
+      online("c2", "C2", [session({ sessionId: "b" })]),
+    ]);
+    expect(result.pages).toEqual({ c1: { total: 60, hasMore: true } });
+  });
+
   it("sorts offline Cores by label for stable display", () => {
     const result = mergeFleetSessions([
       offline("z", "zeta", null),
