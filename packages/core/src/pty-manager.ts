@@ -15,6 +15,7 @@ import {
   type SpawnPathFacts,
 } from "./core-home-ops-client";
 import { PtyOutputBatcher } from "./pty-output-batch";
+import { DialogScreenWatch } from "./core-dialog-watch";
 import { PtyOutputActivityWatcher, type PtyOutputActivityKind } from "./pty-output-activity";
 import { sliceReplayWindow, type PtyReplayWindow } from "./pty-replay-window";
 import {
@@ -397,6 +398,13 @@ export type PtyCoreDeps = {
    * `pty-output-activity.ts` and the two rules in `core-session-backstop.ts`.
    */
   onSessionOutputActivity?: (info: { sessionId: string; kind: PtyOutputActivityKind }) => void;
+  /**
+   * The Session's screen held still for `DIALOG_SETTLE_MS` and matched a dialog
+   * rule of its harness (issue 963): a dialog no hook announced. The host
+   * decides what it means for status (`CoreHarnessStatus.dialogOnScreen`); a
+   * host that wires nothing keeps the behaviour that shipped before.
+   */
+  onSessionDialog?: (info: { sessionId: string; ruleId: string; kind: string }) => "retry" | void;
 };
 
 /** Event emitted by the Core for a PTY — `data` (output) or `exit`. */
@@ -1127,11 +1135,28 @@ export class PtyCore {
     // (issues 243 and 391).
     const outputActivity = new PtyOutputActivityWatcher();
     const watchOutput = plan.mode === "agent" && !opts.shell && !opts.shellSession;
+    // The screen, read for a dialog once it holds still (issue 963). For every
+    // agent Session, when the host listens: the harness's own rules, then generic.
+    const dialogWatch =
+      watchOutput && p.agent && this.deps.onSessionDialog
+        ? new DialogScreenWatch({
+            harness: p.agent,
+            onDialog: (hit) => {
+              if (!p.sessionId) return "retry";
+              try {
+                return this.deps.onSessionDialog?.({ sessionId: p.sessionId, ruleId: hit.ruleId, kind: hit.kind });
+              } catch (err) {
+                log.warn("pty.dialog.failed", { error: String(err) });
+              }
+            },
+          })
+        : null;
     proc.onData((data: string) => {
       releaseSpawnHold();
       if (watchOutput) {
         if (p.sessionId) {
           const kind = outputActivity.push(data, Date.now());
+          dialogWatch?.push(data, kind);
           if (kind) {
             try {
               this.deps.onSessionOutputActivity?.({ sessionId: p.sessionId, kind });
@@ -1161,6 +1186,7 @@ export class PtyCore {
     });
     proc.onExit(({ exitCode, signal }: { exitCode: number; signal?: number }) => {
       clearTimeout(settleTimer);
+      dialogWatch?.dispose();
       releaseSpawnHold();
       // A PTY that died mid-delivery took the prompt with it, and `dispose()`
       // gives up silently — it sets `abandoned` without emitting, because it is
