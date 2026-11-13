@@ -6,11 +6,12 @@ import { ResultWatcher } from "./result-watcher";
 import { SharedChangeFeed, createS3Factory, createSharedFactory, createThroughCoreFactory, type SharedFactoryDeps } from "./shared-factory";
 import { startSessionOnCore } from "./session-starter";
 import { liveSessionsOnCore } from "./session-liveness";
+import { sessionStatusesOnCore } from "./session-status";
 import { stopSessionOnCore } from "./session-stopper";
 import { stopTaskRun } from "./stop-task";
 import { coreLinkManager } from "../services/core-link-manager";
 import type { CoreS3Shared } from "../services/core-s3-shared";
-import { consoleDispatchLog, type Clock, type DispatchLog, type SessionLiveness, type SessionStarter, type SessionStopper } from "./types";
+import { consoleDispatchLog, type Clock, type DispatchLog, type SessionLiveness, type SessionStarter, type SessionStatusReader, type SessionStopper } from "./types";
 import type { AgentLookup } from "./dispatcher";
 
 /**
@@ -37,6 +38,8 @@ export type StartTaskDispatchOptions = {
   stopSession?: SessionStopper;
   /** Which Sessions are live on a Core, for the watcher's once-a-minute check. The Panel's own link by default. */
   liveSessions?: SessionLiveness;
+  /** The Core's status of each Session, read on adoption and once a minute (#949). The Panel's own link by default. */
+  sessionStatuses?: SessionStatusReader;
   minutePassMs?: number;
   agents?: AgentLookup;
   now?: Clock;
@@ -55,6 +58,7 @@ export function startTaskDispatch(opts: StartTaskDispatchOptions = {}): void {
     stopSession,
     ownerId: OPERATOR_ID,
     liveSessions: opts.liveSessions ?? liveSessionsOnCore,
+    sessionStatuses: opts.sessionStatuses ?? sessionStatusesOnCore,
     ...(opts.minutePassMs !== undefined ? { minutePassMs: opts.minutePassMs } : {}),
     ...(opts.now ? { now: opts.now } : {}),
     ...(opts.watchPollMs ? { pollMs: opts.watchPollMs } : {}),

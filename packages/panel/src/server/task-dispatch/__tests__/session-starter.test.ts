@@ -12,7 +12,7 @@ import { startSessionOnCore } from "../session-starter";
 describe("starting a Task's Session on a Core", () => {
   beforeEach(() => {
     start.mockReset();
-    start.mockResolvedValue({ sessionId: "s1", onExit: () => {}, dispose: () => {} });
+    start.mockResolvedValue({ sessionId: "s1", onExit: () => {}, onStatus: () => () => {}, dispose: () => {} });
   });
 
   it("launches a default cursor-cli Agent with --force and dangerouslySkipPermissions, so the spawn policy accepts it", async () => {
@@ -28,5 +28,30 @@ describe("starting a Task's Session on a Core", () => {
     const arg = start.mock.calls[0]![1];
     expect(arg.command).toBe("opencode");
     expect(arg).not.toHaveProperty("dangerouslySkipPermissions");
+  });
+
+  it("hands the Core's status changes on, and lets go of the subscription with the handle", async () => {
+    const unsubscribe = vi.fn();
+    let listener: ((status: string) => void) | null = null;
+    const dispose = vi.fn();
+    start.mockResolvedValue({
+      sessionId: "s1",
+      onExit: () => {},
+      onStatus: (cb: (status: string) => void) => {
+        listener = cb;
+        return unsubscribe;
+      },
+      dispose,
+    });
+    const handle = await startSessionOnCore({ coreId: "core_1", harness: "claude-code", title: "t", prompt: "p", model: null, flags: [] } as never);
+    const seen: string[] = [];
+    handle.onStatus((status) => seen.push(status));
+    listener!("running");
+    listener!("needs-input");
+    expect(seen).toEqual(["running", "needs-input"]);
+
+    handle.dispose();
+    expect(unsubscribe).toHaveBeenCalledTimes(1);
+    expect(dispose).toHaveBeenCalledTimes(1);
   });
 });
