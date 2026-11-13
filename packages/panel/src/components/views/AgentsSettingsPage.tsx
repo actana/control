@@ -42,12 +42,9 @@ export function agentErrorMessage(error: unknown): string {
   if (!(error instanceof ApiError)) return error instanceof Error ? error.message : String(error);
   const code = error.body && typeof error.body === "object" ? (error.body as { code?: unknown }).code : undefined;
   if (code === "core_harnesses_unavailable") return OFFLINE_CORE_MESSAGE;
-  if (code === "harness_missing_on_core") {
-    // "not ready yet (…), ask again shortly" is a wait; anything else is a harness the Core does not have.
-    return error.message.includes("not ready yet")
-      ? `${error.message}. Nothing was created.`
-      : `${error.message}. Install or set it up on that Core first.`;
-  }
+  // Still being checked is a wait; a missing harness needs setup on the Core.
+  if (code === "harness_not_ready") return `${error.message}. Nothing was created; ask again shortly.`;
+  if (code === "harness_missing_on_core") return `${error.message}. Install or set it up on that Core first.`;
   if (error.status === 409 && /default Agent/.test(error.message)) return DEFAULT_AGENT_REASON;
   return error.message;
 }
@@ -248,15 +245,17 @@ function AgentFormDialog({ core, agent, onClose }: { core: CoreWithDial; agent: 
     if (!canSubmit || !harness) return;
     setBusy(true);
     setError(null);
+    // A flag ticked under another harness is no longer shown; the Core would refuse it.
+    const sendFlags = flags.filter((f) => (allowedFlags as readonly string[]).includes(f));
     try {
       if (editing) {
-        await api.updateCoreAgent(core.id, agent.id, { name: trimmedName, model: trimmedModel || null, flags });
+        await api.updateCoreAgent(core.id, agent.id, { name: trimmedName, model: trimmedModel || null, flags: sendFlags });
       } else {
         await api.createCoreAgent(core.id, {
           name: trimmedName,
           harness,
           ...(trimmedModel ? { model: trimmedModel } : {}),
-          flags,
+          flags: sendFlags,
         });
       }
       await queryClient.invalidateQueries({ queryKey: queryKeys.coreAgents(core.id) });

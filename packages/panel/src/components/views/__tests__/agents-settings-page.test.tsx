@@ -176,6 +176,21 @@ describe("Create", () => {
     expect(api.listCoreAgents.mock.calls.length).toBeGreaterThan(calls);
   });
 
+  it("sends no flag the picked harness does not have after the harness is switched", async () => {
+    availability = { ...availability, opencode: { status: "available" } };
+    mount();
+    await screen.findByText("Reviewer");
+    fireEvent.click(screen.getByRole("button", { name: "New Agent on berlin" }));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.change(within(dialog).getByLabelText("Name"), { target: { value: "Switcher" } });
+    fireEvent.click(within(dialog).getByRole("checkbox")); // skip-permissions on claude-code
+    fireEvent.click(within(dialog).getByRole("radio", { name: "OpenCode" }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Create" }));
+    await waitFor(() =>
+      expect(api.createCoreAgent).toHaveBeenCalledWith("c1", { name: "Switcher", harness: "opencode", flags: [] }),
+    );
+  });
+
   it("has no command, argument, script or environment field", async () => {
     mount();
     await screen.findByText("Reviewer");
@@ -217,9 +232,7 @@ describe("Create", () => {
 
   it("reads 'not ready yet' differently from 'missing' when the Core refuses a harness", async () => {
     api.createCoreAgent.mockRejectedValueOnce(
-      new FakeApiError("this Core does not have claude-code available: not ready yet (checking), ask again shortly", 409, {
-        code: "harness_missing_on_core",
-      }),
+      new FakeApiError("claude-code on this Core is not ready yet (checking)", 409, { code: "harness_not_ready" }),
     );
     mount();
     await screen.findByText("Reviewer");

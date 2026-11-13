@@ -462,7 +462,7 @@ describe("create_agent, update_agent, delete_agent (#893)", () => {
     expect(offline).toMatch(/^409 core_harnesses_unavailable: /);
     fakeCore({ ...ready, codex: { status: "checking" } });
     const notReady = textOf(await c.call("create_agent", args));
-    expect(notReady).toMatch(/^409 harness_missing_on_core: .*not ready yet \(checking\), ask again shortly/);
+    expect(notReady).toMatch(/^409 harness_not_ready: .*not ready yet \(checking\)/);
     fakeCore({ ...ready, codex: { status: "missing", reason: "not-found" } });
     const missing = textOf(await c.call("create_agent", args));
     expect(missing).toMatch(/^409 harness_missing_on_core: .*does not have codex available/);

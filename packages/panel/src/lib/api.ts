@@ -235,7 +235,7 @@ export const api = {
   /** One Core's Agents, from the Agents service; `runnableOnly` is the New Task picker's list. */
   listCoreAgents: (coreId: string, opts: { runnableOnly?: boolean } = {}) =>
     req<{ agents: AgentDto[] }>(`/api/cores/${encodeURIComponent(coreId)}/agents${opts.runnableOnly ? "?runnable=1" : ""}`),
-  /** Create an Agent on a Core (#893). A refusal is an `ApiError`; its body carries the stable `code` (`core_harnesses_unavailable`, `harness_missing_on_core`). */
+  /** Create an Agent on a Core (#893). A refusal is an `ApiError`; its body carries the stable `code` (`core_harnesses_unavailable`, `harness_not_ready`, `harness_missing_on_core`). */
   createCoreAgent: (coreId: string, body: { name: string; harness: string; model?: string | null; flags?: string[] }) =>
     req<{ agent: AgentDto }>(`/api/cores/${encodeURIComponent(coreId)}/agents`, { method: "POST", body: JSON.stringify(body) }),
   /** Change an Agent's name, model and flags in place; a field left out is kept, `model: null` clears it. */

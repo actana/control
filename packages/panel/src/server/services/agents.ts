@@ -225,12 +225,9 @@ export async function createAgent(ownerId: number, input: NewAgent, deps: AgentD
   const coreId = String(input.coreId ?? "");
   if (!(await findCoreById(ownerId, coreId))) throw new NotFoundError("core not found");
   const readiness = harnessReadiness((await reportedHarnesses(coreId, deps))[fields.harness]);
-  if (readiness.kind !== "ready") {
-    // Create stays refused for a harness that is still being checked (#706, the error class is pinned by its tests),
-    // but the words say it is worth asking again, so it does not read like a harness that is gone.
-    const detail = readiness.kind === "wait" ? `not ready yet (${readiness.state}), ask again shortly` : readiness.detail;
-    throw new HarnessMissingOnCoreError(coreId, fields.harness, detail);
-  }
+  // Still being checked is not gone: say so with its own error and code, so a caller can wait and ask again.
+  if (readiness.kind === "wait") throw new HarnessNotReadyError(coreId, fields.harness, readiness.state);
+  if (readiness.kind === "unavailable") throw new HarnessMissingOnCoreError(coreId, fields.harness, readiness.detail);
   const result = await insertAgent(row(ownerId, coreId, fields, false, now));
   if (result.kind === "no-core") throw new NotFoundError("core not found");
   if (result.kind === "conflict") throw new ConflictError(`this Core already has an Agent named ${fields.name}`);

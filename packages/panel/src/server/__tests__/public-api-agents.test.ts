@@ -182,13 +182,14 @@ describe("v1 Agent update and the harness errors (#893)", () => {
     expect(await bodyOf(res)).toMatchObject({ code: "harness_missing_on_core", error: expect.stringContaining("does not have codex available") });
   });
 
-  it("create reads differently while the harness is still being checked: a retry hint, not a bare 'does not have'", async () => {
+  it("create answers harness_not_ready while the harness is still being checked, apart from a missing one", async () => {
     const { key } = await createKey();
     fakeCore({ "claude-code": { status: "available" }, codex: { status: "checking" } });
     const res = await create(key);
     expect(res.status).toBe(409);
     const body = await bodyOf(res);
-    expect(body.error).toContain("not ready yet (checking), ask again shortly");
+    expect(body.code).toBe("harness_not_ready");
+    expect(body.error).toContain("not ready yet (checking)");
     const missing = await (async () => {
       fakeCore({ "claude-code": { status: "available" }, codex: { status: "missing", reason: "not-found" } });
       return bodyOf(await create(key));

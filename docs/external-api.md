@@ -378,7 +378,7 @@ the tools below are available to the model.
 | --- | --- |
 | `list_cores` | the Cores the key reaches, with their connection state |
 | `list_agents` | Agents, optionally on one Core |
-| `create_agent` | an Agent on a Core: `coreId`, `name`, `harness`, optional `model` and `flags` from the closed set (`skip-permissions`); no command, arguments, script or environment. A `409` starts with a code: `core_harnesses_unavailable` (the Core cannot be asked) or `harness_missing_on_core` (not available there; the text says "not ready yet" while the harness is still being checked, so ask again) |
+| `create_agent` | an Agent on a Core: `coreId`, `name`, `harness`, optional `model` and `flags` from the closed set (`skip-permissions`); no command, arguments, script or environment. A `409` starts with a code: `core_harnesses_unavailable` (the Core cannot be asked), `harness_not_ready` (the harness is still being checked, so ask again) or `harness_missing_on_core` (not available there) |
 | `update_agent` | an Agent's `name`, `model` and/or `flags` in place, the id stays; the harness and the Core cannot change; `409` for a default Agent |
 | `delete_agent` | removes an Agent (marked `destructiveHint`); `409` for a default Agent |
 | `get_tasks` | Tasks, optionally one `status` or one `coreId` |

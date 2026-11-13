@@ -43,6 +43,7 @@ import {
   updateAgent,
   CoreHarnessesUnavailableError,
   HarnessMissingOnCoreError,
+  HarnessNotReadyError,
   type Agent,
 } from "../services/agents";
 import { getOperator } from "../services/operator";
@@ -199,13 +200,14 @@ export async function getAgentV1(principal: ApiPrincipal, id: string): Promise<R
 /**
  * An Agent write's error as a response. When the Core cannot be asked, or does
  * not have the harness, the 409 also carries a stable `code`
- * (`core_harnesses_unavailable`, `harness_missing_on_core`) a client can branch
- * on; the words of the second say when the harness is only still being checked.
+ * (`core_harnesses_unavailable`, `harness_missing_on_core`, `harness_not_ready`)
+ * a client can branch on; the last is a harness still being checked: ask again.
  */
 export function agentWriteError(e: unknown): Response {
   if (
     e instanceof CoreHarnessesUnavailableError ||
-    e instanceof HarnessMissingOnCoreError
+    e instanceof HarnessMissingOnCoreError ||
+    e instanceof HarnessNotReadyError
   ) {
     return json({ error: e.message, code: e.code }, { status: HTTP_CONFLICT });
   }

@@ -198,7 +198,7 @@
           "400": { "description": "Validation error" },
           "403": { "description": "Key does not reach the Core, or lacks the permission the route needs" },
           "404": { "description": "Core not found" },
-          "409": { "description": "Conflict. When the Core's harness check refuses it, the body also carries `code`: `core_harnesses_unavailable` (the Core cannot be asked) or `harness_missing_on_core` (its text says 'not ready yet' while the harness is still being checked)" },
+          "409": { "description": "Conflict. When the Core's harness check refuses it, the body also carries `code`: `core_harnesses_unavailable` (the Core cannot be asked), `harness_not_ready` (the harness is still being checked: ask again) or `harness_missing_on_core` (not available there)" },
           "401": { "description": "Unauthorized" }
         }
       }

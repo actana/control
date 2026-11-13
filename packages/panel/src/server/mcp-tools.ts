@@ -135,7 +135,8 @@ export const MCP_TOOLS: readonly McpTool[] = [
     description:
       "Create an Agent: a named harness with a model and flags on one Core. The Core must be online and report the harness ready. " +
       "Refusals are 409 and start with a code: core_harnesses_unavailable (the Core cannot be asked right now: it is offline, try again later), " +
-      "harness_missing_on_core (not available there; when its text says 'not ready yet' the Core is still checking the harness: ask again shortly, otherwise it is not installed, outdated or needs setup).",
+      "harness_not_ready (the Core is still checking the harness: ask again shortly), " +
+      "harness_missing_on_core (not available there: it is not installed, outdated or needs setup).",
     readOnly: false,
     permission: "agents:write",
     input: z.strictObject({

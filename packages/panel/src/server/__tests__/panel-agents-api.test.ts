@@ -125,12 +125,12 @@ describe("POST /api/cores/:id/agents", () => {
     expect(await res.json()).toMatchObject({ code: "core_harnesses_unavailable" });
   });
 
-  it("answers 409 harness_missing_on_core, and says 'not ready yet' for a harness still checking", async () => {
+  it("answers 409 harness_not_ready for a harness still checking and harness_missing_on_core for a missing one", async () => {
     availability = { "claude-code": { status: "available" }, codex: { status: "checking" }, pi: { status: "missing", reason: "not-found" } };
     const checking = await call("/api/cores/core-a/agents", { method: "POST", json: { name: "X", harness: "codex" } });
     expect(checking.status).toBe(409);
     const checkingBody = (await checking.json()) as { code: string; error: string };
-    expect(checkingBody.code).toBe("harness_missing_on_core");
+    expect(checkingBody.code).toBe("harness_not_ready");
     expect(checkingBody.error).toContain("not ready yet (checking)");
     const missing = await call("/api/cores/core-a/agents", { method: "POST", json: { name: "X", harness: "pi" } });
     const missingBody = (await missing.json()) as { code: string; error: string };
