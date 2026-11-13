@@ -276,6 +276,13 @@ describe("MCP", () => {
     expect(by("get_tasks")).toContain("sessionState");
   });
 
+  it("the get_task description lists the prompt fields the payload carries, source included (#991)", async () => {
+    const c = await mcp();
+    const tools = await c.listTools();
+    const desc = tools.find((t) => t.name === "get_task")!.description;
+    expect(desc).toContain("prompt: { text, options?, kind, source, at }");
+  });
+
   it("the get_tasks description and the instructions say: list with get_tasks, read one brief with get_task (#957)", async () => {
     const c = await mcp();
     const init = await c.rpc("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "t", version: "1" } });
