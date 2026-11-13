@@ -3,6 +3,7 @@ import * as path from "node:path";
 import { describe, expect, it } from "vitest";
 import { HARNESSES } from "@actana/shared/domain";
 import { classifyDialog } from "@actana/shared/harness-dialog-classifier";
+import { renderScreenText } from "@actana/shared/screen-text";
 import type { DialogKind } from "@actana/shared/harness-dialog-classifier";
 import { HARNESS_DIALOG_RULES } from "@actana/shared/harness-dialog-rules";
 
@@ -98,6 +99,58 @@ describe("negative fixtures (a working spinner, an idle composer)", () => {
         expect(classifyDialog(harness, read(f.file)), `${f.file} as ${harness}`).toBeNull();
       }
     }
+  });
+});
+
+describe("an idle composer under a reply that asks a question is not a dialog", () => {
+  // Agents often end a turn with a question. With the Stop hook lost, the Session sits at its composer: the weak
+  // rules must not read that reply plus the composer as a blocked dialog.
+  const COMPOSERS: { file: string; harness: string; reply: string }[] = [
+    { file: "claude-code-2.1.228-composer.txt", harness: "claude-code", reply: "● All tests pass. Do you want to merge it now?" },
+    { file: "claude-code-2.1.235-composer.txt", harness: "claude-code", reply: "● All tests pass. Do you want to merge it now?" },
+    { file: "codex-0.153.0-composer.txt", harness: "codex", reply: "• All tests pass. Would you like to also bump the version? If yes, say so." },
+    { file: "codex-0.153.0-idle.txt", harness: "codex", reply: "• All tests pass. Would you like to also bump the version? If yes, say so." },
+  ];
+
+  /** The reply goes on the line above the composer: above `❯`'s top rule (Claude) or above `›` (Codex). */
+  function withReply(harness: string, file: string, reply: string): string {
+    const lines = renderScreenText(read(file)).split("\n");
+    const prompt = harness === "claude-code" ? /^\s*❯/ : /^\s*›/;
+    let at = -1;
+    lines.forEach((l, i) => {
+      if (prompt.test(l)) at = i;
+    });
+    expect(at, `${file} has a composer row`).toBeGreaterThan(-1);
+    let insertAt = at;
+    if (harness === "claude-code") {
+      while (insertAt > 0 && !/^\s*[─━]{3,}\s*$/.test(lines[insertAt - 1]!) && !/^\s*[─━]{3,}\s*$/.test(lines[insertAt]!)) insertAt--;
+      while (insertAt > 0 && /^\s*[─━]{3,}\s*$/.test(lines[insertAt - 1]!)) insertAt--;
+      if (!/^\s*[─━]{3,}\s*$/.test(lines[insertAt]!)) insertAt = at;
+    }
+    return [...lines.slice(0, insertAt), reply, ...lines.slice(insertAt)].join("\n");
+  }
+
+  for (const c of COMPOSERS) {
+    it(`${c.file} stays null with a question above it`, () => {
+      expect(classifyDialog(c.harness, withReply(c.harness, c.file, c.reply))).toBeNull();
+    });
+    it(`${c.file} stays null with a question above it under the other phrasing`, () => {
+      const other = c.harness === "claude-code" ? "● Would you like to continue? If yes, I will." : "• Do you want to merge it now?";
+      expect(classifyDialog(c.harness, withReply(c.harness, c.file, other))).toBeNull();
+    });
+  }
+
+  it("a numbered Claude option row boxed between two rules stays matchable (❯ 1. Yes is not a composer)", () => {
+    const rule = "─".repeat(40);
+    const boxed = ["● Done.", rule, " Do you want to proceed?", rule, "❯ 1. Yes", rule].join("\n");
+    expect(classifyDialog("claude-code", boxed)?.ruleId).toBe("legacy_no_prompt_blocker");
+    const above = ["Do you want to proceed?", rule, "❯ 1. Yes", rule, "  2. No"].join("\n");
+    expect(classifyDialog("claude-code", above)?.ruleId).toBe("legacy_no_prompt_blocker");
+  });
+
+  it("a numbered Codex option row stays matchable (› 1. Yes is not a composer)", () => {
+    const screen = ["• Run the migration?", "  Would you like to run the command?", "", "› 1. Yes, proceed (y)", "  2. No, and tell Codex what to do differently (esc)", "", "  gpt-5.6-sol default · ~/projects/api"].join("\n");
+    expect(classifyDialog("codex", screen)?.ruleId).toBe("weak_blocker");
   });
 });
 

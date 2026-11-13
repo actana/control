@@ -83,7 +83,13 @@ export const codexDialogRules: DialogRuleFile = {
       options: "numbered",
       // A sparkle can replace the space after ›; a later response marker makes
       // that prompt stale.
-      not: [{ regex: [/^›[⠁⠂⠄⠈⠐⠠⡀⢀][^\n]*(?:\n(?:[^•■✗✓\n][^\n]*)?)*(?![\s\S])/m] }],
+      not: [
+        { regex: [/^›[⠁⠂⠄⠈⠐⠠⡀⢀][^\n]*(?:\n(?:[^•■✗✓\n][^\n]*)?)*(?![\s\S])/m] },
+        // The idle composer: a `›` line that is not a numbered option (`› 1. Yes` stays matchable), then its status
+        // line (`model · cwd`, or `? for shortcuts` before the model is known). A reply above that asks a question
+        // is not a dialog.
+        { regex: [/^\s*›\s+(?!\d+[.)])\S[^\n]*\n(?:[ \t]*\n)*[ \t]+(?!\d+[.)])(?:\?\s+for shortcuts|\S.*·)/m] },
+      ],
       any: [
         { contains: ["[y/n]"] },
         { contains: ["yes (y)"] },

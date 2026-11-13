@@ -144,7 +144,9 @@ export const claudeCodeDialogRules: DialogRuleFile = {
         { contains: ["review your answers"] },
         { contains: ["skip interview and plan immediately"] },
       ],
-      not: [{ regex: [/^\s*❯\s*$/m] }],
+      // An idle composer is no dialog, whatever the last reply asked: a bare `❯` row (a composer with no hint),
+      // or the `❯` input row boxed between two horizontal rules (`❯ Try "…"`, typed text, a stale draft); a numbered `❯ 1. Yes` option is not one.
+      not: [{ regex: [/^\s*❯\s*$/m] }, { regex: [/^\s*[─━]{3,}[^\n]*\n\s*❯(?!\s*\d+[.)])[^\n]*\n\s*[─━]{3,}/m] }],
     },
   ],
 };
