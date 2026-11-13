@@ -1,3 +1,4 @@
+import { readCoreCapacity } from "../services/core-capacity";
 import { z } from "zod";
 import { forbidden, json, noContent, notFound, parseJsonBody, rethrowUnlessDomain } from "./_helpers";
 import { HTTP_BAD_REQUEST, HTTP_CREATED } from "~/shared/http-status";
@@ -44,7 +45,7 @@ const pairBody = z.object({
 /** The row, its live link, and where its Shared folder stands (absent for a Core registered before 0.5.0). */
 async function withDial(core: Core, sharedFolder?: CoreSharedFolder): Promise<CoreWithDial> {
   const folder = sharedFolder ?? (await describeSharedFolder(core.id));
-  return { ...core, dial: coreLinkManager().status(core.id), ...(folder ? { sharedFolder: folder } : {}) };
+  return { ...core, dial: coreLinkManager().status(core.id), ...(folder ? { sharedFolder: folder } : {}), ...(await readCoreCapacity(core.id)) };
 }
 
 /**

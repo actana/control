@@ -12,10 +12,13 @@ import { MarkdownField } from "~/components/views/MarkdownField";
 import { TaskMarkdown } from "~/components/views/TaskMarkdown";
 import { api } from "~/lib/api";
 import { useFleet } from "~/lib/fleet-context";
+import { formatAutoRetryLine } from "~/lib/task-auto-retry";
 import { formatRelativeTime } from "~/lib/format-relative-time";
+import { sessionStateBadge } from "~/lib/task-session-state";
+import { TaskSessionBadge } from "~/components/views/TaskSessionBadge";
 import { requestSessionOpen } from "~/lib/session-notification-store";
 import { TASK_STATUS_LABEL } from "~/lib/task-board";
-import { queryKeys, useArchivedSessions, useCoreAgents, useSessions, useTask } from "~/queries";
+import { queryKeys, useArchivedSessions, useCoreAgents, useSessionRowById, useSessions, useTask } from "~/queries";
 import {
   FINISHED_TASK_STATUSES,
   canDeleteTask,
@@ -23,7 +26,7 @@ import {
   formatTaskTimeLimit,
   canEditTask,
   canStopTask,
-  parseTaskDispatchComment,
+  resolveAttemptSessions,
   parseTaskTimeLimitChangeComment,
 } from "~/shared/tasks";
 import { taskFolderPath } from "~/shared/shared-files";
@@ -126,10 +129,15 @@ function OpenAttemptSession({
   const core = cores.find((c) => c.id === coreId);
   const coreReachable = core?.dial.state === "connected";
   const sessions = useSessions(coreId);
-  const active = sessions.data?.find((s) => s.id === sessionId);
+  const inFirstPage = sessions.data?.find((s) => s.id === sessionId);
+  // The bucket holds one page of rows (#960): a Session past it is still live.
+  // Ask the Core for that one row before calling it gone or archived.
+  const needByIdCheck = !!core && !!coreReachable && sessions.isFetched && !sessions.isError && !inFirstPage;
+  const byId = useSessionRowById(coreId, sessionId, { enabled: needByIdCheck });
+  const active = inFirstPage ?? byId.data ?? undefined;
   // Archived rows live in their own bucket (ADR 0019); ask only when the active
-  // list has answered and this Session was not in it.
-  const needArchivedCheck = !!core && !!coreReachable && sessions.isFetched && !sessions.isError && !active;
+  // list and the by-id read have both answered and this Session was in neither.
+  const needArchivedCheck = needByIdCheck && byId.isFetched && !byId.isError && !active;
   const archived = useArchivedSessions(coreId, { enabled: needArchivedCheck });
   const inArchived = !!archived.data?.some((s) => s.id === sessionId);
 
@@ -240,8 +248,11 @@ export function TaskDetail({ taskId, onClose, focusComposer = false }: { taskId:
   };
 
   const refresh = () => queryClient.invalidateQueries({ queryKey: queryKeys.tasks });
+  // A comment on a running Task is typed into its Session unless the Operator turns it off (#935, now mode).
+  const [sendIntoSession, setSendIntoSession] = useState(true);
   const comment = useMutation({
-    mutationFn: (reassign: boolean) => api.commentOnTask(taskId, { body: draft, reassign }, ...(attachments.length > 0 ? [attachments] : [])),
+    mutationFn: (reassign: boolean) =>
+      api.commentOnTask(taskId, { body: draft, reassign, ...(!reassign && task?.status === "in_progress" && sendIntoSession ? { deliver: "now" as const } : {}) }, ...(attachments.length > 0 ? [attachments] : [])),
     onSuccess: async () => {
       setDraft("");
       setAttachments([]);
@@ -285,8 +296,8 @@ export function TaskDetail({ taskId, onClose, focusComposer = false }: { taskId:
   const stopOutcome = stop.data?.session ?? null;
   // Without a dispatch comment for the current attempt (the Session is still starting, the Panel restarted mid-start, or the
   // comment failed to write) no per-attempt Stop exists, so the header offers the only one.
-  const hasCurrentDispatch =
-    !!task && comments.some((c) => c.authorKind === "system" && parseTaskDispatchComment(c.body)?.attempt === task.attemptCount);
+  const attemptSessions = resolveAttemptSessions(comments);
+  const hasCurrentDispatch = !!task && attemptSessions.some((s) => s.attempt === task.attemptCount);
   const stopNotice =
     stopOutcome && stopOutcome.outcome !== "stopped" && stopOutcome.outcome !== "not-running"
       ? `The Task was failed, but its Session could not be stopped (${stopOutcome.outcome})${stopOutcome.detail ? `: ${stopOutcome.detail}` : ""}. It may still be running.`
@@ -376,6 +387,18 @@ export function TaskDetail({ taskId, onClose, focusComposer = false }: { taskId:
             {core ? <Badge>{core.label}</Badge> : null}
             {agent ? <Badge>Agent: {agent.name}</Badge> : null}
           </div>
+          {sessionStateBadge(task.sessionState) ? (
+            <div data-session-state-line style={{ display: "flex", alignItems: "center", fontFamily: "var(--mono)", fontSize: 12, color: "var(--text-dim)" }}>
+              <TaskSessionBadge state={task.sessionState} />
+              {task.sessionStateAt !== null ? <span style={{ marginLeft: 8 }}>since {formatRelativeTime(task.sessionStateAt)}</span> : null}
+            </div>
+          ) : null}
+          {task.autoRetry ? (
+            <div data-auto-retry-line style={{ display: "flex", flexDirection: "column", gap: 2, fontFamily: "var(--mono)", fontSize: 12, color: "var(--text-dim)" }}>
+              <span>{formatAutoRetryLine(task.autoRetry)}</span>
+              {task.autoRetry.notice ? <span>{task.autoRetry.notice.text}</span> : null}
+            </div>
+          ) : null}
           <section aria-label="Time limit" style={{ display: "flex", flexDirection: "column", gap: 8, padding: 14, border: "1px solid var(--border)", borderRadius: isPhone ? 12 : 8 }}>
             <div style={{ display: "flex", gap: 12, alignItems: "baseline", flexWrap: "wrap" }}>
               <span style={{ fontFamily: "var(--mono)", fontSize: 11, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--text-dim)" }}>Time limit</span>
@@ -448,8 +471,9 @@ export function TaskDetail({ taskId, onClose, focusComposer = false }: { taskId:
           </section>
           <section aria-label="Comments" style={{ display: "flex", flexDirection: "column", gap: 10 }}>
             <h3 style={{ fontFamily: "var(--mono)", fontSize: 12, letterSpacing: "0.08em", textTransform: "uppercase" }}>Comments</h3>
-            {comments.map((c) => {
-              const dispatch = c.authorKind === "system" ? parseTaskDispatchComment(c.body) : null;
+            {comments.map((c, index) => {
+              // A `Resumed Session` comment opens the same Session as the dispatch comment that started it.
+              const dispatch = attemptSessions.find((s) => s.index === index) ?? null;
               return (
                 <article key={c.id} data-comment-kind={c.authorKind} style={{ padding: 12, borderRadius: 6, borderLeft: `3px solid ${KIND_COLOR[c.authorKind]}`, background: "var(--surface-1)" }}>
                   <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--text-dim)" }}>
@@ -499,6 +523,12 @@ export function TaskDetail({ taskId, onClose, focusComposer = false }: { taskId:
               </Btn>
               </div>
             </div>
+            {task.status === "in_progress" ? (
+              <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12 }}>
+                <input type="checkbox" checked={sendIntoSession} onChange={(e) => setSendIntoSession(e.target.checked)} />
+                Also type it into the running Session (off: a note only)
+              </label>
+            ) : null}
             <FormErrorBox error={message(comment.error) ?? message(move.error)} />
           </section>
   ) : null;

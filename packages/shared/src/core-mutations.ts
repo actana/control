@@ -15,6 +15,7 @@
 // `core-query.ts`.
 
 import { newClientId } from "./client-id";
+import { querySessionPage, type SessionPageQuery } from "./session-paging";
 import type { CoreSessionRow } from "./core-query";
 import type {
   CoreLinkSessionMutation,
@@ -302,4 +303,42 @@ export function querySessions(
     status: row.status,
     updatedAt: row.updated_at,
   }));
+}
+
+/**
+ * A lean row of a paged `sessionsList`: the live-session snapshot plus what a
+ * list needs to name a Session — never a prompt or a transcript (#960).
+ */
+export type PagedSessionSnapshot = CoreLinkSessionSnapshot & {
+  title: string;
+  agent: string;
+  pinned: boolean;
+  archived: boolean;
+};
+
+/**
+ * One page of the sessions view, newest activity first (running and waiting
+ * first). The live-PTY probe runs only for the rows on the page — the whole
+ * point of paging a Core with thousands of Sessions.
+ */
+export function querySessionSnapshotPage(
+  sqlite: CoreMutationSqlite,
+  query: SessionPageQuery,
+  probe: LivePtyProbe,
+): { sessions: PagedSessionSnapshot[]; nextCursor: string | null; total: number } {
+  const page = querySessionPage(sqlite, query);
+  return {
+    sessions: page.rows.map((row) => ({
+      sessionId: row.sessionId,
+      ptyId: probe(row.sessionId),
+      status: row.status,
+      updatedAt: row.updatedAt,
+      title: row.title,
+      agent: row.agent,
+      pinned: row.pinned,
+      archived: row.archived,
+    })),
+    nextCursor: page.nextCursor,
+    total: page.total,
+  };
 }

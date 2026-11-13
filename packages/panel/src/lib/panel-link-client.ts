@@ -93,6 +93,36 @@ type UnsentRequest = CoreLinkRequestFrame extends infer F
     : never
   : never;
 
+/**
+ * Requests that change a Session or a PTY. Rejected at once while the link is
+ * down and never queued (#964): a queued keystroke, resize, kill or lock claim
+ * would be sent minutes later, into whatever the Session is doing by then — a
+ * replayed Enter answers a dialog nobody has seen. Read requests are not here;
+ * they may wait for the link, but only briefly ({@link QUEUED_FRAME_TTL_MS}).
+ *
+ * `spawn` is deliberately not here: a pane mounting before the tab's first
+ * socket has opened has to start its PTY, and a spawn that waits for the link
+ * dies with its request or after {@link QUEUED_FRAME_TTL_MS}, like a read.
+ */
+const NEVER_QUEUED_REQUESTS: ReadonlySet<string> = new Set([
+  "write",
+  "resize",
+  "kill",
+  "killLaunchProcesses",
+  "claim",
+  "release",
+  "forceTakeover",
+  "reclaim",
+  "sessionsMutate",
+  "harnessPrompt",
+]);
+
+/** A frame queued while the link was down is dropped, not sent, once older than this. */
+const QUEUED_FRAME_TTL_MS = 5_000;
+
+/** A frame waiting for the link, with the request it belongs to (if any). */
+type QueuedFrame = { payload: string; reqId: string | null; queuedAt: number };
+
 type Pending = {
   resolve: (frame: CoreLinkResponseFrame) => void;
   reject: (err: Error) => void;
@@ -168,7 +198,7 @@ export class PanelLinkClient {
 
   private reqSeq = 0;
   private readonly pending = new Map<string, Pending>();
-  private readonly queued: string[] = [];
+  private readonly queued: QueuedFrame[] = [];
   private readonly watching = new Map<string, Watch>();
   /**
    * The PTYs this tab is rendering, as `coreId` → `ptyId`s. It lives here for
@@ -252,15 +282,20 @@ export class PanelLinkClient {
     frame: UnsentRequest,
   ): Promise<T> {
     if (this.closed) throw new Error("panel link closed");
+    if (NEVER_QUEUED_REQUESTS.has(frame.type) && (!this.socket || !this.open)) {
+      throw new Error(`panel link is down: ${frame.type} was not sent`);
+    }
     const reqId = `p${++this.reqSeq}`;
     const outgoing = { ...frame, reqId } as CoreLinkRequestFrame;
     const response = await new Promise<CoreLinkResponseFrame>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(reqId);
+        // A frame still waiting for the link dies with its request.
+        this.dropQueued(reqId);
         reject(new Error(`panel-link ${outgoing.type} timed out`));
       }, this.requestTimeoutMs);
       this.pending.set(reqId, { resolve, reject, timer });
-      this.write({ t: "core", coreId, frame: outgoing });
+      this.write({ t: "core", coreId, frame: outgoing }, reqId);
     });
     if (response.type === "error" || response.type === "spawnError") {
       throw new Error(response.message);
@@ -383,6 +418,9 @@ export class PanelLinkClient {
   driveSession(coreId: string, sessionId: string, opts: { take?: boolean } = {}): void {
     const take = opts.take === true;
     if (take) {
+      // A keyboard grab is a lock claim: never queued (#964). The operator's
+      // gesture is gone by the time a link returns.
+      if (!this.socket || !this.open) return;
       this.write({ t: "drive", coreId, sessionId, want: "take" });
       return;
     }
@@ -555,7 +593,35 @@ export class PanelLinkClient {
     for (const [reqId, pending] of this.pending) {
       clearTimeout(pending.timer);
       this.pending.delete(reqId);
+      this.dropQueued(reqId);
       pending.reject(new Error(message));
+    }
+  }
+
+  /** Remove the frame still queued for a request that has ended. */
+  private dropQueued(reqId: string): void {
+    const at = this.queued.findIndex((q) => q.reqId === reqId);
+    if (at >= 0) this.queued.splice(at, 1);
+  }
+
+  /**
+   * Send what waited for this link, minus what is too old to still mean what
+   * its sender meant (#964). A stale frame's request is rejected rather than
+   * left to wait out its timeout for an answer that will never come.
+   */
+  private flushQueued(): void {
+    const now = Date.now();
+    for (const q of this.queued.splice(0)) {
+      if (now - q.queuedAt <= QUEUED_FRAME_TTL_MS) {
+        this.rawSend(q.payload);
+        continue;
+      }
+      const pending = q.reqId ? this.pending.get(q.reqId) : undefined;
+      if (q.reqId && pending) {
+        clearTimeout(pending.timer);
+        this.pending.delete(q.reqId);
+        pending.reject(new Error("panel link was down too long: request dropped"));
+      }
     }
   }
 
@@ -602,7 +668,7 @@ export class PanelLinkClient {
       for (const coreId of this.watching.keys()) this.sendSubscribe(coreId);
       this.resendPtySubscriptions();
       this.resendSessionDrives();
-      for (const frame of this.queued.splice(0)) this.rawSend(frame);
+      this.flushQueued();
       for (const cb of this.connectionListeners) cb(true);
     });
 
@@ -716,15 +782,17 @@ export class PanelLinkClient {
     }
   }
 
-  private write(frame: Parameters<typeof encodePanelLinkFrame>[0]): void {
-    this.rawSend(encodePanelLinkFrame(frame));
+  private write(frame: Parameters<typeof encodePanelLinkFrame>[0], reqId: string | null = null): void {
+    this.rawSend(encodePanelLinkFrame(frame), reqId);
   }
 
-  private rawSend(payload: string): void {
+  private rawSend(payload: string, reqId: string | null = null): void {
     if (!this.socket || !this.open) {
-      // Not up yet (first paint, or mid-reconnect). Queue rather than fail:
-      // pending requests already carry their own timeout.
-      this.queued.push(payload);
+      // Not up yet (first paint, or mid-reconnect). Queue rather than fail for
+      // a read: its request carries its own timeout, which removes the frame
+      // with it, and the frame expires on reconnect. Requests that change a
+      // Session or a PTY never get here ({@link NEVER_QUEUED_REQUESTS}).
+      this.queued.push({ payload, reqId, queuedAt: Date.now() });
       return;
     }
     try {

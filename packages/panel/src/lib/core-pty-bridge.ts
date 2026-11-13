@@ -58,6 +58,18 @@ export type CorePtyBridge = {
    * is already painting.
    */
   onReconnect: (cb: () => void) => () => void;
+  /**
+   * Whether the tab's link is open right now (#964). A pane that may not send
+   * while it is down reads this; `write` and the other Session/PTY requests
+   * reject at once in that window rather than wait for the link.
+   */
+  isLinkUp: () => boolean;
+  /**
+   * Link down / link up, as it happens. "Up" fires after the link has
+   * re-subscribed this tab's PTYs, so a pane that accepts input again on it is
+   * accepting it on a stream that is already coming back.
+   */
+  onLinkChange: (cb: (up: boolean) => void) => () => void;
 };
 
 const bridges = new WeakMap<PanelLinkClient, Map<string, CorePtyBridge>>();
@@ -145,6 +157,8 @@ function createCorePtyBridge(link: PanelLinkClient, coreId: string): CorePtyBrid
         if (msg.coreId !== coreId) return;
         cb({ ptyId: msg.ptyId, exitCode: msg.exitCode, signal: msg.signal });
       }),
+    isLinkUp: () => link.isConnected(),
+    onLinkChange: (cb) => link.onConnectionChange(cb),
     onReconnect: (cb) => {
       let wasDown = false;
       return link.onConnectionChange((connected) => {

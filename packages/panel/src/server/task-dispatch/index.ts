@@ -3,14 +3,17 @@ import type { TaskSessionStopDto } from "~/shared/task-wire";
 import { OPERATOR_ID } from "../services/operator";
 import { TaskDispatcher } from "./dispatcher";
 import { ResultWatcher } from "./result-watcher";
+import { sessionPromptFeed } from "./task-answer";
 import { SharedChangeFeed, createS3Factory, createSharedFactory, createThroughCoreFactory, type SharedFactoryDeps } from "./shared-factory";
-import { startSessionOnCore } from "./session-starter";
+import { resumeSessionOnCore, startSessionOnCore } from "./session-starter";
 import { liveSessionsOnCore } from "./session-liveness";
-import { stopSessionOnCore } from "./session-stopper";
+import { sessionStatusesOnCore } from "./session-status";
+import { sessionStopper } from "./session-stopper";
 import { stopTaskRun } from "./stop-task";
+import { closeTaskSession } from "./close-session";
 import { coreLinkManager } from "../services/core-link-manager";
 import type { CoreS3Shared } from "../services/core-s3-shared";
-import { consoleDispatchLog, type Clock, type DispatchLog, type SessionLiveness, type SessionStarter, type SessionStopper } from "./types";
+import { consoleDispatchLog, type Clock, type DispatchLog, type SessionLiveness, type SessionResumer, type SessionStarter, type SessionStatusReader, type SessionStopper } from "./types";
 import type { AgentLookup } from "./dispatcher";
 
 /**
@@ -33,10 +36,17 @@ export type StartTaskDispatchOptions = {
   modes?: CoreS3Shared;
   throughCore?: SharedFactoryDeps["throughCore"];
   startSession?: SessionStarter;
+  /**
+   * How a re-assigned Task's own Session is continued (#955). The Panel's own link to the Core by default; when a test
+   * hands in `startSession` and no resumer, there is none (its fake Sessions are not on any Core's link).
+   */
+  resumeSession?: SessionResumer;
   /** How a Session is stopped (#723). The Panel's own link to the Core by default. */
   stopSession?: SessionStopper;
   /** Which Sessions are live on a Core, for the watcher's once-a-minute check. The Panel's own link by default. */
   liveSessions?: SessionLiveness;
+  /** The Core's status of each Session, read on adoption and once a minute (#949). The Panel's own link by default. */
+  sessionStatuses?: SessionStatusReader;
   minutePassMs?: number;
   agents?: AgentLookup;
   now?: Clock;
@@ -49,22 +59,33 @@ export type StartTaskDispatchOptions = {
 export function startTaskDispatch(opts: StartTaskDispatchOptions = {}): void {
   if (running) return;
   const feed = new SharedChangeFeed();
-  const detachFeed = feed.attach(coreLinkManager());
-  const stopSession = opts.stopSession ?? stopSessionOnCore;
+  const detachShared = feed.attach(coreLinkManager());
+  // The hook-side kind and options of a waiting prompt (#959): the Core's `session:prompt` events.
+  const detachPrompts = sessionPromptFeed().attach(coreLinkManager());
+  const detachFeed = (): void => {
+    detachShared();
+    detachPrompts();
+  };
+  const stopSession = opts.stopSession ?? sessionStopper;
+  let dispatcher: TaskDispatcher | null = null;
   const watcher = new ResultWatcher({
     stopSession,
+    onSlotFreed: (coreId) => dispatcher?.slotFreed(coreId),
     ownerId: OPERATOR_ID,
     liveSessions: opts.liveSessions ?? liveSessionsOnCore,
+    sessionStatuses: opts.sessionStatuses ?? sessionStatusesOnCore,
     ...(opts.minutePassMs !== undefined ? { minutePassMs: opts.minutePassMs } : {}),
     ...(opts.now ? { now: opts.now } : {}),
     ...(opts.watchPollMs ? { pollMs: opts.watchPollMs } : {}),
     ...(opts.exitGraceMs !== undefined ? { exitGraceMs: opts.exitGraceMs } : {}),
     ...(opts.log ? { log: opts.log } : {}),
   });
+  const resumeSession = opts.resumeSession ?? (opts.startSession ? undefined : resumeSessionOnCore);
   const throughCore = opts.throughCore ?? createThroughCoreFactory(feed, OPERATOR_ID);
-  const dispatcher = new TaskDispatcher({
+  dispatcher = new TaskDispatcher({
     ownerId: OPERATOR_ID,
     startSession: opts.startSession ?? startSessionOnCore,
+    ...(resumeSession ? { resumeSession } : {}),
     sharedFor: createSharedFactory({
       s3: opts.s3 ?? createS3Factory(OPERATOR_ID, opts.modes),
       throughCore,
@@ -102,9 +123,47 @@ export async function stopTask(
   id: string,
   input: { stoppedBy: string; reason?: string | null },
 ): Promise<{ task: Task; session: TaskSessionStopDto | null }> {
-  return stopTaskRun(ownerId, id, input, {
+  const stopped = await stopTaskRun(ownerId, id, input, {
     watcher: running?.watcher ?? null,
-    stopSession: running?.stopSession ?? stopSessionOnCore,
+    stopSession: running?.stopSession ?? sessionStopper,
     ...(running?.now ? { now: running.now } : {}),
   });
+  // The stopped Session's slot is free (#962): wake the Tasks waiting for one.
+  const coreId = stopped.session?.coreId ?? stopped.task.coreId;
+  if (coreId) running?.dispatcher.slotFreed(coreId);
+  return stopped;
+}
+
+/** `close_session` (#962): end a finished Task's harness and free its slot; see {@link closeTaskSession}. */
+export async function closeSession(ownerId: number, id: string, input: { closedBy: string }): Promise<{ task: Task; session: TaskSessionStopDto }> {
+  return closeTaskSession(ownerId, id, input, {
+    stopSession: running?.stopSession ?? sessionStopper,
+    slotFreed: (coreId) => running?.dispatcher.slotFreed(coreId),
+    ...(running?.now ? { now: running.now } : {}),
+  });
+}
+
+/**
+ * `waiting: Core full (n/max)` when the dispatcher knows this Core refused its last start for want of a slot and none
+ * has freed since (#962); null otherwise, or when dispatch is not running. `create_task` with `startNow` says it queued.
+ */
+export function coreWaitingReason(coreId: string): string | null {
+  return running?.dispatcher.coreWaitingReason(coreId) ?? null;
+}
+
+/**
+ * Why a Task just created with `startNow` on this Core will not start at once (#962): the Core is full, or has no live
+ * link. Null when nothing is known against it. The Task is queued either way and starts by itself.
+ */
+export function queuedReasonForNewTask(coreId: string): string | null {
+  const full = coreWaitingReason(coreId);
+  if (full) return full;
+  return coreLinkManager().client(coreId)?.sdk ? null : "waiting: Core not connected";
+}
+
+/** What a `startNow` answer adds when the Task was queued: `{}` when it starts at once. */
+export function queuedAnswer(startNow: boolean | undefined, coreId: string | null | undefined): { queued: true; waiting: string; message: string } | Record<string, never> {
+  const waiting = startNow && coreId ? queuedReasonForNewTask(coreId) : null;
+  if (!waiting) return {};
+  return { queued: true, waiting, message: `Queued, ${waiting}. The Task stays assigned and starts by itself when that clears.` };
 }

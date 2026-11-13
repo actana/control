@@ -14,6 +14,7 @@ import {
 } from "~/lib/core-rail";
 import { routeCoreIdFromLocation } from "~/lib/workspace-core-id";
 import { getCoreStatusDots } from "./core-status-dots";
+import { formatCoreCapacity } from "~/shared/cores";
 
 // The left rail: one tile per Core, in label order, ⌘1 to ⌘9 addressing the
 // first nine. There is nothing else on it.
@@ -63,19 +64,22 @@ export const CoreRail = memo(function CoreRail() {
         const active = activeCoreId === core.id;
         const hue = coreHue(core.id);
         const link = coreLinkLabel(core.dial);
+        const capacity =
+          core.maxSessions === undefined ? null : formatCoreCapacity({ liveSessions: core.liveSessions ?? null, maxSessions: core.maxSessions });
+        const full = core.liveSessions != null && core.maxSessions !== undefined && core.liveSessions >= core.maxSessions;
         return (
           <Link
             key={core.id}
             to="/cores/$coreId"
             params={{ coreId: core.id }}
-            aria-label={`${core.label}, ${link}`}
+            aria-label={`${core.label}, ${link}${capacity ? `, ${capacity} sessions` : ""}`}
             aria-current={active ? "page" : undefined}
             data-core-tile={core.id}
             data-core-slot={hotkey ?? undefined}
             title={
               hotkey
-                ? `${core.label} · ${link} · ${formatBinding({ ...slotBase, key: String(hotkey) })}`
-                : `${core.label} · ${link}`
+                ? `${core.label} · ${link}${capacity ? ` · ${capacity} live sessions` : ""} · ${formatBinding({ ...slotBase, key: String(hotkey) })}`
+                : `${core.label} · ${link}${capacity ? ` · ${capacity} live sessions` : ""}`
             }
             style={{
               position: "relative",
@@ -126,6 +130,23 @@ export const CoreRail = memo(function CoreRail() {
                 aria-label="Needs input"
                 style={{ position: "absolute", top: -4, right: -4, color: "var(--status-needs)" }}
               />
+            ) : null}
+            {capacity ? (
+              <span
+                data-core-capacity={capacity}
+                style={{
+                  position: "absolute",
+                  left: 0,
+                  right: 0,
+                  bottom: 1,
+                  textAlign: "center",
+                  fontSize: 8,
+                  lineHeight: 1,
+                  color: full ? "var(--status-needs)" : "var(--text-dim)",
+                }}
+              >
+                {capacity}
+              </span>
             ) : null}
             {hotkey ? (
               <span

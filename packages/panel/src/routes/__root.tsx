@@ -71,6 +71,7 @@ import { SessionNotificationsButton } from "~/components/views/SessionNotificati
 import { Toaster } from "sonner";
 import { MC_TOAST_CLASS_NAMES, MC_TOAST_CLOSE_ICON } from "~/lib/mc-toast";
 import { useSessionFinishNotifications } from "~/lib/use-session-finish-notifications";
+import { BlockedNotificationsMount } from "~/components/BlockedNotificationsMount";
 import { useEventStreamReconcile } from "~/lib/use-event-stream-reconcile";
 import {
   clearAppNotification,
@@ -161,6 +162,7 @@ function RootComponent() {
                        */}
                       <FirstRunGate>
                         <FleetProvider>
+                          <BlockedNotificationsMount />
                           <Shell />
                         </FleetProvider>
                       </FirstRunGate>

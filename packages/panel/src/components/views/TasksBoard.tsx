@@ -8,15 +8,18 @@ import { Icon } from "~/components/ui/Icon";
 import { api } from "~/lib/api";
 import { useBreakpoint } from "~/lib/breakpoint";
 import { useFleet } from "~/lib/fleet-context";
-import { queryKeys, useCoreAgents, useTasks } from "~/queries";
-import { BOARD_COLUMNS, columnTasks, taskCountsByCore, tasksForCore } from "~/lib/task-board";
+import { queryKeys, useCoreAgents, useTaskCounts, useTasksColumn } from "~/queries";
+import { needsAttention } from "~/lib/task-session-state";
+import { BOARD_COLUMNS, moveInCounts, moveInPages, statusesCount } from "~/lib/task-board";
 import { acceptsDrop, boardColumnOf, DROP_REASONS, dropDecision, type BoardColumnId } from "~/lib/task-board-drop";
 import { useBoardDrag, type TaskCardDrag } from "~/lib/use-board-drag";
 import { Z_INDEX } from "~/lib/z-index";
 import { TaskCard } from "~/components/views/TaskCard";
 import { NewTaskDialog } from "~/components/views/NewTaskDialog";
 import { TaskDetail } from "~/components/views/TaskDetail";
-import type { TaskDto } from "~/shared/task-wire";
+import type { InfiniteData } from "@tanstack/react-query";
+import { TASK_STATUSES } from "~/shared/tasks";
+import type { TaskCountsDto, TaskListDto, TasksPageDto } from "~/shared/task-wire";
 
 function Chip({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) {
   return (
@@ -49,7 +52,7 @@ function CardWithAgent({
   compact,
   placeholder,
 }: {
-  task: TaskDto;
+  task: TaskListDto;
   coreLabel: string | null;
   onOpen: (id: string) => void;
   onReply: (id: string) => void;
@@ -115,8 +118,24 @@ type DropState = "origin" | "allowed" | "refused";
  */
 export function TasksBoard({ coreId = null, openTaskId = null }: { coreId?: string | null; openTaskId?: string | null }) {
   const { cores } = useFleet();
-  const { data: tasks = [], isLoading, error } = useTasks();
   const [chip, setChip] = useState<string | null>(null);
+  // "Needs attention" (#954): a client-side filter over the loaded pages until the server filter (#951) lands.
+  const [attention, setAttention] = useState(false);
+  const filter = coreId ?? chip;
+  // One infinite query per column (#896): 10 Tasks a page, Load more for the next. Hooks, so all four are always asked.
+  const columnQueries = {
+    draft: useTasksColumn("draft", filter),
+    assigned: useTasksColumn("assigned", filter),
+    in_progress: useTasksColumn("in_progress", filter),
+    finished: useTasksColumn("finished", filter),
+  };
+  const counts = useTaskCounts().data;
+  // Every Task any column has loaded: the carried-card and refocus checks look across them.
+  const { draft, assigned, in_progress, finished } = columnQueries;
+  const tasks = useMemo(
+    () => [draft, assigned, in_progress, finished].flatMap((q) => q.data?.pages.flatMap((p) => p.tasks) ?? []),
+    [draft.data, assigned.data, in_progress.data, finished.data],
+  );
   const [creating, setCreating] = useState(false);
   // Phone and tablet show the columns a few at a time (M40): `page` is the first of them.
   const breakpoint = useBreakpoint();
@@ -131,9 +150,6 @@ export function TasksBoard({ coreId = null, openTaskId = null }: { coreId?: stri
   useEffect(() => {
     if (openTaskId) setOpen({ id: openTaskId, reply: false });
   }, [openTaskId]);
-  const filter = coreId ?? chip;
-  const visible = useMemo(() => tasksForCore(tasks, filter), [tasks, filter]);
-  const counts = useMemo(() => taskCountsByCore(tasks), [tasks]);
   const labelOf = (id: string | null) => (id ? (cores.find((c) => c.id === id)?.label ?? null) : null);
 
   // Dragging a card to another column (#827) makes the same one call as the
@@ -147,18 +163,32 @@ export function TasksBoard({ coreId = null, openTaskId = null }: { coreId?: stri
   const [refocus, setRefocus] = useState<{ id: string; column: BoardColumnId } | null>(null);
   const hintId = useId();
   const move = useMutation({
-    mutationFn: ({ task, to }: { task: TaskDto; to: "assigned" | "draft" }) => api.setTaskStatus(task.id, to),
+    mutationFn: ({ task, to }: { task: TaskListDto; to: "assigned" | "draft" }) => api.setTaskStatus(task.id, to),
     onMutate: async ({ task, to }) => {
       setMoving((s) => new Set(s).add(task.id));
-      await queryClient.cancelQueries({ queryKey: queryKeys.tasks, exact: true });
-      const prev = queryClient.getQueryData<TaskDto[]>(queryKeys.tasks);
-      queryClient.setQueryData<TaskDto[]>(queryKeys.tasks, (cur) =>
-        cur?.map((t) => (t.id === task.id ? { ...t, status: to, updatedAt: Date.now() } : t)),
-      );
+      // The poll must not land between the move and the answer; the columns and the counts are the ones it feeds.
+      await Promise.all([queryKeys.tasksColumns, queryKeys.tasksHeads, queryKeys.taskCounts].map((queryKey) => queryClient.cancelQueries({ queryKey })));
+      const prev = {
+        columns: queryClient.getQueriesData<InfiniteData<TasksPageDto, string | null>>({ queryKey: queryKeys.tasksColumns }),
+        counts: queryClient.getQueryData<TaskCountsDto>(queryKeys.taskCounts),
+      };
+      const from = boardColumnOf(task.status);
+      const target = boardColumnOf(to);
+      const moved: TaskListDto = { ...task, status: to, updatedAt: Date.now() };
+      // Both affected columns, whatever Core filter they were loaded for (["tasks", "column", column, coreId]).
+      for (const [key, data] of prev.columns) {
+        const [, , column, filterId] = key;
+        if (column === from) queryClient.setQueryData(key, moveInPages(data, task.id, null));
+        else if (column === target && (filterId === null || filterId === task.coreId)) queryClient.setQueryData(key, moveInPages(data, task.id, moved));
+      }
+      queryClient.setQueryData<TaskCountsDto>(queryKeys.taskCounts, (cur) => (cur ? moveInCounts(cur, task, to) : cur));
       return { prev };
     },
     onError: (err, { task }, ctx) => {
-      if (ctx?.prev) queryClient.setQueryData(queryKeys.tasks, ctx.prev);
+      if (ctx?.prev) {
+        for (const [key, data] of ctx.prev.columns) queryClient.setQueryData(key, data);
+        if (ctx.prev.counts) queryClient.setQueryData(queryKeys.taskCounts, ctx.prev.counts);
+      }
       // The optimistic render already used up the refocus; the rollback is a new element again.
       setRefocus({ id: task.id, column: boardColumnOf(task.status) });
       const message = err instanceof Error ? err.message : String(err);
@@ -175,7 +205,7 @@ export function TasksBoard({ coreId = null, openTaskId = null }: { coreId?: stri
     },
   });
   const labelOfColumn = (id: BoardColumnId) => BOARD_COLUMNS.find((c) => c.id === id)?.label ?? id;
-  const commitDrop = (task: TaskDto, target: BoardColumnId) => {
+  const commitDrop = (task: TaskListDto, target: BoardColumnId) => {
     const d = dropDecision(task, target);
     if (d.kind === "noop") {
       setAnnouncement("Cancelled.");
@@ -214,7 +244,7 @@ export function TasksBoard({ coreId = null, openTaskId = null }: { coreId?: stri
   useEffect(() => {
     if (!refocus) return;
     // Gone, or filtered out by a chip: it will not show, so do not wait to pull focus later.
-    if (!visible.some((t) => t.id === refocus.id)) {
+    if (!tasks.some((t) => t.id === refocus.id)) {
       setRefocus(null);
       return;
     }
@@ -230,7 +260,7 @@ export function TasksBoard({ coreId = null, openTaskId = null }: { coreId?: stri
     // Only if focus is still on the board's side of things: not if it went to a dialog.
     if (document.activeElement !== el && (document.activeElement === document.body || document.activeElement === null)) el.focus();
     setRefocus(null);
-  }, [refocus, visible, compact]);
+  }, [refocus, tasks, compact]);
   const dropStateOf = (col: BoardColumnId): DropState | undefined => {
     if (!drag) return undefined;
     if (boardColumnOf(drag.task.status) === col) return "origin";
@@ -242,7 +272,10 @@ export function TasksBoard({ coreId = null, openTaskId = null }: { coreId?: stri
   const perPage = single ? 1 : 2;
   const first = compact ? Math.min(page, BOARD_COLUMNS.length - perPage) : 0;
   const shown = compact ? BOARD_COLUMNS.slice(first, first + perPage) : BOARD_COLUMNS;
-  const countOf = (statuses: (typeof BOARD_COLUMNS)[number]["statuses"]) => columnTasks(visible, statuses).length;
+  const isLoading = shown.some((c) => columnQueries[c.id].isLoading);
+  const error = shown.map((c) => columnQueries[c.id].error).find((e) => e) ?? null;
+  // Counts are the server's, not what is loaded; blank until they arrive.
+  const countOf = (statuses: (typeof BOARD_COLUMNS)[number]["statuses"]) => (counts ? statusesCount(counts, statuses, filter) : "");
   // While a card is carried by pointer a bar pinned under the top bar offers the four drop targets (a held card
   // cancels touchmove, so nothing in the page flow could be reached); the segments stay in place, hidden.
   const dropGrid = compact && drag?.via === "pointer";
@@ -267,17 +300,24 @@ export function TasksBoard({ coreId = null, openTaskId = null }: { coreId?: stri
     <div style={{ display: "flex", flexDirection: "column", gap: 16, minHeight: 0 }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
         {coreId ? (
-          <div />
+          <div role="group" aria-label="Filter by attention" className={compact ? "mc-tasks-chips" : undefined} style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <Chip active={attention} onClick={() => setAttention((v) => !v)}>
+              Needs attention
+            </Chip>
+          </div>
         ) : (
           <div role="group" aria-label="Filter by Core" className={compact ? "mc-tasks-chips" : undefined} style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
             <Chip active={chip === null} onClick={() => setChip(null)}>
-              All Cores <small>{tasks.length}</small>
+              All Cores <small>{counts ? statusesCount(counts, TASK_STATUSES, null) : ""}</small>
             </Chip>
             {cores.map((c) => (
               <Chip key={c.id} active={chip === c.id} onClick={() => setChip(c.id)}>
-                {c.label} <small>{counts.get(c.id) ?? 0}</small>
+                {c.label} <small>{counts ? statusesCount(counts, TASK_STATUSES, c.id) : ""}</small>
               </Chip>
             ))}
+            <Chip active={attention} onClick={() => setAttention((v) => !v)}>
+              Needs attention
+            </Chip>
           </div>
         )}
         {compact ? null : (
@@ -358,7 +398,9 @@ export function TasksBoard({ coreId = null, openTaskId = null }: { coreId?: stri
           style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 16, alignItems: "start" }}
         >
           {shown.map((col) => {
-            const items = columnTasks(visible, col.statuses);
+            const query = columnQueries[col.id];
+            const loaded = query.data?.pages.flatMap((p) => p.tasks) ?? [];
+            const items = attention ? loaded.filter((t) => needsAttention(t.sessionState)) : loaded;
             // On a phone or tablet the drop targets are the segments (M41), not the list.
             const dropState = compact ? undefined : dropStateOf(col.id);
             const over = !compact && drag?.over === col.id;
@@ -387,7 +429,7 @@ export function TasksBoard({ coreId = null, openTaskId = null }: { coreId?: stri
                 <header style={{ display: "flex", alignItems: "center", gap: 8, fontFamily: "var(--mono)", fontSize: 12, letterSpacing: "0.08em", textTransform: "uppercase" }}>
                   <span aria-hidden style={{ width: 8, height: 8, borderRadius: "50%", background: col.color }} />
                   {compact ? SHORT_LABEL[col.id] : col.label}
-                  <span style={{ color: "var(--text-dim)" }}>{items.length}</span>
+                  <span style={{ color: "var(--text-dim)" }}>{countOf(col.statuses)}</span>
                   {single ? (
                     <span aria-hidden className="mc-tasks-pager">
                       {BOARD_COLUMNS.map((c) => (
@@ -412,6 +454,11 @@ export function TasksBoard({ coreId = null, openTaskId = null }: { coreId?: stri
                     placeholder={compact && drag?.via === "pointer" && drag.task.id === t.id}
                   />
                 ))}
+                {query.hasNextPage ? (
+                  <Btn variant="ghost" size="sm" disabled={query.isFetchingNextPage} onClick={() => void query.fetchNextPage()}>
+                    {query.isFetchingNextPage ? "Loading…" : "Load more"}
+                  </Btn>
+                ) : null}
               </section>
             );
           })}

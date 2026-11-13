@@ -1,0 +1,8 @@
+  ┃
+  ┃  Which database should the service use?
+  ┃
+  ┃  1. Postgres
+  ┃  2. SQLite
+  ┃  3. Type your own answer
+  ┃
+  ┃  ↑↓ select  enter submit  esc dismiss

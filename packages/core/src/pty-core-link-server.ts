@@ -78,6 +78,8 @@ import type { PtyCore, PtyCoreEvent } from "./pty-manager";
 import { CLIENT_KILL_REASON } from "./session-kill";
 import { CoreSessionWriter } from "./core-session-writer";
 import { SessionLockTable } from "./session-lock-table";
+import { readSessionPageRequest, type SessionPage, type SessionPageQuery } from "@actana/shared/session-paging";
+import type { PagedSessionSnapshot } from "@actana/shared/core-mutations";
 import { sessionFrameFieldRefusal, spawnFieldRefusal } from "./request-fields";
 import type { CoreSessionMutation } from "@actana/shared/core-mutations";
 import type { CoreSessionRow } from "@actana/shared/core-query";
@@ -140,6 +142,12 @@ export interface CoreQueryPort {
    * the Archived view has its own frame.
    */
   listSessionRows(): CoreSessionRow[];
+  /**
+   * One page of Sessions (#960): `limit`, `cursor` and the filters are the
+   * frame's. Absent on a port that predates paging; the frame then answers an
+   * empty page.
+   */
+  listSessionRowsPage?(query: SessionPageQuery): SessionPage;
   /**
    * Every archived session on this Core — the exact mirror of
    * `listSessionRows`, answering the `archivedSessionRowsList` frame.
@@ -266,6 +274,15 @@ export interface CoreMutationPort {
    * reattach to on reconnect.
    */
   listSessions(): CoreLinkSessionSnapshot[];
+  /**
+   * One page of the same list (#960), newest activity first, with the live-PTY
+   * probe run for the page's rows only.
+   */
+  listSessionsPage?(query: SessionPageQuery): {
+    sessions: PagedSessionSnapshot[];
+    nextCursor: string | null;
+    total: number;
+  };
 }
 
 export type PtyCoreLinkServerOptions = {
@@ -1449,6 +1466,17 @@ export class PtyCoreLinkServer {
     });
   }
 
+  /**
+   * True when a send into this PTY's Session must be refused: the Session is
+   * `needs-input`, parked on a dialog (#924). Unknown PTY, Session or query
+   * port is not blocked — there is nothing to say it is parked.
+   */
+  private isSendBlocked(ptyId: string): boolean {
+    const sessionId = this.core.sessionIdForPty(ptyId);
+    if (!sessionId || !this.queryPort) return false;
+    return this.queryPort.getSession(sessionId)?.status === "needs-input";
+  }
+
   private async dispatch(conn: ActiveConnection, frame: CoreLinkRequestFrame): Promise<void> {
     const ws = conn.ws;
     switch (frame.type) {
@@ -1523,6 +1551,23 @@ export class PtyCoreLinkServer {
       }
       case "write": {
         if (this.refuseLockedPty(conn, frame.reqId, frame.ptyId)) return;
+        // A stamped write is a send (#289 A); an attached terminal's keystrokes
+        // are not stamped and are never refused here. A Session parked on a
+        // dialog (`needs-input`) must not have text typed into it by a send: it
+        // would answer an approval by accident (#924). Nothing is written and
+        // the answer says `blocked`. `answer_task` (#959) will be the one
+        // deliberate path in, and will not travel as a plain send.
+        if (frame.stamp === true && this.isSendBlocked(frame.ptyId)) {
+          // `blocked` is a new result value on `writeResult`; the SDK frame type
+          // does not name it yet, and `ok: false` is what an older client reads.
+          this.send(ws, {
+            type: "writeResult",
+            reqId: frame.reqId,
+            ok: false,
+            blocked: true,
+          } as CoreLinkServerFrame);
+          return;
+        }
         const ok = this.core.write(frame.ptyId, frame.data);
         // The stamp goes in **after** the PTY took the bytes and **before** the
         // answer goes out, so the id the caller waits from cannot be older than
@@ -1734,6 +1779,29 @@ export class PtyCoreLinkServer {
         // Reader's terminal is decided to be read-only — before a keystroke,
         // which is the whole of what "published, not discovered by failing"
         // buys over the refusal that would otherwise be the first news of it.
+        // With `limit` this is one page (#960): the same rows, plus the cursor
+        // for the next one and the total the filters match. Without it, today's
+        // answer, so an older Panel keeps working.
+        const pageQuery = readSessionPageRequest(frame as Record<string, unknown>);
+        if (pageQuery) {
+          const page = this.queryPort?.listSessionRowsPage?.(pageQuery) ?? {
+            rows: [],
+            nextCursor: null,
+            total: 0,
+          };
+          // `nextCursor` and `total` are not in the published SDK's frame type
+          // (no new dependency), so the answer is built apart from the literal.
+          const answer = {
+            type: "sessionRowsListResult" as const,
+            reqId: frame.reqId,
+            sessions: this.withPublishedLock(conn, page.rows),
+            archivedCount: this.queryPort ? this.queryPort.countArchivedSessions() : 0,
+            nextCursor: page.nextCursor,
+            total: page.total,
+          };
+          this.send(ws, answer);
+          return;
+        }
         const sessions = this.withPublishedLock(
           conn,
           this.queryPort ? this.queryPort.listSessionRows() : [],
@@ -1829,6 +1897,23 @@ export class PtyCoreLinkServer {
         // saying whether this client may write to it. Same stamp, same rule as
         // `sessionRowsList` — a CLI and a Panel asking about one Session are asking
         // the same question and must not get different vocabularies for it.
+        const pageQuery = readSessionPageRequest(frame as Record<string, unknown>);
+        if (pageQuery) {
+          const page = this.mutationPort?.listSessionsPage?.(pageQuery) ?? {
+            sessions: [],
+            nextCursor: null,
+            total: 0,
+          };
+          const answer = {
+            type: "sessionsListResult" as const,
+            reqId: frame.reqId,
+            sessions: this.withPublishedLock(conn, page.sessions),
+            nextCursor: page.nextCursor,
+            total: page.total,
+          };
+          this.send(ws, answer);
+          return;
+        }
         const sessions = this.withPublishedLock(
           conn,
           this.mutationPort ? this.mutationPort.listSessions() : [],

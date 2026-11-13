@@ -1,0 +1,10 @@
+  $ npm test --silent
+
+ ⚠ Waiting for approval...
+
+ Run this command?
+ Not in allowlist: npm test --silent
+
+ → Run (once) (y) (enter)
+   Add Shell(npm) to allowlist? (tab)
+   Skip (esc or n)

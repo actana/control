@@ -138,6 +138,7 @@ import { parseArgs } from "./cli-args.ts";
 import { runClient } from "@actana/cli";
 import { registryPaths } from "./blob-registry.ts";
 import { runPairCommand } from "./actana-pair.ts";
+import { runTaskWait, TASK_WAIT_CURL } from "./task-wait.ts";
 import { EXIT_OK, EXIT_UNIMPLEMENTED, EXIT_USAGE } from "./exit-codes.ts";
 import { runActanaInstall } from "./actana-install.ts";
 import type { ActanaCliDeps } from "./cli-deps.ts";
@@ -218,6 +219,13 @@ This machine's own Core
   logs       Show the daemon's log output
   harnesses  Manage the Harnesses this Core runs — \`harnesses install <id>\`
   uninstall  Stop the daemon and remove the service and the install
+  task       \`task wait <url>\` — loop on a Task's status URL until it finishes
+             or its Session needs a person. No pairing, no key: the URL is the
+             credential. Exit codes: 0 done, 10 failed, 11 partial, 20 needs-input,
+             21 interrupted, 22 idle-no-result, 30 gone, 31 timeout, 1 error,
+             2 usage. Without \`actana\`, the same loop in a shell:
+               ${TASK_WAIT_CURL}
+             \`actana task wait --help\` has the options
 
 Client flags:
   --core <name>         Which registered Core to talk to
@@ -1595,6 +1603,20 @@ async function cmdLogs(deps: ActanaCliDeps, argv: string[]): Promise<number> {
   return deps.system.passthrough(command, args);
 }
 
+/**
+ * `actana task wait <url>` (#953). The only verb of the `task` noun, and a
+ * machine-side command rather than a client noun: it dials the Panel's public
+ * status URL, not a Core, so it needs no registration and works on a laptop
+ * with no Core at all.
+ */
+async function cmdTask(deps: ActanaCliDeps, argv: string[]): Promise<number> {
+  const [verb, ...rest] = argv;
+  if (verb === "wait") return runTaskWait(rest, { out: deps.out, err: deps.err }, deps.taskWait);
+  deps.err(verb === undefined ? "actana task: missing verb." : `actana task: unknown verb "${verb}".`);
+  deps.err("Usage: actana task wait <watch-url> [--until-final] [--timeout <minutes>] [--json]");
+  return EXIT_USAGE;
+}
+
 // ─── dispatch ───────────────────────────────────────────────────────────────
 
 /**
@@ -1693,6 +1715,8 @@ export async function runActanaCli(deps: ActanaCliDeps): Promise<number> {
       return cmdToken(deps, rest);
     case "pair":
       return cmdPair(deps, rest);
+    case "task":
+      return cmdTask(deps, rest);
     case "update":
       return cmdUpdate(deps, rest);
     case "start":

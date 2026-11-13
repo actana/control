@@ -122,3 +122,79 @@ describe("v1 Agents", () => {
     expect((await call("/api/v1/cores/core-b/agents", { bearer: key })).status).toBe(403);
   });
 });
+
+describe("v1 Agent update and the harness errors (#893)", () => {
+  const fakeCore = (availability: Record<string, unknown> | "offline") =>
+    vi.spyOn(coreLinkManager(), "client").mockImplementation(() =>
+      availability === "offline"
+        ? null
+        : ({ request: async () => ({ type: "agentsAvailabilityListResult", availability }) } as never),
+    );
+  const create = (key: string) =>
+    call("/api/v1/agents", { method: "POST", bearer: key, json: { coreId: "core-a", name: "New", harness: "codex" } });
+  const bodyOf = async (res: Response) => (await res.json()) as { error: string; code?: string; agent?: Record<string, unknown> };
+
+  it("PATCH changes the model under the same id, and a later GET shows it", async () => {
+    const { key } = await createKey();
+    const res = await call("/api/v1/agents/agent-a", { method: "PATCH", bearer: key, json: { model: "opus", name: "Opus", flags: ["skip-permissions"] } });
+    expect(res.status).toBe(200);
+    expect((await bodyOf(res)).agent).toMatchObject({ id: "agent-a", coreId: "core-a", harness: "claude-code", name: "Opus", model: "opus" });
+    const again = await call("/api/v1/agents/agent-a", { bearer: key });
+    expect((await bodyOf(again)).agent).toMatchObject({ id: "agent-a", model: "opus" });
+    expect((await testDb.pool.query("select flags from agents where id = 'agent-a'")).rows[0]).toEqual({ flags: ["skip-permissions"] });
+  });
+
+  it("PATCH refuses a harness or Core change, a command and an unknown flag with 400, and writes nothing", async () => {
+    const { key } = await createKey();
+    for (const json of [{ harness: "codex" }, { coreId: "core-b" }, { command: "rm -rf /" }, { env: { A: "b" } }, { flags: ["nope"] }, {}]) {
+      const res = await call("/api/v1/agents/agent-a", { method: "PATCH", bearer: key, json });
+      expect(res.status, JSON.stringify(json)).toBe(400);
+    }
+    expect((await testDb.pool.query("select harness, core_id, model from agents where id = 'agent-a'")).rows[0]).toEqual({ harness: "claude-code", core_id: "core-a", model: null });
+  });
+
+  it("PATCH is 404 for an unknown Agent, 403 outside the key's Cores, 409 for a default Agent or a taken name", async () => {
+    const { key } = await createKey({ name: "a", coreIds: ["core-a"] });
+    expect((await call("/api/v1/agents/nope", { method: "PATCH", bearer: key, json: { model: "opus" } })).status).toBe(404);
+    expect((await call("/api/v1/agents/agent-b", { method: "PATCH", bearer: key, json: { model: "opus" } })).status).toBe(403);
+    await testDb.pool.query(
+      "insert into agents (id, owner_id, core_id, name, harness, flags, is_default, created_at, updated_at) values ('agent-d', 1, 'core-a', 'Claude Code', 'claude-code', '{}', true, 1, 1), ('agent-c', 1, 'core-a', 'C', 'claude-code', '{}', false, 1, 1)",
+    );
+    const def = await call("/api/v1/agents/agent-d", { method: "PATCH", bearer: key, json: { model: "opus" } });
+    expect(def.status).toBe(409);
+    expect((await bodyOf(def)).error).toBe("a default Agent cannot be changed");
+    expect((await call("/api/v1/agents/agent-c", { method: "PATCH", bearer: key, json: { name: "A" } })).status).toBe(409);
+  });
+
+  it("create says core_harnesses_unavailable when the Core cannot be asked", async () => {
+    const { key } = await createKey();
+    fakeCore("offline");
+    const res = await create(key);
+    expect(res.status).toBe(409);
+    expect(await bodyOf(res)).toMatchObject({ code: "core_harnesses_unavailable", error: expect.stringContaining("cannot be asked") });
+  });
+
+  it("create says harness_missing_on_core when the Core does not have the harness available", async () => {
+    const { key } = await createKey();
+    fakeCore({ "claude-code": { status: "available" }, codex: { status: "missing", reason: "not-found" } });
+    const res = await create(key);
+    expect(res.status).toBe(409);
+    expect(await bodyOf(res)).toMatchObject({ code: "harness_missing_on_core", error: expect.stringContaining("does not have codex available") });
+  });
+
+  it("create answers harness_not_ready while the harness is still being checked, apart from a missing one", async () => {
+    const { key } = await createKey();
+    fakeCore({ "claude-code": { status: "available" }, codex: { status: "checking" } });
+    const res = await create(key);
+    expect(res.status).toBe(409);
+    const body = await bodyOf(res);
+    expect(body.code).toBe("harness_not_ready");
+    expect(body.error).toContain("not ready yet (checking)");
+    const missing = await (async () => {
+      fakeCore({ "claude-code": { status: "available" }, codex: { status: "missing", reason: "not-found" } });
+      return bodyOf(await create(key));
+    })();
+    expect(missing.error).not.toContain("ask again");
+    expect(missing.error).not.toEqual(body.error);
+  });
+});

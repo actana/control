@@ -15,6 +15,7 @@ import {
   type SpawnPathFacts,
 } from "./core-home-ops-client";
 import { PtyOutputBatcher } from "./pty-output-batch";
+import { DialogScreenWatch } from "./core-dialog-watch";
 import { PtyOutputActivityWatcher, type PtyOutputActivityKind } from "./pty-output-activity";
 import { sliceReplayWindow, type PtyReplayWindow } from "./pty-replay-window";
 import {
@@ -245,6 +246,32 @@ function reportPromptDelivered(
 }
 
 const ptys = new Map<string, Pty>();
+
+/** Default ceiling on live harness PTYs per Core (issue 895). */
+const DEFAULT_MAX_LIVE_HARNESS_PTYS = 8;
+
+/** Harness spawns that passed the cap but have not yet registered a PTY. */
+let startingHarnessPtys = 0;
+
+/**
+ * The cap on live harness PTYs: `ACTANA_MAX_LIVE_HARNESS_PTYS` when it is a
+ * positive integer, else the default. Read per spawn.
+ */
+function maxLiveHarnessPtys(): number {
+  const raw = process.env.ACTANA_MAX_LIVE_HARNESS_PTYS?.trim();
+  if (raw && /^\d+$/.test(raw)) {
+    const n = Number(raw);
+    if (Number.isSafeInteger(n) && n > 0) return n;
+  }
+  return DEFAULT_MAX_LIVE_HARNESS_PTYS;
+}
+
+function liveHarnessPtyCount(): number {
+  let n = 0;
+  for (const p of ptys.values()) if (p.agent !== undefined && !p.shell && !p.shellSession) n++;
+  return n;
+}
+
 const RING_LIMIT_BYTES = 1_000_000;
 
 /**
@@ -371,6 +398,13 @@ export type PtyCoreDeps = {
    * `pty-output-activity.ts` and the two rules in `core-session-backstop.ts`.
    */
   onSessionOutputActivity?: (info: { sessionId: string; kind: PtyOutputActivityKind }) => void;
+  /**
+   * The Session's screen held still for `DIALOG_SETTLE_MS` and matched a dialog
+   * rule of its harness (issue 963): a dialog no hook announced. The host
+   * decides what it means for status (`CoreHarnessStatus.dialogOnScreen`); a
+   * host that wires nothing keeps the behaviour that shipped before.
+   */
+  onSessionDialog?: (info: { sessionId: string; ruleId: string; kind: string }) => "retry" | void;
 };
 
 /** Event emitted by the Core for a PTY — `data` (output) or `exit`. */
@@ -708,6 +742,27 @@ export class PtyCore {
     // and is almost always an explicit gesture by one operator, while a grid of
     // agents arrives all at once and each one is a full Node process.
     const throttled = opts.agent !== undefined && !opts.shell && !opts.shellSession;
+    // Total cap on live harnesses (issue 895): a grid of ~200 Sessions resumed
+    // at once ran the machine out of memory. Checked before queueing, and
+    // spawns still starting count, so a burst cannot all pass at once. The
+    // error text reaches the Panel's "failed to start pty" message.
+    if (throttled) {
+      const cap = maxLiveHarnessPtys();
+      if (liveHarnessPtyCount() + startingHarnessPtys >= cap) {
+        log.warn("pty.spawn.refused", { code: "harness-cap", cap, sessionId: safeLogValue(opts.sessionId) });
+        throw new Error(
+          `pty:spawn refused: this Core already runs ${cap} live harness PTYs (the limit). ` +
+            `Close or finish a Session first, or raise ACTANA_MAX_LIVE_HARNESS_PTYS on the Core.`,
+        );
+      }
+      startingHarnessPtys++;
+    }
+    let startCounted = throttled;
+    const endStart = () => {
+      if (!startCounted) return;
+      startCounted = false;
+      startingHarnessPtys--;
+    };
     const releaseSlot = throttled ? await acquireSpawnSlot() : null;
     let holdReleased = false;
     const releaseSpawnHold = () => {
@@ -720,6 +775,8 @@ export class PtyCore {
     } catch (err) {
       releaseSpawnHold();
       throw err;
+    } finally {
+      endStart();
     }
   }
 
@@ -1078,11 +1135,28 @@ export class PtyCore {
     // (issues 243 and 391).
     const outputActivity = new PtyOutputActivityWatcher();
     const watchOutput = plan.mode === "agent" && !opts.shell && !opts.shellSession;
+    // The screen, read for a dialog once it holds still (issue 963). For every
+    // agent Session, when the host listens: the harness's own rules, then generic.
+    const dialogWatch =
+      watchOutput && p.agent && this.deps.onSessionDialog
+        ? new DialogScreenWatch({
+            harness: p.agent,
+            onDialog: (hit) => {
+              if (!p.sessionId) return "retry";
+              try {
+                return this.deps.onSessionDialog?.({ sessionId: p.sessionId, ruleId: hit.ruleId, kind: hit.kind });
+              } catch (err) {
+                log.warn("pty.dialog.failed", { error: String(err) });
+              }
+            },
+          })
+        : null;
     proc.onData((data: string) => {
       releaseSpawnHold();
       if (watchOutput) {
         if (p.sessionId) {
           const kind = outputActivity.push(data, Date.now());
+          dialogWatch?.push(data, kind);
           if (kind) {
             try {
               this.deps.onSessionOutputActivity?.({ sessionId: p.sessionId, kind });
@@ -1112,6 +1186,7 @@ export class PtyCore {
     });
     proc.onExit(({ exitCode, signal }: { exitCode: number; signal?: number }) => {
       clearTimeout(settleTimer);
+      dialogWatch?.dispose();
       releaseSpawnHold();
       // A PTY that died mid-delivery took the prompt with it, and `dispose()`
       // gives up silently — it sets `abandoned` without emitting, because it is

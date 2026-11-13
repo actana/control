@@ -22,6 +22,7 @@ import {
   createSession as createSessionSql,
   deleteSession as deleteSessionSql,
   querySessions as querySessionsSql,
+  querySessionSnapshotPage as querySessionSnapshotPageSql,
   recordPromptBlockVersion as recordPromptBlockVersionSql,
   updateSession as updateSessionSql,
   type CoreMutationSqlite,
@@ -104,6 +105,10 @@ export const coreMutationStore: CoreMutationPort = {
   listSessions(): CoreLinkSessionSnapshot[] {
     const conn = ensureConnection() as unknown as CoreMutationSqlite;
     return querySessionsSql(conn, livePtyProbe);
+  },
+  listSessionsPage(query) {
+    const conn = ensureConnection() as unknown as CoreMutationSqlite;
+    return querySessionSnapshotPageSql(conn, query, livePtyProbe);
   },
 };
 

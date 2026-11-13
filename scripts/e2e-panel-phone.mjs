@@ -369,9 +369,58 @@ async function legOpenATerminal({ page, shellId }) {
   }
   log(`the shell printed ${marker}`);
 
+  await legSwipeTerminalHistory({ page, input, shellId, screen });
+
   await tap(page, "the terminal screen's Back button", { css: 'button[aria-label="Back"]', within: screen });
   await waitForGone(page, "the Terminals screen to close", { css: screen });
   await waitFor(page, "the Core's Sessions page again", { css: "[data-core-status-line]" });
+}
+
+/**
+ * #897 — swipe the terminal's history on the phone. A finger dragged down over
+ * the terminal must scroll back through the shell's output, not the page: the
+ * last line of the output leaves the screen while `window.scrollY` stays 0.
+ * (use-terminal-touch-scroll.ts, mobile-terminal.css)
+ *
+ * The rows are read from the DOM renderer, as the echo check above does: the
+ * output ends in a line only the command can print (the quoted halves join in
+ * the shell), and once the viewport is scrolled up from the bottom it is no
+ * longer among the rows — which is `buffer.active.viewportY < baseY`.
+ */
+async function legSwipeTerminalHistory({ page, input, shellId, screen }) {
+  const end = `END-${shellId}`;
+  const rowsText = () =>
+    page.evaluate((sel) => document.querySelector(`${sel} .xterm-rows`)?.textContent ?? "", screen);
+  await input.focus();
+  await page.keyboard.type(`seq 1 300; echo "EN""D-${shellId}"`);
+  await page.keyboard.press("Enter");
+  await waitUntil(
+    page,
+    `the terminal to print ${end} after 300 lines`,
+    ({ sel, needle }) => (document.querySelector(`${sel} .xterm-rows`)?.textContent ?? "").includes(needle),
+    { sel: screen, needle: end },
+  );
+  const box = await (await waitFor(page, "the terminal's screen area", { css: ".xterm-screen", within: screen, react: false })).boundingBox();
+  if (!box) throw new Error("the terminal's screen area has no box");
+  const x = box.x + box.width / 2;
+  const top = box.y + 20;
+  const bottom = box.y + box.height - 20;
+  // Finger down = back in history. Several short drags, like a thumb.
+  for (let i = 0; i < 3; i++) {
+    const touch = await page.touchscreen.touchStart(x, top);
+    for (let y = top; y <= bottom; y += 20) await touch.move(x, y);
+    await touch.end();
+    await delay(100);
+  }
+  await waitUntil(
+    page,
+    "the swipe to scroll the terminal back from its newest line",
+    ({ sel, needle }) => !(document.querySelector(`${sel} .xterm-rows`)?.textContent ?? "").includes(needle),
+    { sel: screen, needle: end },
+  );
+  const scrollY = await page.evaluate(() => window.scrollY);
+  if (scrollY !== 0) throw new Error(`the swipe scrolled the page: window.scrollY is ${scrollY}, expected 0`);
+  log(`swiping scrolled the terminal back (${(await rowsText()).length} chars on screen) and left the page at scrollY 0`);
 }
 
 /**

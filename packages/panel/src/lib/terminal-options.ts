@@ -238,11 +238,15 @@ export function fitTerminalSurface(
   fit: { fit: () => void },
 ): void {
   const viewport = captureTerminalViewport(term);
+  const { cols, rows } = term;
   try {
     fitFillingScrollbarGutter(term, fit);
   } catch {
     /* container not measured yet */
   }
+  // Same grid: nothing to reflow, repaint or restore. Touching the viewport
+  // here would fight a swipe in progress (#897).
+  if (term.cols === cols && term.rows === rows) return;
   restoreTerminalViewport(term, viewport);
   if (term.rows > 0) {
     term.refresh(0, term.rows - 1);

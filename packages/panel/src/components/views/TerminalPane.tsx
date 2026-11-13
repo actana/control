@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useSyncExternalStore,
   useId,
   useLayoutEffect,
   useRef,
@@ -25,6 +26,7 @@ import {
   DUPLICATE_ACTIVE_SESSION_EVENT,
   STATUS_META,
 } from "~/lib/design-meta";
+import { isSettledSessionStatus } from "~/lib/grid-layout-prefs";
 import { mutateSessionForCore } from "~/lib/mutate-session-for-core";
 import { useHideableMenu } from "~/lib/hideable-elements";
 import { takePendingInitialInput } from "~/lib/pending-initial-input";
@@ -48,6 +50,7 @@ import {
   useTerminalPaneZoomShortcuts,
   useTerminalPaneWheelZoom,
 } from "~/lib/use-terminal-zoom";
+import { createTerminalTouchTarget, useTerminalTouchScroll } from "~/lib/use-terminal-touch-scroll";
 import { useHotkey } from "~/lib/use-hotkey";
 import { TerminalZoomControls } from "~/components/views/TerminalZoomControls";
 import { errMsg } from "~/shared/err-msg";
@@ -483,6 +486,11 @@ export function TerminalPane({
   const [liveStatus, setLiveStatus] = useState("");
   const [startError, setStartError] = useState<string | null>(null);
   const [retryNonce, setRetryNonce] = useState(0);
+  // A Session with no live PTY that is not running is attached read-only and
+  // waits here for an explicit Resume (#895); the click sets the ref the surface
+  // closure reads and rebuilds the pane through the same nonce as Retry.
+  const [awaitingResume, setAwaitingResume] = useState(false);
+  const resumeRequestedRef = useRef(false);
   const [renameOpen, setRenameOpen] = useState(false);
   const [titleDraft, setTitleDraft] = useState(session.title);
   const [savingTitle, setSavingTitle] = useState(false);
@@ -495,8 +503,19 @@ export function TerminalPane({
   // (issue 147). Same ref shape and same reason as the status above: every
   // write path in the surface closure reads it, and the surface is built once.
   const writeState = useSessionWriteState(descriptor.coreId, descriptor.sessionId);
+  // The panel link, as this pane's Core reaches it (#964). While it is down a
+  // keystroke has nowhere to go and must not be kept for later: the pane takes
+  // no input and says so, and takes it again once the link is open and this
+  // tab's PTYs are re-subscribed. `getCorePtyBridge` is stable per link × Core,
+  // so the store functions below keep their identity across renders.
+  const linkBridge = getCorePtyBridge(descriptor.coreId);
+  const linkUp = useSyncExternalStore(
+    useCallback((onChange) => linkBridge?.onLinkChange(onChange) ?? (() => {}), [linkBridge]),
+    () => linkBridge?.isLinkUp() ?? true,
+    () => true,
+  );
   const mayWriteRef = useRef(true);
-  mayWriteRef.current = writeState.access.writable;
+  mayWriteRef.current = writeState.access.writable && linkUp;
   const readOnlyReason = writeState.access.writable ? null : writeState.access.reason;
   // The visible half of the bounded optimistic window (issue 393). The pane is
   // writable here — this is a notice, not a verdict — and it says so *before*
@@ -522,6 +541,13 @@ export function TerminalPane({
   } = useTerminalZoom(descriptor.sessionId);
   useTerminalPaneZoomShortcuts(paneRef, zoomIn, zoomOut, resetZoom);
   useTerminalPaneWheelZoom(paneRef, zoomBy);
+  // Phone/tablet only: xterm has no touch scrolling, so without this a swipe
+  // scrolls the page (#897).
+  const getTouchScrollTarget = useCallback(
+    () => termSurfaceRef.current?.touchScrollTarget?.() ?? null,
+    [],
+  );
+  useTerminalTouchScroll(containerRef, getTouchScrollTarget, phone);
 
   // Which discretionary header buttons the user has chosen to show. Zoom is
   // hidden by default; the keyboard shortcuts (Cmd/Ctrl +/-/0) still work. The
@@ -605,8 +631,10 @@ export function TerminalPane({
     !startError &&
     // Answering a question is a write — it walks the TUI menu with injected
     // keys. A Reader is offered no input affordance at all, and an overlay full
-    // of buttons that cannot land is the worst kind (issue 147).
-    writeState.access.writable;
+    // of buttons that cannot land is the worst kind (issue 147). The same holds
+    // while the panel link is down (#964).
+    writeState.access.writable &&
+    linkUp;
 
   // ─── Session write access (issue 147, ADR 0024 D3/D8) ──────────────────────
 
@@ -634,8 +662,8 @@ export function TerminalPane({
   // this is for the answer moving under an open pane, which is the case D8
   // exists for.
   useEffect(() => {
-    termSurfaceRef.current?.setReadOnly?.(!writeState.access.writable);
-  }, [writeState.access.writable]);
+    termSurfaceRef.current?.setReadOnly?.(!(writeState.access.writable && linkUp));
+  }, [writeState.access.writable, linkUp]);
 
   // The loser of an intra-Panel handover. Its own event, its own copy, and
   // nothing in common with the takeover below beyond both ending in a pane the
@@ -1267,6 +1295,7 @@ export function TerminalPane({
         // fallback (issue 386) and honours the write gate.
         sendKeys: (data) => void writeToPty(data),
         applicationCursorKeys: () => term.modes.applicationCursorKeysMode,
+        touchScrollTarget: () => createTerminalTouchTarget(term, (data) => void writeToPty(data)),
         setReadOnly: (readOnly) => setTerminalReadOnly(term, readOnly),
         paste: (text) => term.paste(text),
       };
@@ -1475,6 +1504,7 @@ export function TerminalPane({
         // gate (session alive; effect re-runs via deps) or closes the session.
         if (descriptor.pendingValidation) return;
         setStartError(null);
+        setAwaitingResume(false);
         try {
           fitTerminalSurface(term, fit);
 
@@ -1510,6 +1540,19 @@ export function TerminalPane({
                 return;
               }
             }
+          }
+
+          // Nothing is alive to attach to. Starting a harness is a heavy,
+          // user-visible act, so a tile that merely mounts (grid view over many
+          // Sessions, a reload) never does it for a Session that is not running:
+          // it stays read-only until the operator presses Resume.
+          if (
+            !resumeRequestedRef.current &&
+            isSettledSessionStatus(liveSessionStatusRef.current)
+          ) {
+            setAwaitingResume(true);
+            setLiveStatus("Session is not running. Press Resume to start it.");
+            return;
           }
 
           const isResume = isHarnessResumeCommand(session.agent, descriptor.startCommand);
@@ -1581,6 +1624,36 @@ export function TerminalPane({
       >
         {liveStatus}
       </div>
+      {awaitingResume && !startError && (
+        <div
+          data-session-resume
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: 8,
+            padding: "8px 12px",
+            borderBottom: "1px solid var(--border)",
+            color: "var(--text-dim)",
+            background: "color-mix(in oklch, var(--text-dim) 10%, transparent)",
+            fontFamily: "var(--mono)",
+            fontSize: 11.5,
+          }}
+        >
+          <span>Not running. Showing the saved view only.</span>
+          <Btn
+            variant="ghost"
+            size="sm"
+            icon="refresh"
+            onClick={() => {
+              resumeRequestedRef.current = true;
+              setRetryNonce((value) => value + 1);
+            }}
+          >
+            Resume
+          </Btn>
+        </div>
+      )}
       {startError && (
         <div
           role="alert"
@@ -1618,6 +1691,23 @@ export function TerminalPane({
           it replaces (issue 393), are rendered whoever the Core is: a pane that
           may not type has to say so, and the reason it may not is never that a
           Core lacks a capability. */}
+      {!linkUp && (
+        <div
+          data-terminal-link="down"
+          role="status"
+          style={{
+            padding: "6px 12px",
+            borderBottom: "1px solid var(--border)",
+            background: "color-mix(in oklch, var(--text-dim) 10%, transparent)",
+            color: "var(--text-dim)",
+            fontFamily: "var(--mono)",
+            fontSize: 11,
+            flexShrink: 0,
+          }}
+        >
+          Reconnecting… input is paused until the link is back
+        </div>
+      )}
       {(readOnlyReason ||
         awaitingDriveOptimistic ||
         (writeState.lock.supported && writeState.lock.state === "held-by-you")) && (

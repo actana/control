@@ -1,5 +1,5 @@
-import { useEffect } from "react";
-import { hashKey, queryOptions, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { hashKey, useIsMutating, infiniteQueryOptions, keepPreviousData, queryOptions, useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "~/lib/api";
 import { retainCoreScope, watchCoreScope } from "~/lib/visible-core-scope";
 import { setHookToken } from "~/lib/hook-token";
@@ -9,6 +9,9 @@ import { readCachedSettings } from "~/lib/shell-query-cache";
 import type { CoreLinkSessionRow } from "@actana/shared/sdk-link-frames";
 import type { Session } from "~/db/schema";
 import type { Harness } from "@actana/shared/domain";
+import { statusesCount } from "~/lib/task-board";
+import { TASKS_PAGE_DEFAULT_LIMIT, TASK_COLUMN_STATUSES, type TaskColumn } from "~/shared/tasks";
+import type { TasksPageDto } from "~/shared/task-wire";
 
 export const queryKeys = {
   /** Prefix over everything cached per Core, for a blanket invalidation. */
@@ -19,13 +22,29 @@ export const queryKeys = {
   // belong to the Archived view, and folding them under the sessions key would
   // sweep them into every sessions invalidation — including the count, which
   // has no fetcher of its own to answer with (see `useCoreArchivedSessionCount`).
+  /** Where a Core's first page ended: its true count and the cursor of the next page (#960). */
+  sessionPage: (coreId: string) => ["session-page", coreId] as const,
+  /** The Core's pinned Sessions, read apart from the first page. Under `sessions`, so a sessions invalidation refreshes it. */
+  pinnedSessions: (coreId: string) => ["cores", coreId, "sessions", "pinned"] as const,
+  /** What Load more has appended past the first page; under `sessions`, so a sessions invalidation refreshes it. */
+  sessionsMore: (coreId: string, pages: number) => ["cores", coreId, "sessions", "more", pages] as const,
+  /** One active Session row asked for by id, for a Session past the first page (#960). */
+  sessionRow: (coreId: string, sessionId: string) => ["session-row", coreId, sessionId] as const,
   coreArchivedSessions: (coreId: string) => ["core-archived-sessions", coreId] as const,
   /** Prefix over every Core's archived bucket, for a blanket invalidation. */
   coreArchivedSessionsAll: ["core-archived-sessions"] as const,
   coreArchivedSessionCount: (coreId: string) => ["core-archived-session-count", coreId] as const,
-  /** The Tasks board: every Task the owner has, across Cores. */
+  /** Prefix over everything cached about Tasks (board columns, their first pages, counts, one Task): invalidate by it. */
   tasks: ["tasks"] as const,
   task: (id: string) => ["tasks", id] as const,
+  /** Prefix over every board column's pages (#896). */
+  tasksColumns: ["tasks", "column"] as const,
+  /** One board column's pages for a Core filter (null = All Cores): an infinite query. */
+  tasksColumn: (column: TaskColumn, coreId: string | null) => ["tasks", "column", column, coreId] as const,
+  /** Prefix over the polled first pages; they only exist while a column has more than one page loaded. */
+  tasksHeads: ["tasks", "head"] as const,
+  tasksHead: (column: TaskColumn, coreId: string | null) => ["tasks", "head", column, coreId] as const,
+  taskCounts: ["tasks", "counts"] as const,
   coreAgents: (coreId: string) => ["core-agents", coreId] as const,
   /** Under `coreAgents`, so invalidating a Core's Agents refreshes this too. */
   runnableCoreAgents: (coreId: string) => ["core-agents", coreId, "runnable"] as const,
@@ -39,6 +58,7 @@ export const queryKeys = {
   hookToken: ["hook-token"] as const,
   apiKeys: ["api-keys"] as const,
   webhooks: ["webhooks"] as const,
+  autoRetrySettings: ["settings", "auto-retry"] as const,
   keybindings: ["keybindings"] as const,
   usage: (days: number) => ["usage", days] as const,
   claudeUsageLimits: ["claude-usage-limits"] as const,
@@ -112,6 +132,31 @@ export function remoteSessionFromSnapshot(snapshot: CoreLinkSessionRow): Session
   };
 }
 
+/**
+ * How many Sessions the workspace's list bucket holds: the first page only
+ * (#960). A Core with a long history must not ship all of it to open the board;
+ * the grid keeps its own cap and order on top of this (#895).
+ */
+export const WORKSPACE_SESSIONS_LIMIT = 100;
+
+/**
+ * Ask a Core for exactly one active Session row by id — for a Session that is
+ * not in the first page the bucket holds (a notification, a terminal already
+ * open). `null` when the Core does not have it as an active Session.
+ */
+export async function fetchSessionRowById(coreId: string, sessionId: string): Promise<Session | null> {
+  const bridge = getPanelBridge();
+  if (!bridge) return null;
+  const { sessions } = await bridge.listSessionRows(coreId, { limit: 1, ids: [sessionId], archived: false });
+  // An older Core ignores the paging fields and answers every row; match on id
+  // rather than trusting the first one.
+  const row = sessions.find((s) => s.sessionId === sessionId && !s.archived);
+  return row ? remoteSessionFromSnapshot(row) : null;
+}
+
+/** Where a Core's first page ended (#960). */
+export type SessionPageMeta = { total: number; nextCursor: string | null };
+
 export const sessionsQueryOptions = (coreId: string) =>
   queryOptions({
     ...CORE_SCOPED_FRESHNESS,
@@ -134,7 +179,10 @@ export const sessionsQueryOptions = (coreId: string) =>
       // the panel already knows how to render that.
       const bridge = getPanelBridge();
       if (!bridge) return [];
-      const { sessions, archivedCount } = await bridge.listSessionRows(coreId);
+      const { sessions, archivedCount, total, nextCursor } = await bridge.listSessionRows(coreId, {
+        limit: WORKSPACE_SESSIONS_LIMIT,
+        archived: false,
+      });
       // The archived count rides this answer (ADR 0019) but belongs to a
       // different consumer — the Archived tab, which needs it while the active
       // view is showing. Park it in its own bucket rather than widening this
@@ -149,6 +197,12 @@ export const sessionsQueryOptions = (coreId: string) =>
       // the list no longer holds.
       if (!readIsStale()) {
         client.setQueryData(queryKeys.coreArchivedSessionCount(coreId), archivedCount);
+        // Same for where the first page ended: the Load more and the true count
+        // belong to the list, not to this list's shape.
+        client.setQueryData(queryKeys.sessionPage(coreId), {
+          total: total ?? sessions.length,
+          nextCursor: nextCursor ?? null,
+        } satisfies SessionPageMeta);
       }
       return sessions.map(remoteSessionFromSnapshot);
     },
@@ -352,10 +406,74 @@ function useScopedToVisibleCore(queryKey: readonly unknown[], coreId: string): v
 // nothing pushes that to the browser, so the board and an open Task poll.
 const TASKS_POLL_MS = 5_000;
 
-export const tasksQueryOptions = () =>
+const firstTasksPage = (column: TaskColumn, coreId: string | null) =>
+  api.listTasksPage({ column, coreId, limit: TASKS_PAGE_DEFAULT_LIMIT });
+
+/**
+ * One board column's pages (#896): 10 at a time, the next ones on `fetchNextPage`.
+ * Only the first page polls. While it is the only page loaded the query polls
+ * itself; once more are loaded, polling the query would re-request all of them,
+ * so a separate query polls the first page and the column reloads only when
+ * that first page has changed.
+ */
+export const tasksColumnQueryOptions = (column: TaskColumn, coreId: string | null) =>
+  infiniteQueryOptions({
+    queryKey: queryKeys.tasksColumn(column, coreId),
+    queryFn: ({ pageParam }) => api.listTasksPage({ column, coreId, limit: TASKS_PAGE_DEFAULT_LIMIT, cursor: pageParam }),
+    initialPageParam: null as string | null,
+    getNextPageParam: (last: TasksPageDto) => last.nextCursor,
+    refetchInterval: (query) => ((query.state.data?.pages.length ?? 0) > 1 ? false : TASKS_POLL_MS),
+    refetchOnMount: "always",
+    // Switching the Core filter changes the key: keep the old rows on screen until the new ones arrive.
+    placeholderData: keepPreviousData,
+  });
+
+export function useTasksColumn(column: TaskColumn, coreId: string | null) {
+  const result = useInfiniteQuery(tasksColumnQueryOptions(column, coreId));
+  const loaded = result.data?.pages;
+  const head = useQuery({
+    queryKey: queryKeys.tasksHead(column, coreId),
+    queryFn: () => firstTasksPage(column, coreId),
+    enabled: (loaded?.length ?? 0) > 1 && !result.isPlaceholderData,
+    refetchInterval: TASKS_POLL_MS,
+    refetchOnMount: "always",
+  });
+  const { refetch } = result;
+  // A Task leaving (or deleted from) a later page does not change the first page, so the head poll never sees it;
+  // the column's count does. One reload per change of the count, and only for a column with more than one page.
+  const counts = useTaskCounts().data;
+  const count = counts ? statusesCount(counts, TASK_COLUMN_STATUSES[column], coreId) : null;
+  const moving = useIsMutating() > 0;
+  const seen = useRef<{ coreId: string | null; count: number | null }>({ coreId, count });
+  const pagesLoaded = loaded?.length ?? 0;
+  const placeholder = result.isPlaceholderData;
+  useEffect(() => {
+    // Another Core is another query: its count is not a change to the one before, and its first fetch is already on its way.
+    if (seen.current.coreId !== coreId) {
+      seen.current = { coreId, count };
+      return;
+    }
+    // Old rows shown for a new key, or a move in flight (its optimistic count is not the server's): look again afterwards.
+    if (placeholder || moving) return;
+    const before = seen.current.count;
+    seen.current = { coreId, count };
+    if (before === null || count === null || before === count || pagesLoaded < 2) return;
+    // Join a reload already running (a move's own refresh) instead of restarting it.
+    void refetch({ cancelRefetch: false });
+  }, [count, coreId, placeholder, moving]);
+  useEffect(() => {
+    if (!head.data || !loaded || loaded.length < 2) return;
+    if (JSON.stringify(head.data) !== JSON.stringify(loaded[0])) void refetch();
+    // Only a new answer from the poll asks for a reload, not a change to the loaded pages (an optimistic move).
+  }, [head.dataUpdatedAt]);
+  return result;
+}
+
+/** How many Tasks there are per status and per Core, whatever the board has loaded. */
+export const taskCountsQueryOptions = () =>
   queryOptions({
-    queryKey: queryKeys.tasks,
-    queryFn: async () => (await api.listTasks()).tasks,
+    queryKey: queryKeys.taskCounts,
+    queryFn: () => api.getTaskCounts(),
     refetchInterval: TASKS_POLL_MS,
     refetchOnMount: "always",
   });
@@ -432,7 +550,7 @@ export const useSharedFilesSearch = (coreId: string, query: string) =>
     retry: false,
   });
 
-export const useTasks = () => useQuery(tasksQueryOptions());
+export const useTaskCounts = () => useQuery(taskCountsQueryOptions());
 export const useTask = (id: string) => useQuery({ ...taskQueryOptions(id), enabled: !!id });
 export const useCoreAgents = (coreId: string) => useQuery(coreAgentsQueryOptions(coreId));
 export const useRunnableCoreAgents = (coreId: string) => useQuery(runnableCoreAgentsQueryOptions(coreId));
@@ -442,6 +560,17 @@ export const useSessions = (coreId: string) => {
   useScopedToVisibleCore(options.queryKey, coreId);
   return useQuery(options);
 };
+/**
+ * One active Session row by id, read only while `enabled` — for a Session the
+ * first-page bucket does not hold. `null` when the Core does not have it.
+ */
+export const useSessionRowById = (coreId: string, sessionId: string, opts: { enabled: boolean }) =>
+  useQuery({
+    queryKey: queryKeys.sessionRow(coreId, sessionId),
+    queryFn: () => fetchSessionRowById(coreId, sessionId),
+    enabled: !!coreId && !!sessionId && opts.enabled,
+    retry: false,
+  });
 /** A Core's archived Sessions, read only while `enabled` (the Archived view is open). */
 export const useArchivedSessions = (coreId: string, opts: { enabled: boolean }) =>
   useQuery(archivedSessionsQueryOptions(coreId, { enabled: !!coreId && opts.enabled }));
@@ -511,3 +640,94 @@ export const webhooksQueryOptions = () =>
     queryFn: async () => (await api.listWebhooks()).webhooks,
   });
 export const useWebhooks = () => useQuery(webhooksQueryOptions());
+
+/** Settings › General: the instance settings of auto-retry (#958). */
+export const useAutoRetrySettings = () =>
+  useQuery({ queryKey: queryKeys.autoRetrySettings, queryFn: () => api.getAutoRetrySettings() });
+
+
+/**
+ * The workspace list past its first page (#960): the pages Load more appended
+ * and the Core's pinned Sessions, merged under the first page, with the Core's
+ * true count. The first page stays the bucket's own; nothing here writes to it.
+ */
+export function useSessionPaging(coreId: string, firstPage: readonly Session[]) {
+  const meta = useQuery({
+    queryKey: queryKeys.sessionPage(coreId),
+    queryFn: (): SessionPageMeta | null => null,
+    enabled: false,
+    initialData: null as SessionPageMeta | null,
+  }).data;
+  const total = meta?.total ?? firstPage.length;
+  // How many pages Load more has opened, for the Core they were opened on. The rows
+  // are a query, not state: it re-reads the span opened so far, under `sessions`, so
+  // a Core event that refreshes the list refreshes them too.
+  const [opened, setOpened] = useState<{ coreId: string; pages: number }>({ coreId, pages: 0 });
+  const pages = opened.coreId === coreId ? opened.pages : 0;
+  const moreQuery = useQuery({
+    queryKey: queryKeys.sessionsMore(coreId, pages),
+    queryFn: async (): Promise<{ rows: Session[]; nextCursor: string | null }> => {
+      const bridge = getPanelBridge();
+      if (!bridge) return { rows: [], nextCursor: null };
+      // Page 1 is the bucket's own; read it only for the cursor that leads past it.
+      let answer = await bridge.listSessionRows(coreId, { limit: WORKSPACE_SESSIONS_LIMIT, archived: false });
+      let rows: Session[] = [];
+      for (let i = 0; i < pages && (answer.nextCursor ?? null) !== null; i += 1) {
+        answer = await bridge.listSessionRows(coreId, {
+          limit: WORKSPACE_SESSIONS_LIMIT,
+          archived: false,
+          cursor: answer.nextCursor as string,
+        });
+        rows = rows.concat(answer.sessions.map(remoteSessionFromSnapshot));
+      }
+      return { rows, nextCursor: answer.nextCursor ?? null };
+    },
+    enabled: !!coreId && pages > 0,
+    placeholderData: keepPreviousData,
+    retry: false,
+  });
+  const held = pages > 0 ? moreQuery.data : undefined;
+  const nextCursor = held ? held.nextCursor : (meta?.nextCursor ?? null);
+  const loadingMore = pages > 0 && moreQuery.isFetching;
+  const loadMore = useCallback(() => {
+    if (nextCursor === null || loadingMore) return;
+    setOpened({ coreId, pages: pages + 1 });
+  }, [coreId, pages, nextCursor, loadingMore]);
+
+  // A pinned Session can sit anywhere in the order; the Core filters, so the
+  // Pinned views never depend on which pages were opened.
+  const pinned = useQuery({
+    queryKey: queryKeys.pinnedSessions(coreId),
+    queryFn: async () => {
+      const bridge = getPanelBridge();
+      if (!bridge) return [];
+      const { sessions } = await bridge.listSessionRows(coreId, {
+        limit: WORKSPACE_SESSIONS_LIMIT,
+        archived: false,
+        pinned: true,
+      });
+      return sessions.filter((s) => s.pinned && !s.archived).map(remoteSessionFromSnapshot);
+    },
+    enabled: !!coreId && total > firstPage.length,
+    retry: false,
+  });
+
+  const rows = useMemo(() => {
+    // The first page and the pinned read are the newest answers; an appended row
+    // read earlier yields to either.
+    const pinnedById = new Map((pinned.data ?? []).map((row) => [row.id, row]));
+    const seen = new Set<string>();
+    const out: Session[] = [];
+    const add = (row: Session) => {
+      if (seen.has(row.id)) return;
+      seen.add(row.id);
+      out.push(row);
+    };
+    firstPage.forEach(add);
+    (held?.rows ?? []).forEach((row) => add(pinnedById.get(row.id) ?? row));
+    (pinned.data ?? []).forEach(add);
+    return out;
+  }, [firstPage, held, pinned.data]);
+
+  return { rows, total: Math.max(total, rows.length), hasMore: nextCursor !== null, loadingMore, loadMore };
+}

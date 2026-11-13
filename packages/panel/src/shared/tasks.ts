@@ -10,6 +10,25 @@ export type TaskStatus = (typeof TASK_STATUSES)[number];
 export const FINISHED_TASK_STATUSES = ["done", "failed", "partial"] as const satisfies readonly TaskStatus[];
 
 /**
+ * The Tasks board's columns (#896). A column is one status, except `finished`,
+ * which holds every status a Task ends in.
+ */
+export const TASK_COLUMNS = ["draft", "assigned", "in_progress", "finished"] as const;
+export type TaskColumn = (typeof TASK_COLUMNS)[number];
+export const TASK_COLUMN_STATUSES: Record<TaskColumn, readonly TaskStatus[]> = {
+  draft: ["draft"],
+  assigned: ["assigned"],
+  in_progress: ["in_progress"],
+  finished: FINISHED_TASK_STATUSES,
+};
+
+/** A page of Tasks: the board asks for 10, a caller may ask for up to 100. */
+export const TASKS_PAGE_DEFAULT_LIMIT = 10;
+export const TASKS_PAGE_MAX_LIMIT = 100;
+/** MCP `get_tasks` with `withDescriptions` (#957): descriptions come only on a small page. */
+export const TASKS_WITH_DESCRIPTIONS_MAX_LIMIT = 10;
+
+/**
  * The statuses a Task's title and description can be edited in, and the ones it
  * can be deleted in (#722). Not `in_progress`: its Session already has the old
  * prompt, and deleting the Task would leave that Session running with nothing to
@@ -37,6 +56,60 @@ export function canStopTask(status: TaskStatus): boolean {
 export function formatTaskStopComment(f: { stoppedBy: string; reason?: string | null }): string {
   const reason = f.reason?.trim();
   return reason ? `Stopped by ${f.stoppedBy}: ${reason}` : `Stopped by ${f.stoppedBy}.`;
+}
+
+/**
+ * What a Task's Session is doing (#949). Set while an attempt runs, `null` when none does. It never moves a
+ * Task's `status`: the result file stays the only success signal. Shared contract with the Studio twin; keep
+ * the names word for word.
+ */
+export const TASK_SESSION_STATES = ["working", "needs-input", "interrupted", "idle-no-result", "exited"] as const;
+export type TaskSessionState = (typeof TASK_SESSION_STATES)[number];
+
+export function isTaskSessionState(v: unknown): v is TaskSessionState {
+  return typeof v === "string" && (TASK_SESSION_STATES as readonly string[]).includes(v);
+}
+
+/**
+ * The Session state for a Core Session status: `running` is `working`; `needs-input` and `interrupted` keep
+ * their names; `finished` is `idle-no-result` (a Session that finished with a complete result file ends its
+ * Task, which clears the state); `terminated` and `disconnected` are `exited`. Any other status is null.
+ */
+export function sessionStateForCoreStatus(status: string): TaskSessionState | null {
+  switch (status) {
+    case "running":
+      return "working";
+    case "needs-input":
+      return "needs-input";
+    case "interrupted":
+      return "interrupted";
+    case "finished":
+      return "idle-no-result";
+    case "terminated":
+    case "disconnected":
+      return "exited";
+    default:
+      return null;
+  }
+}
+
+const SESSION_STATE_COMMENTS: Partial<Record<TaskSessionState, string>> = {
+  "needs-input": "The agent's Session needs input (it is waiting at a prompt).",
+  interrupted: "The agent's Session was interrupted.",
+  "idle-no-result": "The agent's Session finished its turn without writing a result file.",
+};
+
+/**
+ * The system comment for a change of Session state, or null when the change gets none: one comment per change
+ * into `needs-input`, `interrupted` or `idle-no-result`, and one when the Session is `working` again after one
+ * of them. Everything else, `working` to `working` and `exited` included, is silent.
+ */
+export function formatTaskSessionStateComment(from: TaskSessionState | null, to: TaskSessionState): string | null {
+  if (from === to) return null;
+  const into = SESSION_STATE_COMMENTS[to];
+  if (into) return into;
+  if (to === "working" && from !== null && SESSION_STATE_COMMENTS[from]) return "The agent's Session is working again.";
+  return null;
 }
 
 /** Every legal move, by the status it leaves. Anything not listed here is rejected. */
@@ -120,6 +193,73 @@ export function parseTaskDispatchComment(body: string): TaskDispatchCommentField
   };
 }
 
+/**
+ * The system comment for an attempt that went to the Task's own Session again (#955): `Resumed Session <id> (attempt <n>)`.
+ * It names no Core, Agent or harness: those are the ones of the dispatch comment that started that Session
+ * ({@link resolveAttemptSessions} reads them from there).
+ */
+export type TaskResumeCommentFields = { attempt: number; sessionId: string };
+
+export function formatTaskResumeComment(fields: TaskResumeCommentFields): string {
+  if (!isTaskDispatchId(fields.sessionId)) throw new Error("the Session id is not a valid id (letters, digits, _ and - only)");
+  return `Resumed Session ${fields.sessionId} (attempt ${fields.attempt})`;
+}
+
+export function parseTaskResumeComment(body: string): TaskResumeCommentFields | null {
+  const m = /^Resumed Session ([\w-]+) \(attempt (\d+)\)$/.exec(body);
+  return m ? { attempt: Number(m[2]), sessionId: m[1]! } : null;
+}
+
+/**
+ * The system comment for an attempt that could not go to the Task's own Session and got a new one (#955):
+ * `New Session <id> (attempt <n>; resume not possible: <reason>; <m> of <total> comments included)`. It comes with the
+ * dispatch comment that names the Core, Agent and harness of the new Session, not instead of it. Nothing reads it back,
+ * so the reason (a Core may put a long or multi-line text in it) is cut to one short line.
+ */
+export type TaskNewSessionCommentFields = { attempt: number; sessionId: string; reason: string; included: number; total: number };
+
+export function formatTaskNewSessionComment(fields: TaskNewSessionCommentFields): string {
+  if (!isTaskDispatchId(fields.sessionId)) throw new Error("the Session id is not a valid id (letters, digits, _ and - only)");
+  const flat = fields.reason.replace(/\s+/g, " ").trim();
+  const reason = flat.length > 200 ? `${flat.slice(0, 200)}...` : flat;
+  return `New Session ${fields.sessionId} (attempt ${fields.attempt}; resume not possible: ${reason}; ${fields.included} of ${fields.total} comments included)`;
+}
+
+/** The Session one attempt ran in, as the Panel's own system comments say. */
+export type TaskAttemptSession = {
+  /** Where the comment sits in the list given. */
+  index: number;
+  attempt: number;
+  sessionId: string;
+  coreId: string;
+  agentName: string | null;
+  harness: string | null;
+  /** The attempt resumed an earlier Session instead of starting one. */
+  resumed: boolean;
+};
+
+/**
+ * Every attempt's Session, oldest first, from a Task's comments (system ones only: a user or agent comment that
+ * looks like a dispatch comment is not one). A `Resumed Session` comment has no Core, so it takes the Core, Agent
+ * and harness of the latest earlier comment that named the same Session; with none it is skipped.
+ */
+export function resolveAttemptSessions(comments: readonly { authorKind: string; body: string }[]): TaskAttemptSession[] {
+  const out: TaskAttemptSession[] = [];
+  comments.forEach((c, index) => {
+    if (c.authorKind !== "system") return;
+    const dispatched = parseTaskDispatchComment(c.body);
+    if (dispatched) {
+      out.push({ index, attempt: dispatched.attempt, sessionId: dispatched.sessionId, coreId: dispatched.coreId, agentName: dispatched.agentName, harness: dispatched.harness, resumed: false });
+      return;
+    }
+    const resumed = parseTaskResumeComment(c.body);
+    if (!resumed) return;
+    const origin = [...out].reverse().find((s) => s.sessionId === resumed.sessionId);
+    if (origin) out.push({ ...origin, index, attempt: resumed.attempt, resumed: true });
+  });
+  return out;
+}
+
 export const TASK_TIMEOUT_DEFAULT_MINUTES = 60;
 export const TASK_TIMEOUT_MIN_MINUTES = 1;
 export const TASK_TIMEOUT_MAX_MINUTES = 43_200; // 30 days
@@ -187,4 +327,15 @@ export function formatTaskTimeLeft(minutes: number): string {
   if (minutes < 60) return `${minutes} min`;
   const rest = minutes % 60;
   return rest === 0 ? `${Math.floor(minutes / 60)} h` : `${Math.floor(minutes / 60)} h ${rest} min`;
+}
+
+/**
+ * An `assigned` Task that is not being started says why in its `lastError`, always starting with this (#962):
+ * `waiting: Core full (8/8)`, `waiting: Core not connected`, `waiting: Harness not ready (...)`. No other error starts so.
+ */
+export const TASK_WAITING_PREFIX = "waiting: ";
+
+/** The reason an `assigned` Task is waiting, or null (not assigned, or its `lastError` is an earlier failure). */
+export function taskWaitingReason(task: { status: string; lastError: string | null }): string | null {
+  return task.status === "assigned" && task.lastError?.startsWith(TASK_WAITING_PREFIX) ? task.lastError : null;
 }

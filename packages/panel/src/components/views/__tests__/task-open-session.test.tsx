@@ -4,7 +4,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { KeybindingsProvider } from "~/lib/keybindings/store";
 import type { CoreWithDial } from "~/shared/cores";
-import { formatTaskDispatchComment } from "~/shared/tasks";
+import { formatTaskDispatchComment, formatTaskResumeComment } from "~/shared/tasks";
 import type { TaskCommentDto, TaskDto } from "~/shared/task-wire";
 
 // Open session on a Task attempt (#676): pending-open + workspace navigate, same path as the Core page.
@@ -41,9 +41,14 @@ vi.mock("~/lib/fleet-context", () => ({
 type SessionRow = { sessionId: string; title: string; agent: string; status: string; archived?: boolean };
 const sessionRows = vi.hoisted(() => ({ rows: [] as SessionRow[] }));
 const archivedRows = vi.hoisted(() => ({ rows: [] as SessionRow[] }));
+// Active rows the Core holds past the first page: only an `ids` read finds them (#960).
+const pastFirstPage = vi.hoisted(() => ({ rows: [] as SessionRow[] }));
 vi.mock("~/lib/panel-bridge", () => ({
   getPanelBridge: () => ({
-    listSessionRows: async () => ({ sessions: sessionRows.rows, archivedCount: archivedRows.rows.length }),
+    listSessionRows: async (_coreId: string, opts?: { ids?: string[] }) =>
+      opts?.ids
+        ? { sessions: pastFirstPage.rows.filter((r) => opts.ids!.includes(r.sessionId)), archivedCount: 0 }
+        : { sessions: sessionRows.rows, archivedCount: archivedRows.rows.length },
     listArchivedSessions: async () => archivedRows.rows,
   }),
 }));
@@ -106,6 +111,7 @@ beforeEach(() => {
   });
   sessionRows.rows = [{ sessionId: "t-alive", title: "attempt", agent: "opencode", status: "running" }];
   archivedRows.rows = [];
+  pastFirstPage.rows = [];
   task = {
     id: "T-0142",
     title: "Rotate keys",
@@ -117,6 +123,8 @@ beforeEach(() => {
     dispatchedAt: 1,
     lastError: null,
     timeoutMinutes: 60,
+    sessionState: null,
+    sessionStateAt: null,
     createdAt: 1,
     updatedAt: 1,
   };
@@ -127,6 +135,21 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("Open session on a Task attempt", () => {
+  it("offers the same Session on the comment of an attempt that resumed it (#955)", async () => {
+    task = { ...task, attemptCount: 2 };
+    comments = [
+      dispatchComment(1, "t-alive"),
+      { id: "k-2", taskId: "T-0142", authorKind: "system", authorName: "Panel", sourceFile: null, body: formatTaskResumeComment({ attempt: 2, sessionId: "t-alive" }), createdAt: 2 },
+    ];
+    const onClose = mount();
+    const buttons = (await screen.findAllByRole("button", { name: /Open session/ })) as HTMLButtonElement[];
+    expect(buttons).toHaveLength(2);
+    await waitFor(() => expect(buttons[1]!.disabled).toBe(false));
+    fireEvent.click(buttons[1]!);
+    expect(requestSessionOpen).toHaveBeenCalledWith("core_a", "t-alive");
+    expect(onClose).toHaveBeenCalled();
+  });
+
   it("opens the Session with the Core page's pending-open path and closes the drawer", async () => {
     const onClose = mount();
     const button = (await screen.findByRole("button", { name: /Open session/ })) as HTMLButtonElement;
@@ -142,7 +165,8 @@ describe("Open session on a Task attempt", () => {
     mount();
     const button = (await screen.findByRole("button", { name: /Open session/ })) as HTMLButtonElement;
     await waitFor(() => expect(button.disabled).toBe(true));
-    expect(screen.getByText("Session no longer exists on this Core")).toBeTruthy();
+    // The reason waits for the by-id read of the Core (#960), so it lands a tick later.
+    expect(await screen.findByText("Session no longer exists on this Core")).toBeTruthy();
     fireEvent.click(button);
     expect(requestSessionOpen).not.toHaveBeenCalled();
     expect(navigate).not.toHaveBeenCalled();
@@ -179,6 +203,18 @@ describe("Open session on a Task attempt", () => {
     expect(button.disabled).toBe(true);
     fireEvent.click(button);
     expect(requestSessionOpen).not.toHaveBeenCalled();
+  });
+
+  it("opens a live Session that is past the first page of rows", async () => {
+    sessionRows.rows = [{ sessionId: "t-other", title: "x", agent: "opencode", status: "running" }];
+    pastFirstPage.rows = [{ sessionId: "t-alive", title: "attempt", agent: "opencode", status: "running" }];
+    const onClose = mount();
+    const button = (await screen.findByRole("button", { name: /Open session/ })) as HTMLButtonElement;
+    await waitFor(() => expect(button.disabled).toBe(false));
+    expect(screen.queryByText("Session no longer exists on this Core")).toBeNull();
+    fireEvent.click(button);
+    expect(requestSessionOpen).toHaveBeenCalledWith("core_a", "t-alive");
+    expect(onClose).toHaveBeenCalled();
   });
 
   it("shows one Open session control per dispatched attempt", async () => {

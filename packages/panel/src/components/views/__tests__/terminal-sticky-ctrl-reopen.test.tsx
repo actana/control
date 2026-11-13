@@ -50,10 +50,12 @@ const ptyBridge = {
   replay: async () => ({ data: "", nextSeq: 0 }),
   subscribe: async () => {},
   unsubscribe: async () => {},
-  findBySession: async () => ({ ptyId: null }),
+  findBySession: async (): Promise<{ ptyId: string | null }> => ({ ptyId: null }),
   onData: () => noop,
   onExit: () => noop,
   onReconnect: () => noop,
+  isLinkUp: () => true,
+  onLinkChange: () => noop,
 };
 vi.mock("~/lib/panel-bridge", () => ({
   getPanelBridge: () => ({}),
@@ -232,6 +234,13 @@ describe("phone: sticky Ctrl survives Back and reopen", () => {
 
 describe("phone: key-row bytes feed the turn tracker (issue 386)", () => {
   const cursorFinished = { ...session, agent: "cursor-cli", status: "finished" } as unknown as Session;
+  // #895: a Session that is not running is no longer respawned on mount, so
+  // these scenarios (a finished-status Session being typed into) start from a
+  // live PTY the pane attaches to, as they did through the old respawn.
+  beforeEach(() => {
+    vi.spyOn(ptyBridge, "findBySession").mockResolvedValue({ ptyId: "pty1" });
+    vi.spyOn(ptyBridge, "replay").mockResolvedValue({ data: "", nextSeq: 1 });
+  });
   const runningPatches = () =>
     mutateSession.mock.calls.filter(([, arg]) => (arg as { status?: string }).status === "running");
 

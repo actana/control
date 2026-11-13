@@ -17,7 +17,8 @@ vi.mock("~/lib/fleet-context", () => ({
 let task: TaskDto;
 const api = vi.hoisted(() => ({
   getKeybindings: vi.fn(async () => ({ bindings: {} })),
-  listTasks: vi.fn(async () => ({ tasks: [] })),
+  listTasksPage: vi.fn(async () => ({ tasks: [], nextCursor: null })),
+  getTaskCounts: vi.fn(async () => ({ byStatus: {}, byCore: {} })),
   getTask: vi.fn(),
   listCoreAgents: vi.fn(async () => ({ agents: [{ id: "ag-c1", coreId: "c1", name: "claude-code", harness: "claude-code", model: null, isDefault: true }] })),
   createTask: vi.fn(async (_body: Record<string, unknown>) => ({ task: { id: "new" } })),
@@ -39,7 +40,7 @@ function mount(ui: React.ReactElement) {
   );
 }
 
-const baseTask: TaskDto = { id: "T-7", title: "Rotate keys", description: "", status: "draft", coreId: "c1", agent: "ag-c1", attemptCount: 0, dispatchedAt: null, lastError: null, timeoutMinutes: 60, createdAt: 1, updatedAt: 1 };
+const baseTask: TaskDto = { id: "T-7", title: "Rotate keys", description: "", status: "draft", coreId: "c1", agent: "ag-c1", attemptCount: 0, dispatchedAt: null, lastError: null, timeoutMinutes: 60, sessionState: null, sessionStateAt: null, createdAt: 1, updatedAt: 1 };
 
 beforeEach(() => {
   for (const fn of Object.values(api)) fn.mockClear();

@@ -163,4 +163,17 @@ describe("CoreRail", () => {
     expect(opened).toEqual(["c1"]);
     expect(beyond.defaultPrevented).toBe(true);
   });
+
+  it("shows each Core's live PTYs against its limit (#962), `?` when the count is unknown", async () => {
+    cores = [
+      { ...core("c1", "alpha"), liveSessions: 5, maxSessions: 8 },
+      { ...core("c2", "bravo"), liveSessions: null, maxSessions: 8 },
+      core("c3", "charlie"),
+    ];
+    await mount();
+    expect(document.querySelector('[data-core-tile="c1"] [data-core-capacity]')?.textContent).toBe("5/8");
+    expect(document.querySelector('[data-core-tile="c2"] [data-core-capacity]')?.textContent).toBe("?/8");
+    expect(document.querySelector('[data-core-tile="c3"] [data-core-capacity]')).toBeNull();
+    expect(document.querySelector('[data-core-tile="c1"]')?.getAttribute("title")).toContain("5/8 live sessions");
+  });
 });

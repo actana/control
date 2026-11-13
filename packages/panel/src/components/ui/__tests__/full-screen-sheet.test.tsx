@@ -195,7 +195,7 @@ describe("ConfirmDialog on phone", () => {
 
 describe("TaskDetail as a drawer-screen", () => {
   function mountTask() {
-    const task: TaskDto = { id: "T-7", title: "Rotate keys", description: "", status: "assigned", coreId: "core_a", agent: null, attemptCount: 0, dispatchedAt: null, lastError: null, timeoutMinutes: 60, createdAt: 1, updatedAt: 1 };
+    const task: TaskDto = { id: "T-7", title: "Rotate keys", description: "", status: "assigned", coreId: "core_a", agent: null, attemptCount: 0, dispatchedAt: null, lastError: null, timeoutMinutes: 60, sessionState: null, sessionStateAt: null, createdAt: 1, updatedAt: 1 };
     api.getTask.mockResolvedValue({ task, comments: [] });
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     const onClose = vi.fn();

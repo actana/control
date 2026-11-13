@@ -278,6 +278,15 @@ describe("harnessLaunchMode", () => {
     ).toBe("new");
   });
 
+  it("resumes a Claude Code Session whose harness was ended after its Task reported (#962)", () => {
+    // The Panel ends a finished Task's harness to free its PTY slot; the Session row stays, with its captured id.
+    for (const status of ["finished", "terminated", "disconnected"] as const) {
+      expect(
+        harnessLaunchMode({ ...baseSession, agent: "claude-code", status, claudeSessionId: "claude-session-1" } satisfies Session),
+      ).toBe("resume");
+    }
+  });
+
   it("starts OpenCode fresh until a ses_* id is captured", () => {
     expect(
       harnessLaunchMode({

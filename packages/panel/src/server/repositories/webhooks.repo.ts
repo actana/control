@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { and, asc, desc, eq, inArray, isNull, lte, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNotNull, isNull, lte, or, sql } from "drizzle-orm";
 import { ownedBy } from "~/db/owner";
 import { panelDb, type PanelDb } from "~/db/panel-db-handle";
 import { cores, webhookCores, webhookDeliveries, webhookOutbox, webhooks } from "~/db/pg-schema";
@@ -86,13 +86,25 @@ export async function deleteWebhookRow(ownerId: number, id: string): Promise<boo
   return removed.length > 0;
 }
 
-/** Write an outbox row inside an open transaction (the Task change's). */
-export async function insertOutboxInTx(tx: PanelTx, row: NewOutboxRow): Promise<WebhookOutboxRow> {
+/**
+ * Write an outbox row inside an open transaction (the Task change's). The only
+ * reader of the outbox is the fan-out ({@link claimAndFanOutOneOutbox}), which
+ * delivers to this owner's webhooks; with none, nobody would ever read the row
+ * (and it would keep the Task description or comment body), so nothing is
+ * written and `null` comes back. A webhook created later gets no earlier events.
+ */
+export async function insertOutboxInTx(tx: PanelTx, row: NewOutboxRow): Promise<WebhookOutboxRow | null> {
+  const anyWebhook = await tx
+    .select({ id: webhooks.id })
+    .from(webhooks)
+    .where(ownedBy(webhooks, row.ownerId))
+    .limit(1);
+  if (anyWebhook.length === 0) return null;
   const [stored] = await tx.insert(webhookOutbox).values({ ...row, ownerId: row.ownerId }).returning();
   return stored!;
 }
 
-export async function insertOutbox(row: NewOutboxRow): Promise<WebhookOutboxRow> {
+export async function insertOutbox(row: NewOutboxRow): Promise<WebhookOutboxRow | null> {
   return panelDb().transaction((tx) => insertOutboxInTx(tx, row));
 }
 
@@ -340,6 +352,58 @@ export async function pruneOldDeliveries(ownerId: number, cutoff: number): Promi
     .delete(webhookDeliveries)
     .where(ownedBy(webhookDeliveries, ownerId, lte(webhookDeliveries.createdAt, cutoff)))
     .returning({ id: webhookDeliveries.id });
+  return removed.length;
+}
+
+/** Outbox rows pruned per call by default, so the first pass after #965 clears a backlog in steps. */
+export const OUTBOX_PRUNE_LIMIT = 1000;
+
+/**
+ * Delete this owner's outbox rows processed at or before `cutoff` and no longer
+ * referenced by any delivery, at most `limit` per call. A delivery row
+ * cascades from its outbox row (`webhook_deliveries.outbox_id`, ON DELETE
+ * CASCADE), so a row with a delivery left (a retry in flight, or the history
+ * Settings shows) is kept until {@link pruneOldDeliveries} has removed that
+ * delivery. Returns how many went.
+ */
+export async function pruneProcessedOutbox(
+  ownerId: number,
+  cutoff: number,
+  limit: number = OUTBOX_PRUNE_LIMIT,
+): Promise<number> {
+  const removed = await panelDb().transaction(async (tx) => {
+    const victims = await tx
+      .select({ id: webhookOutbox.id })
+      .from(webhookOutbox)
+      .where(
+        ownedBy(
+          webhookOutbox,
+          ownerId,
+          and(
+            isNotNull(webhookOutbox.processedAt),
+            lte(webhookOutbox.processedAt, cutoff),
+            sql`not exists (select 1 from ${webhookDeliveries} where ${webhookDeliveries.outboxId} = ${webhookOutbox.id} and ${webhookDeliveries.ownerId} = ${ownerId})`,
+          ),
+        ),
+      )
+      .orderBy(asc(webhookOutbox.processedAt), asc(webhookOutbox.id))
+      .limit(limit)
+      .for("update", { skipLocked: true });
+    if (victims.length === 0) return [];
+    return tx
+      .delete(webhookOutbox)
+      .where(
+        ownedBy(
+          webhookOutbox,
+          ownerId,
+          inArray(
+            webhookOutbox.id,
+            victims.map((v) => v.id),
+          ),
+        ),
+      )
+      .returning({ id: webhookOutbox.id });
+  });
   return removed.length;
 }
 

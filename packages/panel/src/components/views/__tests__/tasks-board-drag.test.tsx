@@ -4,6 +4,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { KeybindingsProvider } from "~/lib/keybindings/store";
 import { DROP_REASONS } from "~/lib/task-board-drop";
+import type { PageQuery } from "./task-board-fake";
 import type { CoreWithDial } from "~/shared/cores";
 import type { AgentDto, TaskDto } from "~/shared/task-wire";
 
@@ -25,7 +26,7 @@ const toast = vi.hoisted(() => ({ error: vi.fn(), success: vi.fn() }));
 vi.mock("sonner", () => ({ toast }));
 
 const task = (id: string, title: string, status: TaskDto["status"], coreId: string | null, extra: Partial<TaskDto> = {}): TaskDto => ({
-  id, title, description: "", status, coreId, agent: coreId ? `ag-${coreId}` : null, attemptCount: 0, dispatchedAt: null, lastError: null, timeoutMinutes: 60, createdAt: 1, updatedAt: 1, ...extra,
+  id, title, description: "", status, coreId, agent: coreId ? `ag-${coreId}` : null, attemptCount: 0, dispatchedAt: null, lastError: null, timeoutMinutes: 60, sessionState: null, sessionStateAt: null, createdAt: 1, updatedAt: 1, ...extra,
 });
 const agentsByCore: Record<string, AgentDto[]> = {
   c1: [{ id: "ag-c1", coreId: "c1", name: "claude-code", harness: "claude-code", model: null, isDefault: true }],
@@ -35,7 +36,8 @@ const agentsByCore: Record<string, AgentDto[]> = {
 let tasks: TaskDto[] = [];
 const api = vi.hoisted(() => ({
   getKeybindings: vi.fn(async () => ({ bindings: {} })),
-  listTasks: vi.fn(async () => ({ tasks })),
+  listTasksPage: vi.fn(async (q: PageQuery) => (await import("./task-board-fake")).fakeTasksPage(tasks, q)),
+  getTaskCounts: vi.fn(async () => (await import("./task-board-fake")).fakeTaskCounts(tasks)),
   getTask: vi.fn(async (id: string) => ({ task: tasks.find((t) => t.id === id)!, comments: [] })),
   listCoreAgents: vi.fn(async (coreId: string) => ({ agents: agentsByCore[coreId] ?? [] })),
   createTask: vi.fn(async () => ({})),
@@ -135,7 +137,7 @@ describe("dragging a card to a column it may go to", () => {
     expect(api.setTaskStatus).toHaveBeenCalledTimes(1);
     expect(api.setTaskStatus).toHaveBeenCalledWith("t1", "assigned");
     answer();
-    await waitFor(() => expect(api.listTasks.mock.calls.length).toBeGreaterThan(1));
+    await waitFor(() => expect(api.listTasksPage.mock.calls.length).toBeGreaterThan(1));
     expect(columnOfCard("t1")).toBe("assigned");
     expect(toast.error).not.toHaveBeenCalled();
   });
@@ -424,6 +426,8 @@ describe("moving a card from the keyboard", () => {
   it("does not later steal focus for a moved card that never showed (filtered out by a chip)", async () => {
     const { client } = await board();
     fireEvent.click(screen.getByRole("button", { name: /^build-box-01/ }));
+    // The chip asks the server for that Core's Tasks (#896), so its card turns up after the answer.
+    await waitFor(() => expect(card("t2")).not.toBeNull());
     const el = card("t2");
     el.focus();
     fireEvent.keyDown(el, { key: " " });

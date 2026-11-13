@@ -274,7 +274,9 @@ session wait` unblocks on) and clears the tracked subagent set. The reopen puts
 the status back; it cannot un-send a notification or restore that set, which
 expires on its own after two hours.
 
-**A harness parked on a dialog nobody matched is not idle (issue 469).** Only
+**A harness parked on a dialog nobody matched is not idle (issue 469).** (Since issue 963
+the screen rules below can set `needs-input` for such a dialog; this section is what
+still holds when no rule matches.) Only
 `hasClaudeInterruptPrompt` and `hasCodexHookReviewPrompt` turn a screen into
 `needs-input` (the interrupt matchers of #392 yield `interrupted`, not
 `needs-input`, and are not dialogs); any other permission or approval box repaints unchanged for as
@@ -327,6 +329,70 @@ harness whose spinner rotates its gerund (`✻ Herding… / Simmering… /
 Pondering…`) puts a new word on screen every rotation, so the idle rule never
 fires for it at all. Before any of this, a lost `Stop` wedged the Session until
 a human edited the row by hand — while the Panel said the opposite.
+
+#### A dialog no hook announces: screen rules (issue 963)
+
+The static-screen rule above only stops a parked dialog from being settled
+`finished`; it leaves the Session `running`. Issue 963 closes that: once the
+screen has held still for `DIALOG_SETTLE_MS` (10 s: no bytes, or the classifier's
+`static` verdict), the Core reads the emulated screen with
+`classifyDialog(harness, screenText)` (`@actana/shared`) and, on a match, sets
+`needs-input` through the same `updateStatus` port the hook pipeline uses. The
+`session:updated` payload carries `source: "screen:<ruleId>"`, so a screen-set
+status can be told from a hook-set one. No frame or status value is new.
+
+**The order is hook → screen rule → backstop.**
+
+1. **Hook.** A status a hook wrote always wins: the screen rules stay silent for
+   `DIALOG_SETTLE_MS` after any hook of that Session and never overwrite a
+   hook-set `needs-input`. Only a `running` Session is ever classified (never
+   `ready` or `finished`).
+2. **Screen rule.** Only when no hook spoke. The classifier tries the harness's
+   own rules by priority, then `generic`; it reads only each rule's region (the
+   last N non-empty lines, the first N, or the text after the last horizontal
+   rule), never the scrollback, so text the agent merely printed higher up does
+   not match. A harness's rules are never applied to another harness's Session.
+   A screen-set `needs-input` goes back to `running` on the next output burst or
+   on a hook that means work, and to `finished` on `Stop` as before.
+3. **Backstop.** A screen-set `needs-input` is treated like any `needs-input`:
+   the quiet rule and the idle rule do not settle it `finished`.
+
+Rules are data, one file per harness in `packages/shared/src/harness-dialog-rules/`
+(`DialogRule`: `id`, `kind`, `priority`, `region`, a match of `contains` / `any` /
+`all` / `lineRegex` / `regex` / `not`, and how to read the `options`). The rules
+adapted from herdr (Apache-2.0, commit `ee5bfb5`) name their source in the file
+header; herdr's matching engine is not ported.
+
+| Rule file | Rules (`ruleId` → `kind`) | Source |
+|---|---|---|
+| `claude-code.ts` | `folder_trust` → trust; `live_blocked_form`, `live_blocked_form_named_session` → choice; `dynamic_workflow_prompt` → confirm; `mcp_elicitation_prompt` → question; `bash_permission_prompt`, `generic_permission_prompt` → permission; `legacy_no_prompt_blocker` → unknown | herdr `claude.toml` 2026.10.11.1; `folder_trust` ours |
+| `codex.ts` | `trust_directory` → trust; `startup_update`, `live_strong_blocker` → choice; `weak_blocker` → confirm | herdr `codex.toml` 2026.10.11.1 |
+| `cursor-cli.ts` | `workspace_trust` → trust; `write_file_approval`, `approval_prompt` → permission | herdr `cursor.toml` 2026.08.03.1; `workspace_trust` ours (real cursor-agent 2026.08.11 screen) |
+| `opencode.ts` | `permission_required` → permission; `dialog_footer` → choice | herdr `opencode.toml` 2026.06.10.1 |
+| `pi.ts` | `project_trust` → trust; `selector_footer` → choice | ours (herdr has no Pi `blocked` rule); `project_trust` from the real Pi 0.85.1 screen |
+| `generic.ts` | `numbered_choice_footer`, `arrow_choice_footer` → choice; `yes_no_prompt`, `press_enter_to_continue` → confirm; `press_any_key` → unknown | ours; tried after the harness's own rules |
+
+What the rules do not cover, stated rather than argued away:
+
+- **Codex's window-title rule** (`osc_title_blocked`, "Action Required" in the
+  terminal title) is not translated: the classifier is given screen text, not the
+  title.
+- **Pi's extension dialogs** (select, confirm, input, editor, custom) are reported
+  by `ui_prompt_start` and are not repeated as screen rules; the Pi rules cover
+  what the hook cannot see: the project-trust prompt, which Pi draws before any
+  extension loads, and Pi's built-in selectors (`/login`, `/model`, pickers).
+- **OpenCode's `permission.asked`** hook reports permission dialogs when its plugin
+  is loaded; the OpenCode rules are the fallback for when it is not.
+- **Synthetic fixtures.** A dialog that could not be produced on the capturing
+  Core has a fixture built from the rule's own text, with `synthetic` in the file
+  name (`packages/core/src/__tests__/fixtures/`). Those rules match the text the
+  rule source describes, not a screen captured from the harness, until a real
+  capture replaces the fixture. Every harness has a blocked fixture and two
+  negatives (a working spinner and an idle composer); no rule fires on any
+  harness's negatives, and a rule never runs outside its harness
+  (`harness-dialog-fixtures.test.ts`).
+- Local override or hot update of the rule files, and moving prompt delivery's
+  trust and readiness strings into data, are not part of this (issue 926).
 
 `Notification` is also intentionally narrowed to `permission_prompt`. Claude Code
 sends idle input reminders through the same hook event, so treating all

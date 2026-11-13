@@ -1,5 +1,8 @@
+import { noteCoreCap } from "../services/core-capacity";
 import { CoreSharedError, type CoreShared } from "@actana/sdk/shared";
 import { NotFoundError } from "../errors";
+import { getAutoRetrySettings } from "../services/auto-retry-settings";
+import { exitCodeOfCause, formatAutoRetryWaiting, isAutoRetryOptedIn } from "~/shared/auto-retry";
 import {
   CoreHarnessesUnavailableError,
   HarnessNotReadyError,
@@ -11,20 +14,24 @@ import {
 import {
   addTaskComment,
   claimTask,
+  clearAutoRetryPending,
+  setAutoRetryNotice,
   failTaskDispatch,
   findCurrentTaskSession,
   getTask,
   listTaskComments,
   listTasks,
+  markTaskWaiting,
+  releaseTaskClaim,
   type Task,
   type TaskComment,
 } from "../services/tasks";
 import { archivedTaskName, classifyTaskEntry, taskFolder } from "~/shared/task-report";
-import { formatTaskDispatchComment, parseTaskDispatchComment } from "~/shared/tasks";
+import { formatTaskDispatchComment, formatTaskNewSessionComment, formatTaskResumeComment, resolveAttemptSessions, sessionStateForCoreStatus, taskWaitingReason, type TaskAttemptSession } from "~/shared/tasks";
 import { ResultWatcher } from "./result-watcher";
 import { lazyShared, type SharedFor } from "./shared-factory";
-import { buildTaskPointer, buildTaskPrompt, taskPromptPath } from "./task-prompt";
-import { consoleDispatchLog, messageOf, type Clock, type DispatchLog, type SessionStarter, type SessionStopper } from "./types";
+import { buildResumePrompt, buildTaskPointer, buildTaskPrompt, promptComments, taskPromptPath } from "./task-prompt";
+import { consoleDispatchLog, messageOf, RESUME_REFUSALS, STOP_TIMEOUT_MS, type Clock, type DispatchLog, type ResumeRefusal, type SessionResumer, type SessionStarter, type SessionStopper, type StartedSession } from "./types";
 
 /**
  * The dispatcher (#570): claims `assigned` Tasks, starts a Session on the Agent's
@@ -40,6 +47,11 @@ import { consoleDispatchLog, messageOf, type Clock, type DispatchLog, type Sessi
  *  2. RESOLVE the Task's Agent to the harness and Core it has right now.
  *  3. On a re-run, rename the older results to `attempt-<n>-<name>` (client PR 41).
  *  4. WRITE the prompt file through the Core's Files API and read it back, then START the Session through the Core's client, then add a system comment.
+ *     On a re-run (#955) the Task's own last Session is tried first: if it can be resumed (it has a harness session id, it is on
+ *     the Agent's Core, the harness resumes it), the harness is reopened on that same Session row, or, when it is still
+ *     running (one live harness per Task), the message is typed into it. The prompt file then holds only what is new, and the
+ *     comment says `Resumed Session <id> (attempt <n>)`. When it cannot be resumed, the new Session of step 4 is started as
+ *     before, and the reason it could not (a `ResumeRefusal`) is logged and goes into a `New Session ...` comment after the dispatch comment (#955).
  *  5. WATCH its result files.
  * Any failure before the Session runs moves the Task to `failed` with the reason
  * as its last error and a system comment (`failTaskDispatch`), so no Task is left
@@ -53,6 +65,17 @@ import { consoleDispatchLog, messageOf, type Clock, type DispatchLog, type Sessi
  * a Panel restart starts it again. It is separate from the result watcher's run timeout, which only starts
  * at dispatch.
  *
+ * An attempt is counted only when a Session started (#962). A dispatch that ends before that leaves `attemptCount` as it
+ * was, whether the Task is failed (the reasons above) or kept waiting:
+ *  - a Core that cannot be asked (not connected) or whose Session start is refused for a full Core
+ *    (`pty:spawn refused: ... live harness PTYs`) leaves the Task `assigned` with the reason in `lastError`,
+ *    `waiting: Core not connected` / `waiting: Core full (n/max)`, and it is dispatched again by itself. One system
+ *    comment when it starts waiting, none per retry. A refused start is found out by trying: the claim is given back
+ *    (`releaseTaskClaim`), the Core is marked full in memory, and the other Tasks of that Core wait without a claim
+ *    until a slot frees (`slotFreed`, called by the watcher) or a probe is due (15 s, doubling to 5 min).
+ *  - a Harness that is not ready (`waiting: Harness not ready (...)`) waits as before, up to `harnessWaitMs`, then fails
+ *    with the attempt given back.
+ *
  * Every query is the owner's (`ownerId`).
  */
 
@@ -64,6 +87,8 @@ export type AgentLookup = {
 export type TaskDispatcherOptions = {
   ownerId: number;
   startSession: SessionStarter;
+  /** Continues a re-assigned Task's own Session (#955). Without it a re-run always starts a new Session. */
+  resumeSession?: SessionResumer;
   sharedFor: SharedFor;
   /**
    * The Core's own Files API (the through-the-Core mode), where the Task's prompt file is written. A write there
@@ -89,12 +114,26 @@ export type TaskDispatcherOptions = {
 export const DEFAULT_DISPATCH_POLL_MS = 2_000;
 /** Covers a setup check (about 75 s), the probe retries and a Core link that reconnects. */
 export const DEFAULT_HARNESS_WAIT_MS = 5 * 60_000;
+/** After a start refused for a full Core, how long until another Task may try it (doubles on each refusal, up to the maximum). */
+export const FULL_CORE_RETRY_MIN_MS = 15_000;
+export const FULL_CORE_RETRY_MAX_MS = 5 * 60_000;
+
+/** What the Core says when it has no room: `pty:spawn refused: this Core already runs 8 live harness PTYs (the limit)`. */
+const CORE_FULL = /already runs (\d+) live harness PTYs/;
+const NO_LINK = /no live link to this Core/;
+
+type FullCore = { max: number; retryAt: number; failures: number };
+
+/** `waiting: Core full (8/8)`; the refusal comes at the cap, so the count is the cap. */
+const fullReason = (max: number) => `waiting: Core full (${max}/${max})`;
+const NOT_CONNECTED = "waiting: Core not connected";
 
 const realAgents: AgentLookup = { get: getAgent, resolve: (ownerId, id) => resolveAgent(ownerId, id) };
 
 export class TaskDispatcher {
   private readonly ownerId: number;
   private readonly startSession: SessionStarter;
+  private readonly resumeSession: SessionResumer | null;
   private readonly sharedFor: SharedFor;
   private readonly coreFilesFor: SharedFor;
   private readonly watcher: ResultWatcher;
@@ -105,6 +144,10 @@ export class TaskDispatcher {
   private readonly harnessWaitMs: number;
   /** Task id to the first time it was seen waiting for its Harness; dropped once it is claimed or leaves `assigned`. */
   private readonly waitingSince = new Map<string, number>();
+  /** Tasks already logged as waiting for a Core that is not connected (logged once; not a Harness window). */
+  private readonly notConnectedLogged = new Set<string>();
+  /** Core id to what the last refused start said; the Tasks of that Core wait without a claim until it clears. */
+  private readonly fullCores = new Map<string, FullCore>();
   private readonly log: DispatchLog;
   private timer: ReturnType<typeof setInterval> | null = null;
   private cycling: Promise<number> | null = null;
@@ -114,6 +157,7 @@ export class TaskDispatcher {
   constructor(opts: TaskDispatcherOptions) {
     this.ownerId = opts.ownerId;
     this.startSession = opts.startSession;
+    this.resumeSession = opts.resumeSession ?? null;
     this.sharedFor = opts.sharedFor;
     this.coreFilesFor = opts.coreFilesFor ?? opts.sharedFor;
     this.watcher = opts.watcher;
@@ -148,6 +192,7 @@ export class TaskDispatcher {
       }
       const ids = new Set(waiting.map((t) => t.id));
       for (const id of this.waitingSince.keys()) if (!ids.has(id)) this.waitingSince.delete(id);
+      for (const id of this.notConnectedLogged) if (!ids.has(id)) this.notConnectedLogged.delete(id);
       for (const task of waiting) {
         if (this.stopped) break;
         try {
@@ -162,6 +207,21 @@ export class TaskDispatcher {
     });
     this.cycling = run;
     return run;
+  }
+
+  /**
+   * A slot on this Core was freed (a harness ended) or the Core connected: forget that it was full and look at the
+   * waiting Tasks now instead of at the next probe.
+   */
+  slotFreed(coreId: string): void {
+    if (!this.fullCores.delete(coreId)) return;
+    if (this.timer && !this.stopped) void this.dispatchOnce();
+  }
+
+  /** `waiting: Core full (n/max)` while this Core's last start was refused and no slot has freed since; else null. */
+  coreWaitingReason(coreId: string): string | null {
+    const full = this.fullCores.get(coreId);
+    return full ? fullReason(full.max) : null;
   }
 
   /**
@@ -220,6 +280,7 @@ export class TaskDispatcher {
           authorName: agent?.name ?? "agent",
           timeoutMinutes: task.timeoutMinutes,
         });
+        await this.watcher.readSessionState(task.id); // no handle to hear the Session's status on: ask the Core once
         adopted += 1;
       } catch (err) {
         unfinished = err;
@@ -228,6 +289,24 @@ export class TaskDispatcher {
     }
     if (unfinished) throw unfinished;
     return adopted;
+  }
+
+  /**
+   * The waiting reason when a refused or impossible start is one that may pass: a full Core (also remembered, so the
+   * Core's other Tasks do not each try it) or a link that is not there. Null for any other error, which fails the Task.
+   */
+  private startRefusal(coreId: string, err: unknown): string | null {
+    const message = messageOf(err);
+    const cap = CORE_FULL.exec(message);
+    if (cap) {
+      const max = Number(cap[1]);
+      noteCoreCap(coreId, max);
+      const failures = (this.fullCores.get(coreId)?.failures ?? 0) + 1;
+      const retry = Math.min(FULL_CORE_RETRY_MIN_MS * 2 ** (failures - 1), FULL_CORE_RETRY_MAX_MS);
+      this.fullCores.set(coreId, { max, failures, retryAt: this.now() + retry });
+      return fullReason(max);
+    }
+    return NO_LINK.test(message) ? NOT_CONNECTED : null;
   }
 
   /** Write the prompt file through the Core's own Files API and read it back, so a short or missing file is an error here. */
@@ -274,17 +353,14 @@ export class TaskDispatcher {
    * Before attempt n: if attempt n-1 ended by an operator's stop or by the timeout, its Session may still be
    * running (the stop could not reach the Core, or the kill failed) and could write a `success.md` the new
    * attempt would count. Try to stop it again. Best effort and logged: a Core still unreachable does not hold
-   * the new attempt back. An attempt that ended on its own result is left alone, so its Session stays open to read.
+   * the new attempt back. An attempt that ended on its own result is left alone: the watcher ended its harness when it reported (#962).
    */
   private async stopPreviousSession(taskId: string, previous: number, comments: readonly TaskComment[]): Promise<void> {
     if (!this.stopSession) return;
     try {
-      let at = -1;
-      comments.forEach((c, i) => {
-        if (c.authorKind === "system" && parseTaskDispatchComment(c.body)?.attempt === previous) at = i;
-      });
-      if (at < 0) return;
-      const target = parseTaskDispatchComment(comments[at]!.body)!;
+      const target = resolveAttemptSessions(comments).filter((a) => a.attempt === previous).at(-1);
+      if (!target) return;
+      const at = target.index;
       // Only the Panel's own words count: "Stopped by" is a system comment, and the timeout is the Panel's
       // `fail.md` of that attempt (recorded as the agent's comment, but with that attempt's fail.md as its
       // source and the Panel's signature in the body). A user or agent comment with the same phrase is not it.
@@ -302,34 +378,120 @@ export class TaskDispatcher {
     }
   }
 
-  /** True when this dispatcher claimed the Task (whether or not its Session then started). False also when the Task keeps waiting for its Harness. */
+  /** Wait for the watcher's stop of this Task's finished harness, if one is in flight, for at most `STOP_TIMEOUT_MS`. */
+  private async waitForHarnessStop(taskId: string): Promise<void> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const limit = new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, STOP_TIMEOUT_MS);
+    });
+    try {
+      await Promise.race([this.watcher.harnessEnding(taskId), limit]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /** A Session that is running, did not take the message typed into it, and must not run beside the new one (one live harness per Task). Best effort. */
+  private async stopRunningSession(taskId: string, session: TaskAttemptSession): Promise<void> {
+    if (!this.stopSession) return;
+    try {
+      const result = await this.stopSession({ coreId: session.coreId, sessionId: session.sessionId });
+      this.log.info(`task ${taskId}: running Session ${session.sessionId} stopped before a new one starts: ${result.outcome}${result.detail ? ` (${result.detail})` : ""}`);
+    } catch (err) {
+      this.log.error(`task ${taskId}: could not stop running Session ${session.sessionId}: ${messageOf(err)}`);
+    }
+  }
+
+  /** True when this dispatcher claimed the Task and kept it (whether or not its Session then started). False when another dispatcher got it, or the Task keeps waiting (Harness, Core not connected or full), including a claim given back. */
   private async dispatch(task: Task): Promise<boolean> {
-    // Ask before claiming: nothing moves a claimed Task back to `assigned`, so the wait has to happen here.
+    const wasWaiting = taskWaitingReason(task) !== null;
+    /** Say why the Task is not started, once: a system comment only when it was not waiting already. */
+    const wait = async (reason: string) => {
+      try {
+        await markTaskWaiting(this.ownerId, task.id, reason, { comment: !wasWaiting }, this.now());
+      } catch (err) {
+        this.log.error(`task ${task.id}: could not record that it is waiting (${reason}): ${messageOf(err)}`);
+      }
+    };
+    // A pending auto-retry (#958): the back-off has to pass first, and the kill switch ends it. Waiting writes no comment.
+    const pending = task.autoRetry?.notBefore ?? null;
+    /** Why a pending retry is ended instead of started (null: it goes on). */
+    let endedBecause: string | null = null;
+    if (pending !== null) {
+      // The Task's own off switch (#958): `autoRetry: null` or one attempt in all, set during the back-off, ends the pending retry the way the kill switch does.
+      if (!isAutoRetryOptedIn(task.autoRetry) || task.autoRetry.maxAttempts === 1) endedBecause = "Auto-retry switched off for this Task";
+      let enabled = true;
+      try {
+        enabled = (await getAutoRetrySettings(this.ownerId)).enabled;
+      } catch (err) {
+        this.log.error(`task ${task.id}: could not read the auto-retry settings: ${messageOf(err)}`);
+      }
+      if (endedBecause === null && !enabled) endedBecause = "Auto-retry is switched off";
+      if (endedBecause === null && this.now() < pending) {
+        await wait(formatAutoRetryWaiting(pending, this.now()));
+        return false;
+      }
+    }
+    // Ask before claiming: a claimed Task counts an attempt, so the wait has to happen here.
     let early: { agentId: string; resolved?: ResolvedAgent; error?: unknown } | null = null;
     if (task.agent) {
       try {
         early = { agentId: task.agent, resolved: await this.agents.resolve(this.ownerId, task.agent) };
       } catch (err) {
-        if (err instanceof HarnessNotReadyError || err instanceof CoreHarnessesUnavailableError) {
+        if (err instanceof CoreHarnessesUnavailableError) {
+          // The Core is not connected: wait for it, with no limit, and say so. This wait is not the Harness
+          // window: that starts at the first "not ready" answer after the Core is back.
+          this.waitingSince.delete(task.id);
+          if (!this.notConnectedLogged.has(task.id)) {
+            this.notConnectedLogged.add(task.id);
+            this.log.info(`task ${task.id}: waiting for its Agent's Core: ${messageOf(err)}`);
+          }
+          await wait(NOT_CONNECTED);
+          return false;
+        }
+        if (err instanceof HarnessNotReadyError) {
           const since = this.waitingSince.get(task.id) ?? this.now();
           if (!this.waitingSince.has(task.id)) {
             this.waitingSince.set(task.id, since);
             this.log.info(`task ${task.id}: waiting for its Agent's Harness: ${messageOf(err)}`);
           }
-          if (this.now() - since < this.harnessWaitMs) return false;
+          if (this.now() - since < this.harnessWaitMs) {
+            await wait(`waiting: Harness not ready (${err.state})`);
+            return false;
+          }
         }
         early = { agentId: task.agent, error: err };
       }
     }
     this.waitingSince.delete(task.id);
+    this.notConnectedLogged.delete(task.id);
+
+    // A Core whose last start was refused for want of a slot: no claim until a slot frees or a probe is due.
+    const coreId = early?.resolved?.coreId;
+    const full = coreId ? this.fullCores.get(coreId) : undefined;
+    if (coreId && full && this.now() < full.retryAt) {
+      await wait(fullReason(full.max));
+      return false;
+    }
 
     const claimed = await claimTask(this.ownerId, task.id, this.now());
     if (!claimed) return false; // another dispatcher got it, or it is no longer assigned
     const attempt = claimed.attemptCount;
+    let started = false;
     const fail = async (reason: string) => {
       this.log.error(`task ${claimed.id}: ${reason}`);
-      await failTaskDispatch(this.ownerId, claimed.id, reason, this.now());
+      // No Session started: the attempt the claim counted is given back.
+      await failTaskDispatch(this.ownerId, claimed.id, reason, this.now(), { refundAttempt: !started });
     };
+    if (endedBecause !== null) {
+      // The kill switch (#958 guard 7) or the Task's own off switch: a pending retry is failed instead of started. `assigned` has no edge to `failed`, so it is claimed and failed with the attempt given back.
+      const reason = endedBecause;
+      await fail(reason);
+      await setAutoRetryNotice(this.ownerId, claimed.id, "gave-up", reason, this.now()).catch((e) => this.log.error(`task ${claimed.id}: could not record the notice: ${messageOf(e)}`));
+      return true;
+    }
+    // This attempt follows an auto-retry (#958): its prompt says so.
+    const autoRetried = claimed.autoRetry?.notBefore != null ? { exitCode: exitCodeOfCause(claimed.autoRetry.lastCause) } : undefined;
 
     if (!claimed.agent) {
       await fail("this Task has no Agent to run it");
@@ -359,27 +521,79 @@ export class TaskDispatcher {
       return true;
     }
 
+    // The finished attempt's harness may still be being stopped (#962): resuming into it now would send the message to a
+    // Session that stop then kills. Wait for the stop, no longer than the stop itself can take.
+    await this.waitForHarnessStop(claimed.id);
+
     let sessionId: string;
+    let resumed = false;
+    // Why this Task's own Session was not resumed (null: a first dispatch, a resume, or no resumer wired), and how many of
+    // its comments the new Session was given: the `New Session ...` comment says both (#955).
+    let resumeRefusal: ResumeRefusal | null = null;
+    let included = 0;
+    let totalComments = 0;
     try {
       const comments = await listTaskComments(this.ownerId, claimed.id);
-      if (attempt > 1) await this.stopPreviousSession(claimed.id, attempt - 1, comments);
-      // The whole Task goes into a file the agent reads, not into the composer. The file is on the Core before
-      // the pointer is typed, so the agent cannot be told to read a file that is not there.
-      try {
-        await this.writePromptFile(resolved.coreId, claimed.id, attempt, buildTaskPrompt(claimed, comments, attempt));
-      } catch (err) {
-        await fail(`could not put the Task's prompt file on Core ${resolved.coreId}: ${messageOf(err)}`);
-        return true;
+      let handle: StartedSession | null = null;
+      const previous = this.resumeSession ? resolveAttemptSessions(comments).at(-1) : undefined;
+      if (this.resumeSession && !previous && attempt > 1) resumeRefusal = RESUME_REFUSALS.noEarlierSession;
+      if (this.resumeSession && previous) {
+        if (previous.coreId !== resolved.coreId) resumeRefusal = RESUME_REFUSALS.otherCore;
+        else if (previous.harness !== resolved.harness) resumeRefusal = RESUME_REFUSALS.otherHarness;
+        else {
+          try {
+            await this.writePromptFile(resolved.coreId, claimed.id, attempt, buildResumePrompt(claimed, comments, attempt, previous.index, autoRetried));
+          } catch (err) {
+            await fail(`could not put the Task's prompt file on Core ${resolved.coreId}: ${messageOf(err)}`);
+            return true;
+          }
+          const outcome = await this.resumeSession({
+            coreId: resolved.coreId,
+            sessionId: previous.sessionId,
+            harness: resolved.harness,
+            model: resolved.model,
+            flags: resolved.flags,
+            prompt: buildTaskPointer(resolved.harness, claimed.id, attempt),
+          });
+          if (outcome.kind === "cannot") {
+            resumeRefusal = outcome.refusal;
+            // One live harness per Task: a Session that is running and did not take the message is stopped before another starts.
+            if (outcome.stillLive) await this.stopRunningSession(claimed.id, previous);
+          } else {
+            handle = outcome.session;
+            resumed = true;
+          }
+        }
+        if (resumeRefusal) this.log.info(`task ${claimed.id}: Session ${previous.sessionId} not resumed (${resumeRefusal.reason}); starting a new Session`);
       }
-      const session = await this.startSession({
-        coreId: resolved.coreId,
-        harness: resolved.harness,
-        model: resolved.model,
-        flags: resolved.flags,
-        title: `Task: ${claimed.title.trim().slice(0, 80)}`,
-        prompt: buildTaskPointer(resolved.harness, claimed.id, attempt),
-      });
+      if (!handle) {
+        const given = promptComments(comments);
+        included = given.shown.length;
+        totalComments = given.total;
+        if (attempt > 1) await this.stopPreviousSession(claimed.id, attempt - 1, comments);
+        // The whole Task goes into a file the agent reads, not into the composer. The file is on the Core before
+        // the pointer is typed, so the agent cannot be told to read a file that is not there.
+        try {
+          await this.writePromptFile(resolved.coreId, claimed.id, attempt, buildTaskPrompt(claimed, comments, attempt, autoRetried));
+        } catch (err) {
+          await fail(`could not put the Task's prompt file on Core ${resolved.coreId}: ${messageOf(err)}`);
+          return true;
+        }
+        handle = await this.startSession({
+          coreId: resolved.coreId,
+          harness: resolved.harness,
+          model: resolved.model,
+          flags: resolved.flags,
+          title: `Task: ${claimed.title.trim().slice(0, 80)}`,
+          prompt: buildTaskPointer(resolved.harness, claimed.id, attempt),
+        });
+      }
+      const session = handle;
       sessionId = session.sessionId;
+      started = true;
+      this.fullCores.delete(resolved.coreId);
+      // The back-off is over once a Session runs (a start that was refused keeps the retry pending, and its prompt line).
+      if (autoRetried) await clearAutoRetryPending(this.ownerId, claimed.id, this.now()).catch((e) => this.log.error(`task ${claimed.id}: could not clear the pending retry: ${messageOf(e)}`));
       this.watcher.track(
         {
           taskId: claimed.id,
@@ -394,35 +608,45 @@ export class TaskDispatcher {
         () => session.dispose(),
       );
       session.onExit(({ exitCode }) => this.watcher.markExited(claimed.id, exitCode));
+      // The Core's status changes, one write at a time and in the order they came (#949). An unknown status is skipped.
+      let writes: Promise<void> = Promise.resolve();
+      session.onStatus((status) => {
+        const state = sessionStateForCoreStatus(status);
+        if (state) writes = writes.then(() => this.watcher.markSessionState(claimed.id, state));
+      });
     } catch (err) {
       this.watcher.untrack(claimed.id);
+      // Not an attempt, and not a failure: the Core has no room or no link right now. Wait for it.
+      const refusal = started ? null : this.startRefusal(resolved.coreId, err);
+      if (refusal) {
+        this.log.info(`task ${claimed.id}: ${refusal}; back to assigned until it clears (${messageOf(err)})`);
+        const released = await releaseTaskClaim(this.ownerId, claimed.id, attempt, refusal, { comment: !wasWaiting }, this.now()).catch((e) => {
+          this.log.error(`task ${claimed.id}: could not give the claim back: ${messageOf(e)}`);
+          return undefined;
+        });
+        if (released === undefined) await fail(`could not start a Session on Core ${resolved.coreId}: ${messageOf(err)}`);
+        return false;
+      }
       await fail(`could not start a Session on Core ${resolved.coreId}: ${messageOf(err)}`);
       return true;
     }
 
     try {
-      await addTaskComment(
-        this.ownerId,
-        claimed.id,
-        {
-          authorKind: "system",
-          authorName: "Panel",
-          body: formatTaskDispatchComment({
-            attempt,
-            agentName: agent.name,
-            harness: resolved.harness,
-            coreId: resolved.coreId,
-            sessionId,
-          }),
-        },
-        this.now(),
-      );
+      // A new Session is always named by the dispatch comment (Core, Agent, harness: what the next re-assign and Open
+      // session read). When a resume was tried first, the `New Session ...` comment follows it and says why it was not.
+      const notes = resumed
+        ? [formatTaskResumeComment({ attempt, sessionId })]
+        : [
+            formatTaskDispatchComment({ attempt, agentName: agent.name, harness: resolved.harness, coreId: resolved.coreId, sessionId }),
+            ...(resumeRefusal ? [formatTaskNewSessionComment({ attempt, sessionId, reason: resumeRefusal.reason, included, total: totalComments })] : []),
+          ];
+      for (const body of notes) await addTaskComment(this.ownerId, claimed.id, { authorKind: "system", authorName: "Panel", body }, this.now());
     } catch (err) {
       // The Session is running and being watched; a missing note is not a reason to fail the Task.
       this.log.error(`task ${claimed.id}: could not add the dispatch comment: ${messageOf(err)}`);
     }
     await this.stopIfStoppedWhileStarting(claimed.id, attempt, { coreId: resolved.coreId, sessionId });
-    this.log.info(`task ${claimed.id}: attempt ${attempt} running as Session ${sessionId} on Core ${resolved.coreId}`);
+    this.log.info(`task ${claimed.id}: attempt ${attempt} running as ${resumed ? "resumed " : ""}Session ${sessionId} on Core ${resolved.coreId}`);
     return true;
   }
 }

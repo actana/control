@@ -43,10 +43,13 @@ export function spawnFieldRefusal(opts: object): string | null {
 // A Session belongs to the Core, so a frame that lists Sessions has nothing to
 // narrow by and a `create` has nothing to create the Session under. The same
 // allow-list reasoning as above, per frame: the keys each frame has left.
+const PAGING_FIELDS = ["limit", "cursor", "status", "archived", "harness", "q", "ids", "pinned"] as const;
 const SESSION_FRAME_FIELDS: Record<string, ReadonlySet<string>> = {
-  sessionRowsList: new Set(["type", "reqId"]),
+  // The paging fields are the frame's own (#960), not a grouping a 0.4.x client
+  // narrowed by: `limit` and `cursor` page, the rest filter.
+  sessionRowsList: new Set(["type", "reqId", ...PAGING_FIELDS]),
   archivedSessionRowsList: new Set(["type", "reqId"]),
-  sessionsList: new Set(["type", "reqId"]),
+  sessionsList: new Set(["type", "reqId", ...PAGING_FIELDS]),
 };
 const SESSION_CREATE_FIELDS: ReadonlySet<string> = new Set(["op", "sessionId", "title", "agent", "status", "icon"]);
 
