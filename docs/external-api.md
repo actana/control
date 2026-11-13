@@ -323,7 +323,7 @@ separate from the browser's session-cookie routes.
 | Agents | `GET/POST /api/v1/agents`, `GET/PATCH/DELETE /api/v1/agents/:id`, `GET /api/v1/cores/:id/agents` |
 | Sessions | `GET /api/v1/sessions?coreId=&limit=&cursor=&status=&archived=&harness=&q=`: one page of a Core's Sessions (running and waiting first, then newest activity), lean rows, `nextCursor` and `total`; `400` for a bad `limit` or `cursor` |
 | Tasks | `GET/POST /api/v1/tasks`, `GET/PATCH/DELETE /api/v1/tasks/:id`, `POST /api/v1/tasks/:id/status`, `POST /api/v1/tasks/:id/stop` |
-| Comments | `GET/POST /api/v1/tasks/:id/comments` |
+| Comments | `GET/POST /api/v1/tasks/:id/comments`. A comment written with a key is stored as a `user` comment named `<key name> (API key)` (the same name is used for the time-limit change, stop and close records). It is a note: pass `"deliver": "now"` to also type it into the Task's running Session (#935); the `201` body then has `delivery: { mode, delivered, reason? }`. A Session that is waiting for input (`needs-input`) is never typed into: the comment stays a note and `reason` says why |
 
 Status moves go through the Tasks service. A key client may only ask for the
 operator moves `assigned` and `draft` (the dispatcher and the result watcher
@@ -386,7 +386,7 @@ the tools below are available to the model.
 | `get_task` | one Task with its comment thread; `waiting: { reason, coreId }` while it is `assigned` but not started (Core full, Core not connected, Harness not ready), else `null` (also on `get_tasks`) |
 | `create_task` | a draft, or an assigned Task with `startNow` (needs `coreId` and `agent`); optional `timeoutMinutes` (default 60, `null` = No limit) |
 | `assign_task` | `assigned` (default) or `draft`, the operator moves only; every other status is refused |
-| `comment_task` | a comment; `reassign: true` also sends a finished Task back (Comment & re-assign) |
+| `comment_task` | a comment, stored as `<key name> (API key)`; a note unless `deliver: "now"`, which also types it into the running Session (the answer's `delivery` says whether it was, and why not); `reassign: true` also sends a finished Task back (Comment & re-assign) |
 | `close_session` | ends the harness of a Task that is no longer `in_progress` and frees its Core's PTY slot, so a Task waiting for capacity starts; the Session stays (transcript kept, `comment_task` with `reassign` continues it); `409` for an `in_progress` Task, a Task with no Session, or a Session someone is working in (marked `destructiveHint`). REST: `POST /api/v1/tasks/{id}/close-session` |
 | `stop_task` | stops an `in_progress` Task: its Session is stopped and the Task fails with a system comment, after which `comment_task` with `reassign` works (marked `destructiveHint`); `409` for any other status |
 | `update_task` | a Task's `title`, `description` and/or `timeoutMinutes`; the title and description are refused (`409`) while it is `in_progress`, the time limit is allowed at any status |

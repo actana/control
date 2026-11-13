@@ -247,8 +247,11 @@ export function TaskDetail({ taskId, onClose, focusComposer = false }: { taskId:
   };
 
   const refresh = () => queryClient.invalidateQueries({ queryKey: queryKeys.tasks });
+  // A comment on a running Task is typed into its Session unless the Operator turns it off (#935, now mode).
+  const [sendIntoSession, setSendIntoSession] = useState(true);
   const comment = useMutation({
-    mutationFn: (reassign: boolean) => api.commentOnTask(taskId, { body: draft, reassign }, ...(attachments.length > 0 ? [attachments] : [])),
+    mutationFn: (reassign: boolean) =>
+      api.commentOnTask(taskId, { body: draft, reassign, ...(!reassign && task?.status === "in_progress" && sendIntoSession ? { deliver: "now" as const } : {}) }, ...(attachments.length > 0 ? [attachments] : [])),
     onSuccess: async () => {
       setDraft("");
       setAttachments([]);
@@ -513,6 +516,12 @@ export function TaskDetail({ taskId, onClose, focusComposer = false }: { taskId:
               </Btn>
               </div>
             </div>
+            {task.status === "in_progress" ? (
+              <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12 }}>
+                <input type="checkbox" checked={sendIntoSession} onChange={(e) => setSendIntoSession(e.target.checked)} />
+                Also type it into the running Session (off: a note only)
+              </label>
+            ) : null}
             <FormErrorBox error={message(comment.error) ?? message(move.error)} />
           </section>
   ) : null;

@@ -13,8 +13,9 @@ import {
 } from "@actana/shared/session-paging";
 import type { ApiPrincipal } from "../api-key-auth";
 import { closeSession, queuedAnswer, stopTask } from "../task-dispatch";
+import { deliverCommentNow } from "../task-dispatch/comment-delivery";
 import { stopTaskBody } from "./tasks.controller";
-import { scopeReaches } from "../services/api-keys";
+import { listApiKeys, scopeReaches } from "../services/api-keys";
 import { getCore, listCores } from "../services/cores";
 import { readCoreCapacity } from "../services/core-capacity";
 import { coreLinkManager } from "../services/core-link-manager";
@@ -80,7 +81,7 @@ const newTaskBody = z.object({
   timeoutMinutes: timeoutMinutesSchema.optional(),
 });
 const statusBody = z.object({ status: z.enum(OPERATOR_TASK_STATUSES) });
-const commentBody = z.object({ body: z.string(), reassign: z.boolean().optional() });
+const commentBody = z.object({ body: z.string(), reassign: z.boolean().optional(), deliver: z.literal("now").optional() });
 const newAgentBody = z.object({
   coreId: z.string(),
   name: z.string(),
@@ -181,6 +182,16 @@ function agentDto(a: Agent): AgentDto {
 
 async function authorName(): Promise<string> {
   return (await getOperator())?.name?.trim() || "operator";
+}
+
+/**
+ * Who a write is recorded as (#935): the Operator for a browser session, and for an API key the key itself, `<key name> (API key)`,
+ * so the thread tells the Operator from an orchestrator. Used for a comment's author and for `changedBy`, `stoppedBy`, `closedBy`.
+ */
+async function actorName(principal: ApiPrincipal): Promise<string> {
+  if (principal.kind !== "api-key") return authorName();
+  const key = (await listApiKeys(principal.ownerId)).find((k) => k.id === principal.keyId);
+  return `${key?.name ?? principal.keyId} (API key)`;
 }
 
 /**
@@ -565,7 +576,7 @@ export async function updateTaskV1(principal: ApiPrincipal, id: string, request:
     const task = await getTask(principal.ownerId, id);
     const denied = refuseOutsideScope(principal, task.coreId);
     if (denied) return denied;
-    return json({ task: taskDto(await updateTask(principal.ownerId, id, { ...body.data, changedBy: await authorName() }), origin) });
+    return json({ task: taskDto(await updateTask(principal.ownerId, id, { ...body.data, changedBy: await actorName(principal) }), origin) });
   } catch (e) {
     return rethrowUnlessDomain(e);
   }
@@ -592,7 +603,7 @@ export async function stopTaskV1(principal: ApiPrincipal, id: string, request: R
     const task = await getTask(principal.ownerId, id);
     const denied = refuseOutsideScope(principal, task.coreId);
     if (denied) return denied;
-    const stopped = await stopTask(principal.ownerId, id, { stoppedBy: await authorName(), reason: body.data.reason });
+    const stopped = await stopTask(principal.ownerId, id, { stoppedBy: await actorName(principal), reason: body.data.reason });
     return json({ task: taskDto(stopped.task, origin), session: stopped.session });
   } catch (e) {
     return rethrowUnlessDomain(e);
@@ -605,7 +616,7 @@ export async function closeTaskSessionV1(principal: ApiPrincipal, id: string, or
     const task = await getTask(principal.ownerId, id);
     const denied = refuseOutsideScope(principal, task.coreId);
     if (denied) return denied;
-    const closed = await closeSession(principal.ownerId, id, { closedBy: await authorName() });
+    const closed = await closeSession(principal.ownerId, id, { closedBy: await actorName(principal) });
     return json({ task: taskDto(closed.task, origin), session: closed.session });
   } catch (e) {
     return rethrowUnlessDomain(e);
@@ -630,13 +641,15 @@ export async function addTaskCommentV1(principal: ApiPrincipal, id: string, requ
     const task = await getTask(principal.ownerId, id);
     const denied = refuseOutsideScope(principal, task.coreId);
     if (denied) return denied;
-    const input = { authorKind: "user" as const, authorName: await authorName(), body: body.data.body };
+    const input = { authorKind: "user" as const, authorName: await actorName(principal), body: body.data.body };
     if (body.data.reassign) {
       const updated = await commentAndReassign(principal.ownerId, id, input);
       return json({ task: taskDto(updated, origin), comments: (await listTaskComments(principal.ownerId, id)).map(commentDto) });
     }
     const stored = await addTaskComment(principal.ownerId, id, input);
-    return json({ comment: commentDto(stored) }, { status: HTTP_CREATED });
+    // A comment is a note unless the caller asks for delivery (#935): an orchestrator's progress comments on its own Task must not be typed into its own Session.
+    const delivery = body.data.deliver === "now" ? await deliverCommentNow(principal.ownerId, id, stored) : undefined;
+    return json({ comment: commentDto(stored), ...(delivery ? { delivery } : {}) }, { status: HTTP_CREATED });
   } catch (e) {
     return rethrowUnlessDomain(e);
   }

@@ -31,6 +31,7 @@ import { getAgent, listAgentsForCore, type Agent } from "../services/agents";
 import { getOperator } from "../services/operator";
 import { findCoreById } from "../repositories/cores.repo";
 import { queuedAnswer, stopTask } from "../task-dispatch";
+import { deliverCommentNow } from "../task-dispatch/comment-delivery";
 
 /**
  * Tasks and their comments, for the operator's browser (#571). Every handler
@@ -56,7 +57,7 @@ const newTaskBody = z.object({
 // Task running with nothing behind it, or let a re-assign start a second attempt on top of one.
 export const OPERATOR_TASK_STATUSES = ["assigned", "draft"] as const;
 const statusBody = z.object({ status: z.enum(OPERATOR_TASK_STATUSES) });
-const commentBody = z.object({ body: z.string(), reassign: z.boolean().optional() });
+const commentBody = z.object({ body: z.string(), reassign: z.boolean().optional(), deliver: z.literal("now").optional() });
 /** Stopping a running Task (#723): an optional reason, recorded in the system comment. */
 export const stopTaskBody = z.object({ reason: z.string().trim().max(2000).optional() });
 /**
@@ -332,14 +333,18 @@ export async function comment(ownerId: number, id: string, request: Request): Pr
         parsed.files,
       );
       if (parsed.data.reassign) return json({ task: taskDto(done.task), comments: (await listTaskComments(ownerId, id)).map(commentDto) });
-      return json({ comment: commentDto(done.comment!) }, { status: HTTP_CREATED });
+      const stored = done.comment!;
+      const delivery = parsed.data.deliver === "now" ? await deliverCommentNow(ownerId, id, stored) : undefined;
+      return json({ comment: commentDto(stored), ...(delivery ? { delivery } : {}) }, { status: HTTP_CREATED });
     }
     if (parsed.data.reassign) {
       const task = await commentAndReassign(ownerId, id, input);
       return json({ task: taskDto(task), comments: (await listTaskComments(ownerId, id)).map(commentDto) });
     }
     const stored = await addTaskComment(ownerId, id, input);
-    return json({ comment: commentDto(stored) }, { status: HTTP_CREATED });
+    // The Operator's choice (#935): typed into the running Session (`deliver: "now"`), or a note only.
+    const delivery = parsed.data.deliver === "now" ? await deliverCommentNow(ownerId, id, stored) : undefined;
+    return json({ comment: commentDto(stored), ...(delivery ? { delivery } : {}) }, { status: HTTP_CREATED });
   } catch (e) {
     return attachmentFailure(e);
   }

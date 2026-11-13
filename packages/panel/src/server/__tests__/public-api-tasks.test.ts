@@ -305,7 +305,7 @@ describe("v1 Task time limit (#724)", () => {
     const task = ((await res.json()) as TaskBody).task as TaskBody["task"] & { status: string };
     expect(task).toMatchObject({ status: "in_progress", timeoutMinutes: 240 });
     const thread = (await (await call(`/api/v1/tasks/${id}/comments`, { bearer: key })).json()) as { comments: { authorKind: string; body: string }[] };
-    expect(thread.comments.map((c) => c.body)).toContain("Time limit changed from 1 hour to 4 hours by Test Operator.");
+    expect(thread.comments.map((c) => c.body)).toContain("Time limit changed from 1 hour to 4 hours by k (API key).");
     expect(thread.comments.find((c) => c.body.startsWith("Time limit changed"))?.authorKind).toBe("system");
     expect(await outboxTypes(id)).toContain("task.updated");
     const none = await call(`/api/v1/tasks/${id}`, { method: "PATCH", bearer: key, json: { timeoutMinutes: null } });

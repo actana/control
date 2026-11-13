@@ -133,7 +133,7 @@ describe("time limit tools (#724)", () => {
     const updated = dataOf(await c.call("update_task", { taskId: task.id, timeoutMinutes: 240 })).task;
     expect(updated).toMatchObject({ status: "in_progress", timeoutMinutes: 240 });
     const comments = await tasksService.listTaskComments(A, task.id);
-    expect(comments.map((x) => x.body)).toContain("Time limit changed from 1 hour to 4 hours by Test Operator.");
+    expect(comments.map((x) => x.body)).toContain("Time limit changed from 1 hour to 4 hours by k (API key).");
     // The title is still locked while it runs.
     expect(textOf(await c.call("update_task", { taskId: task.id, title: "late" }))).toMatch(/^409/);
   });
@@ -350,6 +350,86 @@ describe("delete_task (#722)", () => {
     expect(textOf(await (await client(A, ["core-a"])).call("delete_task", { taskId: onB.id }))).toMatch(/^403/);
     expect(textOf(await (await client(A)).call("delete_task", { taskId: onX.id }))).toMatch(/^404/);
     expect(await taskCount()).toBe(2);
+  });
+});
+
+describe("comment_task delivery and the key's name (#935)", () => {
+  const typed: string[] = [];
+  const keyed = async (name: string) => {
+    const { key } = await createApiKey(A, { name, permissions: ALL_API_KEY_PERMISSIONS });
+    const c = new McpTestClient(key);
+    await c.connect();
+    return c;
+  };
+  async function runningTask() {
+    const task = await tasksService.createTask(A, { title: "run", coreId: "core-a", agent: "agent-a", startNow: true });
+    await tasksService.claimTask(A, task.id);
+    await tasksService.addTaskComment(A, task.id, {
+      authorKind: "system",
+      authorName: "Panel",
+      body: formatTaskDispatchComment({ attempt: 1, agentName: "Agent", harness: "claude-code", coreId: "core-a", sessionId: "session_1" }),
+    });
+    return task;
+  }
+  beforeEach(async () => {
+    typed.length = 0;
+    const { setSessionTyperForTests } = await import("../task-dispatch/comment-delivery");
+    setSessionTyperForTests(async () => ({
+      deliver: async (text: string) => {
+        typed.push(text);
+        return { ok: true };
+      },
+      dispose: () => {},
+    }));
+  });
+  afterEach(async () => {
+    (await import("../task-dispatch/comment-delivery")).setSessionTyperForTests(null);
+  });
+
+  it("offers deliver: now on comment_task", async () => {
+    const byName = Object.fromEntries((await (await client(A)).listTools()).map((t) => [t.name, t]));
+    expect(Object.keys(byName.comment_task!.inputSchema.properties).sort()).toEqual(["body", "deliver", "reassign", "taskId"]);
+    expect(byName.comment_task!.description).toMatch(/deliver/);
+  });
+
+  it("without deliver on a running Task records the comment and types nothing", async () => {
+    const task = await runningTask();
+    const res = dataOf(await (await keyed("orchestrator")).call("comment_task", { taskId: task.id, body: "milestone 1 reached" }));
+    expect(res.comment).toMatchObject({ body: "milestone 1 reached" });
+    expect(res.delivery).toBeUndefined();
+    expect(typed).toEqual([]);
+  });
+
+  it("with deliver: now on a running Task types it into the Session", async () => {
+    const task = await runningTask();
+    const res = dataOf(await (await keyed("orchestrator")).call("comment_task", { taskId: task.id, body: "use the other branch", deliver: "now" }));
+    expect(res.delivery).toEqual({ mode: "now", delivered: true });
+    expect(typed).toEqual([`New comment on your Task ${task.id} from orchestrator (API key): use the other branch`, "\r"]);
+  });
+
+  it("with deliver: now on a Session that needs input types nothing and says why", async () => {
+    const task = await runningTask();
+    await tasksService.setTaskSessionState(A, task.id, "needs-input");
+    const res = dataOf(await (await keyed("orchestrator")).call("comment_task", { taskId: task.id, body: "yes", deliver: "now" }));
+    expect(res.delivery).toMatchObject({ mode: "now", delivered: false });
+    expect(res.delivery.reason).toMatch(/waiting for input/);
+    expect(typed).toEqual([]);
+  });
+
+  it("stores a comment written with a key under the key's name, still as a user comment", async () => {
+    const task = await tasksService.createTask(A, { title: "t", coreId: "core-a", agent: "agent-a" });
+    const added = dataOf(await (await keyed("D1 orchestrator")).call("comment_task", { taskId: task.id, body: "hello" })).comment;
+    expect(added).toMatchObject({ authorKind: "user", authorName: "D1 orchestrator (API key)" });
+  });
+
+  it("names the key in a stop's and a time-limit change's record too", async () => {
+    const task = await runningTask();
+    const c = await keyed("D1 orchestrator");
+    await c.call("update_task", { taskId: task.id, timeoutMinutes: 30 });
+    await c.call("stop_task", { taskId: task.id, reason: "hung" });
+    const bodies = (await tasksService.listTaskComments(A, task.id)).map((x) => x.body);
+    expect(bodies.some((b) => b.startsWith("Stopped by D1 orchestrator (API key)"))).toBe(true);
+    expect(bodies.some((b) => b.includes("D1 orchestrator (API key)") && !b.startsWith("Stopped"))).toBe(true);
   });
 });
 

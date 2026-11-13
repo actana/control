@@ -94,7 +94,12 @@ export type NewTaskCommentRequest = {
   body: string;
   /** Comment & re-assign: the comment and the move back to `assigned`, in one call. */
   reassign?: boolean;
+  /** `now`: also type the comment into the Task's running Session (#935). Without it the comment is a note. */
+  deliver?: "now";
 };
+
+/** What became of a comment's delivery into the Task's Session (#935): typed, or kept as a note with the reason. */
+export type TaskCommentDelivery = { mode: "now"; delivered: boolean; reason?: string };
 
 /** Stop a running Task (#723). */
 export type StopTaskRequest = { reason?: string };
