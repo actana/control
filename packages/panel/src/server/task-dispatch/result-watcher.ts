@@ -70,7 +70,7 @@ export type ResultWatcherOptions = {
   exitGraceMs?: number;
   pollMs?: number;
   log?: DispatchLog;
-  /** Stops a Session whose dispatch timed out, so a hung agent does not run on after its Task failed (#723). */
+  /** Stops a Session whose dispatch timed out, so a hung agent does not run on after its Task failed (#723), and ends the harness of a Task that reported, to free its PTY slot (#962). */
   stopSession?: SessionStopper;
   /**
    * Which Sessions are live on a Core. Asked once a minute per Core: a Session missing twice in a row counts as
@@ -334,6 +334,48 @@ export class ResultWatcher {
     }
   }
 
+  /**
+   * A result file ended this dispatch (#962): let go of it, then end the Session's harness so its PTY slot is free. A
+   * Core runs at most 8 live harness PTYs, and a finished Task's harness used to keep its slot for ever.
+   */
+  private async finish(t: Tracked): Promise<void> {
+    this.drop(t);
+    await this.endHarness(t);
+  }
+
+  /**
+   * Ask the Core to stop the harness of a Task that has reported, with the same stop an operator's `stop_task` uses: a
+   * kill of the Session's PTY. That frees the slot and nothing else: the Session row, its transcript and its harness
+   * session id stay, so the Session can be resumed (#955) or continued by a comment on the finished Task (#904).
+   * Skipped when the harness already exited. Best effort, never throws: the Task is finished either way, and a Core that
+   * cannot be reached is noted on the Task, since its Session may still hold a slot.
+   */
+  private async endHarness(t: Tracked): Promise<void> {
+    if (!this.stopSession || !t.sessionId || t.exit) return;
+    const target = { coreId: t.coreId, sessionId: t.sessionId };
+    let problem: string | null = null;
+    try {
+      const { outcome, detail } = await this.stopSession(target);
+      this.log.info(`task ${t.taskId}: Session ${target.sessionId} after its result: ${outcome}${detail ? ` (${detail})` : ""}`);
+      if (outcome === "unreachable") problem = `the Core is unreachable${detail ? ` (${detail})` : ""}`;
+      else if (outcome === "failed") problem = detail ?? "the Core refused";
+    } catch (err) {
+      this.log.error(`task ${t.taskId}: ending the harness of Session ${target.sessionId} failed: ${messageOf(err)}`);
+      return;
+    }
+    if (!problem) return;
+    try {
+      await addTaskComment(
+        this.ownerId,
+        t.taskId,
+        { authorKind: "system", authorName: "Panel", body: `The harness of Session ${target.sessionId} on Core ${target.coreId} could not be ended after the Task reported: ${problem}. It may still hold a PTY slot.` },
+        this.now(),
+      );
+    } catch (err) {
+      this.log.error(`task ${t.taskId}: could not note that the harness was not ended: ${messageOf(err)}`);
+    }
+  }
+
   private drop(t: Tracked): void {
     if (this.tracked.get(t.taskId) === t) this.tracked.delete(t.taskId);
     t.release();
@@ -350,7 +392,7 @@ export class ResultWatcher {
         finished = await this.consume(t, watched.changes);
         t.cursor = watched.cursor;
       }
-      if (finished) this.drop(t);
+      if (finished) await this.finish(t);
       return finished;
     } catch (err) {
       this.log.error(`task ${t.taskId}: could not read its results before recording idle-no-result: ${messageOf(err)}`);
@@ -376,7 +418,11 @@ export class ResultWatcher {
       // be recorded. Timeout and exit below do not depend on it, so a Task is never stuck behind it.
       this.log.error(`task ${t.taskId}: could not read or record its results: ${messageOf(err)}`);
     }
-    if (finished || this.tracked.get(t.taskId) !== t) {
+    if (finished) {
+      await this.finish(t);
+      return;
+    }
+    if (this.tracked.get(t.taskId) !== t) {
       this.drop(t);
       return;
     }
@@ -479,7 +525,7 @@ export class ResultWatcher {
     // One last look at the folder itself, not at the change feed: a result whose event was missed still counts.
     try {
       if (await this.consume(t, await this.folderChanges(t))) {
-        this.drop(t);
+        await this.finish(t);
         return;
       }
     } catch (err) {

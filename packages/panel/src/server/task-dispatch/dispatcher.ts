@@ -275,7 +275,7 @@ export class TaskDispatcher {
    * Before attempt n: if attempt n-1 ended by an operator's stop or by the timeout, its Session may still be
    * running (the stop could not reach the Core, or the kill failed) and could write a `success.md` the new
    * attempt would count. Try to stop it again. Best effort and logged: a Core still unreachable does not hold
-   * the new attempt back. An attempt that ended on its own result is left alone, so its Session stays open to read.
+   * the new attempt back. An attempt that ended on its own result is left alone: the watcher ended its harness when it reported (#962).
    */
   private async stopPreviousSession(taskId: string, previous: number, comments: readonly TaskComment[]): Promise<void> {
     if (!this.stopSession) return;

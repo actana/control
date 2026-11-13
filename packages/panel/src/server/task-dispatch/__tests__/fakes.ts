@@ -175,13 +175,21 @@ export class FakeCore {
 
   readonly stopSession: SessionStopper = async (target) => {
     this.stops.push({ ...target });
+    // A stopped harness has no PTY any more: its slot is free.
+    if (this.stopOutcome.outcome === "stopped" || this.stopOutcome.outcome === "not-running") this.live?.delete(target.sessionId);
     return this.stopOutcome;
   };
+
+  /** The Core's cap on live harness PTYs (`DEFAULT_MAX_LIVE_HARNESS_PTYS`, 8); null is no cap. A start over it is refused as the Core refuses it. */
+  maxLivePtys: number | null = null;
 
   readonly startSession: SessionStarter = async (request) => {
     await this.onStart?.();
     this.starts.push(request);
     if (this.failWith) throw new Error(this.failWith);
+    if (this.maxLivePtys !== null && (this.live?.size ?? 0) >= this.maxLivePtys) {
+      throw new Error(`pty:spawn refused: this Core already runs ${this.maxLivePtys} live harness PTYs (the limit).`);
+    }
     const id = `session_${(this.n += 1)}`;
     let onExit: ((e: { exitCode: number }) => void) | null = null;
     const record = {

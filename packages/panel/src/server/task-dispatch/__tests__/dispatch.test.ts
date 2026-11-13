@@ -1166,16 +1166,18 @@ describe("stopping a running Task", () => {
     expect(core.starts).toHaveLength(2);
   });
 
-  it("leaves the Session of an attempt that finished on its own alone when re-running", async () => {
+  it("does not stop the Session of an attempt that finished on its own a second time when re-running", async () => {
     const { clock, core, shared, dispatcher, watcher } = rig();
     const task = await assign(clock);
     await dispatcher.dispatchOnce();
     shared.write(result(task.id, "fail.md"), report("could not"), clock.now() + 1);
     await watcher.tick();
+    // Its harness was ended when it reported (#962): once, by the watcher.
+    expect(core.stops).toEqual([{ coreId: "core_1", sessionId: "session_1" }]);
     await commentAndReassign(A, task.id, { authorKind: "user", authorName: "Operator", body: "retry" }, clock.now());
     clock.advance(1);
     await dispatcher.dispatchOnce();
-    expect(core.stops).toEqual([]);
+    expect(core.stops).toEqual([{ coreId: "core_1", sessionId: "session_1" }]);
     expect(core.starts).toHaveLength(2);
   });
 
@@ -1185,12 +1187,14 @@ describe("stopping a running Task", () => {
     await dispatcher.dispatchOnce();
     shared.write(result(task.id, "fail.md"), report("could not"), clock.now() + 1);
     await watcher.tick();
+    // Its harness was ended when it reported (#962): once, by the watcher.
+    expect(core.stops).toEqual([{ coreId: "core_1", sessionId: "session_1" }]);
     await addTaskComment(A, task.id, { authorKind: "user", authorName: "Operator", body: "the agent wrote no result within an hour, I think" }, clock.now());
     await addTaskComment(A, task.id, { authorKind: "agent", authorName: "Claude Code", body: "The agent wrote no result within 30 minutes (said someone)", sourceFile: "attempt-1-note.md" }, clock.now());
     await commentAndReassign(A, task.id, { authorKind: "user", authorName: "Operator", body: "retry" }, clock.now());
     clock.advance(1);
     await dispatcher.dispatchOnce();
-    expect(core.stops).toEqual([]);
+    expect(core.stops).toEqual([{ coreId: "core_1", sessionId: "session_1" }]);
     expect(core.starts).toHaveLength(2);
   });
 
@@ -1372,7 +1376,7 @@ describe("a Task that times out has its Session stopped (#723)", () => {
     expect(core.stops).toEqual([]);
   });
 
-  it("does not stop a Session whose result turns up in the last look", async () => {
+  it("ends a Session whose result turns up in the last look as a finished Task's, not as a timeout's (#962)", async () => {
     const { clock, core, shared, dispatcher, watcher } = rig();
     const task = await assign(clock);
     await dispatcher.dispatchOnce();
@@ -1382,7 +1386,8 @@ describe("a Task that times out has its Session stopped (#723)", () => {
     await watcher.tick();
 
     expect((await getTask(A, task.id)).status).toBe("done");
-    expect(core.stops).toEqual([]);
+    expect(core.stops).toEqual([{ coreId: "core_1", sessionId: "session_1" }]);
+    expect((await systemBodies(task.id)).some((b) => b.includes("after the timeout"))).toBe(false);
   });
 });
 

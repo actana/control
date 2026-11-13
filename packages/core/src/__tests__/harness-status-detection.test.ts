@@ -419,6 +419,30 @@ describe("harness status detection on the Core (issue 84)", () => {
       expect(killedEvents()).toMatchObject([{ liveTurn: false, statusBefore: "finished", status: "finished" }]);
     });
 
+    it("keeps the row and its harness session id when a finished Session's harness is ended (#962: the Session stays resumable)", async () => {
+      const status = new CoreHarnessStatus({ writer, spawned: () => ({ pid: SPAWNED_PID, launcher: "harness" }) });
+      await postHook({ hook_event_name: "UserPromptSubmit", session_id: "sess-1" });
+      await postHook({ hook_event_name: "Stop", session_id: "sess-1" });
+      expect(rowSessionId()).toBe("sess-1");
+
+      status.sessionExited({ sessionId: SESSION_ID, ptyId: "p1", exitCode: 0, kill });
+
+      // The row is still there, still `finished` (not `ready`, so a launch resumes), and still holds the id to resume.
+      expect(coreQueryStore.getSession(SESSION_ID)).toBeTruthy();
+      expect(rowStatus()).toBe("finished");
+      expect(rowSessionId()).toBe("sess-1");
+    });
+
+    it("keeps the harness session id of a turn that was still running when its harness was ended", async () => {
+      const status = new CoreHarnessStatus({ writer, spawned: () => ({ pid: SPAWNED_PID, launcher: "harness" }) });
+      await postHook({ hook_event_name: "UserPromptSubmit", session_id: "sess-1" });
+
+      status.sessionExited({ sessionId: SESSION_ID, ptyId: "p1", exitCode: 0, kill });
+
+      expect(rowStatus()).toBe("terminated");
+      expect(rowSessionId()).toBe("sess-1");
+    });
+
     it("tells a killed bare Session apart from one that simply exited", async () => {
       const status = new CoreHarnessStatus({ writer, spawned: () => ({ pid: SPAWNED_PID, launcher: "harness" }) });
       status.sessionExited({ sessionId: SESSION_ID, ptyId: "p1", exitCode: 0, kill });
