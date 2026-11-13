@@ -6,8 +6,8 @@ A Task's `sessionState` says what its Session is doing. It is `null` when no att
 |---|---|---|
 | `working` | The Agent is busy. | Keep waiting on `watch.url`. |
 | `needs-input` | The Session waits for a person: the Agent asked a question or hit a dialog. | Read the Task with `get_task`. If the Agent asked a question you can answer, answer with `comment_task`. Otherwise tell the Operator. |
-| `interrupted` | The Session was interrupted. | Read the Task, then continue with `comment_task` and `reassign: true`, or tell the Operator. |
-| `idle-no-result` | The Session is idle and has written no complete result file. | Read the Task and its comments. If the work is not done, send it back with `comment_task` and `reassign: true`. |
+| `interrupted` | The Session was interrupted. | The Task is still `in_progress`: a Session state never moves its `status`. If you created the Task, `stop_task` it, then `comment_task` with `reassign: true` to continue. Otherwise tell the Operator. Do not stop a Task you did not create. |
+| `idle-no-result` | The Session is idle and has written no complete result file. | Read the Task and its comments. The Task is still `in_progress`. If the work is not done and you created the Task, `stop_task` it, then send it back with `comment_task` and `reassign: true`. Otherwise tell the Operator. Do not stop a Task you did not create. |
 | `exited` | The Session ended. | Read the Task: a result file may exist. If none does, the attempt failed; comment and re-assign if it should go on. |
 
 `get_tasks` takes `sessionState` (one value or a comma list) to list, for example, every Task that is `needs-input`.
