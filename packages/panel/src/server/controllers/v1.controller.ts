@@ -14,7 +14,7 @@ import {
 import type { ApiPrincipal } from "../api-key-auth";
 import { closeSession, queuedAnswer, stopTask } from "../task-dispatch";
 import { stopTaskBody } from "./tasks.controller";
-import { scopeReaches } from "../services/api-keys";
+import { listApiKeys, scopeReaches } from "../services/api-keys";
 import { getCore, listCores } from "../services/cores";
 import { readCoreCapacity } from "../services/core-capacity";
 import { coreLinkManager } from "../services/core-link-manager";
@@ -56,6 +56,8 @@ import {
   type Agent,
 } from "../services/agents";
 import { getOperator } from "../services/operator";
+import { TaskAnswerError, answerTask, readTaskPrompt } from "../task-dispatch/task-answer";
+import { ANSWER_KEYS_MAX, ANSWER_TEXT_MAX } from "../task-dispatch/task-input";
 import { findCoreById } from "../repositories/cores.repo";
 import { HARNESSES } from "~/shared/agents";
 import { OPERATOR_TASK_STATUSES, taskListDto, timeoutMinutesSchema, updateTaskBody } from "./tasks.controller";
@@ -558,7 +560,9 @@ export async function getTaskV1(principal: ApiPrincipal, id: string, origin = ""
     const denied = refuseOutsideScope(principal, task.coreId);
     if (denied) return denied;
     const comments = await listTaskComments(principal.ownerId, id);
-    return json({ task: taskDto(task, origin), comments: comments.map(commentDto) });
+    // While its Session waits for input the Task carries what it asks (#959); null when the Core cannot be read.
+    const prompt = task.sessionState === "needs-input" ? { prompt: await readTaskPrompt(task) } : {};
+    return json({ task: { ...taskDto(task, origin), ...prompt }, comments: comments.map(commentDto) });
   } catch (e) {
     return rethrowUnlessDomain(e);
   }
@@ -658,6 +662,48 @@ export async function addTaskCommentV1(principal: ApiPrincipal, id: string, requ
     const stored = await addTaskComment(principal.ownerId, id, input);
     return json({ comment: commentDto(stored) }, { status: HTTP_CREATED });
   } catch (e) {
+    return rethrowUnlessDomain(e);
+  }
+}
+
+/** What an answer says: typed text, an option by number or label, or keys from a fixed allowlist (#959). */
+export const answerTaskBody = z.object({
+  answer: z.union([
+    z.strictObject({ text: z.string().min(1).max(ANSWER_TEXT_MAX) }),
+    z.strictObject({ option: z.union([z.number().int().min(1), z.string().min(1).max(200)]) }),
+    z.strictObject({ keys: z.array(z.string().max(16)).min(1).max(ANSWER_KEYS_MAX) }),
+  ]),
+  expect: z.number().int().optional(),
+});
+
+/** Who answered: a key is named `<key name> (API key)` (the text lane A's #935 gives a key's comments), a session is the Operator. */
+async function answererName(principal: ApiPrincipal): Promise<string> {
+  if (principal.kind !== "api-key") return authorName();
+  const key = (await listApiKeys(principal.ownerId)).find((k) => k.id === principal.keyId);
+  return key ? `${key.name} (API key)` : "API key";
+}
+
+/**
+ * `POST /api/v1/tasks/:id/answer` (#959): answer the prompt a Task's Session waits at. 409 with a `code`: `not_waiting`,
+ * `stale_prompt`, `needs_human` (trust, credentials, a permission that widens access: ask a human), `prompt_unavailable`;
+ * 400 `invalid_answer`. Nothing is typed on a refusal. Needs `tasks:write`, like every Task write.
+ */
+export async function answerTaskV1(principal: ApiPrincipal, id: string, request: Request, origin = originOf(request)): Promise<Response> {
+  const body = await parseJsonBody(request, answerTaskBody);
+  if (!body.ok) return body.response;
+  try {
+    const task = await getTask(principal.ownerId, id);
+    const denied = refuseOutsideScope(principal, task.coreId);
+    if (denied) return denied;
+    const { prompt, summary } = await answerTask(task, {
+      answer: body.data.answer,
+      ...(body.data.expect === undefined ? {} : { expect: body.data.expect }),
+      by: await answererName(principal),
+    });
+    const fresh = await getTask(principal.ownerId, id);
+    return json({ task: taskDto(fresh, origin), answered: { kind: prompt.kind, at: prompt.at, answer: summary } });
+  } catch (e) {
+    if (e instanceof TaskAnswerError) return json({ error: e.message, code: e.code }, { status: e.status });
     return rethrowUnlessDomain(e);
   }
 }

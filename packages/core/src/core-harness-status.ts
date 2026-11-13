@@ -13,6 +13,7 @@
 // and the drain backstop behave identically on both sides.
 
 import log from "@actana/shared/log";
+import { SESSION_PROMPT_EVENT_KIND, hookPromptOf } from "@actana/shared/harness-hook-prompt";
 import {
   handleHarnessHookEvent,
   hookResultResponse,
@@ -158,6 +159,7 @@ export class CoreHarnessStatus {
         },
         updateStatus: (id, status) => {
           this.screenSet.delete(id);
+          if (status === "needs-input") this.recordHookPrompt(id, payload);
           return this.writeStatus(id, status);
         },
         setSessionId: (id, harnessSessionId) => {
@@ -336,6 +338,21 @@ export class CoreHarnessStatus {
 
   private now(): number {
     return this.deps.now ? this.deps.now() : Date.now();
+  }
+
+  /**
+   * What the hook that is about to set `needs-input` says about the dialog (#959): one `session:prompt` event, before the
+   * status event, so a Panel reading both in order has the kind and options when it sees the status. Best effort: a
+   * Session with no event log, or a hook that names nothing, leaves the Panel to read the screen.
+   */
+  private recordHookPrompt(sessionId: string, payload: HarnessHookBody): void {
+    const prompt = hookPromptOf(payload);
+    if (!prompt) return;
+    try {
+      this.deps.writer.recordSessionEvent(SESSION_PROMPT_EVENT_KIND, JSON.stringify({ sessionId, ...prompt }), { sessionId });
+    } catch (err) {
+      log.warn("harness-status.prompt-event-failed", { sessionId, error: String(err) });
+    }
   }
 
   private writeStatus(sessionId: string, status: CoreLinkSessionStatus, source?: string): boolean {
