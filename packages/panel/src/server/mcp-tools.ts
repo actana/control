@@ -25,7 +25,7 @@ import { scopeReaches } from "./services/api-keys";
 import type { ApiKeyPermission } from "~/shared/api-key-permissions";
 import { SESSION_PAGE_MAX, SESSION_STATUS_FILTERS } from "@actana/shared/session-paging";
 import { AGENT_FLAGS, AGENT_NAME_MAX, HARNESSES } from "~/shared/agents";
-import { TASKS_PAGE_MAX_LIMIT, TASK_STATUSES } from "~/shared/tasks";
+import { TASKS_PAGE_MAX_LIMIT, TASK_SESSION_STATES, TASK_STATUSES } from "~/shared/tasks";
 
 /**
  * The MCP tools (#573). Each one is a thin call into the same handlers the
@@ -57,8 +57,11 @@ export type McpTool = {
   /** The API key permission a call needs. */
   permission: ApiKeyPermission;
   input: z.ZodObject;
-  run(principal: ApiKeyPrincipal, args: never): Promise<ToolOutcome>;
+  run(principal: ApiKeyPrincipal, args: never, ctx: McpContext): Promise<ToolOutcome>;
 };
+
+/** What the server knows about the call itself: the Panel's own origin, so a Task's watch URL is absolute. */
+export type McpContext = { origin: string };
 
 /** A v1 handler's `Response` as a tool outcome: 2xx is its JSON, anything else is `"<status> <error>"`. */
 async function outcomeOf(response: Response): Promise<ToolOutcome> {
@@ -86,7 +89,7 @@ function tool<S extends z.ZodObject>(def: {
   destructive?: boolean;
   permission: ApiKeyPermission;
   input: S;
-  run: (principal: ApiKeyPrincipal, args: z.infer<S>) => Promise<ToolOutcome>;
+  run: (principal: ApiKeyPrincipal, args: z.infer<S>, ctx: McpContext) => Promise<ToolOutcome>;
 }): McpTool {
   return def as McpTool;
 }
@@ -181,7 +184,9 @@ export const MCP_TOOLS: readonly McpTool[] = [
     name: "get_tasks",
     description:
       "List Tasks on the Cores the key can reach, optionally only one status or one Core. With no limit, every matching Task with its full description. " +
-      "With a limit (1-100) you get one page, newest update first, without descriptions (use get_task for those), plus nextCursor: pass it back as cursor for the next page; null on the last. Each Task has waiting: { reason, coreId } while it is assigned but not started (Core full, Core not connected, Harness not ready), else null.",
+      "With a limit (1-100) you get one page, newest update first, without descriptions (use get_task for those), plus nextCursor: pass it back as cursor for the next page; null on the last. Each Task has waiting: { reason, coreId } while it is assigned but not started (Core full, Core not connected, Harness not ready), else null. " +
+      "Each Task has sessionState (working, needs-input, interrupted, idle-no-result, exited; null when no attempt runs): pass sessionState (one value or a comma list) to list only those, e.g. every Task that needs-input. " +
+      "A row has no watch URL: read it with get_task, or wait on the watch.url that create_task, assign_task and comment_task returned. Call get_guide for the full recipe.",
     readOnly: true,
     permission: "read",
     input: z.object({
@@ -189,8 +194,12 @@ export const MCP_TOOLS: readonly McpTool[] = [
       coreId: coreIdArg.optional(),
       limit: z.number().int().min(1).max(TASKS_PAGE_MAX_LIMIT).optional().describe("Page size, 1-100. Omit to get every Task with its description."),
       cursor: z.string().min(1).optional().describe("The nextCursor of the previous page. Needs limit."),
+      sessionState: z
+        .string()
+        .optional()
+        .describe(`Only Tasks whose Session is in this state: one of ${TASK_SESSION_STATES.join(", ")}, or a comma list of them.`),
     }),
-    run: async (principal, { status, coreId, limit, cursor }) => {
+    run: async (principal, { status, coreId, limit, cursor, sessionState }) => {
       if (coreId !== undefined && !scopeReaches(principal.scope, coreId)) {
         return outcomeOf(forbidden("this API key does not reach that Core"));
       }
@@ -200,6 +209,7 @@ export const MCP_TOOLS: readonly McpTool[] = [
           ...(coreId === undefined ? {} : { coreId }),
           ...(limit === undefined ? {} : { limit }),
           ...(cursor === undefined ? {} : { cursor }),
+          ...(sessionState === undefined ? {} : { sessionState }),
         }),
       );
       // The rows are in the JSON text only: a list can be megabytes, so it is not repeated as structuredContent.
@@ -229,17 +239,20 @@ export const MCP_TOOLS: readonly McpTool[] = [
   }),
   tool({
     name: "get_task",
-    description: "One Task with its comment thread (the agent's report arrives here as a comment). waiting is { reason, coreId } while the Task is assigned but not started (Core full, Core not connected, Harness not ready), else null.",
+    description:
+      "One Task with its comment thread (the agent's report arrives here as a comment). waiting is { reason, coreId } while the Task is assigned but not started (Core full, Core not connected, Harness not ready), else null. " +
+      "sessionState says what its Session is doing; while an attempt is assigned (queued) or runs, watch is { url, expiresAt, pollAfterSeconds }: wait by reading watch.url (no API key), not by calling get_task in a loop. Call get_guide for the full recipe.",
     readOnly: true,
     permission: "read",
     input: z.object({ taskId: taskIdArg }),
-    run: async (principal, { taskId }) => outcomeOf(await getTaskV1(principal, taskId)),
+    run: async (principal, { taskId }, { origin }) => outcomeOf(await getTaskV1(principal, taskId, origin)),
   }),
   tool({
     name: "create_task",
     description:
       "Create a Task. It is a draft unless startNow is true, which creates it assigned so its Agent starts on it (needs coreId and agent). If the Core is full or not connected the Task is queued: the answer says so (queued, waiting) and it starts by itself. " +
-      "timeoutMinutes sets its time limit per attempt (default 60 minutes; null = No limit).",
+      "timeoutMinutes sets its time limit per attempt (default 60 minutes; null = No limit). " +
+      "The Task comes back with sessionState and, watch.url right away, even while it is queued for a Core: read that URL to wait (it needs no API key); do not loop on get_task or call it again. A draft has no watch. Call get_guide for the full recipe.",
     readOnly: false,
     permission: "tasks:write",
     input: z.object({
@@ -250,29 +263,31 @@ export const MCP_TOOLS: readonly McpTool[] = [
       startNow: z.boolean().optional(),
       timeoutMinutes: timeoutMinutesArg,
     }),
-    run: async (principal, args) => outcomeOf(await createTaskV1(principal, asJsonRequest(args))),
+    run: async (principal, args, { origin }) => outcomeOf(await createTaskV1(principal, asJsonRequest(args), origin)),
   }),
   tool({
     name: "assign_task",
     description:
       "Move a Task to assigned (its Agent starts on it) or back to draft. These are the only moves an operator makes; " +
       "in_progress, done, failed and partial belong to the dispatcher and the Agent's report. A Task that is in_progress " +
-      "cannot be moved: stop_task it first.",
+      "cannot be moved: stop_task it first. The Task comes back with sessionState and, watch.url straight away (no extra get_task) to wait on; a Task moved back to draft has none.",
     readOnly: false,
     permission: "tasks:write",
     input: z.object({ taskId: taskIdArg, status: z.enum(OPERATOR_TASK_STATUSES).default("assigned") }),
-    run: async (principal, { taskId, status }) =>
-      outcomeOf(await setTaskStatusV1(principal, taskId, asJsonRequest({ status }))),
+    run: async (principal, { taskId, status }, { origin }) =>
+      outcomeOf(await setTaskStatusV1(principal, taskId, asJsonRequest({ status }), origin)),
   }),
   tool({
     name: "comment_task",
-    description: "Add a comment to a Task's thread. With reassign true, also send a finished Task back to its Agent (Comment & re-assign). " +
+    description: "Add a comment to a Task's thread. With reassign true, also send a finished Task back to its Agent (Comment & re-assign) and get the Task back with sessionState and watch.url straight away. " +
       "A Task that is in_progress is refused: stop_task it first, then comment again with reassign true.",
     readOnly: false,
     permission: "tasks:write",
     input: z.object({ taskId: taskIdArg, body: z.string().min(1), reassign: z.boolean().optional() }),
-    run: async (principal, { taskId, body, reassign }) =>
-      outcomeOf(await addTaskCommentV1(principal, taskId, asJsonRequest({ body, ...(reassign === undefined ? {} : { reassign }) }))),
+    run: async (principal, { taskId, body, reassign }, { origin }) =>
+      outcomeOf(
+        await addTaskCommentV1(principal, taskId, asJsonRequest({ body, ...(reassign === undefined ? {} : { reassign }) }), origin),
+      ),
   }),
   tool({
     name: "stop_task",
@@ -283,8 +298,8 @@ export const MCP_TOOLS: readonly McpTool[] = [
     permission: "tasks:write",
     destructive: true,
     input: z.object({ taskId: taskIdArg, reason: z.string().max(2000).optional().describe("Why it is stopped; recorded in the Task's comment.") }),
-    run: async (principal, { taskId, reason }) =>
-      outcomeOf(await stopTaskV1(principal, taskId, asJsonRequest({ ...(reason === undefined ? {} : { reason }) }))),
+    run: async (principal, { taskId, reason }, { origin }) =>
+      outcomeOf(await stopTaskV1(principal, taskId, asJsonRequest({ ...(reason === undefined ? {} : { reason }) }), origin)),
   }),
   tool({
     name: "close_session",
@@ -296,7 +311,7 @@ export const MCP_TOOLS: readonly McpTool[] = [
     permission: "tasks:write",
     destructive: true,
     input: z.object({ taskId: taskIdArg }),
-    run: async (principal, { taskId }) => outcomeOf(await closeTaskSessionV1(principal, taskId)),
+    run: async (principal, { taskId }, { origin }) => outcomeOf(await closeTaskSessionV1(principal, taskId, origin)),
   }),
   tool({
     name: "update_task",
@@ -316,8 +331,8 @@ export const MCP_TOOLS: readonly McpTool[] = [
       .refine((a) => a.title !== undefined || a.description !== undefined || a.timeoutMinutes !== undefined, {
         message: "give a title, a description or a time limit",
       }),
-    run: async (principal, { taskId, ...fields }) =>
-      outcomeOf(await updateTaskV1(principal, taskId, asJsonRequest(fields, "PATCH"))),
+    run: async (principal, { taskId, ...fields }, { origin }) =>
+      outcomeOf(await updateTaskV1(principal, taskId, asJsonRequest(fields, "PATCH"), origin)),
   }),
   tool({
     name: "delete_task",

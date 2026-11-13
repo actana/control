@@ -17,6 +17,8 @@ const {
   verifyWatchToken,
   watchExpiresAt,
   taskWatchToken,
+  nextAttemptWatchToken,
+  nextAttemptWatchExpiresAt,
   taskWatchUrl,
   readWatch,
   pollAfterSeconds,
@@ -232,6 +234,61 @@ describe("readWatch", () => {
     expect((await readWatch(first, T0 + 23 * 3600_000)).kind).toBe("ok");
     expect(await readWatch(first, T0 + 24 * 3600_000)).toEqual({ kind: "gone" });
     expect((await readWatch(second, T0 + 24 * 3600_000)).kind).toBe("ok");
+  });
+});
+
+describe("readWatch for an assigned Task (next-attempt token)", () => {
+  const assigned = { status: "assigned", sessionState: null, sessionStateAt: null, attemptCount: 0, dispatchedAt: null } as const;
+
+  it("answers the queued attempt with status assigned, no state, no result and a 5 s poll", async () => {
+    const row = await seed(assigned);
+    const token = nextAttemptWatchToken(row, T0);
+    expect(await readWatch(token, T0 + 1000)).toEqual({
+      kind: "ok",
+      payload: {
+        taskId: "task-1",
+        attempt: 1,
+        status: "assigned",
+        sessionState: null,
+        sessionStateAt: null,
+        result: null,
+        updatedAt: T0 + 1000,
+        pollAfterSeconds: 5,
+      },
+    });
+  });
+
+  it("outlives a queue wait: the time limit, the No-limit window and the grace all count", () => {
+    const limit = { id: "task-1", attemptCount: 0, timeoutMinutes: 60 };
+    expect(nextAttemptWatchExpiresAt(limit, T0)).toBe(T0 + NO_LIMIT_WATCH_TTL_MS + 60 * MIN + WATCH_GRACE_MS);
+    expect(nextAttemptWatchExpiresAt({ ...limit, timeoutMinutes: null }, T0)).toBe(T0 + NO_LIMIT_WATCH_TTL_MS + WATCH_GRACE_MS);
+  });
+
+  it("is the running attempt's token once dispatch raises attemptCount", async () => {
+    const row = await seed(assigned);
+    const token = nextAttemptWatchToken(row, T0);
+    await panelDb()
+      .update(tasks)
+      .set({ status: "in_progress", attemptCount: 1, dispatchedAt: T0 + 5000, sessionState: "working", sessionStateAt: T0 + 6000 })
+      .where(eq(tasks.id, "task-1"));
+    expect(await readWatch(token, T0 + 7000)).toMatchObject({
+      kind: "ok",
+      payload: { attempt: 1, status: "in_progress", sessionState: "working", result: null },
+    });
+  });
+
+  it("a Task moved back to draft is gone", async () => {
+    const row = await seed(assigned);
+    const token = nextAttemptWatchToken(row, T0);
+    await panelDb().update(tasks).set({ status: "draft" }).where(eq(tasks.id, "task-1"));
+    expect(await readWatch(token, T0 + 1)).toEqual({ kind: "gone" });
+  });
+
+  it("an assigned Task does not answer a token for any other attempt", async () => {
+    const row = await seed({ ...assigned, attemptCount: 1 });
+    expect(await readWatch(taskWatchToken(row, T0), T0 + 1)).toEqual({ kind: "gone" });
+    expect(await readWatch(nextAttemptWatchToken({ ...row, attemptCount: 5 }, T0), T0 + 1)).toEqual({ kind: "gone" });
+    expect((await readWatch(nextAttemptWatchToken(row, T0), T0 + 1)).kind).toBe("ok");
   });
 });
 

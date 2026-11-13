@@ -81,6 +81,22 @@ export function taskWatchToken(
   return mintWatchToken(task.id, task.attemptCount, watchExpiresAt(task, now));
 }
 
+/**
+ * An `assigned` Task has no attempt yet: the token it gets is for the next one (`attemptCount + 1`), so the URL
+ * a hand-off call returns keeps working once dispatch starts the attempt. It must outlive a queue wait, so it
+ * lasts the No-limit window plus the attempt's time limit plus the grace.
+ */
+export function nextAttemptWatchExpiresAt(task: { timeoutMinutes: number | null }, now: number): number {
+  return now + NO_LIMIT_WATCH_TTL_MS + (task.timeoutMinutes ?? 0) * 60_000 + WATCH_GRACE_MS;
+}
+
+export function nextAttemptWatchToken(
+  task: { id: string; attemptCount: number; timeoutMinutes: number | null },
+  now: number = Date.now(),
+): string {
+  return mintWatchToken(task.id, task.attemptCount + 1, nextAttemptWatchExpiresAt(task, now));
+}
+
 /** The absolute URL: `AC_PANEL_PUBLIC_URL` when set, else the request's origin. */
 export function taskWatchUrl(token: string, requestOrigin: string): string {
   const configured = process.env.AC_PANEL_PUBLIC_URL?.trim();
@@ -121,9 +137,15 @@ export async function readWatch(token: string, now: number = Date.now()): Promis
   if (!claim) return { kind: "not-found" };
   if (now >= claim.expiresAt) return { kind: "gone" };
   const task = await findTaskWatchRow(claim.taskId);
-  if (!task || task.attemptCount !== claim.attempt) return { kind: "gone" };
+  if (!task) return { kind: "gone" };
   const status = task.status;
-  if (status === "in_progress") {
+  // A queued Task answers the token minted for its next attempt; once dispatch raises `attemptCount` the same
+  // token is the running attempt's and the rules below apply unchanged.
+  const queued = status === "assigned" && claim.attempt === task.attemptCount + 1;
+  if (!queued && task.attemptCount !== claim.attempt) return { kind: "gone" };
+  if (queued) {
+    // queued for its next attempt: readable
+  } else if (status === "in_progress") {
     // running: readable
   } else if (isFinished(status)) {
     if (wasStopped(task.lastError)) return { kind: "gone" };
@@ -135,7 +157,7 @@ export async function readWatch(token: string, now: number = Date.now()): Promis
     kind: "ok",
     payload: {
       taskId: task.id,
-      attempt: task.attemptCount,
+      attempt: claim.attempt,
       status: status as TaskStatus,
       sessionState: isTaskSessionState(task.sessionState) ? task.sessionState : null,
       sessionStateAt: task.sessionStateAt,

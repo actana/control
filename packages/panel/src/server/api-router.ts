@@ -320,14 +320,14 @@ async function dispatch(
   m = pathname.match(V1_TASK_STATUS_PATH);
   if (m && method === "POST") return v1Controller.setTaskStatusV1(principal!, decode(m[1]), request);
   m = pathname.match(V1_TASK_CLOSE_SESSION_PATH);
-  if (m && method === "POST") return v1Controller.closeTaskSessionV1(principal!, decode(m[1]));
+  if (m && method === "POST") return v1Controller.closeTaskSessionV1(principal!, decode(m[1]), url.origin);
   m = pathname.match(V1_TASK_STOP_PATH);
   if (m && method === "POST") return v1Controller.stopTaskV1(principal!, decode(m[1]), request);
   m = pathname.match(V1_TASK_COMMENTS_PATH);
   if (m && method === "GET") return v1Controller.listTaskCommentsV1(principal!, decode(m[1]));
   if (m && method === "POST") return v1Controller.addTaskCommentV1(principal!, decode(m[1]), request);
   m = pathname.match(V1_TASK_PATH);
-  if (m && method === "GET") return v1Controller.getTaskV1(principal!, decode(m[1]));
+  if (m && method === "GET") return v1Controller.getTaskV1(principal!, decode(m[1]), url.origin);
   if (m && method === "PATCH") return v1Controller.updateTaskV1(principal!, decode(m[1]), request);
   if (m && method === "DELETE") return v1Controller.deleteTaskV1(principal!, decode(m[1]));
 

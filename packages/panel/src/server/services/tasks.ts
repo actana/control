@@ -249,8 +249,12 @@ export async function createTask(ownerId: number, input: NewTask, now = Date.now
   return row;
 }
 
-export async function listTasks(ownerId: number, statuses?: TaskStatus[]): Promise<Task[]> {
-  return findTasks(ownerId, statuses);
+export async function listTasks(
+  ownerId: number,
+  statuses?: TaskStatus[],
+  sessionStates?: readonly TaskSessionState[],
+): Promise<Task[]> {
+  return findTasks(ownerId, statuses, sessionStates);
 }
 
 export type { TaskCounts, TaskListRow, TasksPage, TasksPageQuery };
