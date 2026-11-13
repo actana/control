@@ -75,9 +75,8 @@ beforeEach(async () => {
     return {
       request: async (frame: Record<string, unknown>) => {
         frames.push(frame);
-        const result = answer(frame) as { type: string; message?: string };
-        if (result.type === "error") throw new Error(result.message);
-        return result as never;
+        // Like the SDK client: an error frame is an answer, not a rejection.
+        return answer(frame) as never;
       },
     } as never;
   });
@@ -136,6 +135,14 @@ describe("GET /api/v1/sessions", () => {
     answer = () => ({ type: "error", message: "invalid cursor" });
     const cursor = Buffer.from(JSON.stringify([1, 10, "s1"])).toString("base64url");
     expect((await call(`/api/v1/sessions?coreId=core-a&cursor=${cursor}`, { bearer: key })).status).toBe(400);
+  });
+
+  it("answers 502 when an older Core refuses the paging fields, not an empty list", async () => {
+    const { key } = await createKey();
+    answer = () => ({ type: "error", message: 'sessionsList does not take "limit": a Session belongs to the Core' });
+    const res = await call("/api/v1/sessions?coreId=core-a", { bearer: key });
+    expect(res.status).toBe(502);
+    expect(await res.json()).not.toHaveProperty("sessions");
   });
 
   it("keeps to the owner and the key's Cores", async () => {

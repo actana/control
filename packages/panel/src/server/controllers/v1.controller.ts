@@ -287,11 +287,18 @@ export async function listSessionsV1(principal: ApiPrincipal, query: ListSession
     let answer: CoreSessionPage;
     try {
       answer = (await client.request(frame as never)) as CoreSessionPage;
-    } catch (e) {
-      const message = e instanceof Error ? e.message : String(e);
+    } catch {
+      return jsonError(HTTP_BAD_GATEWAY, "the Core did not answer");
+    }
+    // The link hands an error frame back as an answer, not a rejection.
+    if (answer.type !== "sessionsListResult") {
+      const message = String((answer as { message?: unknown }).message ?? "");
       // The Core refuses what it cannot read: that is the caller's request, not an outage.
       if (/^(invalid cursor|limit must|status must)/.test(message)) throw new ValidationError(message);
-      return jsonError(HTTP_BAD_GATEWAY, "the Core did not answer");
+      return jsonError(
+        HTTP_BAD_GATEWAY,
+        /does not take/.test(message) ? "this Core is too old to page Sessions; update it" : "the Core did not answer",
+      );
     }
     const body: SessionsPageDto = {
       sessions: (answer.sessions ?? []).map((s) => ({
