@@ -8,7 +8,7 @@ import { closePanelTestDb, openPanelTestDb, resetPanelState } from "./_panel-tes
  */
 
 const testDb = await openPanelTestDb();
-const { updateAgent, getAgent } = await import("../services/agents");
+const { updateAgent, getAgent, resolveAgent } = await import("../services/agents");
 const { ConflictError, NotFoundError, ValidationError } = await import("../errors");
 
 const A = 1;
@@ -39,6 +39,18 @@ describe("updateAgent", () => {
     const updated = await updateAgent(A, "agent-1", { model: "sonnet" }, 99);
     expect(updated).toMatchObject({ id: "agent-1", coreId: "core-a", harness: "claude-code", name: "Opus", model: "sonnet", flags: ["skip-permissions"], isDefault: false, updatedAt: 99, createdAt: 10 });
     expect((await getAgent(A, "agent-1")).model).toBe("sonnet");
+  });
+
+  it("is what the next dispatch resolves: the Agent runs with the new model", async () => {
+    await updateAgent(A, "agent-1", { model: "sonnet" });
+    const harnesses = async () => ({ "claude-code": { status: "available" } }) as never;
+    expect(await resolveAgent(A, "agent-1", { harnesses })).toEqual({
+      agentId: "agent-1",
+      coreId: "core-a",
+      harness: "claude-code",
+      model: "sonnet",
+      flags: ["skip-permissions"],
+    });
   });
 
   it("changes the name and the flags, and null clears the model", async () => {
