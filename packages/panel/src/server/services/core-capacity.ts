@@ -16,7 +16,7 @@ const PAGE = 100;
 export const CAPACITY_MAX_PAGES = 5;
 
 type Row = { ptyId: string | null; agent?: string };
-type Page = { type?: string; sessions?: Row[]; nextCursor?: string | null };
+type Page = { type?: string; sessions?: Row[]; nextCursor?: string | null; total?: number };
 type Link = { request(frame: never): Promise<unknown> };
 export type CapacityLinkFor = (coreId: string) => Link | null;
 
@@ -40,7 +40,8 @@ async function countLive(link: Link): Promise<number | null> {
   for (let page = 0; page < CAPACITY_MAX_PAGES; page++) {
     const frame = { type: "sessionsList", limit: PAGE, archived: false, ...(cursor ? { cursor } : {}) };
     const answer = (await link.request(frame as never)) as Page;
-    if (answer.type !== "sessionsListResult") return null;
+    // A Core that cannot read its Sessions (or is older than paging) answers `[]` with no `total`: that is no answer, not "0 live".
+    if (answer.type !== "sessionsListResult" || typeof answer.total !== "number") return null;
     for (const s of answer.sessions ?? []) if (s.ptyId !== null && s.agent) live++;
     cursor = answer.nextCursor;
     if (!cursor) break;

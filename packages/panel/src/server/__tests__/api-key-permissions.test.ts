@@ -107,6 +107,7 @@ function sampleFor(method: string, pattern: RegExp): { path: string; json?: unkn
   if (path === "/api/v1/tasks") return { path, json: { title: "new task" } };
   if (path.endsWith("/status")) return { path, json: { status: "draft" } };
   if (path.endsWith("/stop")) return { path, json: {} };
+  if (path.endsWith("/close-session")) return { path };
   if (method === "PATCH") return { path, json: { title: "renamed" } };
   if (path.endsWith("/comments")) return { path, json: { body: "hello" } };
   throw new Error(`no sample for ${method} ${path}`);
@@ -127,7 +128,7 @@ describe("a read-only key", () => {
         expect(await errorOf(res)).toBe(`this API key lacks the ${route.permission} permission`);
       }
     }
-    expect(seen.filter((s) => s.startsWith("POST ") || s.startsWith("PATCH ") || s.startsWith("DELETE ")).length).toBe(9);
+    expect(seen.filter((s) => s.startsWith("POST ") || s.startsWith("PATCH ") || s.startsWith("DELETE ")).length).toBe(10);
     expect(seen.filter((s) => s.startsWith("GET ")).length).toBe(11);
     // Nothing was written: the 403 came from the gate, before any handler ran.
     expect((await testDb.pool.query("select count(*)::int as n from agents")).rows[0]).toEqual({ n: 2 });

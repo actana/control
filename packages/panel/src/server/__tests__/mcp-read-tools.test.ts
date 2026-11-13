@@ -183,7 +183,7 @@ describe("capacity and waiting (#962)", () => {
     noteCoreCap("core-b", 4);
     vi.spyOn(coreLinkManager(), "client").mockImplementation(((id: string) =>
       id === "core-a"
-        ? { request: async () => ({ type: "sessionsListResult", sessions: [1, 2, 3].map((n) => ({ sessionId: `s${n}`, ptyId: `p${n}`, agent: "claude-code" })), nextCursor: null }) }
+        ? { request: async () => ({ type: "sessionsListResult", sessions: [1, 2, 3].map((n) => ({ sessionId: `s${n}`, ptyId: `p${n}`, agent: "claude-code" })), nextCursor: null, total: 3 }) }
         : null) as never);
     const cores = dataOf(await (await client(A)).call("list_cores")).cores as { id: string; liveSessions: number | null; maxSessions: number }[];
     expect(cores.find((c) => c.id === "core-a")).toMatchObject({ liveSessions: 3, maxSessions: 8 });

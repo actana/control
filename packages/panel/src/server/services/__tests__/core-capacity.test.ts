@@ -9,6 +9,7 @@ const linkOf = (pages: unknown[][]) => {
   const request = vi.fn(async () => ({
     type: "sessionsListResult",
     sessions: pages[n] ?? [],
+    total: pages.flat().length,
     nextCursor: ++n < pages.length ? `c${n}` : null,
   }));
   return { request };
@@ -43,6 +44,14 @@ describe("readCoreCapacity", () => {
     resetCoreCapacityForTests();
     const other = { request: async () => ({ type: "error", message: "does not take" }) };
     expect((await readCoreCapacity("c1", () => other as never)).liveSessions).toBeNull();
+  });
+
+  it("is unknown, not 0, for a Core that answers an empty list with no total (it cannot read its Sessions)", async () => {
+    const blind = { request: async () => ({ type: "sessionsListResult", sessions: [], nextCursor: null }) };
+    expect((await readCoreCapacity("c1", () => blind as never)).liveSessions).toBeNull();
+    resetCoreCapacityForTests();
+    const idle = { request: async () => ({ type: "sessionsListResult", sessions: [], nextCursor: null, total: 0 }) };
+    expect((await readCoreCapacity("c1", () => idle as never)).liveSessions).toBe(0);
   });
 
   it("asks a Core once per TTL, then again", async () => {

@@ -69,6 +69,11 @@ export const updateTaskBody = z
     message: "give a title, a description or a time limit",
   });
 
+function waitingOf(t: Task): TaskDto["waiting"] {
+  const reason = taskWaitingReason(t);
+  return reason === null ? null : { reason, coreId: t.coreId };
+}
+
 function taskDto(t: Task): TaskDto {
   return {
     id: t.id,
@@ -80,7 +85,7 @@ function taskDto(t: Task): TaskDto {
     attemptCount: t.attemptCount,
     dispatchedAt: t.dispatchedAt,
     lastError: t.lastError,
-    waiting: taskWaitingReason(t) === null ? null : { reason: taskWaitingReason(t)!, coreId: t.coreId },
+    waiting: waitingOf(t),
     timeoutMinutes: t.timeoutMinutes,
     sessionState: toSessionState(t.sessionState),
     sessionStateAt: t.sessionStateAt,

@@ -59,6 +59,7 @@ export const API_KEY_ROUTES: ReadonlyArray<{ method: string; pattern: RegExp; pe
   { method: "DELETE", pattern: /^\/api\/v1\/tasks\/[^/]+$/, permission: "tasks:write" },
   { method: "POST", pattern: /^\/api\/v1\/tasks\/[^/]+\/status$/, permission: "tasks:write" },
   { method: "POST", pattern: /^\/api\/v1\/tasks\/[^/]+\/stop$/, permission: "tasks:write" },
+  { method: "POST", pattern: /^\/api\/v1\/tasks\/[^/]+\/close-session$/, permission: "tasks:write" },
   { method: "GET", pattern: /^\/api\/v1\/tasks\/[^/]+\/comments$/, permission: "read" },
   { method: "POST", pattern: /^\/api\/v1\/tasks\/[^/]+\/comments$/, permission: "tasks:write" },
 ];
