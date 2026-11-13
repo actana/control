@@ -143,6 +143,15 @@ describe("Task detail on a phone", () => {
     await open();
     fireEvent.change(screen.getByLabelText("Comment"), { target: { value: "note" } });
     fireEvent.click(screen.getByRole("button", { name: "Comment" }));
+    // #935: "Also type it into the running Session" is on by default, so a Comment on a running Task delivers now.
+    await waitFor(() => expect(api.commentOnTask).toHaveBeenCalledWith("T-7", { body: "note", reassign: false, deliver: "now" }));
+  });
+
+  it("sends a note only, with no deliver, when the Session box is unticked", async () => {
+    await open();
+    fireEvent.click(screen.getByLabelText(/Also type it into the running Session/));
+    fireEvent.change(screen.getByLabelText("Comment"), { target: { value: "note" } });
+    fireEvent.click(screen.getByRole("button", { name: "Comment" }));
     await waitFor(() => expect(api.commentOnTask).toHaveBeenCalledWith("T-7", { body: "note", reassign: false }));
   });
 

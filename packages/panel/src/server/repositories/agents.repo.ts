@@ -110,7 +110,7 @@ async function updateInTransaction(
     const taken = await tx
       .select({ id: agents.id })
       .from(agents)
-      .where(and(eq(agents.coreId, current[0].coreId), eq(agents.name, fields.name), ne(agents.id, id)));
+      .where(ownedBy(agents, ownerId, and(eq(agents.coreId, current[0].coreId), eq(agents.name, fields.name), ne(agents.id, id))));
     if (taken[0]) return { kind: "conflict" };
     const updated = await tx
       .update(agents)

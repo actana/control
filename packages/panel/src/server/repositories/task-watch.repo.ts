@@ -1,11 +1,12 @@
 import { and, desc, eq, inArray } from "drizzle-orm";
 import { panelDb } from "~/db/panel-db-handle";
+import { ownedBy } from "~/db/owner";
 import { taskStatusHistory, tasks } from "~/db/pg-schema";
 import { FINISHED_TASK_STATUSES } from "~/shared/tasks";
 
-// The status URL (#950) names a Task by a signed token, not by an owner: the HMAC is the capability, and what it
-// opens is one Task's status and Session state, nothing else. So this read is by Task id alone, deliberately not
-// through `ownedBy`, and it selects only the columns the payload and the validity rules need: never the title,
+// The status URL (#950) names a Task by a signed token: the HMAC is the capability, and what it opens is one Task's
+// status and Session state, nothing else. The token carries the Task's owner, signed with the rest, so the read
+// still goes through `ownedBy` (ADR 0041 D15), and it selects only the columns the payload and the validity rules need: never the title,
 // the description or the comments.
 
 export type TaskWatchRow = {
@@ -20,7 +21,7 @@ export type TaskWatchRow = {
   endedAt: number | null;
 };
 
-export async function findTaskWatchRow(id: string): Promise<TaskWatchRow | null> {
+export async function findTaskWatchRow(ownerId: number, id: string): Promise<TaskWatchRow | null> {
   const rows = await panelDb()
     .select({
       id: tasks.id,
@@ -32,14 +33,20 @@ export async function findTaskWatchRow(id: string): Promise<TaskWatchRow | null>
       updatedAt: tasks.updatedAt,
     })
     .from(tasks)
-    .where(eq(tasks.id, id))
+    .where(ownedBy(tasks, ownerId, eq(tasks.id, id)))
     .limit(1);
   const row = rows[0];
   if (!row) return null;
   const ended = await panelDb()
     .select({ changedAt: taskStatusHistory.changedAt })
     .from(taskStatusHistory)
-    .where(and(eq(taskStatusHistory.taskId, id), inArray(taskStatusHistory.toStatus, [...FINISHED_TASK_STATUSES])))
+    .where(
+      ownedBy(
+        taskStatusHistory,
+        ownerId,
+        and(eq(taskStatusHistory.taskId, id), inArray(taskStatusHistory.toStatus, [...FINISHED_TASK_STATUSES])),
+      ),
+    )
     .orderBy(desc(taskStatusHistory.seq))
     .limit(1);
   return { ...row, endedAt: ended[0]?.changedAt ?? null };
