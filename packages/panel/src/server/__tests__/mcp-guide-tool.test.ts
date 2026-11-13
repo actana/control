@@ -201,6 +201,14 @@ describe("what the guide teaches", () => {
     expect(text).toMatch(/only/i);
   });
 
+  it("states: a recipe that re-assigns also stops the Task first (a Session state never moves the status)", () => {
+    const rows = read("states")
+      .split("\n")
+      .filter((l) => l.startsWith("|") && /reassign/.test(l));
+    expect(rows.length).toBeGreaterThan(0);
+    for (const row of rows) expect(row).toContain("stop_task");
+  });
+
   it("blocked: do not stop a Task you did not create", () => {
     const text = read("blocked");
     expect(text).toMatch(/do not stop a Task you did not create/i);
