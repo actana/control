@@ -261,7 +261,7 @@ services:
 # thing that reads this file: the `docker` entry there matches Dockerfiles only.
   seaweedfs:
     profiles: ["seaweedfs"]
-    image: chrislusf/seaweedfs:4.47@sha256:ce9e796f1fe6f06968f4c04bdaf8f678dad9c8acdfef3d244133d71bfa6bf882
+    image: chrislusf/seaweedfs:4.53@sha256:ccad23e18639c8b98cee17e7100b95830a06077b56d8e5b006d6dcf8ec5e94a0
     restart: unless-stopped
     # Reaps create-bucket.sh: the entrypoint starts it in a subshell and then execs, so it is orphaned to this init.
     init: true
