@@ -111,7 +111,7 @@ services:
   # compose up` stops and says so rather than start a database anyone can
   # guess the password to.
   postgres:
-    image: postgres:18.6-bookworm@sha256:3725f4e2499eef5134592b3b4ab79a543ed7f8e533b05b5b637af926630f6650
+    image: postgres:18.6-bookworm@sha256:f1ea2a1a4fb7b68d4836be1fdcb8a6466a89b072158bf9d97663600538c294c5
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
